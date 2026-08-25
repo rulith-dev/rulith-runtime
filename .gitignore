@@ -1,0 +1,10 @@
+node_modules/
+examples/**/runtime/
+examples/**/.runtime-test/
+rulith-station.json
+rulith-tools.json
+rulith-sources.json
+output.json
+*.log
+.env
+.env.*

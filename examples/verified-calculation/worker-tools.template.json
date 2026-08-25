@@ -1,0 +1,21 @@
+{
+  "load_calculation_input": {
+    "impl": "run",
+    "cmd": "node",
+    "args": ["__READ_SCRIPT__"]
+  },
+  "write_calculation_result": {
+    "impl": "run",
+    "cmd": "node",
+    "args": ["__WRITE_SCRIPT__"],
+    "passArgs": true
+  },
+  "claims": {
+    "output_record": {
+      "impl": "run",
+      "cmd": "node",
+      "args": ["__VERIFY_SCRIPT__"],
+      "tier": "attested"
+    }
+  }
+}

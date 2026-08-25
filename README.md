@@ -1,0 +1,111 @@
+# Rulith Local Runtime
+
+This repository contains the local half of Rulith:
+
+It is the canonical source for the downloadable local runtime. Hosted services may
+carry release copies of these files, but changes must originate here and retain the
+hashes recorded in `artifact-manifest.json`.
+
+| Component | Responsibility | Trust boundary |
+| --- | --- | --- |
+| Agent Runtime | Drives the model-to-board loop | Model credentials stay in this process |
+| Worker | Executes declared tools and reports synchronous receipts | Source credentials stay in the local vault |
+| Station | Starts, stops, configures, and observes both processes | Listens on loopback and requires a per-run key |
+
+The runtime is domain-neutral. Workflow vocabulary, criteria, actions, tools,
+sources, and constitutional constraints come from the agent's installed capability
+packages. The local processes do not contain an order-processing policy or another
+hidden business workflow.
+
+## Requirements
+
+- Node.js 20 or newer
+- A Rulith Cloud account and Agent token
+- A model endpoint compatible with Anthropic Messages or OpenAI Chat Completions
+- A Rulith Connection id and key when a workflow needs local execution
+
+No build step is required. The three entry points are dependency-free single-file
+ES modules. Database tools load the optional `pg` package only when used.
+
+## Agent Runtime
+
+```powershell
+$env:RULITH_TOKEN = '<agent-token>'
+$env:RULITH_MODEL_KEY = '<model-key>'
+$env:RULITH_MODEL = '<model-id>'
+$env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'
+node agent/rulith-agent.mjs --agent default --ui
+```
+
+The Agent Runtime sends board commands to Rulith Cloud and model requests directly
+to the configured model endpoint. It does not upload the model key to Rulith.
+
+## Worker
+
+Create local configuration files from the examples in `config/`, then run:
+
+```powershell
+$env:RULITH_CHANNEL = '<connection-id>'
+$env:RULITH_CHANNEL_KEY = '<connection-key>'
+$env:RULITH_TOOLS_FILE = "$PWD/config/rulith-tools.example.json"
+$env:RULITH_SOURCES_FILE = "$PWD/config/rulith-sources.example.json"
+node worker/rulith-worker.mjs
+```
+
+The Worker polls outbound, claims only work for which it has a declared local
+implementation, executes it, and reports a receipt before polling again. A model
+request cannot grant itself a tool, a source, a credential, or verification authority.
+
+## Station
+
+Copy `config/rulith-station.example.json` outside the repository, fill in the local
+values, and run:
+
+```powershell
+$env:RULITH_STATION_CONFIG = 'C:\path\to\rulith-station.json'
+node station/rulith-station.mjs
+```
+
+Station prints a loopback URL containing a random key. It is a local process host and
+timeline, not a board and not an authority service.
+
+## Five-minute verified file workflow
+
+The smallest end-to-end example reads trusted numbers from one local JSON file,
+derives the exact total on the board, writes another JSON file, reads it back, and
+only then accepts the result.
+
+```powershell
+cd examples/verified-calculation
+node prepare-runtime.mjs <connection-id>
+```
+
+Follow the generated paths and the instructions in
+[`examples/verified-calculation/README.md`](examples/verified-calculation/README.md).
+The model never supplies the trusted input values or the calculated output values.
+
+## Security model
+
+- Agent tokens and model keys belong to the Agent Runtime process.
+- Connection keys and source credentials belong to the Worker machine.
+- `run` tools execute fixed local commands; work-item values are not interpolated
+  into command names or arguments.
+- HTTP tools are constrained to their declared source or allowlist.
+- Database read tools accept a single `SELECT`; fenced write tools classify and
+  reject unsupported or destructive statements unless the declared contract allows them.
+- Submitted work is not self-verification. Acceptance remains a board and policy decision.
+
+See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.
+
+## Project status
+
+The runtime is beta software. Protocol compatibility is versioned, but command-line
+flags and the Station UI may still change before 1.0.
+
+Source comments and a few diagnostic messages inherited from the first deployment
+are still being translated to English. New user-facing text must be English.
+
+## License
+
+Apache-2.0. The license covers the code in this repository; it does not grant rights
+to the hosted Rulith Cloud service or the Rulith trademarks.

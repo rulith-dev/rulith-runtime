@@ -1,0 +1,7 @@
+{
+  "read_report": {
+    "impl": "run",
+    "cmd": "node",
+    "args": ["C:/absolute/path/to/read-report.mjs"]
+  }
+}

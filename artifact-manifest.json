@@ -1,0 +1,54 @@
+{
+  "schema": "rulith-local-runtime-artifacts/v1",
+  "source": "https://github.com/rulith-dev/rulith-runtime",
+  "files": {
+    "agent/rulith-agent.mjs": {
+      "sha256": "322d2832323de06debe4cf5fa4f0faa3ffd35fcdc501114efa85f384413e16d9"
+    },
+    "worker/rulith-worker.mjs": {
+      "sha256": "c3507d3717d7a978087e067933818b93dbe695e39b9a20eb796d2992f6359dbc"
+    },
+    "station/rulith-station.mjs": {
+      "sha256": "4314b118ae79343027e7e1299062fe775a5b87bbad37b3f5b7fa921f6c946453"
+    },
+    "config/rulith-sources.example.json": {
+      "sha256": "9a6b0640aba9c1bea27158dd86117f2cf527e74a15d5adcb1293c9867a2f04cd"
+    },
+    "config/rulith-station.example.json": {
+      "sha256": "ac87772b5e09dc30406ff67389d2d5221936d1996010d7aae805b3a64b8db691"
+    },
+    "config/rulith-tools.example.json": {
+      "sha256": "dfc75f3a4ed7fec4eabe86f23d6a7d475fd0f13c83817a559f9ba5d6c3d86333"
+    },
+    "examples/verified-calculation/README.md": {
+      "sha256": "51b7e93c0901986182060bdcd123cfffa5a9c46993cac8316d40b3e016db12ea"
+    },
+    "examples/verified-calculation/data/input.json": {
+      "sha256": "0b5b0a5dcc1bafb34853e9cac1ed748bcdb905471b74636fb928a1e180ed6de7"
+    },
+    "examples/verified-calculation/prepare-runtime.mjs": {
+      "sha256": "a6b2ff395d95a186b0c76371a44c43b92bf768b8bd9ea6fb912d9d59aa6dbcb9"
+    },
+    "examples/verified-calculation/prepare-station.mjs": {
+      "sha256": "94a6b9ef84b6659693bf0d49f568ce3e2ee3c607db9372043157b73a54dff1f7"
+    },
+    "examples/verified-calculation/read-input.mjs": {
+      "sha256": "7c8efeddf6283dce58d4e9d6ced5f90216cb0dbafd4feeb55b1a5bd855dd7a71"
+    },
+    "examples/verified-calculation/recipe.template.json": {
+      "sha256": "477d8e7d002f9af9b83b295a8371d4fb250a1ef7a2754e26da54062a915df103"
+    },
+    "examples/verified-calculation/setup.mjs": {
+      "sha256": "3afd6e23fa845aba813258a605849e7340b6f34cbcc17c730e1e09a7d79a961c"
+    },
+    "examples/verified-calculation/verify-output.mjs": {
+      "sha256": "9c494c8d77741d441a1cb4e5ade1282c88f955b883a14bccffe07d37cdf70b85"
+    },
+    "examples/verified-calculation/worker-tools.template.json": {
+      "sha256": "a5825c3d4385218ab1b2e6883001932630a20f5f4a279d93f4fc040f9f7e6cae"
+    },
+    "examples/verified-calculation/write-output.mjs": {
+      "sha256": "23de0678e275bf8d20ae8f18d55ebc464ff53a4e01eddb73c0e157fa6be563cc"
+    }
+  }
+}

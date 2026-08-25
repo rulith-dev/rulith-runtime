@@ -1,0 +1,25 @@
+{
+  "repl": {
+    "args": ["--agent", "default", "--ui", "--case-boards"],
+    "env": {
+      "RULITH_URL": "https://api.rulith.com",
+      "RULITH_TOKEN": "",
+      "RULITH_MODEL_URL": "",
+      "RULITH_MODEL": "",
+      "RULITH_MODEL_KEY": ""
+    }
+  },
+  "worker": {
+    "env": {
+      "RULITH_WORK_URL": "https://api.rulith.com/work",
+      "RULITH_CHANNEL": "",
+      "RULITH_CHANNEL_KEY": "",
+      "RULITH_TOOLS_FILE": "./rulith-tools.json",
+      "RULITH_SOURCES_FILE": "./rulith-sources.json"
+    }
+  },
+  "paths": {
+    "repl": "../agent/rulith-agent.mjs",
+    "worker": "../worker/rulith-worker.mjs"
+  }
+}
