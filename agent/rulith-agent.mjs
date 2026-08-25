@@ -125,6 +125,19 @@ import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
+function fingerprintRecipePacks(packs) {
+  return packs.map((entry, index) => {
+    if (Object.hasOwn(entry, 'digest')) {
+      if (typeof entry.digest !== 'string' || entry.digest.trim() === '') {
+        throw new Error(`Recipe packs[${index}].digest must be a non-empty string when supplied.`)
+      }
+      return entry
+    }
+    const digest = createHash('sha256').update(JSON.stringify(entry.pack)).digest('hex')
+    return { ...entry, digest: `sha256:${digest}` }
+  })
+}
+
 const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.com').replace(/\/$/, '')
 const TOKEN = process.env.RULITH_TOKEN ?? ''
 const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
@@ -220,12 +233,14 @@ if (recipePath !== '') {
   try { raw = readFileSync(recipePath, 'utf8') } catch (e) { die(`Cannot read recipe file ${recipePath}: ${e?.message ?? e}. It must be a JSON file; see the schema in the header of rulith-agent.mjs.`) }
   let j = {}
   try { j = JSON.parse(raw) } catch (e) { die(`Recipe file is not valid JSON (${recipePath}): ${e?.message ?? e}`) }
-  const packs = Array.isArray(j.packs) ? j.packs : []
-  packs.forEach((p, i) => {
+  const declaredPacks = Array.isArray(j.packs) ? j.packs : []
+  declaredPacks.forEach((p, i) => {
     if (p === null || typeof p !== 'object' || typeof p.packType !== 'string' || p.pack === null || typeof p.pack !== 'object') {
       die(`Recipe packs[${i}] is invalid. Each entry must look like {"packType":"domain|tools|channels|norms","pack":{...},"digest":"optional"}.`)
     }
   })
+  let packs = []
+  try { packs = fingerprintRecipePacks(declaredPacks) } catch (e) { die(e?.message ?? String(e)) }
   const seed = Array.isArray(j.seed) ? j.seed : []
   RECIPE.packs = packs
   RECIPE.seed = seed

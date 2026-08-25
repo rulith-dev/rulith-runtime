@@ -38,6 +38,14 @@ test('station masks secrets and never persists the mask as a credential', () => 
   assert.deepEqual(applyEnvEdit(prior, view), prior)
 })
 
+test('local recipe assembler fingerprints every package without overriding an explicit pin', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /function fingerprintRecipePacks\(packs\)/)
+  assert.match(source, /createHash\('sha256'\)\.update\(JSON\.stringify\(entry\.pack\)\)/)
+  assert.match(source, /digest: `sha256:\$\{digest\}`/)
+  assert.match(source, /digest must be a non-empty string when supplied/)
+})
+
 test('station presents the public local workflow in English', () => {
   const visible = stationPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
   assert.match(stationPage, /Local control room/)
