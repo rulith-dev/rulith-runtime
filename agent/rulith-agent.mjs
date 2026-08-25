@@ -138,6 +138,14 @@ function fingerprintRecipePacks(packs) {
   })
 }
 
+// Keep local recipe identity byte-compatible with the Cloud's closing audit.
+// The authoritative package ledger contains only ordered (type, digest) pairs;
+// seed operations are case input, not part of the installed program identity.
+function recipeDigestOver(id, packs) {
+  const pairs = packs.map((entry) => [entry.packType, entry.digest])
+  return `sha256:${createHash('sha256').update(JSON.stringify({ id, packs: pairs })).digest('hex')}`
+}
+
 const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.com').replace(/\/$/, '')
 const TOKEN = process.env.RULITH_TOKEN ?? ''
 const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
@@ -246,12 +254,12 @@ if (recipePath !== '') {
   RECIPE.seed = seed
   RECIPE.maxConcurrentCases = Number.isInteger(j.runtime?.maxConcurrentCases)
     ? Math.max(1, Math.min(8, j.runtime.maxConcurrentCases)) : 1
-  // 本地配方的**出身**: id 由文件自报(缺省=智能体名),digest 对包体内容取哈希。
-  // 与云上物化的算法**不必逐字节相同**——它们是两份不同的配方,本来就该有不同的指纹;
-  // 要紧的是同一份本地文件恒出同一枚指纹(这样"同配方双开 genesis 相同"在离线形态下也成立)。
+  // Local recipe identity uses the same ordered package-ledger digest as the
+  // Cloud closing audit. Otherwise every local recipe would be reported as
+  // drifted even when every installed package fingerprint matches exactly.
   RECIPE.ref = {
     id: String(j.id ?? agentName),
-    digest: `sha256:${createHash('sha256').update(JSON.stringify({ packs, seed })).digest('hex')}`,
+    digest: recipeDigestOver(String(j.id ?? agentName), packs),
   }
   // 配了配方却既没开案板模式、也不是接单脑=十有八九是忘了带旗。**不静默**: 配方在两处用得上——
   // 案板模式的「开单」,与服务槽的「首建服务板」(复用时不重播)。单板长跑形态下它一行都发不出去。
@@ -1011,7 +1019,7 @@ async function openCase(ctx, title, predecessor, resumeId) {
   // 把开成的案误判成失败。旧 boardd 无此标 ⇒ 照走补锁路(与 installed 缺位退逐件装同一形)。
   const hostLocked = (mk.payload ?? {}).lawLocked === true
   if (caseLawLock && hostLocked) {
-    log(`◎ 案卷「${id}」已随配方锁法(宿主同事务落锁)——配方即全部法源,案内不立法(摘锁去控制台,要治理角色)`)
+    log(`◎ Case "${id}" opened with its program locked atomically. The installed recipe is its complete law source; unlocking requires a governance role in Console.`)
   }
   if (caseLawLock && !hostLocked) {
     const r = await board({ kind: 'ApplyBatch', operations: [
@@ -1021,7 +1029,7 @@ async function openCase(ctx, title, predecessor, resumeId) {
       const why = '案内锁法(law_locked)被拒'
       return { ok: false, id, built: true, abandoned: await abandon(why), teaching: `${why}: ${String(r.teaching ?? r.errorCode ?? '')}` }
     }
-    log(`◎ 案卷「${id}」已锁法(旧 boardd,客户端补锁)——配方即全部法源,案内不立法(摘锁去控制台,要治理角色)`)
+    log(`◎ Case "${id}" program locked through the compatibility path. The installed recipe is its complete law source; unlocking requires a governance role in Console.`)
   }
   return { ok: true, id, built: true, abandoned: false, packs: RECIPE.packs.length, seeded: RECIPE.seed.length, ...(caseLawLock ? { lawLocked: true } : {}) }
 }
@@ -1075,7 +1083,7 @@ async function sealCase(ctx, reason, disposition) {
     log(`◎ 服务板「${ctx.board}」不封板——一客一板与这份服务同寿(封板是不可逆终态);要结束这位客户,去运营面处置`)
     return false
   }
-  if ((process.env.RULITH_AUTO_SEAL ?? '') === 'off') { log(`◎ 案卷「${ctx.board}」办完了,但 RULITH_AUTO_SEAL=off——留在「在办」,自己去控制台结案`); return false }
+  if ((process.env.RULITH_AUTO_SEAL ?? '') === 'off') { log(`◎ Case "${ctx.board}" is complete, but RULITH_AUTO_SEAL=off. It remains active until you close it in Console.`); return false }
   // **义务清空由板说了算,不由客户端预测**(2026-08-18 冷通枪第五发): 封板门的真判据是五臂
   // (未回执动作/求证工单/可领动作/待清关案卷/待取材),我在这边只手抄了两臂 ⇒ 剩下三臂的
   // 未结项照样把封板顶回来,而客户端以为"可以封了"。**同一条判据不许写两份**——所以这里改成
@@ -1093,12 +1101,12 @@ async function sealCase(ctx, reason, disposition) {
   }
   if (r.accepted === true) {
     const idem = r.payload?.idempotent === true
-    log(`◎ 案卷「${ctx.board}」已封板结案（处置 ${disposition}${degraded ? '；真机暂不收该字段' : ''}）${idem ? '(幂等: 此前已结)' : ''}——封后写一律拒、读照常,控制台可查`)
+    log(`◎ Case "${ctx.board}" sealed (${disposition}${degraded ? '; the deployed server ignored this optional field' : ''})${idem ? ' (idempotent: already sealed)' : ''}. Writes are now rejected, reads remain available, and the record is visible in Console.`)
     emitOn(ctx, 'sealed', { board: ctx.board, idempotent: idem, disposition, ...(degraded ? { degraded: true } : {}) })
     return true
   }
   // 封不上**不静默**: 案卷会一直挂在「在办」占额度,人得知道该去看哪一块
-  log(`◎ 案卷「${ctx.board}」封板被拒: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 200)}——它留在「在办」,控制台可手工结案`)
+  log(`◎ Case "${ctx.board}" could not be sealed: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 200)}. It remains active and can be resolved in Console.`)
   return false
 }
 
@@ -1182,14 +1190,14 @@ async function dischargePass(ctx) {
     const r = await board({ kind: 'RunDischarge', root, leaves: fresh.map((l) => String(l.node)) }, ctx.board)
     if (r.accepted !== true) {
       // 放电拒**不静默**：没装验收桥是最常见的一种,教学原话直接回模型与人(报错=接口)
-      notes.push(`[放电拒] ${String(r.teaching ?? r.errorCode ?? '').slice(0, 180)}`)
+      notes.push(`[Verification rejected] ${String(r.teaching ?? r.errorCode ?? '').slice(0, 180)}`)
       continue
     }
     const gaps = r.payload?.gaps ?? []
     // 在途与缺口分栏(同上): work-ordered 是"派出去了,等回话",说成缺口会让模型以为卡住了。
     const ordered = gaps.filter((g) => /work-ordered|退避窗|backoff window/.test(String(g.reason ?? '')))
     const real = gaps.filter((g) => !/work-ordered/.test(String(g.reason ?? '')))
-    notes.push(`[放电] ${fresh.length} 叶${real.length ? `;缺口: ${real.map((g) => `${g.node}(${String(g.reason ?? '').slice(0, 80)})`).join(' · ')}` : ''}${ordered.length ? `;求证在途(等真探回话,不用管): ${ordered.map((g) => g.node).join(' · ')}` : ''}${real.length === 0 && ordered.length === 0 ? ' 全闭合' : ''}`)
+    notes.push(`[Verification] ${fresh.length} ${fresh.length === 1 ? 'leaf' : 'leaves'}${real.length ? `; gaps: ${real.map((g) => `${g.node}(${String(g.reason ?? '').slice(0, 80)})`).join(' · ')}` : ''}${ordered.length ? `; evidence pending (the runtime will wait): ${ordered.map((g) => g.node).join(' · ')}` : ''}${real.length === 0 && ordered.length === 0 ? '; all closed' : ''}`)
   }
   ctx.lastLeaves = seen
   // **人也要看得见**(2026-08-06 真机第一次跑就是这个坑): 器官只喂模型不喂人,等于没跑——

@@ -46,6 +46,22 @@ test('local recipe assembler fingerprints every package without overriding an ex
   assert.match(source, /digest must be a non-empty string when supplied/)
 })
 
+test('local recipe identity uses the same package-ledger digest as cloud audit', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /function recipeDigestOver\(id, packs\)/)
+  assert.match(source, /JSON\.stringify\(\{ id, packs: pairs \}\)/)
+  assert.match(source, /digest: recipeDigestOver\(String\(j\.id \?\? agentName\), packs\)/)
+  assert.doesNotMatch(source, /JSON\.stringify\(\{ packs, seed \}\)/)
+})
+
+test('agent lifecycle events shown to users use the English product vocabulary', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /\[Verification\]/)
+  assert.match(source, /Case "\$\{ctx\.board\}" sealed/)
+  assert.doesNotMatch(source, /notes\.push\(`\[放电/)
+  assert.doesNotMatch(source, /log\(`◎ 案卷/)
+})
+
 test('station presents the public local workflow in English', () => {
   const visible = stationPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
   assert.match(stationPage, /Local control room/)
