@@ -21,7 +21,9 @@ calculated output values.
 
 ## Fastest public setup
 
-Create one pull-door Connection in Console and copy its public channel id. Then run:
+Create one pull-door Connection for the Agent in Console and copy its public channel
+id. That Connection receives active cases created by this Agent, but not cases owned
+by another Agent. Then run:
 
 ```powershell
 Invoke-WebRequest https://console.rulith.com/examples/verified-calculation/setup.mjs -OutFile verified-calculation-setup.mjs
