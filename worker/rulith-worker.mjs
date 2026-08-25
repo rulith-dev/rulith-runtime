@@ -91,6 +91,13 @@ const REVIEWER_URL = process.env.RULITH_REVIEWER_URL
 const REVIEWER_MODEL = process.env.RULITH_REVIEWER_MODEL
 const REVIEWER_TIMEOUT_MS = Number(process.env.RULITH_REVIEWER_TIMEOUT_MS ?? 120_000)
 
+class CredentialRejectedError extends Error {
+  constructor(teaching = '') {
+    super(`Connection credential rejected (401). Copy a fresh Connection channel id and key from Console > Connections.${teaching ? ` ${teaching}` : ''}`)
+    this.name = 'CredentialRejectedError'
+  }
+}
+
 if (IS_MAIN && (!CHANNEL || !KEY)) {
   console.error('Missing RULITH_CHANNEL / RULITH_CHANNEL_KEY. Register a Worker connection in Console; its key is shown once.')
   process.exit(2)
@@ -169,8 +176,8 @@ if (IS_MAIN) {
     })
       .then(async (r) => {
         if (r.ok) return r.json()
-        console.error(`· Could not load source definitions from Rulith Cloud (HTTP ${r.status}). Local secrets remain available, but cloud source endpoints were not loaded.` +
-          (r.status === 401 ? '\n  HTTP 401 means the channel credential did not reach Gateway. Check that the edge preserves x-rulith-channel and x-rulith-channel-key on /work/sources.' : ''))
+        if (r.status === 401) throw new CredentialRejectedError()
+        console.error(`· Could not load source definitions from Rulith Cloud (HTTP ${r.status}). Local secrets remain available, but cloud source endpoints were not loaded.`)
         return undefined
       }).then((j) => {
         if (!j || !Array.isArray(j.sources)) return
@@ -180,7 +187,10 @@ if (IS_MAIN) {
           if (SOURCES[s.name] === undefined && typeof s.access === 'string' && s.access !== '') { SOURCES[s.name] = { url: s.access, dsn: s.access }; n++ }
         }
         if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`)
-      }).catch((e) => { console.error(`· Could not reach Rulith Cloud for source definitions (${e.message}). Continuing with local secrets.`) })
+      }).catch((e) => {
+        if (e instanceof CredentialRejectedError) throw e
+        console.error(`· Could not reach Rulith Cloud for source definitions (${e.message}). Continuing with local secrets.`)
+      })
   } catch (e) {
     // **纯清关工人不持任何工具**——判卷那一席只读案卷、只回判词,一只手都不需要。
     // 逼它先造一张空工具表是把"持工具"当成了 worker 的本质,而本质是"按配置上岗"。
@@ -196,10 +206,6 @@ if (IS_MAIN) {
   checkImpls(TOOLS)
   // 空表不再等于"只观望"(SRC-41 全退): 工单行自带 toolSpec 的活它照领照干。
   // 横幅得说真话——说错的代价是人以为这台在空转,去手写一张本不需要的工具表。
-  const seats = [Object.keys(TOOLS).length ? `tools: ${Object.keys(TOOLS).join(', ')}` : 'tools: transparent (using each work item toolSpec)']
-  if (REVIEWER_URL && REVIEWER_MODEL) seats.push(`reviewer: ${REVIEWER_MODEL}`)
-  say(`rulith-worker ${WORKER_VERSION} online · channel ${CHANNEL} · ${seats.join(' · ')}`, 'up',
-    { channel: CHANNEL, version: WORKER_VERSION, tools: Object.keys(TOOLS).length, reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
 }
 
 /**
@@ -217,7 +223,7 @@ async function work(operation, board) {
     body: JSON.stringify({ operation: board === undefined ? operation : { ...operation, board } }),
   })
   const j = await r.json().catch(() => ({}))
-  if (r.status === 401) { console.error(`Credential rejected: ${j.teaching ?? ''}`); process.exit(3) }
+  if (r.status === 401) throw new CredentialRejectedError(j.teaching ?? '')
   return j
 }
 
@@ -1066,7 +1072,21 @@ let quietPolls = 0
 if (IS_MAIN) {
   process.on('SIGINT', () => { running = false; console.log('\nWorker stopped.') })
 
-  await SOURCES_READY
+  try {
+    await SOURCES_READY
+  } catch (e) {
+    if (e instanceof CredentialRejectedError) {
+      console.error(e.message)
+      process.exitCode = 3
+      running = false
+    } else throw e
+  }
+  if (running) {
+    const seats = [Object.keys(TOOLS).length ? `tools: ${Object.keys(TOOLS).join(', ')}` : 'tools: transparent (using each work item toolSpec)']
+    if (REVIEWER_URL && REVIEWER_MODEL) seats.push(`reviewer: ${REVIEWER_MODEL}`)
+    say(`rulith-worker ${WORKER_VERSION} online · channel ${CHANNEL} · ${seats.join(' · ')}`, 'up',
+      { channel: CHANNEL, version: WORKER_VERSION, tools: Object.keys(TOOLS).length, reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
+  }
   while (running) {
     try {
       const r = await work({ kind: 'Poll' })
@@ -1093,6 +1113,12 @@ if (IS_MAIN) {
         console.log(`\n· Note: a reviewer is configured, but no review arrived in five polls. If actions are awaiting clearance, confirm that channel "${CHANNEL}" is listed in the Board reviewerChannels policy.`)
       }
     } catch (e) {
+      if (e instanceof CredentialRejectedError) {
+        console.error(e.message)
+        process.exitCode = 3
+        running = false
+        continue
+      }
       console.error(`Polling failed (${e.message}); retrying in 5 seconds`)
       wev('error', { note: String(e.message).slice(0, 200) })
       await new Promise((r) => setTimeout(r, 5000))

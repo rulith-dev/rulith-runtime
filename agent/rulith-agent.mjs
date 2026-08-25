@@ -175,6 +175,37 @@ const SESSION_KEY_MAX = 128
 const SERVE_CASE_SLOTS = (process.env.RULITH_SERVE_CASE_SLOTS ?? '') === 'on'
 
 const argv = process.argv.slice(2)
+if (argv.includes('--help') || argv.includes('-h')) {
+  console.log(`rulith-agent — local Agent Runtime for Rulith Cloud
+
+Usage:
+  node agent/rulith-agent.mjs [options] [task]
+
+Options:
+  --agent <id>       Agent id in Console (default: default)
+  --ui               Open the loopback timeline UI
+  --serve            Accept tasks through the local service endpoint
+  --case-boards      Create one board per case
+  --recipe <file>    Install the JSON recipe when opening a case board
+  --case <id>        Resume an existing case for the first segment
+  --shadow           Run the configured shadow verification path
+  -h, --help         Show this help without requiring credentials
+
+Required environment:
+  RULITH_TOKEN       Agent token from Console
+  ANTHROPIC_API_KEY or RULITH_MODEL_KEY
+
+Common optional environment:
+  RULITH_URL         Cloud API base (default: https://api.rulith.com)
+  RULITH_MODEL       Model identifier
+  RULITH_MODEL_URL   Model API endpoint
+  RULITH_MAX_ROUNDS  Maximum model rounds (default: 12)
+  RULITH_UI_PORT     Timeline UI port (default: 7788)
+  RULITH_UI_OPEN     Set to off to serve the UI without opening a browser
+  RULITH_SERVE_PORT  Local task endpoint port (default: 7799)
+`)
+  process.exit(0)
+}
 let agentName = 'default'
 let withUi = false
 let withShadow = false
@@ -368,7 +399,7 @@ const nextCaseId = () => {
 }
 const caseTitleOf = (text) => {
   const t = String(text ?? '').replace(/\s+/g, ' ').trim()
-  return t === '' ? '(未命名案卷)' : `${t.slice(0, 60)}${t.length > 60 ? '…' : ''}`
+  return t === '' ? '(untitled case)' : `${t.slice(0, 60)}${t.length > 60 ? '…' : ''}`
 }
 // 「当前板」曾经是这里的一个进程级 `let currentBoard`。**2026-08-07 分槽后它没了**:
 // 板寻址住进会话槽(`slot.board`),`board(op, to)` 的 `to` 因此**必须显式给**——见下面那个函数。
@@ -663,7 +694,7 @@ let seq = 0
  *  所以缺省口整个删掉,漏传当场炸(下面这条守卫),而不是安静地把一位客户的材料写进另一位的板。 */
 async function board(operation, to, profile) {
   if (typeof to !== 'string' || to === '') {
-    throw new Error(`board(): 缺板寻址参数 to——分槽之后没有「当前板」这个进程级缺省口了,每一发都要说清发给哪块板(operation.kind=${String(operation?.kind ?? '?')})`)
+    throw new Error(`board(): missing board address "to". After session partitioning there is no process-wide current board; every command must name its target (operation.kind=${String(operation?.kind ?? '?')}).`)
   }
   // 长命板的 Work 信封: 门内 op 才带(带错方向也是拒)。
   // **不带 expectedRevision**: 它在协议里是可选的乐观并发把手,而这块板不止我们一个写者
@@ -684,12 +715,12 @@ async function board(operation, to, profile) {
         ...(bound !== undefined ? { work: { id: bound.id } } : {}) }),
     })
   } catch (e) {
-    die(`连不上 ${URL_BASE}——${e?.cause?.code ?? e?.message ?? e}。检查网络,或用 RULITH_URL 指到你的部署。`)
+    die(`Cannot reach ${URL_BASE}: ${e?.cause?.code ?? e?.message ?? e}. Check the network or point RULITH_URL at your deployment.`)
   }
   const raw = await r.text().catch(() => '')
   let j
   try { j = JSON.parse(raw) } catch { j = {} }
-  if (r.status === 401) die(`令牌不认（401）：${j.teaching ?? ''}`)
+  if (r.status === 401) die(`Token rejected (401): ${j.teaching ?? ''}`)
   // **没有内容的报错不是接口**(2026-08-22,RT-ALOOP-TRANSPORT)。
   //
   // 本函数原来除 401 外**从不看 HTTP 状态**:502 + HTML 正文、200 + 半截 JSON、网关重启,
@@ -707,9 +738,9 @@ async function board(operation, to, profile) {
     j = {
       accepted: false,
       errorCode: 'upstream_unavailable',
-      teaching: `云端这一跳没通(HTTP ${r.status})——**不是你写错了**,板根本没看到这批操作。` +
-        `原样重发即可;若一直这样,查 ${URL_BASE} 是否可达。` +
-        (head !== '' ? `\n   服务端回的头 160 字: ${head}` : '\n   服务端一个字都没回。'),
+      teaching: `The Cloud hop failed (HTTP ${r.status}); the board never received this batch.` +
+        ` Retry it unchanged. If it keeps failing, check whether ${URL_BASE} is reachable.` +
+        (head !== '' ? `\n   First 160 response characters: ${head}` : '\n   The server returned an empty body.'),
     }
   }
   // 绑定失效就**丢掉绑定,但不自动重发**: 换个 requestId 重发不是幂等的(核心按 requestId 去重),
@@ -737,7 +768,7 @@ async function ensureBoardWork(ctx, root) {
   if (lifecycleOf(mf)?.status === 'initializing') {
     const act = await board({ kind: 'MaintainBaseline', operations: [], activate: true }, ctx.board)
     if (act.accepted !== true) {
-      log(`✗ 长命板「${ctx.board}」的初始 Baseline 激活被拒: ${String(act.teaching ?? act.errorCode ?? '').slice(0, 200)}——未激活的板不接 Work,本单办不了`)
+      log(`✗ Initial Baseline activation was rejected on long-lived board "${ctx.board}": ${String(act.teaching ?? act.errorCode ?? '').slice(0, 200)}. An inactive board cannot accept Work.`)
       return undefined
     }
     mf = await board({ kind: 'GetBoardManifest' }, ctx.board)
@@ -748,13 +779,13 @@ async function ensureBoardWork(ctx, root) {
   if (hit !== undefined && typeof hit.id === 'string' && typeof hit.root === 'string') {
     const adopted = { id: hit.id, root: hit.root }
     workOf.set(ctx.board, adopted)
-    log(`◎ 接上板上还在办的那件事「${adopted.root}」(${adopted.id})——上一单没归成的活由本单接着办完`)
+    log(`◎ Resuming active work "${adopted.root}" (${adopted.id}) from the board.`)
     return adopted
   }
   const id = `WORK_srv_${Date.now().toString(36)}_${seq++}`
   const opened = await board({ kind: 'OpenWork', id, root }, ctx.board)
   if (opened.accepted !== true) {
-    log(`✗ 在长命板「${ctx.board}」上开事失败: ${String(opened.teaching ?? opened.errorCode ?? '').slice(0, 200)}`)
+    log(`✗ Could not open Work on long-lived board "${ctx.board}": ${String(opened.teaching ?? opened.errorCode ?? '').slice(0, 200)}`)
     return undefined
   }
   const bound = { id: String(opened.payload?.workId ?? id), root }
@@ -811,20 +842,19 @@ async function archiveBoardWork(ctx, disposition) {
   let degraded = false
   let r = await board(disposition === undefined ? base : { ...base, disposition }, ctx.board)
   if (r.accepted !== true && disposition !== undefined && dispositionUnsupported(r)) {
-    log(`◎ 真机的归档门还不收 disposition（原话: ${String(r.teaching ?? '').trim().slice(0, 140)}）——已退回不带该字段重发一次；
-   **板上不会是"没有"**: 权威端对缺席的 disposition 取缺省 completed(核心 op_seal_board 的 unwrap_or),
-   所以这一段在账面上会记成**办结**。处置「${disposition}」只留在本地日志。
-   ${disposition === 'completed' ? '(本次两者同值,账面无差。)' : '**这与你要的处置不是一回事**——去控制台按实际情况处置这一案。'}`)
+    log(`◎ This host does not yet accept ArchiveTask.disposition (${String(r.teaching ?? '').trim().slice(0, 140)}). Retried once without that field.
+   The authority defaults an omitted disposition to completed, so the ledger records this segment as completed. Disposition "${disposition}" remains only in the local log.
+   ${disposition === 'completed' ? '(The two values agree for this run.)' : '**This is not the requested disposition.** Correct the case in Console.'}`)
     degraded = true
     r = await board(base, ctx.board)
   }
   if (r.accepted === true) {
     workOf.delete(ctx.board)
-    log(`◎ 本单已归档(${bound.root}${disposition === undefined ? '' : ` · 处置 ${disposition}${degraded ? '；真机暂不收该字段' : ''}`})——板保持干净,下一单在干净的台面上开工(历史在冷层,控制台可查)`)
+    log(`◎ Archived this run (${bound.root}${disposition === undefined ? '' : ` · disposition ${disposition}${degraded ? '; host omitted the unsupported field' : ''}`}). History remains available in Console.`)
     emitOn(ctx, 'archived', { root: bound.root, ...(disposition === undefined ? {} : { disposition }), ...(degraded ? { degraded: true } : {}) })
   } else {
-    log(`◎ 本单归档被拒: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 200)}
-   这件事留在板上(下一单接着办)——归档会把树收起来,没办完就归等于把回执的落点也收了。`)
+    log(`◎ Archive rejected: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 200)}
+   Work remains active for the next run; archiving unfinished work would remove the landing point for later receipts.`)
   }
 }
 // 注意力预算(核心 §6.5.1,协议面 GetProjection.attention): **有损聚焦**,只对模型读用,
@@ -837,18 +867,18 @@ const attnArg = () => (ATTENTION_FACTS > 0 ? { attention: { budget: { facts: ATT
 
 const projectionText = async (ctx, opts = {}) => {
   const r = await board({ kind: 'GetProjection', ...(opts.full === true ? {} : attnArg()) }, ctx.board)
-  if (r.accepted !== true) return `（板还读不到：${r.teaching ?? r.errorCode ?? ''}）`
+  if (r.accepted !== true) return `(board unavailable: ${r.teaching ?? r.errorCode ?? ''})`
   let text = String(r.payload?.text ?? '')
   // 板报缺口(QueryBoard include:gaps,0.11): 「现在该干嘛」由板自己说——桥缺可信来源/放电卡点/
   // 交付义务,不靠模型对着全量投影猜。老 boardd 无 QueryBoard=拒,静默略过(缺口段是增益不是依赖)。
   const { gaps, inFlight } = await boardGaps(ctx)
   if (gaps.length > 0) {
     const lines = gaps.slice(0, 12).map((x) => `- ${x.gap}(${Object.entries(x.args ?? {}).map(([k, v]) => `${k}=${v}`).join(', ')})`)
-    text += ['', '', '板报缺口（板自己算的「还差什么」，优先处理）：', ...lines].join(String.fromCharCode(10))
+    text += ['', '', 'Board-reported gaps (what remains; handle these first):', ...lines].join(String.fromCharCode(10))
   }
   if (inFlight.length > 0) {
-    const lines = inFlight.slice(0, 12).map((x) => `- ${String(x.args?.node ?? '')}：求证工单已派出，等真探回话`)
-    text += ['', '', '求证在途（不是缺口，不用管——下一轮再看即可，别改叶子也别收尾）：', ...lines].join(String.fromCharCode(10))
+    const lines = inFlight.slice(0, 12).map((x) => `- ${String(x.args?.node ?? '')}: verification dispatched; waiting for evidence`)
+    text += ['', '', 'Verification in flight (not a gap; wait for the next round and do not rewrite the leaf or close the task):', ...lines].join(String.fromCharCode(10))
   }
   return text
 }
@@ -893,8 +923,8 @@ async function autoArchive(ctx) {
     // 是客户端在这条腿上**放弃使用自己更严的那把尺**。
     const st = String(c.payload?.state ?? '')
     if (st !== 'done') {
-      log(`◎ 「${root}」规则上已可交付,但驱动态是 ${st || '(不可考)'} 而不是 done——**先不归档**。` +
-        (st === 'actuating' ? '还有外向动作没回执;归早了那棵树就收起来了,回执再来也没地方贴。' : '没到 done 就归,等于把没办完的活记成办结。'))
+      log(`◎ "${root}" is rule-deliverable, but drive state is ${st || '(unknown)'} rather than done, so it will not be archived.` +
+        (st === 'actuating' ? ' An outward action still lacks a receipt.' : ' Archiving before done would record unfinished work as complete.'))
       continue
     }
     // **处置显式带上**,不靠权威端缺省(缺省是 `completed`——"不带"与"办结"在账面上长一个样)。
@@ -903,14 +933,14 @@ async function autoArchive(ctx) {
     if (r.accepted !== true && dispositionUnsupported(r)) {
       // 老 boardd 不认这个字段 ⇒ 退回不带并如实记(与 `archiveBoardWork` 同一条降级路)。
       // 这一格**降级方向是安全的**:走到这里两根轴都成立,不带字段的缺省恰好也是 `completed`。
-      log(`◎ 真机的归档门还不收 disposition——已退回不带该字段重发(此处两者同值,账面无差)`)
+      log('◎ This host does not yet accept ArchiveTask.disposition; retried without it. Both values mean completed here.')
       r = await board({ kind: 'ArchiveTask', root }, ctx.board)
     }
     if (r.accepted === true) {
-      log(`◎ 「${root}」已可交付,顺手归档——板保持干净(历史在冷层,控制台可查)`)
+      log(`◎ "${root}" is deliverable and has been archived. History remains available in Console.`)
       emitOn(ctx, 'archived', { root })
     } else {
-      log(`◎ 「${root}」归档被拒: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 160)}`) // 诚实门的原话
+      log(`◎ Archive rejected for "${root}": ${String(r.teaching ?? r.errorCode ?? '').slice(0, 160)}`) // authority teaching
     }
   }
 }
@@ -965,25 +995,25 @@ async function openCase(ctx, title, predecessor, resumeId) {
   // 网关的在办板数上限就长这个样子,那句教学写明了出路(结掉几个在办的案)。
   const existed = boardAlreadyExists(mk)
   if (mk.accepted !== true && !existed) {
-    return { ok: false, id, built: false, abandoned: false, teaching: String(mk.teaching ?? mk.errorCode ?? 'CreateBoard 被拒') }
+    return { ok: false, id, built: false, abandoned: false, teaching: String(mk.teaching ?? mk.errorCode ?? 'CreateBoard rejected') }
   }
   if (existed) {
     // 已存在=已装配。**不重装不重播**(重播撞 duplicate id;不带 digest 的重装会把包再并一次)。
     // 这既是续办的正路,也顺手让"同一 id 重试开案"变得真幂等。
-    log(`◎ 接着办既有案卷「${id}」(已装配,不重播种)`)
+    log(`◎ Resuming existing case "${id}" without reinstalling or reseeding it.`)
     emitOn(ctx, 'case-open', { board: id, ok: true, resumed: true })
     return { ok: true, id, built: true, abandoned: false, resumed: true, packs: 0, seeded: 0 }
   }
   /** 半装配案卷的收口: 作废封板。返回 true=已作废(不占额度),false=作废不掉(留在「在办」)。 */
   const abandon = async (why) => {
-    const { r, degraded } = await sealBoardOn(id, `开案未完成: ${why}`, 'abandoned')
+    const { r, degraded } = await sealBoardOn(id, `Case initialization failed: ${why}`, 'abandoned')
     if (r.accepted === true) {
-      log(`◎ 半装配的案卷「${id}」已作废封板（disposition=abandoned${degraded ? '；真机暂不收该字段,处置只记在本地' : ''}）——它不会留在「在办」占额度`)
+      log(`◎ Partially initialized case "${id}" was sealed as abandoned${degraded ? '; the host omitted the unsupported disposition field' : ''}. It no longer consumes an active-case slot.`)
       emitOn(ctx, 'case-abandoned', { board: id, why, ...(degraded ? { degraded: true } : {}) })
       return true
     }
-    log(`◎ 半装配的案卷「${id}」**作废不掉**: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 200)}
-   案号 ${id} 留在「在办」——去控制台处置(它可能连制度都没装上,别拿它继续办事)`)
+    log(`◎ Partially initialized case "${id}" could not be abandoned: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 200)}
+   It remains active. Resolve it in Console and do not continue using it.`)
     emitOn(ctx, 'case-abandon-failed', { board: id, why, teaching: String(r.teaching ?? r.errorCode ?? '') })
     return false
   }
@@ -992,12 +1022,12 @@ async function openCase(ctx, title, predecessor, resumeId) {
   // 不静默假设装好了——那会开出一块"看起来配好、实际全空"的板。
   const initInstalled = Array.isArray(mk.payload?.installed) ? mk.payload.installed.length : 0
   if (RECIPE.packs.length > 0 && initInstalled === 0) {
-    log(`◎ 权威端还不识配方构成(回执无 installed)——退回逐件装,升级 boardd 后此路自动消失`)
+    log('◎ The authority did not report atomic recipe installation; falling back to installing each package separately.')
     for (const p of RECIPE.packs) {
       const name = String(p.pack?.meta?.name ?? p.packType)
       const r = await board({ kind: 'RegisterPack', packType: p.packType, pack: p.pack, ...(typeof p.digest === 'string' ? { digest: p.digest } : {}) }, id)
       if (r.accepted !== true) {
-        const why = `装配方包「${name}」(${p.packType})被拒`
+        const why = `Recipe package "${name}" (${p.packType}) was rejected`
         return { ok: false, id, built: true, abandoned: await abandon(why), teaching: `${why}: ${String(r.teaching ?? r.errorCode ?? '')}` }
       }
     }
@@ -1005,7 +1035,7 @@ async function openCase(ctx, title, predecessor, resumeId) {
   if (RECIPE.seed.length > 0) {
     const r = await board({ kind: 'ApplyBatch', operations: RECIPE.seed }, id)
     if (r.accepted !== true) {
-      const why = `播种(宪法/目标 ${RECIPE.seed.length} 条)被拒`
+      const why = `Seeding ${RECIPE.seed.length} constitution/goal facts was rejected`
       return { ok: false, id, built: true, abandoned: await abandon(why), teaching: `${why}: ${String(r.teaching ?? r.errorCode ?? '')}` }
     }
   }
@@ -1023,10 +1053,10 @@ async function openCase(ctx, title, predecessor, resumeId) {
   }
   if (caseLawLock && !hostLocked) {
     const r = await board({ kind: 'ApplyBatch', operations: [
-      { op: 'assert_fact', id: 'LAW_LOCK', predicate: 'law_locked', args: { by: 'recipe' }, summary: '案内锁法: 配方=本案全部法源(RULITH_CASE_LAW_LOCK)' },
+      { op: 'assert_fact', id: 'LAW_LOCK', predicate: 'law_locked', args: { by: 'recipe' }, summary: 'Case program locked: the recipe is the complete law source (RULITH_CASE_LAW_LOCK)' },
     ] }, id)
     if (r.accepted !== true) {
-      const why = '案内锁法(law_locked)被拒'
+      const why = 'The case law lock (law_locked) was rejected'
       return { ok: false, id, built: true, abandoned: await abandon(why), teaching: `${why}: ${String(r.teaching ?? r.errorCode ?? '')}` }
     }
     log(`◎ Case "${id}" program locked through the compatibility path. The installed recipe is its complete law source; unlocking requires a governance role in Console.`)
@@ -1039,9 +1069,9 @@ async function openCase(ctx, title, predecessor, resumeId) {
 const STOP_DISPOSITIONS = ['cancelled', 'failed', 'abandoned']
 const SEAL_ON_STOP = (process.env.RULITH_SEAL_ON_STOP ?? '').trim()
 if (SEAL_ON_STOP !== '' && !STOP_DISPOSITIONS.includes(SEAL_ON_STOP)) {
-  die(`RULITH_SEAL_ON_STOP=${SEAL_ON_STOP} 不认——只收 ${STOP_DISPOSITIONS.join(' / ')}。
-   停轮不是办结: completed 是板判出来的(certified 且状态真 done),环境变量给不了它。
-   不配这个变量 = 停轮不封板,案卷留在「在办」等你处置(缺省,也是推荐档)。`)
+  die(`RULITH_SEAL_ON_STOP=${SEAL_ON_STOP} is invalid; accepted values are ${STOP_DISPOSITIONS.join(' / ')}.
+   Stopping a run is not completion. Only the board can establish completed from certified work in done state.
+   Leave this variable unset to keep the case active for later handling (the recommended default).`)
 }
 
 /**
@@ -1064,10 +1094,9 @@ async function sealBoardOn(boardId, reason, disposition) {
   // 降级的判据**住在 `dispositionUnsupported` 里**(归档门共用同一条;两处各写一份,
   // 迟早只改一处 ⇒ 一道门开始把语义拒当形状拒重发,而另一道门不会)。
   if (!dispositionUnsupported(first)) return { r: first, degraded: false }
-  log(`◎ 真机的封板门还不收 disposition（原话: ${teaching.trim().slice(0, 140)}）——已退回不带该字段重发一次；
-   **板上不会是"没有"**: 权威端对缺席的 disposition 取缺省 completed(核心 op_seal_board 的 unwrap_or),
-   所以这一单在账面上会记成**办结**。处置「${disposition}」只留在本地日志。
-   ${disposition === 'completed' ? '(本次两者同值,账面无差。)' : '**这与你要的处置不是一回事**——去控制台按实际情况处置这一案。'}`)
+  log(`◎ This host does not yet accept SealBoard.disposition (${teaching.trim().slice(0, 140)}). Retried once without that field.
+   The authority defaults an omitted disposition to completed, so the ledger records this case as completed. Disposition "${disposition}" remains only in the local log.
+   ${disposition === 'completed' ? '(The two values agree for this run.)' : '**This is not the requested disposition.** Correct the case in Console.'}`)
   return { r: await board(base, boardId), degraded: true }
 }
 
@@ -1080,7 +1109,7 @@ async function sealCase(ctx, reason, disposition) {
   // 把它用在一个还在服务的客户身上,等于用一次段尾收尾把客户关系写死。这条守卫是**可执行断言**:
   // 调用链上任何一处将来把服务槽路由到这里,当场看得见,而不是安静地封掉某位客户的板。
   if (ctx.serviceBoard === true) {
-    log(`◎ 服务板「${ctx.board}」不封板——一客一板与这份服务同寿(封板是不可逆终态);要结束这位客户,去运营面处置`)
+    log(`◎ Service board "${ctx.board}" remains open because sealing is irreversible. End this customer relationship from the operations surface.`)
     return false
   }
   if ((process.env.RULITH_AUTO_SEAL ?? '') === 'off') { log(`◎ Case "${ctx.board}" is complete, but RULITH_AUTO_SEAL=off. It remains active until you close it in Console.`); return false }
@@ -1093,7 +1122,7 @@ async function sealCase(ctx, reason, disposition) {
   if (r.accepted !== true && r.errorCode === 'work_pending' && disposition === 'completed') {
     const deadline = Date.now() + Math.max(0, DELIVERABLE_WAIT_MS)
     while (Date.now() < deadline) {
-      log(`◌ 封板被顶回(${String(r.teaching ?? '').slice(0, 90)})——等未结项落地再试`)
+      log(`◌ Seal deferred (${String(r.teaching ?? '').slice(0, 90)}); waiting for outstanding work before retrying.`)
       await new Promise((x) => setTimeout(x, 3000))
       ;({ r, degraded } = await sealBoardOn(ctx.board, reason, disposition))
       if (r.accepted === true || r.errorCode !== 'work_pending') break
@@ -1285,15 +1314,15 @@ async function deliverableNow(ctx) {
     }
     // **同一句话只说一次**(2026-08-18 真机: 3 秒一轮打了十三行一模一样的等待行,把中栏刷成噪音)。
     // 内容变了(等的东西不一样了)才再说——**重复不是信息**,而屏幕上的位置是有限的。
-    const waitLine = `◌ ${[inflight ? '求证在途' : '', open.length ? `未回执动作 ${open.join('/')}` : ''].filter(Boolean).join(' · ')}——等它们落地再判可交付(最多 ${Math.round(DELIVERABLE_WAIT_MS / 1000)}s)`
+    const waitLine = `◌ ${[inflight ? 'verification in flight' : '', open.length ? `unreceipted actions ${open.join('/')}` : ''].filter(Boolean).join(' · ')}; waiting before deciding deliverability (up to ${Math.round(DELIVERABLE_WAIT_MS / 1000)}s)`
     if (waitLine !== lastWaitLine) { log(waitLine); lastWaitLine = waitLine }
     await new Promise((r) => setTimeout(r, 3000))
     final = await completionAll(ctx)
   }
   const deliverable = final.roots.length > 0 && final.certified === true && final.allDone === true
   const why = final.roots.length === 0
-    ? '板上没有任务树——这一段没有可交付物(纯回话/开工即停都是这个形状)'
-    : `板未判可交付(certified=${final.certified} · floor=${final.floor} · ${final.state})`
+    ? 'The board has no task tree, so this segment has no deliverable.'
+    : `The board has not established deliverability (certified=${final.certified} · floor=${final.floor} · ${final.state}).`
   return { final, deliverable, why }
 }
 
@@ -1830,9 +1859,9 @@ Successor case "${healed.id}" is ready with the recipe installed. Materials were
               ? `Service board "${ctx.board}" is sealed (board_sealed). Writes are frozen; this task has stopped.`
               : 'The board is sealed (board_sealed). Writes are rejected; this task has stopped.'
             log(`
-⚠ ${note}。${ctx.serviceBoard
-  ? '一客一板的板名由 sessionKey 定死,客户端不会替你另开一块(另开=换了个客户)。封板不可逆,**没有解封**——要续办这位客户,给他换一个 sessionKey 落新板(旧板结论要搬,走运营面的显式召回);旧板读面照常,案卷仍可审计。'
-  : '案卷定稿后要办新的事得开一块新板（--case-boards 会每段自动开单）。'}`)
+⚠ ${note} ${ctx.serviceBoard
+  ? 'A service board is fixed by sessionKey and cannot be unsealed. To continue for this customer, use a new sessionKey and explicitly recall any required conclusions; the old board remains readable and auditable.'
+  : 'To do more work after a case is sealed, open a new board. --case-boards does this automatically for each segment.'}`)
             break
           }
         } else feedback = `The board rejected this batch:\n${teaching}\n\nCorrect the request using that guidance and submit again.`
@@ -2411,7 +2440,13 @@ Task endpoint ready (serial within a slot · ${SERVE_CONCURRENCY} concurrent slo
   log(`
 Verify the task tree, work items, and conclusions in Console: ${seen}
 `)
-  emit('end', { ok: note.includes('干完'), note, projection: after, console: seen, ...(pendingCaseId === null ? {} : { pendingCaseId }) })
+  emit('end', {
+    ok: pendingCaseId === null && note.startsWith('Board certified the case as deliverable'),
+    note,
+    projection: after,
+    console: seen,
+    ...(pendingCaseId === null ? {} : { pendingCaseId }),
+  })
   if (withUi) log(`The local timeline remains available at http://127.0.0.1:${UI_PORT}. Press Ctrl+C to exit.`)
   else process.exit(0)
 } else {

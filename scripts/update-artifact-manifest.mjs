@@ -24,7 +24,17 @@ const files = [
   'examples/verified-calculation/write-output.mjs',
 ]
 
-const sha256 = (file) => createHash('sha256').update(readFileSync(resolve(root, file))).digest('hex')
+// The public release is served from Git blobs, whose text form is LF. Windows
+// checkouts may present the same tracked file as CRLF; hashing that worktree
+// representation made the manifest disagree with GitHub Raw and Linux CI.
+// Hash the repository-canonical text bytes instead. `.gitattributes` pins LF
+// for future checkouts; this normalization also makes the generator stable in
+// an already-created Windows checkout.
+const canonicalBytes = (file) => Buffer.from(
+  readFileSync(resolve(root, file), 'utf8').replace(/\r\n/g, '\n'),
+  'utf8',
+)
+const sha256 = (file) => createHash('sha256').update(canonicalBytes(file)).digest('hex')
 const manifest = {
   schema: 'rulith-local-runtime-artifacts/v1',
   source: 'https://github.com/rulith-dev/rulith-runtime',

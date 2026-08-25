@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { orderWork } from '../worker/rulith-worker.mjs'
@@ -16,7 +17,8 @@ test('artifact manifest matches every downloadable local file', () => {
   assert.equal(manifest.schema, 'rulith-local-runtime-artifacts/v1')
   assert.ok(Object.keys(manifest.files).length >= 16)
   for (const [rel, entry] of Object.entries(manifest.files)) {
-    const actual = createHash('sha256').update(readFileSync(join(ROOT, rel))).digest('hex')
+    const canonical = readFileSync(join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
+    const actual = createHash('sha256').update(canonical, 'utf8').digest('hex')
     assert.equal(actual, entry.sha256, `${rel} drifted from artifact-manifest.json`)
   }
 })
@@ -36,6 +38,52 @@ test('station masks secrets and never persists the mask as a credential', () => 
   const view = maskEnv(prior)
   assert.equal(view.RULITH_TOKEN, '••••3456')
   assert.deepEqual(applyEnvEdit(prior, view), prior)
+})
+
+test('agent help is available before credentials and documents the UI port', () => {
+  const run = spawnSync(process.execPath, ['agent/rulith-agent.mjs', '--help'], {
+    cwd: ROOT,
+    env: { ...process.env, RULITH_TOKEN: '', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '' },
+    encoding: 'utf8',
+  })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /RULITH_UI_PORT/)
+  assert.match(run.stdout, /--case-boards/)
+  assert.doesNotMatch(run.stderr, /missing/i)
+})
+
+test('worker rejects bad credentials before claiming to be online and exits cleanly', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(401, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ accepted: false, teaching: 'credential rejected' }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const child = spawn(process.execPath, ['worker/rulith-worker.mjs'], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      RULITH_WORK_URL: `http://127.0.0.1:${port}/work`,
+      RULITH_CHANNEL: 'test-channel',
+      RULITH_CHANNEL_KEY: 'wrong-key',
+      RULITH_TOOLS_FILE: join(ROOT, 'test', 'does-not-exist.json'),
+      RULITH_SOURCES_FILE: join(ROOT, 'test', 'does-not-exist.json'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+  const code = await Promise.race([
+    new Promise((resolve) => child.once('close', resolve)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('worker did not exit after credential rejection')), 5000)),
+  ]).finally(() => server.close())
+
+  assert.equal(code, 3, stderr)
+  assert.doesNotMatch(stdout, /online/)
+  assert.match(stderr, /Connection credential rejected/)
+  assert.doesNotMatch(stderr, /edge preserves|Assertion failed|UV_HANDLE_CLOSING/)
 })
 
 test('local recipe assembler fingerprints every package without overriding an explicit pin', () => {

@@ -1,0 +1,29 @@
+name: Setup question
+description: Ask about installing the runtime or shaping a workflow.
+title: "[Question] "
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: Never include tokens, keys, credentials, private inputs, or customer data.
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to accomplish?
+      description: Describe the workflow outcome and where you are blocked.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: What is your setup?
+      description: Include OS, Node.js version, model API shape, and the command you ran. Remove secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened?
+      description: Paste the smallest relevant error or observation with private data removed.
+    validations:
+      required: true

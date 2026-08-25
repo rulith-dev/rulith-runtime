@@ -45,6 +45,10 @@ $env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'
 node agent/rulith-agent.mjs --agent default --ui
 ```
 
+`--ui` opens the loopback-only timeline at `http://127.0.0.1:7788`. If that port is
+already in use, set `RULITH_UI_PORT` to another local port. Run
+`node agent/rulith-agent.mjs --help` to inspect options without configuring credentials.
+
 The Agent Runtime sends board commands to Rulith Cloud and model requests directly
 to the configured model endpoint. It does not upload the model key to Rulith.
 
@@ -110,11 +114,11 @@ See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.
 The runtime is beta software. Protocol compatibility is versioned, but command-line
 flags and the Station UI may still change before 1.0.
 
-The Station UI and primary onboarding path are English. A small number of
-compatibility diagnostics may still retain Chinese while they are being retired.
+The Station UI and primary onboarding path are English. Runtime-facing diagnostics
+must be English; internal source comments may use another language.
 
-Please use [GitHub Discussions](https://github.com/rulith-dev/rulith-runtime/discussions)
-for workflow design questions and the issue templates for reproducible defects.
+Please use the [setup question template](https://github.com/rulith-dev/rulith-runtime/issues/new?template=question.yml)
+for workflow design questions and the other issue templates for reproducible defects and feedback.
 
 ## License
 
