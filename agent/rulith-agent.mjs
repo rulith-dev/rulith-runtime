@@ -182,9 +182,9 @@ const CASE_BOARDS = caseBoards
 const SERVE = withServe
 
 const die = (msg) => { console.error(`\n✗ ${msg}\n`); process.exit(1) }
-if (TOKEN === '') die('缺 RULITH_TOKEN——到控制台「接入与凭证」页生成（只显示一次）。')
-if (MODEL_KEY === '') die('缺模型 key（ANTHROPIC_API_KEY 或 RULITH_MODEL_KEY）——它只在本进程用，不会发给 rulith。')
-if (SERVE_CASE_SLOTS && (!SERVE || !CASE_BOARDS)) die('RULITH_SERVE_CASE_SLOTS=on 必须同时启用 --serve 与 --case-boards——并行 Context 的持久边界是一案一板。')
+if (TOKEN === '') die('RULITH_TOKEN is missing. Create an Agent token in Console under Access & credentials; it is shown only once.')
+if (MODEL_KEY === '') die('A model key is missing. Set ANTHROPIC_API_KEY or RULITH_MODEL_KEY. It stays in this local process and is never sent to Rulith.')
+if (SERVE_CASE_SLOTS && (!SERVE || !CASE_BOARDS)) die('RULITH_SERVE_CASE_SLOTS=on requires both --serve and --case-boards. Each concurrent context needs its own case board.')
 // 无任务=进入多轮对话(2026-08-01 起 CLI 是桌面主形态);带任务=一次办完后退出(CI/脚本兼容不变)。
 // **接单脑不是对话**: 收单口进来的每一条都是「任务」,所以 --serve 下按 CLI 语义走
 // (纯回话不算办完,照旧催它给 JSON 或 DONE:/STOP:)——排队的是活,不是聊天。
@@ -217,13 +217,13 @@ const CHAT = TASK === '' && !SERVE
 const RECIPE = { packs: [], seed: [], ref: undefined, maxConcurrentCases: 1 }
 if (recipePath !== '') {
   let raw = ''
-  try { raw = readFileSync(recipePath, 'utf8') } catch (e) { die(`读不到配方文件 ${recipePath}——${e?.message ?? e}。它是一个 JSON 文件,形状见 rulith-agent.mjs 头部注释。`) }
+  try { raw = readFileSync(recipePath, 'utf8') } catch (e) { die(`Cannot read recipe file ${recipePath}: ${e?.message ?? e}. It must be a JSON file; see the schema in the header of rulith-agent.mjs.`) }
   let j = {}
-  try { j = JSON.parse(raw) } catch (e) { die(`配方文件不是合法 JSON（${recipePath}）——${e?.message ?? e}`) }
+  try { j = JSON.parse(raw) } catch (e) { die(`Recipe file is not valid JSON (${recipePath}): ${e?.message ?? e}`) }
   const packs = Array.isArray(j.packs) ? j.packs : []
   packs.forEach((p, i) => {
     if (p === null || typeof p !== 'object' || typeof p.packType !== 'string' || p.pack === null || typeof p.pack !== 'object') {
-      die(`配方 packs[${i}] 形状不对——每项形如 {"packType":"domain|tools|channels|norms","pack":{…},"digest":"可选"}`)
+      die(`Recipe packs[${i}] is invalid. Each entry must look like {"packType":"domain|tools|channels|norms","pack":{...},"digest":"optional"}.`)
     }
   })
   const seed = Array.isArray(j.seed) ? j.seed : []
@@ -240,7 +240,7 @@ if (recipePath !== '') {
   }
   // 配了配方却既没开案板模式、也不是接单脑=十有八九是忘了带旗。**不静默**: 配方在两处用得上——
   // 案板模式的「开单」,与服务槽的「首建服务板」(复用时不重播)。单板长跑形态下它一行都发不出去。
-  if (!CASE_BOARDS && !SERVE) console.error(`⚠ 配了配方（${recipePath}）但既没开 --case-boards 也没开 --serve——配方只在案板模式的「开单」与服务槽的「首建服务板」两处用,当前是单板长跑形态,它不会被发出去。`)
+  if (!CASE_BOARDS && !SERVE) console.error(`⚠ Recipe ${recipePath} is configured, but neither --case-boards nor --serve is enabled. Recipes are applied when a case board or service board is first created, so this single-board run will not install it.`)
 }
 
 /**
@@ -260,7 +260,7 @@ async function refreshRecipe() {
   } catch { return }
   const now = RECIPE.ref?.digest ?? was
   if (now !== was) {
-    console.log(`· 配方已更新: ${String(was).slice(0, 19)}… → ${String(now).slice(0, 19)}…（本单起按新配方开案）`)
+    console.log(`Recipe updated: ${String(was).slice(0, 19)}… → ${String(now).slice(0, 19)}…. New cases will use the new recipe.`)
   }
 }
 
@@ -279,17 +279,16 @@ async function fetchRecipe(opts) {
     // 而刷新时手里**已经有一份能用的配方**,网络抖一下不该把正在服务的智能体打停。
     // 如实说一句、按手里那份接着办——这不是放宽 fail-closed,是两种情形本就不同。
     if (refresh) {
-      console.error(`⚠ ${why}——按手里那份配方接着办（指纹 ${String(RECIPE.ref?.digest ?? '').slice(0, 19)}…；云上若已更新，下一单再试）`)
+      console.error(`⚠ ${why}. Continuing with the last loaded recipe (${String(RECIPE.ref?.digest ?? '').slice(0, 19)}…). The next case will try the Cloud recipe again.`)
       throw new Error('recipe-refresh-failed')
     }
     if (bareOk) {
-      console.error(`⚠ ${why}——RULITH_ALLOW_BARE_BOARD=on,本次**开裸板**(不装包不播种)。这块板上没有宪法门,别拿它办真事。`)
+      console.error(`⚠ ${why}. RULITH_ALLOW_BARE_BOARD=on: opening a bare board with no packages or seed. It has no Constitution gate; use it only for experiments.`)
       return
     }
     die(`${why}
-   **不开工**: 配方里有宪法包,宪法没落板就等于少了一整层门——那样的板看起来能干活,实际连清关台账都没有。
-   出路三条: ① 网络/网关恢复后重试 ② 带 --recipe <文件> 离线跑 ③ 确实要裸板(实验/自测)就显式开
-   RULITH_ALLOW_BARE_BOARD=on。**不给缺省放行**——静默开裸板是"配置没生效"最难查的一种形状。`)
+   Work did not start. A recipe may contain Constitution gates; opening without them would silently weaken the workflow.
+   Retry when Cloud is reachable, use --recipe <file> for an offline deployment, or explicitly set RULITH_ALLOW_BARE_BOARD=on for an experiment. Bare boards are never the default.`)
   }
   let r
   try {
@@ -297,15 +296,15 @@ async function fetchRecipe(opts) {
       headers: { authorization: `Bearer ${TOKEN}` },
     })
   } catch (e) {
-    return giveUp(`取云上配方失败(${e?.message ?? e})`)
+    return giveUp(`Could not fetch the Cloud recipe (${e?.message ?? e})`)
   }
   if (!r.ok) {
-    return giveUp(`取云上配方被拒(HTTP ${r.status})。老网关可能还没有 /agent/v1/recipe 这条路`)
+    return giveUp(`Cloud recipe request was rejected (HTTP ${r.status}). This deployment may not support /agent/v1/recipe`)
   }
   const j = await r.json().catch(() => ({}))
   const rec = j?.recipe
   if (rec === undefined || !Array.isArray(rec.packs)) {
-    return giveUp('云上配方形状不对')
+    return giveUp('Cloud returned an invalid recipe shape')
   }
   // **闸问的是「宪法到没到」,不是「取没取到」**(2026-08-22,RT-AGT-EMPTY-RECIPE)。
   //
@@ -322,7 +321,7 @@ async function fetchRecipe(opts) {
   // 对面 `gateway.ts` 的 `/agent/v1/recipe` 注释写着「空配方不是错…裸板照样开得出来」——
   // 那句在**网关**这一侧成立(它不该替客户端决定开不开工),但客户端不能照它放行。
   if (rec.packs.length === 0) {
-    return giveUp(`云上配方是空的(智能体 "${agentName}" 名下一个包都没装,或都停用了)`)
+    return giveUp(`The Cloud recipe is empty. Agent "${agentName}" has no enabled packages`)
   }
   RECIPE.packs = rec.packs
   RECIPE.seed = [] // 播种(目标/初始材料)是**这一单**的事,不是配方的事;配方只管装法
@@ -1381,11 +1380,11 @@ async function ask(messages, system, cfg = MAIN_CFG) {
     })
   } catch (e) {
     // 用户面工具不该抛原始堆栈: 说清连的是谁、怎么改(2026-08-01 自跑时踩到)
-    die(`连不上模型服务 ${cfg.url}——${e?.cause?.code ?? e?.message ?? e}。
-   自建/代理服务用 RULITH_MODEL_URL 指过去;走官方就别设这个变量。`)
+    die(`Cannot reach model service ${cfg.url}: ${e?.cause?.code ?? e?.message ?? e}.
+   Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
   }
   const j = await r.json().catch(() => ({}))
-  if (!r.ok) die(`模型服务出错（${r.status}）：${JSON.stringify(j).slice(0, 300)}`)
+  if (!r.ok) die(`Model service error (${r.status}): ${JSON.stringify(j).slice(0, 300)}`)
   if (openaiStyle) return String(j.choices?.[0]?.message?.content ?? '')
   return (j.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n')
 }
@@ -1470,17 +1469,17 @@ const extractSubmission = (text) => {
 // ── 主循环：提议 → 裁决 → 教学回流 ──────────────────────────────────
 const log = (s) => console.log(s)
 log(`
-rulith-agent · 智能体「${agentName}」· ${URL_BASE}`)
+rulith-agent · Agent "${agentName}" · ${URL_BASE}`)
 // 配方在**开第一块板之前**取: 之后每一次建板都带着同一枚出身指纹(BRD-112)
 await fetchRecipe()
 /** 配方出处的一句人话——三种来源(云上/本地/没有)得看得见,不然"我明明装了包"会变成悬案。 */
 const recipeLine = () => (
-  recipePath !== '' ? `${recipePath}（本地文件 · ${RECIPE.packs.length} 个包 · ${RECIPE.seed.length} 条播种）`
-  : RECIPE.ref !== undefined ? `云上包簿「${RECIPE.ref.id}」（${RECIPE.packs.length} 个包 · 指纹 ${RECIPE.ref.digest.slice(0, 19)}…）`
-  : '空（只开裸板,不装包）'
+  recipePath !== '' ? `${recipePath} (local file · ${RECIPE.packs.length} package(s) · ${RECIPE.seed.length} seed operation(s))`
+  : RECIPE.ref !== undefined ? `Cloud recipe "${RECIPE.ref.id}" (${RECIPE.packs.length} package(s) · digest ${RECIPE.ref.digest.slice(0, 19)}…)`
+  : 'empty (bare board; no packages installed)'
 )
 if (CASE_BOARDS) {
-  log(`案板模式（一单一板）：每段开一块新案卷（案号前缀 ${CASE_PREFIX}），办结即封板。 配方: ${recipeLine()}`)
+  log(`Case-board mode: every task opens a new case (${CASE_PREFIX}-…), and completed cases are sealed. Recipe: ${recipeLine()}`)
 }
 
 // 案板模式下每一单是控制台登记簿里独立的一行(名字=案号),所以核对地址按**当前案卷**出——
@@ -1488,7 +1487,7 @@ if (CASE_BOARDS) {
 const consoleUrlOf = (name) => `https://console.rulith.com/agents/${encodeURIComponent(name)}`
 const consoleUrl = consoleUrlOf(agentName)
 /** 停轮未结时终端上的那一句(三张脸共用一份措辞——同一件事三种说法比不说更糟)。 */
-const pendingLine = (id) => (id === null || id === undefined ? '' : ` · 案卷未结 pending_case_id=${id}(带 --case ${id} 接着办,或去控制台处置)`)
+const pendingLine = (id) => (id === null || id === undefined ? '' : ` · Case remains open: pending_case_id=${id}. Resume with --case ${id}, or resolve it in Console.`)
 
 // ── 锁态探测(2026-08-01 立法权锁,「看不见」优先于「拒得住」): 锁定板的系统提示
 //    **根本不含**立规则/定义动作的模板——不给把手,模型就不会伸手去摸、也不会烧轮数撞拒绝。 ──
@@ -1541,7 +1540,7 @@ async function probeLawLock(ctx) {
   const mf = await board({ kind: 'GetBoardManifest' }, ctx.board)
   if (mf.accepted === true && mf.payload?.lawLocked === true) {
     ctx.system = SYSTEM_LOCKED
-    log(`◆ 本板已锁定立法权——规则由板主在控制台装,这里照制度干活。${ctx.key === '' ? '' : `（会话 ${ctx.key}）`}`)
+    log(`Board legislation is locked. Rules come from packages installed by the board owner; this Agent executes under them.${ctx.key === '' ? '' : ` (session ${ctx.key})`}`)
   }
 }
 // 单板长跑: 开工前探那块长命板。案板模式: 板还没开出来,推迟到第一次开单之后。
@@ -1565,18 +1564,18 @@ function compactTranscript(ctx) {
   while (drop < messages.length && messages[drop]?.role !== 'user') drop += 1
   if (drop >= messages.length || drop <= 0) return // 切不出干净的口就不切(宁可长,不可发坏形状)
   const cut = messages.splice(0, drop)
-  const trail = ctx.segmentTrail.length ? ctx.segmentTrail.map((t, i) => `${i + 1}. ${t}`).join('\n') : '(无)'
+  const trail = ctx.segmentTrail.length ? ctx.segmentTrail.map((t, i) => `${i + 1}. ${t}`).join('\n') : '(none)'
   // 留痕**并进**第一条 user,不新增消息——不动角色结构,任何线型都不会因此变形
   messages[0] = {
     ...messages[0],
-    content: `[已压缩] 更早的 ${cut.length} 条对话已收起。**板才是权威记录**,细节在板上——要看发 BOARD:。
-之前办过的段:
+    content: `[Transcript compacted] ${cut.length} earlier message(s) were removed. The board remains authoritative; reply BOARD: to read it.
+Earlier segments:
 ${trail}
 
 ───
 ${messages[0].content}`,
   }
-  log(`（转录压缩：收起 ${cut.length} 条，留 ${messages.length} 条 + ${ctx.segmentTrail.length} 行段留痕）`)
+  log(`Transcript compacted: dropped ${cut.length}, kept ${messages.length} message(s) and ${ctx.segmentTrail.length} segment marker(s).`)
   emitOn(ctx, 'compact', { dropped: cut.length, kept: messages.length, segments: ctx.segmentTrail.length })
 }
 /** 插话取件口（viz 的 pollUserMsg 在协议面的对应）。CHAT 形态由收件箱挂上；
@@ -1611,19 +1610,19 @@ async function runSegment(ctx, userText) {
     if (!opened.ok) {
       // 建出来了但没装齐: 把「当前板」指向它——读照常,收尾那句核对地址才指得到真正该看的那块
       if (opened.built) ctx.board = opened.id
-      const note = `开单失败,本段不办——${opened.teaching.slice(0, 300)}`
+      const note = `Could not open the case; this task did not start: ${opened.teaching.slice(0, 300)}`
       // 半成品已作废(补偿式原子)就不是「在办」;作废不掉的才留案号要人处置
       const stranded = opened.built === true && opened.abandoned !== true ? opened.id : null
       log(`
 ✗ ${note}${stranded === null ? '' : `
-   （案卷「${stranded}」已建但配方没装齐、也作废不掉,留在「在办」——控制台可查看/结案）`}`)
+   (Case "${stranded}" exists but is not fully configured and could not be abandoned. It remains open for review in Console.)`}`)
       emitOn(ctx, 'case-open', { board: opened.id, ok: false, teaching: opened.teaching, ...(stranded === null ? {} : { pendingCaseId: stranded }) })
       ctx.segmentTrail.push(`${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
       return { note, pendingCaseId: stranded }
     }
     ctx.board = opened.id
     log(`
-◎ 开单: 案卷「${opened.id}」已建 · 配方 ${opened.packs} 个包 · 播种 ${opened.seeded} 条`)
+Case opened: "${opened.id}" · ${opened.packs} package(s) · ${opened.seeded} seed operation(s)`)
     emitOn(ctx, 'case-open', { board: opened.id, ok: true, title: caseTitleOf(userText), packs: opened.packs, seeded: opened.seeded })
     await probeLawLock(ctx)
   }
@@ -1637,12 +1636,12 @@ async function runSegment(ctx, userText) {
   // 位置在**开单之后、读板之前**: 第一发读(projectionText 的 GetProjection)就已经在门内了。
   if (!ctx.caseMode) await ensureBoardWork(ctx, ctx.taskId ?? `seg_${Date.now().toString(36)}_${seq++}`)
   const proj = await projectionText(ctx)
-  messages.push({ role: 'user', content: `${CHAT ? '用户说' : '任务'}：${userText}
+  messages.push({ role: 'user', content: `${CHAT ? 'User message' : 'Task'}: ${userText}
 
-当前板上：
+Current board:
 ${proj}` })
   let done = false
-  let note = '进行中'
+  let note = 'in progress'
   let nudged = false // 「说了要提交却没提交」的纠偏机会,每段只给一次
   let lastRevision = await revisionNow(ctx)
   // 已完成的旧根不能替新一段收工。只有本段实际见过「未完成」之后再转为可交付，
@@ -1653,15 +1652,15 @@ ${proj}` })
     emitOn(ctx, 'round', { n: round })
     // 轮号**也上终端**(2026-08-18): 从前它只进事件流,于是任何按 stdout 数轮数的量具
     // (冷通枪就是一个)恒读 0 ——**读数一直在骗人**,而"0 轮通过"看着还挺好。
-    log(`— 第 ${round} 轮 —`)
+    log(`— Round ${round} —`)
     // 插话不打断(viz pollUserMsg 同律): 人在本段跑着的时候又说了话,当轮就进对话,不必等段跑完。
     // **只有缺省槽有这条线**: 本机操作者的话属于他自己那条对话,不属于某位远程客户的会话槽。
     const interject = ctx === defaultSlot ? pollInterject?.() : undefined
     if (interject) {
       log(`
-[用户插话] ${interject}`)
+[User interjection] ${interject}`)
       emitOn(ctx, 'user', { text: interject, interject: true })
-      messages.push({ role: 'user', content: `[用户] ${interject}` })
+      messages.push({ role: 'user', content: `[User] ${interject}` })
     }
     const reply = await ask(messages, ctx.system)
     const say = reply.replace(/```[\s\S]*?```/g, '').trim()
@@ -1685,8 +1684,8 @@ ${say.slice(0, 1200)}`)
 
     let feedback = ''
     if (wantsBoard) {
-      feedback = `全板：\n${await projectionText(ctx, { full: true })}`
-      log('（模型要了一次全板）')
+      feedback = `Full board:\n${await projectionText(ctx, { full: true })}`
+      log('(The model requested the full board.)')
     } else if (stopping) {
       // done/stop = **请求**不是结论(viz 同律: 模型只请求,板裁决)。本轮照常走完放电与裁决,
       // 收尾那句话报板的判词——本文件第一条纪律就是「结论不是模型写的」。
@@ -1697,8 +1696,8 @@ ${say.slice(0, 1200)}`)
       // 同步回执(2026-08-21 修)照旧: 板在 act_wait_ms 内等到受信回执会把 done/ok/result
       // 合进 payload——答案已经在手,客户端不许扔了再叫模型去等。
       if (cmds.length !== 1) {
-        feedback = `每轮只允许 1 条顶层命令(收到 ${cmds.length} 条)，本批零执行。请拆成多轮：每次收到终态回执并重读板后，再决定下一条。`
-        log(`板：拒了顶层命令批次 —— ${feedback}`)
+        feedback = `Only one top-level command is allowed per turn; ${cmds.length} were received and none were executed. Split the sequence across turns, waiting for each terminal receipt and rereading the board before choosing the next command.`
+        log(`Board rejected the command batch: ${feedback}`)
         emitOn(ctx, 'verdict', { accepted: false, cmd: 'command-batch', teaching: feedback })
       } else {
         const lines = []
@@ -1713,40 +1712,40 @@ ${say.slice(0, 1200)}`)
             const tag = inv !== '' ? ` · ${inv}` : ''
             if (p.done === true) {
               const detail = String(p.ok === true ? (p.result ?? '') : (p.reason ?? '')).slice(0, 400)
-              log(`板：${head} ${p.ok === true ? '已办成' : '没办成'}${tag}${detail !== '' ? ` — ${detail.slice(0, 160)}` : ''}`)
+              log(`Board: ${head} ${p.ok === true ? 'completed' : 'failed'}${tag}${detail !== '' ? ` — ${detail.slice(0, 160)}` : ''}`)
               emitOn(ctx, 'verdict', { accepted: true, cmd: c.kind, done: true, ok: p.ok === true, added: (r.delta?.added ?? []).length, revision: r.revision ?? '', ...(inv !== '' ? { invocation: inv } : {}) })
               lines.push(p.ok === true
-                ? `${head} 已办成${tag}。执行器回执：${detail}`
-                : `${head} 没办成${tag}。执行器回执：${detail}——这是**世界那边**的失败，不是你的调用形状有问题；要重试就再调一次（会是一次新的 invocation）。`)
+                ? `${head} completed${tag}. Worker receipt: ${detail}`
+                : `${head} failed${tag}. Worker receipt: ${detail}. This is an execution failure, not a command-shape error. A retry must be a new invocation.`)
               if (p.ok === true) succeeded += 1
               else {
                 if (ci < cmds.length - 1) {
-                  const stopped = `动作序列暂停 · ${succeeded}/${cmds.length} 成功——前一步执行失败，其余 ${cmds.length - 1 - ci} 条未执行`
-                  log(`板：${stopped}`)
+                  const stopped = `Action sequence stopped: ${succeeded}/${cmds.length} completed. The previous action failed; ${cmds.length - 1 - ci} action(s) were not executed.`
+                  log(`Board: ${stopped}`)
                   emitOn(ctx, 'sequence-stopped', { total: cmds.length, succeeded, reason: 'effect_failed', remaining: cmds.length - 1 - ci })
-                  lines.push(`(${stopped}，依赖它的后续动作不能盲发。)`)
+                  lines.push(`${stopped} Dependent actions cannot be issued blindly.`)
                 }
                 break
               }
             } else {
-              log(`板：${head} 已受理${tag}（回执未落，等派发）`)
+              log(`Board: ${head} accepted${tag}; terminal receipt pending.`)
               emitOn(ctx, 'verdict', { accepted: true, cmd: c.kind, done: false, added: (r.delta?.added ?? []).length, revision: r.revision ?? '', ...(inv !== '' ? { invocation: inv } : {}) })
-              lines.push(`${head} 已受理${tag}，但**回执还没落板**（可能被清关挡着，或执行器还没领）。别当它办成了：下一轮看板面上有没有它的 effect_confirmed。`)
+              lines.push(`${head} was accepted${tag}, but no terminal receipt has landed. It may be awaiting clearance or Worker pickup. Do not treat it as complete; reread the board for effect_confirmed.`)
               if (ci < cmds.length - 1) {
-                const stopped = `动作序列暂停 · ${succeeded}/${cmds.length} 成功——前一步只有受理、尚无终态回执，其余 ${cmds.length - 1 - ci} 条未执行`
-                log(`板：${stopped}`)
+                const stopped = `Action sequence stopped: ${succeeded}/${cmds.length} completed. The previous action has no terminal receipt; ${cmds.length - 1 - ci} action(s) were not executed.`
+                log(`Board: ${stopped}`)
                 emitOn(ctx, 'sequence-stopped', { total: cmds.length, succeeded, reason: 'receipt_pending', remaining: cmds.length - 1 - ci })
-                lines.push(`(${stopped}，不能越过同步屏障。)`)
+                lines.push(`${stopped} The synchronous barrier cannot be bypassed.`)
               }
               break
             }
           } else {
             const t = String(r.teaching ?? r.errorCode ?? '')
-            log(`板：拒了 ${head} —— ${t.slice(0, 160)}`)
+            log(`Board rejected ${head}: ${t.slice(0, 160)}`)
             emitOn(ctx, 'verdict', { accepted: false, cmd: c.kind, teaching: t })
-            lines.push(`${head} 被拒：${t}`)
+            lines.push(`${head} was rejected: ${t}`)
             if (ci < cmds.length - 1) {
-              lines.push(`(本轮其余 ${cmds.length - 1 - ci} 条未执行——序列前一条被拒即停,改好这条再连发。)`)
+              lines.push(`${cmds.length - 1 - ci} remaining action(s) were not executed because the sequence stops at the first rejection.`)
             }
             break
           }
@@ -1764,24 +1763,24 @@ ${say.slice(0, 1200)}`)
       const boardHasWork = CHAT && !nudged && (await boardGaps(ctx)).length > 0
       if (boardHasWork) {
         nudged = true
-        feedback = '你上一轮以「要提交」收尾却没有给出 JSON 块。请把那一块补上：板内操作用 JSON 数组，顶层命令（如 ApplyAction）用带 kind 的对象；确实无事可做就 DONE:/STOP:。'
-      } else if (CHAT) { note = '回话(无板操作)'; done = true }
-      else feedback = '没读到 JSON 操作块。请回一个 JSON 数组的代码块（板内操作），或一个带 kind 的对象（顶层命令，如 ApplyAction），或用 DONE:/STOP: 收尾。'
+        feedback = 'Your previous reply described a submission but included no JSON block. Submit board operations as a JSON array, or one top-level command such as ApplyAction as an object with kind. If nothing remains, reply DONE: or STOP:.'
+      } else if (CHAT) { note = 'response only (no board operation)'; done = true }
+      else feedback = 'No JSON submission was found. Return a JSON array for board operations, one object with kind for a top-level command such as ApplyAction, or finish with DONE: or STOP:.'
     } else {
       const r = await board({ kind: 'ApplyBatch', operations: ops }, ctx.board)
       if (r.accepted === true) {
         const added = (r.delta?.added ?? []).length
-        log(`板：接受 ${ops.length} 条 · 新增 ${added} 项 · 修订号 ${r.revision ?? ''}`)
+        log(`Board accepted ${ops.length} operation(s) · ${added} item(s) added · revision ${r.revision ?? ''}`)
         emitOn(ctx, 'verdict', { accepted: true, added, revision: r.revision ?? '' })
         // **只回增量,不回灌全板**(viz 逐义,2026-08-06 搬)。此前每轮都把整块板塞回转录:
         // 一块小探针板的投影已经 2-3.3 KB(大半是词表),真板远不止——12 轮就是十几份全板副本,
         // 而板每轮只多几条。要看全板,模型自己发 BOARD: 要(下面那件工具),那是**它的**决定。
         const warn = (r.payload?.warnings ?? []).join('\n')
-        feedback = `板接受了(修订号 ${r.revision ?? ''}, 新增 ${added} 项)${warn ? `\n${warn}` : ''}`
+        feedback = `Board accepted the batch (revision ${r.revision ?? ''}, ${added} item(s) added).${warn ? `\n${warn}` : ''}`
       } else {
         // **报错是接口**：原样回喂，不改写——板的教学比我们的转述准
         const teaching = String(r.teaching ?? r.errorCode ?? '')
-        log(`板：拒了 —— ${teaching.slice(0, 300)}`)
+        log(`Board rejected the batch: ${teaching.slice(0, 300)}`)
         emitOn(ctx, 'verdict', { accepted: false, teaching })
         if (String(r.errorCode ?? '') === 'board_sealed') {
           // **board_sealed 是唯一一种"照着改"没有出路的拒**: 案卷已结,同一块板上再提一万次也是拒。
@@ -1798,22 +1797,22 @@ ${say.slice(0, 1200)}`)
             sealHealed = true
             ctx.board = healed.id
             lastRevision = await revisionNow(ctx)
-            log(`◎ 旧案卷已结案——已另开案卷「${healed.id}」承继前案「${sealedBoard}」并装好配方,这一批请在新案卷上重提`)
+            log(`The previous case was already sealed. Opened successor case "${healed.id}" with predecessor "${sealedBoard}" and installed the recipe.`)
             emitOn(ctx, 'case-open', { board: healed.id, ok: true, healed: true, predecessor: sealedBoard })
-            feedback = `刚才那块板**已经结案了**（board_sealed）：封板后一切写入教学拒、读照常，这不是你写错了，重提同一块板也不会通过。
-已为你另开一块案卷「${healed.id}」并装好配方——**旧案卷上的材料不会自动搬过来**，请把本轮的操作（连同它依赖的前提材料）在新案卷上重提一次。`
+            feedback = `The previous board is sealed (board_sealed). Reads remain available, but no further write can succeed there.
+Successor case "${healed.id}" is ready with the recipe installed. Materials were not copied automatically; resubmit this operation and its required premises on the new case.`
           } else {
             boardSealedStop = true
             note = ctx.serviceBoard
-              ? `服务板「${ctx.board}」已被封板（board_sealed）——写面冻结,本段如实停下`
-              : '板已结案（board_sealed）——封板后写入一律拒,本段如实停下'
+              ? `Service board "${ctx.board}" is sealed (board_sealed). Writes are frozen; this task has stopped.`
+              : 'The board is sealed (board_sealed). Writes are rejected; this task has stopped.'
             log(`
 ⚠ ${note}。${ctx.serviceBoard
   ? '一客一板的板名由 sessionKey 定死,客户端不会替你另开一块(另开=换了个客户)。封板不可逆,**没有解封**——要续办这位客户,给他换一个 sessionKey 落新板(旧板结论要搬,走运营面的显式召回);旧板读面照常,案卷仍可审计。'
   : '案卷定稿后要办新的事得开一块新板（--case-boards 会每段自动开单）。'}`)
             break
           }
-        } else feedback = `板拒绝了这一批，原话：\n${teaching}\n\n照它说的改，再提一次。`
+        } else feedback = `The board rejected this batch:\n${teaching}\n\nCorrect the request using that guidance and submit again.`
       }
     }
 
@@ -1884,7 +1883,7 @@ ${say.slice(0, 1200)}`)
               .find(Boolean)
             if (bo && Date.now() < until) {
               const waitS = Math.min(Number(bo[1] ?? bo[2] ?? 5) + 1, Math.max(1, Math.ceil((until - Date.now()) / 1000)))
-              if (!said) { log(`◌ 在途结算中（求证/回执未落板）——宿主原地等，不烧模型轮`); said = true }
+              if (!said) { log('◌ Waiting locally for verification and receipts; no model turn is being consumed.'); said = true }
               await new Promise((r) => setTimeout(r, waitS * 1000))
               continue
             }
@@ -1893,7 +1892,7 @@ ${say.slice(0, 1200)}`)
           feedback += armed
           continue
         }
-        if (!said) { log(`◌ 在途结算中（求证/回执未落板）——宿主原地等，不烧模型轮`); said = true }
+        if (!said) { log('◌ Waiting locally for verification and receipts; no model turn is being consumed.'); said = true }
         await new Promise((r) => setTimeout(r, 2000))
         c = await completionAll(ctx)
         ;({ facts } = await boardRoots(ctx))
@@ -1907,7 +1906,7 @@ ${say.slice(0, 1200)}`)
         if (c.certified === true && c.allDone === true && openObligations(facts).length === 0) break
       }
       if (said) {
-        log(`◌ 结算完毕（certified=${c.certified} · ${c.state}）——这一轮模型看到的是已落地的结果`)
+        log(`◌ Settlement complete (certified=${c.certified} · ${c.state}). The next model turn receives the landed result.`)
         // **等完就把板面一起端上去**(2026-08-18 用户看站输出第三发): 真机里模型在结算之后
         // 连回两轮 `BOARD:` —— 每一轮都是一次完整的模型调用而产出为零,**而那是我们自己教的**
         // (「回一行 BOARD: 看着就行」)。宿主既然已经替它等了,落定的板面就该直接给它:
@@ -1916,7 +1915,7 @@ ${say.slice(0, 1200)}`)
       }
     }
     // 完成态**上终端**给人看(不是喂模型的教学: 模型看板自己的投影与回执)
-    if (c.roots.length > 0) log(`[完成态] certified=${c.certified} floor=${c.floor} ${c.state}`)
+    if (c.roots.length > 0) log(`[Completion] certified=${c.certified} floor=${c.floor} ${c.state}`)
     emitOn(ctx, 'board', { certified: c.certified, floor: c.floor, state: c.state, breached: c.breached })
 
     if (!(c.certified === true && c.allDone === true)) sawUndeliverable = true
@@ -1924,14 +1923,14 @@ ${say.slice(0, 1200)}`)
     // 省掉真机里那轮 `BOARD: 等待…` 和紧随其后的 `DONE:` 两次完整模型调用。
     if (!done && sawUndeliverable && c.certified === true && c.allDone === true && openObligations(facts).length === 0) {
       done = true
-      log(`◎ 板已判可交付且全部义务已清——宿主直接收工，不再请求模型复述 DONE`)
+      log('The board marked the case deliverable and all obligations are clear. The host is completing without another model turn.')
       emitOn(ctx, 'auto-complete', { certified: true, floor: c.floor, state: c.state })
     }
 
     if (done) {
       note = c.certified
-        ? `板判可交付（floor=${c.floor}）`
-        : c.roots.length === 0 ? '回话(板上无任务树)' : `模型收尾,但板未判可交付（floor=${c.floor} · ${c.state}）——如实照说`
+        ? `Board certified the case as deliverable (floor=${c.floor}).`
+        : c.roots.length === 0 ? 'Response only; no task tree exists on the board.' : `The model stopped, but the board did not certify the case (floor=${c.floor} · ${c.state}).`
       break
     }
 
@@ -1940,12 +1939,12 @@ ${say.slice(0, 1200)}`)
     // 归 MAX_ROUNDS 一条线管,不需要第二个会猜错的判据)。
     lastRevision = await revisionNow(ctx)
     // 结算过就把落定的板面一起端上（省掉模型那一轮 `BOARD:` 的要价）。
-    messages.push({ role: 'user', content: `[结果] ${feedback}\n[完成态] certified=${c.certified} floor=${c.floor} ${c.state}`
-      + (settledBoard !== '' ? `\n\n当前板上（已落定，不必再要）：\n${settledBoard}` : '')
-      + `\n\n继续，或用 DONE: 收尾。` })
+    messages.push({ role: 'user', content: `[Result] ${feedback}\n[Completion] certified=${c.certified} floor=${c.floor} ${c.state}`
+      + (settledBoard !== '' ? `\n\nCurrent landed board state:\n${settledBoard}` : '')
+      + `\n\nContinue, or finish with DONE:.` })
   }
-  if (note === '进行中') { note = `到 ${MAX_ROUNDS} 轮上限，如实停下`; log(`
-⚠ ${note}（调 RULITH_MAX_ROUNDS 可放宽）。`) }
+  if (note === 'in progress') { note = `Stopped at the ${MAX_ROUNDS}-round limit.`; log(`
+⚠ ${note} Increase RULITH_MAX_ROUNDS only after reviewing why the workflow did not converge.`) }
   // 影子人格(--shadow): 段尾对抗审阅——同一智能体的内外人格,板侧防篡改机制(CD 钉等)天然在。
   // **抗议的牙齿 = 拦下本段的收尾动作**: 单板长跑形态拦的是自动归档,案板形态拦的是**封板**。
   // 同一条纪律的两个投影: 影子有异议的活不算收尾,板上留着,人与主人格都看得见。
@@ -1963,12 +1962,12 @@ ${say.slice(0, 1200)}`)
   // caseMode 这条腿里面,因此对服务槽天然不生效——板与这份服务同寿,没有"这一段办完就结案"这回事。
   let pendingCaseId = null
   if (boardSealedStop) {
-    log('◆ 板已结案——本段不做任何收尾写入(封板后写一律拒)')
+    log('The board is already sealed; no final write was attempted.')
   } else if (!shadowClear) {
     if (ctx.caseMode) pendingCaseId = ctx.board
     log(ctx.caseMode
-      ? '◆ 影子有异议——本案不封板,案卷留在「在办」待处理(异议已落板 shadow_finding)'
-      : '◆ 影子有异议——本段不自动归档,板上留着待处理(异议已落板 shadow_finding)')
+      ? 'Shadow review raised a finding. The case remains open and the shadow_finding is on the board.'
+      : 'Shadow review raised a finding. Automatic archival was skipped and the shadow_finding is on the board.')
   } else if (ctx.caseMode) {
     // 判据在 `deliverableNow`(长命板腿共用同一个执行点)。
     const { deliverable, why } = await deliverableNow(ctx)
@@ -1977,20 +1976,19 @@ ${say.slice(0, 1200)}`)
     } else if (SEAL_ON_STOP !== '') {
       // **显式选择作废**: 配了 RULITH_SEAL_ON_STOP 才在停轮时封,且带的是作废处置——
       // 这是运维的一次决定("这条线上的停轮单一律作废"),不是缺省行为。
-      log(`◎ 停轮未办结,但配了 RULITH_SEAL_ON_STOP=${SEAL_ON_STOP}——按此处置封板结案(${why})`)
-      if (!await sealCase(ctx, `${note}｜停轮处置 ${SEAL_ON_STOP}: ${why}`, SEAL_ON_STOP)) pendingCaseId = ctx.board
+      log(`The task stopped before certification. RULITH_SEAL_ON_STOP=${SEAL_ON_STOP} explicitly closes it with that disposition (${why}).`)
+      if (!await sealCase(ctx, `${note} | stop disposition ${SEAL_ON_STOP}: ${why}`, SEAL_ON_STOP)) pendingCaseId = ctx.board
     } else {
       pendingCaseId = ctx.board
       log(`
-◎ 案卷「${ctx.board}」**没有结案**——${why}。
-   停轮不等于办结: 它留在「在办」(pending_case_id=${ctx.board})——带 --case ${ctx.board} 起进程即接着办,或去控制台处置。
-   要让停轮也结掉,配 RULITH_SEAL_ON_STOP=cancelled|failed|abandoned(显式作废,不是缺省)。`)
+Case "${ctx.board}" remains open: ${why}.
+   Stopping is not completion. Resume with --case ${ctx.board}, or resolve it in Console. To close stopped work explicitly, set RULITH_SEAL_ON_STOP=cancelled|failed|abandoned.`)
       emitOn(ctx, 'case-pending', { board: ctx.board, reason: why, note })
     }
   } else if (autoArchiveOff()) {
     // 旋钮的判据落在**两条归档腿共同的调用点**上(2026-08-17)。从前它只写在 `autoArchive()`
     // 里边,于是长命板腿(`archiveBoardWork`)根本不看它——门牌承诺的「可关」对现役形态是假的。
-    log('◎ RULITH_AUTO_ARCHIVE=off——本段不做任何归档(板上的活原样留着,去控制台处置)')
+    log('RULITH_AUTO_ARCHIVE=off: no work was archived. The board remains unchanged for operator review.')
   } else if (workOf.has(ctx.board)) {
     // 长命板形态: 段尾归的是**这一单那件事**(ArchiveTask,不是 SealBoard——服务板恒不封)。
     // 归一件事就把它整个局部面收起,所以不必再逐根 autoArchive;而 `ArchiveTask.root` 必须逐字
@@ -2005,16 +2003,15 @@ ${say.slice(0, 1200)}`)
     else {
       const bound = workOf.get(ctx.board)
       log(`
-◎ 本段未办结——${why}。
-   这件事(Work ${bound?.id ?? '?'} · root ${bound?.root ?? '?'})留在板上,下段接着办:归档会把树收起来,
-   没办完就归等于把回执的落点也收了,而且账面上它会变成「办结」。`)
+This segment remains open: ${why}.
+   Work ${bound?.id ?? '?'} (root ${bound?.root ?? '?'}) remains on the board for the next segment. Archiving unfinished work would remove the receipt target and falsely record completion.`)
       emitOn(ctx, 'work-pending', { board: ctx.board, work: bound?.id, root: bound?.root, reason: why, note })
     }
   } else await autoArchive(ctx) // 单板长跑(case/老 boardd)照旧清板: 可交付的根归档,下一段在干净的板上开工
   // 段边界留痕: 这一行是压缩后**唯一**留下来的东西,所以要写得能独立读懂——
   // 用户说了什么 + 板判如何。细节不写,细节在板上。案板形态多带一个案号:
   // 新段=新板之后,"上一单在哪块案卷上"是跨单衔接唯一还找得回来的线头。
-  ctx.segmentTrail.push(`${ctx.caseMode ? `[案 ${ctx.board}${pendingCaseId === null ? '' : ' · 未结'}] ` : ''}${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
+  ctx.segmentTrail.push(`${ctx.caseMode ? `[case ${ctx.board}${pendingCaseId === null ? '' : ' · open'}] ` : ''}${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
   if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40) // 留痕本身也要有上界
   return { note, pendingCaseId }
 }
@@ -2030,17 +2027,17 @@ ${say.slice(0, 1200)}`)
 async function shadowReview(ctx, userText, opts = {}) {
   const proj = await projectionText(ctx)
   const verdict = await ask(
-    [{ role: 'user', content: `刚办的一段: ${userText}\n\n板上现状:\n${proj}` }],
-    `你是这个智能体的**影子人格**——对抗审阅者。立场: 假设主人格出了错,专挑真缺陷:
-- 结论真有依据吗?材料可疑吗(数值反常/来源存疑/该有的没有)?
-- 该求证的走了计算后端吗,还是有"嘴说"混过去的?
-- 有没有半途而废但看着像干完的?
-只挑**坐实**的问题,不为挑而挑。没有问题就只回一行 PASS。
-有问题就每行一条,格式: FINDING: <一句话,具体到节点/数值>。最多 3 条,挑最重的。`,
+    [{ role: 'user', content: `Completed segment: ${userText}\n\nCurrent board:\n${proj}` }],
+    `You are the Agent's adversarial shadow reviewer. Assume the primary Agent may be wrong and identify only concrete defects:
+- Is every conclusion actually supported? Are values abnormal, sources doubtful, or expected materials missing?
+- Did claims that require verification go through a trusted computation or source, or were they merely stated?
+- Is unfinished work being presented as complete?
+Do not invent criticism. If no issue is substantiated, reply with exactly PASS.
+Otherwise return at most three lines, each formatted FINDING: <one precise issue with a node or value>.`,
     SHADOW_CFG,
   )
   const findings = verdict.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('FINDING:')).slice(0, 3)
-  const tag = opts.inline ? '◆ 影子(随拍)' : '◆ 影子(关门审计)'
+  const tag = opts.inline ? '◆ Shadow review (inline)' : '◆ Shadow review (final)'
   if (findings.length === 0) { log(`${tag}: PASS`); emitOn(ctx, 'shadow', { pass: true, inline: opts.inline === true }); return true }
   for (const f of findings) log(`${tag}: ${f.slice(0, 200)}`)
   emitOn(ctx, 'shadow', { pass: false, findings, inline: opts.inline === true })
@@ -2050,7 +2047,7 @@ async function shadowReview(ctx, userText, opts = {}) {
     predicate: 'shadow_finding', args: { text: f.slice(9, 240).trim() },
   }))
   const r = await board({ kind: 'ApplyBatch', operations: ops }, ctx.board)
-  if (r.accepted !== true) log(`◆ 影子异议落板被拒: ${String(r.teaching ?? '').slice(0, 120)}`)
+  if (r.accepted !== true) log(`◆ Board rejected the shadow finding: ${String(r.teaching ?? '').slice(0, 120)}`)
   return false
 }
 
@@ -2072,9 +2069,8 @@ if (SERVE) {
   const SERVE_CONCURRENCY = !Number.isFinite(wantedConcurrency) || wantedConcurrency < 1
     ? 1 : Math.min(8, Math.floor(wantedConcurrency))
   if (Number.isFinite(wantedConcurrency) && Math.floor(wantedConcurrency) > 8) {
-    console.error(`⚠ RULITH_SERVE_CONCURRENCY=${wantedConcurrency} 超上限,已 clamp 到 8。
-   跨槽并发是真生效的(每槽自带板/转录/放电守卫,互不相干),但每个并行段都在烧模型配额与云上写配额
-   ——8 是保守的闸,不是测出来的极限。要更高的并发请**多开进程**(资源账因此也是分开的)。`)
+    console.error(`⚠ RULITH_SERVE_CONCURRENCY=${wantedConcurrency} exceeds the supported maximum and was clamped to 8.
+   Cross-slot concurrency is real, but every slot consumes model and Cloud capacity. Eight is a conservative guardrail, not a measured limit. Run additional processes for higher concurrency.`)
   }
 
   const runs = []       // 环形队列: 最近 SERVE_RUNS_MAX 条(内存里的东西必须有上界)
@@ -2099,7 +2095,7 @@ if (SERVE) {
       if (victim === undefined) {
         // 全都在忙: 这时候硬驱逐等于打断一位客户办到一半的段。**如实超一格**并说出来——
         // 闲下来的那一刻下一次准入就会把它收回去(稳态仍有界)。
-        log(`♻ 会话槽已达上界 ${SERVE_SLOTS_MAX} 且**全部在忙**——本次暂时超一格(${sessions.size + 1});有槽闲下来即回收`)
+        log(`All ${SERVE_SLOTS_MAX} session slots are busy. Temporarily admitting slot ${sessions.size + 1}; the next idle slot will be reclaimed.`)
         return
       }
       const s = sessions.get(victim)
@@ -2107,7 +2103,7 @@ if (SERVE) {
       // Work 绑定跟着槽走(否则这张表随驱逐单调增长)。**丢的只是本机的记性**: 那件事在服务端
       // 还开着,这个 key 再来单时 ensureBoardWork 会从板的清单上把它认领回来。
       workOf.delete(s.board)
-      log(`♻ 会话槽到上界 ${SERVE_SLOTS_MAX},驱逐最久未用的闲置槽「${victim}」(板 ${s.board} 不动)——丢的是内存里的转录,板在服务端 journal 里不丢;这个 key 再来单会重建槽、重读板`)
+      log(`Evicted least-recently-used idle session "${victim}" at the ${SERVE_SLOTS_MAX}-slot limit. Board ${s.board} is unchanged; only the local transcript was released.`)
       emit('slot-evicted', { session: victim, board: s.board, slots: sessions.size })
     }
   }
@@ -2127,8 +2123,8 @@ if (SERVE) {
       : makeSlot(sessionKey, serviceBoardName(sessionKey), { caseMode: false, serviceBoard: true })
     sessions.set(sessionKey, slot)
     log(SERVE_CASE_SLOTS
-      ? `◎ 新工作槽「${sessionKey}」(一任务一案板;当前 ${sessions.size}/${SERVE_SLOTS_MAX} 槽)`
-      : `◎ 新会话槽「${sessionKey}」→ 服务板「${slot.board}」(一客一板,长命不封板;当前 ${sessions.size}/${SERVE_SLOTS_MAX} 槽)`)
+      ? `Opened work slot "${sessionKey}" (one task per case board; ${sessions.size}/${SERVE_SLOTS_MAX} slots).`
+      : `Opened session "${sessionKey}" on service board "${slot.board}" (${sessions.size}/${SERVE_SLOTS_MAX} slots).`)
     emit('slot-open', { session: sessionKey, ...(SERVE_CASE_SLOTS ? {} : { board: slot.board }), slots: sessions.size, ...(SERVE_CASE_SLOTS ? { mode: 'case' } : {}) })
     return slot
   }
@@ -2141,18 +2137,18 @@ if (SERVE) {
     if (ctx.ready) return true
     if (ctx.broken !== '') return false
     // 服务板的配方出身与案板同源(BRD-113: 长命板的配置与案板同一份配方,差别只在它不封板)
-    const mk = await board({ kind: 'CreateBoard', id: ctx.board, title: `${agentName} · 会话 ${ctx.key}`,
+    const mk = await board({ kind: 'CreateBoard', id: ctx.board, title: `${agentName} · session ${ctx.key}`,
       lifecycle: 'long_lived', workConcurrency: 'serial_activation',
       ...(RECIPE.ref !== undefined ? { recipe: RECIPE.ref } : {}) }, ctx.board, 'continuous')
     const existed = boardAlreadyExists(mk)
     if (mk.accepted !== true && !existed) {
-      ctx.broken = String(mk.teaching ?? mk.errorCode ?? 'CreateBoard 被拒')
-      log(`✗ 服务板「${ctx.board}」开不出来: ${ctx.broken.slice(0, 240)}`)
+      ctx.broken = String(mk.teaching ?? mk.errorCode ?? 'CreateBoard rejected')
+      log(`✗ Could not create service board "${ctx.board}": ${ctx.broken.slice(0, 240)}`)
       return false
     }
     if (existed) {
       // **复用**: 板上已有这位客户的全部历史(服务端 journal),配方一发都不重播。
-      log(`◎ 服务板「${ctx.board}」已在——直接续用(配方不重播:板上的制度就是那一份)`)
+      log(`Service board "${ctx.board}" already exists. Reusing it without replaying the recipe.`)
       ctx.ready = true
       await probeLawLock(ctx)
       return true
@@ -2165,10 +2161,9 @@ if (SERVE) {
       const name = String(p.pack?.meta?.name ?? p.packType)
       const r = await board({ kind: 'RegisterPack', packType: p.packType, pack: p.pack, ...(typeof p.digest === 'string' ? { digest: p.digest } : {}) }, ctx.board)
       if (r.accepted !== true) {
-        ctx.broken = `装配方包「${name}」(${p.packType})被拒: ${String(r.teaching ?? r.errorCode ?? '')}`
-        log(`✗ 服务板「${ctx.board}」半装配: ${ctx.broken.slice(0, 240)}
-   这块板留在服务端(服务板不作废封板——封板不可逆,不拿它收拾一位在服务的客户),本槽不再接单。
-   去运营面处置这块板;要让重试安全,给配方里的每个包加 digest(带指纹才幂等)。`)
+        ctx.broken = `Recipe package "${name}" (${p.packType}) was rejected: ${String(r.teaching ?? r.errorCode ?? '')}`
+        log(`✗ Service board "${ctx.board}" is partially configured: ${ctx.broken.slice(0, 240)}
+   The board remains available for operator review, but this slot will not accept work. Add digests to every package before retrying so installation is idempotent.`)
         emit('slot-broken', { session: ctx.key, board: ctx.board, why: ctx.broken })
         return false
       }
@@ -2188,12 +2183,12 @@ if (SERVE) {
         : RECIPE.seed.length > 0 ? await board({ kind: 'MaintainBaseline', operations: RECIPE.seed }, ctx.board) : { accepted: true })
       : RECIPE.seed.length > 0 ? await board({ kind: 'ApplyBatch', operations: RECIPE.seed }, ctx.board) : { accepted: true }
     if (seeded.accepted !== true) {
-      ctx.broken = `播种(${RECIPE.seed.length} 条${life0?.kind === 'long_lived' ? ',落初始 Baseline' : ''})被拒: ${String(seeded.teaching ?? seeded.errorCode ?? '')}`
-      log(`✗ 服务板「${ctx.board}」半装配: ${ctx.broken.slice(0, 240)}——本槽不再接单,去运营面处置这块板`)
+      ctx.broken = `Seed (${RECIPE.seed.length} operation(s)${life0?.kind === 'long_lived' ? ', initial Baseline' : ''}) was rejected: ${String(seeded.teaching ?? seeded.errorCode ?? '')}`
+      log(`✗ Service board "${ctx.board}" is partially configured: ${ctx.broken.slice(0, 240)}. This slot will not accept work; resolve it in Console.`)
       emit('slot-broken', { session: ctx.key, board: ctx.board, why: ctx.broken })
       return false
     }
-    log(`◎ 服务板「${ctx.board}」已建 · 配方 ${RECIPE.packs.length} 个包 · 播种 ${RECIPE.seed.length} 条(此后复用不重播)`)
+    log(`Service board "${ctx.board}" created with ${RECIPE.packs.length} package(s) and ${RECIPE.seed.length} seed operation(s). Future use will not replay them.`)
     emit('slot-provisioned', { session: ctx.key, board: ctx.board, packs: RECIPE.packs.length, seeded: RECIPE.seed.length })
     ctx.ready = true
     await probeLawLock(ctx)
@@ -2204,11 +2199,11 @@ if (SERVE) {
   const serveGate = (req) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     const key = req.headers['x-rulith-serve'] ?? url.searchParams.get('k') ?? ''
-    if (key !== SERVE_KEY) return '缺少或不正确的收单钥——启动时打印在终端,请带 x-rulith-serve 头(SSE 用 ?k=)'
+    if (key !== SERVE_KEY) return 'Missing or invalid task key. Use the startup key in the x-rulith-serve header, or ?k= for SSE.'
     const origin = req.headers.origin
-    if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return `跨源请求被拒(Origin: ${origin})——收单口只认本机来源`
+    if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return `Cross-origin request rejected (Origin: ${origin}). The task endpoint accepts local origins only.`
     const host = String(req.headers.host ?? '')
-    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return `Host 不是本机(${host})——防 DNS 重绑定`
+    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return `Non-local Host rejected (${host}) to prevent DNS rebinding.`
     return null
   }
   /** 全体槽(缺省槽在前,会话槽按 LRU 顺序在后)——排队/调度/快照都读这一个视图。 */
@@ -2235,14 +2230,14 @@ if (SERVE) {
       const bad = serveGate(req)
       if (bad !== null) return deny(bad)
       const ct = String(req.headers['content-type'] ?? '')
-      if (!ct.startsWith('application/json')) return deny('只收 application/json——纯文本体是绕过浏览器预检的常见手法')
+      if (!ct.startsWith('application/json')) return deny('Only application/json is accepted; plain-text bodies can bypass browser preflight checks.')
       // 按字节收、收完再解码（同 /say）：逐块拼字符串会把跨块的多字节字符切坏。
       const bodyChunks = []
       let size = 0
       let over = false
       req.on('data', (c) => { size += c.length; if (size > UI_MAX_BODY) { over = true; req.destroy(); return } bodyChunks.push(c) })
       req.on('end', () => {
-        if (over) return deny('请求体超过 64KB')
+        if (over) return deny('Request body exceeds 64KB.')
         const raw = Buffer.concat(bodyChunks).toString('utf8')
         let text = ''
         let sessionKey = ''
@@ -2250,12 +2245,12 @@ if (SERVE) {
           const b = JSON.parse(raw || '{}')
           text = String(b.text ?? '').trim()
           sessionKey = String(b.sessionKey ?? '').trim()
-        } catch { return deny('体不是 JSON——形状是 {"text":"…","sessionKey":"可选"}') }
-        if (text === '') return deny('缺 text——形状是 {"text":"处理所有未处理订单并发货"}', 400)
+        } catch { return deny('Body is not valid JSON. Expected {"text":"...","sessionKey":"optional"}.') }
+        if (text === '') return deny('Missing text. Expected {"text":"process this task"}.', 400)
         // **教学拒不截断**: 静默截断会把两个不同客户的长 key 折成同一块板(串板),
         // 那比拒绝一单严重得多——一客一板的全部意义就在"两位客户的材料不进同一次闭包"。
         if (sessionKey.length > SESSION_KEY_MAX) {
-          return deny(`sessionKey 超过 ${SESSION_KEY_MAX} 字(实得 ${sessionKey.length})——它要参与板名推导,不能静默截断(两个不同客户的长 key 会折成同一块板)。用一个短稳定标识,比如你自己系统里的用户 id。`, 400)
+          return deny(`sessionKey exceeds ${SESSION_KEY_MAX} characters (${sessionKey.length} received). It cannot be truncated because it determines board identity. Use a short stable identifier such as your system's user id.`, 400)
         }
         const slot = slotFor(sessionKey)
         const item = { id: `task_${Date.now().toString(36)}_${serveSeq++}`, text, at: Date.now(), sessionKey }
@@ -2267,7 +2262,7 @@ if (SERVE) {
         res.writeHead(202, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: true, id: item.id, queued: depth,
           ...(sessionKey === '' ? {} : { sessionKey, ...(slot.serviceBoard ? { board: slot.board } : {}) }),
-          teaching: `已入队。看结果: GET /runs?k=<钥>（加 &stream=1 走 SSE）` }))
+          teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }))
         pump()
       })
       return
@@ -2288,17 +2283,17 @@ if (SERVE) {
       req.on('close', () => clients.delete(res))
       return
     }
-    return deny('收单口只有两条: POST /task {"text":…,"sessionKey":"可选"} 与 GET /runs?k=<钥>（&stream=1 走 SSE）', 404)
+    return deny('Available endpoints: POST /task {"text":"...","sessionKey":"optional"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
   })
   await new Promise((r) => serveSrv.listen(SERVE_PORT, '127.0.0.1', r))
   log(`
-接单脑就绪（同槽串行 · 跨槽并发 ${SERVE_CONCURRENCY} · ${SERVE_CASE_SLOTS ? '工作' : '会话'}槽上界 ${SERVE_SLOTS_MAX}）：http://127.0.0.1:${SERVE_PORT}
-  投单：curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…"}'
-  ${SERVE_CASE_SLOTS ? '并行案件：每次投单带一个短命 sessionKey；每槽开独立案板，办结即封' : '一客一板：同一发加上 sessionKey,该客户就有自己长命的服务板(板名由 key 定死,不封板)'}
+Task endpoint ready (serial within a slot · ${SERVE_CONCURRENCY} concurrent slot(s) · ${SERVE_SLOTS_MAX} ${SERVE_CASE_SLOTS ? 'work' : 'session'} slot limit): http://127.0.0.1:${SERVE_PORT}
+  Submit: curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…"}'
+  ${SERVE_CASE_SLOTS ? 'Parallel cases: give every task a short-lived sessionKey; each slot receives an independent case board that is sealed on completion.' : 'One customer per board: a stable sessionKey selects that customer\'s long-lived service board.'}
         -d '{"text":"…","sessionKey":"${SERVE_CASE_SLOTS ? 'ctx-1' : 'user-42'}"}'
-  看板：curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
-  钥每次启动随机——回环不是边界,任何网页都能往 127.0.0.1 发简单请求。`)
-  emit('start', { agent: agentName, url: URL_BASE, task: '(接单脑)', projection: '', concurrency: SERVE_CONCURRENCY,
+  Inspect: curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
+  The key is randomized on every start. Loopback alone is not an authorization boundary.`)
+  emit('start', { agent: agentName, url: URL_BASE, task: '(task endpoint)', projection: '', concurrency: SERVE_CONCURRENCY,
     ...(SERVE_CASE_SLOTS ? { mode: 'parallel_cases' } : {}) })
 
   /** 办一单(某个槽的队首)。**同槽恒串行**由 `slot.busy` 保证,跨槽由 `inFlight` 的长度封顶。 */
@@ -2314,14 +2309,14 @@ if (SERVE) {
     emit('task-start', { id: item.id, text: item.text,
       ...(slot.key === '' ? {} : { session: slot.key, ...(slot.serviceBoard ? { board: slot.board } : {}) }) })
     log(`
-▶ 接单 ${item.id}${slot.key === '' ? '' : `（会话 ${slot.key} · 板 ${slot.board}）`}：${item.text}`)
+▶ Task ${item.id}${slot.key === '' ? '' : ` (session ${slot.key} · board ${slot.board})`}: ${item.text}`)
     let note = ''
     let pendingCaseId = null
     try {
       // 服务槽先把板办妥(find-or-create;首建才装配方)。办不妥就**不办这一单**——
       // 拿一块没装上制度的板干活,比不干活危险。
       if (slot.serviceBoard && !(await ensureServiceBoard(slot))) {
-        note = `服务板未就绪,本单不办——${slot.broken || 'CreateBoard 未成功'}`
+        note = `Service board is not ready; task was not started: ${slot.broken || 'CreateBoard failed'}`
         log(`✗ ${note}`)
       } else {
         const seg = await runSegment(slot, item.text)
@@ -2330,7 +2325,7 @@ if (SERVE) {
       }
     } catch (e) {
       // 一单办炸**不许掀翻整个队列**: 如实记档,接着办下一单(无人值守的第一要务是活着)
-      note = `本单异常中止: ${e?.message ?? e}`
+      note = `Task aborted with an unexpected error: ${e?.message ?? e}`
       // 炸了的那一单**当然没结**: 案板形态下把案号留给调用方(否则这一单从产品面消失)
       if (slot.caseMode) pendingCaseId = slot.board
       log(`✗ ${note}`)
@@ -2357,7 +2352,7 @@ if (SERVE) {
     }
     pushRun(rec)
     emit('task-done', rec)
-    log(`· ${note}${pendingLine(pendingCaseId)} · 板务核对: ${rec.console}
+    log(`· ${note}${pendingLine(pendingCaseId)} · Verify in Console: ${rec.console}
 `)
   }
   // 泵(槽感知调度): 扫一遍槽,把**空闲且有排队**的槽开起来,直到跨槽并发到顶。
@@ -2371,7 +2366,7 @@ if (SERVE) {
       // 那等于整台服务因为某一单的意外而下线。runOne 自己已经把办事那段包严了,这一层兜的是
       // 它之外(记档/发事件)万一出的岔子。
       void runOne(slot)
-        .catch((e) => log(`✗ 调度层意外(队列照走): ${e?.message ?? e}`))
+        .catch((e) => log(`✗ Scheduler error; the queue will continue: ${e?.message ?? e}`))
         .finally(pump)
     }
   }
@@ -2380,21 +2375,21 @@ if (SERVE) {
   if (TASK !== '') { defaultSlot.queue.push({ id: `task_${Date.now().toString(36)}_${serveSeq++}`, text: TASK, at: Date.now(), sessionKey: '' }); pump() }
 } else if (!CHAT) {
   // ── 一次办完(CI/脚本形态,行为不变) ──
-  log(`任务：${TASK}
+  log(`Task: ${TASK}
 `)
   emit('start', { agent: agentName, url: URL_BASE, task: TASK, projection: '' })
   const { note, pendingCaseId } = await runSegment(defaultSlot, TASK)
   // 封板后**读照常**——案卷定稿仍须可审计,所以收尾这一读在两种形态下都成立
   const after = await projectionText(defaultSlot)
   const seen = CASE_BOARDS ? consoleUrlOf(defaultSlot.board) : consoleUrl
-  log('\n──────── 板上现在有什么（这才是权威） ────────')
+  log('\n──────── Final authoritative board state ────────')
   log(after)
-  if (pendingCaseId !== null) log(`⚠ 这一单**没有结案**：pending_case_id=${pendingCaseId}——带 --case ${pendingCaseId} 起进程即接着办,或去控制台处置。`)
+  if (pendingCaseId !== null) log(`⚠ This case remains open: pending_case_id=${pendingCaseId}. Resume with --case ${pendingCaseId}, or resolve it in Console.`)
   log(`
-板务(任务树/工单/结论)在控制台看：${seen}
+Verify the task tree, work items, and conclusions in Console: ${seen}
 `)
   emit('end', { ok: note.includes('干完'), note, projection: after, console: seen, ...(pendingCaseId === null ? {} : { pendingCaseId }) })
-  if (withUi) log(`界面还开着（http://127.0.0.1:${UI_PORT}）——看完按 Ctrl+C 退出。`)
+  if (withUi) log(`The local timeline remains available at http://127.0.0.1:${UI_PORT}. Press Ctrl+C to exit.`)
   else process.exit(0)
 } else {
   // ── 多轮对话(桌面主形态,2026-08-01): **REPL 进程是本体,界面是可插拔的脸**——
@@ -2432,12 +2427,12 @@ if (SERVE) {
   pollInterject = () => (inbox.length > queuedAtSegmentStart ? inbox.splice(queuedAtSegmentStart, 1)[0] : undefined)
 
   log(CASE_BOARDS
-    ? '多轮对话（案板模式）。每说一句开一块案卷,办结即封板;所有案卷在控制台的登记簿里分「在办/已结」。'
-    : `多轮对话。板务(任务树/工单/结论)在控制台看：${consoleUrl}`)
-  log('对话记录只在本机,不上板。空行忽略,exit/quit 或 Ctrl+C 退出。\n')
-  emit('start', { agent: agentName, url: URL_BASE, task: '(对话)', projection: '' })
+    ? 'Interactive case-board mode. Every message opens a new case; completed cases are sealed and remain auditable in Console.'
+    : `Interactive mode. Verify task trees, work items, and conclusions in Console: ${consoleUrl}`)
+  log('The transcript stays on this machine and is not written to the board. Empty lines are ignored. Use exit, quit, or Ctrl+C to stop.\n')
+  emit('start', { agent: agentName, url: URL_BASE, task: '(interactive)', projection: '' })
   for (;;) {
-    if (inbox.length === 0 && (stdinOpen || withUi)) process.stdout.write('你> ')
+    if (inbox.length === 0 && (stdinOpen || withUi)) process.stdout.write('You> ')
     const line = await nextInput()
     if (line === null) break
     if (line === 'exit' || line === 'quit') break
@@ -2446,10 +2441,10 @@ if (SERVE) {
     const { note, pendingCaseId } = await runSegment(defaultSlot, line)
     emit('segment-end', { note, ...(CASE_BOARDS ? { board: defaultSlot.board } : {}), ...(pendingCaseId === null ? {} : { pendingCaseId }) })
     log(`
-· ${note}${pendingLine(pendingCaseId)} · 板务核对: ${CASE_BOARDS ? consoleUrlOf(defaultSlot.board) : consoleUrl}
+· ${note}${pendingLine(pendingCaseId)} · Verify in Console: ${CASE_BOARDS ? consoleUrlOf(defaultSlot.board) : consoleUrl}
 `)
   }
   rl.close()
-  log('收工。')
+  log('Stopped.')
   process.exit(0)
 }

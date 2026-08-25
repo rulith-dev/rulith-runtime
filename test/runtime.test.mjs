@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { orderWork } from '../worker/rulith-worker.mjs'
-import { applyEnvEdit, maskEnv } from '../station/rulith-station.mjs'
+import { applyEnvEdit, maskEnv, stationPage } from '../station/rulith-station.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
@@ -36,6 +36,15 @@ test('station masks secrets and never persists the mask as a credential', () => 
   const view = maskEnv(prior)
   assert.equal(view.RULITH_TOKEN, '••••3456')
   assert.deepEqual(applyEnvEdit(prior, view), prior)
+})
+
+test('station presents the public local workflow in English', () => {
+  const visible = stationPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
+  assert.match(stationPage, /Local control room/)
+  assert.match(stationPage, /Maximum concurrent cases/)
+  assert.match(stationPage, /Worker activity/)
+  assert.match(stationPage, /Board: action/)
+  assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
 })
 
 test('verified calculation example renders valid local files without credentials', () => {

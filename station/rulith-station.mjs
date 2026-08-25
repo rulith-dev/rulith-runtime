@@ -74,7 +74,7 @@ function loadConfig() {
       paths: {},
     }
     writeFileSync(CONFIG_FILE, JSON.stringify(skeleton, null, 2))
-    console.log(`· 生成配置骨架 ${CONFIG_FILE}——填好 env 再从界面点启动`)
+    console.log(`Created ${CONFIG_FILE}. Add your environment values, then start the components from Station.`)
     return skeleton
   }
   return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
@@ -100,9 +100,9 @@ const comps = {
 const running = (c) => comps[c].child !== null && comps[c].child.exitCode === null
 
 function startRepl(cfg) {
-  if (running('repl')) return '已在跑'
+  if (running('repl')) return 'Already running.'
   const path = resolve(cfg.paths?.repl ?? resolve(HERE, '../agent/rulith-agent.mjs'))
-  if (!existsSync(path)) return `找不到 REPL 文件 ${path}——在配置 paths.repl 里指对`
+  if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.repl in the Station configuration.`
   const uiKey = randomUUID().replace(/-/g, '')
   const serveKey = randomUUID().replace(/-/g, '')
   const uiPort = Number(cfg.repl?.env?.RULITH_UI_PORT ?? 7788)
@@ -172,9 +172,9 @@ async function subscribeReplEvents(port, key, child) {
 }
 
 function startWorker(cfg) {
-  if (running('worker')) return '已在跑'
+  if (running('worker')) return 'Already running.'
   const path = resolve(cfg.paths?.worker ?? resolve(HERE, '../worker/rulith-worker.mjs'))
-  if (!existsSync(path)) return `找不到 worker 文件 ${path}——在配置 paths.worker 里指对`
+  if (!existsSync(path)) return `Worker runtime not found at ${path}. Set paths.worker in the Station configuration.`
   const child = spawn(process.execPath, [path], {
     env: { ...process.env, ...(cfg.worker?.env ?? {}), RULITH_WORKER_EVENTS: 'jsonl' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -209,7 +209,7 @@ function wireStdio(src, child) {
 
 function stopComp(name) {
   const c = comps[name].child
-  if (c === null) return '没在跑'
+  if (c === null) return 'Not running.'
   c.kill()
   return null
 }
@@ -218,11 +218,11 @@ function stopComp(name) {
 function gate(req) {
   const url = new URL(req.url, 'http://127.0.0.1')
   const k = req.headers['x-rulith-station'] ?? url.searchParams.get('k') ?? ''
-  if (k !== KEY) return '缺少或不正确的站钥——启动时打印在终端'
+  if (k !== KEY) return 'Missing or invalid Station key. Use the key printed at startup.'
   const origin = req.headers.origin
-  if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return `跨源请求被拒(Origin: ${origin})`
+  if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return `Cross-origin request rejected (Origin: ${origin}).`
   const host = String(req.headers.host ?? '')
-  if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return `Host 不是本机(${host})——防 DNS 重绑定`
+  if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return `Non-local Host rejected (${host}) to prevent DNS rebinding.`
   return null
 }
 // **按字节收、收完再解码**(2026-08-18): 逐块 `raw += chunk` 是隐式 toString(),
@@ -232,7 +232,7 @@ const readJson = (req) => new Promise((ok, no) => {
   const chunks = []
   let size = 0
   req.on('data', (c) => { size += c.length; if (size > MAX_BODY) { no(new Error('body>64KB')); req.destroy(); return } chunks.push(c) })
-  req.on('end', () => { try { ok(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')) } catch { no(new Error('不是 JSON')) } })
+  req.on('end', () => { try { ok(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')) } catch { no(new Error('Body is not valid JSON.')) } })
 })
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)) }
 
@@ -266,10 +266,10 @@ if (IS_MAIN) {
       if (path === '/config' && req.method === 'POST') {
         const b = await readJson(req)
         const comp = String(b.comp ?? '')
-        if (comp !== 'repl' && comp !== 'worker') return void json(res, 400, { ok: false, teaching: 'comp 只认 repl/worker' })
+        if (comp !== 'repl' && comp !== 'worker') return void json(res, 400, { ok: false, teaching: 'comp must be repl or worker.' })
         cfg[comp] = { ...(cfg[comp] ?? {}), env: applyEnvEdit(cfg[comp]?.env, b.env ?? {}), ...(comp === 'repl' && Array.isArray(b.args) ? { args: b.args.map(String) } : {}) }
         saveConfig(cfg)
-        return void json(res, 200, { ok: true, teaching: running(comp) ? '已保存——重启该组件后生效' : '已保存' })
+        return void json(res, 200, { ok: true, teaching: running(comp) ? 'Saved. Restart this component to apply the change.' : 'Saved.' })
       }
       if (path === '/ctl' && req.method === 'POST') {
         const b = await readJson(req)
@@ -277,28 +277,28 @@ if (IS_MAIN) {
         const err = b.op === 'stop' ? stopComp(String(b.comp))
           : String(b.comp) === 'repl' ? startRepl(cfg)
           : String(b.comp) === 'worker' ? startWorker(cfg)
-          : 'comp 只认 repl/worker'
+          : 'comp must be repl or worker.'
         return void json(res, err === null ? 200 : 400, err === null ? { ok: true } : { ok: false, teaching: err })
       }
       if (path === '/say' && req.method === 'POST') {
-        if (!running('repl')) return void json(res, 409, { ok: false, teaching: 'REPL 没在跑——先启动' })
+        if (!running('repl')) return void json(res, 409, { ok: false, teaching: 'The Agent runtime is not running. Start it first.' })
         const b = await readJson(req)
         const sessionKey = String(b.sessionKey ?? '').trim() || `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`
         const r = await fetch(`http://127.0.0.1:${comps.repl.servePort}/task`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': comps.repl.serveKey },
           body: JSON.stringify({ text: String(b.text ?? ''), sessionKey }),
         }).catch(() => undefined)
-        if (r === undefined) return void json(res, 502, { ok: false, teaching: 'REPL 接单口没应答' })
+        if (r === undefined) return void json(res, 502, { ok: false, teaching: 'The Agent task endpoint did not respond.' })
         return void json(res, r.status, await r.json().catch(() => ({ ok: r.ok })))
       }
-      json(res, 404, { ok: false, teaching: '没有这个端点' })
+      json(res, 404, { ok: false, teaching: 'Endpoint not found.' })
     } catch (e) {
       json(res, 400, { ok: false, teaching: String(e?.message ?? e) })
     }
   })
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`rulith-station · http://127.0.0.1:${PORT}/?k=${KEY}`)
-    console.log('（本机回环；配置文件 ' + resolve(CONFIG_FILE) + '；密文值不出站）')
+    console.log('(Loopback only; configuration: ' + resolve(CONFIG_FILE) + '; secret values never leave this process.)')
   })
   process.on('SIGINT', () => { stopComp('repl'); stopComp('worker'); process.exit(0) })
 }
@@ -309,8 +309,8 @@ if (IS_MAIN) {
 // 卡片语言（一轮=一张卡：模型说了什么 + 板的判词贴在卡底），右栏放手的流水（worker 执行），
 // 左栏是控制台（起停/配置/案卷/去处）。**三栏各答一个问题**：
 //   左＝这套装置现在什么状态、我能按什么　中＝它在想什么、板怎么判　右＝它的手在干什么
-export const stationPage = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>rulith-station · 本地站</title>
+export const stationPage = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>rulith-station · local control room</title>
 <style>
 :root{--bg:#0a0d13;--panel:#10161f;--line:#1d2735;--fg:#e8eef5;--dim:#8b98a8;--faint:#707d8e;
 --cyan:#35d0ba;--amber:#e0a03a;--green:#34d399;--red:#f87171}
@@ -362,7 +362,7 @@ body.multi .bchip{display:inline}
 </style></head><body>
 <div class="top">
   <h1>rulith-station</h1>
-  <span class="sub">本地站 · 脑与手在一块屏上</span>
+  <span class="sub">Local control room · Agent and Worker on one screen</span>
   <span style="flex:1"></span>
   <span class="faint" id="agentline"></span>
   <span class="pill" id="busy" style="display:none"></span>
@@ -370,59 +370,59 @@ body.multi .bchip{display:inline}
 <div class="grid">
   <!-- 左：控制台 -->
   <div class="col left">
-    <h2>装置</h2>
-    <div class="row"><span>智能体（脑）<span class="faint" id="pid-repl"></span></span>
-      <span><span class="pill stop" id="st-repl">…</span> <button class="btn" id="bt-repl" onclick="ctl('repl')">启动</button></span></div>
-    <div class="row"><span>worker（手）<span class="faint" id="pid-worker"></span></span>
-      <span><span class="pill stop" id="st-worker">…</span> <button class="btn" id="bt-worker" onclick="ctl('worker')">启动</button></span></div>
-    <p class="faint" style="margin:10px 0 0">脑提议、板裁决、手执行——三方分进程分凭证，站只是它们的本地宿主。</p>
-    <div class="row" style="margin-top:8px"><span>最大并行案件数</span><b id="max-concurrency">1</b></div>
+    <h2>Components</h2>
+    <div class="row"><span>Agent <span class="faint" id="pid-repl"></span></span>
+      <span><span class="pill stop" id="st-repl">…</span> <button class="btn" id="bt-repl" onclick="ctl('repl')">Start</button></span></div>
+    <div class="row"><span>Worker <span class="faint" id="pid-worker"></span></span>
+      <span><span class="pill stop" id="st-worker">…</span> <button class="btn" id="bt-worker" onclick="ctl('worker')">Start</button></span></div>
+    <p class="faint" style="margin:10px 0 0">The Agent proposes, the board decides, and the Worker executes. Each runs separately with its own credential; Station only hosts and observes them.</p>
+    <div class="row" style="margin-top:8px"><span>Maximum concurrent cases</span><b id="max-concurrency">1</b></div>
 
-    <h2 style="margin-top:26px">本次案卷</h2>
-    <div class="cases" id="cases"><span class="faint">还没开单</span></div>
+    <h2 style="margin-top:26px">Cases in this session</h2>
+    <div class="cases" id="cases"><span class="faint">No cases yet</span></div>
 
-    <h2 style="margin-top:26px">去处</h2>
+    <h2 style="margin-top:26px">Open</h2>
     <div class="cases">
-      <a href="https://console.rulith.com/cases" target="_blank" rel="noopener">云控制台 · 工作记录 ↗</a>
-      <a href="#" id="replnative" onclick="return false" class="faint">REPL 原生页（站启动后可用）</a>
+      <a href="https://console.rulith.com/cases" target="_blank" rel="noopener">Console · Runs ↗</a>
+      <a href="#" id="replnative" onclick="return false" class="faint">Agent timeline (available after startup)</a>
     </div>
 
-    <h2 style="margin-top:26px">配置</h2>
-    <p class="faint" style="margin:0 0 8px">密文只显示尾 4 位；原样保存＝保持原值。改完重启该组件生效。</p>
-    <details><summary>脑 · env</summary>
+    <h2 style="margin-top:26px">Configuration</h2>
+    <p class="faint" style="margin:0 0 8px">Secrets show only their final four characters. Saving a masked value preserves the original. Restart the component after a change.</p>
+    <details><summary>Agent environment</summary>
       <textarea id="c-repl"></textarea>
-      <div style="margin:6px 0"><span class="faint">启动参数（JSON 数组）</span><input id="c-repl-args"></div>
-      <button class="btn" onclick="saveCfg('repl')">保存</button> <span class="faint" id="m-repl"></span>
+      <div style="margin:6px 0"><span class="faint">Arguments (JSON array)</span><input id="c-repl-args"></div>
+      <button class="btn" onclick="saveCfg('repl')">Save</button> <span class="faint" id="m-repl"></span>
     </details>
-    <details style="margin-top:8px"><summary>手 · env</summary>
+    <details style="margin-top:8px"><summary>Worker environment</summary>
       <textarea id="c-worker"></textarea>
-      <button class="btn" onclick="saveCfg('worker')">保存</button> <span class="faint" id="m-worker"></span>
+      <button class="btn" onclick="saveCfg('worker')">Save</button> <span class="faint" id="m-worker"></span>
     </details>
   </div>
 
   <!-- 中：推理时间线（借 7788 的卡片语言） -->
   <div class="col mid">
-    <div style="display:flex;justify-content:flex-end;padding:2px 0"><button class="btn" style="padding:2px 8px;font-size:12px" onclick="clearFeed('feed')">清空</button></div>
-    <div class="feedwrap" id="feedwrap"><div id="feed"><p class="faint">等脑上线…启动后这里是它每一轮说了什么、板怎么判。</p></div></div>
+    <div style="display:flex;justify-content:flex-end;padding:2px 0"><button class="btn" style="padding:2px 8px;font-size:12px" onclick="clearFeed('feed')">Clear</button></div>
+    <div class="feedwrap" id="feedwrap"><div id="feed"><p class="faint">Waiting for the Agent. Its proposals and the board's decisions will appear here.</p></div></div>
     <div style="position:sticky;bottom:0;background:var(--bg);padding:10px 0 16px;border-top:1px solid var(--line)">
       <form id="sayform" style="display:flex;gap:8px">
-        <input id="saytext" placeholder="交代一件事（满载时自动排队）…">
-        <button class="btn go">发送</button>
+        <input id="saytext" placeholder="Give the Agent a task (queued when capacity is full)…">
+        <button class="btn go">Send</button>
       </form>
     </div>
   </div>
 
   <!-- 右：手的流水 -->
   <div class="col right">
-    <h2>手的流水 · worker <button class="btn" style="float:right;padding:2px 8px;font-size:12px" onclick="clearFeed('wfeed')">清空</button></h2>
-    <p class="faint" style="margin:-4px 0 10px">领了什么活、干成没有、回执有没有落板。</p>
-    <div id="wfeed"><span class="faint">等手上线…</span></div>
+    <h2>Worker activity <button class="btn" style="float:right;padding:2px 8px;font-size:12px" onclick="clearFeed('wfeed')">Clear</button></h2>
+    <p class="faint" style="margin:-4px 0 10px">Claims, execution outcomes, and receipts returned to the board.</p>
+    <div id="wfeed"><span class="faint">Waiting for the Worker…</span></div>
   </div>
 </div>
 <script>
 const K='__KEY__'
 // 清空只清**这块屏**(事件全史仍在站里,刷新页面即补看)——看不过来时把噪音抹掉,不是删账。
-function clearFeed(id){const el=document.getElementById(id);el.innerHTML='<span class="faint">已清空（刷新页面可补看全史）</span>'}
+function clearFeed(id){const el=document.getElementById(id);el.innerHTML='<span class="faint">Cleared from this view. Refresh to replay retained events.</span>'}
 const esc=(s)=>String(s).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
 const $=(id)=>document.getElementById(id)
 const feed=$('feed'), wfeed=$('wfeed')
@@ -464,31 +464,31 @@ const clip=(s,n)=>{s=String(s||'');return s.length>n?s.slice(0,n)+'…':s}
 // ── 中栏：一轮一张卡，板的判词贴在卡底（7788 的形） ──────────────────────
 function midEvent(e){
   if(e.board)curBoard=e.board
-  if(e.type==='start'){$('agentline').textContent='智能体 '+(e.agent||'')+' · '+(e.url||'');if(e.concurrency)$('max-concurrency').textContent=String(e.concurrency);return}
+  if(e.type==='start'){$('agentline').textContent='Agent '+(e.agent||'')+' · '+(e.url||'');if(e.concurrency)$('max-concurrency').textContent=String(e.concurrency);return}
   if(e.type==='task-start'){
     const k=eventKey(e);lastCards[k]=null
-    pendingUsers[k]=addMid('<div class="card" style="border-color:rgba(53,208,186,.35)"><div class="faint">工作实例 '+esc(e.session||'')+' · '+hhmm(e)+'</div><div class="say">'+esc(e.text||'')+'</div></div>',e.board)
+    pendingUsers[k]=addMid('<div class="card" style="border-color:rgba(53,208,186,.35)"><div class="faint">Work instance '+esc(e.session||'')+' · '+hhmm(e)+'</div><div class="say">'+esc(e.text||'')+'</div></div>',e.board)
     return
   }
   // 你的输入卡先进屏(此刻还不知道它会开出哪块案卷),等 case-open 一到回头补板标——
   // 流是串行的,最近一张未标卡就是它的(2026-08-18 用户: 过滤到单个案卷时历史输入全员出场)。
-  if(e.type==='user'){const k=eventKey(e);lastCards[k]=null;pendingUsers[k]=addMid('<div class="card" style="border-color:rgba(53,208,186,.35)"><div class="faint">你 · '+hhmm(e)+'</div><div class="say">'+esc(e.text||'')+'</div></div>',e.board);return}
-  if(e.type==='round'){lastCards[eventKey(e)]=null;addMid('<div class="round">第 '+esc(String(e.n))+' 轮'+(e.board?' · '+esc(e.board):'')+'</div>',e.board);return}
+  if(e.type==='user'){const k=eventKey(e);lastCards[k]=null;pendingUsers[k]=addMid('<div class="card" style="border-color:rgba(53,208,186,.35)"><div class="faint">You · '+hhmm(e)+'</div><div class="say">'+esc(e.text||'')+'</div></div>',e.board);return}
+  if(e.type==='round'){lastCards[eventKey(e)]=null;addMid('<div class="round">Round '+esc(String(e.n))+(e.board?' · '+esc(e.board):'')+'</div>',e.board);return}
   if(e.type==='propose'){
-    lastCards[eventKey(e)]=addMid('<div class="card"><div class="say">'+esc(e.say||'(这一轮只提交了操作)')+'</div>'
-      +(e.ops?'<details><summary>它提交了 '+e.ops.length+' 条操作</summary><pre>'+esc(JSON.stringify(e.ops,null,2))+'</pre></details>':'')
-      +(e.cmds?'<details><summary>它签发了 '+e.cmds.length+' 条命令（'+esc(e.cmds.map((c)=>c.action||c.kind).join(' → '))+'）</summary><pre>'+esc(JSON.stringify(e.cmds,null,2))+'</pre></details>':'')+'</div>',e.board)
+    lastCards[eventKey(e)]=addMid('<div class="card"><div class="say">'+esc(e.say||'(This round proposed operations only.)')+'</div>'
+      +(e.ops?'<details><summary>Proposed '+e.ops.length+' operation(s)</summary><pre>'+esc(JSON.stringify(e.ops,null,2))+'</pre></details>':'')
+      +(e.cmds?'<details><summary>Issued '+e.cmds.length+' command(s) ('+esc(e.cmds.map((c)=>c.action||c.kind).join(' → '))+')</summary><pre>'+esc(JSON.stringify(e.cmds,null,2))+'</pre></details>':'')+'</div>',e.board)
     return
   }
   if(e.type==='verdict'){
     const box=e.accepted
       ? e.cmd
         ? e.done===true
-          ? '<div class="verdict '+(e.ok===true?'accept':'reject')+'"><b>板：动作'+(e.ok===true?'办成':'失败')+'</b> · '+esc(e.cmd)+' · 调用 '+esc(e.invocation||'')+' · 修订号 '+esc(e.revision||'')+'</div>'
-          : '<div class="verdict reject"><b>板：动作仅受理，尚未同步完成</b> · '+esc(e.cmd)+' · 调用 '+esc(e.invocation||'')+' · 修订号 '+esc(e.revision||'')+'</div>'
-        : '<div class="verdict accept"><b>板：接受</b> · 新增 '+esc(String(e.added||0))+' 项 · 修订号 '+esc(e.revision||'')+'</div>'
-      : '<div class="verdict reject"><b>板：拒绝</b><div class="why">'+esc(e.teaching||'')+'</div>'
-        +'<div class="why" style="color:var(--faint)">报错是接口：这段原话会原样回喂模型，让它照着改。</div></div>'
+          ? '<div class="verdict '+(e.ok===true?'accept':'reject')+'"><b>Board: action '+(e.ok===true?'completed':'failed')+'</b> · '+esc(e.cmd)+' · invocation '+esc(e.invocation||'')+' · revision '+esc(e.revision||'')+'</div>'
+          : '<div class="verdict reject"><b>Board: action accepted but not completed synchronously</b> · '+esc(e.cmd)+' · invocation '+esc(e.invocation||'')+' · revision '+esc(e.revision||'')+'</div>'
+        : '<div class="verdict accept"><b>Board: accepted</b> · '+esc(String(e.added||0))+' item(s) added · revision '+esc(e.revision||'')+'</div>'
+      : '<div class="verdict reject"><b>Board: rejected</b><div class="why">'+esc(e.teaching||'')+'</div>'
+        +'<div class="why" style="color:var(--faint)">This guidance is returned to the Agent so it can correct the request.</div></div>'
     const card=lastCards[eventKey(e)]
     if(card&&card.firstElementChild){card.firstElementChild.insertAdjacentHTML('beforeend',box);$('feedwrap').scrollTop=$('feedwrap').scrollHeight}
     else addMid('<div class="card">'+box+'</div>',e.board)
@@ -499,15 +499,15 @@ function midEvent(e){
     const pending=pendingUsers[eventKey(e)]
     if(pending&&!pending.dataset.board)tagBoard(pending,e.board)
     delete pendingUsers[eventKey(e)]
-    addMid('<div class="round">开单 · 案卷 '+esc(e.board||'')+'</div>',e.board);return
+    addMid('<div class="round">Case opened · '+esc(e.board||'')+'</div>',e.board);return
   }
-  if(e.type==='sealed'){setBusy('',e.board);noteCase(e.board,e.at||e.t,'completed',e.session);addMid('<div class="round" style="color:var(--green)">封板结案 · '+esc(e.board||'')+'</div>',e.board);return}
+  if(e.type==='sealed'){setBusy('',e.board);noteCase(e.board,e.at||e.t,'completed',e.session);addMid('<div class="round" style="color:var(--green)">Case sealed · '+esc(e.board||'')+'</div>',e.board);return}
   // 放电事件：有真缺口才值得占时间线；纯"求证在途"是宿主机械，收进状态提示（log 径同律）。
-  if(e.type==='discharge'){const dn=(e.notes||[]).join(' · ');if(/缺口|放电拒/.test(dn))addMid('<div class="faint" style="margin:6px 0">求证 · '+esc(clip(dn,200))+'</div>',e.board);else setBusy('求证已派出，等真探回话',e.board);return}
+  if(e.type==='discharge'){const dn=(e.notes||[]).join(' · ');if(/gap|rejected|缺口|放电拒/i.test(dn))addMid('<div class="faint" style="margin:6px 0">Verification · '+esc(clip(dn,200))+'</div>',e.board);else setBusy('Verification requested; waiting for evidence',e.board);return}
   if(e.type==='task-done'){setBusy('',e.board);noteCase(e.board,e.at||e.t,e.pendingCaseId?'pending':'completed',e.sessionKey);return}
   if(e.type==='segment-end'||e.type==='end'){setBusy('',e.board);addMid('<div class="round">'+esc(clip(e.note,200))+'</div>',e.board);return}
   // 退出行按当前案卷归属(中断的是它);两案之间的退出归上一案,无伤——重点是别在每个过滤视图里全员出场。
-  if(e.type==='exit'){addMid('<div class="round" style="color:var(--amber)">脑进程退出（code '+esc(String(e.code))+'）</div>');return}
+  if(e.type==='exit'){addMid('<div class="round" style="color:var(--amber)">Agent process exited (code '+esc(String(e.code))+')</div>');return}
   if(e.type==='log'){
     // 并发后裸 stdout 没有可靠板归属；宁可作为全局日志显示，也不猜给“最近一块板”制造串线。
     const t=String(e.line||''),B=e.board||''
@@ -517,9 +517,9 @@ function midEvent(e){
     // 忙"，不是"发生了一件事"——收进顶部一枚状态提示，来了就亮、落定就灭。
     if(/^◌/.test(t)){setBusy(t.replace(/^◌\s*/,''),B);return}
     // 放电那行说的是"求证派出去了"——右栏已有工单流水，中栏只保留一次，不重复贴。
-    if(/^\[放电\]|^求证 ·/.test(t)){setBusy('求证已派出，等真探回话',B);return}
+    if(/^\[discharge\]|^verification ·|^\[放电\]|^求证 ·/i.test(t)){setBusy('Verification requested; waiting for evidence',B);return}
     // 剩下的只留"这件事的结论"：封板/未结案/板判。其余（配方、模式说明、提示）不进时间线。
-    if(/封板结案|没有结案|板判可交付|未结义务/.test(t)){setBusy('',B);addMid('<div class="faint" style="margin:5px 0">'+esc(clip(t,260))+'</div>',B)}
+    if(/case sealed|not closed|board.*deliverable|outstanding obligation|封板结案|没有结案|板判可交付|未结义务/i.test(t)){setBusy('',B);addMid('<div class="faint" style="margin:5px 0">'+esc(clip(t,260))+'</div>',B)}
     return
   }
 }
@@ -534,10 +534,10 @@ function noteCase(b,at,status,session){
 // 排序=开单时间倒序(显式,不依赖事件到达序——SSE 重连补史时到达序不保真),每行带开单时刻。
 function renderCases(){
   document.body.classList.toggle('multi',seenCases.length>1)
-  const all=seenCases.length>1?'<div class="crow'+(filterBoard===''?' sel':'')+'" data-b=""><span>全部 · 混流</span></div>':''
+  const all=seenCases.length>1?'<div class="crow'+(filterBoard===''?' sel':'')+'" data-b=""><span>All · combined</span></div>':''
   const state=(s)=>s==='completed'?'✓':s==='pending'?'◐':'●'
   const rows=seenCases.slice().sort((x,y)=>y.at-x.at).map((c)=>'<div class="crow'+(filterBoard===c.b?' sel':'')+'" data-b="'+esc(c.b)+'"><span title="'+esc(c.b)+'">'+state(c.status)+' '+esc(bshort(c.b))+'</span><span class="faint" style="margin-left:auto">'+hhmm({at:c.at}).slice(0,5)+'</span><a href="https://console.rulith.com/cases/'+encodeURIComponent(c.b)+'" target="_blank" rel="noopener">↗</a></div>').join('')
-  $('cases').innerHTML=(all+rows)||'<span class="faint">还没开单</span>'
+  $('cases').innerHTML=(all+rows)||'<span class="faint">No cases yet</span>'
 }
 $('cases').addEventListener('click',(ev)=>{
   if(ev.target.tagName==='A')return // 控制台链接照常跳转,不当切换
@@ -556,29 +556,29 @@ function setFilter(b){
 // ── 右栏：手的流水 ────────────────────────────────────────────────────
 function reportedState(e){
   if(e.kind!=='verification')return e.ok===false
-    ? {cls:'reject',icon:'○',label:'失败'}
+    ? {cls:'reject',icon:'○',label:'Failed'}
     : {cls:'accept',icon:'○',label:''}
   // 核验是三态，不是普通动作的成败布尔值。not_satisfied 说明探针正常执行、
   // 只是当前世界尚未满足验收式；只有 error 才是核验器/基础设施故障。
   const outcome=e.outcome||(e.ok===true?'satisfied':'error') // 兼容尚未携 outcome 的旧 worker
-  if(outcome==='satisfied')return {cls:'accept',icon:'●',label:'核验通过'}
-  if(outcome==='not_satisfied')return {cls:'pending',icon:'○',label:'条件未满足'}
-  return {cls:'fault',icon:'×',label:'核验故障'}
+  if(outcome==='satisfied')return {cls:'accept',icon:'●',label:'Verified'}
+  if(outcome==='not_satisfied')return {cls:'pending',icon:'○',label:'Condition not satisfied'}
+  return {cls:'fault',icon:'×',label:'Verification error'}
 }
 function rightEvent(e){
   const t='<span class="wt">'+hhmm(e)+'</span>'
-  if(e.type==='up')return addRight(t+'上线 <span class="faint">通道 '+esc(clip(e.channel,26))+' · 工具 '+esc(String(e.tools))+(e.reviewer?' · 兼审查席':'')+'</span>')
-  if(e.type==='claimed')return addRight(t+bchip(e)+'<span style="color:var(--cyan)">●</span> 领到 <code>'+esc(e.kind||'')+'</code> '+esc(e.id||e.action||''),e.board)
+  if(e.type==='up')return addRight(t+'Online <span class="faint">source '+esc(clip(e.channel,26))+' · '+esc(String(e.tools))+' tool(s)'+(e.reviewer?' · reviewer enabled':'')+'</span>')
+  if(e.type==='claimed')return addRight(t+bchip(e)+'<span style="color:var(--cyan)">●</span> Claimed <code>'+esc(e.kind||'')+'</code> '+esc(e.id||e.action||''),e.board)
   if(e.type==='reported'){
     const s=reportedState(e)
-    return addRight(t+bchip(e)+'<span class="'+s.cls+'">'+s.icon+'</span> 回执 '+esc(e.id||e.action||'')
-      +(e.verdict?' 判词 <code>'+esc(e.verdict)+'</code>':'')
-      +(s.label?' <span class="'+s.cls+'">'+s.label+'</span>':'')+(e.landed===false?' <span class="fault">板拒收</span>':'')
+    return addRight(t+bchip(e)+'<span class="'+s.cls+'">'+s.icon+'</span> Receipt '+esc(e.id||e.action||'')
+      +(e.verdict?' verdict <code>'+esc(e.verdict)+'</code>':'')
+      +(s.label?' <span class="'+s.cls+'">'+s.label+'</span>':'')+(e.landed===false?' <span class="fault">Rejected by board</span>':'')
       +((e.result||e.reason)?'<div class="faint" style="margin-left:14px">'+esc(clip(e.result||e.reason,110))+'</div>':''),e.board)
   }
-  if(e.type==='skip')return addRight(t+bchip(e)+'<span class="faint">跳过 '+esc(e.id||'')+'（'+esc(e.why||'')+'）</span>',e.board)
+  if(e.type==='skip')return addRight(t+bchip(e)+'<span class="faint">Skipped '+esc(e.id||'')+' ('+esc(e.why||'')+')</span>',e.board)
   if(e.type==='error')return addRight(t+'<span class="reject">'+esc(clip(e.note,160))+'</span>')
-  if(e.type==='exit')return addRight(t+'<span class="reject">手进程退出（code '+esc(String(e.code))+'）</span>')
+  if(e.type==='exit')return addRight(t+'<span class="reject">Worker process exited (code '+esc(String(e.code))+')</span>')
   if(e.type==='log'){
     const s=String(e.line||'')
     if(/^\\.+$/.test(s.trim()))return           // 轮询心跳点，不占屏
@@ -595,16 +595,16 @@ es.onmessage=(m)=>{const e=JSON.parse(m.data)
 async function refresh(){
   const r=await fetch('/status?k='+K).then(r=>r.json()).catch(()=>null);if(!r)return
   for(const c of ['repl','worker']){
-    $('st-'+c).textContent=r[c]?'运行中':'停止';$('st-'+c).className='pill '+(r[c]?'run':'stop')
-    $('bt-'+c).textContent=r[c]?'停止':'启动';$('bt-'+c).dataset.op=r[c]?'stop':'start'
+    $('st-'+c).textContent=r[c]?'Running':'Stopped';$('st-'+c).className='pill '+(r[c]?'run':'stop')
+    $('bt-'+c).textContent=r[c]?'Stop':'Start';$('bt-'+c).dataset.op=r[c]?'stop':'start'
   }
   const rn=$('replnative')
-  if(r.replUi){rn.href=r.replUi;rn.target='_blank';rn.rel='noopener';rn.className='';rn.textContent='REPL 原生页 ↗';rn.onclick=null}
+  if(r.replUi){rn.href=r.replUi;rn.target='_blank';rn.rel='noopener';rn.className='';rn.textContent='Agent timeline ↗';rn.onclick=null}
 }
 async function ctl(c){
   const op=$('bt-'+c).dataset.op||'start'
   const r=await fetch('/ctl?k='+K,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({comp:c,op})}).then(r=>r.json())
-  if(!r.ok)alert(r.teaching||'失败')
+  if(!r.ok)alert(r.teaching||'Failed')
   setTimeout(refresh,700)
 }
 async function loadCfg(){
@@ -615,10 +615,10 @@ async function loadCfg(){
 }
 async function saveCfg(c){
   let env,args
-  try{env=JSON.parse($('c-'+c).value)}catch(e){$('m-'+c).textContent='env 不是合法 JSON：'+e.message;return}
-  if(c==='repl'){try{args=JSON.parse($('c-repl-args').value)}catch(e){$('m-repl').textContent='启动参数不是合法 JSON 数组';return}}
+  try{env=JSON.parse($('c-'+c).value)}catch(e){$('m-'+c).textContent='Environment is not valid JSON: '+e.message;return}
+  if(c==='repl'){try{args=JSON.parse($('c-repl-args').value)}catch(e){$('m-repl').textContent='Arguments must be a valid JSON array.';return}}
   const r=await fetch('/config?k='+K,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({comp:c,env,...(args!==undefined?{args}:{})})}).then(r=>r.json())
-  $('m-'+c).textContent=r.teaching||(r.ok?'已保存':'失败')
+  $('m-'+c).textContent=r.teaching||(r.ok?'Saved.':'Failed')
   loadCfg()
 }
 $('sayform').addEventListener('submit',async(ev)=>{ev.preventDefault()

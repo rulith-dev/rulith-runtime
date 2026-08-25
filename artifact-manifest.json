@@ -3,13 +3,13 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "322d2832323de06debe4cf5fa4f0faa3ffd35fcdc501114efa85f384413e16d9"
+      "sha256": "968b566fc5d48e764056297300e3483a7adac6f435ce17d3d61c9e322748f469"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "c3507d3717d7a978087e067933818b93dbe695e39b9a20eb796d2992f6359dbc"
     },
     "station/rulith-station.mjs": {
-      "sha256": "4314b118ae79343027e7e1299062fe775a5b87bbad37b3f5b7fa921f6c946453"
+      "sha256": "73620546ab72579bf977c8b88ae68e1c82b390e20f029b213af38f56933aae99"
     },
     "config/rulith-sources.example.json": {
       "sha256": "9a6b0640aba9c1bea27158dd86117f2cf527e74a15d5adcb1293c9867a2f04cd"

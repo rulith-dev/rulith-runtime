@@ -15,9 +15,10 @@ preserve these boundaries:
 Before opening a pull request, run:
 
 ```bash
-cd runtime
 npm run check
 npm test
+npm run manifest
+git diff --exit-code artifact-manifest.json
 ```
 
 Changes to the Cloud wire contract should include a compatibility note and a focused

@@ -24,6 +24,14 @@ hidden business workflow.
 - A model endpoint compatible with Anthropic Messages or OpenAI Chat Completions
 - A Rulith Connection id and key when a workflow needs local execution
 
+Clone the current beta release:
+
+```bash
+git clone --branch v0.1.0-beta.1 --depth 1 https://github.com/rulith-dev/rulith-runtime.git
+cd rulith-runtime
+npm test
+```
+
 No build step is required. The three entry points are dependency-free single-file
 ES modules. Database tools load the optional `pg` package only when used.
 
@@ -102,8 +110,11 @@ See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.
 The runtime is beta software. Protocol compatibility is versioned, but command-line
 flags and the Station UI may still change before 1.0.
 
-Source comments and a few diagnostic messages inherited from the first deployment
-are still being translated to English. New user-facing text must be English.
+The Station UI and primary onboarding path are English. A small number of
+compatibility diagnostics may still retain Chinese while they are being retired.
+
+Please use [GitHub Discussions](https://github.com/rulith-dev/rulith-runtime/discussions)
+for workflow design questions and the issue templates for reproducible defects.
 
 ## License
 

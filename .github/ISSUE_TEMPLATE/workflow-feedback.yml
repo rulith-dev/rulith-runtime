@@ -1,0 +1,38 @@
+name: Workflow feedback
+description: Tell us what happened when you tried Rulith on real work.
+title: "[Workflow] "
+labels: [workflow-feedback]
+body:
+  - type: markdown
+    attributes:
+      value: Describe the workflow, not private business data. Never include credentials.
+  - type: textarea
+    id: job
+    attributes:
+      label: What job were you trying to complete?
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: What did you connect?
+      description: List the model type, source type, and tools without secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: What was useful?
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: Where did you get stuck or lose trust?
+    validations:
+      required: true
+  - type: input
+    id: outcome
+    attributes:
+      label: Measurable outcome, if any
+      placeholder: e.g. 8 files checked, 1 mismatch caught, 12 minutes total

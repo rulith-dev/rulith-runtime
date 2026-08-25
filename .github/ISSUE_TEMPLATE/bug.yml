@@ -1,0 +1,53 @@
+name: Runtime bug
+description: Report a reproducible Agent, Worker, Station, or example failure.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include tokens, keys, source credentials, private files, or customer data.
+  - type: input
+    id: version
+    attributes:
+      label: Runtime version or commit
+      placeholder: v0.1.0-beta.1 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Agent Runtime
+        - Worker
+        - Station
+        - Verified calculation example
+        - Cloud protocol compatibility
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Give the smallest safe sequence that reproduces the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and redacted logs
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows 11, Node 22.14.0, OpenAI-compatible local endpoint
+    validations:
+      required: true

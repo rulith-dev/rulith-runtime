@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Workflow design and setup questions
+    url: https://github.com/rulith-dev/rulith-runtime/discussions
+    about: Ask questions and compare workflow designs.
