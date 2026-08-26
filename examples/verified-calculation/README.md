@@ -24,15 +24,15 @@ calculated output values.
 Create an Agent named `verified-calculation` in Console. Create one Worker Connection named
 `verified-calculation-worker` for that Agent and copy its public channel id and one-time key. Open
 **Capabilities → Capability market**, search for `Verified Calculation`, select the Agent,
-and install the **Verified Calculation** Capability once. The market shows its three governed
+and install the **Verified Calculation** Capability once. The market shows its two governed
 components before confirmation:
 
 1. **Verified Calculation — Knowledge**
-2. **Verified Calculation — Tools**
-3. **Verified Calculation — Local source**
+2. **Verified Calculation — Local source**
 
-The Capability manifest only groups ordinary typed packages; each component uses the same
-installation path as community packages, with no starter-only installer. After installation,
+Knowledge contains the Actions and their versioned Tool references. The reusable Source
+component describes the required local source; neither component contains Adapter code,
+credentials, or a Connection. After installation,
 open **Agent → Configuration → Data sources**
 and bind `verified-calculation-local` to `verified-calculation-worker`. This deployment
 binding belongs to the Agent and is deliberately absent from the reusable Source package.
@@ -45,9 +45,10 @@ node verified-calculation-setup.mjs
 cd rulith-verified-calculation
 ```
 
-The setup program downloads the public REPL and Worker plus the local adapters and sample
-data. It does not request or store your Agent token, model key, Connection key, or Agent
-configuration.
+The setup program downloads the public REPL and Worker, `worker-tools.json`, local Adapters,
+and sample data. The Worker Tool Manifest maps the Capability's versioned Tool ids to those
+Adapters. It stays local and contains no Agent token, model key, Connection key, or source
+credential.
 
 ## Prepare from this source checkout
 
@@ -65,13 +66,13 @@ args: --agent verified-calculation --ui --case-boards
 RULITH_CASE_BOARDS=on
 ```
 
-Configure the Worker with its Connection credentials. Tool execution and the `runtime`
-source location arrive from the governed packages, so this example needs no local Tool
-or Source definition file:
+Configure the Worker with its Connection credentials and the local Tool Manifest. Source
+policy remains governed in Console; only Adapter implementation is local:
 
 ```text
 RULITH_CHANNEL=<connection-id>
 RULITH_CHANNEL_KEY=<connection-key>
+RULITH_TOOLS_FILE=<this-directory>/runtime/worker-tools.json
 ```
 
 If another Station already works on this machine, derive a separate local config

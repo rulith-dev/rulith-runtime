@@ -123,56 +123,39 @@
             ],
             "then": [{ "predicate": "acceptance_met", "args": { "node": "?node" } }]
           }
-        ]
-      }
-    },
-    {
-      "packType": "tools",
-      "pack": {
-        "format": "rulith-tools/1",
-        "meta": { "name": "verified_calculation_io", "title": "Verified Calculation — Tools", "version": 1 },
-        "tools": [
+        ],
+        "actions": [
           {
-            "name": "load_calculation_input",
-            "kind": "read",
-            "impl": "run",
-            "source": "verified-calculation-local",
-            "exec": "adapters/verified-calculation/read-input.mjs",
-            "desc": "[intake] Read and validate the configured local input.json, then create the task. Pass no target and no business arguments.",
-            "params": {},
-            "returns": [
-              {
-                "predicate": "calculation_input",
-                "args": {
-                  "node": "$node",
-                  "job_id": "$job_id",
-                  "unit_price_cents": "$unit_price_cents",
-                  "quantity": "$quantity",
-                  "shipping_cents": "$shipping_cents"
+            "action": "load_calculation_input",
+            "description": "[intake] Read and validate the configured local input.json, then create the task. Pass no target and no business arguments.",
+            "preconditions": [],
+            "effects": [],
+            "execution": {
+              "tool": "rulith.verified_calculation.read_input@1",
+              "source": "verified-calculation-local",
+              "kind": "read",
+              "params": {},
+              "returns": [
+                {
+                  "predicate": "calculation_input",
+                  "args": {
+                    "node": "$node",
+                    "job_id": "$job_id",
+                    "unit_price_cents": "$unit_price_cents",
+                    "quantity": "$quantity",
+                    "shipping_cents": "$shipping_cents"
+                  }
+                },
+                {
+                  "predicate": "task_seed",
+                  "args": { "root": "$task_root", "node": "$node", "test": "$acceptance_test" }
                 }
-              },
-              {
-                "predicate": "task_seed",
-                "args": { "root": "$task_root", "node": "$node", "test": "$acceptance_test" }
-              }
-            ]
+              ]
+            }
           },
           {
-            "name": "write_calculation_result",
-            "kind": "write",
-            "impl": "run",
-            "source": "verified-calculation-local",
-            "exec": "adapters/verified-calculation/write-output.mjs",
-            "desc": "Write only the exact result bound from trusted input plus the board-derived calculation. Pass no business arguments; add only the target leaf.",
-            "params": {
-              "node": "string",
-              "job_id": "string",
-              "unit_price_cents": "number",
-              "quantity": "number",
-              "shipping_cents": "number",
-              "subtotal_cents": "number",
-              "total_cents": "number"
-            },
+            "action": "write_calculation_result",
+            "description": "Write only the exact result bound from trusted input plus the board-derived calculation. Pass no business arguments; add only the target leaf.",
             "preconditions": [
               {
                 "predicate": "calculation_input",
@@ -205,29 +188,45 @@
                   "status": "completed"
                 }
               }
-            ]
+            ],
+            "execution": {
+              "tool": "rulith.verified_calculation.write_output@1",
+              "source": "verified-calculation-local",
+              "kind": "write",
+              "params": {
+                "node": "string",
+                "job_id": "string",
+                "unit_price_cents": "number",
+                "quantity": "number",
+                "shipping_cents": "number",
+                "subtotal_cents": "number",
+                "total_cents": "number"
+              }
+            }
           },
           {
-            "name": "verify_calculation_output",
-            "kind": "read",
-            "impl": "run",
-            "source": "verified-calculation-local",
-            "exec": "adapters/verified-calculation/verify-output.mjs",
-            "desc": "Read the persisted output and attest only an exact match to the board-bound result.",
-            "params": {
-              "node": "string",
-              "job_id": "string",
-              "subtotal_cents": "number",
-              "total_cents": "number",
-              "status": "string"
-            },
+            "action": "verify_calculation_output",
+            "description": "Read the persisted output and attest only an exact match to the board-bound result.",
             "preconditions": [
               { "predicate": "calculation_result", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents" } },
               { "predicate": "output_written", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "?status" } }
             ],
-            "returns": [
-              { "predicate": "output_record", "args": { "node": "$node", "job_id": "$job_id", "subtotal_cents": "$subtotal_cents", "total_cents": "$total_cents", "status": "$status" } }
-            ]
+            "effects": [],
+            "execution": {
+              "tool": "rulith.verified_calculation.verify_output@1",
+              "source": "verified-calculation-local",
+              "kind": "read",
+              "params": {
+                "node": "string",
+                "job_id": "string",
+                "subtotal_cents": "number",
+                "total_cents": "number",
+                "status": "string"
+              },
+              "returns": [
+                { "predicate": "output_record", "args": { "node": "$node", "job_id": "$job_id", "subtotal_cents": "$subtotal_cents", "total_cents": "$total_cents", "status": "$status" } }
+              ]
+            }
           }
         ]
       }

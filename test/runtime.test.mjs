@@ -175,7 +175,7 @@ test('production-facing runtime text is English-only', () => {
   }
 })
 
-test('verified calculation example prepares only local adapters; governed packages stay off the client', () => {
+test('verified calculation prepares a local Tool Manifest and adapters; governed Capability stays off the client', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-runtime-'))
   const example = join(ROOT, 'examples', 'verified-calculation')
   try {
@@ -185,8 +185,8 @@ test('verified calculation example prepares only local adapters; governed packag
       encoding: 'utf8',
     })
     assert.equal(run.status, 0, run.stderr || run.stdout)
-    assert.equal(existsSync(join(dir, 'rulith-tools.json')), false,
-      'tool execution contracts must come from the governed Tool package, not a generated client table')
+    assert.equal(existsSync(join(dir, 'worker-tools.json')), true,
+      'local Adapter bindings must be explicit in the Worker Tool Manifest')
     assert.equal(existsSync(join(dir, 'input.json')), true)
     assert.equal(existsSync(join(example, 'adapters', 'verified-calculation', 'read-input.mjs')), true)
     assert.equal(existsSync(join(dir, 'recipe.json')), false, 'managed capability packages must not be rendered into the client workspace')
@@ -197,17 +197,16 @@ test('verified calculation example prepares only local adapters; governed packag
   }
 })
 
-test('verified calculation is represented by three ordinary market packages', () => {
+test('verified calculation is one Capability composed of Knowledge and Sources', () => {
   const recipe = JSON.parse(readFileSync(join(ROOT, 'examples', 'verified-calculation', 'recipe.template.json'), 'utf8'))
-  assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['domain', 'tools', 'sources'])
+  assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['domain', 'sources'])
   assert.deepEqual(recipe.packs.map((entry) => entry.pack.title ?? entry.pack.meta?.title), [
     'Verified Calculation — Knowledge',
-    'Verified Calculation — Tools',
     'Verified Calculation — Local source',
   ])
   assert.equal(recipe.collection.id, 'verified_calculation')
   assert.equal(recipe.collection.version, '1.0.0')
-  assert.equal('line' in recipe.packs[2].pack.sources[0], false)
+  assert.equal('line' in recipe.packs[1].pack.sources[0], false)
   assert.equal(recipe.packs[0].pack.acceptance.length, 1)
 })
 

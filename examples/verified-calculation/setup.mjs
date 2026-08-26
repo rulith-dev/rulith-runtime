@@ -13,6 +13,7 @@ const FILES = new Map([
   ['read-input.mjs', 'adapters/verified-calculation/read-input.mjs'],
   ['write-output.mjs', 'adapters/verified-calculation/write-output.mjs'],
   ['verify-output.mjs', 'adapters/verified-calculation/verify-output.mjs'],
+  ['worker-tools.json', 'worker-tools.json'],
   ['data/input.json', 'runtime/input.json'],
 ])
 
@@ -41,5 +42,5 @@ for (const [file, contents] of downloads) {
 }
 
 console.log(`Prepared ${target}`)
-console.log('Tools and source access come from the packages installed in Console; this directory contains only the local adapters and data.')
+console.log('Actions and source policy come from Console. worker-tools.json binds their versioned Tool ids to local adapters; credentials stay in your local source vault.')
 console.log('Next: set your Agent token, model credentials, Connection key, and run the two commands from the Rulith 5-minute quickstart.')

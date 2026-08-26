@@ -6,7 +6,7 @@
       "sha256": "adadb16ba762842bbb21e58197c4ed5ec978ee4a726fd735c3bf5c592b6066f8"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "a3e53a3f121f6d534eb614f4cc8d505c7bd2f2d9c6ac074e26a434842eaebc9e"
+      "sha256": "092f5341fa2d72ce993cdfc099f9b7eec90c03e3cdb3e35287f2817533d668f6"
     },
     "station/rulith-station.mjs": {
       "sha256": "0817f8d6a22b5c62aa419cb7987070c4034e8a79d48af654ba6be90b16a6c5db"
@@ -17,29 +17,32 @@
     "config/rulith-station.example.json": {
       "sha256": "b8dd96663d054f5bc00eb5aebb27e2a2d516429991224c3299d82ff5929fec93"
     },
-    "config/rulith-tools.example.json": {
-      "sha256": "3e5ef49c05df53fe0125ecefe2db1fbb3145f606047c36b3356500f22bda5ea8"
+    "config/worker-tools.example.json": {
+      "sha256": "884b534c23eddb04a2e0ef3e38d3b1393f77e2448ba7bfafd6f219249a64929e"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "d8ca9916f19f90199be971dde2733d4702e9d380820211bc9511606eb8fc088d"
+      "sha256": "a57463ef68087a9f0b18cfa03bfb21ebafc9a921f14c971c746ef480d74c2996"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
     },
     "examples/verified-calculation/prepare-runtime.mjs": {
-      "sha256": "b51200aa5a2ea9ce5bf30ea0f49654a917854e892f94cd5f1c12aeafd5a74040"
+      "sha256": "80c4eb6134976313f6e35ed80cb3cad6fd16496e0456ed1c56e126e3990c43ed"
     },
     "examples/verified-calculation/prepare-station.mjs": {
-      "sha256": "fa0c0032b732d7ad02ff8c239983df0b240786a366bd06b695d78301bc40bcbf"
+      "sha256": "9ef103e0101e83edcd26aea7bb7e93c506f288a529d38ae23c1ac8a3c21761d9"
     },
     "examples/verified-calculation/read-input.mjs": {
       "sha256": "52ed9dde4456ed7844ed02eceffc1c2a6b21faa57650435ed0671439c90dc7ee"
     },
     "examples/verified-calculation/recipe.template.json": {
-      "sha256": "7db243b38c136af4ac699fa48a8d2d2e83990e5988d921ccb62a27541c089ee7"
+      "sha256": "ba80ea96e7ae4ae8fbb7effaf71eeac5bc317576163f6c4bcebda2d890591d35"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "615675bc31b7591e11c72d5b8f87d79e57799526f0103d8073b35a9476c5df8d"
+      "sha256": "5918db5df373d052f6fcea40d98c9ef2446b97095020577217242370667fc466"
+    },
+    "examples/verified-calculation/worker-tools.json": {
+      "sha256": "65ac6cd00e3a59dfcb2cee0f1d673dd5511e912040563e2d2a9cd1fceeb9a3df"
     },
     "examples/verified-calculation/verify-output.mjs": {
       "sha256": "84c7467d7ff7b4d00f29ca7462a73423e102d1e87b1c59fdcca597ca607db336"

@@ -14,9 +14,11 @@ for (const file of ['read-input.mjs', 'write-output.mjs', 'verify-output.mjs']) 
   copyFileSync(join(HERE, file), join(adapters, file))
 }
 copyFileSync(join(HERE, 'data', 'input.json'), join(runtime, 'input.json'))
+copyFileSync(join(HERE, 'worker-tools.json'), join(runtime, 'worker-tools.json'))
 console.log(JSON.stringify({
   runtime,
   adapters,
   input: join(runtime, 'input.json'),
   output: join(runtime, 'output.json'),
+  workerTools: join(runtime, 'worker-tools.json'),
 }, null, 2))

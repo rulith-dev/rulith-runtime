@@ -11,7 +11,7 @@ const files = [
   'station/rulith-station.mjs',
   'config/rulith-sources.example.json',
   'config/rulith-station.example.json',
-  'config/rulith-tools.example.json',
+  'config/worker-tools.example.json',
   'examples/verified-calculation/README.md',
   'examples/verified-calculation/data/input.json',
   'examples/verified-calculation/prepare-runtime.mjs',
@@ -19,6 +19,7 @@ const files = [
   'examples/verified-calculation/read-input.mjs',
   'examples/verified-calculation/recipe.template.json',
   'examples/verified-calculation/setup.mjs',
+  'examples/verified-calculation/worker-tools.json',
   'examples/verified-calculation/verify-output.mjs',
   'examples/verified-calculation/write-output.mjs',
 ]

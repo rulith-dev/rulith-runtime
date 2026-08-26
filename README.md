@@ -12,10 +12,11 @@ hashes recorded in `artifact-manifest.json`.
 | Worker | Executes declared tools and reports synchronous receipts | Source credentials stay in the local vault |
 | Station | Starts, stops, configures, and observes both processes | Listens on loopback and requires a per-run key |
 
-The runtime is domain-neutral. Workflow vocabulary, criteria, actions, tools,
-sources, and constitutional constraints come from the agent's installed capability
-packages. The local processes do not contain an order-processing policy or another
-hidden business workflow.
+The runtime is domain-neutral. An Agent reasons in Actions. Its installed Capability
+defines vocabulary, criteria, Actions, and Source requirements; an independent
+Constitution may constrain them. A Worker Tool Manifest maps each versioned Tool
+referenced by an executed Action to a local Adapter. The local processes contain no
+hidden order-processing policy or other business workflow.
 
 ## Requirements
 
@@ -54,23 +55,43 @@ to the configured model endpoint. It does not upload the model key to Rulith.
 
 ## Worker
 
-Tool and Source packages installed in Console define names, arguments, result mappings,
-attestation scope, safety fences, and non-secret adapter locations. A `run` package may
-select only a relative adapter already installed under the Worker root; it cannot send a
-command, an absolute path, or a shell program. Local configuration is optional and is
-reserved for credentials or deployment-specific endpoint overrides.
+The Agent's governed Actions name versioned Tools and Sources. The Worker Tool Manifest
+is local deployment configuration: it maps a Tool id to an Adapter (`http`, `run`,
+`db-query`, `db-exec-fenced`, or `mcp`), a Source, and an entry. It is not installed as
+a Capability and is never uploaded to the board. A `run` entry must be a relative file
+beneath the Worker root; it cannot select an arbitrary command, absolute path, or shell.
+Credentials remain in the local source vault.
 
 For a package that needs no private credential, run:
 
 ```powershell
 $env:RULITH_CHANNEL = '<connection-id>'
 $env:RULITH_CHANNEL_KEY = '<connection-key>'
+$env:RULITH_TOOLS_FILE = 'C:\path\to\worker-tools.json'
 node worker/rulith-worker.mjs
 ```
 
-The Worker polls outbound, claims only work whose package selects a supported and locally
-present adapter, executes it, and reports a receipt before polling again. A model
-request cannot grant itself a tool, a source, a credential, or verification authority.
+The Worker polls outbound and presents only Tool id, digest, and Source. Rulith pins that
+manifest to the Agent-owned Connection and dispatches an Action only when its Tool and
+Source match the pin. The Worker resolves the Adapter locally, executes it, and reports a
+receipt before polling again. A model request cannot grant itself a Tool, Source,
+credential, Adapter, or verification authority.
+
+Adapters are a fast way to implement Tools; they are not an Agent-facing concept. For
+example:
+
+```json
+{
+  "format": "rulith-worker-tools/1",
+  "tools": {
+    "acme.read_report@1": {
+      "adapter": "run",
+      "source": "reports",
+      "entry": "adapters/read-report.mjs"
+    }
+  }
+}
+```
 
 ## Station
 

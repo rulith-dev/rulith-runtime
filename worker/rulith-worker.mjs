@@ -3,14 +3,16 @@
 /**
  * rulith-worker — 通用执行器参考体(v1,单文件；数据库驱动按需安装)。
  *
- * 它不懂任何业务领域，只执行五种有界载体：http / db-query / db-exec-fenced / mcp / run。
- * 前四种可由工单行的 toolSpec + 来源库直接驱动；run 是明确的本机固定程序适配边界。
- * 本地工具表只作运维覆盖与存量兼容，不再是通用执行的必需品。
+ * It knows no business domain. The Agent sees Actions; each external Action
+ * references a versioned Tool. This Worker resolves that Tool against its
+ * local, authenticated manifest. Adapters (http / db-query /
+ * db-exec-fenced / mcp / run) are only a quick way to implement Tools here;
+ * adapter configuration is never accepted from a board work item.
  *
  *   RULITH_WORK_URL      派工面地址(缺省 https://api.rulith.com/work)
  *   RULITH_CHANNEL       执行器通道 id(控制台「连接」页注册)
  *   RULITH_CHANNEL_KEY   执行器通道钥(注册时唯一一次显示)
- *   RULITH_TOOLS_FILE    本地工具表 JSON(见下),缺省 ./rulith-tools.json
+ *   RULITH_TOOLS_FILE    Worker Tool Manifest JSON, default ./worker-tools.json
  *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
  *
@@ -18,14 +20,13 @@
  * 判卷那一席另需板侧把这个通道列进 reviewerChannels(治理配置,运营方定),
  * 否则协议侧一行案卷也不下发(fail-closed:清关权不能自报)。
  *
- * 工具表形状(动作名 → 工具):
+ * Worker Tool Manifest shape (versioned Tool id -> local implementation):
  *   {
- *     "notify":      { "impl": "run",  "cmd": "echo", "args": ["notified"] },
- *     "place_order": { "impl": "http", "url": "http://erp.internal/api/orders",
- *                      "method": "POST", "allowHosts": ["erp.internal"] },
- *     "claims": {                                  ← 放电工具(计算作证): 主张形状 → 后端
- *       "cert": { "impl": "http", "url": "http://farm.internal/lean/check",
- *                 "method": "POST", "allowHosts": ["farm.internal"] }
+ *     "format": "rulith-worker-tools/1",
+ *     "tools": {
+ *       "acme.notify@1": { "adapter": "run", "source": "crm", "entry": "adapters/notify.mjs" },
+ *       "acme.verify_cert@1": { "adapter": "http", "source": "certifier", "entry": "/verify",
+ *         "handles": { "verification": ["cert"] } }
  *     }
  *   }
  *
@@ -37,7 +38,7 @@
  *   http 只打来源地址同源的相对路径(存量本机表则只打 allowHosts);
  *   db-query 只跑单条 SELECT；db-exec-fenced 先做单语句与破坏性分类;
  *   mcp 只调用来源端点与工具声明给出的具名工具;
- *   本机表与工单 toolSpec 都没有可执行规格的动作**不领**(别人的活不抢,如实跳过)。
+ *   本机 Tool Manifest 没有对应版本或摘要不匹配的动作**不领**(别人的活不抢,如实跳过)。
  *
  * 流程(纯出站,防火墙零入站口):
  *   Poll(长轮询,有活即回) → 逐个: 有工具才 ClaimWork(领取,板发租约) → 本地执行
@@ -57,7 +58,7 @@ const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 const WORK_URL = process.env.RULITH_WORK_URL ?? 'https://api.rulith.com/work'
 const CHANNEL = process.env.RULITH_CHANNEL
 const KEY = process.env.RULITH_CHANNEL_KEY
-const TOOLS_FILE = process.env.RULITH_TOOLS_FILE ?? './rulith-tools.json'
+const TOOLS_FILE = process.env.RULITH_TOOLS_FILE ?? './worker-tools.json'
 const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToPath(import.meta.url)))
 /** 密文库(SRC-40,来源授信规范批E): `{ "<来源名>": { "dsn"|"url"|"headers"|"token": … } }`。
  *  凭据只住这台机器——不进工具表(工具表随包可分享)、不上板、不进注册面。
@@ -131,11 +132,11 @@ const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp']
 /** 锚建议(批C): 把每条取材路线的目标指纹打出来,治理者照抄进控制台的「锚」栏——
  *  钉了锚之后,证词与注册目标对不上会被网关当场拒(漂移可检)。 */
 function printAnchorHints(tools) {
-  const ms = tools.materials ?? {}
-  for (const [m, route] of Object.entries(ms)) {
+  for (const [id, route] of Object.entries(tools)) {
+    if (!Array.isArray(route.handles?.evidence) || route.handles.evidence.length === 0) continue
     try {
-      if (route.impl === 'http') console.log(`· Suggested anchor ${m}: origin:${new URL(route.url).origin}`)
-      else if (route.impl === 'run') console.log(`· Suggested anchor ${m}: cmd:${createHash('sha256').update(String(route.cmd ?? '')).digest('hex').slice(0, 16)}`)
+      if (route.adapter === 'http') console.log(`· Suggested anchor ${id}: source:${route.source}`)
+      else if (route.adapter === 'run') console.log(`· Suggested anchor ${id}: adapter:${createHash('sha256').update(String(route.entry)).digest('hex').slice(0, 16)}`)
     } catch { /* 路线残缺不拦启动,取材时自会报 */ }
   }
 }
@@ -150,16 +151,14 @@ if (IS_MAIN) {
     // **每一重都在验一个无辜的对象**,因为报错把他指向了那边。
     // 判据: catch 的教学说"读不了",那 try 里就只许放"读"。
     //
-    // **没有表 ≠ 表坏了**(SRC-41 全退,2026-08-21): 工单行早已自带 `toolSpec`,执行链的
-    // 回退也早就写好了——只剩启动这一步没跟上,于是客户仍被逼手写一张「工具→SQL」的本机表,
-    // 而那正是「知识住客户端」那条反模式的实体。文件不在=**透明工人**形态(正常),
-    // 文件在而读不动/解不开=故障(照旧退出)。两者混成一句,手滑写坏 JSON 的人会以为
-    // 自己正在透明模式下正常运行,而他配的手一只都不会被执行。
+    // Missing manifest is a valid review-only or idle Worker shape. It must
+    // remain visibly different from a malformed manifest: the former carries
+    // no Tools and cannot claim action work; the latter is a deployment error.
     if (!existsSync(TOOLS_FILE)) {
       TOOLS = {}
-      console.log('· No local tool table. Running as a transparent Worker using the toolSpec carried by each work item.')
+      console.log('· No Worker Tool Manifest installed. This Worker will not claim action work.')
     } else {
-      TOOLS = JSON.parse(readFileSync(TOOLS_FILE, 'utf8'))
+      TOOLS = workerToolsOf(JSON.parse(readFileSync(TOOLS_FILE, 'utf8')))
     }
     printAnchorHints(TOOLS)
     try {
@@ -203,7 +202,7 @@ if (IS_MAIN) {
     // 逼它先造一张空工具表是把"持工具"当成了 worker 的本质,而本质是"按配置上岗"。
     // (真机实跑当场撞到: 清关工人起不来,报的还是"读不了工具表"这种指错方向的错。)
     if (!REVIEWER_ONLY) {
-      console.error(`Cannot read tool table ${TOOLS_FILE}: ${e.message}\n  Shape: {"<action>":{"impl":"run","cmd":"echo","args":["hi"]}}\n  A review-only Worker needs no tool table when RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are set.`)
+      console.error(`Cannot read Worker Tool Manifest ${TOOLS_FILE}: ${e.message}\n  Shape: {"format":"rulith-worker-tools/1","tools":{"vendor.tool@1":{"adapter":"run","source":"local","entry":"adapters/tool.mjs"}}}\n  A review-only Worker needs no Tool Manifest when RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are set.`)
       process.exit(2)
     }
     TOOLS = {}
@@ -211,8 +210,7 @@ if (IS_MAIN) {
   // 读成功**之后**才点名(DPC-6): 它炸了不叫"读不了"。放在 try 外面,是为了让它自己的错
   // 以自己的形状出现——**同一个 catch 不许同时服务两种成因**(与 unknown_board 那条同律)。
   checkImpls(TOOLS)
-  // 空表不再等于"只观望"(SRC-41 全退): 工单行自带 toolSpec 的活它照领照干。
-  // 横幅得说真话——说错的代价是人以为这台在空转,去手写一张本不需要的工具表。
+  // An empty manifest is honest: this Worker cannot claim action work.
 }
 
 /**
@@ -514,14 +512,13 @@ async function handDbExec(t, args) {
 function checkImpls(tools) {
   const missing = []
   for (const [name, t] of Object.entries(tools ?? {})) {
-    if (name === 'claims' || t === null || typeof t !== 'object') continue
-    const impl = t.impl
-    if (typeof impl === 'string' && !KNOWN_IMPLS.has(impl)) missing.push(`${name}(impl:"${impl}")`)
+    if (t === null || typeof t !== 'object') continue
+    const adapter = t.adapter
+    if (typeof adapter === 'string' && !KNOWN_IMPLS.has(adapter)) missing.push(`${name}(adapter:"${adapter}")`)
   }
   if (missing.length > 0) {
-    console.error(`⚠ Unsupported tool implementation(s): ${missing.join(', ')}`)
+    console.error(`⚠ Unsupported Worker Tool adapter(s): ${missing.join(', ')}`)
     console.error(`  This Worker supports: ${[...KNOWN_IMPLS].join(' / ')}`)
-    console.error('  Unsupported tools will not execute. Change the implementation or upgrade the Worker.')
   }
   return missing
 }
@@ -611,12 +608,36 @@ function verificationResult(raw) {
   }
 }
 
+/** Resolve verification and evidence work through the same versioned Tool inventory. */
+function toolForHandle(tools, kind, value) {
+  for (const [id, definition] of Object.entries(tools ?? {})) {
+    const handled = definition?.handles?.[kind]
+    if (Array.isArray(handled) && handled.includes(value)) return { id, definition }
+  }
+  return undefined
+}
+
+function handledLocalTool(id, definition, payload, kind = 'read') {
+  const params = Object.fromEntries(Object.keys(payload ?? {}).map((name) => [name, 'json']))
+  return adapterToolFromSpec(JSON.stringify({
+    name: id, kind, impl: definition.adapter, source: definition.source,
+    exec: definition.entry, params, ...(definition.fence ? { fence: definition.fence } : {}),
+  }), JSON.stringify(payload ?? {}))
+}
+
+async function runHandledTool(id, definition, payload, board, kind = 'read') {
+  const local = handledLocalTool(id, definition, payload, kind)
+  const raw = await execute(id, payload, { [id]: local }, SOURCES, { board })
+  const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
+  return text.replace(/^HTTP [0-9]+:\s*/, '')
+}
+
 // 工单面=WorkItem 三件(ListWork/ClaimWork/ReportWork,workType 判别):旧八件专面动词已随
 // 核心退役面整删(2026-08-04)。verification=求证工单 · action=外向动作 · review=清关案卷。
 async function handleClaimWork(w) {
-  const routes = TOOLS.claims ?? {}
-  const t = routes[w.claim?.predicate]
-  if (t === undefined) { console.log(`· Skipping work item ${w.work}: no verification tool is configured for claim ${w.claim?.predicate}`); return }
+  const picked = toolForHandle(TOOLS, 'verification', w.claim?.predicate)
+  if (picked === undefined) { console.log(`· Skipping work item ${w.work}: no versioned Tool handles verification for claim ${w.claim?.predicate}`); return }
+  const { id: toolId, definition: t } = picked
   if (w.channel !== CHANNEL) { return } // 路由到别的通道的工单,别抢
   const claim = await work({ kind: 'ClaimWork', workType: 'verification', id: w.work }, w.board)
   if (claim.accepted !== true) { console.log(`· Claiming work item ${w.work} was rejected (${claim.errorCode ?? ''})`); return }
@@ -627,24 +648,8 @@ async function handleClaimWork(w) {
   // 载荷作为**同级字段**附在主张旁——只读 predicate/args 的老手不受影响。
   const body = w.payload !== undefined ? { ...w.claim, payload: w.payload } : w.claim
   try {
-    if (t.impl === 'http') {
-      const u = new URL(t.url)
-      if (!(t.allowHosts ?? []).includes(u.hostname)) throw new Error(`Fence rejected host: ${u.hostname}`)
-      const r = await fetch(t.url, { method: t.method ?? 'POST', headers: { 'content-type': 'application/json', ...(t.headers ?? {}) }, body: JSON.stringify(body) })
-      // **先拿全文再解析,截断只用于日志**(2026-08-01 真机: 原先 slice(0,200) 后才 JSON.parse,
-      // 带结果事实的回答远超 200 字 ⇒ 解析必失败 ⇒ 值静默丢失,板上只剩"证实了"没有数)。
-      const full = await r.text()
-      evidence = full.slice(0, 200)
-      if (!r.ok) throw new Error(`HTTP ${r.status}: ${evidence}`)
-      // 后端可回报**它这次实际干的活**配得上的档(scipy 近似 vs 精确求解不是一回事);
-      // 工具表的档只知道一条路由,不知道这一单算了什么——两者取弱。
-      // 同时把**算出来的值**带回去: 没有它,板上只剩「证实了」没有数,人问"多少"只能去问模型,而模型会编。
-      const result = verificationResult(full)
-      ;({ ok, outcome, evidence, tier: backTier, facts: backFacts, reason: backReason } = result)
-    } else if (t.impl === 'run') {
-      const result = verificationResult(await handRun({ ...t, args: [...(t.args ?? []), JSON.stringify(body)] }, undefined, { board: w.board }))
-      ;({ ok, outcome, evidence, tier: backTier, facts: backFacts, reason: backReason } = result)
-    } else throw new Error(`Unsupported impl "${t.impl}"`)
+    const result = verificationResult(await runHandledTool(toolId, t, body, w.board, 'read'))
+    ;({ ok, outcome, evidence, tier: backTier, facts: backFacts, reason: backReason } = result)
   } catch (e) {
     ok = false
     outcome = 'error'
@@ -675,42 +680,25 @@ async function handleClaimWork(w) {
 // 它由工具包在装载时声明、宿主保管、host→host 随单下发。所以这件工具不是"模型的手":
 // 查什么不由模型决定,查回来的数也不经模型转述。**门不采信请求方自述**的机械形态就是这个。
 //
-// 本地实现走工具表的 `materials` 段(与 claims/tools 同律: 表里没有就不领,别人的活不抢):
-//   "materials": { "order_amount": { "impl": "http", "url": "http://db.internal/query",
-//                                     "method": "POST", "allowHosts": ["db.internal"] } }
+// 本地实现同样是版本化 Tool，只是以 `handles.evidence` 声明它承接哪类取材工单。
 // 后端收 {snapshot,key,metric,args},回一个 {facts:[{predicate,args}]} 或裸事实数组。
 async function handleEvidence(w) {
-  let route = (TOOLS.materials ?? {})[w.material]
-  if (route === undefined) {
-    console.log(`· Skipping material request ${w.material}: no matching material route is configured`)
+  const picked = toolForHandle(TOOLS, 'evidence', w.material)
+  if (picked === undefined) {
+    console.log(`· Skipping material request ${w.material}: no versioned Tool handles this evidence request`)
     return
   }
+  const { id: toolId, definition: route } = picked
   say(`● Claimed material request ${w.material} for ${w.tool} × ${w.norm}; fetching…`, 'claimed',
     { kind: 'material', id: w.material, tool: w.tool, ...(w.board ? { board: w.board } : {}) })
   let facts = []
   let exhibit
   let err
   try {
-    if (route.impl === 'http') {
-      route = resolveSourceCreds(route, SOURCES)
-      const u = new URL(route.url)
-      if (!(route.allowHosts ?? []).includes(u.hostname)) throw new Error(`Fence rejected host: ${u.hostname}`)
-      const r = await fetch(route.url, {
-        method: route.method ?? 'POST',
-        headers: { 'content-type': 'application/json', ...(route.headers ?? {}) },
-        body: JSON.stringify({ material: w.material, ...(w.payload ?? {}) }),
-      })
-      const full = await r.text()
-      if (!r.ok) throw new Error(`HTTP ${r.status}: ${full.slice(0, 160)}`)
-      const j = JSON.parse(full)
-      facts = Array.isArray(j) ? j : (j.facts ?? [])
-      // 展品(SRC-23 批C): 这句证词指着哪件实物——目标=接口源点,摘要=响应哈希。
-      exhibit = { target: 'origin:' + u.origin, item: u.pathname, digest: 'sha256:' + createHash('sha256').update(full).digest('hex').slice(0, 16) }
-    } else if (route.impl === 'run') {
-      const out = await handRun({ ...route, args: [...(route.args ?? []), JSON.stringify({ material: w.material, ...(w.payload ?? {}) })] }, undefined, { board: w.board })
-      facts = JSON.parse(out)
-      exhibit = { target: 'cmd:' + createHash('sha256').update(String(route.cmd ?? '')).digest('hex').slice(0, 16), item: String(route.cmd ?? ''), digest: 'sha256:' + createHash('sha256').update(out).digest('hex').slice(0, 16) }
-    } else throw new Error(`Unsupported impl "${route.impl}"`)
+    const out = await runHandledTool(toolId, route, { material: w.material, ...(w.payload ?? {}) }, w.board, 'read')
+    const parsed = JSON.parse(out)
+    facts = Array.isArray(parsed) ? parsed : (parsed.facts ?? [])
+    exhibit = { target: `tool:${toolId}`, item: route.source, digest: 'sha256:' + createHash('sha256').update(out).digest('hex').slice(0, 16) }
   } catch (e) { err = String(e.message).slice(0, 200) }
   if (err !== undefined || facts.length === 0) {
     // **查不出就不回报**: 回一条空材料等于伪造"查过了没事"。门那边会一直等,
@@ -915,30 +903,15 @@ async function handleAction(w) {
   const invocation = w.work
   // 板侧 2026-08-20 起全部工单行都出 `tool`（`action` 是那次改名前的旧名，已无生产者）。
   const action = w.tool
-  // SRC-41 裁3(2026-08-17): 工单行自带 toolSpec(exec 执行模板+params 参数槽)与实参——
-  // 本机表没有这件工具时按行上的规格通用执行,SQL 不再烙死在工人本机。
-  // 本机表**优先**(运维覆盖权: 表里有就按表办,行上的规格不越过它)。
-  let transient
-  if (TOOLS[action] === undefined && typeof w.toolSpec === 'string') {
-    try { transient = toolFromSpec(w.toolSpec, w.args) } catch (e) {
-      // 同因只说一次: 这一条最容易刷屏——意图缺实参时**每一次轮询都会再撞一次**,
-      // 而它是死结构(不重发意图就永远这样),重复说一百遍也不会让它变好(真机右栏几十行)。
-      saySkipOnce(w.board, action, `bad_toolspec:${String(e.message).slice(0, 60)}`,
-        `· Skipping ${action}: work item toolSpec is invalid (${String(e.message).slice(0, 100)})`)
-      return
-    }
-  }
-  if (TOOLS[action] === undefined && transient === undefined) {
-    saySkipOnce(w.board, action, 'no_local_tool', `· Skipping ${action}: no executable tool implementation is available`)
+  if (typeof w.toolSpec !== 'string') {
+    saySkipOnce(w.board, action, 'missing_tool_reference', `· Skipping ${action}: the work item has no Worker Tool reference`)
     return
   }
-  let executionTools = TOOLS
-  if (TOOLS[action] !== undefined && typeof w.toolSpec === 'string') {
-    try { executionTools = { [action]: toolWithContract(TOOLS[action], w.toolSpec) } } catch (e) {
-      saySkipOnce(w.board, action, `bad_contract:${String(e.message).slice(0, 60)}`,
-        `· Skipping ${action}: the domain package result contract is invalid (${String(e.message).slice(0, 100)})`)
-      return
-    }
+  let resolved
+  try { resolved = toolFromSpec(w.toolSpec, w.args, TOOLS, w.toolDigest) } catch (e) {
+    saySkipOnce(w.board, action, `tool_resolution:${String(e.message).slice(0, 60)}`,
+      `· Skipping ${action}: ${String(e.message).slice(0, 120)}`)
+    return
   }
   const claim = await work({ kind: 'ClaimWork', workType: 'action', id: invocation }, w.board)
   if (claim.accepted !== true) {
@@ -953,9 +926,7 @@ async function handleAction(w) {
   let resultFacts = []
   let reason
   try {
-    const executed = transient !== undefined
-      ? await execute(action, transient._args, { [action]: transient }, SOURCES, { board: w.board }) // db 类参数已填进 exec;mcp 类实参经 _args 透传
-      : await execute(action, w.payload?.args ?? w.args, executionTools, SOURCES, { board: w.board })
+    const executed = await execute(action, resolved._args ?? w.payload?.args ?? w.args, { [action]: resolved }, SOURCES, { board: w.board })
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
@@ -1007,13 +978,14 @@ async function handleAction(w) {
 }
 
 /**
- * 工单行 toolSpec → 临时工具(SRC-41 裁3)。**填参是这里唯一的牙齿位**:
+ * Adapter compiler used only for a locally trusted Worker manifest.
+ * Board work items cannot call this function directly.
  * - 只认声明过的参数槽(params);exec 里出现未声明的 {占位} 或缺实参 = 抛(如实 ok=false);
  * - number 槽只收真数值(数字或纯数字串)——「1;DROP TABLE」这种进不了数值槽;
  * - string 槽单引号包裹、内部单引号翻倍(SQL 字面量转义),模板里**不要**再自带引号;
  * - 填完的 SQL 照走 db-exec-fenced 的分类门/db-query 的 SELECT-only 守卫——牙齿不因参数化让位。
  */
-function toolFromSpec(specJson, argsJson) {
+function adapterToolFromSpec(specJson, argsJson) {
   const spec = JSON.parse(specJson)
   if (typeof spec.impl !== 'string') throw new Error('toolSpec is missing impl')
   if (spec.impl === 'mcp') {
@@ -1083,6 +1055,87 @@ function toolFromSpec(specJson, argsJson) {
     ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}) }
 }
 
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonical(value[k])]))
+  return value
+}
+
+export function toolDigest(definition) {
+  return createHash('sha256').update(JSON.stringify(canonical(definition))).digest('hex')
+}
+
+/** Validate and normalize the local Worker Tool Manifest. */
+export function workerToolsOf(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.format !== 'rulith-worker-tools/1'
+      || !raw.tools || typeof raw.tools !== 'object' || Array.isArray(raw.tools)) {
+    throw new Error('Worker tools must use {"format":"rulith-worker-tools/1","tools":{"tool.id@1":{...}}}')
+  }
+  const unknownTop = Object.keys(raw).filter((key) => !['format', 'tools'].includes(key))
+  if (unknownTop.length > 0) throw new Error(`Worker Tool Manifest has unknown top-level field(s): ${unknownTop.join(', ')}`)
+  const out = {}
+  const handledBy = new Map()
+  for (const [id, value] of Object.entries(raw.tools)) {
+    if (!/^[a-z][a-z0-9_.-]{1,95}@[1-9][0-9]*$/.test(id)) throw new Error(`Worker Tool id "${id}" must pin a positive version, for example acme.lookup@1`)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Worker Tool ${id} must be an object`)
+    const adapter = value.adapter
+    if (typeof adapter !== 'string' || !KNOWN_IMPLS.has(adapter)) throw new Error(`Worker Tool ${id} uses unsupported adapter "${String(adapter)}"`)
+    if (typeof value.source !== 'string' || value.source === '') throw new Error(`Worker Tool ${id} must bind one source`)
+    if (typeof value.entry !== 'string' || value.entry === '') throw new Error(`Worker Tool ${id} must define an adapter entry`)
+    const unknown = Object.keys(value).filter((key) => !['adapter', 'source', 'entry', 'fence', 'handles', 'tier'].includes(key))
+    if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
+    if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {
+      throw new Error(`Worker Tool ${id}.fence must be an object`)
+    }
+    if (value.handles !== undefined) {
+      if (!value.handles || typeof value.handles !== 'object' || Array.isArray(value.handles)) throw new Error(`Worker Tool ${id}.handles must be an object`)
+      const unknownHandles = Object.keys(value.handles).filter((key) => !['verification', 'evidence'].includes(key))
+      if (unknownHandles.length > 0) throw new Error(`Worker Tool ${id}.handles has unknown work type(s): ${unknownHandles.join(', ')}`)
+      for (const kind of ['verification', 'evidence']) {
+        const values = value.handles[kind]
+        if (values === undefined) continue
+        if (!Array.isArray(values) || values.length === 0 || values.some((item) => typeof item !== 'string' || item === '')) {
+          throw new Error(`Worker Tool ${id}.handles.${kind} must be a non-empty array of names`)
+        }
+        for (const item of values) {
+          const key = `${kind}:${item}`
+          if (handledBy.has(key)) throw new Error(`${kind} work "${item}" is handled by both ${handledBy.get(key)} and ${id}`)
+          handledBy.set(key, id)
+        }
+      }
+    }
+    out[id] = { ...value, digest: toolDigest(value) }
+  }
+  return out
+}
+
+export function workerToolManifest(tools) {
+  return Object.entries(tools).map(([id, def]) => ({ id, digest: def.digest ?? toolDigest(def), source: def.source }))
+}
+
+/**
+ * Resolve an Action work item to a local Tool. The work item may carry only a
+ * versioned Tool reference plus its board-owned invocation contract. Any
+ * adapter/entry supplied by the board is rejected instead of executed.
+ */
+function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest) {
+  const spec = JSON.parse(specJson)
+  if (spec.impl !== 'worker-tool') throw new Error('work item must reference a Worker Tool; adapter implementation is not accepted from the board')
+  const ref = spec.exec
+  if (typeof ref !== 'string' || !/^[a-z][a-z0-9_.-]{1,95}@[1-9][0-9]*$/.test(ref)) throw new Error('work item is missing a versioned Worker Tool reference')
+  const def = tools[ref]
+  if (!def) throw new Error(`Worker Tool ${ref} is not installed on this connection`)
+  const digest = def.digest ?? toolDigest(def)
+  if (expectedDigest !== undefined && digest !== expectedDigest) throw new Error(`Worker Tool ${ref} digest does not match the connection pin`)
+  if (typeof spec.source !== 'string' || spec.source !== def.source) throw new Error(`Worker Tool ${ref} is bound to source ${def.source}, not ${String(spec.source)}`)
+  const local = {
+    name: ref, kind: spec.kind, impl: def.adapter, source: def.source,
+    exec: def.entry, params: spec.params ?? {}, returns: spec.returns ?? [],
+    ...(def.fence && typeof def.fence === 'object' ? { fence: def.fence } : {}),
+  }
+  return adapterToolFromSpec(JSON.stringify(local), argsJson)
+}
+
 /** 判词解析交出去供红测——它是整条清关链上唯一一处"模型说了算"的入口,
  *  fail-closed 折叠得对不对不能靠读源码断言。 */
 // `weakerTier` 与 `handHttp` 的围栏 2026-08-22 导出给枪:变异实证它们此前**零覆盖**
@@ -1097,7 +1150,7 @@ export function orderWork(items) {
     .map(([w]) => w)
 }
 
-export { parseVerdict, resolveSourceCreds, execute, toolFromSpec, toolWithContract, shouldReview, noteReviewed, verificationResult, weakerTier, tierRank, TIER_ORDER }
+export { parseVerdict, resolveSourceCreds, execute, toolFromSpec, adapterToolFromSpec, toolWithContract, shouldReview, noteReviewed, verificationResult, weakerTier, tierRank, TIER_ORDER }
 
 let running = true
 let sawReview = false
@@ -1115,14 +1168,14 @@ if (IS_MAIN) {
     } else throw e
   }
   if (running) {
-    const seats = [Object.keys(TOOLS).length ? `tools: ${Object.keys(TOOLS).join(', ')}` : 'tools: transparent (using each work item toolSpec)']
+    const seats = [Object.keys(TOOLS).length ? `tools: ${Object.keys(TOOLS).join(', ')}` : 'tools: none (action work disabled)']
     if (REVIEWER_URL && REVIEWER_MODEL) seats.push(`reviewer: ${REVIEWER_MODEL}`)
     say(`rulith-worker ${WORKER_VERSION} online · channel ${CHANNEL} · ${seats.join(' · ')}`, 'up',
       { channel: CHANNEL, version: WORKER_VERSION, tools: Object.keys(TOOLS).length, reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
   }
   while (running) {
     try {
-      const r = await work({ kind: 'Poll' })
+      const r = await work({ kind: 'Poll', tools: workerToolManifest(TOOLS) })
       // 单数组 + workType 判别(ListWork 合流面): 求证工单/可领动作/清关案卷同队,按型分派。
       // **动作优先**(2026-08-23 站上实跑证伤,用户裁「不可用当然得修」): 单线程循环里
       // 动作排在成串求证重探后面 ⇒ ApplyAction 受理到执行隔约一分钟,act_wait 30s
