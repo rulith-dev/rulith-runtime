@@ -20,7 +20,6 @@ const files = [
   'examples/verified-calculation/recipe.template.json',
   'examples/verified-calculation/setup.mjs',
   'examples/verified-calculation/verify-output.mjs',
-  'examples/verified-calculation/worker-tools.template.json',
   'examples/verified-calculation/write-output.mjs',
 ]
 

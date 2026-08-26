@@ -14,7 +14,7 @@ if (!sourcePath || !existsSync(sourcePath)) {
   console.error('usage: node prepare-station.mjs <existing-working-rulith-station.json>')
   process.exit(2)
 }
-for (const required of ['rulith-tools.json', 'input.json']) {
+for (const required of ['input.json']) {
   if (!existsSync(join(runtime, required))) {
     console.error(`missing ${join(runtime, required)} — run prepare-runtime.mjs first`)
     process.exit(2)
@@ -44,9 +44,7 @@ const config = {
     ...(source.worker ?? {}),
     env: {
       ...(source.worker?.env ?? {}),
-      RULITH_TOOLS_FILE: join(runtime, 'rulith-tools.json'),
-      RULITH_CALC_INPUT: join(runtime, 'input.json'),
-      RULITH_CALC_OUTPUT: join(runtime, 'output.json'),
+      RULITH_WORKER_ROOT: HERE,
     },
   },
   paths: {

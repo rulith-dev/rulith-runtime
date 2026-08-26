@@ -54,24 +54,22 @@ to the configured model endpoint. It does not upload the model key to Rulith.
 
 ## Worker
 
-Tool and Source packages installed in Console define the portable contracts: names,
-arguments, expected facts, attestation scope, and safety fences. The files in `config/`
-are machine-local deployment overlays. They bind those contracts to fixed executables,
-directories, endpoints, and secrets; they are not a second capability recipe and must
-not be published to the Capability market.
+Tool and Source packages installed in Console define names, arguments, result mappings,
+attestation scope, safety fences, and non-secret adapter locations. A `run` package may
+select only a relative adapter already installed under the Worker root; it cannot send a
+command, an absolute path, or a shell program. Local configuration is optional and is
+reserved for credentials or deployment-specific endpoint overrides.
 
-Create local binding files from the examples in `config/`, then run:
+For a package that needs no private credential, run:
 
 ```powershell
 $env:RULITH_CHANNEL = '<connection-id>'
 $env:RULITH_CHANNEL_KEY = '<connection-key>'
-$env:RULITH_TOOLS_FILE = "$PWD/config/rulith-tools.example.json"
-$env:RULITH_SOURCES_FILE = "$PWD/config/rulith-sources.example.json"
 node worker/rulith-worker.mjs
 ```
 
-The Worker polls outbound, claims only work for which it has a declared local
-implementation, executes it, and reports a receipt before polling again. A model
+The Worker polls outbound, claims only work whose package selects a supported and locally
+present adapter, executes it, and reports a receipt before polling again. A model
 request cannot grant itself a tool, a source, a credential, or verification authority.
 
 ## Station
@@ -106,8 +104,8 @@ The model never supplies the trusted input values or the calculated output value
 
 - Agent tokens and model keys belong to the Agent Runtime process.
 - Connection keys and source credentials belong to the Worker machine.
-- `run` tools execute fixed local commands; work-item values are not interpolated
-  into command names or arguments.
+- `run` tools execute relative adapters beneath the Worker root with the current Node
+  runtime; packages cannot select arbitrary commands or escape that directory.
 - HTTP tools are constrained to their declared source or allowlist.
 - Database read tools accept a single `SELECT`; fenced write tools classify and
   reject unsupported or destructive statements unless the declared contract allows them.

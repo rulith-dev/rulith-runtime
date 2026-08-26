@@ -26,9 +26,9 @@ Create an Agent named `verified-calculation` in Console. Create a pull Connectio
 **Capabilities → Capability market**, search for `Verified Calculation`, select the Agent,
 and install these ordinary Rulith-published packages in order:
 
-1. **Verified Calculation · 1/3 Knowledge**
-2. **Verified Calculation · 2/3 Tools**
-3. **Verified Calculation · 3/3 Local Source**
+1. **Verified Calculation — Knowledge**
+2. **Verified Calculation — Tools**
+3. **Verified Calculation — Local source**
 
 The third package binds its Source declaration to the existing `local-worker` Connection.
 All three use the same gallery and installation path as community packages; there is no
@@ -61,12 +61,13 @@ args: --agent verified-calculation --ui --case-boards
 RULITH_CASE_BOARDS=on
 ```
 
-Configure the Worker while preserving its Connection credentials:
+Configure the Worker with its Connection credentials. Tool execution and the `runtime`
+source location arrive from the governed packages, so this example needs no local Tool
+or Source definition file:
 
 ```text
-RULITH_TOOLS_FILE=<runtime>/rulith-tools.json
-RULITH_CALC_INPUT=<runtime>/input.json
-RULITH_CALC_OUTPUT=<runtime>/output.json
+RULITH_CHANNEL=<connection-id>
+RULITH_CHANNEL_KEY=<connection-key>
 ```
 
 If another Station already works on this machine, derive a separate local config
@@ -100,6 +101,12 @@ arguments:
 
 ```json
 {"kind":"ApplyAction","action":"write_calculation_result","target":"CALC_calc-001"}
+```
+
+The final read-back uses the same board-bound target:
+
+```json
+{"kind":"ApplyAction","action":"verify_calculation_output","target":"CALC_calc-001"}
 ```
 
 The completed case must contain an `output_written` action effect and an attested

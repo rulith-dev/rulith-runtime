@@ -46,7 +46,7 @@ function executableText(source) {
 test('artifact manifest matches every downloadable local file', () => {
   const manifest = JSON.parse(readFileSync(join(ROOT, 'artifact-manifest.json'), 'utf8'))
   assert.equal(manifest.schema, 'rulith-local-runtime-artifacts/v1')
-  assert.ok(Object.keys(manifest.files).length >= 16)
+  assert.ok(Object.keys(manifest.files).length >= 15)
   for (const [rel, entry] of Object.entries(manifest.files)) {
     const canonical = readFileSync(join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
     const actual = createHash('sha256').update(canonical, 'utf8').digest('hex')
@@ -185,8 +185,10 @@ test('verified calculation example prepares only local adapters; governed packag
       encoding: 'utf8',
     })
     assert.equal(run.status, 0, run.stderr || run.stdout)
-    const tools = JSON.parse(readFileSync(join(dir, 'rulith-tools.json'), 'utf8'))
-    assert.ok(Object.keys(tools).length >= 3)
+    assert.equal(existsSync(join(dir, 'rulith-tools.json')), false,
+      'tool execution contracts must come from the governed Tool package, not a generated client table')
+    assert.equal(existsSync(join(dir, 'input.json')), true)
+    assert.equal(existsSync(join(example, 'adapters', 'verified-calculation', 'read-input.mjs')), true)
     assert.equal(existsSync(join(dir, 'recipe.json')), false, 'managed capability packages must not be rendered into the client workspace')
     assert.equal(existsSync(join(dir, 'recipe.template.json')), false,
       'the public market source must not be downloaded as a client-owned recipe')
@@ -199,10 +201,11 @@ test('verified calculation is represented by three ordinary market packages', ()
   const recipe = JSON.parse(readFileSync(join(ROOT, 'examples', 'verified-calculation', 'recipe.template.json'), 'utf8'))
   assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['domain', 'tools', 'sources'])
   assert.deepEqual(recipe.packs.map((entry) => entry.pack.title ?? entry.pack.meta?.title), [
-    'Verified Calculation · 1/3 Knowledge',
-    'Verified Calculation · 2/3 Tools',
-    'Verified Calculation · 3/3 Local Source',
+    'Verified Calculation — Knowledge',
+    'Verified Calculation — Tools',
+    'Verified Calculation — Local source',
   ])
+  assert.equal(recipe.collection.id, 'verified_calculation')
   assert.equal(recipe.packs[2].pack.sources[0].line, 'local-worker')
   assert.equal(recipe.packs[0].pack.acceptance.length, 1)
 })

@@ -46,7 +46,8 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** 直接跑=干活;被 import=只把纯函数交出去(测试用)。
  *  没有这道闸,判词解析这类"模型说了算"的地方就永远只能靠读源码断言——
@@ -57,6 +58,7 @@ const WORK_URL = process.env.RULITH_WORK_URL ?? 'https://api.rulith.com/work'
 const CHANNEL = process.env.RULITH_CHANNEL
 const KEY = process.env.RULITH_CHANNEL_KEY
 const TOOLS_FILE = process.env.RULITH_TOOLS_FILE ?? './rulith-tools.json'
+const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToPath(import.meta.url)))
 /** 密文库(SRC-40,来源授信规范批E): `{ "<来源名>": { "dsn"|"url"|"headers"|"token": … } }`。
  *  凭据只住这台机器——不进工具表(工具表随包可分享)、不上板、不进注册面。
  *  工具/取材条目写 `"source": "<来源名>"` 即从这里取密;直写 dsn/url 照旧可用(迁移双读)。 */
@@ -82,6 +84,8 @@ function resolveSourceCreds(route, vault) {
   const merged = { ...route }
   if (merged.dsn === undefined && typeof src.dsn === 'string') merged.dsn = src.dsn
   if (merged.url === undefined && typeof src.url === 'string') merged.url = src.url
+  if (merged.access === undefined && typeof src.access === 'string') merged.access = src.access
+  if (merged.sourceType === undefined && typeof src.type === 'string') merged.sourceType = src.type
   if (src.headers && typeof src.headers === 'object') merged.headers = { ...(src.headers), ...(merged.headers ?? {}) }
   if (typeof src.token === 'string' && merged.headers?.authorization === undefined) merged.headers = { ...(merged.headers ?? {}), authorization: `Bearer ${src.token}` }
   return merged
@@ -184,7 +188,10 @@ if (IS_MAIN) {
         let n = 0
         for (const s of j.sources) {
           if (!s || typeof s.name !== 'string' || s.name === '') continue
-          if (SOURCES[s.name] === undefined && typeof s.access === 'string' && s.access !== '') { SOURCES[s.name] = { url: s.access, dsn: s.access }; n++ }
+          if (SOURCES[s.name] === undefined && typeof s.access === 'string' && s.access !== '') {
+            SOURCES[s.name] = { type: s.type, access: s.access, url: s.access, dsn: s.access }
+            n++
+          }
         }
         if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`)
       }).catch((e) => {
@@ -313,14 +320,21 @@ async function handHttp(t, args, sources = SOURCES) {
  *  `passArgs:true` 只把动态实参序列化成**一个 JSON argv**追加给固定程序；
  *  它不会改变 cmd，也不会拆成多个参数。程序自己校验这份数据。
  */
-function handRun(t, args, context = {}) {
+function handRun(t, args, context = {}, sources = SOURCES) {
   return new Promise((resolve, reject) => {
     const argv = [...(t.args ?? []), ...(t.passArgs === true ? [JSON.stringify(args ?? {})] : [])]
     // `board` 来自受信工单行，不来自模型 args。固定适配器据它领取/续租自己的案件，
     // 同一 Worker 才能安全服务多个并行 Context；模型不能靠改动作参数把别案主键带进来。
-    const env = context.board
-      ? { ...process.env, RULITH_CASE_ID: String(context.board) }
-      : process.env
+    const source = resolveSourceCreds(t, sources)
+    const access = typeof source.access === 'string'
+      ? (isAbsolute(source.access) ? source.access : resolve(WORKER_ROOT, source.access))
+      : undefined
+    const env = {
+      ...process.env,
+      ...(context.board ? { RULITH_CASE_ID: String(context.board) } : {}),
+      ...(access ? { RULITH_SOURCE_ACCESS: access } : {}),
+      ...(source.sourceType ? { RULITH_SOURCE_TYPE: String(source.sourceType) } : {}),
+    }
     execFile(t.cmd, argv, { timeout: 60_000, env }, (err, stdout, stderr) => {
       // **不要再拼一遍 stderr**(2026-08-21 真机: 回执里同一句话出现两遍,中间一个 " : ")。
       // `execFile` 的 `err.message` 形如「Command failed: <命令行>\n<stderr 全文>」——
@@ -524,7 +538,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCES, context =
   let out
   if (t.impl === 'http') out = await handHttp(t, args, sources)
   else if (t.impl === 'run') {
-    out = await handRun(t, args, context)
+    out = await handRun(t, args, context, sources)
     // 本机 run 只是固定执行适配器；“输出哪些领域事实”仍由领域包 returns 声明。
     // 结构化程序统一回 {rows:[...]}，Worker 机械映射，不让脚本自行决定谓词与档位。
     if (Array.isArray(t.returns)) {
@@ -1025,8 +1039,27 @@ function toolFromSpec(specJson, argsJson) {
       _args: hargs,
     }
   }
+  if (spec.impl === 'run') {
+    if (typeof spec.source !== 'string' || spec.source === '') throw new Error('run toolSpec is missing source')
+    if (typeof spec.exec !== 'string' || spec.exec === '') throw new Error('run toolSpec is missing a local adapter path')
+    if (isAbsolute(spec.exec) || /^[A-Za-z]:[\\/]/.test(spec.exec) || spec.exec.startsWith('\\\\') || spec.exec.startsWith('//')) {
+      throw new Error('run exec must be a relative adapter path under the Worker root')
+    }
+    const adapter = resolve(WORKER_ROOT, spec.exec)
+    const inside = relative(WORKER_ROOT, adapter)
+    if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+      throw new Error('run exec must stay inside the Worker root')
+    }
+    let rargs = {}
+    if (typeof argsJson === 'string' && argsJson !== '') rargs = JSON.parse(argsJson)
+    return {
+      impl: 'run', source: spec.source, cmd: process.execPath, args: [adapter], passArgs: true,
+      ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}),
+      _args: rargs,
+    }
+  }
   if (spec.impl !== 'db-query' && spec.impl !== 'db-exec-fenced') {
-    throw new Error(`toolSpec impl "${spec.impl}" is not supported for generic execution; supported implementations are http, db-query, db-exec-fenced, and mcp`)
+    throw new Error(`toolSpec impl "${spec.impl}" is not supported for generic execution; supported implementations are http, run, db-query, db-exec-fenced, and mcp`)
   }
   if (typeof spec.exec !== 'string' || spec.exec === '') throw new Error('Database toolSpec is missing an exec template')
   const params = spec.params ?? {}

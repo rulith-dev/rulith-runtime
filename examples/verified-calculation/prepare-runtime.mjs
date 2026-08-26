@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-/** Render runtime files without copying credentials into the repository. */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+/** Prepare the local adapter layout referenced by the governed Tool and Source packages. */
+import { copyFileSync, mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,17 +8,15 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const runtime = resolve(process.env.RULITH_CALC_RUNTIME ?? join(HERE, 'runtime'))
 mkdirSync(runtime, { recursive: true })
 
-const tools = readFileSync(join(HERE, 'worker-tools.template.json'), 'utf8')
-  .replaceAll('__READ_SCRIPT__', resolve(HERE, 'read-input.mjs').replaceAll('\\', '/'))
-  .replaceAll('__WRITE_SCRIPT__', resolve(HERE, 'write-output.mjs').replaceAll('\\', '/'))
-  .replaceAll('__VERIFY_SCRIPT__', resolve(HERE, 'verify-output.mjs').replaceAll('\\', '/'))
-
-JSON.parse(tools)
-writeFileSync(join(runtime, 'rulith-tools.json'), tools)
-writeFileSync(join(runtime, 'input.json'), readFileSync(join(HERE, 'data', 'input.json')))
+const adapters = join(HERE, 'adapters', 'verified-calculation')
+mkdirSync(adapters, { recursive: true })
+for (const file of ['read-input.mjs', 'write-output.mjs', 'verify-output.mjs']) {
+  copyFileSync(join(HERE, file), join(adapters, file))
+}
+copyFileSync(join(HERE, 'data', 'input.json'), join(runtime, 'input.json'))
 console.log(JSON.stringify({
   runtime,
-  tools: join(runtime, 'rulith-tools.json'),
+  adapters,
   input: join(runtime, 'input.json'),
   output: join(runtime, 'output.json'),
 }, null, 2))

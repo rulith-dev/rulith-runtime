@@ -1,4 +1,9 @@
 {
+  "collection": {
+    "id": "verified_calculation",
+    "title": "Verified Calculation",
+    "summary": "Read trusted local JSON, derive an exact total, write the result, and verify it by independent read-back."
+  },
   "packs": [
     {
       "packType": "domain",
@@ -6,7 +11,7 @@
         "format": "rulith-pack/1",
         "meta": {
           "name": "verified_calculation",
-          "title": "Verified Calculation · 1/3 Knowledge",
+          "title": "Verified Calculation — Knowledge",
           "version": 1,
           "deps": [],
           "provides": ["calculation_result"]
@@ -124,13 +129,14 @@
       "packType": "tools",
       "pack": {
         "format": "rulith-tools/1",
-        "meta": { "name": "verified_calculation_io", "title": "Verified Calculation · 2/3 Tools", "version": 1 },
+        "meta": { "name": "verified_calculation_io", "title": "Verified Calculation — Tools", "version": 1 },
         "tools": [
           {
             "name": "load_calculation_input",
             "kind": "read",
             "impl": "run",
             "source": "verified-calculation-local",
+            "exec": "adapters/verified-calculation/read-input.mjs",
             "desc": "[intake] Read and validate the configured local input.json, then create the task. Pass no target and no business arguments.",
             "params": {},
             "returns": [
@@ -155,6 +161,7 @@
             "kind": "write",
             "impl": "run",
             "source": "verified-calculation-local",
+            "exec": "adapters/verified-calculation/write-output.mjs",
             "desc": "Write only the exact result bound from trusted input plus the board-derived calculation. Pass no business arguments; add only the target leaf.",
             "params": {
               "node": "string",
@@ -198,6 +205,28 @@
                 }
               }
             ]
+          },
+          {
+            "name": "verify_calculation_output",
+            "kind": "read",
+            "impl": "run",
+            "source": "verified-calculation-local",
+            "exec": "adapters/verified-calculation/verify-output.mjs",
+            "desc": "Read the persisted output and attest only an exact match to the board-bound result.",
+            "params": {
+              "node": "string",
+              "job_id": "string",
+              "subtotal_cents": "number",
+              "total_cents": "number",
+              "status": "string"
+            },
+            "preconditions": [
+              { "predicate": "calculation_result", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents" } },
+              { "predicate": "output_written", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "?status" } }
+            ],
+            "returns": [
+              { "predicate": "output_record", "args": { "node": "$node", "job_id": "$job_id", "subtotal_cents": "$subtotal_cents", "total_cents": "$total_cents", "status": "$status" } }
+            ]
           }
         ]
       }
@@ -207,12 +236,13 @@
       "pack": {
         "format": "rulith-sources/1",
         "meta": { "name": "verified_calculation_source", "version": 1 },
-        "title": "Verified Calculation · 3/3 Local Source",
+        "title": "Verified Calculation — Local source",
         "sources": [
           {
             "name": "verified-calculation-local",
-            "type": "compute",
+            "type": "file",
             "line": "local-worker",
+            "access": "runtime",
             "words": ["calculation_input", "task_seed", "output_record"],
             "tier": "attested",
             "territoryHint": "Customer-controlled local JSON files"

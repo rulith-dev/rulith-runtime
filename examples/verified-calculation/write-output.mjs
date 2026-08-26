@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const OUTPUT = process.env.RULITH_CALC_OUTPUT ?? join(HERE, 'data', 'output.json')
+const SOURCE_ROOT = process.env.RULITH_SOURCE_ACCESS ?? join(HERE, 'data')
+const OUTPUT = process.env.RULITH_CALC_OUTPUT ?? join(SOURCE_ROOT, 'output.json')
 
 function fail(message) {
   console.error(`calculation output rejected: ${message}`)
