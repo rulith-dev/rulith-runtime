@@ -21,19 +21,23 @@ calculated output values.
 
 ## Fastest public setup
 
-Create an Agent named `verified-calculation` in Console. Create a pull Connection named
-`local-worker` for that Agent and copy its public channel id and one-time key. Open
+Create an Agent named `verified-calculation` in Console. Create one Worker Connection named
+`verified-calculation-worker` for that Agent and copy its public channel id and one-time key. Open
 **Capabilities → Capability market**, search for `Verified Calculation`, select the Agent,
-and install these ordinary Rulith-published packages in order:
+and install the **Verified Calculation** Capability once. The market shows its three governed
+components before confirmation:
 
 1. **Verified Calculation — Knowledge**
 2. **Verified Calculation — Tools**
 3. **Verified Calculation — Local source**
 
-The third package binds its Source declaration to the existing `local-worker` Connection.
-All three use the same gallery and installation path as community packages; there is no
-starter-only installer. Governance owns the installed recipe, and the local REPL and
-Worker cannot replace it. Then run:
+The Capability manifest only groups ordinary typed packages; each component uses the same
+installation path as community packages, with no starter-only installer. After installation,
+open **Agent → Configuration → Data sources**
+and bind `verified-calculation-local` to `verified-calculation-worker`. This deployment
+binding belongs to the Agent and is deliberately absent from the reusable Source package.
+Governance owns the installed recipe and binding; the local REPL and Worker cannot replace
+either. Then run:
 
 ```powershell
 Invoke-WebRequest https://console.rulith.com/examples/verified-calculation/setup.mjs -OutFile verified-calculation-setup.mjs
@@ -47,7 +51,7 @@ configuration.
 
 ## Prepare from this source checkout
 
-Install the three example packages in Console first, then prepare only the local adapters:
+Install the Verified Calculation Capability in Console first, then prepare only the local adapters:
 
 ```powershell
 cd examples/verified-calculation

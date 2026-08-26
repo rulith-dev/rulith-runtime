@@ -206,7 +206,8 @@ test('verified calculation is represented by three ordinary market packages', ()
     'Verified Calculation — Local source',
   ])
   assert.equal(recipe.collection.id, 'verified_calculation')
-  assert.equal(recipe.packs[2].pack.sources[0].line, 'local-worker')
+  assert.equal(recipe.collection.version, '1.0.0')
+  assert.equal('line' in recipe.packs[2].pack.sources[0], false)
   assert.equal(recipe.packs[0].pack.acceptance.length, 1)
 })
 

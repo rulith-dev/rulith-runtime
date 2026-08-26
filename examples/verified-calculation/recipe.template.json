@@ -1,6 +1,7 @@
 {
   "collection": {
     "id": "verified_calculation",
+    "version": "1.0.0",
     "title": "Verified Calculation",
     "summary": "Read trusted local JSON, derive an exact total, write the result, and verify it by independent read-back."
   },
@@ -241,7 +242,6 @@
           {
             "name": "verified-calculation-local",
             "type": "file",
-            "line": "local-worker",
             "access": "runtime",
             "words": ["calculation_input", "task_seed", "output_record"],
             "tier": "attested",

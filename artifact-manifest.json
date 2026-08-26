@@ -21,7 +21,7 @@
       "sha256": "3e5ef49c05df53fe0125ecefe2db1fbb3145f606047c36b3356500f22bda5ea8"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "59a4d8aedb7d85a723ddd2dbc2e8169f4e56d7788b339a29a4fa647f1d1094bb"
+      "sha256": "d8ca9916f19f90199be971dde2733d4702e9d380820211bc9511606eb8fc088d"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
@@ -36,7 +36,7 @@
       "sha256": "52ed9dde4456ed7844ed02eceffc1c2a6b21faa57650435ed0671439c90dc7ee"
     },
     "examples/verified-calculation/recipe.template.json": {
-      "sha256": "bc6b235a8964302980e832676b1d3c044998554fcc1d8cee43de77c81a2748ec"
+      "sha256": "7db243b38c136af4ac699fa48a8d2d2e83990e5988d921ccb62a27541c089ee7"
     },
     "examples/verified-calculation/setup.mjs": {
       "sha256": "615675bc31b7591e11c72d5b8f87d79e57799526f0103d8073b35a9476c5df8d"
