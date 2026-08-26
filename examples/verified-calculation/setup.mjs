@@ -15,7 +15,6 @@ const FILES = [
   'read-input.mjs',
   'write-output.mjs',
   'verify-output.mjs',
-  'recipe.template.json',
   'worker-tools.template.json',
   'data/input.json',
 ]

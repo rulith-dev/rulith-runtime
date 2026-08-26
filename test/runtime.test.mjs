@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -11,6 +11,37 @@ import { orderWork } from '../worker/rulith-worker.mjs'
 import { applyEnvEdit, maskEnv, stationPage } from '../station/rulith-station.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
+
+const PRODUCTION_DIRS = ['agent', 'worker', 'station', 'examples', 'config']
+const LEGACY_RESPONSE_PATTERNS = [
+  '/不认|不收|未知|无此|不支持|不识别|unknown|unsupported|unrecognized|not recognized/i',
+  '/(?:已存在|already exists)/i',
+  '/work-ordered|退避窗|backoff window/',
+  '/退避窗\\(还剩约 (\\d+)s\\)|backoff window \\(about (\\d+)s/',
+  '/gap|rejected|缺口|放电拒/i',
+  '/^\\[discharge\\]|^verification ·|^\\[放电\\]|^求证 ·/i',
+  '/case sealed|not closed|board.*deliverable|outstanding obligation|封板结案|没有结案|板判可交付|未结义务/i',
+  '/提示:|锚建议/',
+]
+
+function productionFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) return productionFiles(path)
+    return /\.(?:mjs|json)$/.test(entry.name) ? [path] : []
+  })
+}
+
+function executableText(source) {
+  let text = source
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/(^|\s)\/\/.*$/, ''))
+    .join('\n')
+  for (const pattern of LEGACY_RESPONSE_PATTERNS) text = text.replaceAll(pattern, '<legacy-response-pattern>')
+  return text
+}
 
 test('artifact manifest matches every downloadable local file', () => {
   const manifest = JSON.parse(readFileSync(join(ROOT, 'artifact-manifest.json'), 'utf8'))
@@ -131,6 +162,19 @@ test('station presents the public local workflow in English', () => {
   assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
 })
 
+test('production-facing runtime text is English-only', () => {
+  const files = PRODUCTION_DIRS.flatMap((dir) => productionFiles(join(ROOT, dir)))
+  assert.ok(files.length >= 15)
+  for (const file of files) {
+    const text = executableText(readFileSync(file, 'utf8'))
+    const match = text.match(/[\u3400-\u9fff]/)
+    if (match) {
+      const line = text.slice(0, match.index).split('\n').length
+      assert.fail(`${file.slice(ROOT.length + 1)}:${line} contains CJK in production-facing text`)
+    }
+  }
+})
+
 test('verified calculation example prepares only local adapters; governed packages stay off the client', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-runtime-'))
   const example = join(ROOT, 'examples', 'verified-calculation')
@@ -144,9 +188,23 @@ test('verified calculation example prepares only local adapters; governed packag
     const tools = JSON.parse(readFileSync(join(dir, 'rulith-tools.json'), 'utf8'))
     assert.ok(Object.keys(tools).length >= 3)
     assert.equal(existsSync(join(dir, 'recipe.json')), false, 'managed capability packages must not be rendered into the client workspace')
+    assert.equal(existsSync(join(dir, 'recipe.template.json')), false,
+      'the public market source must not be downloaded as a client-owned recipe')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('verified calculation is represented by three ordinary market packages', () => {
+  const recipe = JSON.parse(readFileSync(join(ROOT, 'examples', 'verified-calculation', 'recipe.template.json'), 'utf8'))
+  assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['domain', 'tools', 'sources'])
+  assert.deepEqual(recipe.packs.map((entry) => entry.pack.title ?? entry.pack.meta?.title), [
+    'Verified Calculation · 1/3 Knowledge',
+    'Verified Calculation · 2/3 Tools',
+    'Verified Calculation · 3/3 Local Source',
+  ])
+  assert.equal(recipe.packs[2].pack.sources[0].line, 'local-worker')
+  assert.equal(recipe.packs[0].pack.acceptance.length, 1)
 })
 
 test('public runtime contains no private deployment addresses or credential material', () => {

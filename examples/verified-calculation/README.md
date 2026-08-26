@@ -22,10 +22,18 @@ calculated output values.
 ## Fastest public setup
 
 Create an Agent named `verified-calculation` in Console. Create a pull Connection named
-`local-worker` for that Agent and copy its public channel id and one-time key. Then open
-the Agent's **Configuration** tab and install the Verified Calculation starter with that
-Connection name. The capability recipe is governance-owned; the local REPL never
-installs it. Then run:
+`local-worker` for that Agent and copy its public channel id and one-time key. Open
+**Capabilities → Capability market**, search for `Verified Calculation`, select the Agent,
+and install these ordinary Rulith-published packages in order:
+
+1. **Verified Calculation · 1/3 Knowledge**
+2. **Verified Calculation · 2/3 Tools**
+3. **Verified Calculation · 3/3 Local Source**
+
+The third package binds its Source declaration to the existing `local-worker` Connection.
+All three use the same gallery and installation path as community packages; there is no
+starter-only installer. Governance owns the installed recipe, and the local REPL and
+Worker cannot replace it. Then run:
 
 ```powershell
 Invoke-WebRequest https://console.rulith.com/examples/verified-calculation/setup.mjs -OutFile verified-calculation-setup.mjs
@@ -39,7 +47,7 @@ configuration.
 
 ## Prepare from this source checkout
 
-Install the example configuration in Console first, then prepare only the local adapters:
+Install the three example packages in Console first, then prepare only the local adapters:
 
 ```powershell
 cd examples/verified-calculation

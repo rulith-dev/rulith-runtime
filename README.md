@@ -54,7 +54,13 @@ to the configured model endpoint. It does not upload the model key to Rulith.
 
 ## Worker
 
-Create local configuration files from the examples in `config/`, then run:
+Tool and Source packages installed in Console define the portable contracts: names,
+arguments, expected facts, attestation scope, and safety fences. The files in `config/`
+are machine-local deployment overlays. They bind those contracts to fixed executables,
+directories, endpoints, and secrets; they are not a second capability recipe and must
+not be published to the Capability market.
+
+Create local binding files from the examples in `config/`, then run:
 
 ```powershell
 $env:RULITH_CHANNEL = '<connection-id>'
@@ -89,7 +95,7 @@ only then accepts the result.
 
 ```powershell
 cd examples/verified-calculation
-node prepare-runtime.mjs <connection-id>
+node prepare-runtime.mjs
 ```
 
 Follow the generated paths and the instructions in

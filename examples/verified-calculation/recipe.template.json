@@ -6,6 +6,7 @@
         "format": "rulith-pack/1",
         "meta": {
           "name": "verified_calculation",
+          "title": "Verified Calculation · 1/3 Knowledge",
           "version": 1,
           "deps": [],
           "provides": ["calculation_result"]
@@ -123,7 +124,7 @@
       "packType": "tools",
       "pack": {
         "format": "rulith-tools/1",
-        "meta": { "name": "verified_calculation_io", "version": 1 },
+        "meta": { "name": "verified_calculation_io", "title": "Verified Calculation · 2/3 Tools", "version": 1 },
         "tools": [
           {
             "name": "load_calculation_input",
@@ -202,22 +203,20 @@
       }
     },
     {
-      "packType": "channels",
+      "packType": "sources",
       "pack": {
-        "format": "rulith-channels/1",
-        "meta": { "name": "verified_calculation_local_worker", "version": 1 },
-        "channels": [
+        "format": "rulith-sources/1",
+        "meta": { "name": "verified_calculation_source", "version": 1 },
+        "title": "Verified Calculation · 3/3 Local Source",
+        "sources": [
           {
-            "id": "__RULITH_CHANNEL__",
-            "role": "compute",
-            "recertifiable": false,
-            "tools": ["load_calculation_input", "write_calculation_result"]
+            "name": "verified-calculation-local",
+            "type": "compute",
+            "line": "local-worker",
+            "words": ["calculation_input", "task_seed", "output_record"],
+            "tier": "attested",
+            "territoryHint": "Customer-controlled local JSON files"
           }
-        ],
-        "bindings": [
-          { "predicate": "calculation_input", "channel": "__RULITH_CHANNEL__", "tier": "attested" },
-          { "predicate": "task_seed", "channel": "__RULITH_CHANNEL__", "tier": "attested" },
-          { "predicate": "output_record", "channel": "__RULITH_CHANNEL__", "tier": "attested" }
         ]
       }
     }
