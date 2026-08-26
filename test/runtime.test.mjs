@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -50,6 +50,18 @@ test('agent help is available before credentials and documents the UI port', () 
   assert.match(run.stdout, /RULITH_UI_PORT/)
   assert.match(run.stdout, /--case-boards/)
   assert.doesNotMatch(run.stderr, /missing/i)
+})
+
+test('managed Cloud rejects a client-owned recipe before it can install packages', () => {
+  const run = spawnSync(process.execPath, ['agent/rulith-agent.mjs', '--case-boards', '--recipe', 'client-owned.json', 'test'], {
+    cwd: ROOT,
+    env: { ...process.env, RULITH_URL: 'https://api.rulith.com', RULITH_TOKEN: 'test-token', RULITH_MODEL_KEY: 'test-model-key' },
+    encoding: 'utf8',
+  })
+  assert.equal(run.status, 1)
+  assert.match(run.stderr, /self-hosted\/offline option/)
+  assert.match(run.stderr, /configured in Console/)
+  assert.doesNotMatch(run.stderr, /Cannot read recipe file/)
 })
 
 test('worker rejects bad credentials before claiming to be online and exits cleanly', async () => {
@@ -119,20 +131,19 @@ test('station presents the public local workflow in English', () => {
   assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
 })
 
-test('verified calculation example renders valid local files without credentials', () => {
+test('verified calculation example prepares only local adapters; governed packages stay off the client', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-runtime-'))
   const example = join(ROOT, 'examples', 'verified-calculation')
   try {
-    const run = spawnSync(process.execPath, ['prepare-runtime.mjs', 'public-test-channel'], {
+    const run = spawnSync(process.execPath, ['prepare-runtime.mjs'], {
       cwd: example,
       env: { ...process.env, RULITH_CALC_RUNTIME: dir },
       encoding: 'utf8',
     })
     assert.equal(run.status, 0, run.stderr || run.stdout)
-    const recipe = JSON.parse(readFileSync(join(dir, 'recipe.json'), 'utf8'))
     const tools = JSON.parse(readFileSync(join(dir, 'rulith-tools.json'), 'utf8'))
-    assert.match(JSON.stringify(recipe), /public-test-channel/)
     assert.ok(Object.keys(tools).length >= 3)
+    assert.equal(existsSync(join(dir, 'recipe.json')), false, 'managed capability packages must not be rendered into the client workspace')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

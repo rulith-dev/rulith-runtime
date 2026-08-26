@@ -129,6 +129,7 @@
             "name": "load_calculation_input",
             "kind": "read",
             "impl": "run",
+            "source": "verified-calculation-local",
             "desc": "[intake] Read and validate the configured local input.json, then create the task. Pass no target and no business arguments.",
             "params": {},
             "returns": [
@@ -152,6 +153,7 @@
             "name": "write_calculation_result",
             "kind": "write",
             "impl": "run",
+            "source": "verified-calculation-local",
             "desc": "Write only the exact result bound from trusted input plus the board-derived calculation. Pass no business arguments; add only the target leaf.",
             "params": {
               "node": "string",

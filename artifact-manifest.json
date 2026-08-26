@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "96cca3e9a4d49449f590bfc2134b387835f907206eed9481b7241b98f08a534c"
+      "sha256": "adadb16ba762842bbb21e58197c4ed5ec978ee4a726fd735c3bf5c592b6066f8"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "e7fd96f7e68f487aa95c60d5aa738113fbae2e963803cbe230b42eb0c8d94385"
@@ -21,25 +21,25 @@
       "sha256": "3e5ef49c05df53fe0125ecefe2db1fbb3145f606047c36b3356500f22bda5ea8"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "06953cab55ba083e890911bceee81f35e22f6e944c673007f60ae7c73d7892c0"
+      "sha256": "cdec800f1bc7142858794135923bc2736157b87d0a8c88c9f10dec16a67aa288"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
     },
     "examples/verified-calculation/prepare-runtime.mjs": {
-      "sha256": "6d8be5aa2761d7c77ba4c1910eb6ec3566a8e7a0b6e2aa905820550c2ab2bf0a"
+      "sha256": "e2d9bbb944df40783e17d372327e17ca78543cb7eff9c2ba6b4bafd0fbdf667f"
     },
     "examples/verified-calculation/prepare-station.mjs": {
-      "sha256": "4516584ebd64fd68eb8d5f9eb7b8634cc910c75dbb5f1b8c9849390080fc22b0"
+      "sha256": "e2eccae369319505f68161e1dbad3a060293a8bac62b8480c57a4d090e630939"
     },
     "examples/verified-calculation/read-input.mjs": {
       "sha256": "2721ac07f5786dd7e9bd20d49d5d83889a4ed758ba4d132f00cb7bb756763997"
     },
     "examples/verified-calculation/recipe.template.json": {
-      "sha256": "ccdc23bc2b9485bf3d5f2331c48f8d92e0198d91a1618fffd61bf11120b4afca"
+      "sha256": "09378c3f43d6ee717acefbc7215c5e6d099a30810eee0590c6c28fbb92258f2f"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "59cd110ab6c0ca62101d65ea8ea7819b72b5b3881d759c2bbbca7d28d25b0f90"
+      "sha256": "86083da8ca74abfe89887a2343d61115691d6f1c92c449877fb40c6385d2b6e5"
     },
     "examples/verified-calculation/verify-output.mjs": {
       "sha256": "deddc47dfcc0086771d8749bbcc151200577116a9f5978bff37c5a1a7fa44d04"

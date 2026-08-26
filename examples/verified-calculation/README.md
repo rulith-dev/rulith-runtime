@@ -21,34 +21,35 @@ calculated output values.
 
 ## Fastest public setup
 
-Create one pull-door Connection for the Agent in Console and copy its public channel
-id. That Connection receives active cases created by this Agent, but not cases owned
-by another Agent. Then run:
+Create an Agent named `verified-calculation` in Console. Create a pull Connection named
+`local-worker` for that Agent and copy its public channel id and one-time key. Then open
+the Agent's **Configuration** tab and install the Verified Calculation starter with that
+Connection name. The capability recipe is governance-owned; the local REPL never
+installs it. Then run:
 
 ```powershell
 Invoke-WebRequest https://console.rulith.com/examples/verified-calculation/setup.mjs -OutFile verified-calculation-setup.mjs
-node verified-calculation-setup.mjs <channel-id>
+node verified-calculation-setup.mjs
 cd rulith-verified-calculation
 ```
 
-The setup program downloads the public REPL and Worker plus this example, then renders
-the recipe with the channel id. It does not request or store your Agent token, model key,
-or Connection key.
+The setup program downloads the public REPL and Worker plus the local adapters and sample
+data. It does not request or store your Agent token, model key, Connection key, or Agent
+configuration.
 
 ## Prepare from this source checkout
 
-Use an existing compute connection from Console. Keep its key in Station; only its
-public channel id is used to render the recipe:
+Install the example configuration in Console first, then prepare only the local adapters:
 
 ```powershell
 cd examples/verified-calculation
-node prepare-runtime.mjs <channel-id>
+node prepare-runtime.mjs
 ```
 
 Configure the REPL directly or through Station:
 
 ```text
-args: --agent verified-calculation --ui --case-boards --recipe <runtime>/recipe.json
+args: --agent verified-calculation --ui --case-boards
 RULITH_CASE_BOARDS=on
 ```
 

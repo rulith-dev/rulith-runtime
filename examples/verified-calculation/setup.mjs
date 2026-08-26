@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * Download the public REPL + Worker reference files and render a local verified
- * JSON calculation workspace. Credentials are never requested or written here.
+ * Download the public REPL + Worker reference files and prepare a local verified
+ * JSON calculation workspace. Agent capabilities are installed in Console;
+ * credentials are never requested or written here.
  */
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const ORIGIN = process.env.RULITH_DOWNLOAD_ORIGIN ?? 'https://console.rulith.com'
-const channel = process.argv[2]
-const target = resolve(process.argv[3] ?? 'rulith-verified-calculation')
+const target = resolve(process.argv[2] ?? 'rulith-verified-calculation')
 const FILES = [
   'prepare-runtime.mjs',
   'read-input.mjs',
@@ -20,10 +20,6 @@ const FILES = [
   'data/input.json',
 ]
 
-if (!channel || !/^[A-Za-z0-9._:@-]{1,200}$/.test(channel)) {
-  console.error('usage: node verified-calculation-setup.mjs <connection-channel-id> [target-directory]')
-  process.exit(2)
-}
 if (existsSync(target) && readdirSync(target).length > 0) {
   console.error(`refusing to overwrite non-empty directory: ${target}`)
   process.exit(2)
@@ -48,7 +44,7 @@ for (const [file, contents] of downloads) {
   writeFileSync(path, contents)
 }
 
-const prepared = spawnSync(process.execPath, ['prepare-runtime.mjs', channel], {
+const prepared = spawnSync(process.execPath, ['prepare-runtime.mjs'], {
   cwd: target,
   encoding: 'utf8',
 })

@@ -14,7 +14,7 @@ if (!sourcePath || !existsSync(sourcePath)) {
   console.error('usage: node prepare-station.mjs <existing-working-rulith-station.json>')
   process.exit(2)
 }
-for (const required of ['recipe.json', 'rulith-tools.json', 'input.json']) {
+for (const required of ['rulith-tools.json', 'input.json']) {
   if (!existsSync(join(runtime, required))) {
     console.error(`missing ${join(runtime, required)} — run prepare-runtime.mjs first`)
     process.exit(2)
@@ -31,7 +31,7 @@ const config = {
   ...source,
   repl: {
     ...(source.repl ?? {}),
-    args: ['--agent', 'verified-calculation', '--ui', '--recipe', join(runtime, 'recipe.json')],
+    args: ['--agent', 'verified-calculation', '--ui'],
     env: {
       ...(source.repl?.env ?? {}),
       RULITH_CASE_BOARDS: 'on',

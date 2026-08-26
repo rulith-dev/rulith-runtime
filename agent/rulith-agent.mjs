@@ -186,7 +186,7 @@ Options:
   --ui               Open the loopback timeline UI
   --serve            Accept tasks through the local service endpoint
   --case-boards      Create one board per case
-  --recipe <file>    Install the JSON recipe when opening a case board
+  --recipe <file>    Self-hosted only: install a local JSON recipe when opening a case
   --case <id>        Resume an existing case for the first segment
   --shadow           Run the configured shadow verification path
   -h, --help         Show this help without requiring credentials
@@ -232,11 +232,16 @@ for (let i = 0; i < argv.length; i++) {
 const TASK = rest.join(' ').trim()
 const CASE_BOARDS = caseBoards
 const SERVE = withServe
+const MANAGED_RULITH_CLOUD = (() => {
+  try { return new URL(URL_BASE).hostname.toLowerCase() === 'api.rulith.com' } catch { return false }
+})()
 
 const die = (msg) => { console.error(`\n✗ ${msg}\n`); process.exit(1) }
 if (TOKEN === '') die('RULITH_TOKEN is missing. Create an Agent token in Console under Access & credentials; it is shown only once.')
 if (MODEL_KEY === '') die('A model key is missing. Set ANTHROPIC_API_KEY or RULITH_MODEL_KEY. It stays in this local process and is never sent to Rulith.')
 if (SERVE_CASE_SLOTS && (!SERVE || !CASE_BOARDS)) die('RULITH_SERVE_CASE_SLOTS=on requires both --serve and --case-boards. Each concurrent context needs its own case board.')
+if (MANAGED_RULITH_CLOUD && recipePath !== '') die('--recipe is a self-hosted/offline option. Rulith Cloud capabilities must be configured in Console; the local Agent cannot install or override them.')
+if (MANAGED_RULITH_CLOUD && caseLawLock) die('RULITH_CASE_LAW_LOCK is a self-hosted compatibility option. On Rulith Cloud, law policy belongs to the governance configuration in Console.')
 // 无任务=进入多轮对话(2026-08-01 起 CLI 是桌面主形态);带任务=一次办完后退出(CI/脚本兼容不变)。
 // **接单脑不是对话**: 收单口进来的每一条都是「任务」,所以 --serve 下按 CLI 语义走
 // (纯回话不算办完,照旧催它给 JSON 或 DONE:/STOP:)——排队的是活,不是聊天。
@@ -262,8 +267,8 @@ const CHAT = TASK === '' && !SERVE
 // **配方的权威在云上,不在这个文件旁边**(2026-08-07,核心 board-spec BRD-112)。云上的领域智能体
 // 早已配齐领域四件套,每块基于它开的板初始化都基于那套配置——所以缺省路径是**向网关取配方**
 // (`GET /agent/v1/recipe?agent=<名>`,包簿的物化),本地 `--recipe` 文件降级为**离线/自建部署的备用**。
-// 两者并存过一段时间,而那正是问题: 同一事实两个真相源,案板用的是本地那个。现在定死顺序——
-// 显式给了 `--recipe` 就用它(离线形态优先级更高,你明说了要哪份),否则向云取。
+// 两者并存过一段时间,而那正是问题: 同一事实两个真相源,案板用的是本地那个。现在定死边界——
+// 托管云只认治理台账;`--recipe` 仅供离线/自托管权威端,托管端会在网关再次拒绝携包请求。
 // `RECIPE.ref = {id, digest}` 是配方**出身**,建板时随 `CreateBoard{recipe}` 发出去,由 host 落
 // genesis 受信事实;有了它,"这一案是哪个智能体按哪版配方办的"从案卷本身答得出。
 const RECIPE = { packs: [], seed: [], ref: undefined, maxConcurrentCases: 1 }
@@ -988,8 +993,11 @@ async function openCase(ctx, title, predecessor, resumeId) {
   // lawLock 进配方(吸收① 2026-08-21): 配了 RULITH_CASE_LAW_LOCK 且带构成 ⇒ 锁随配方声明,
   // 宿主在物化尾步同事务落锁——「锁定的就是这份配方」由构造保证,不再靠本客户端末步补一刀。
   // 旧 boardd 不认这个字段(原样忽略)⇒ 回执无 lawLocked 标 ⇒ 下面补锁路照旧接住(如实退回)。
+  const declaredRecipe = RECIPE.ref === undefined ? undefined
+    : recipePath === '' ? { ...RECIPE.ref }
+    : { ...RECIPE.ref, ...(RECIPE.packs.length > 0 ? { packs: RECIPE.packs } : {}), ...(caseLawLock && RECIPE.packs.length > 0 ? { lawLock: true } : {}) }
   const mk = await board({ kind: 'CreateBoard', id, title,
-    ...(RECIPE.ref !== undefined ? { recipe: { ...RECIPE.ref, ...(RECIPE.packs.length > 0 ? { packs: RECIPE.packs } : {}), ...(caseLawLock && RECIPE.packs.length > 0 ? { lawLock: true } : {}) } } : {}),
+    ...(declaredRecipe !== undefined ? { recipe: declaredRecipe } : {}),
     ...(typeof predecessor === 'string' && predecessor !== '' ? { predecessor } : {}) }, id, 'case')
   // CreateBoard 幂等: 撞"已存在"照走(重试安全)。真拒(配额/权限)如实带教学回来——
   // 网关的在办板数上限就长这个样子,那句教学写明了出路(结掉几个在办的案)。
@@ -1022,6 +1030,10 @@ async function openCase(ctx, title, predecessor, resumeId) {
   // 不静默假设装好了——那会开出一块"看起来配好、实际全空"的板。
   const initInstalled = Array.isArray(mk.payload?.installed) ? mk.payload.installed.length : 0
   if (RECIPE.packs.length > 0 && initInstalled === 0) {
+    if (recipePath === '') {
+      const why = 'The authority did not materialize the governance recipe atomically'
+      return { ok: false, id, built: true, abandoned: await abandon(why), teaching: `${why}. The Agent will not fall back to installing packages with its execution credential.` }
+    }
     log('◎ The authority did not report atomic recipe installation; falling back to installing each package separately.')
     for (const p of RECIPE.packs) {
       const name = String(p.pack?.meta?.name ?? p.packType)
@@ -2205,11 +2217,18 @@ if (SERVE) {
       await probeLawLock(ctx)
       return true
     }
+    const initInstalled = Array.isArray(mk.payload?.installed) ? mk.payload.installed.length : 0
+    if (recipePath === '' && RECIPE.packs.length > 0 && initInstalled === 0) {
+      ctx.broken = 'The authority did not materialize the governance recipe atomically. The Agent will not install packages with its execution credential.'
+      log(`✗ Service board "${ctx.board}" is not usable: ${ctx.broken}`)
+      emit('slot-broken', { session: ctx.key, board: ctx.board, why: ctx.broken })
+      return false
+    }
     // **首建**: 配方照发一遍(与开单序列同一份数据)。这里失败留下的是一块**半装配的服务板**,
     // 而服务板**没有作废封板这条出路**(封板是不可逆终态,不能拿它收拾一位在服务的客户)。
     // 所以: 标记这个槽 broken、如实报出板名,让运营面处置——**不自动重试**,因为不带 digest 的
     // 配方重试会把已装上的那几个包再装一遍。要能安全重试,给配方每个包加 digest。
-    for (const p of RECIPE.packs) {
+    for (const p of recipePath === '' ? [] : RECIPE.packs) {
       const name = String(p.pack?.meta?.name ?? p.packType)
       const r = await board({ kind: 'RegisterPack', packType: p.packType, pack: p.pack, ...(typeof p.digest === 'string' ? { digest: p.digest } : {}) }, ctx.board)
       if (r.accepted !== true) {
