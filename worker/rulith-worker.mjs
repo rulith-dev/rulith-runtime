@@ -45,7 +45,7 @@
  *   → ReportWork(回执,与领取配对,板侧防重放) → 立即回到 Poll。
  */
 import { readFileSync, existsSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -58,6 +58,7 @@ const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 const WORK_URL = process.env.RULITH_WORK_URL ?? 'https://api.rulith.com/work'
 const CHANNEL = process.env.RULITH_CHANNEL
 const KEY = process.env.RULITH_CHANNEL_KEY
+export const WORKER_ID = process.env.RULITH_WORKER_ID ?? `wkr_${randomUUID()}`
 const TOOLS_FILE = process.env.RULITH_TOOLS_FILE ?? './worker-tools.json'
 const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToPath(import.meta.url)))
 /** 密文库(SRC-40,来源授信规范批E): `{ "<来源名>": { "dsn"|"url"|"headers"|"token": … } }`。
@@ -220,12 +221,13 @@ if (IS_MAIN) {
  * 它仍然一次只对着一块板干活,只是不再由部署配置写死是哪一块。
  */
 async function work(operation, board) {
+  const identified = { ...operation, workerId: WORKER_ID }
   const r = await fetch(WORK_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-rulith-channel': CHANNEL, 'x-rulith-channel-key': KEY,
       // 版本随每一发走(RT-WK-VER): 网关据它记得下「这台客户机跑的是哪一版」。
       'x-rulith-worker-version': WORKER_VERSION },
-    body: JSON.stringify({ operation: board === undefined ? operation : { ...operation, board } }),
+    body: JSON.stringify({ operation: board === undefined ? identified : { ...identified, board } }),
   })
   const j = await r.json().catch(() => ({}))
   if (r.status === 401) throw new CredentialRejectedError(j.teaching ?? '')
@@ -319,7 +321,7 @@ async function handHttp(t, args, sources = SOURCES) {
  *  它不会改变 cmd，也不会拆成多个参数。程序自己校验这份数据。
  */
 function handRun(t, args, context = {}, sources = SOURCES) {
-  return new Promise((resolve, reject) => {
+  return new Promise((finish, reject) => {
     const argv = [...(t.args ?? []), ...(t.passArgs === true ? [JSON.stringify(args ?? {})] : [])]
     // `board` 来自受信工单行，不来自模型 args。固定适配器据它领取/续租自己的案件，
     // 同一 Worker 才能安全服务多个并行 Context；模型不能靠改动作参数把别案主键带进来。
@@ -333,16 +335,11 @@ function handRun(t, args, context = {}, sources = SOURCES) {
       ...(access ? { RULITH_SOURCE_ACCESS: access } : {}),
       ...(source.sourceType ? { RULITH_SOURCE_TYPE: String(source.sourceType) } : {}),
     }
-    execFile(t.cmd, argv, { timeout: 60_000, env }, (err, stdout, stderr) => {
-      // **不要再拼一遍 stderr**(2026-08-21 真机: 回执里同一句话出现两遍,中间一个 " : ")。
-      // `execFile` 的 `err.message` 形如「Command failed: <命令行>\n<stderr 全文>」——
-      // **stderr 已经在里面了**;右边再拼一次就是把它说两遍。
-      // 下游那层(execute 的 catch)削掉的是「Command failed: <命令行>」那一行,削完正好把
-      // 两份重复的分隔露出来 —— 上游多说一遍、下游削掉前缀,两处**各自都像对的**,合起来才是错的。
+    execFile(t.cmd, argv, { timeout: 60_000, env }, (err, stdout) => {
       if (err) return reject(new Error(String(err.message)))
-      // 核验三态是结构化 JSON，reason/facts 稍长就可能越过旧 200 字截断。截断后 JSON
-      // 解析失败会反向洗成旧式 satisfied；因此统一出口保留有界 4K，展示层再自行裁短。
-      resolve(String(stdout).slice(0, 4000) || '(no output)')
+      // Structured verification can exceed the old 200-byte truncation. Keep
+      // one bounded machine-readable result; presentation layers may shorten it.
+      finish(String(stdout).slice(0, 4000) || '(no output)')
     })
   })
 }
@@ -913,7 +910,7 @@ async function handleAction(w) {
       `· Skipping ${action}: ${String(e.message).slice(0, 120)}`)
     return
   }
-  const claim = await work({ kind: 'ClaimWork', workType: 'action', id: invocation }, w.board)
+  const claim = await work({ kind: 'ClaimWork', workType: 'action', id: invocation, executionGrant: w.executionGrant }, w.board)
   if (claim.accepted !== true) {
     saySkipOnce(w.board, action, `claim_rejected:${claim.errorCode ?? ''}`,
       `· Claiming ${action} was rejected (${claim.errorCode ?? ''}): ${String(claim.teaching ?? '').slice(0, 80)}`)
@@ -950,7 +947,7 @@ async function handleAction(w) {
   // 两条修:① 落不了账就**原样重发**(同 id,板侧本就防重放;不是重跑那只手);
   // ② 那一行把「手成没成」与「账落没落」**分开说**。
   const RETRY_MS = [1_000, 4_000, 12_000]
-  const body = { kind: 'ReportWork', workType: 'action', id: invocation, ok,
+  const body = { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant, ok,
     ...(ok ? { result, ...(resultFacts.length > 0 ? { facts: resultFacts } : {}) } : { result: '', reason }) }
   let rep = await work(body, w.board)
   for (let i = 0; rep.accepted !== true && i < RETRY_MS.length; i++) {

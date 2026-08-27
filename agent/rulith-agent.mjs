@@ -969,8 +969,14 @@ async function autoArchive(ctx) {
 // 没有它,「误封 → 重办」在账面上是 1 completed + N cancelled,老实续办反而被惩罚。
 /** CreateBoard 的“已存在”目前仍共用 rejected，尚无稳定的 already_exists errorCode。
  *  美国节点已经英文化，因此在协议补专码前，兼容权威端现有中英文教学；不能再把续办绑死到 UI 语言。 */
-const boardAlreadyExists = (r) => r?.accepted !== true
-  && /(?:已存在|already exists)/i.test(String(r?.teaching ?? ''))
+const boardAlreadyExists = (r) => {
+  if (r?.accepted === true) return false
+  const teaching = String(r?.teaching ?? '').trim()
+  // Match the authority's board-level sentence, not an arbitrary nested
+  // package error such as `tool "x" already exists`. The latter means case
+  // construction failed and must never be treated as a resumable case.
+  return /^Board\s+"[^"]+"\s+already exists\b/i.test(teaching)
+}
 
 async function openCase(ctx, title, predecessor, resumeId) {
   // **续办既有案**(2026-08-08 外部 review: "下次继续这一案"此前是不真实的产品承诺——
@@ -1204,6 +1210,38 @@ async function boardRoots(ctx) {
   return { roots, facts }
 }
 
+/**
+ * Wait for the terminal receipt of one accepted outward action without spending
+ * another model turn. Intake actions are the important edge case: before their
+ * receipt there is deliberately no task root, so the ordinary settlement loop
+ * (which starts from a task tree) cannot observe them.
+ */
+async function waitForTerminalActionReceipt(ctx, invocation) {
+  if (!invocation || SETTLE_WAIT_MS <= 0) return undefined
+  const until = Date.now() + SETTLE_WAIT_MS
+  let announced = false
+  while (Date.now() < until) {
+    const { facts } = await boardRoots(ctx)
+    for (const fact of facts) {
+      const predicate = fact.atom?.predicate
+      const args = fact.atom?.args ?? {}
+      if (String(args.invocation ?? '') !== invocation) continue
+      if (predicate === 'effect_confirmed') {
+        return { ok: true, detail: String(args.result ?? '') }
+      }
+      if (predicate === 'effect_failed') {
+        return { ok: false, detail: String(args.reason ?? '') }
+      }
+    }
+    if (!announced) {
+      log(`◌ Waiting locally for the terminal action receipt (${invocation}); no model turn is being consumed.`)
+      announced = true
+    }
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  return undefined
+}
+
 const revisionNow = async (ctx) => String((await board({ kind: 'GetHealth' }, ctx.board))?.revision ?? '')
 
 // ① 自动放电：板算 digest，客户端只记「这个版本我放过了」。
@@ -1392,6 +1430,14 @@ function hasLiveDischargeWork(facts = []) {
   })
 }
 
+/** A work-ordered gap is only an in-flight display hint while the authoritative
+ * discharge ledger still contains unfinished work. QueryBoard may retain the
+ * dispatch-era gap after the terminal receipt, so the gap alone is not a
+ * lifecycle authority. */
+function visibleInFlightGaps(gaps = [], facts = []) {
+  return hasLiveDischargeWork(facts) ? gaps : []
+}
+
 /** 板报缺口的**唯一读取点**（全板视图与每轮指引共用一份判据）。
  *  **在途不是缺口**（2026-08-18 冷通枪逮到）：`work-ordered` = 求证工单已派给真探、正在等回话，
  *  是**正常在途态**。把它摆进"还差什么（优先处理）"那一栏，模型会合理地判断"卡住了"并停轮
@@ -1400,7 +1446,15 @@ async function boardGaps(ctx) {
   const g = await board({ kind: 'QueryBoard', include: ['gaps'] }, ctx.board)
   const all = g.accepted === true ? (g.payload?.gaps ?? []) : []
   const isFlight = (x) => /work-ordered/.test(String(x.args?.reason ?? ''))
-  return { gaps: all.filter((x) => !isFlight(x)), inFlight: all.filter(isFlight) }
+  const candidates = all.filter(isFlight)
+  if (candidates.length === 0) return { gaps: all, inFlight: [] }
+  const p = await board({ kind: 'GetProjection', format: 'json' }, ctx.board)
+  // If the ledger cannot be read, keep the conservative waiting hint. Hiding
+  // real in-flight verification would be more damaging than a stale hint.
+  const inFlight = p.accepted === true
+    ? visibleInFlightGaps(candidates, p.payload?.context?.facts ?? [])
+    : candidates
+  return { gaps: all.filter((x) => !isFlight(x)), inFlight }
 }
 
 
@@ -1538,8 +1592,8 @@ rulith-agent · Agent "${agentName}" · ${URL_BASE}`)
 await fetchRecipe()
 /** 配方出处的一句人话——三种来源(云上/本地/没有)得看得见,不然"我明明装了包"会变成悬案。 */
 const recipeLine = () => (
-  recipePath !== '' ? `${recipePath} (local file · ${RECIPE.packs.length} package(s) · ${RECIPE.seed.length} seed operation(s))`
-  : RECIPE.ref !== undefined ? `Cloud recipe "${RECIPE.ref.id}" (${RECIPE.packs.length} package(s) · digest ${RECIPE.ref.digest.slice(0, 19)}…)`
+  recipePath !== '' ? `${recipePath} (local configuration · ${RECIPE.seed.length} seed operation(s))`
+  : RECIPE.ref !== undefined ? `Cloud Capability "${RECIPE.ref.id}" (digest ${RECIPE.ref.digest.slice(0, 19)}…)`
   : 'empty (bare board; no packages installed)'
 )
 if (CASE_BOARDS) {
@@ -1686,7 +1740,7 @@ async function runSegment(ctx, userText) {
     }
     ctx.board = opened.id
     log(`
-Case opened: "${opened.id}" · ${opened.packs} package(s) · ${opened.seeded} seed operation(s)`)
+Case opened: "${opened.id}" · Capability loaded · ${opened.seeded} seed operation(s)`)
     emitOn(ctx, 'case-open', { board: opened.id, ok: true, title: caseTitleOf(userText), packs: opened.packs, seeded: opened.seeded })
     await probeLawLock(ctx)
   }
@@ -1793,8 +1847,20 @@ ${say.slice(0, 1200)}`)
               }
             } else {
               log(`Board: ${head} accepted${tag}; terminal receipt pending.`)
+              const terminal = await waitForTerminalActionReceipt(ctx, String(inv))
+              if (terminal !== undefined) {
+                const detail = terminal.detail.slice(0, 400)
+                log(`Board: ${head} ${terminal.ok ? 'completed' : 'failed'}${tag}${detail !== '' ? ` — ${detail.slice(0, 160)}` : ''}`)
+                emitOn(ctx, 'verdict', { accepted: true, cmd: c.kind, done: true, ok: terminal.ok, added: (r.delta?.added ?? []).length, revision: r.revision ?? '', ...(inv !== '' ? { invocation: inv } : {}) })
+                lines.push(terminal.ok
+                  ? `${head} completed${tag}. Worker receipt: ${detail}`
+                  : `${head} failed${tag}. Worker receipt: ${detail}. This is an execution failure, not a command-shape error. A retry must be a new invocation.`)
+                if (terminal.ok) succeeded += 1
+                else break
+                continue
+              }
               emitOn(ctx, 'verdict', { accepted: true, cmd: c.kind, done: false, added: (r.delta?.added ?? []).length, revision: r.revision ?? '', ...(inv !== '' ? { invocation: inv } : {}) })
-              lines.push(`${head} was accepted${tag}, but no terminal receipt has landed. It may be awaiting clearance or Worker pickup. Do not treat it as complete; reread the board for effect_confirmed.`)
+              lines.push(`${head} was accepted${tag}, but no terminal receipt landed within the local settlement window. It may be awaiting clearance or Worker pickup. Do not treat it as complete.`)
               if (ci < cmds.length - 1) {
                 const stopped = `Action sequence stopped: ${succeeded}/${cmds.length} completed. The previous action has no terminal receipt; ${cmds.length - 1 - ci} action(s) were not executed.`
                 log(`Board: ${stopped}`)
@@ -2259,7 +2325,7 @@ if (SERVE) {
       emit('slot-broken', { session: ctx.key, board: ctx.board, why: ctx.broken })
       return false
     }
-    log(`Service board "${ctx.board}" created with ${RECIPE.packs.length} package(s) and ${RECIPE.seed.length} seed operation(s). Future use will not replay them.`)
+    log(`Service board "${ctx.board}" created with its Capability configuration and ${RECIPE.seed.length} seed operation(s). Future use will not replay them.`)
     emit('slot-provisioned', { session: ctx.key, board: ctx.board, packs: RECIPE.packs.length, seeded: RECIPE.seed.length })
     ctx.ready = true
     await probeLawLock(ctx)
