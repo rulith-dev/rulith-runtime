@@ -5,7 +5,7 @@
  *
  * It knows no business domain. The Agent sees Actions; each external Action
  * references a versioned Tool. This Worker resolves that Tool against its
- * local, authenticated manifest. Adapters (http / db-query /
+ * local, authenticated manifest. Adapters (workspace / http / db-query /
  * db-exec-fenced / mcp / run) are only a quick way to implement Tools here;
  * adapter configuration is never accepted from a board work item.
  *
@@ -13,6 +13,8 @@
  *   RULITH_CHANNEL       执行器通道 id(控制台「连接」页注册)
  *   RULITH_CHANNEL_KEY   执行器通道钥(注册时唯一一次显示)
  *   RULITH_TOOLS_FILE    Worker Tool Manifest JSON, default ./worker-tools.json
+ *   RULITH_WORKSPACE_SOURCE  Enable fixed workspace Tools for this Source name
+ *   RULITH_WORKSPACE_MODE    read (default) or read-write
  *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
  *
@@ -36,6 +38,7 @@
  * 围栏(机械硬界,声明即边界):
  *   run  只执行表里写死的 cmd/args——不接受任何来自工单的插值(注入面=零);
  *   http 只打来源地址同源的相对路径(存量本机表则只打 allowHosts);
+ *   workspace 只读写 Source access 根目录内的有界文本/JSON 文件,不执行 shell、不删除;
  *   db-query 只跑单条 SELECT；db-exec-fenced 先做单语句与破坏性分类;
  *   mcp 只调用来源端点与工具声明给出的具名工具;
  *   本机 Tool Manifest 没有对应版本或摘要不匹配的动作**不领**(别人的活不抢,如实跳过)。
@@ -45,6 +48,7 @@
  *   → ReportWork(回执,与领取配对,板侧防重放) → 立即回到 Poll。
  */
 import { readFileSync, existsSync } from 'node:fs'
+import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
@@ -129,7 +133,36 @@ function say(line, type, data = {}) {
  *  **必须声明在装载块之前**（2026-08-11 P0）：`checkImpls` 是函数声明会提升，
  *  但它函数体里引用的这个 `const` **不会**——放在后面就是模块顶层执行时踩进暂时性死区。
  *  「函数提升了，常量没有」——而当时那一发还落在读工具表的 try 里，被报成了"读不了工具表"。 */
-const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp'])
+const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp', 'workspace'])
+const WORKSPACE_READ_TOOLS = Object.freeze({
+  'rulith.workspace.list@1': 'list',
+  'rulith.workspace.search@1': 'search',
+  'rulith.workspace.read_text@1': 'read_text',
+  'rulith.workspace.read_json@1': 'read_json',
+  'rulith.workspace.hash@1': 'hash',
+})
+const WORKSPACE_WRITE_TOOLS = Object.freeze({
+  'rulith.workspace.write_text@1': 'write_text',
+  'rulith.workspace.write_json@1': 'write_json',
+})
+
+/**
+ * Materialize the fixed Tool implementations shipped with this Worker.
+ * Selecting a mode only controls what the local process is capable of
+ * presenting. The Agent Connection must still carry every Tool id, and a
+ * governed Action must still reference it before any work can be dispatched.
+ */
+export function builtinWorkspaceTools(source, mode = 'read') {
+  if (typeof source !== 'string' || source.trim() === '') throw new Error('Built-in workspace Tools require one source name')
+  if (mode !== 'read' && mode !== 'read-write') throw new Error('RULITH_WORKSPACE_MODE must be read or read-write')
+  const catalog = mode === 'read-write' ? { ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS } : WORKSPACE_READ_TOOLS
+  const tools = {}
+  for (const [id, entry] of Object.entries(catalog)) {
+    const definition = { adapter: 'workspace', source: source.trim(), entry }
+    tools[id] = { ...definition, digest: toolDigest(definition) }
+  }
+  return tools
+}
 /** 锚建议(批C): 把每条取材路线的目标指纹打出来,治理者照抄进控制台的「锚」栏——
  *  钉了锚之后,证词与注册目标对不上会被网关当场拒(漂移可检)。 */
 function printAnchorHints(tools) {
@@ -157,9 +190,17 @@ if (IS_MAIN) {
     // no Tools and cannot claim action work; the latter is a deployment error.
     if (!existsSync(TOOLS_FILE)) {
       TOOLS = {}
-      console.log('· No Worker Tool Manifest installed. This Worker will not claim action work.')
+      if (!process.env.RULITH_WORKSPACE_SOURCE) console.log('· No Worker Tool Manifest installed. This Worker will not claim action work.')
     } else {
       TOOLS = workerToolsOf(JSON.parse(readFileSync(TOOLS_FILE, 'utf8')))
+    }
+    const workspaceSource = String(process.env.RULITH_WORKSPACE_SOURCE ?? '').trim()
+    if (workspaceSource !== '') {
+      const builtins = builtinWorkspaceTools(workspaceSource, process.env.RULITH_WORKSPACE_MODE ?? 'read')
+      const collisions = Object.keys(builtins).filter((id) => TOOLS[id] !== undefined)
+      if (collisions.length > 0) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
+      TOOLS = { ...TOOLS, ...builtins }
+      console.log(`· Built-in workspace Tools enabled for source ${workspaceSource} (${process.env.RULITH_WORKSPACE_MODE ?? 'read'}). Connection authorization is still required.`)
     }
     printAnchorHints(TOOLS)
     try {
@@ -342,6 +383,162 @@ function handRun(t, args, context = {}, sources = SOURCES) {
       finish(String(stdout).slice(0, 4000) || '(no output)')
     })
   })
+}
+
+const WORKSPACE_MAX_FILE_BYTES = 256 * 1024
+const WORKSPACE_MAX_LIST_ENTRIES = 500
+const WORKSPACE_MAX_SEARCH_MATCHES = 100
+
+function pathInside(root, target) {
+  const rel = relative(root, target)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+async function workspaceRootOf(t, sources) {
+  const source = resolveSourceCreds(t, sources)
+  if (typeof source.access !== 'string' || source.access.trim() === '') {
+    throw new Error(`Workspace Tool ${t.name ?? t.operation ?? ''} requires a file Source with an access root`)
+  }
+  const configured = isAbsolute(source.access) ? resolve(source.access) : resolve(WORKER_ROOT, source.access)
+  let root
+  try { root = await realpath(configured) } catch { throw new Error(`Workspace Source root does not exist: ${configured}`) }
+  const info = await stat(root)
+  if (!info.isDirectory()) throw new Error(`Workspace Source access must name a directory: ${configured}`)
+  return root
+}
+
+function workspaceRelativePath(raw, optional = false) {
+  if (raw === undefined && optional) return '.'
+  if (typeof raw !== 'string' || raw.trim() === '') throw new Error('Workspace Tool argument path must be a non-empty relative path')
+  if (isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\') || raw.startsWith('//')) {
+    throw new Error('Workspace Tool argument path must be relative to the configured Source root')
+  }
+  return raw
+}
+
+async function existingWorkspaceTarget(root, raw, optional = false) {
+  const requested = resolve(root, workspaceRelativePath(raw, optional))
+  if (!pathInside(root, requested)) throw new Error('Workspace Tool path is outside the configured Source root')
+  let target
+  try { target = await realpath(requested) } catch { throw new Error(`Workspace path does not exist: ${String(raw ?? '.')}`) }
+  if (!pathInside(root, target)) throw new Error('Workspace Tool path is outside the configured Source root')
+  return target
+}
+
+async function writableWorkspaceTarget(root, raw) {
+  const requested = resolve(root, workspaceRelativePath(raw))
+  if (!pathInside(root, requested) || requested === root) throw new Error('Workspace Tool path is outside the configured Source root')
+  const parent = dirname(requested)
+  await mkdir(parent, { recursive: true })
+  const actualParent = await realpath(parent)
+  if (!pathInside(root, actualParent)) throw new Error('Workspace Tool path is outside the configured Source root')
+  try {
+    const info = await lstat(requested)
+    if (info.isSymbolicLink()) throw new Error('Workspace Tool will not write through a symbolic link')
+    if (!info.isFile()) throw new Error('Workspace Tool write target must be a regular file')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+  return requested
+}
+
+async function boundedText(path, cap = WORKSPACE_MAX_FILE_BYTES) {
+  const info = await stat(path)
+  if (!info.isFile()) throw new Error('Workspace Tool read target must be a regular file')
+  if (info.size > cap) throw new Error(`Workspace file is ${info.size} bytes, exceeding the ${cap}-byte limit`)
+  const body = await readFile(path)
+  if (body.includes(0)) throw new Error('Workspace text tools do not read binary files')
+  return body.toString('utf8')
+}
+
+/** Fixed, path-fenced local implementations used by versioned workspace Tools. */
+async function handWorkspace(t, args, sources = SOURCES) {
+  const root = await workspaceRootOf(t, sources)
+  const operation = String(t.operation ?? t.entry ?? '')
+  const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+  if (operation === 'list') {
+    const target = await existingWorkspaceTarget(root, input.path, true)
+    const entries = await readdir(target, { withFileTypes: true })
+    const rows = []
+    for (const entry of entries.slice(0, WORKSPACE_MAX_LIST_ENTRIES)) {
+      const absolute = resolve(target, entry.name)
+      const info = entry.isSymbolicLink() ? undefined : await stat(absolute)
+      rows.push({
+        path: relative(root, absolute).replace(/\\/g, '/'),
+        type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other',
+        ...(info?.isFile() ? { size: info.size } : {}),
+      })
+    }
+    return JSON.stringify({ entries: rows, truncated: entries.length > rows.length })
+  }
+  if (operation === 'search') {
+    if (typeof input.query !== 'string' || input.query.length < 1 || input.query.length > 200) {
+      throw new Error('Workspace search query must be a string of 1-200 characters')
+    }
+    const start = await existingWorkspaceTarget(root, input.path, true)
+    const startInfo = await stat(start)
+    const queue = startInfo.isDirectory() ? [{ dir: start, depth: 0 }] : []
+    const files = startInfo.isFile() ? [start] : []
+    while (queue.length > 0 && files.length < WORKSPACE_MAX_LIST_ENTRIES) {
+      const current = queue.shift()
+      const entries = await readdir(current.dir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue
+        const absolute = resolve(current.dir, entry.name)
+        if (entry.isFile()) files.push(absolute)
+        else if (entry.isDirectory() && current.depth < 8) queue.push({ dir: absolute, depth: current.depth + 1 })
+        if (files.length >= WORKSPACE_MAX_LIST_ENTRIES) break
+      }
+    }
+    const matches = []
+    for (const file of files) {
+      let text
+      try { text = await boundedText(file) } catch { continue }
+      for (const [index, line] of text.split(/\r?\n/).entries()) {
+        let from = 0
+        while (matches.length < WORKSPACE_MAX_SEARCH_MATCHES) {
+          const column = line.indexOf(input.query, from)
+          if (column < 0) break
+          matches.push({ path: relative(root, file).replace(/\\/g, '/'), line: index + 1, column: column + 1, text: line.slice(0, 300) })
+          from = column + Math.max(1, input.query.length)
+        }
+        if (matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
+      }
+      if (matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
+    }
+    return JSON.stringify({ matches, truncated: matches.length >= WORKSPACE_MAX_SEARCH_MATCHES || files.length >= WORKSPACE_MAX_LIST_ENTRIES })
+  }
+  if (operation === 'read_text' || operation === 'read_json' || operation === 'hash') {
+    const target = await existingWorkspaceTarget(root, input.path)
+    if (operation === 'hash') {
+      const info = await stat(target)
+      if (!info.isFile()) throw new Error('Workspace hash target must be a regular file')
+      if (info.size > 16 * 1024 * 1024) throw new Error('Workspace hash target exceeds the 16-MiB limit')
+      return createHash('sha256').update(await readFile(target)).digest('hex')
+    }
+    const text = await boundedText(target)
+    if (operation === 'read_text') return text
+    let value
+    try { value = JSON.parse(text) } catch (error) { throw new Error(`Workspace JSON is invalid: ${error.message}`) }
+    return JSON.stringify(value)
+  }
+  if (operation === 'write_text' || operation === 'write_json') {
+    const target = await writableWorkspaceTarget(root, input.path)
+    let text
+    if (operation === 'write_text') {
+      if (typeof input.text !== 'string') throw new Error('Workspace write_text requires a string argument named text')
+      text = input.text
+    } else {
+      if (!Object.hasOwn(input, 'value')) throw new Error('Workspace write_json requires an argument named value')
+      text = `${JSON.stringify(input.value, null, 2)}\n`
+    }
+    if (Buffer.byteLength(text, 'utf8') > WORKSPACE_MAX_FILE_BYTES) {
+      throw new Error(`Workspace write exceeds the ${WORKSPACE_MAX_FILE_BYTES}-byte limit`)
+    }
+    await writeFile(target, text, 'utf8')
+    return JSON.stringify({ path: relative(root, target).replace(/\\/g, '/'), bytes: Buffer.byteLength(text, 'utf8') })
+  }
+  throw new Error(`Unsupported workspace operation "${operation}"`)
 }
 
 // ── 数据库双工具的**牙齿**（DPC-6，2026-08-11 随批一起交付）─────────────────────────
@@ -529,6 +726,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCES, context =
     try { args = JSON.parse(args) } catch { /* 非 JSON 载荷原样透传 */ }
   }
   const t = tools[action]
+  if (!t) throw new Error(`Worker Tool ${action} is not installed on this connection`)
   let out
   if (t.impl === 'http') out = await handHttp(t, args, sources)
   else if (t.impl === 'run') {
@@ -545,6 +743,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCES, context =
       return { result: String(out), facts }
     }
   }
+  else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
   else if (t.impl === 'mcp') out = await handMcp(t, args)
   else if (t.impl === 'db-query') out = await handDbQuery(t, args)
   else if (t.impl === 'db-exec-fenced') out = await handDbExec(t, args)
@@ -1027,8 +1226,17 @@ function adapterToolFromSpec(specJson, argsJson) {
       _args: rargs,
     }
   }
+  if (spec.impl === 'workspace') {
+    if (typeof spec.source !== 'string' || spec.source === '') throw new Error('workspace toolSpec is missing source')
+    if (!Object.values({ ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS }).includes(spec.exec)) {
+      throw new Error(`workspace toolSpec has unsupported operation "${String(spec.exec)}"`)
+    }
+    let wargs = {}
+    if (typeof argsJson === 'string' && argsJson !== '') wargs = JSON.parse(argsJson)
+    return { impl: 'workspace', source: spec.source, operation: spec.exec, _args: wargs }
+  }
   if (spec.impl !== 'db-query' && spec.impl !== 'db-exec-fenced') {
-    throw new Error(`toolSpec impl "${spec.impl}" is not supported for generic execution; supported implementations are http, run, db-query, db-exec-fenced, and mcp`)
+    throw new Error(`toolSpec impl "${spec.impl}" is not supported for generic execution; supported implementations are http, run, workspace, db-query, db-exec-fenced, and mcp`)
   }
   if (typeof spec.exec !== 'string' || spec.exec === '') throw new Error('Database toolSpec is missing an exec template')
   const params = spec.params ?? {}
@@ -1079,6 +1287,9 @@ export function workerToolsOf(raw) {
     if (typeof adapter !== 'string' || !KNOWN_IMPLS.has(adapter)) throw new Error(`Worker Tool ${id} uses unsupported adapter "${String(adapter)}"`)
     if (typeof value.source !== 'string' || value.source === '') throw new Error(`Worker Tool ${id} must bind one source`)
     if (typeof value.entry !== 'string' || value.entry === '') throw new Error(`Worker Tool ${id} must define an adapter entry`)
+    if (adapter === 'workspace' && !Object.values({ ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS }).includes(value.entry)) {
+      throw new Error(`Worker Tool ${id} uses unknown workspace operation "${value.entry}"`)
+    }
     const unknown = Object.keys(value).filter((key) => !['adapter', 'source', 'entry', 'fence', 'handles', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
     if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {

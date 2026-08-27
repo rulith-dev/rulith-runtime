@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-import { orderWork } from '../worker/rulith-worker.mjs'
+import { builtinWorkspaceTools, execute, orderWork, toolFromSpec } from '../worker/rulith-worker.mjs'
 import { applyEnvEdit, maskEnv, stationPage } from '../station/rulith-station.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -69,6 +69,59 @@ test('station masks secrets and never persists the mask as a credential', () => 
   const view = maskEnv(prior)
   assert.equal(view.RULITH_TOKEN, '••••3456')
   assert.deepEqual(applyEnvEdit(prior, view), prior)
+})
+
+test('built-in workspace Tools expose a bounded read set and require an explicit write mode', () => {
+  const readOnly = builtinWorkspaceTools('workspace', 'read')
+  assert.deepEqual(Object.keys(readOnly).sort(), [
+    'rulith.workspace.hash@1',
+    'rulith.workspace.list@1',
+    'rulith.workspace.read_json@1',
+    'rulith.workspace.read_text@1',
+    'rulith.workspace.search@1',
+  ])
+  assert.ok(Object.values(readOnly).every((tool) => tool.adapter === 'workspace' && tool.source === 'workspace'))
+  assert.equal(readOnly['rulith.workspace.write_text@1'], undefined)
+
+  const readWrite = builtinWorkspaceTools('workspace', 'read-write')
+  assert.ok(readWrite['rulith.workspace.write_text@1'])
+  assert.ok(readWrite['rulith.workspace.write_json@1'])
+  assert.throws(() => builtinWorkspaceTools('', 'read'), /source name/)
+  assert.throws(() => builtinWorkspaceTools('workspace', 'all'), /read or read-write/)
+})
+
+test('built-in workspace Tools stay inside their Source root and return bounded machine-readable results', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-workspace-'))
+  try {
+    writeFileSync(join(root, 'input.json'), JSON.stringify({ amount: 7 }))
+    writeFileSync(join(root, 'notes.txt'), 'alpha\nbeta\nalpha again\n')
+    const tools = builtinWorkspaceTools('workspace', 'read-write')
+    const sources = { workspace: { access: root, type: 'file' } }
+    const call = (id, args) => {
+      const local = toolFromSpec(JSON.stringify({
+        name: id, kind: id.includes('write_') ? 'write' : 'read', impl: 'worker-tool',
+        source: 'workspace', exec: id, params: {},
+      }), JSON.stringify(args), tools, tools[id].digest)
+      return execute(id, args, { [id]: local }, sources)
+    }
+
+    const read = JSON.parse(String(await call('rulith.workspace.read_json@1', { path: 'input.json' })))
+    assert.deepEqual(read, { amount: 7 })
+    const search = JSON.parse(String(await call('rulith.workspace.search@1', { query: 'alpha', path: '.' })))
+    assert.equal(search.matches.length, 2)
+    assert.ok(search.matches.every((row) => row.path === 'notes.txt'))
+    const digest = String(await call('rulith.workspace.hash@1', { path: 'input.json' }))
+    assert.match(digest, /^[a-f0-9]{64}$/)
+
+    await call('rulith.workspace.write_json@1', { path: 'out/result.json', value: { ok: true } })
+    assert.deepEqual(JSON.parse(readFileSync(join(root, 'out', 'result.json'), 'utf8')), { ok: true })
+    await assert.rejects(
+      call('rulith.workspace.read_text@1', { path: '../outside.txt' }),
+      /outside the configured Source root/,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('agent help is available before credentials and documents the UI port', () => {

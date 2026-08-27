@@ -55,12 +55,31 @@ to the configured model endpoint. It does not upload the model key to Rulith.
 
 ## Worker
 
-The Agent's governed Actions name versioned Tools and Sources. The Worker Tool Manifest
-is local deployment configuration: it maps a Tool id to an Adapter (`http`, `run`,
-`db-query`, `db-exec-fenced`, or `mcp`), a Source, and an entry. It is not installed as
-a Capability and is never uploaded to the board. A `run` entry must be a relative file
-beneath the Worker root; it cannot select an arbitrary command, absolute path, or shell.
-Credentials remain in the local source vault.
+The Agent's governed Actions name versioned Tools and Sources. The Worker ships one
+small built-in `workspace` Adapter and also accepts a local Tool Manifest for custom
+integrations (`http`, `run`, `db-query`, `db-exec-fenced`, or `mcp`). Adapter
+configuration is not installed as a Capability and is never uploaded to the board. A
+`run` entry must be a relative file beneath the Worker root; it cannot select an
+arbitrary command, absolute path, or shell. Credentials remain in the local source
+vault.
+
+The built-in workspace catalog mirrors the common file abilities of coding Agents
+without exposing a shell:
+
+| Tool id | Operation | Local ceiling |
+| --- | --- | --- |
+| `rulith.workspace.list@1` | List one directory | Read |
+| `rulith.workspace.search@1` | Search bounded text files | Read |
+| `rulith.workspace.read_text@1` | Read bounded UTF-8 text | Read |
+| `rulith.workspace.read_json@1` | Parse and return JSON | Read |
+| `rulith.workspace.hash@1` | Compute SHA-256 | Read |
+| `rulith.workspace.write_text@1` | Write bounded UTF-8 text | Read-write only |
+| `rulith.workspace.write_json@1` | Serialize and write JSON | Read-write only |
+
+Every path is relative to the bound file Source's `access` root. Traversal, absolute
+model-supplied paths, symbolic-link writes, binary text reads, oversized files, delete,
+and arbitrary command execution are rejected. `RULITH_WORKSPACE_MODE` is only a local
+host ceiling; it never grants the Agent permission to use a Tool.
 
 For a package that needs no private credential, run:
 
@@ -71,11 +90,28 @@ $env:RULITH_TOOLS_FILE = 'C:\path\to\worker-tools.json'
 node worker/rulith-worker.mjs
 ```
 
-The Worker polls outbound and presents only Tool id, digest, and Source. Rulith pins that
-manifest to the Agent-owned Connection and dispatches an Action only when its Tool and
-Source match the pin. The Worker resolves the Adapter locally, executes it, and reports a
-receipt before polling again. A model request cannot grant itself a Tool, Source,
-credential, Adapter, or verification authority.
+For a Capability whose Actions reference the built-in workspace Tool ids, a local
+manifest is unnecessary:
+
+```powershell
+$env:RULITH_CHANNEL = '<connection-id>'
+$env:RULITH_CHANNEL_KEY = '<connection-key>'
+$env:RULITH_WORKSPACE_SOURCE = 'workspace'
+$env:RULITH_WORKSPACE_MODE = 'read' # use read-write only when the workflow needs writes
+node worker/rulith-worker.mjs
+```
+
+The Source named `workspace` must be bound to this Agent Connection and configured with
+the allowed root directory. The Connection must already carry each exact versioned Tool
+id through an installed governed Action. A Worker's first poll pins implementation
+digests; it cannot authorize Tools merely by presenting them.
+
+The Worker polls outbound and presents only Tool id, digest, and Source. Rulith checks
+that every presented Tool was authorized for the Agent-owned Connection, pins the
+implementation set, and dispatches an Action only when its Tool and Source match. The
+Worker resolves the Adapter locally, executes it, and reports a receipt before polling
+again. A model request cannot grant itself a Tool, Source, credential, Adapter, or
+verification authority.
 
 Adapters are a fast way to implement Tools; they are not an Agent-facing concept. For
 example:
@@ -125,6 +161,8 @@ The model never supplies the trusted input values or the calculated output value
 
 - Agent tokens and model keys belong to the Agent Runtime process.
 - Connection keys and source credentials belong to the Worker machine.
+- Built-in workspace Tools are fenced to the configured Source root, bounded in size and
+  result count, and expose neither delete nor arbitrary shell execution.
 - `run` tools execute relative adapters beneath the Worker root with the current Node
   runtime; packages cannot select arbitrary commands or escape that directory.
 - HTTP tools are constrained to their declared source or allowlist.
