@@ -3,25 +3,25 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "9bc752c01e8afcaaa9283914c83b648abd511d537a08485cfa123f54bea45394"
+      "sha256": "4167a7568d19da988ebd659ff3770fa91db8c7f9a4e3364c1993959ed94169e8"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "5657ec1f3b34c2a3cb3feedde0743e583fa5c08cd6e7245fee97599c7cfa2ebe"
+      "sha256": "2006ff6906a6c9a3626cc1989e1a3326786e600e4f48ea779315b4095a892178"
     },
     "station/rulith-station.mjs": {
-      "sha256": "0817f8d6a22b5c62aa419cb7987070c4034e8a79d48af654ba6be90b16a6c5db"
+      "sha256": "b65e737c9aa3dd7d2615e98c76682a50cd43d52f2fd24bd6d74906f2581a9b55"
     },
     "config/rulith-sources.example.json": {
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
     },
     "config/rulith-station.example.json": {
-      "sha256": "b8dd96663d054f5bc00eb5aebb27e2a2d516429991224c3299d82ff5929fec93"
+      "sha256": "066723cbbe33c575b838de2a2b00ec883880600df277cc057e529757f1214fa2"
     },
     "config/worker-tools.example.json": {
       "sha256": "884b534c23eddb04a2e0ef3e38d3b1393f77e2448ba7bfafd6f219249a64929e"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "d3a7af25239ebda2cdd9537ae4c30a28d580ba3254ab1dacaf4da13a580bdbb9"
+      "sha256": "ccd9146c4d3cddc8a17c30ba16cfd8ce346e7bb128adab6d11b92cd7f0588b20"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
@@ -39,7 +39,7 @@
       "sha256": "79f892cf7e07fb9b7a63394752dcc38390f74145266566dbb13353b408e1bab7"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "4628faa3465baf38d82a307dd7677a2dd8b0cc2aebb6b59bf130542573c6bdcf"
+      "sha256": "61f3457e1ef2a7bb3f8892efc9485b9d5ac3ab4e83758821da6a9916bdc7490e"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "65ac6cd00e3a59dfcb2cee0f1d673dd5511e912040563e2d2a9cd1fceeb9a3df"

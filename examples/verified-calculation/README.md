@@ -35,7 +35,7 @@ Governance owns the installed recipe and binding; the local REPL and Worker cann
 either. Then run:
 
 ```powershell
-Invoke-WebRequest https://console.rulith.com/examples/verified-calculation/setup.mjs -OutFile verified-calculation-setup.mjs
+Invoke-WebRequest https://console.rulith.ai/examples/verified-calculation/setup.mjs -OutFile verified-calculation-setup.mjs
 node verified-calculation-setup.mjs
 cd rulith-verified-calculation
 ```

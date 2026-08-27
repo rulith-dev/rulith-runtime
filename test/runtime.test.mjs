@@ -65,7 +65,7 @@ test('worker prioritizes world-changing actions while preserving stable order', 
 })
 
 test('station masks secrets and never persists the mask as a credential', () => {
-  const prior = { RULITH_TOKEN: 'token-123456', RULITH_URL: 'https://api.rulith.com' }
+  const prior = { RULITH_TOKEN: 'token-123456', RULITH_URL: 'https://api.rulith.ai' }
   const view = maskEnv(prior)
   assert.equal(view.RULITH_TOKEN, '••••3456')
   assert.deepEqual(applyEnvEdit(prior, view), prior)
@@ -139,7 +139,7 @@ test('agent help is available before credentials and documents the UI port', () 
 test('managed Cloud rejects a client-owned recipe before it can install packages', () => {
   const run = spawnSync(process.execPath, ['agent/rulith-agent.mjs', '--case-boards', '--recipe', 'client-owned.json', 'test'], {
     cwd: ROOT,
-    env: { ...process.env, RULITH_URL: 'https://api.rulith.com', RULITH_TOKEN: 'test-token', RULITH_MODEL_KEY: 'test-model-key' },
+    env: { ...process.env, RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: 'test-token', RULITH_MODEL_KEY: 'test-model-key' },
     encoding: 'utf8',
   })
   assert.equal(run.status, 1)

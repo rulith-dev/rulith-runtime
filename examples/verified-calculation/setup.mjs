@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const ORIGIN = process.env.RULITH_DOWNLOAD_ORIGIN ?? 'https://console.rulith.com'
+const ORIGIN = process.env.RULITH_DOWNLOAD_ORIGIN ?? 'https://console.rulith.ai'
 const target = resolve(process.argv[2] ?? 'rulith-verified-calculation')
 const FILES = new Map([
   ['read-input.mjs', 'adapters/verified-calculation/read-input.mjs'],

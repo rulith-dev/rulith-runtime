@@ -69,8 +69,8 @@ export function applyEnvEdit(prior, edit) {
 function loadConfig() {
   if (!existsSync(CONFIG_FILE)) {
     const skeleton = {
-      repl: { args: ['--agent', 'default', '--ui'], env: { RULITH_URL: 'https://api.rulith.com', RULITH_TOKEN: '', RULITH_MODEL_KEY: '', RULITH_CASE_BOARDS: 'on' } },
-      worker: { env: { RULITH_WORK_URL: 'https://api.rulith.com/work', RULITH_CHANNEL: '', RULITH_CHANNEL_KEY: '' } },
+      repl: { args: ['--agent', 'default', '--ui'], env: { RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '', RULITH_MODEL_KEY: '', RULITH_CASE_BOARDS: 'on' } },
+      worker: { env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CHANNEL: '', RULITH_CHANNEL_KEY: '' } },
       paths: {},
     }
     writeFileSync(CONFIG_FILE, JSON.stringify(skeleton, null, 2))
@@ -383,7 +383,7 @@ body.multi .bchip{display:inline}
 
     <h2 style="margin-top:26px">Open</h2>
     <div class="cases">
-      <a href="https://console.rulith.com/cases" target="_blank" rel="noopener">Console · Runs ↗</a>
+      <a href="https://console.rulith.ai/cases" target="_blank" rel="noopener">Console · Runs ↗</a>
       <a href="#" id="replnative" onclick="return false" class="faint">Agent timeline (available after startup)</a>
     </div>
 
@@ -536,7 +536,7 @@ function renderCases(){
   document.body.classList.toggle('multi',seenCases.length>1)
   const all=seenCases.length>1?'<div class="crow'+(filterBoard===''?' sel':'')+'" data-b=""><span>All · combined</span></div>':''
   const state=(s)=>s==='completed'?'✓':s==='pending'?'◐':'●'
-  const rows=seenCases.slice().sort((x,y)=>y.at-x.at).map((c)=>'<div class="crow'+(filterBoard===c.b?' sel':'')+'" data-b="'+esc(c.b)+'"><span title="'+esc(c.b)+'">'+state(c.status)+' '+esc(bshort(c.b))+'</span><span class="faint" style="margin-left:auto">'+hhmm({at:c.at}).slice(0,5)+'</span><a href="https://console.rulith.com/cases/'+encodeURIComponent(c.b)+'" target="_blank" rel="noopener">↗</a></div>').join('')
+  const rows=seenCases.slice().sort((x,y)=>y.at-x.at).map((c)=>'<div class="crow'+(filterBoard===c.b?' sel':'')+'" data-b="'+esc(c.b)+'"><span title="'+esc(c.b)+'">'+state(c.status)+' '+esc(bshort(c.b))+'</span><span class="faint" style="margin-left:auto">'+hhmm({at:c.at}).slice(0,5)+'</span><a href="https://console.rulith.ai/cases/'+encodeURIComponent(c.b)+'" target="_blank" rel="noopener">↗</a></div>').join('')
   $('cases').innerHTML=(all+rows)||'<span class="faint">No cases yet</span>'
 }
 $('cases').addEventListener('click',(ev)=>{

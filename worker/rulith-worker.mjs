@@ -9,7 +9,7 @@
  * db-exec-fenced / mcp / run) are only a quick way to implement Tools here;
  * adapter configuration is never accepted from a board work item.
  *
- *   RULITH_WORK_URL      派工面地址(缺省 https://api.rulith.com/work)
+ *   RULITH_WORK_URL      Work endpoint (default https://api.rulith.ai/work)
  *   RULITH_CHANNEL       执行器通道 id(控制台「连接」页注册)
  *   RULITH_CHANNEL_KEY   执行器通道钥(注册时唯一一次显示)
  *   RULITH_TOOLS_FILE    Worker Tool Manifest JSON, default ./worker-tools.json
@@ -59,7 +59,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
  *  而它恰恰是整条清关链上唯一一处非确定性入口。 */
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 
-const WORK_URL = process.env.RULITH_WORK_URL ?? 'https://api.rulith.com/work'
+const WORK_URL = process.env.RULITH_WORK_URL ?? 'https://api.rulith.ai/work'
 const CHANNEL = process.env.RULITH_CHANNEL
 const KEY = process.env.RULITH_CHANNEL_KEY
 export const WORKER_ID = process.env.RULITH_WORKER_ID ?? `wkr_${randomUUID()}`

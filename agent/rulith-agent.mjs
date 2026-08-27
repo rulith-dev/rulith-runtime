@@ -90,7 +90,7 @@
  *   REPL 进程是本体，界面全是可插拔的脸——嵌进任何应用都不必改本体（脸只要带上这把钥）。
  *
  * 可选 env：
- *   RULITH_URL        云端地址（缺省 https://api.rulith.com）
+ *   RULITH_URL        Cloud API base (default https://api.rulith.ai)
  *   RULITH_MODEL      模型名（缺省 claude-sonnet-5）
  *   RULITH_MODEL_URL  模型服务地址（缺省 https://api.anthropic.com/v1/messages）
  *   RULITH_MAX_ROUNDS 最多几轮（缺省 12——防跑飞，到顶如实说明并停）
@@ -146,7 +146,7 @@ function recipeDigestOver(id, packs) {
   return `sha256:${createHash('sha256').update(JSON.stringify({ id, packs: pairs })).digest('hex')}`
 }
 
-const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.com').replace(/\/$/, '')
+const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/$/, '')
 const TOKEN = process.env.RULITH_TOKEN ?? ''
 const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
@@ -196,7 +196,7 @@ Required environment:
   ANTHROPIC_API_KEY or RULITH_MODEL_KEY
 
 Common optional environment:
-  RULITH_URL         Cloud API base (default: https://api.rulith.com)
+  RULITH_URL         Cloud API base (default: https://api.rulith.ai)
   RULITH_MODEL       Model identifier
   RULITH_MODEL_URL   Model API endpoint
   RULITH_MAX_ROUNDS  Maximum model rounds (default: 12)
@@ -233,7 +233,7 @@ const TASK = rest.join(' ').trim()
 const CASE_BOARDS = caseBoards
 const SERVE = withServe
 const MANAGED_RULITH_CLOUD = (() => {
-  try { return new URL(URL_BASE).hostname.toLowerCase() === 'api.rulith.com' } catch { return false }
+  try { return new Set(['api.rulith.ai', 'api.rulith.com']).has(new URL(URL_BASE).hostname.toLowerCase()) } catch { return false }
 })()
 
 const die = (msg) => { console.error(`\n✗ ${msg}\n`); process.exit(1) }
@@ -1602,7 +1602,7 @@ if (CASE_BOARDS) {
 
 // 案板模式下每一单是控制台登记簿里独立的一行(名字=案号),所以核对地址按**当前案卷**出——
 // 指着智能体名那一页会让人去看一块根本没这单的板。
-const consoleUrlOf = (name) => `https://console.rulith.com/agents/${encodeURIComponent(name)}`
+const consoleUrlOf = (name) => `https://console.rulith.ai/agents/${encodeURIComponent(name)}`
 const consoleUrl = consoleUrlOf(agentName)
 /** 停轮未结时终端上的那一句(三张脸共用一份措辞——同一件事三种说法比不说更糟)。 */
 const pendingLine = (id) => (id === null || id === undefined ? '' : ` · Case remains open: pending_case_id=${id}. Resume with --case ${id}, or resolve it in Console.`)
