@@ -21,31 +21,31 @@
       "sha256": "884b534c23eddb04a2e0ef3e38d3b1393f77e2448ba7bfafd6f219249a64929e"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "a57463ef68087a9f0b18cfa03bfb21ebafc9a921f14c971c746ef480d74c2996"
+      "sha256": "d3a7af25239ebda2cdd9537ae4c30a28d580ba3254ab1dacaf4da13a580bdbb9"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
     },
     "examples/verified-calculation/prepare-runtime.mjs": {
-      "sha256": "80c4eb6134976313f6e35ed80cb3cad6fd16496e0456ed1c56e126e3990c43ed"
+      "sha256": "bbf32059e524e278431fcade0ed5112fde4010936ba4d8515b13e44bbf1a864a"
     },
     "examples/verified-calculation/prepare-station.mjs": {
-      "sha256": "9ef103e0101e83edcd26aea7bb7e93c506f288a529d38ae23c1ac8a3c21761d9"
+      "sha256": "c59dd28bee9d87626684a472ebbd404de7eb141f2dd3f835fd1423eb21451d61"
     },
     "examples/verified-calculation/read-input.mjs": {
       "sha256": "52ed9dde4456ed7844ed02eceffc1c2a6b21faa57650435ed0671439c90dc7ee"
     },
     "examples/verified-calculation/recipe.template.json": {
-      "sha256": "ba80ea96e7ae4ae8fbb7effaf71eeac5bc317576163f6c4bcebda2d890591d35"
+      "sha256": "9363d46bf2aca2cb560491ac8085efd5dfae6e0b6381316f41a6885f678f44a4"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "5918db5df373d052f6fcea40d98c9ef2446b97095020577217242370667fc466"
+      "sha256": "4628faa3465baf38d82a307dd7677a2dd8b0cc2aebb6b59bf130542573c6bdcf"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "65ac6cd00e3a59dfcb2cee0f1d673dd5511e912040563e2d2a9cd1fceeb9a3df"
     },
     "examples/verified-calculation/verify-output.mjs": {
-      "sha256": "84c7467d7ff7b4d00f29ca7462a73423e102d1e87b1c59fdcca597ca607db336"
+      "sha256": "22706fe8389dabef798f9bc1ae98c364d904ee7fa94a60420e5380f9f8651941"
     },
     "examples/verified-calculation/write-output.mjs": {
       "sha256": "3e937bcf28306b5cc317b65a61310f64cc91134c74b39a6f90cd70ea84e150ca"

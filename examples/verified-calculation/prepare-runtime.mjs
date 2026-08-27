@@ -8,7 +8,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const runtime = resolve(process.env.RULITH_CALC_RUNTIME ?? join(HERE, 'runtime'))
 mkdirSync(runtime, { recursive: true })
 
-const adapters = join(HERE, 'adapters', 'verified-calculation')
+const adapters = join(runtime, 'adapters', 'verified-calculation')
 mkdirSync(adapters, { recursive: true })
 for (const file of ['read-input.mjs', 'write-output.mjs', 'verify-output.mjs']) {
   copyFileSync(join(HERE, file), join(adapters, file))

@@ -42,5 +42,5 @@ for (const [file, contents] of downloads) {
 }
 
 console.log(`Prepared ${target}`)
-console.log('Actions and source policy come from Console. worker-tools.json binds their versioned Tool ids to local adapters; credentials stay in your local source vault.')
+console.log('The Capability comes from Console. worker-tools.json is the local Adapter Manifest that binds its versioned Tool ids to implementations; credentials stay local.')
 console.log('Next: set your Agent token, model credentials, Connection key, and run the two commands from the Rulith 5-minute quickstart.')

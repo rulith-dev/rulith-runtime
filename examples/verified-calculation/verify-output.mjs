@@ -13,9 +13,12 @@ function fail(message) {
   process.exit(2)
 }
 
-let args
-try { args = JSON.parse(process.argv[2] ?? '') } catch { fail('worker must pass one JSON argument object') }
-if (!args || typeof args !== 'object' || Array.isArray(args)) fail('argument must be one JSON object')
+let request
+try { request = JSON.parse(process.argv[2] ?? '') } catch { fail('worker must pass one JSON argument object') }
+if (!request || typeof request !== 'object' || Array.isArray(request)) fail('argument must be one JSON object')
+const verificationWork = request.predicate === 'output_record'
+const args = verificationWork ? request.args : request
+if (!args || typeof args !== 'object' || Array.isArray(args)) fail('verification claim must carry one args object')
 
 let stored
 try { stored = JSON.parse(readFileSync(OUTPUT, 'utf8')) } catch (error) {
@@ -33,4 +36,11 @@ const sameRecord = stored !== null && typeof stored === 'object' && !Array.isArr
   && Object.keys(stored).length === expectedKeys.length
   && expectedKeys.every((key) => stored[key] === expected[key])
 if (!nodeMatches || !sameRecord) fail('persisted output does not exactly match the board-bound result')
-process.stdout.write(JSON.stringify({ rows: [{ node: args.node, ...stored }] }))
+if (verificationWork) {
+  process.stdout.write(JSON.stringify({
+    outcome: 'satisfied',
+    tier: 'attested',
+  }))
+} else {
+  process.stdout.write(JSON.stringify({ rows: [{ node: args.node, ...stored }] }))
+}

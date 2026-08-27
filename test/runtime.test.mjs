@@ -188,7 +188,7 @@ test('verified calculation prepares a local Tool Manifest and adapters; governed
     assert.equal(existsSync(join(dir, 'worker-tools.json')), true,
       'local Adapter bindings must be explicit in the Worker Tool Manifest')
     assert.equal(existsSync(join(dir, 'input.json')), true)
-    assert.equal(existsSync(join(example, 'adapters', 'verified-calculation', 'read-input.mjs')), true)
+    assert.equal(existsSync(join(dir, 'adapters', 'verified-calculation', 'read-input.mjs')), true)
     assert.equal(existsSync(join(dir, 'recipe.json')), false, 'managed capability packages must not be rendered into the client workspace')
     assert.equal(existsSync(join(dir, 'recipe.template.json')), false,
       'the public market source must not be downloaded as a client-owned recipe')
@@ -199,6 +199,7 @@ test('verified calculation prepares a local Tool Manifest and adapters; governed
 
 test('verified calculation is one Capability composed of Knowledge and Sources', () => {
   const recipe = JSON.parse(readFileSync(join(ROOT, 'examples', 'verified-calculation', 'recipe.template.json'), 'utf8'))
+  const guide = readFileSync(join(ROOT, 'examples', 'verified-calculation', 'README.md'), 'utf8')
   assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['domain', 'sources'])
   assert.deepEqual(recipe.packs.map((entry) => entry.pack.title ?? entry.pack.meta?.title), [
     'Verified Calculation — Knowledge',
@@ -206,8 +207,17 @@ test('verified calculation is one Capability composed of Knowledge and Sources',
   ])
   assert.equal(recipe.collection.id, 'verified_calculation')
   assert.equal(recipe.collection.version, '1.0.0')
+  assert.deepEqual(recipe.packs[0].pack.pins, ['calculation_result'],
+    'the public recipe must pin the same completion fact as the hosted Capability')
   assert.equal('line' in recipe.packs[1].pack.sources[0], false)
   assert.equal(recipe.packs[0].pack.acceptance.length, 1)
+  assert.match(guide, /one\s+installed Capability, with four inspectable sections/i)
+  assert.doesNotMatch(guide, /two governed components|install.*Knowledge[\s\S]*install.*source/i,
+    'typed protocol components must not leak back into the user installation ritual')
+  assert.match(guide, /verified-calc-worker/)
+  assert.doesNotMatch(guide, /verified-calculation-worker/)
+  assert.match(guide, /RULITH_WORKER_ROOT=<this-directory>\/runtime/,
+    'source-checkout instructions must resolve Adapter entries from the generated runtime directory')
 })
 
 test('public runtime contains no private deployment addresses or credential material', () => {

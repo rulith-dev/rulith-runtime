@@ -17,6 +17,7 @@
           "deps": [],
           "provides": ["calculation_result"]
         },
+        "pins": ["calculation_result"],
         "vocab": [
           {
             "predicate": "calculation_input",

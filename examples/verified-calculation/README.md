@@ -22,19 +22,14 @@ calculated output values.
 ## Fastest public setup
 
 Create an Agent named `verified-calculation` in Console. Create one Worker Connection named
-`verified-calculation-worker` for that Agent and copy its public channel id and one-time key. Open
+`verified-calc-worker` for that Agent and copy its public channel id and one-time key. Open
 **Capabilities → Capability market**, search for `Verified Calculation`, select the Agent,
-and install the **Verified Calculation** Capability once. The market shows its two governed
-components before confirmation:
-
-1. **Verified Calculation — Knowledge**
-2. **Verified Calculation — Local source**
-
-Knowledge contains the Actions and their versioned Tool references. The reusable Source
-component describes the required local source; neither component contains Adapter code,
-credentials, or a Connection. After installation,
-open **Agent → Configuration → Data sources**
-and bind `verified-calculation-local` to `verified-calculation-worker`. This deployment
+and install the **Verified Calculation** Capability once. It appears as one market item and one
+installed Capability, with four inspectable sections: Vocabulary, Rules, Actions, and Sources.
+Internally the protocol records typed knowledge and source components, but that is not a user
+installation ritual and there is no starter-only installer. After installation, open
+**Agent → Configuration → Data sources**
+and bind `verified-calculation-local` to `verified-calc-worker`. This deployment
 binding belongs to the Agent and is deliberately absent from the reusable Source package.
 Governance owns the installed recipe and binding; the local REPL and Worker cannot replace
 either. Then run:
@@ -45,14 +40,13 @@ node verified-calculation-setup.mjs
 cd rulith-verified-calculation
 ```
 
-The setup program downloads the public REPL and Worker, `worker-tools.json`, local Adapters,
-and sample data. The Worker Tool Manifest maps the Capability's versioned Tool ids to those
-Adapters. It stays local and contains no Agent token, model key, Connection key, or source
-credential.
+The setup program downloads the public REPL and Worker plus `worker-tools.json`, the local
+Adapters, and sample data. It does not request or store your Agent token, model key,
+Connection key, or Agent configuration.
 
 ## Prepare from this source checkout
 
-Install the Verified Calculation Capability in Console first, then prepare only the local adapters:
+Install the example Capability in Console first, then prepare the local Tool Manifest and Adapters:
 
 ```powershell
 cd examples/verified-calculation
@@ -66,13 +60,15 @@ args: --agent verified-calculation --ui --case-boards
 RULITH_CASE_BOARDS=on
 ```
 
-Configure the Worker with its Connection credentials and the local Tool Manifest. Source
-policy remains governed in Console; only Adapter implementation is local:
+Configure the Worker with its Connection credentials and local Adapter Manifest. The governed
+Actions name versioned Tools and Sources; the manifest is the Worker-local binding
+from those Tool ids to fixed Adapters. It is not a second workflow recipe:
 
 ```text
 RULITH_CHANNEL=<connection-id>
 RULITH_CHANNEL_KEY=<connection-key>
 RULITH_TOOLS_FILE=<this-directory>/runtime/worker-tools.json
+RULITH_WORKER_ROOT=<this-directory>/runtime
 ```
 
 If another Station already works on this machine, derive a separate local config

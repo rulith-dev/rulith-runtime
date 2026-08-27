@@ -44,7 +44,7 @@ const config = {
     ...(source.worker ?? {}),
     env: {
       ...(source.worker?.env ?? {}),
-      RULITH_WORKER_ROOT: HERE,
+      RULITH_WORKER_ROOT: runtime,
       RULITH_TOOLS_FILE: join(runtime, 'worker-tools.json'),
     },
   },
