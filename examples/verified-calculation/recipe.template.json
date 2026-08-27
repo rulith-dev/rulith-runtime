@@ -156,7 +156,7 @@
           },
           {
             "action": "write_calculation_result",
-            "description": "Write only the exact result bound from trusted input plus the board-derived calculation. Pass no business arguments; add only the target leaf.",
+            "description": "After intake, calculation_result is derived automatically from trusted input. Do not assert or calculate it yourself; invoke this action directly. Pass no business arguments and add only the target leaf.",
             "preconditions": [
               {
                 "predicate": "calculation_input",

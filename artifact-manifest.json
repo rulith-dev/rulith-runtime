@@ -36,7 +36,7 @@
       "sha256": "52ed9dde4456ed7844ed02eceffc1c2a6b21faa57650435ed0671439c90dc7ee"
     },
     "examples/verified-calculation/recipe.template.json": {
-      "sha256": "9363d46bf2aca2cb560491ac8085efd5dfae6e0b6381316f41a6885f678f44a4"
+      "sha256": "79f892cf7e07fb9b7a63394752dcc38390f74145266566dbb13353b408e1bab7"
     },
     "examples/verified-calculation/setup.mjs": {
       "sha256": "4628faa3465baf38d82a307dd7677a2dd8b0cc2aebb6b59bf130542573c6bdcf"
