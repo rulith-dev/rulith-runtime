@@ -260,8 +260,12 @@ test('verified calculation is one Capability composed of Knowledge and Sources',
   ])
   assert.equal(recipe.collection.id, 'verified_calculation')
   assert.equal(recipe.collection.version, '1.0.0')
-  assert.deepEqual(recipe.packs[0].pack.pins, ['calculation_result'],
-    'the public recipe must pin the same completion fact as the hosted Capability')
+  assert.deepEqual(recipe.packs[0].pack.pins, ['calculation_result', 'calculation_completed'],
+    'the public recipe must pin the Case result and acceptance root used by the hosted Capability')
+  assert.equal(recipe.collection.caseContract?.format, 'rulith-case-contract/1')
+  assert.equal(recipe.collection.caseContract?.caseType, 'verified_calculation')
+  assert.equal(recipe.collection.caseContract?.acceptance?.predicate, 'calculation_completed')
+  assert.equal(recipe.collection.caseContract?.terminal?.cardinality, 'once_per_case')
   assert.equal('line' in recipe.packs[1].pack.sources[0], false)
   assert.equal(recipe.packs[0].pack.acceptance.length, 1)
   assert.match(guide, /one\s+installed Capability, with four inspectable sections/i)

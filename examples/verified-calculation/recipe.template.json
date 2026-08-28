@@ -3,7 +3,20 @@
     "id": "verified_calculation",
     "version": "1.0.0",
     "title": "Verified Calculation",
-    "summary": "Read trusted local JSON, derive an exact total, write the result, and verify it by independent read-back."
+    "summary": "Read trusted local JSON, derive an exact total, write the result, and verify it by independent read-back.",
+    "caseContract": {
+      "format": "rulith-case-contract/1",
+      "caseType": "verified_calculation",
+      "title": "Verified calculation",
+      "businessKey": { "predicate": "calculation_input", "arguments": ["job_id"] },
+      "opening": { "predicate": "calculation_input", "keyArguments": ["job_id"] },
+      "acceptance": {
+        "predicate": "calculation_completed",
+        "keyArguments": ["job_id"],
+        "minimumGroundingFloor": "attested"
+      },
+      "terminal": { "cardinality": "once_per_case", "disposition": "completed", "requiresCertified": true }
+    }
   },
   "packs": [
     {
@@ -17,7 +30,7 @@
           "deps": [],
           "provides": ["calculation_result"]
         },
-        "pins": ["calculation_result"],
+        "pins": ["calculation_result", "calculation_completed"],
         "vocab": [
           {
             "predicate": "calculation_input",
@@ -43,6 +56,11 @@
             "predicate": "task_seed",
             "args": ["root", "node", "test"],
             "description": "Trusted intake result used by the host to create the one-leaf task tree."
+          },
+          {
+            "predicate": "calculation_completed",
+            "args": ["job_id"],
+            "description": "Case acceptance root derived only after exact calculation, durable write, and independent matching read-back."
           }
         ],
         "axioms": [
@@ -82,6 +100,27 @@
                 }
               }
             ]
+          },
+          {
+            "id": "complete_verified_calculation",
+            "description": "Accept one calculation Case only when the written and independently read-back values match the exact board-derived result.",
+            "tier": "attested",
+            "source": "verified-calculation-read-back",
+            "when": [
+              {
+                "predicate": "calculation_result",
+                "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents" }
+              },
+              {
+                "predicate": "output_written",
+                "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "completed" }
+              },
+              {
+                "predicate": "output_record",
+                "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "completed" }
+              }
+            ],
+            "then": [{ "predicate": "calculation_completed", "args": { "job_id": "?job_id" } }]
           }
         ],
         "empirical": [],
@@ -92,35 +131,7 @@
             "description": "The leaf is accepted only when the worker read back the same job and exact totals that the board derived.",
             "when": [
               { "predicate": "acceptance", "args": { "node": "?node", "test": "?test" } },
-              {
-                "predicate": "calculation_result",
-                "args": {
-                  "node": "?node",
-                  "job_id": "?test",
-                  "subtotal_cents": "?subtotal_cents",
-                  "total_cents": "?total_cents"
-                }
-              },
-              {
-                "predicate": "output_written",
-                "args": {
-                  "node": "?node",
-                  "job_id": "?test",
-                  "subtotal_cents": "?subtotal_cents",
-                  "total_cents": "?total_cents",
-                  "status": "completed"
-                }
-              },
-              {
-                "predicate": "output_record",
-                "args": {
-                  "node": "?node",
-                  "job_id": "?test",
-                  "subtotal_cents": "?subtotal_cents",
-                  "total_cents": "?total_cents",
-                  "status": "completed"
-                }
-              }
+              { "predicate": "calculation_completed", "args": { "job_id": "?test" } }
             ],
             "then": [{ "predicate": "acceptance_met", "args": { "node": "?node" } }]
           }
