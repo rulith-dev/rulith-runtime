@@ -530,6 +530,7 @@ es.onmessage=(m)=>{
   }
   if(e.type==='case-open') add('<div class="round">'+(e.ok?(e.healed?'Previous case closed → new case ':'Case opened · ')+esc(e.board):'Could not open case · '+esc(e.teaching||''))+'</div>')
   if(e.type==='sealed') add('<div class="round">Case sealed · '+esc(e.board)+(e.idempotent?' (idempotent)':'')+'</div>')
+  if(e.type==='case-certified') add('<div class="round">Case certified · '+esc(e.caseId)+' · floor '+esc(e.groundingFloor)+'</div>')
   if(e.type==='segment-end') add('<div class="round">'+esc(e.note||'')+'</div>')
   if(e.type==='round') add('<div class="round">Round '+e.n+'</div>')
   if(e.type==='propose') add('<div class="card"><div class="say">'+esc(e.say||'(The model proposed operations only.)')+'</div>'+
@@ -855,8 +856,16 @@ async function archiveBoardWork(ctx, disposition) {
   }
   if (r.accepted === true) {
     workOf.delete(ctx.board)
-    log(`◎ Archived this run (${bound.root}${disposition === undefined ? '' : ` · disposition ${disposition}${degraded ? '; host omitted the unsupported field' : ''}`}). History remains available in Console.`)
-    emitOn(ctx, 'archived', { root: bound.root, ...(disposition === undefined ? {} : { disposition }), ...(degraded ? { degraded: true } : {}) })
+    const terminal = caseTerminalReceiptOf(r.payload?.caseTerminalReceipt)
+    if (terminal !== undefined) {
+      log(`◎ Case ${terminal.caseId} certified and archived (${terminal.disposition} · floor ${terminal.groundingFloor}). The signed terminal receipt and evidence digest are available in Console.`)
+      emitOn(ctx, 'case-certified', terminal)
+    } else {
+      // A legacy or non-contracted Work may archive without a Case Terminal Receipt. Say exactly
+      // that: ArchiveTask acceptance is not equivalent to contracted certification or billable work.
+      log(`◎ Archived this run (${bound.root}${disposition === undefined ? '' : ` · disposition ${disposition}${degraded ? '; host omitted the unsupported field' : ''}`}). No Case Terminal Receipt was returned, so this archive is not presented as a certified Case. History remains available in Console.`)
+    }
+    emitOn(ctx, 'archived', { root: bound.root, ...(disposition === undefined ? {} : { disposition }), ...(terminal === undefined ? {} : { caseTerminalReceipt: terminal }), ...(degraded ? { degraded: true } : {}) })
   } else {
     log(`◎ Archive rejected: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 200)}
    Work remains active for the next run; archiving unfinished work would remove the landing point for later receipts.`)
@@ -976,6 +985,25 @@ const boardAlreadyExists = (r) => {
   // package error such as `tool "x" already exists`. The latter means case
   // construction failed and must never be treated as a resumable case.
   return /^Board\s+"[^"]+"\s+already exists\b/i.test(teaching)
+}
+
+/**
+ * Treat a terminal receipt as a protocol object, not a truthy decoration. The authority signs the
+ * semantics; the local Agent only refuses to upgrade an ArchiveTask response into "certified" unless
+ * the minimum identity, evidence, and disposition fields are present and internally coherent.
+ */
+function caseTerminalReceiptOf(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  if (raw.format !== 'rulith-case-terminal-receipt/1') return undefined
+  const required = [
+    'caseId', 'caseType', 'businessKeyDigest', 'capabilityReleaseDigest', 'caseContractDigest',
+    'acceptanceAtomKey', 'acceptanceEvidenceClosureDigest', 'groundingFloor', 'disposition',
+    'openedAt', 'terminalAt', 'idempotencyKey',
+  ]
+  if (required.some((key) => typeof raw[key] !== 'string' || raw[key].trim() === '')) return undefined
+  if (raw.certified !== true || raw.disposition !== 'completed') return undefined
+  if (!['verified', 'attested'].includes(raw.groundingFloor)) return undefined
+  return Object.fromEntries([['format', raw.format], ...required.map((key) => [key, raw[key]]), ['certified', true]])
 }
 
 async function openCase(ctx, title, predecessor, resumeId) {
