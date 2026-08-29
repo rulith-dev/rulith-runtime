@@ -12,7 +12,7 @@
  *      + worker 执行事件（RULITH_WORKER_EVENTS=jsonl，读孩子的 stdout——**不是网络口**，
  *      worker 纯出站零入站的形态一根毛不变）→ 一条 SSE 流，浏览器晚开补看全史
  *   ③ 配置面：两件的 env 表单化。**密文类值打码显示，回存打码值=保持原值**；
- *      密文库(rulith-sources.json)只显示条目名，值永不出站（SRC-40 不因 UI 松动）
+ *      The Worker secret file exposes names only; secret values never leave the machine.
  *   ④ 插话转发：POST /say → Agent 接单口 /task（站持注入钥，并为每案生成 contextKey）
  *
  * 门与 REPL --ui 同律同码：随机站钥 + Origin/Host 只认本机 + 只收 JSON 封顶 64KB。
@@ -20,7 +20,7 @@
  *
  * 配置文件 rulith-station.json（缺省当前目录，RULITH_STATION_CONFIG 可指）：
  *   { "repl":   { "args": ["--agent","orders","--ui"], "env": { "RULITH_TOKEN": "…", … } },
- *     "worker": { "env": { "RULITH_CHANNEL": "…", "RULITH_CHANNEL_KEY": "…", … } },
+ *     "worker": { "env": { "RULITH_CONNECTION": "…", "RULITH_CONNECTION_KEY": "…", … } },
  *     "paths":  { "repl": "…/rulith-agent.mjs", "worker": "…/rulith-worker.mjs" } }
  * 首次启动没有配置文件会生成骨架——先填 env 再从界面上点启动。
  *
@@ -69,8 +69,8 @@ export function applyEnvEdit(prior, edit) {
 function loadConfig() {
   if (!existsSync(CONFIG_FILE)) {
     const skeleton = {
-      repl: { args: ['--agent', 'default', '--ui'], env: { RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '', RULITH_MODEL_KEY: '', RULITH_CASE_BOARDS: 'on' } },
-      worker: { env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CHANNEL: '', RULITH_CHANNEL_KEY: '' } },
+      repl: { args: ['--agent', 'default', '--ui'], env: { RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '', RULITH_MODEL_KEY: '' } },
+      worker: { env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '' } },
       paths: {},
     }
     writeFileSync(CONFIG_FILE, JSON.stringify(skeleton, null, 2))
@@ -109,11 +109,11 @@ function startRepl(cfg) {
   const servePort = Number(cfg.repl?.env?.RULITH_SERVE_PORT ?? 7799)
   const args = Array.isArray(cfg.repl?.args) ? cfg.repl.args : []
   const withUi = [...args]
-  for (const flag of ['--ui', '--serve', '--case-boards']) if (!withUi.includes(flag)) withUi.push(flag)
+  for (const flag of ['--ui', '--serve']) if (!withUi.includes(flag)) withUi.push(flag)
   const child = spawn(process.execPath, [path, ...withUi], {
     env: { ...process.env, ...(cfg.repl?.env ?? {}),
       RULITH_UI_KEY: uiKey, RULITH_SERVE_KEY: serveKey,
-      RULITH_SERVE_PORT: String(servePort), RULITH_SERVE_CASE_SLOTS: 'on', RULITH_CASE_BOARDS: 'on' },
+      RULITH_SERVE_PORT: String(servePort) },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const configuredConcurrency = Math.max(1, Math.min(8, Math.trunc(Number(cfg.repl?.env?.RULITH_SERVE_CONCURRENCY ?? 1)) || 1))
@@ -370,7 +370,7 @@ body.multi .bchip{display:inline}
 <div class="grid">
   <!-- 左：控制台 -->
   <div class="col left">
-    <h2>Components</h2>
+    <h2>Runtime</h2>
     <div class="row"><span>Agent <span class="faint" id="pid-repl"></span></span>
       <span><span class="pill stop" id="st-repl">…</span> <button class="btn" id="bt-repl" onclick="ctl('repl')">Start</button></span></div>
     <div class="row"><span>Worker <span class="faint" id="pid-worker"></span></span>
@@ -501,7 +501,7 @@ function midEvent(e){
     delete pendingUsers[eventKey(e)]
     addMid('<div class="round">Case opened · '+esc(e.board||'')+'</div>',e.board);return
   }
-  if(e.type==='sealed'){setBusy('',e.board);noteCase(e.board,e.at||e.t,'completed',e.session);addMid('<div class="round" style="color:var(--green)">Case sealed · '+esc(e.board||'')+'</div>',e.board);return}
+  if(e.type==='case-closed'){setBusy('',e.board);noteCase(e.board,e.at||e.t,'completed',e.session);addMid('<div class="round" style="color:var(--green)">Case closed · '+esc(e.board||'')+'</div>',e.board);return}
   // 放电事件：有真缺口才值得占时间线；纯"求证在途"是宿主机械，收进状态提示（log 径同律）。
   if(e.type==='discharge'){const dn=(e.notes||[]).join(' · ');if(/gap|rejected|缺口|放电拒/i.test(dn))addMid('<div class="faint" style="margin:6px 0">Verification · '+esc(clip(dn,200))+'</div>',e.board);else setBusy('Verification requested; waiting for evidence',e.board);return}
   if(e.type==='task-done'){setBusy('',e.board);noteCase(e.board,e.at||e.t,e.pendingCaseId?'pending':'completed',e.sessionKey);return}
@@ -567,7 +567,7 @@ function reportedState(e){
 }
 function rightEvent(e){
   const t='<span class="wt">'+hhmm(e)+'</span>'
-  if(e.type==='up')return addRight(t+'Online <span class="faint">source '+esc(clip(e.channel,26))+' · '+esc(String(e.tools))+' tool(s)'+(e.reviewer?' · reviewer enabled':'')+'</span>')
+  if(e.type==='up')return addRight(t+'Online <span class="faint">connection '+esc(clip(e.connectionId,26))+' · '+esc(String(e.tools))+' tool(s)'+(e.reviewer?' · reviewer enabled':'')+'</span>')
   if(e.type==='claimed')return addRight(t+bchip(e)+'<span style="color:var(--cyan)">●</span> Claimed <code>'+esc(e.kind||'')+'</code> '+esc(e.id||e.action||''),e.board)
   if(e.type==='reported'){
     const s=reportedState(e)

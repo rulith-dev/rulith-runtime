@@ -132,19 +132,19 @@ test('agent help is available before credentials and documents the UI port', () 
   })
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /RULITH_UI_PORT/)
-  assert.match(run.stdout, /--case-boards/)
+  assert.match(run.stdout, /--case <id>/)
+  assert.doesNotMatch(run.stdout, /--case-boards|--recipe/)
   assert.doesNotMatch(run.stderr, /missing/i)
 })
 
-test('managed Cloud rejects a client-owned recipe before it can install packages', () => {
+test('the local runtime has no client-owned recipe or Board-profile surface', () => {
   const run = spawnSync(process.execPath, ['agent/rulith-agent.mjs', '--case-boards', '--recipe', 'client-owned.json', 'test'], {
     cwd: ROOT,
     env: { ...process.env, RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: 'test-token', RULITH_MODEL_KEY: 'test-model-key' },
     encoding: 'utf8',
   })
   assert.equal(run.status, 1)
-  assert.match(run.stderr, /self-hosted\/offline option/)
-  assert.match(run.stderr, /configured in Console/)
+  assert.match(run.stderr, /Unknown option: --case-boards/)
   assert.doesNotMatch(run.stderr, /Cannot read recipe file/)
 })
 
@@ -160,8 +160,8 @@ test('worker rejects bad credentials before claiming to be online and exits clea
     env: {
       ...process.env,
       RULITH_WORK_URL: `http://127.0.0.1:${port}/work`,
-      RULITH_CHANNEL: 'test-channel',
-      RULITH_CHANNEL_KEY: 'wrong-key',
+      RULITH_CONNECTION: 'test-connection',
+      RULITH_CONNECTION_KEY: 'wrong-key',
       RULITH_TOOLS_FILE: join(ROOT, 'test', 'does-not-exist.json'),
       RULITH_SOURCES_FILE: join(ROOT, 'test', 'does-not-exist.json'),
     },
@@ -182,29 +182,18 @@ test('worker rejects bad credentials before claiming to be online and exits clea
   assert.doesNotMatch(stderr, /edge preserves|Assertion failed|UV_HANDLE_CLOSING/)
 })
 
-test('local recipe assembler fingerprints every package without overriding an explicit pin', () => {
+test('the local Agent does not assemble, fingerprint, or install governance recipes', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /function fingerprintRecipePacks\(packs\)/)
-  assert.match(source, /createHash\('sha256'\)\.update\(JSON\.stringify\(entry\.pack\)\)/)
-  assert.match(source, /digest: `sha256:\$\{digest\}`/)
-  assert.match(source, /digest must be a non-empty string when supplied/)
-})
-
-test('local recipe identity uses the same package-ledger digest as cloud audit', () => {
-  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /function recipeDigestOver\(id, packs\)/)
-  assert.match(source, /JSON\.stringify\(\{ id, packs: pairs \}\)/)
-  assert.match(source, /digest: recipeDigestOver\(String\(j\.id \?\? agentName\), packs\)/)
-  assert.doesNotMatch(source, /JSON\.stringify\(\{ packs, seed \}\)/)
+  assert.doesNotMatch(source, /fingerprintRecipePacks|recipeDigestOver|--recipe/)
+  assert.match(source, /Do not attempt add_axiom, define_action, RegisterPack/)
 })
 
 test('agent lifecycle events shown to users use the English product vocabulary', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /\[Verification\]/)
-  assert.match(source, /Case "\$\{ctx\.board\}" sealed/)
-  assert.match(source, /function caseTerminalReceiptOf\(raw\)/)
-  assert.match(source, /No Case Terminal Receipt was returned, so this archive is not presented as a certified Case/)
-  assert.match(source, /Case \$\{terminal\.caseId\} certified and archived/)
+  assert.match(source, /Closed Case "\$\{bound\.root\}" with disposition/)
+  assert.match(source, /emitOn\(ctx, 'case-closed'/)
+  assert.match(source, /Board certified the case as deliverable/)
   assert.doesNotMatch(source, /notes\.push\(`\[放电/)
   assert.doesNotMatch(source, /log\(`◎ 案卷/)
 })
@@ -253,12 +242,12 @@ test('verified calculation prepares a local Tool Manifest and adapters; governed
   }
 })
 
-test('verified calculation is one Capability composed of Knowledge and Sources', () => {
+test('verified calculation is one Capability composed of Program and Sources', () => {
   const recipe = JSON.parse(readFileSync(join(ROOT, 'examples', 'verified-calculation', 'recipe.template.json'), 'utf8'))
   const guide = readFileSync(join(ROOT, 'examples', 'verified-calculation', 'README.md'), 'utf8')
-  assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['domain', 'sources'])
-  assert.deepEqual(recipe.packs.map((entry) => entry.pack.title ?? entry.pack.meta?.title), [
-    'Verified Calculation — Knowledge',
+  assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['program', 'sources'])
+  assert.deepEqual(recipe.packs.map((entry) => entry.title ?? entry.pack.title ?? entry.pack.meta?.title), [
+    'Verified Calculation — Program',
     'Verified Calculation — Local source',
   ])
   assert.equal(recipe.collection.id, 'verified_calculation')

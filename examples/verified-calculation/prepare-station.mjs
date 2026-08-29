@@ -34,7 +34,6 @@ const config = {
     args: ['--agent', 'verified-calculation', '--ui'],
     env: {
       ...(source.repl?.env ?? {}),
-      RULITH_CASE_BOARDS: 'on',
       RULITH_SERVE_CONCURRENCY: '1',
       RULITH_UI_PORT: process.env.RULITH_CALC_UI_PORT ?? '7789',
       RULITH_SERVE_PORT: process.env.RULITH_CALC_SERVE_PORT ?? '7800',

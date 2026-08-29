@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: Apache-2.0
 /**
- * rulith-worker — 通用执行器参考体(v1,单文件；数据库驱动按需安装)。
+ * Rulith Worker is the domain-neutral execution runtime.
  *
  * It knows no business domain. The Agent sees Actions; each external Action
  * references a versioned Tool. This Worker resolves that Tool against its
@@ -10,8 +10,8 @@
  * adapter configuration is never accepted from a board work item.
  *
  *   RULITH_WORK_URL      Work endpoint (default https://api.rulith.ai/work)
- *   RULITH_CHANNEL       执行器通道 id(控制台「连接」页注册)
- *   RULITH_CHANNEL_KEY   执行器通道钥(注册时唯一一次显示)
+ *   RULITH_CONNECTION       Agent-owned Connection id
+ *   RULITH_CONNECTION_KEY   Connection credential shown once at registration
  *   RULITH_TOOLS_FILE    Worker Tool Manifest JSON, default ./worker-tools.json
  *   RULITH_WORKSPACE_SOURCE  Enable fixed workspace Tools for this Source name
  *   RULITH_WORKSPACE_MODE    read (default) or read-write
@@ -60,8 +60,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 
 const WORK_URL = process.env.RULITH_WORK_URL ?? 'https://api.rulith.ai/work'
-const CHANNEL = process.env.RULITH_CHANNEL
-const KEY = process.env.RULITH_CHANNEL_KEY
+const CONNECTION_ID = process.env.RULITH_CONNECTION
+const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 export const WORKER_ID = process.env.RULITH_WORKER_ID ?? `wkr_${randomUUID()}`
 const TOOLS_FILE = process.env.RULITH_TOOLS_FILE ?? './worker-tools.json'
 const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToPath(import.meta.url)))
@@ -78,8 +78,8 @@ const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToP
  *  两个落点：① 横幅（人当场看得见）② 随每一发派工请求发头（网关记得下最后见到的版本）。
  *  版本对不上时能问出「你那台跑的是哪一版」——在此之前这句话问不出答案。 */
 export const WORKER_VERSION = '2026-08-23'
-const SOURCES_FILE = process.env.RULITH_SOURCES_FILE ?? './rulith-sources.json'
-let SOURCES = {}
+const SECRETS_FILE = process.env.RULITH_SECRETS_FILE ?? './worker-secrets.json'
+let SOURCE_CONTEXT = {}
 // 首张工单也必须拿到完整执行契约。来源地址同步失败可以降级到本机密文库，
 // 但不能一边同步一边先 Poll——否则同一配置会因网络时序偶发地报“缺端点”。
 let SOURCES_READY = Promise.resolve()
@@ -103,13 +103,13 @@ const REVIEWER_TIMEOUT_MS = Number(process.env.RULITH_REVIEWER_TIMEOUT_MS ?? 120
 
 class CredentialRejectedError extends Error {
   constructor(teaching = '') {
-    super(`Connection credential rejected (401). Copy a fresh Connection channel id and key from Console > Connections.${teaching ? ` ${teaching}` : ''}`)
+    super(`Connection credential rejected (401). Copy a fresh Connection id and key from Console > Connections.${teaching ? ` ${teaching}` : ''}`)
     this.name = 'CredentialRejectedError'
   }
 }
 
-if (IS_MAIN && (!CHANNEL || !KEY)) {
-  console.error('Missing RULITH_CHANNEL / RULITH_CHANNEL_KEY. Register a Worker connection in Console; its key is shown once.')
+if (IS_MAIN && (!CONNECTION_ID || !CONNECTION_KEY)) {
+  console.error('Missing RULITH_CONNECTION / RULITH_CONNECTION_KEY. Register a Connection in Console; its key is shown once.')
   process.exit(2)
 }
 
@@ -204,8 +204,8 @@ if (IS_MAIN) {
     }
     printAnchorHints(TOOLS)
     try {
-      SOURCES = JSON.parse(readFileSync(SOURCES_FILE, 'utf8'))
-      console.log(`· Local secret store loaded: ${Object.keys(SOURCES).length} source(s) (${Object.keys(SOURCES).join(' / ')}). Credentials remain local.`)
+      SOURCE_CONTEXT = JSON.parse(readFileSync(SECRETS_FILE, 'utf8'))
+      console.log(`· Local secret store loaded for ${Object.keys(SOURCE_CONTEXT).length} Source(s). Credentials remain local.`)
     } catch { /* 没有密文库=直写模式照旧,不是错 */ }
     // 地址下发(选项C): 云上数据源的访问定义自动拉取——**非密半边**,密码永不下发(SRC-40)。
     // 本机密文库优先(同名不覆盖);拉不到不是错(老网关没这路由,worker 照旧跑)。
@@ -216,7 +216,7 @@ if (IS_MAIN) {
     // `/work/sources` 落进兜底那一支而那一支剥掉通道头 ⇒ 401。真相如何要靠这条日志说话。
     // 「拉不到不是错」仍然成立——**不是错不等于不用说**。
     SOURCES_READY = fetch(`${WORK_URL}/sources`, {
-      headers: { 'x-rulith-channel': CHANNEL, 'x-rulith-channel-key': KEY },
+      headers: { 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY },
       signal: AbortSignal.timeout(10_000),
     })
       .then(async (r) => {
@@ -229,10 +229,13 @@ if (IS_MAIN) {
         let n = 0
         for (const s of j.sources) {
           if (!s || typeof s.name !== 'string' || s.name === '') continue
-          if (SOURCES[s.name] === undefined && typeof s.access === 'string' && s.access !== '') {
-            SOURCES[s.name] = { type: s.type, access: s.access, url: s.access, dsn: s.access }
-            n++
-          }
+          const local = SOURCE_CONTEXT[s.name] ?? {}
+          const remote = typeof s.access === 'string' && s.access !== ''
+            ? { type: s.type, access: s.access, url: s.access, dsn: s.access }
+            : { type: s.type }
+          SOURCE_CONTEXT[s.name] = { ...remote, ...local,
+            ...(remote.headers || local.headers ? { headers: { ...(remote.headers ?? {}), ...(local.headers ?? {}) } } : {}) }
+          n++
         }
         if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`)
       }).catch((e) => {
@@ -256,19 +259,19 @@ if (IS_MAIN) {
 }
 
 /**
- * 打派工面。`board` = 工单行上带回来的**板标识**(人面名)——收件箱模式(控制台注册连接时
- * 选「整个账户」)下,一条凭证服务多块板,"这件活在哪块板上"随单来、原样带回。
- * 缺省单板模式下带不带都行(网关按注册的那块板路由)。**worker 自己不多板化**:
- * 它仍然一次只对着一块板干活,只是不再由部署配置写死是哪一块。
+ * Call the Worker surface. A Connection already identifies exactly one Agent
+ * Board, so the Worker never accepts or returns a Board route. Poll supplies a
+ * trusted caseId and caseRevision as local execution context; ClaimWork and ReportWork
+ * return the work identity and signed execution grant unchanged.
  */
-async function work(operation, board) {
+async function work(operation) {
   const identified = { ...operation, workerId: WORKER_ID }
   const r = await fetch(WORK_URL, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-rulith-channel': CHANNEL, 'x-rulith-channel-key': KEY,
+    headers: { 'content-type': 'application/json', 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY,
       // 版本随每一发走(RT-WK-VER): 网关据它记得下「这台客户机跑的是哪一版」。
       'x-rulith-worker-version': WORKER_VERSION },
-    body: JSON.stringify({ operation: board === undefined ? identified : { ...identified, board } }),
+    body: JSON.stringify({ operation: identified }),
   })
   const j = await r.json().catch(() => ({}))
   if (r.status === 401) throw new CredentialRejectedError(j.teaching ?? '')
@@ -317,7 +320,7 @@ async function readHttpBody(r, maxBytes) {
  * 原语工具 http：共享包只带 source+相对路径，地址与凭据由 Worker 的来源库补齐。
  * 本机旧工具表仍可直写 url，但必须显式 allowHosts；来自 source 的地址本身就是治理边界。
  */
-async function handHttp(t, args, sources = SOURCES) {
+async function handHttp(t, args, sources = SOURCE_CONTEXT) {
   const resolved = resolveSourceCreds(t, sources)
   if (typeof resolved.url !== 'string' || resolved.url === '') {
     throw new Error('HTTP tools require a source endpoint: declare source in the tool, configure access on that source, and keep credentials in the matching local secret entry')
@@ -361,10 +364,10 @@ async function handHttp(t, args, sources = SOURCES) {
  *  `passArgs:true` 只把动态实参序列化成**一个 JSON argv**追加给固定程序；
  *  它不会改变 cmd，也不会拆成多个参数。程序自己校验这份数据。
  */
-function handRun(t, args, context = {}, sources = SOURCES) {
+function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
   return new Promise((finish, reject) => {
     const argv = [...(t.args ?? []), ...(t.passArgs === true ? [JSON.stringify(args ?? {})] : [])]
-    // `board` 来自受信工单行，不来自模型 args。固定适配器据它领取/续租自己的案件，
+    // `caseId` comes from the trusted work item, never from model arguments.
     // 同一 Worker 才能安全服务多个并行 Context；模型不能靠改动作参数把别案主键带进来。
     const source = resolveSourceCreds(t, sources)
     const access = typeof source.access === 'string'
@@ -372,7 +375,7 @@ function handRun(t, args, context = {}, sources = SOURCES) {
       : undefined
     const env = {
       ...process.env,
-      ...(context.board ? { RULITH_CASE_ID: String(context.board) } : {}),
+      ...(context.caseId ? { RULITH_CASE_ID: String(context.caseId) } : {}),
       ...(access ? { RULITH_SOURCE_ACCESS: access } : {}),
       ...(source.sourceType ? { RULITH_SOURCE_TYPE: String(source.sourceType) } : {}),
     }
@@ -383,6 +386,13 @@ function handRun(t, args, context = {}, sources = SOURCES) {
       finish(String(stdout).slice(0, 4000) || '(no output)')
     })
   })
+}
+
+function inCase(w, operation) {
+  if (typeof w?.caseId !== 'string' || w.caseId === '' || typeof w?.caseRevision !== 'string' || w.caseRevision === '') {
+    throw new Error('Worker Poll returned a work item without caseId/caseRevision; refusing to claim or report unscoped or stale work')
+  }
+  return { ...operation, caseId: w.caseId, caseRevision: w.caseRevision }
 }
 
 const WORKSPACE_MAX_FILE_BYTES = 256 * 1024
@@ -452,7 +462,7 @@ async function boundedText(path, cap = WORKSPACE_MAX_FILE_BYTES) {
 }
 
 /** Fixed, path-fenced local implementations used by versioned workspace Tools. */
-async function handWorkspace(t, args, sources = SOURCES) {
+async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
   const root = await workspaceRootOf(t, sources)
   const operation = String(t.operation ?? t.entry ?? '')
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
@@ -613,7 +623,7 @@ const dbUrl = () => process.env.RULITH_DB_URL ?? process.env.DEMO_DB_URL
  *  端点与凭据从密文库按来源名取(工具声明写 source);remoteTool 缺省=工具名。
  *  返回物是材料不是指令——它经板围栏进案卷,不直接进模型上下文。 */
 async function handMcp(t, args) {
-  const r = resolveSourceCreds(t, SOURCES)
+  const r = resolveSourceCreds(t, SOURCE_CONTEXT)
   if (!r.url) return 'error: MCP tools require a source endpoint. Declare "source": "<source-name>" and configure {"url": "...", "token"?: "..."} under that source in the local secret store.'
   const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: t.remoteTool ?? t.name, arguments: args ?? {} } }
   const res = await fetch(r.url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(r.headers ?? {}) }, body: JSON.stringify(body) })
@@ -642,7 +652,7 @@ async function handMcp(t, args) {
 
 /** 具名工具 db-query：SELECT-only 硬守卫 + 行数截断。 */
 async function handDbQuery(t, args) {
-  const dsn = resolveSourceCreds(t, SOURCES).dsn ?? dbUrl()
+  const dsn = resolveSourceCreds(t, SOURCE_CONTEXT).dsn ?? dbUrl()
   if (!dsn) return 'error: Database connection is not configured. Set RULITH_DB_URL locally; it is never stored in the tool package or on the Board.'
   const sql = String(args?.sql ?? t.sql ?? '')
   const refused = selectOnlyGuard(sql)
@@ -686,7 +696,7 @@ export function resultFactsFromRows(t, rows) {
 
 /** 具名工具 db-exec-fenced：**分类进门**——破坏性语句须经人签，这件工具不绕过。 */
 async function handDbExec(t, args) {
-  const dsn = resolveSourceCreds(t, SOURCES).dsn ?? dbUrl()
+  const dsn = resolveSourceCreds(t, SOURCE_CONTEXT).dsn ?? dbUrl()
   if (!dsn) return 'error: Database connection is not configured. Set RULITH_DB_URL locally; it is never stored in the tool package or on the Board.'
   const sql = String(args?.sql ?? t.sql ?? '')
   if (multiStatement(sql)) return 'error: db_exec accepts one statement only; chained statements can hide a destructive operation behind a benign prefix'
@@ -717,7 +727,7 @@ function checkImpls(tools) {
   return missing
 }
 
-async function execute(action, args, tools = TOOLS, sources = SOURCES, context = {}) {
+async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, context = {}) {
   // 工单行的 args 是 JSON **字符串**(板上 tool_invoked.args 原文)。toolSpec 通用路
   // 各自 parse,而本地表优先路此前原样透传 ⇒ db 手的 `args?.sql` 恒 undefined,
   // 每一发都拿空串去撞守卫(2026-08-23 生产 orders 五幕实证,RT-WK-ARGS-1)。
@@ -776,19 +786,27 @@ function weakerTier(a, b) {
 }
 
 /**
- * 核验后端的结构化三态。普通文本／未带 outcome 的旧 JSON 仍表示 satisfied；只有显式
- * outcome 才改变状态。未知 outcome 不许猜——它是协议错误，折成 worker error 回执。
- * `not_satisfied` 是一次正常完成的业务判断，不是异常，也不该吃故障退避预算。
+ * Normalize the verification backend's explicit three-state envelope.
+ * Unstructured text and envelopes without `outcome` are protocol errors: a
+ * Worker must never infer success from a payload it cannot classify.
+ * `not_satisfied` is a completed business decision, not an infrastructure error.
  */
 function verificationResult(raw) {
-  const text = String(raw ?? '')
   let value
-  try { value = JSON.parse(text) } catch { return { outcome: 'satisfied', ok: true, evidence: text } }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return { outcome: 'satisfied', ok: true, evidence: text }
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw) } catch {
+      throw new Error('Verification result must be a JSON object with an explicit outcome')
+    }
+  } else {
+    value = raw
   }
-  const declared = Object.prototype.hasOwnProperty.call(value, 'outcome')
-  const outcome = declared ? value.outcome : 'satisfied'
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Verification result must be a JSON object with an explicit outcome')
+  }
+  if (!Object.prototype.hasOwnProperty.call(value, 'outcome')) {
+    throw new Error('Verification result must include an explicit outcome')
+  }
+  const outcome = value.outcome
   if (!['satisfied', 'not_satisfied', 'error'].includes(outcome)) {
     throw new Error(`Verification outcome must be satisfied, not_satisfied, or error; received ${JSON.stringify(outcome)}`)
   }
@@ -797,7 +815,7 @@ function verificationResult(raw) {
   return {
     outcome,
     ok,
-    evidence: String(value.evidence ?? reason ?? text),
+    evidence: String(value.evidence ?? reason ?? ''),
     ...(typeof value.tier === 'string' ? { tier: value.tier } : {}),
     ...(Array.isArray(value.facts) ? { facts: value.facts } : {}),
     ...(!ok && reason !== undefined ? { reason: String(reason) } : {}),
@@ -821,30 +839,31 @@ function handledLocalTool(id, definition, payload, kind = 'read') {
   }), JSON.stringify(payload ?? {}))
 }
 
-async function runHandledTool(id, definition, payload, board, kind = 'read') {
+async function runHandledTool(id, definition, payload, caseId, kind = 'read') {
   const local = handledLocalTool(id, definition, payload, kind)
-  const raw = await execute(id, payload, { [id]: local }, SOURCES, { board })
+  const raw = await execute(id, payload, { [id]: local }, SOURCE_CONTEXT, { caseId })
   const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
   return text.replace(/^HTTP [0-9]+:\s*/, '')
 }
 
-// 工单面=WorkItem 三件(ListWork/ClaimWork/ReportWork,workType 判别):旧八件专面动词已随
-// 核心退役面整删(2026-08-04)。verification=求证工单 · action=外向动作 · review=清关案卷。
+// The public Worker surface is Poll / ClaimWork / ReportWork. ListWork remains
+// an internal gateway-to-boardd operation. Work type distinguishes verification,
+// action, review, and evidence items.
 async function handleClaimWork(w) {
   const picked = toolForHandle(TOOLS, 'verification', w.claim?.predicate)
   if (picked === undefined) { console.log(`· Skipping work item ${w.work}: no versioned Tool handles verification for claim ${w.claim?.predicate}`); return }
   const { id: toolId, definition: t } = picked
-  if (w.channel !== CHANNEL) { return } // 路由到别的通道的工单,别抢
-  const claim = await work({ kind: 'ClaimWork', workType: 'verification', id: w.work }, w.board)
+  if (w.connectionId !== CONNECTION_ID) return
+  const claim = await work(inCase(w, { kind: 'ClaimWork', workType: 'verification', id: w.work }))
   if (claim.accepted !== true) { console.log(`· Claiming work item ${w.work} was rejected (${claim.errorCode ?? ''})`); return }
   say(`● Claimed verification work ${w.work} (${w.claim.predicate}); verifying…`, 'claimed',
-    { kind: 'verification', id: w.work, claim: w.claim?.predicate, ...(w.board ? { board: w.board } : {}) })
+    { kind: 'verification', id: w.work, claim: w.claim?.predicate, ...(w.caseId ? { caseId: w.caseId } : {}) })
   let ok = true, outcome = 'satisfied', evidence = '', backTier, backFacts, backReason
   // 工单自带载荷(板侧 RT-WO-2): 那片叶的 work_goal 规格随单下发,后端据此干真活。
   // 载荷作为**同级字段**附在主张旁——只读 predicate/args 的老手不受影响。
   const body = w.payload !== undefined ? { ...w.claim, payload: w.payload } : w.claim
   try {
-    const result = verificationResult(await runHandledTool(toolId, t, body, w.board, 'read'))
+    const result = verificationResult(await runHandledTool(toolId, t, body, w.caseId, 'read'))
     ;({ ok, outcome, evidence, tier: backTier, facts: backFacts, reason: backReason } = result)
   } catch (e) {
     ok = false
@@ -857,17 +876,17 @@ async function handleClaimWork(w) {
   }
   // 办不成也要如实回报**为什么**——缘由留在板上,否则没人知道它卡在哪(2026-08-01 真机: 回执被拒,工单死循环)
   if (!ok && !backReason) { try { backReason = JSON.parse(evidence.replace(/^HTTP \d+: /, '')).reason } catch { backReason = evidence } }
-  const rep = await work({
+  const rep = await work(inCase(w, {
     kind: 'ReportWork', workType: 'verification', id: w.work, ok, outcome,
     tier: weakerTier(t.tier ?? 'attested', backTier),
     ...(Array.isArray(backFacts) && backFacts.length ? { facts: backFacts } : {}),
     ...(!ok && backReason ? { reason: String(backReason).slice(0, 240) } : {}),
-    ...(evidence ? { evidenceRefs: [`worker:${CHANNEL}`] } : {}),
-  }, w.board)
+    ...(evidence ? { evidenceRefs: [`worker:${CONNECTION_ID}`] } : {}),
+  }))
   // 红行带上**为什么**(2026-08-18 站上「经常出回执失败」): 光一个"失败"读起来像系统坏了,
   // 带上探针原话(status=pending 未达 shipped 这类)就看得出是世界还没到位,不是坏。
   say(`○ Work report ${w.work}: ${outcome} → ${rep.accepted === true ? 'accepted by Board' : `rejected by Board (${rep.errorCode ?? ''})`}`, 'reported',
-    { kind: 'verification', id: w.work, ok, outcome, landed: rep.accepted === true, ...(!ok && backReason ? { reason: String(backReason).slice(0, 140) } : {}), ...(w.board ? { board: w.board } : {}) })
+    { kind: 'verification', id: w.work, ok, outcome, landed: rep.accepted === true, ...(!ok && backReason ? { reason: String(backReason).slice(0, 140) } : {}), ...(w.caseId ? { caseId: w.caseId } : {}) })
 }
 
 // ── 取材: 门的眼(spec §6 取材那一环) ──────────────────────────────────────
@@ -886,12 +905,12 @@ async function handleEvidence(w) {
   }
   const { id: toolId, definition: route } = picked
   say(`● Claimed material request ${w.material} for ${w.tool} × ${w.norm}; fetching…`, 'claimed',
-    { kind: 'material', id: w.material, tool: w.tool, ...(w.board ? { board: w.board } : {}) })
+    { kind: 'material', id: w.material, tool: w.tool, ...(w.caseId ? { caseId: w.caseId } : {}) })
   let facts = []
   let exhibit
   let err
   try {
-    const out = await runHandledTool(toolId, route, { material: w.material, ...(w.payload ?? {}) }, w.board, 'read')
+    const out = await runHandledTool(toolId, route, { material: w.material, ...(w.payload ?? {}) }, w.caseId, 'read')
     const parsed = JSON.parse(out)
     facts = Array.isArray(parsed) ? parsed : (parsed.facts ?? [])
     exhibit = { target: `tool:${toolId}`, item: route.source, digest: 'sha256:' + createHash('sha256').update(out).digest('hex').slice(0, 16) }
@@ -902,9 +921,9 @@ async function handleEvidence(w) {
     console.log(`○ Material request ${w.material} produced no evidence (${err ?? 'the backend returned no facts'}); no empty report was submitted`)
     return
   }
-  const rep = await work({ kind: 'ReportWork', workType: 'evidence', material: w.material, facts, ...(exhibit ? { exhibit } : {}) }, w.board)
+  const rep = await work(inCase(w, { kind: 'ReportWork', workType: 'evidence', material: w.material, facts, ...(exhibit ? { exhibit } : {}) }))
   if (!WEV_ON) console.log(`○ Material report ${w.material}: ${facts.length} fact(s) → ${rep.accepted === true ? 'accepted by Board' : `rejected by Board (${rep.errorCode ?? ''}: ${String(rep.teaching ?? '').slice(0, 90)})`}`)
-  wev('reported', { kind: 'material', id: w.material, facts: facts.length, landed: rep.accepted === true, ...(w.board ? { board: w.board } : {}) })
+  wev('reported', { kind: 'material', id: w.material, facts: facts.length, landed: rep.accepted === true, ...(w.caseId ? { caseId: w.caseId } : {}) })
 }
 
 // ── 清关工人: 判卷那一席(spec §6 部署形态二——业务方持手,合规方运营清关工人,板持账) ──
@@ -1011,7 +1030,7 @@ async function askReviewer(caseFile) {
 
 /**
  * 同卷不重审(RT-WK-DEDUP,2026-08-17 真机: 本地审查员一轮被打 182 次)。
- * 键=(板,动作,条款),值=案卷全文指纹——案卷内容变了(意图被改/新回执落板)才值得重审,
+ * 键=(案件,动作,条款),值=案卷全文指纹——案卷内容变了(意图被改/新回执落板)才值得重审,
  * 原样重复送审只是把同一个问题问到审查员崩溃。纯函数,seen 由调用方持有(重启即清,首审一次不亏)。
  */
 /** 同卷不重审 + **最小重审间隔**(RT-WK-DEDUP;2026-08-18 真机补后半)。
@@ -1022,13 +1041,13 @@ async function askReviewer(caseFile) {
  *  案卷真变了,下一拍照样审得到。 */
 const REVIEW_MIN_INTERVAL_MS = Number(process.env.RULITH_REVIEW_MIN_INTERVAL_MS ?? 20_000)
 function shouldReview(seen, w, now = Date.now()) {
-  const key = `${w.board ?? ''}|${w.tool}|${w.norm}`
+  const key = `${w.caseId ?? ''}|${w.tool}|${w.norm}`
   const digest = createHash('sha256').update(String(w.caseFile?.rendered ?? '')).digest('hex').slice(0, 16)
   const prior = seen.get(key)
   if (prior !== undefined && typeof prior === 'object') {
     if (prior.digest === digest) return false
     if (now - prior.at < REVIEW_MIN_INTERVAL_MS) return false
-  } else if (prior === digest) return false // 旧形(纯指纹)兼容: 存量进程内存里的值
+  }
   // **只记时刻,判词落定之后才记指纹**(2026-08-22,RT-WK-DEDUP-3)。
   //
   // 原来这里当场 `seen.set(key, {digest, at})`——而 `askReviewer` 的**全部失败路径**
@@ -1047,7 +1066,7 @@ function shouldReview(seen, w, now = Date.now()) {
  *  (不点名条款的 `not_applicable` 在 `parseVerdict` 里就已折成 `uncertain`,到不了这里。) */
 function noteReviewed(seen, w, verdict, now = Date.now()) {
   if (verdict !== 'allow' && verdict !== 'block' && verdict !== 'not_applicable') return
-  const key = `${w.board ?? ''}|${w.tool}|${w.norm}`
+  const key = `${w.caseId ?? ''}|${w.tool}|${w.norm}`
   const digest = createHash('sha256').update(String(w.caseFile?.rendered ?? '')).digest('hex').slice(0, 16)
   seen.set(key, { digest, at: now })
 }
@@ -1062,33 +1081,33 @@ async function handleReview(w) {
   if (!shouldReview(REVIEWED, w)) return // 同卷判过,案卷没变——不重复烧审查员
   // review v1 **无领取语义**(案卷无租约,板侧金样 47): 不 ClaimWork,直接判完回报。
   say(`● Received review: action ${w.tool} × clause ${w.norm}; reviewing…`, 'claimed',
-    { kind: 'review', tool: w.tool, norm: w.norm, ...(w.board ? { board: w.board } : {}) })
+    { kind: 'review', tool: w.tool, norm: w.norm, ...(w.caseId ? { caseId: w.caseId } : {}) })
   const v = await askReviewer(w.caseFile)
   noteReviewed(REVIEWED, w, v.verdict) // 判成了才算判过(uncertain 留给下一拍重投)
-  const rep = await work({
+  const rep = await work(inCase(w, {
     kind: 'ReportWork', workType: 'review', tool: w.tool, norm: w.norm,
     verdict: v.verdict, reason: v.reason, ...(v.citedClause ? { citedClause: v.citedClause } : {}),
-  }, w.board)
+  }))
   const landed = rep.accepted === true ? 'accepted' : `rejected (${rep.errorCode ?? ''}: ${String(rep.teaching ?? '').slice(0, 80)})`
   // 三种归宿在日志里必须分得开: 「审过放行」「审过但这条款不管它」「仍拦」是三件事,
   // 写成两种的那一版让运维分不出"合规过关"与"根本没进合规射程"(与板上 via 同律)。
   const OUTCOME = { allow: ' (allowed)', not_applicable: ' (clause not applicable; allowed)' }
   if (!WEV_ON) console.log(`○ Verdict ${w.tool} × ${w.norm}: ${v.verdict}${OUTCOME[v.verdict] ?? ' (still blocked)'} → Board ${landed}${v.reason ? ` · ${v.reason.slice(0, 90)}` : ''}`)
   wev('reported', { kind: 'review', tool: w.tool, norm: w.norm, verdict: v.verdict, landed: rep.accepted === true,
-    ...(v.reason ? { reason: String(v.reason).slice(0, 120) } : {}), ...(w.board ? { board: w.board } : {}) })
+    ...(v.reason ? { reason: String(v.reason).slice(0, 120) } : {}), ...(w.caseId ? { caseId: w.caseId } : {}) })
 }
 
 /** 同因跳过只说一次(2026-08-18 真机: 一条等清关的 notify_customer 把右栏刷了几十行
  *  一模一样的「跳过(clearance_required)」)。**重复不是信息**——原因变了才再说,
- *  变回来也再说一次(状态真的翻转过)。键=板|动作,值=上次说过的原因。 */
+ *  变回来也再说一次(状态真的翻转过)。键=案件|动作,值=上次说过的原因。 */
 const SAID = new Map()
-function saySkipOnce(board, action, why, humanLine) {
-  const key = `${board ?? ''}|${action}`
+function saySkipOnce(caseId, action, why, humanLine) {
+  const key = `${caseId ?? ''}|${action}`
   if (SAID.get(key) === why) return
   SAID.set(key, why)
   // 与 say() 同律(2026-08-18 站上还是双吐——漏改了这一处): 结构化模式下人读行退位。
   if (!WEV_ON) console.log(humanLine)
-  wev('skip', { kind: 'action', id: action, why, ...(board ? { board } : {}) })
+  wev('skip', { kind: 'action', id: action, why, ...(caseId ? { caseId } : {}) })
 }
 
 async function handleAction(w) {
@@ -1100,29 +1119,29 @@ async function handleAction(w) {
   // 板侧 2026-08-20 起全部工单行都出 `tool`（`action` 是那次改名前的旧名，已无生产者）。
   const action = w.tool
   if (typeof w.toolSpec !== 'string') {
-    saySkipOnce(w.board, action, 'missing_tool_reference', `· Skipping ${action}: the work item has no Worker Tool reference`)
+    saySkipOnce(w.caseId, action, 'missing_tool_reference', `· Skipping ${action}: the work item has no Worker Tool reference`)
     return
   }
   let resolved
   try { resolved = toolFromSpec(w.toolSpec, w.args, TOOLS, w.toolDigest) } catch (e) {
-    saySkipOnce(w.board, action, `tool_resolution:${String(e.message).slice(0, 60)}`,
+    saySkipOnce(w.caseId, action, `tool_resolution:${String(e.message).slice(0, 60)}`,
       `· Skipping ${action}: ${String(e.message).slice(0, 120)}`)
     return
   }
-  const claim = await work({ kind: 'ClaimWork', workType: 'action', id: invocation, executionGrant: w.executionGrant }, w.board)
+  const claim = await work(inCase(w, { kind: 'ClaimWork', workType: 'action', id: invocation, executionGrant: w.executionGrant }))
   if (claim.accepted !== true) {
-    saySkipOnce(w.board, action, `claim_rejected:${claim.errorCode ?? ''}`,
+    saySkipOnce(w.caseId, action, `claim_rejected:${claim.errorCode ?? ''}`,
       `· Claiming ${action} was rejected (${claim.errorCode ?? ''}): ${String(claim.teaching ?? '').slice(0, 80)}`)
     return
   }
-  SAID.delete(`${w.board ?? ''}|${action}`) // 领到了=状态翻转,下次再被拒要重新说一次
-  say(`● Claimed ${action}; executing…`, 'claimed', { kind: 'action', id: action, ...(w.board ? { board: w.board } : {}) })
+  SAID.delete(`${w.caseId ?? ''}|${action}`) // 领到了=状态翻转,下次再被拒要重新说一次
+  say(`● Claimed ${action}; executing…`, 'claimed', { kind: 'action', id: action, ...(w.caseId ? { caseId: w.caseId } : {}) })
   let ok = true
   let result = ''
   let resultFacts = []
   let reason
   try {
-    const executed = await execute(action, resolved._args ?? w.payload?.args ?? w.args, { [action]: resolved }, SOURCES, { board: w.board })
+    const executed = await execute(action, resolved._args ?? w.payload?.args ?? w.args, { [action]: resolved }, SOURCE_CONTEXT, { caseId: w.caseId })
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
@@ -1146,20 +1165,21 @@ async function handleAction(w) {
   // 两条修:① 落不了账就**原样重发**(同 id,板侧本就防重放;不是重跑那只手);
   // ② 那一行把「手成没成」与「账落没落」**分开说**。
   const RETRY_MS = [1_000, 4_000, 12_000]
-  const body = { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant, ok,
+  const body = inCase(w, { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant, ok,
     ...(ok ? { result, ...(resultFacts.length > 0 ? { facts: resultFacts } : {}) } : { result: '', reason }) }
-  let rep = await work(body, w.board)
+  )
+  let rep = await work(body)
   for (let i = 0; rep.accepted !== true && i < RETRY_MS.length; i++) {
     // **只重发"没落账"的**: 板语义拒(带 errorCode)是板的裁决,重发一百次也是同一个答案。
     // 没有 errorCode = 这一跳没通(与 agent 侧 `board()` 同一条判据)。
     if (typeof rep.errorCode === 'string') break
     if (!WEV_ON) console.error(`· Receipt was not committed (attempt ${i + 1}); retrying unchanged in ${RETRY_MS[i] / 1000}s. The action already ran; this retry records its receipt only.`)
     await new Promise((r) => setTimeout(r, RETRY_MS[i]))
-    rep = await work(body, w.board)
+    rep = await work(body)
   }
   const landed = rep.accepted === true
   wev('reported', { kind: 'action', id: action, ok, landed,
-    ...(ok && result ? { result: String(result).slice(0, 90) } : {}), ...(reason !== undefined ? { reason } : {}), ...(w.board ? { board: w.board } : {}) })
+    ...(ok && result ? { result: String(result).slice(0, 90) } : {}), ...(reason !== undefined ? { reason } : {}), ...(w.caseId ? { caseId: w.caseId } : {}) })
   if (!WEV_ON) {
     const handSaid = ok ? `succeeded · ${result.slice(0, 60)}` : `failed · ${reason}`
     const ledger = landed ? 'receipt committed'
@@ -1378,8 +1398,8 @@ if (IS_MAIN) {
   if (running) {
     const seats = [Object.keys(TOOLS).length ? `tools: ${Object.keys(TOOLS).join(', ')}` : 'tools: none (action work disabled)']
     if (REVIEWER_URL && REVIEWER_MODEL) seats.push(`reviewer: ${REVIEWER_MODEL}`)
-    say(`rulith-worker ${WORKER_VERSION} online · channel ${CHANNEL} · ${seats.join(' · ')}`, 'up',
-      { channel: CHANNEL, version: WORKER_VERSION, tools: Object.keys(TOOLS).length, reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
+    say(`rulith-worker ${WORKER_VERSION} online · connection ${CONNECTION_ID} · ${seats.join(' · ')}`, 'up',
+      { connectionId: CONNECTION_ID, version: WORKER_VERSION, tools: Object.keys(TOOLS).length, reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
   }
   while (running) {
     try {
@@ -1404,7 +1424,7 @@ if (IS_MAIN) {
       // (清关权不能自报,所以协议侧对非清关通道是**静默不下发**,不报错)。
       // 症状是"轮询一切正常、就是永远没活",查起来离真因隔一层——所以在这里说破,只说一次。
       if (REVIEWER_URL && REVIEWER_MODEL && !sawReview && ++quietPolls === 5) {
-        console.log(`\n· Note: a reviewer is configured, but no review arrived in five polls. If actions are awaiting clearance, confirm that channel "${CHANNEL}" is listed in the Board reviewerChannels policy.`)
+        console.log(`\n· Note: a reviewer is configured, but no review arrived in five polls. If actions are awaiting clearance, confirm that Connection "${CONNECTION_ID}" has the reviewer role.`)
       }
     } catch (e) {
       if (e instanceof CredentialRejectedError) {

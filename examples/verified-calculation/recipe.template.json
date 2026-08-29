@@ -20,12 +20,12 @@
   },
   "packs": [
     {
-      "packType": "domain",
+      "packType": "program",
       "pack": {
         "format": "rulith-pack/1",
         "meta": {
           "name": "verified_calculation",
-          "title": "Verified Calculation — Knowledge",
+          "title": "Verified Calculation — Program",
           "version": 1,
           "deps": [],
           "provides": ["calculation_result"]
@@ -245,10 +245,10 @@
     },
     {
       "packType": "sources",
+      "title": "Verified Calculation — Local source",
       "pack": {
         "format": "rulith-sources/1",
         "meta": { "name": "verified_calculation_source", "version": 1 },
-        "title": "Verified Calculation — Local source",
         "sources": [
           {
             "name": "verified-calculation-local",

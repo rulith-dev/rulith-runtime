@@ -26,7 +26,7 @@ Create an Agent named `verified-calculation` in Console. Create one Worker Conne
 **Capabilities → Capability market**, search for `Verified Calculation`, select the Agent,
 and install the **Verified Calculation** Capability once. It appears as one market item and one
 installed Capability, with four inspectable sections: Vocabulary, Rules, Actions, and Sources.
-Internally the protocol records typed knowledge and source components, but that is not a user
+Internally the protocol records program and source packages, but that is not a user
 installation ritual and there is no starter-only installer. After installation, open
 **Agent → Configuration → Data sources**
 and bind `verified-calculation-local` to `verified-calc-worker`. This deployment
@@ -56,8 +56,7 @@ node prepare-runtime.mjs
 Configure the REPL directly or through Station:
 
 ```text
-args: --agent verified-calculation --ui --case-boards
-RULITH_CASE_BOARDS=on
+args: --agent verified-calculation --ui
 ```
 
 Configure the Worker with its Connection credentials and local Adapter Manifest. The governed
