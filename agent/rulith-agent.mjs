@@ -52,6 +52,7 @@ Options:
   --ui               Open the loopback timeline UI
   --serve            Accept tasks through the local service endpoint
   --case <id>        Resume an existing case for the first segment
+  --case-type <id>   Case Type from the installed Capability catalog (default: exploration)
   --shadow           Run the configured shadow verification path
   -h, --help         Show this help without requiring credentials
 
@@ -76,6 +77,7 @@ let withShadow = false
 let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
 /** Resume one existing Case Context for the first segment only. */
 let resumeCase = (process.env.RULITH_RESUME_CASE ?? '').trim()
+let selectedCaseType = (process.env.RULITH_CASE_TYPE ?? 'exploration').trim() || 'exploration'
 const rest = []
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--agent' && argv[i + 1] !== undefined) { agentId = argv[++i]; continue }
@@ -83,6 +85,7 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--serve') { withServe = true; continue }
   if (argv[i] === '--shadow') { withShadow = true; continue }
   if (argv[i] === '--case' && argv[i + 1] !== undefined) { resumeCase = argv[++i]; continue }
+  if (argv[i] === '--case-type' && argv[i + 1] !== undefined) { selectedCaseType = argv[++i]; continue }
   if (argv[i].startsWith('-')) {
     console.error(`Unknown option: ${argv[i]}. Run with --help to see the supported execution surface.`)
     process.exit(1)
@@ -406,8 +409,8 @@ async function board(operation, ctx) {
   return j
 }
 /** Open or resume exactly one named Case Context. Never adopt another Case. */
-async function ensureCaseContext(ctx, caseId) {
-  if (ctx.case?.id === caseId && ctx.case?.root === caseId && typeof ctx.case?.revision === 'string' && ctx.case.revision !== '') return ctx.case
+async function ensureCaseContext(ctx, caseId, caseType) {
+  if (ctx.case?.id === caseId && ctx.case?.root === caseId && ctx.case?.caseType === caseType && typeof ctx.case?.revision === 'string' && ctx.case.revision !== '') return ctx.case
   ctx.case = undefined
   let mf = await board({ kind: 'GetBoardManifest' }, ctx)
   if (mf.accepted !== true) {
@@ -425,11 +428,16 @@ async function ensureCaseContext(ctx, caseId) {
       log(`✗ Case Context "${caseId}" has root "${String(hit.root)}". Case identity and acceptance root must be identical.`)
       return undefined
     }
-    ctx.case = { id: caseId, root: caseId, revision: String(hit.revision) }
+    if (hit.caseType !== caseType) {
+      log(`✗ Case Context "${caseId}" is pinned to Case Type "${String(hit.caseType)}", not "${caseType}".`)
+      return undefined
+    }
+    ctx.case = { id: caseId, root: caseId, revision: String(hit.revision), caseType,
+      capabilityReleaseDigest: String(hit.capabilityReleaseDigest), caseContractDigest: String(hit.caseContractDigest) }
     log(`◎ Resuming Case "${caseId}" on Agent Board "${ctx.board}".`)
     return ctx.case
   }
-  const opened = await board({ kind: 'OpenCase', caseId, root: caseId }, ctx)
+  const opened = await board({ kind: 'OpenCase', caseType, caseId, root: caseId }, ctx)
   if (opened.accepted !== true) {
     log(`✗ Could not open Case "${caseId}" on Agent Board "${ctx.board}": ${String(opened.teaching ?? opened.errorCode ?? '').slice(0, 240)}`)
     return undefined
@@ -444,7 +452,9 @@ async function ensureCaseContext(ctx, caseId) {
     log(`✗ The authority opened Case "${caseId}" without a Case revision. Execution stopped before writing task facts.`)
     return undefined
   }
-  ctx.case = { id: caseId, root: caseId, revision }
+  ctx.case = { id: caseId, root: caseId, revision, caseType,
+    capabilityReleaseDigest: String(opened.payload?.capabilityReleaseDigest ?? ''),
+    caseContractDigest: String(opened.payload?.caseContractDigest ?? '') }
   return ctx.case
 }
 /** Close the current Case Context with an explicit disposition. */
@@ -933,8 +943,7 @@ const makeSlot = (key) => ({
   lastUsed: Date.now(),             // LRU 用
 })
 const defaultSlot = makeSlot('')
-// 锁态读板自述(锁合一 2026-08-03): GetBoardManifest.lawLocked=权威端真相
-// (旧 GetCapabilities.lawLocked 是网关洗上去的便利标,已随便利层锁退役;老 boardd 无自述=不锁)
+// 锁态只读 GetBoardManifest.lawLocked 的权威端真相;协议清单不承载实例状态。
 //
 // 案板模式下探针要落在**案卷**上、且只探一次: 同一份配方开出的板锁态相同(锁来自装了什么包),
 // 每单再探一遍纯属给开单成本添砖。所以这里是"首次可探时探,探过就记住"。
@@ -999,14 +1008,14 @@ let pollInterject = null
  *  `caseId` is the Case handled by this segment, and `pendingCaseId` is present only
  *  when that Case Context remains open. Together they distinguish a completed segment
  *  from a paused Case without inferring lifecycle state from prose. */
-async function runSegment(ctx, userText) {
+async function runSegment(ctx, userText, caseType = selectedCaseType) {
   const messages = ctx.messages
   compactTranscript(ctx) // 段起始先收窗——切口落在段边界最干净,不会切断本段的推理链
   const useResume = resumeCase
   resumeCase = '' // Resume applies to the first segment only.
   const caseId = useResume || ctx.taskId || nextCaseId()
   ctx.case = undefined
-  const opened = await ensureCaseContext(ctx, caseId)
+  const opened = await ensureCaseContext(ctx, caseId, caseType)
   if (opened === undefined) {
     const note = `Could not open Case Context "${caseId}" on Agent Board "${ctx.board}"; this task did not start.`
     log(`\n✗ ${note}`)
@@ -1014,8 +1023,8 @@ async function runSegment(ctx, userText) {
     ctx.segmentTrail.push(`[case ${caseId} · open] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
     return { note, caseId, pendingCaseId: caseId }
   }
-  log(`\nCase Context opened: "${caseId}" on Agent Board "${ctx.board}".`)
-  emitOn(ctx, 'case-open', { board: ctx.board, caseId, ok: true })
+  log(`\nCase Context opened: "${caseId}" · Case Type "${caseType}" on Agent Board "${ctx.board}".`)
+  emitOn(ctx, 'case-open', { board: ctx.board, caseId, caseType, ok: true })
   const proj = await projectionText(ctx)
   messages.push({ role: 'user', content: `${CHAT ? 'User message' : 'Task'}: ${userText}
 
@@ -1470,18 +1479,21 @@ if (SERVE) {
         const raw = Buffer.concat(bodyChunks).toString('utf8')
         let text = ''
         let sessionKey = ''
+        let caseType = selectedCaseType
         try {
           const b = JSON.parse(raw || '{}')
           text = String(b.text ?? '').trim()
           sessionKey = String(b.sessionKey ?? '').trim()
-        } catch { return deny('Body is not valid JSON. Expected {"text":"...","sessionKey":"optional"}.') }
-        if (text === '') return deny('Missing text. Expected {"text":"process this task"}.', 400)
+          caseType = String(b.caseType ?? selectedCaseType).trim()
+        } catch { return deny('Body is not valid JSON. Expected {"text":"...","caseType":"exploration","sessionKey":"optional"}.') }
+        if (text === '') return deny('Missing text. Expected {"text":"process this task","caseType":"exploration"}.', 400)
+        if (!/^[a-z][a-z0-9_-]{1,63}$/.test(caseType)) return deny('caseType must be a 2-64 character lowercase identifier from the Agent Case Type catalog.', 400)
         // Session keys select bounded local transcript/queue slots. They never select a Board.
         if (sessionKey.length > SESSION_KEY_MAX) {
           return deny(`sessionKey exceeds ${SESSION_KEY_MAX} characters (${sessionKey.length} received). It cannot be truncated because it identifies a local conversation slot. Use a short opaque identifier.`, 400)
         }
         const slot = slotFor(sessionKey)
-        const item = { id: nextCaseId(), text, at: Date.now(), sessionKey }
+        const item = { id: nextCaseId(), text, caseType, at: Date.now(), sessionKey }
         slot.queue.push(item)
         slot.lastUsed = item.at
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0)
@@ -1511,12 +1523,12 @@ if (SERVE) {
       req.on('close', () => clients.delete(res))
       return
     }
-    return deny('Available endpoints: POST /task {"text":"...","sessionKey":"optional"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
+    return deny('Available endpoints: POST /task {"text":"...","caseType":"exploration","sessionKey":"optional"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
   })
   await new Promise((r) => serveSrv.listen(SERVE_PORT, '127.0.0.1', r))
   log(`
 Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent Case Context(s) · ${SERVE_SLOTS_MAX} session limit): http://127.0.0.1:${SERVE_PORT}
-  Submit: curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…"}'
+  Submit: curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…","caseType":"exploration"}'
   Optional session: -d '{"text":"…","sessionKey":"conversation-1"}'
   Every task receives its own Case Context on Agent Board "${agentId}". Sessions only isolate local transcripts and queues.
   Inspect: curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
@@ -1540,7 +1552,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
     let note = ''
     let pendingCaseId = null
     try {
-      const seg = await runSegment(slot, item.text)
+      const seg = await runSegment(slot, item.text, item.caseType)
       note = seg.note
       pendingCaseId = seg.pendingCaseId
     } catch (e) {
@@ -1590,7 +1602,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
   }
   // 带任务参数启动 = 第一单已经在手上(脚本可以"起进程即办一单,之后接着收单")。
   // 它没有 sessionKey,所以进缺省槽——与从前一字不差。
-  if (TASK !== '') { defaultSlot.queue.push({ id: nextCaseId(), text: TASK, at: Date.now(), sessionKey: '' }); pump() }
+  if (TASK !== '') { defaultSlot.queue.push({ id: nextCaseId(), text: TASK, caseType: selectedCaseType, at: Date.now(), sessionKey: '' }); pump() }
 } else if (!CHAT) {
   // ── 一次办完(CI/脚本形态,行为不变) ──
   log(`Task: ${TASK}

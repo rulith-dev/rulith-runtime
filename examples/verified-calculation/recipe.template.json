@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "title": "Verified Calculation",
     "summary": "Read trusted local JSON, derive an exact total, write the result, and verify it by independent read-back.",
-    "caseContract": {
+    "caseContracts": [{
       "format": "rulith-case-contract/1",
       "caseType": "verified_calculation",
       "title": "Verified calculation",
@@ -16,7 +16,7 @@
         "minimumGroundingFloor": "attested"
       },
       "terminal": { "cardinality": "once_per_case", "disposition": "completed", "requiresCertified": true }
-    }
+    }]
   },
   "packs": [
     {

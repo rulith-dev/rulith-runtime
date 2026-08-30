@@ -46,6 +46,19 @@ $env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'
 node agent/rulith-agent.mjs --agent default --ui
 ```
 
+Each task opens one Case under an installed Capability's Case Type. Use the
+Case Type catalog exposed by Rulith Cloud; exploratory work defaults to the
+platform-owned `exploration` contract:
+
+```powershell
+node agent/rulith-agent.mjs --agent default --case-type verified_calculation "calculate and verify this job"
+```
+
+For the loopback service, `POST /task` accepts the same selection as
+`{"text":"...","caseType":"verified_calculation","sessionKey":"optional"}`.
+`RULITH_CASE_TYPE` sets the local default. The Runtime proposes only the Case Type;
+Cloud pins the exact Capability Release and Case Contract digests before the Case opens.
+
 `--ui` opens the loopback-only timeline at `http://127.0.0.1:7788`. If that port is
 already in use, set `RULITH_UI_PORT` to another local port. Run
 `node agent/rulith-agent.mjs --help` to inspect options without configuring credentials.
