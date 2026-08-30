@@ -59,6 +59,12 @@ For the loopback service, `POST /task` accepts the same selection as
 `RULITH_CASE_TYPE` sets the local default. The Runtime proposes only the Case Type;
 Cloud pins the exact Capability Release and Case Contract digests before the Case opens.
 
+The `exploration` Case Type is the only mode that permits provisional Case-local
+predicates, rules, Actions, and Goals. They never modify installed Capabilities
+or shared Agent law and disappear when the Case closes. Its Terminal Receipt is
+exploratory and never Publisher-billable; only later attribution and replay may
+turn repeated paths into a Capability draft.
+
 `--ui` opens the loopback-only timeline at `http://127.0.0.1:7788`. If that port is
 already in use, set `RULITH_UI_PORT` to another local port. Run
 `node agent/rulith-agent.mjs --help` to inspect options without configuring credentials.

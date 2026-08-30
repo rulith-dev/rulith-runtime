@@ -188,6 +188,16 @@ test('the local Agent does not assemble, fingerprint, or install governance reci
   assert.match(source, /Do not attempt add_axiom, define_action, RegisterPack/)
 })
 
+test('exploration uses an explicit Case-local provisional program without widening normal execution', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /const SYSTEM_EXPLORATION =/)
+  assert.match(source, /case_context\(case_id, root, case_type\)/)
+  assert.match(source, /rulith\.exploration\.completed\(case_id\)/)
+  assert.match(source, /caseType === 'exploration' \? SYSTEM_EXPLORATION : SYSTEM/)
+  assert.match(source, /const SYSTEM = `[\s\S]*Do not add temporary axioms, define actions, or register packs/,
+    'normal Capability execution must remain closed to provisional semantics')
+})
+
 test('agent lifecycle events shown to users use the English product vocabulary', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /\[Verification\]/)

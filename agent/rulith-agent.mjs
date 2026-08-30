@@ -354,7 +354,7 @@ if (withUi) {
 // Configuration and Board lifecycle belong to Console/governance. This local
 // runtime only opens, uses, pauses, and closes Case Contexts on the Agent Board.
 const CASE_CONTEXT_OPERATIONS = new Set([
-  'GetProjection', 'GetChanges', 'GetCompletion', 'QueryBoard', 'RunDischarge', 'ApplyBatch',
+  'GetProjection', 'GetChanges', 'GetCompletion', 'GetBoardManifest', 'QueryBoard', 'RunDischarge', 'ApplyBatch',
   'CloseCase', 'PauseCase', 'Explain', 'IngestObservation', 'GrantClearance', 'ClaimWork', 'ApplyAction', 'ReportWork',
 ])
 const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed', 'unknown_case'])
@@ -883,6 +883,14 @@ Do not invent predicates, actions, or acceptance names. Do not add temporary axi
 
 ${EXECUTION_GUIDE}`
 
+const SYSTEM_EXPLORATION = `You are a Rulith exploration agent working inside one isolated Case Context. The installed Agent configuration remains authoritative, but this Case Type explicitly permits provisional, Case-local vocabulary, rules, Actions, Goals, and acceptance dependencies so an uncovered task can be solved and later distilled.
+
+Use namespaced provisional predicates under scratch.<domain>.<name>. You may add safe axioms and board-local Actions only inside this Case. They disappear when the Case closes and never modify an installed Capability or BoardShared law. Installed external Tools may still be invoked through ApplyAction; a provisional Action never grants itself external execution authority.
+
+OpenCase has injected the trusted system fact case_context(case_id, root, case_type). A completed exploration must derive rulith.exploration.completed(case_id) through a Case-local rule that binds case_id from case_context and consumes at least one task-specific positive evidence premise. Never assert the completion predicate and never derive it from case_context alone. Record the final evidence-backed finding before requesting DONE so the Terminal Receipt retains the effective path. A fully exploratory path may close, but it is not Publisher-billable and cannot become a Capability until replay validates it.
+
+${EXECUTION_GUIDE}`
+
 /** 模型这一轮提交了什么: `{ops:[…]}`=一批板内操作 · `{cmd:{kind,…}}`=一条顶层命令 · null=没提交。
  *
  *  **顶层命令这一支是 2026-08-21 真机演练撞出来补的(P0)**: 此前这里是
@@ -936,6 +944,7 @@ const makeSlot = (key) => ({
   dischargedDigest: new Map(),      // 放电守卫: `板::节点` → 放过的 spec 版本
   lastLeaves: [],                   // 脉冲用
   lawProbed: false,                 // board governance is stable across Case Contexts
+  lawLocked: false,
   system: SYSTEM,     // 该槽此刻念的系统提示(锁态探到就换成 SYSTEM_LOCKED 那版)
   queue: [],                        // 本槽待办(同槽 FIFO)
   busy: false,                      // 本槽是否有段在跑
@@ -951,7 +960,8 @@ async function probeLawLock(ctx) {
   if (ctx.lawProbed) return
   ctx.lawProbed = true
   const mf = await board({ kind: 'GetBoardManifest' }, ctx)
-  if (mf.accepted === true && mf.payload?.lawLocked === true) {
+  ctx.lawLocked = mf.accepted === true && mf.payload?.lawLocked === true
+  if (ctx.lawLocked) {
     ctx.system = SYSTEM_LOCKED
     log(`Board legislation is locked. Rules come from packages installed by the board owner; this Agent executes under them.${ctx.key === '' ? '' : ` (session ${ctx.key})`}`)
   }
@@ -1015,6 +1025,8 @@ async function runSegment(ctx, userText, caseType = selectedCaseType) {
   resumeCase = '' // Resume applies to the first segment only.
   const caseId = useResume || ctx.taskId || nextCaseId()
   ctx.case = undefined
+  await probeLawLock(ctx)
+  ctx.system = ctx.lawLocked ? SYSTEM_LOCKED : caseType === 'exploration' ? SYSTEM_EXPLORATION : SYSTEM
   const opened = await ensureCaseContext(ctx, caseId, caseType)
   if (opened === undefined) {
     const note = `Could not open Case Context "${caseId}" on Agent Board "${ctx.board}"; this task did not start.`
