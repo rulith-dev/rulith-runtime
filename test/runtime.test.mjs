@@ -389,3 +389,11 @@ test('committed public files only teach Agent flags the Agent accepts', () => {
     'these flags are published but the Agent rejects them and exits 1.\n  '
     + rejected.join('\n  '))
 })
+
+test('Agent discovers the System Profile from the Board and never promotes preview modules in prose', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /mf\.payload\?\.systemProfile/)
+  assert.match(source, /rulith-system-profile\/1/)
+  assert.match(source, /Preview modules are not guarantees and must not be assumed/)
+  assert.doesNotMatch(source, /Preview modules are (?:stable|available|supported)/)
+})

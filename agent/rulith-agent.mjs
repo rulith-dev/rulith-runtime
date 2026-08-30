@@ -924,6 +924,13 @@ Do not invent predicates, actions, or acceptance names. Do not attempt add_axiom
 
 ${EXECUTION_GUIDE}`
 
+function systemProfileInstruction(profile) {
+  if (!profile || profile.format !== 'rulith-system-profile/1') return ''
+  const stable = Array.isArray(profile.stableModules) ? profile.stableModules.join(', ') : ''
+  const preview = Array.isArray(profile.previewModules) ? profile.previewModules.join(', ') : ''
+  return `\n\nSystem substrate: ${profile.format} ${profile.id || ''}@${profile.version || ''} (${profile.status || 'unknown'}, digest ${profile.digest || 'unavailable'}). Stable modules: ${stable || 'none advertised'}.${preview ? ` Preview modules are not guarantees and must not be assumed: ${preview}.` : ''}`
+}
+
 // A slot owns only local conversation and scheduler state. All slots address
 // the same persistent Agent Board; each queued task receives an independent
 // Case Context before any task-scoped operation is sent.
@@ -951,8 +958,12 @@ async function probeLawLock(ctx) {
   if (ctx.lawProbed) return
   ctx.lawProbed = true
   const mf = await board({ kind: 'GetBoardManifest' }, ctx)
+  if (mf.accepted === true) {
+    const profile = mf.payload?.systemProfile
+    ctx.systemProfile = profile
+    ctx.system = (mf.payload?.lawLocked === true ? SYSTEM_LOCKED : SYSTEM) + systemProfileInstruction(profile)
+  }
   if (mf.accepted === true && mf.payload?.lawLocked === true) {
-    ctx.system = SYSTEM_LOCKED
     log(`Board legislation is locked. Rules come from packages installed by the board owner; this Agent executes under them.${ctx.key === '' ? '' : ` (session ${ctx.key})`}`)
   }
 }
