@@ -262,7 +262,9 @@ if (IS_MAIN) {
  * Call the Worker surface. A Connection already identifies exactly one Agent
  * Board, so the Worker never accepts or returns a Board route. Poll supplies a
  * trusted caseId and caseRevision as local execution context; ClaimWork and ReportWork
- * return the work identity and signed execution grant unchanged.
+ * return the work identity and signed execution grant unchanged. The Case revision is
+ * the one field that does move: claiming is a write, so a report carries the revision
+ * the accepted ClaimWork returned, never the Poll row's (see claimedCaseRevision).
  */
 async function work(operation) {
   const identified = { ...operation, workerId: WORKER_ID }
@@ -393,6 +395,37 @@ function inCase(w, operation) {
     throw new Error('Worker Poll returned a work item without caseId/caseRevision; refusing to claim or report unscoped or stale work')
   }
   return { ...operation, caseId: w.caseId, caseRevision: w.caseRevision }
+}
+
+/**
+ * 领取之后的回报, 案卷版本取自**领取回执**, 不是 Poll 行(2026-08-30, RT-WK-CLAIMREV)。
+ *
+ * `ClaimWork` 是一次**写**——核心 `operation_kind_writes` 点名含它, `idem_cache::cache_put`
+ * 对任何被受理的写把案卷推进一版, 并把新值放进回执的 `caseRevision`。于是 Poll 行上那个
+ * `cN` 在领取成功的**同一刻**就旧了: 拿它去 `ReportWork`, 板答
+ * `{"errorCode":"stale_case_revision","teaching":"Case revision is stale: expected c4, current c5"}`。
+ *
+ * 那是**带 errorCode 的板语义拒**, 而下面回执重发那一圈正是按 errorCode `break` 的
+ * ⇒ 回执永不落板——**而手已经改了世界**。这是整条链上最坏的次序: 领取那一刻受信
+ * `dispatched` 已在板上, 核心 `should_fire` = ready && !dispatched ⇒ 这条 invocation
+ * 此后**永不再下发**; 世界变了、`effect_confirmed` 永不来、封板门永远顶回、案卷永久「在办」。
+ *
+ * 拿不到版本就返回 undefined, 让调用方**在动手之前**红: 不回退 Poll 值(必被判 stale)、
+ * 不自增(凭空造一个板没说过的数)。**猜一个数字正是这一类缺陷从响变哑的那一步**——
+ * 响的那一版世界还没变, 哑的那一版世界已经变了。
+ *
+ * 不领取的工型(取材/清关)照旧走 `inCase`: 它们没有那一次写, 没有更新的版本可用,
+ * Poll 行上那一版就是对的。
+ */
+function claimedCaseRevision(claim) {
+  const revision = claim?.caseRevision
+  return typeof revision === 'string' && revision !== '' ? revision : undefined
+}
+
+/** 案卷身份仍来自工单(`inCase` 那道闸一字不改), 只把版本换成领取回执给的那一版。
+ *  键序不变——回执重发要求**原样**, 而"原样"是字节级的。 */
+function afterClaim(w, caseRevision, operation) {
+  return { ...inCase(w, operation), caseRevision }
 }
 
 const WORKSPACE_MAX_FILE_BYTES = 256 * 1024
@@ -856,6 +889,14 @@ async function handleClaimWork(w) {
   if (w.connectionId !== CONNECTION_ID) return
   const claim = await work(inCase(w, { kind: 'ClaimWork', workType: 'verification', id: w.work }))
   if (claim.accepted !== true) { console.log(`· Claiming work item ${w.work} was rejected (${claim.errorCode ?? ''})`); return }
+  // 领到了, 但板没给案卷版本 ⇒ 这份回执无处可落。**在调工具之前**停手并出声(见 claimedCaseRevision)。
+  const claimedRevision = claimedCaseRevision(claim)
+  if (claimedRevision === undefined) {
+    console.error(`⚠ Skipping verification work ${w.work}: ClaimWork was accepted without a Case revision, so its report would have no revision to carry.`
+      + ` The verification Tool was not called. This Worker will not guess a revision; report this Worker and Board version pair.`)
+    wev('skip', { kind: 'verification', id: w.work, why: 'claim_without_case_revision', ...(w.caseId ? { caseId: w.caseId } : {}) })
+    return
+  }
   say(`● Claimed verification work ${w.work} (${w.claim.predicate}); verifying…`, 'claimed',
     { kind: 'verification', id: w.work, claim: w.claim?.predicate, ...(w.caseId ? { caseId: w.caseId } : {}) })
   let ok = true, outcome = 'satisfied', evidence = '', backTier, backFacts, backReason
@@ -876,7 +917,7 @@ async function handleClaimWork(w) {
   }
   // 办不成也要如实回报**为什么**——缘由留在板上,否则没人知道它卡在哪(2026-08-01 真机: 回执被拒,工单死循环)
   if (!ok && !backReason) { try { backReason = JSON.parse(evidence.replace(/^HTTP \d+: /, '')).reason } catch { backReason = evidence } }
-  const rep = await work(inCase(w, {
+  const rep = await work(afterClaim(w, claimedRevision, {
     kind: 'ReportWork', workType: 'verification', id: w.work, ok, outcome,
     tier: weakerTier(t.tier ?? 'attested', backTier),
     ...(Array.isArray(backFacts) && backFacts.length ? { facts: backFacts } : {}),
@@ -1134,6 +1175,17 @@ async function handleAction(w) {
       `· Claiming ${action} was rejected (${claim.errorCode ?? ''}): ${String(claim.teaching ?? '').slice(0, 80)}`)
     return
   }
+  // **这里是这条链上最后一个"什么都还没发生"的时刻**(2026-08-30, RT-WK-CLAIMREV)。
+  // 领取受理即把案卷推进一版; 回执必须用回执给的那一版。板没给 ⇒ 无处可落 ⇒ 现在就停手。
+  // 猜一个数字(回退 Poll 值/自增)会让这一发跑完再被判 stale——**那时世界已经变了**。
+  const claimedRevision = claimedCaseRevision(claim)
+  if (claimedRevision === undefined) {
+    console.error(`⚠ Not starting the executor for ${action}: ClaimWork was accepted without a Case revision, so its receipt would have no revision to carry.`
+      + ` Nothing external has changed. This Worker will not guess a revision — a guessed receipt is refused as stale after the world has already moved.`
+      + ` This invocation stays claimed and will not be dispatched again; resolve the case in Console.`)
+    wev('skip', { kind: 'action', id: action, why: 'claim_without_case_revision', ...(w.caseId ? { caseId: w.caseId } : {}) })
+    return
+  }
   SAID.delete(`${w.caseId ?? ''}|${action}`) // 领到了=状态翻转,下次再被拒要重新说一次
   say(`● Claimed ${action}; executing…`, 'claimed', { kind: 'action', id: action, ...(w.caseId ? { caseId: w.caseId } : {}) })
   let ok = true
@@ -1165,7 +1217,9 @@ async function handleAction(w) {
   // 两条修:① 落不了账就**原样重发**(同 id,板侧本就防重放;不是重跑那只手);
   // ② 那一行把「手成没成」与「账落没落」**分开说**。
   const RETRY_MS = [1_000, 4_000, 12_000]
-  const body = inCase(w, { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant, ok,
+  // 只算一次, 循环里原样重发——**上游按操作身份(含 caseRevision)铸幂等键**,
+  // 差一个字节就落到另一格缓存, 于是已提交的回执被答成 `already_reported`(RT-WK-RID-1)。
+  const body = afterClaim(w, claimedRevision, { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant, ok,
     ...(ok ? { result, ...(resultFacts.length > 0 ? { facts: resultFacts } : {}) } : { result: '', reason }) }
   )
   let rep = await work(body)

@@ -64,8 +64,8 @@ Actions name versioned Tools and Sources; the manifest is the Worker-local bindi
 from those Tool ids to fixed Adapters. It is not a second workflow recipe:
 
 ```text
-RULITH_CHANNEL=<connection-id>
-RULITH_CHANNEL_KEY=<connection-key>
+RULITH_CONNECTION=<connection-id>
+RULITH_CONNECTION_KEY=<connection-key>
 RULITH_TOOLS_FILE=<this-directory>/runtime/worker-tools.json
 RULITH_WORKER_ROOT=<this-directory>/runtime
 ```

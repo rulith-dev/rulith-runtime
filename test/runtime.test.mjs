@@ -281,3 +281,111 @@ test('public runtime contains no private deployment addresses or credential mate
     assert.doesNotMatch(source, /michaltina|victor shaw/i)
   }
 })
+
+// ── Published knobs must exist ───────────────────────────────────────────────
+//
+// The failure this closes has no error channel of its own. A README that teaches
+// `RULITH_CHANNEL` after the Worker renamed it to `RULITH_CONNECTION` reads
+// perfectly, ships green, and costs the reader an `exit(2)` on their first run —
+// they blame themselves, not the document. Same for a flag: the Agent's argument
+// parser rejects anything it does not know and exits 1, so a documented
+// `--case-boards` is a published instruction to fail.
+//
+// The guard therefore checks the two directions that can rot silently:
+//   · every RULITH_* name taught in a committed public file is read by the code;
+//   · every Agent flag taught in an Agent invocation is accepted by the parser.
+//
+// Extraction failure must be RED, not green: an empty read of either source set
+// would make every taught name look supported. The floors below are the assertion
+// that the extractors still have hold of the sources.
+
+/** Environment variable names the shipped runtime actually reads. */
+function runtimeEnvNamesRead() {
+  const names = new Set()
+  const roots = ['agent', 'worker', 'station', 'examples', 'scripts']
+  for (const root of roots) {
+    const dir = join(ROOT, root)
+    if (!existsSync(dir)) continue
+    for (const file of productionFiles(dir)) {
+      if (!file.endsWith('.mjs')) continue
+      const source = readFileSync(file, 'utf8')
+      for (const m of source.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1])
+      for (const m of source.matchAll(/process\.env\[\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
+    }
+  }
+  return names
+}
+
+/** Command-line flags the Agent's argument parser accepts; everything else exits 1. */
+function agentFlagsAccepted() {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  const flags = new Set()
+  for (const m of source.matchAll(/argv(?:\[i\]\s*===|\.includes\()\s*'(--[a-z][a-z0-9-]*)'/g)) flags.add(m[1])
+  return flags
+}
+
+/** Committed files a reader copies from. Anything here is an instruction, not a note. */
+const PUBLIC_INSTRUCTION_FILES = [
+  'README.md',
+  'SECURITY.md',
+  'SUPPORT.md',
+  'CONTRIBUTING.md',
+  'examples/verified-calculation/README.md',
+  'config/rulith-station.example.json',
+  'config/rulith-sources.example.json',
+  'config/worker-tools.example.json',
+]
+
+test('committed public files only teach environment variables the runtime reads', () => {
+  const read = runtimeEnvNamesRead()
+  assert.ok(read.size >= 20, `only extracted ${read.size} environment reads from the runtime — the extractor lost the source`)
+
+  const taught = []
+  let scanned = 0
+  for (const rel of PUBLIC_INSTRUCTION_FILES) {
+    const path = join(ROOT, rel)
+    if (!existsSync(path)) continue
+    scanned += 1
+    const text = readFileSync(path, 'utf8')
+    for (const m of text.matchAll(/\bRULITH_[A-Z0-9_]+\b/g)) taught.push({ name: m[0], rel })
+  }
+  assert.equal(scanned, PUBLIC_INSTRUCTION_FILES.length, 'a listed public file is missing; the scan would silently shrink')
+  assert.ok(taught.length >= 15, `only found ${taught.length} taught names — the document scan is not reaching the code fences`)
+
+  const unread = [...new Set(taught.filter((e) => !read.has(e.name)).map((e) => `${e.name} (${e.rel})`))].sort()
+  assert.deepEqual(unread, [],
+    'these names are published as instructions but nothing in the runtime reads them.\n  '
+    + unread.join('\n  ')
+    + '\nA reader who copies them gets a process that exits without ever seeing the value it needed.')
+})
+
+test('committed public files only teach Agent flags the Agent accepts', () => {
+  const accepted = agentFlagsAccepted()
+  assert.ok(accepted.size >= 4, `only extracted ${accepted.size} accepted flags — the parser scan failed`)
+  assert.ok(accepted.has('--agent') && accepted.has('--ui'), 'the flag extractor is not reading the real parser')
+
+  // Only flags on an Agent invocation count. `git clone --depth` in the same README
+  // belongs to another command; widening the scan to every flag would make this guard
+  // noisy and the next person would delete it.
+  const taught = []
+  for (const rel of PUBLIC_INSTRUCTION_FILES) {
+    const path = join(ROOT, rel)
+    if (!existsSync(path)) continue
+    for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+      if (!/rulith-agent\.mjs/.test(line)) continue
+      for (const m of line.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]*)/g)) taught.push({ flag: m[1], rel })
+    }
+  }
+  // The Station example launches the Agent through `paths.repl`, so its argument
+  // array is an Agent invocation even though the binary name is on another line.
+  const station = JSON.parse(readFileSync(join(ROOT, 'config', 'rulith-station.example.json'), 'utf8'))
+  for (const arg of station.repl?.args ?? []) {
+    if (/^--/.test(arg)) taught.push({ flag: arg, rel: 'config/rulith-station.example.json' })
+  }
+  assert.ok(taught.length >= 3, `only found ${taught.length} taught Agent flags — the invocation scan is not matching`)
+
+  const rejected = [...new Set(taught.filter((e) => !accepted.has(e.flag)).map((e) => `${e.flag} (${e.rel})`))].sort()
+  assert.deepEqual(rejected, [],
+    'these flags are published but the Agent rejects them and exits 1.\n  '
+    + rejected.join('\n  '))
+})

@@ -1,6 +1,6 @@
 {
   "repl": {
-    "args": ["--agent", "default", "--ui", "--case-boards"],
+    "args": ["--agent", "default", "--ui"],
     "env": {
       "RULITH_URL": "https://api.rulith.ai",
       "RULITH_TOKEN": "",
@@ -12,9 +12,8 @@
   "worker": {
     "env": {
       "RULITH_WORK_URL": "https://api.rulith.ai/work",
-      "RULITH_CHANNEL": "",
-      "RULITH_CHANNEL_KEY": "",
-      "RULITH_SOURCES_FILE": "./rulith-sources.json"
+      "RULITH_CONNECTION": "",
+      "RULITH_CONNECTION_KEY": ""
     }
   },
   "paths": {

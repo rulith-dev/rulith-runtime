@@ -84,8 +84,8 @@ host ceiling; it never grants the Agent permission to use a Tool.
 For a package that needs no private credential, run:
 
 ```powershell
-$env:RULITH_CHANNEL = '<connection-id>'
-$env:RULITH_CHANNEL_KEY = '<connection-key>'
+$env:RULITH_CONNECTION = '<connection-id>'
+$env:RULITH_CONNECTION_KEY = '<connection-key>'
 $env:RULITH_TOOLS_FILE = 'C:\path\to\worker-tools.json'
 node worker/rulith-worker.mjs
 ```
@@ -94,8 +94,8 @@ For a Capability whose Actions reference the built-in workspace Tool ids, a loca
 manifest is unnecessary:
 
 ```powershell
-$env:RULITH_CHANNEL = '<connection-id>'
-$env:RULITH_CHANNEL_KEY = '<connection-key>'
+$env:RULITH_CONNECTION = '<connection-id>'
+$env:RULITH_CONNECTION_KEY = '<connection-key>'
 $env:RULITH_WORKSPACE_SOURCE = 'workspace'
 $env:RULITH_WORKSPACE_MODE = 'read' # use read-write only when the workflow needs writes
 node worker/rulith-worker.mjs

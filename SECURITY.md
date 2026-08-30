@@ -10,7 +10,7 @@ live customer data or reusable credentials.
 ## Credential placement
 
 - Keep `RULITH_TOKEN` and model credentials in the Agent Runtime environment.
-- Keep `RULITH_CHANNEL_KEY` and source credentials on the Worker machine.
+- Keep `RULITH_CONNECTION_KEY` and source credentials on the Worker machine.
 - Do not put passwords, tokens, private keys, or DSNs with embedded passwords in
   capability packages, recipes, board facts, Station configuration committed to Git,
   or issue reports.
