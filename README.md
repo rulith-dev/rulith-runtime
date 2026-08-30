@@ -18,6 +18,13 @@ Constitution may constrain them. A Worker Tool Manifest maps each versioned Tool
 referenced by an executed Action to a local Adapter. The local processes contain no
 hidden order-processing policy or other business workflow.
 
+At startup the Agent reads the Board's `rulith-system-profile/1` identity. The
+Profile defines the stable non-domain substrate—scalar rules, evidence,
+convergence, receipted Actions, and accountable Cases. Preview modules are shown
+to the Agent as unavailable guarantees, not silently promoted by the local
+runtime. The Profile is service-owned configuration; there is no local switch
+that can replace or widen it.
+
 ## Requirements
 
 - Node.js 20 or newer
