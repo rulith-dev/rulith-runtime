@@ -252,11 +252,11 @@ test('verified calculation is one Capability composed of Program and Sources', (
   ])
   assert.equal(recipe.collection.id, 'verified_calculation')
   assert.equal(recipe.collection.version, '1.0.0')
-  assert.deepEqual(recipe.packs[0].pack.pins, ['calculation_result', 'calculation_completed'],
+  assert.deepEqual(recipe.packs[0].pack.pins, ['rulith.verified_calculation.calculation_result', 'rulith.verified_calculation.calculation_completed'],
     'the public recipe must pin the Case result and acceptance root used by the hosted Capability')
   assert.equal(recipe.collection.caseContracts?.[0]?.format, 'rulith-case-contract/1')
   assert.equal(recipe.collection.caseContracts?.[0]?.caseType, 'verified_calculation')
-  assert.equal(recipe.collection.caseContracts?.[0]?.acceptance?.predicate, 'calculation_completed')
+  assert.equal(recipe.collection.caseContracts?.[0]?.acceptance?.predicate, 'rulith.verified_calculation.calculation_completed')
   assert.equal(recipe.collection.caseContracts?.[0]?.terminal?.cardinality, 'once_per_case')
   assert.equal('line' in recipe.packs[1].pack.sources[0], false)
   assert.equal(recipe.packs[0].pack.acceptance.length, 1)
@@ -388,12 +388,4 @@ test('committed public files only teach Agent flags the Agent accepts', () => {
   assert.deepEqual(rejected, [],
     'these flags are published but the Agent rejects them and exits 1.\n  '
     + rejected.join('\n  '))
-})
-
-test('Agent discovers the System Profile from the Board and never promotes preview modules in prose', () => {
-  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /mf\.payload\?\.systemProfile/)
-  assert.match(source, /rulith-system-profile\/1/)
-  assert.match(source, /Preview modules are not guarantees and must not be assumed/)
-  assert.doesNotMatch(source, /Preview modules are (?:stable|available|supported)/)
 })

@@ -16,7 +16,7 @@
       "source": "verified-calculation-local",
       "entry": "adapters/verified-calculation/verify-output.mjs",
       "handles": {
-        "verification": ["output_record"]
+        "verification": ["rulith.verified_calculation.output_record"]
       }
     }
   }

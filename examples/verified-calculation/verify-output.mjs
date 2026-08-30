@@ -16,7 +16,7 @@ function fail(message) {
 let request
 try { request = JSON.parse(process.argv[2] ?? '') } catch { fail('worker must pass one JSON argument object') }
 if (!request || typeof request !== 'object' || Array.isArray(request)) fail('argument must be one JSON object')
-const verificationWork = request.predicate === 'output_record'
+const verificationWork = request.predicate === 'rulith.verified_calculation.output_record'
 const args = verificationWork ? request.args : request
 if (!args || typeof args !== 'object' || Array.isArray(args)) fail('verification claim must carry one args object')
 

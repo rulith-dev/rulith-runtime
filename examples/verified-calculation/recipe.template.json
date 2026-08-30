@@ -8,10 +8,10 @@
       "format": "rulith-case-contract/1",
       "caseType": "verified_calculation",
       "title": "Verified calculation",
-      "businessKey": { "predicate": "calculation_input", "arguments": ["job_id"] },
-      "opening": { "predicate": "calculation_input", "keyArguments": ["job_id"] },
+      "businessKey": { "predicate": "rulith.verified_calculation.calculation_input", "arguments": ["job_id"] },
+      "opening": { "predicate": "rulith.verified_calculation.calculation_input", "keyArguments": ["job_id"] },
       "acceptance": {
-        "predicate": "calculation_completed",
+        "predicate": "rulith.verified_calculation.calculation_completed",
         "keyArguments": ["job_id"],
         "minimumGroundingFloor": "attested"
       },
@@ -22,43 +22,38 @@
     {
       "packType": "program",
       "pack": {
-        "format": "rulith-pack/1",
+        "format": "rulith-domain-program",
         "meta": {
           "name": "verified_calculation",
           "title": "Verified Calculation — Program",
           "version": 1,
           "deps": [],
-          "provides": ["calculation_result"]
+          "provides": ["rulith.verified_calculation.calculation_result"]
         },
-        "pins": ["calculation_result", "calculation_completed"],
+        "pins": ["rulith.verified_calculation.calculation_result", "rulith.verified_calculation.calculation_completed"],
         "vocab": [
           {
-            "predicate": "calculation_input",
+            "predicate": "rulith.verified_calculation.calculation_input",
             "args": ["node", "job_id", "unit_price_cents", "quantity", "shipping_cents"],
             "description": "A validated input record read by the trusted local source adapter; the model cannot assert this predicate."
           },
           {
-            "predicate": "calculation_result",
+            "predicate": "rulith.verified_calculation.calculation_result",
             "args": ["node", "job_id", "subtotal_cents", "total_cents"],
             "description": "Exact subtotal and total derived by the board closure, never supplied by the model or source adapter."
           },
           {
-            "predicate": "output_written",
+            "predicate": "rulith.verified_calculation.output_written",
             "args": ["node", "job_id", "subtotal_cents", "total_cents", "status"],
             "description": "Synchronous action effect applied only after the trusted writer atomically wrote and read back the output file."
           },
           {
-            "predicate": "output_record",
+            "predicate": "rulith.verified_calculation.output_record",
             "args": ["node", "job_id", "subtotal_cents", "total_cents", "status"],
             "description": "Independent read-only verification of the persisted output, attested through the configured worker channel."
           },
           {
-            "predicate": "task_seed",
-            "args": ["root", "node", "test"],
-            "description": "Trusted intake result used by the host to create the one-leaf task tree."
-          },
-          {
-            "predicate": "calculation_completed",
+            "predicate": "rulith.verified_calculation.calculation_completed",
             "args": ["job_id"],
             "description": "Case acceptance root derived only after exact calculation, durable write, and independent matching read-back."
           }
@@ -71,7 +66,7 @@
             "source": "integer-arithmetic",
             "when": [
               {
-                "predicate": "calculation_input",
+                "predicate": "rulith.verified_calculation.calculation_input",
                 "args": {
                   "node": "?node",
                   "job_id": "?job_id",
@@ -91,7 +86,7 @@
             ],
             "then": [
               {
-                "predicate": "calculation_result",
+                "predicate": "rulith.verified_calculation.calculation_result",
                 "args": {
                   "node": "?node",
                   "job_id": "?job_id",
@@ -108,19 +103,19 @@
             "source": "verified-calculation-read-back",
             "when": [
               {
-                "predicate": "calculation_result",
+                "predicate": "rulith.verified_calculation.calculation_result",
                 "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents" }
               },
               {
-                "predicate": "output_written",
+                "predicate": "rulith.verified_calculation.output_written",
                 "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "completed" }
               },
               {
-                "predicate": "output_record",
+                "predicate": "rulith.verified_calculation.output_record",
                 "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "completed" }
               }
             ],
-            "then": [{ "predicate": "calculation_completed", "args": { "job_id": "?job_id" } }]
+            "then": [{ "predicate": "rulith.verified_calculation.calculation_completed", "args": { "job_id": "?job_id" } }]
           }
         ],
         "empirical": [],
@@ -131,7 +126,7 @@
             "description": "The leaf is accepted only when the worker read back the same job and exact totals that the board derived.",
             "when": [
               { "predicate": "acceptance", "args": { "node": "?node", "test": "?test" } },
-              { "predicate": "calculation_completed", "args": { "job_id": "?test" } }
+              { "predicate": "rulith.verified_calculation.calculation_completed", "args": { "job_id": "?test" } }
             ],
             "then": [{ "predicate": "acceptance_met", "args": { "node": "?node" } }]
           }
@@ -149,7 +144,7 @@
               "params": {},
               "returns": [
                 {
-                  "predicate": "calculation_input",
+                  "predicate": "rulith.verified_calculation.calculation_input",
                   "args": {
                     "node": "$node",
                     "job_id": "$job_id",
@@ -170,7 +165,7 @@
             "description": "After intake, calculation_result is derived automatically from trusted input. Do not assert or calculate it yourself; invoke this action directly. Pass no business arguments and add only the target leaf.",
             "preconditions": [
               {
-                "predicate": "calculation_input",
+                "predicate": "rulith.verified_calculation.calculation_input",
                 "args": {
                   "node": "?node",
                   "job_id": "?job_id",
@@ -180,7 +175,7 @@
                 }
               },
               {
-                "predicate": "calculation_result",
+                "predicate": "rulith.verified_calculation.calculation_result",
                 "args": {
                   "node": "?node",
                   "job_id": "?job_id",
@@ -191,7 +186,7 @@
             ],
             "effects": [
               {
-                "predicate": "output_written",
+                "predicate": "rulith.verified_calculation.output_written",
                 "args": {
                   "node": "?node",
                   "job_id": "?job_id",
@@ -220,8 +215,8 @@
             "action": "verify_calculation_output",
             "description": "Read the persisted output and attest only an exact match to the board-bound result.",
             "preconditions": [
-              { "predicate": "calculation_result", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents" } },
-              { "predicate": "output_written", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "?status" } }
+              { "predicate": "rulith.verified_calculation.calculation_result", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents" } },
+              { "predicate": "rulith.verified_calculation.output_written", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "?status" } }
             ],
             "effects": [],
             "execution": {
@@ -236,7 +231,7 @@
                 "status": "string"
               },
               "returns": [
-                { "predicate": "output_record", "args": { "node": "$node", "job_id": "$job_id", "subtotal_cents": "$subtotal_cents", "total_cents": "$total_cents", "status": "$status" } }
+                { "predicate": "rulith.verified_calculation.output_record", "args": { "node": "$node", "job_id": "$job_id", "subtotal_cents": "$subtotal_cents", "total_cents": "$total_cents", "status": "$status" } }
               ]
             }
           }
@@ -254,7 +249,7 @@
             "name": "verified-calculation-local",
             "type": "file",
             "access": "runtime",
-            "words": ["calculation_input", "task_seed", "output_record"],
+            "words": ["rulith.verified_calculation.calculation_input", "task_seed", "rulith.verified_calculation.output_record"],
             "tier": "attested",
             "territoryHint": "Customer-controlled local JSON files"
           }
