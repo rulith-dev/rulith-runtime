@@ -318,7 +318,7 @@ if (withUi) {
         // **一段全是 `�` 的文字不是任务**(2026-08-22 真机看图撞出,RT-AUI-4)。
         //
         // 那次的 `推理时间线` 页面上「你」整行是替换字符,而它下面照样写着
-        // 「开单 · 案卷 orders-…-41d9」——**乱码开成了一块案卷**,上了板、烧了模型轮、留在「在办」。
+        // 「开案 · 案卷 orders-…-41d9」——**乱码开成了一件案卷**,上了板、烧了模型轮、留在「在办」。
         //
         // 成因不在这里(那次是 `curl.exe` 收命令行参数时按 Windows ANSI 码页转过一道,
         // 中文在参数里就烂了;本函数上面那句「按字节收、收完再解码」是对的)。
@@ -559,7 +559,7 @@ const projectionText = async (ctx) => {
 // **没搬 actuate（执行器收据面）**，那是故意的：本文件是「脑」，手归 rulith-worker（见文件头边界）。
 // 一个进程既提议又执行，等于把提议方和执行方合成一个人——那正是收据面要拆开的东西。
 
-/** 板上现有的根（枚举给放电/完成态/归档共用）。 */
+/** 板上现有的根（枚举给放电/完成态/结案共用）。 */
 async function boardRoots(ctx) {
   const pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
   if (pj.accepted !== true) return { roots: [], facts: [] }
@@ -618,8 +618,10 @@ async function dischargePass(ctx) {
     if (c.accepted !== true) continue
     const leaves = c.payload?.leaves ?? []
     seen.push(...leaves)
-    // 守卫键**带板**: 案板模式下节点名跨案卷天然重名(每单都有自己的 L1),只按节点名记
-    // 「放过了」,第二单的同名叶子会被第一单的记录挡住——**永远等不到求证,certified 永远不来**。
+    // 守卫键**带板**: 一块 durable Agent Board 上运行多个 Case Context,节点名跨 Case 天然重名
+    // (每件活都有自己的 L1)。**分辨靠 digest 不靠名字**: 同名同 digest = 真的放过了,
+    // 同名新 digest = 另一件活,照放。板那一段则把 --serve 的不同会话槽隔开
+    // ——少了它,两个客户的同名叶子会互相挡住,**永远等不到求证,certified 永远不来**。
     const key = (l) => `${ctx.board}::${l.node}`
     const fresh = leaves.filter((l) => l.met !== true && ctx.dischargedDigest.get(key(l)) !== l.digest)
     if (fresh.length === 0) continue
@@ -647,7 +649,7 @@ async function dischargePass(ctx) {
 // ② 板裁决的完成态：多根取合取（全部 certified 才算 certified），floor 取最弱的一档。
 //    `allDone` 是**另一根轴**,不能与 certified 混用: certified 说的是「够不够硬」,
 //    state 说的是「还有没有活」。真机上见过 certified=true 而 state=actuating(手领了活没回执)——
-//    只看 certified 就封板,等于把"还在办"记成"办完了"(2026-08-07 review 的假绿正是这个形状)。
+//    只看 certified 就结案,等于把"还在办"记成"办完了"(2026-08-07 review 的假绿正是这个形状)。
 const FLOOR_ORDER = ['asserted', 'assume', 'approximate', 'attested', 'verified']
 async function completionAll(ctx) {
   const { roots } = await boardRoots(ctx)
@@ -669,11 +671,11 @@ async function completionAll(ctx) {
 }
 
 /**
- * **段尾收工的唯一可交付判据**——案板腿(封板)与长命板腿(归 Work)共用这一个执行点。
+ * **段尾收工的唯一可交付判据**——`CloseCase` 只有这一个执行点。
  *
- * 从前只有案板腿有这三重判据(`roots>0 && certified && allDone`),长命板腿是**无条件**归档:
- * 段一停轮就把那件事归掉,而 CloseCase 缺省按 `completed` 关账 ⇒ 没办完的活被记成办结
- * (2026-08-17 orders-bt 真机)。两条腿走同一个判据,就没有"哪一条腿松一点"这回事了。
+ * 从前收工有两条路,其中一条是**无条件**关账: 段一停轮就把那件事关掉,而 CloseCase 缺省按
+ * `completed` 关账 ⇒ 没办完的活被记成办结(2026-08-17 orders-bt 真机)。
+ * 收成一条路 + 三重判据(`roots>0 && certified && allDone`),就没有"哪一条路松一点"这回事了。
  *
  * 收工前**重读一次板的裁决**: 段内最后一轮之后板还可能变(放电回执/影子异议落板),
  * 拿轮内的旧读去决定终态,就是拿过期判词收工。
@@ -688,7 +690,7 @@ async function deliverableNow(ctx) {
   let pushed = false
   let lastWaitLine = ''
   // 循环条件**不能只看 certified**(2026-08-18 第四发): 失败形状恰恰是「已 certified 但义务未清」
-  // ——那时循环不进,直接判 deliverable,封板被板拒(还有 N 项未结),案卷白白留「在办」。
+  // ——那时循环不进,直接判 deliverable,结案被板拒(还有 N 项未结),案卷白白留「在办」。
   // 判据 = 未达可交付 **或** 还有未结义务,两者都清才收工。
   while (final.roots.length > 0 && Date.now() < deadline) {
     const notYet = final.certified !== true || final.allDone !== true
@@ -705,7 +707,7 @@ async function deliverableNow(ctx) {
     // 对应的 discharge_done；直接拿它判在途会让混合核验白等满一个结算窗。
     const inflight = hasLiveDischargeWork(facts)
       && (g.accepted === true ? (g.payload?.gaps ?? []) : []).some((x) => /work-ordered/.test(String(x.args?.reason ?? '')))
-    // **动作在途也要等**(2026-08-18 冷通枪第三发): 板判 1/1 叶接地 certified,封板却被拒——
+    // **动作在途也要等**(2026-08-18 冷通枪第三发): 板判 1/1 叶接地 certified,结案却被拒——
     // 「本案还有 5 项未结」= 已派发未回执的动作(等执行器/等清关)。求证与动作是两条在途线,
     // 只等一条,另一条就成了"办完了却不结案"的新成因。义务清没清是**宿主看得见的机械事实**,
     // 不该靠模型自觉等——所以判据放在这里,不放在提示词里。
@@ -989,8 +991,9 @@ const makeSlot = (key) => ({
 const defaultSlot = makeSlot('')
 // 锁态只读 GetBoardManifest.lawLocked 的权威端真相;协议清单不承载实例状态。
 //
-// 案板模式下探针要落在**案卷**上、且只探一次: 同一份配方开出的板锁态相同(锁来自装了什么包),
-// 每单再探一遍纯属给开单成本添砖。所以这里是"首次可探时探,探过就记住"。
+// 锁态是**板的属性**(锁来自这块板上装了什么包),不是单个 Case 的: 一块 durable Agent Board 上的每个
+// Case Context 读到的都是同一个锁态,每开一件活再探一遍纯属给开案成本添砖。
+// 所以每槽"首次可探时探一次,探过就记住"。
 async function probeLawLock(ctx) {
   if (ctx.lawProbed) return
   ctx.lawProbed = true
@@ -1202,7 +1205,7 @@ ${say.slice(0, 1200)}`)
         feedback = lines.join('\n')
       }
     } else if (ops === null) {
-      // 对话形态: 纯回答是合法的一段(段收在这里;板上有没有活由板自己的封板闸判,不由客户端猜)。
+      // 对话形态: 纯回答是合法的一段(段收在这里;板上有没有活由板自己的结案闸判,不由客户端猜)。
       // **但"板上还有活"时的零提交不是纯回话**(2026-08-21 实跑撞出): 模型写完一整段计划、
       // 一个字没发——段当场收工,那一轮的活全丢,案卷空着留在「在办」。
       // 判据**问板不猜话**: 首版拿正则测「是不是冒号结尾」,那测的是散文的标点,
@@ -1365,8 +1368,8 @@ ${say.slice(0, 1200)}`)
   if (note === 'in progress') { note = `Stopped at the ${MAX_ROUNDS}-round limit.`; log(`
 ⚠ ${note} Increase RULITH_MAX_ROUNDS only after reviewing why the workflow did not converge.`) }
   // 影子人格(--shadow): 段尾对抗审阅——同一智能体的内外人格,板侧防篡改机制(CD 钉等)天然在。
-  // **抗议的牙齿 = 拦下本段的收尾动作**: 单板长跑形态拦的是自动归档,案板形态拦的是**封板**。
-  // 同一条纪律的两个投影: 影子有异议的活不算收尾,板上留着,人与主人格都看得见。
+  // **抗议的牙齿 = 拦下本段的收尾动作**,也就是拦下 `CloseCase`。
+  // 影子有异议的活不算收尾: 案卷留「在办」,板上留着,人与主人格都看得见。
   const shadowClear = !withShadow || await shadowReview(ctx, userText)
   let pendingCaseId = caseId
   if (!shadowClear) {
@@ -1384,14 +1387,14 @@ ${say.slice(0, 1200)}`)
   return { note, caseId, pendingCaseId }
 }
 
-/** 影子审阅: 对抗立场读板与本段经过,专挑真缺陷。发现→落板 shadow_finding + 返回 false(拦归档)。
+/** 影子审阅: 对抗立场读板与本段经过,专挑真缺陷。发现→落板 shadow_finding + 返回 false(拦结案)。
  *  审不出问题回 PASS。影子**只能落异议事实,不能改主人格写的任何东西**——它是审的,不是改的。
  *
  *  两个时机（viz 逐义，2026-08-06 补上第一个）：
  *    - `inline`（每轮，板变过才跑）——**牙齿在这里**：异议落板后紧接着就是同一轮的放电，
  *      影子的缺陷主张与主人格的叶子一起接地，confirmed_defect 赶得上在 certify 之前挡门。
- *    - 段尾【关门审计】——最后一道,牙齿是拦下本段自动归档:有异议的活不算收尾,板上留着。
- *  只有段尾那次的返回值被用来拦归档;inline 那次不拦(它靠板机制生效,不靠流程分支)。 */
+ *    - 段尾【关门审计】——最后一道,牙齿是拦下本段的 `CloseCase`:有异议的活不算收尾,板上留着。
+ *  只有段尾那次的返回值被用来拦结案;inline 那次不拦(它靠板机制生效,不靠流程分支)。 */
 async function shadowReview(ctx, userText, opts = {}) {
   const proj = await projectionText(ctx)
   const verdict = await ask(
@@ -1409,7 +1412,7 @@ Otherwise return at most three lines, each formatted FINDING: <one precise issue
   if (findings.length === 0) { log(`${tag}: PASS`); emitOn(ctx, 'shadow', { pass: true, inline: opts.inline === true }); return true }
   for (const f of findings) log(`${tag}: ${f.slice(0, 200)}`)
   emitOn(ctx, 'shadow', { pass: false, findings, inline: opts.inline === true })
-  // 异议落板(asserted 档如实——影子的话也是话,不是证据;它的作用是可见与拦归档)
+  // 异议落板(asserted 档如实——影子的话也是话,不是证据;它的作用是可见与拦结案)
   const ops = findings.map((f, i) => ({
     op: 'assert_fact', id: `SF_${Date.now().toString(36)}_${i}`,
     predicate: 'shadow_finding', args: { text: f.slice(9, 240).trim() },
@@ -1423,8 +1426,8 @@ if (SERVE) {
   // ── 接单脑(批7 起,2026-08-07 分槽): 回环收单 → **按槽**跑 → 结果留内存环形队列 ──
   //
   // 这是「网站后端可直接嵌的无人值守闭环」的最小形态: 它不读 stdin、不弹界面,
-  // 只把 **runSegment** 这一个循环挂到一个 HTTP 口上。前面那些器官(开单/放电/影子/封板/
-  // 身份板)一行都不改——接单脑只负责**排队、分槽与留痕**,不负责办事。
+  // 只把 **runSegment** 这一个循环挂到一个 HTTP 口上。前面那些器官(开案/放电/影子/结案)
+  // 一行都不改——接单脑只负责**排队、分槽与留痕**,不负责办事。
   //
   // **同槽恒串行,跨槽按 SERVE_CONCURRENCY 并行**。旧门牌写的是"并发恒为 1",前提是四处
   // 进程级单例(尤其 messages 转录);那四处已全部入槽(见 makeSlot),前提失效 ⇒ 裁决作废。

@@ -1209,7 +1209,7 @@ async function handleAction(w) {
   // 手已经改了世界;这一发若落不了板,后果不是"少一行日志":`ClaimWork` 那一刻受信
   // `dispatched` 已在板上,而核心 `should_fire` = ready && !dispatched(invocation)
   // ⇒ **这条 invocation 此后永不再下发**(动作面无租约弧,那是求证面的)。于是世界改了、
-  // `effect_confirmed`/`effect_failed` 永不来、封板门 `work_pending` 永远顶回、案卷永久「在办」。
+  // `effect_confirmed`/`effect_failed` 永不来、`case_pending` 永远顶回、Case 永久无法完成。
   //
   // 实测的日志原文是 `○ 回执 ship: ok=true → 板 拒()`——空括号来自 500 正文不是 JSON。
   // **传输层塌了与板语义拒了在这一行里长得一模一样**,而 `ok=true` 是扫一眼先看到的那个词。
