@@ -33,7 +33,7 @@
       "sha256": "ab1bc867c6f08c4f9e6b4ed45f8933251ab6f922b1670c3ce50c43fad9aae83e"
     },
     "examples/verified-calculation/read-input.mjs": {
-      "sha256": "52ed9dde4456ed7844ed02eceffc1c2a6b21faa57650435ed0671439c90dc7ee"
+      "sha256": "9b360e7a6dd108657e7b4946d9f63128f02d86e31087fe50b60bcfe0830bcabd"
     },
     "examples/verified-calculation/recipe.template.json": {
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"

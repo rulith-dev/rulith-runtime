@@ -329,6 +329,12 @@ test('verified calculation is one Capability composed of Program and Sources', (
     'source-checkout instructions must resolve Adapter entries from the generated runtime directory')
 })
 
+test('verified calculation intake roots its task tree in the trusted active Case', () => {
+  const adapter = readFileSync(join(ROOT, 'examples', 'verified-calculation', 'read-input.mjs'), 'utf8')
+  assert.match(adapter, /RULITH_CASE_ID/)
+  assert.doesNotMatch(adapter, /task_root:\s*['"]CALCULATION_CASE['"]/)
+})
+
 test('public runtime contains no private deployment addresses or credential material', () => {
   for (const rel of [
     'agent/rulith-agent.mjs',

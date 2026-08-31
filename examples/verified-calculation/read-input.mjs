@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SOURCE_ROOT = process.env.RULITH_SOURCE_ACCESS ?? join(HERE, 'data')
 const INPUT = process.env.RULITH_CALC_INPUT ?? join(SOURCE_ROOT, 'input.json')
+const CASE_ID = process.env.RULITH_CASE_ID ?? ''
 
 function fail(message) {
   console.error(`calculation input rejected: ${message}`)
@@ -26,6 +27,9 @@ try {
   fail(`cannot read valid JSON from ${INPUT}: ${error?.message ?? error}`)
 }
 if (!input || typeof input !== 'object' || Array.isArray(input)) fail('top level must be one JSON object')
+if (CASE_ID === '' || CASE_ID.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(CASE_ID)) {
+  fail('RULITH_CASE_ID must be the trusted active Case identity')
+}
 if (typeof input.job_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.job_id)) {
   fail('job_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}')
 }
@@ -40,7 +44,7 @@ if (!Number.isSafeInteger(subtotal) || !Number.isSafeInteger(subtotal + shipping
 // Deliberately do not emit subtotal/total. Exact arithmetic belongs to the board closure.
 process.stdout.write(JSON.stringify({ rows: [{
   node: `CALC_${input.job_id}`,
-  task_root: 'CALCULATION_CASE',
+  task_root: CASE_ID,
   acceptance_test: input.job_id,
   job_id: input.job_id,
   unit_price_cents: unitPrice,
