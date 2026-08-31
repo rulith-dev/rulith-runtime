@@ -584,7 +584,12 @@ const projectionText = async (ctx) => {
 
 /** 板上现有的根（枚举给放电/完成态/结案共用）。 */
 async function boardRoots(ctx) {
-  const pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
+  const selected = ctx.case
+  let pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
+  if (selected !== undefined && ctx.case === undefined && STALE_CASE.has(String(pj?.errorCode ?? ''))) {
+    const restored = await ensureCaseContext(ctx, selected.id, selected.caseType)
+    if (restored !== undefined) pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
+  }
   if (pj.accepted !== true) return { roots: [], facts: [] }
   const facts = pj.payload?.context?.facts ?? []
   const roots = [...new Set(facts.filter((f) => f.atom?.predicate === 'root').map((f) => String(f.atom.args?.node ?? '')))].filter(Boolean)
