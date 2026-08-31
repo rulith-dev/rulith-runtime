@@ -116,6 +116,15 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
       digest: count.rows[0].digest,
     })
     assert.match(count.rows[0].digest, /^[a-f0-9]{64}$/)
+    const countTool = toolFromSpec(JSON.stringify({
+      name: 'count_source', kind: 'read', impl: 'worker-tool', source: 'workspace', exec: 'rulith.workspace.count@1',
+      params: { path: 'string', recursive: 'boolean' },
+      returns: [{ predicate: 'acme.files.directory_count', args: { source: '$source', path: '$path', file_count: '$file_count', digest: '$digest' } }],
+    }), JSON.stringify({ path: '.', recursive: false }), tools, tools['rulith.workspace.count@1'].digest, sources)
+    const counted = await execute('count_source', { path: '.', recursive: false }, { count_source: countTool }, sources)
+    assert.deepEqual(counted.facts, [{ predicate: 'acme.files.directory_count', args: {
+      source: 'workspace', path: '.', file_count: 2, digest: count.rows[0].digest,
+    } }], 'workspace returns must cross the same structured result membrane as run adapters')
     const digest = String(await call('rulith.workspace.hash@1', { path: 'input.json' }))
     assert.match(digest, /^[a-f0-9]{64}$/)
 

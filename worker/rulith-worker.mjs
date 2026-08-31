@@ -730,8 +730,7 @@ async function handDbQuery(t, args) {
   const r = await pgRun(dsn, sql)
   const rows = r.rows.slice(0, Number(t.maxRows ?? 50))
   const result = `rows=${r.rowCount}${r.rows.length > rows.length ? ` (showing first ${rows.length})` : ''} ${JSON.stringify(rows)}`.slice(0, 4000)
-  const facts = resultFactsFromRows(t, rows)
-  return facts.length > 0 ? { result, facts } : result
+  return Array.isArray(t.returns) && t.returns.length > 0 ? { result, rows } : result
 }
 
 /** 工具包 returns 的纯映射器。领域知识只在声明里，Worker 只做逐行、逐列机械映射。 */
@@ -809,20 +808,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   if (!t) throw new Error(`Worker Tool ${action} is not installed on this connection`)
   let out
   if (t.impl === 'http') out = await handHttp(t, args, sources)
-  else if (t.impl === 'run') {
-    out = await handRun(t, args, context, sources)
-    // 本机 run 只是固定执行适配器；“输出哪些领域事实”仍由领域包 returns 声明。
-    // 结构化程序统一回 {rows:[...]}，Worker 机械映射，不让脚本自行决定谓词与档位。
-    if (Array.isArray(t.returns)) {
-      let envelope
-      try { envelope = JSON.parse(String(out)) } catch { throw new Error('A run tool with returns must output JSON shaped as {rows:[...]}') }
-      if (!envelope || typeof envelope !== 'object' || !Array.isArray(envelope.rows)) {
-        throw new Error('A run tool with returns must output JSON shaped as {rows:[...]}')
-      }
-      const facts = resultFactsFromRows(t, envelope.rows)
-      return { result: String(out), facts }
-    }
-  }
+  else if (t.impl === 'run') out = await handRun(t, args, context, sources)
   else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
   else if (t.impl === 'mcp') out = await handMcp(t, args)
   else if (t.impl === 'db-query') out = await handDbQuery(t, args)
@@ -831,6 +817,30 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   // 手的失败形态是 'error: …' 文本(mcp/db 同族十处)。必须在这唯一出口折成异常——
   // 返回值路径会把失败洗成 ok=true 的回执: 库一行没动,板却记「已执行」(RT-WK-HONEST,2026-08-17 真机)。
   if (typeof out === 'string' && out.startsWith('error:')) throw new Error(out.slice('error:'.length).trim())
+  // `returns` is the common result membrane for every Adapter. Keeping this
+  // inside only the run arm made workspace/db/http/mcp rows visible in logs but
+  // absent from the Board — the worst kind of false success for Source access.
+  if (Array.isArray(t.returns) && t.returns.length > 0) {
+    let text
+    let rows
+    if (out && typeof out === 'object' && !Array.isArray(out) && Array.isArray(out.rows)) {
+      text = String(out.result ?? JSON.stringify({ rows: out.rows }))
+      rows = out.rows
+    } else {
+      text = String(out)
+      const payload = text.replace(/^HTTP [0-9]+:\s*/, '')
+      let envelope
+      try { envelope = JSON.parse(payload) } catch { throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}') }
+      if (!envelope || typeof envelope !== 'object' || !Array.isArray(envelope.rows)) {
+        throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}')
+      }
+      rows = envelope.rows
+    }
+    if (!Array.isArray(rows)) {
+      throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}')
+    }
+    return { result: text, facts: resultFactsFromRows(t, rows) }
+  }
   return out
 }
 
@@ -1344,7 +1354,8 @@ function adapterToolFromSpec(specJson, argsJson) {
     }
     let wargs = {}
     if (typeof argsJson === 'string' && argsJson !== '') wargs = JSON.parse(argsJson)
-    return { impl: 'workspace', source: spec.source, operation: spec.exec, _args: wargs }
+    return { impl: 'workspace', source: spec.source, operation: spec.exec, _args: wargs,
+      ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}) }
   }
   if (spec.impl !== 'db-query' && spec.impl !== 'db-exec-fenced') {
     throw new Error(`toolSpec impl "${spec.impl}" is not supported for generic execution; supported implementations are http, run, workspace, db-query, db-exec-fenced, and mcp`)
