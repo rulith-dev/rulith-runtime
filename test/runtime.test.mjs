@@ -188,6 +188,16 @@ test('the local Agent does not assemble, fingerprint, or install governance reci
   assert.match(source, /Do not attempt add_axiom, define_action, RegisterPack/)
 })
 
+test('the local Agent sends business values while Cloud injects commercial pins and exposes one bounded Case View', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /--business-key <json>/)
+  assert.match(source, /kind: 'OpenCase'[\s\S]{0,180}businessKey/)
+  assert.match(source, /RULITH_ATTENTION_FACTS \?\? 80/)
+  assert.match(source, /kind: 'GetCompletion'/)
+  assert.match(source, /reply VIEW: to refresh it/)
+  assert.doesNotMatch(source, /projectionText\(ctx, \{ full: true \}\)/)
+})
+
 test('exploration uses an explicit Case-local provisional program without widening normal execution', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /const SYSTEM_EXPLORATION =/)

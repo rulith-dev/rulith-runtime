@@ -53,10 +53,11 @@ cd examples/verified-calculation
 node prepare-runtime.mjs
 ```
 
-Configure the REPL directly or through Station:
+Configure the Agent Runtime directly or through Station. The business-key values
+name this Case; Cloud computes the digest and pins it before opening:
 
 ```text
-args: --agent verified-calculation --ui
+args: --agent verified-calculation --case-type verified_calculation --business-key {"job_id":"calc-001"} --ui
 ```
 
 Configure the Worker with its Connection credentials and local Adapter Manifest. The governed

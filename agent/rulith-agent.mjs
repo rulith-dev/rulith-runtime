@@ -53,6 +53,7 @@ Options:
   --serve            Accept tasks through the local service endpoint
   --case <id>        Resume an existing case for the first segment
   --case-type <id>   Case Type from the installed Capability catalog (default: exploration)
+  --business-key <json>  Contract business-key values, for example {"job_id":"calc-001"}
   --shadow           Run the configured shadow verification path
   -h, --help         Show this help without requiring credentials
 
@@ -78,6 +79,7 @@ let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
 /** Resume one existing Case Context for the first segment only. */
 let resumeCase = (process.env.RULITH_RESUME_CASE ?? '').trim()
 let selectedCaseType = (process.env.RULITH_CASE_TYPE ?? 'exploration').trim() || 'exploration'
+let selectedBusinessKeyRaw = (process.env.RULITH_BUSINESS_KEY_JSON ?? '').trim()
 const rest = []
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--agent' && argv[i + 1] !== undefined) { agentId = argv[++i]; continue }
@@ -86,6 +88,7 @@ for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--shadow') { withShadow = true; continue }
   if (argv[i] === '--case' && argv[i + 1] !== undefined) { resumeCase = argv[++i]; continue }
   if (argv[i] === '--case-type' && argv[i + 1] !== undefined) { selectedCaseType = argv[++i]; continue }
+  if (argv[i] === '--business-key' && argv[i + 1] !== undefined) { selectedBusinessKeyRaw = argv[++i]; continue }
   if (argv[i].startsWith('-')) {
     console.error(`Unknown option: ${argv[i]}. Run with --help to see the supported execution surface.`)
     process.exit(1)
@@ -94,8 +97,22 @@ for (let i = 0; i < argv.length; i++) {
 }
 const TASK = rest.join(' ').trim()
 const SERVE = withServe
-
 const die = (msg) => { console.error(`\n✗ ${msg}\n`); process.exit(1) }
+
+const businessKeyOf = (raw, label = 'businessKey') => {
+  if (raw === '' || raw === undefined || raw === null) return undefined
+  let value = raw
+  if (typeof raw === 'string') {
+    try { value = JSON.parse(raw) } catch { die(`${label} must be a JSON object of finite scalar values.`) }
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0
+    || !Object.values(value).every((v) => typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)))) {
+    die(`${label} must be a non-empty JSON object whose values are strings, booleans, or finite numbers.`)
+  }
+  return value
+}
+const selectedBusinessKey = businessKeyOf(selectedBusinessKeyRaw, 'RULITH_BUSINESS_KEY_JSON / --business-key')
+
 if (TOKEN === '') die('RULITH_TOKEN is missing. Create an Agent token in Console under Access & credentials; it is shown only once.')
 if (MODEL_KEY === '') die('A model key is missing. Set ANTHROPIC_API_KEY or RULITH_MODEL_KEY. It stays in this local process and is never sent to Rulith.')
 // 无任务=进入多轮对话(2026-08-01 起 CLI 是桌面主形态);带任务=一次办完后退出(CI/脚本兼容不变)。
@@ -409,7 +426,7 @@ async function board(operation, ctx) {
   return j
 }
 /** Open or resume exactly one named Case Context. Never adopt another Case. */
-async function ensureCaseContext(ctx, caseId, caseType) {
+async function ensureCaseContext(ctx, caseId, caseType, businessKey) {
   if (ctx.case?.id === caseId && ctx.case?.root === caseId && ctx.case?.caseType === caseType && typeof ctx.case?.revision === 'string' && ctx.case.revision !== '') return ctx.case
   ctx.case = undefined
   let mf = await board({ kind: 'GetBoardManifest' }, ctx)
@@ -437,7 +454,8 @@ async function ensureCaseContext(ctx, caseId, caseType) {
     log(`◎ Resuming Case "${caseId}" on Agent Board "${ctx.board}".`)
     return ctx.case
   }
-  const opened = await board({ kind: 'OpenCase', caseType, caseId, root: caseId }, ctx)
+  const opened = await board({ kind: 'OpenCase', caseType, caseId, root: caseId,
+    ...(businessKey === undefined ? {} : { businessKey }) }, ctx)
   if (opened.accepted !== true) {
     log(`✗ Could not open Case "${caseId}" on Agent Board "${ctx.board}": ${String(opened.teaching ?? opened.errorCode ?? '').slice(0, 240)}`)
     return undefined
@@ -477,14 +495,31 @@ async function archiveCaseContext(ctx, disposition) {
 // 不用于裁决读(裁决必须无损)。板一大,全量投影会把窗口吃光——真板实测 364 条事实的板
 // 收到 60 条省约 74% 上下文。text 面自带「本视图已聚焦…要看全板重发不带 attention 的读」,
 // 所以模型知道自己看的是窄视图,不会把"没看见"当成"不存在"。
-// 缺省不开(零回归): 配 RULITH_ATTENTION_FACTS=60 才生效。
-const ATTENTION_FACTS = Number(process.env.RULITH_ATTENTION_FACTS ?? 0)
-const attnArg = () => (ATTENTION_FACTS > 0 ? { attention: { budget: { facts: ATTENTION_FACTS } } } : {})
+// Hosted execution defaults to a bounded Case-focused view. Operators may tune
+// the budget, but the working Agent never receives an unbounded whole-Board dump.
+const ATTENTION_FACTS = Math.max(20, Number(process.env.RULITH_ATTENTION_FACTS ?? 80))
+const attnArg = (ctx) => ({ attention: { focus: ctx.case?.root, budget: { facts: ATTENTION_FACTS, findings: Math.max(10, Math.floor(ATTENTION_FACTS / 4)) } } })
 
-const projectionText = async (ctx, opts = {}) => {
-  const r = await board({ kind: 'GetProjection', ...(opts.full === true ? {} : attnArg()) }, ctx)
+const projectionText = async (ctx) => {
+  const r = await board({ kind: 'GetProjection', ...attnArg(ctx) }, ctx)
   if (r.accepted !== true) return `(board unavailable: ${r.teaching ?? r.errorCode ?? ''})`
   let text = String(r.payload?.text ?? '')
+  if (ctx.case !== undefined) {
+    const completion = await board({ kind: 'GetCompletion', root: ctx.case.root }, ctx)
+    if (completion.accepted === true) {
+      const p = completion.payload ?? {}
+      text = `Case View\n${JSON.stringify({
+        goal: ctx.case.root,
+        goalState: p.state,
+        certified: p.certified,
+        groundingFloor: p.floor,
+        frontier: p.frontierDetails ?? p.frontier ?? [],
+        acceptance: p.leaves ?? [],
+        missingEvidence: p.gaps ?? [],
+        blocked: p.blocked ?? [],
+      }, null, 2)}\n\nRelevant verified state and available actions:\n${text}`
+    }
+  }
   // 板报缺口(QueryBoard include:gaps,0.11): 「现在该干嘛」由板自己说——桥缺可信来源/放电卡点/
   // 交付义务,不靠模型对着全量投影猜。老 boardd 无 QueryBoard=拒,静默略过(缺口段是增益不是依赖)。
   const { gaps, inFlight } = await boardGaps(ctx)
@@ -875,7 +910,7 @@ The only bootstrap exception is an action whose description begins with [intake]
 Do not create a temporary task tree before intake. After its terminal receipt, read the board again and bind every later external action to a real returned leaf. Without the [intake] marker, never guess that an action may run without a target.
 Do not supply business identifiers, amounts, addresses, or other business arguments from conversation. Action arguments must come from board-grounded bindings. Continue only after a terminal receipt with done=true; done=false means accepted for processing, not succeeded.
 
-Reply with BOARD: alone to read the full board. Reply with DONE: only when the board is complete. Reply with STOP: when material, domain capability, or a human decision is genuinely missing.`
+Reply with VIEW: alone to refresh the bounded Case View. Reply with DONE: only when the Case View is complete. Reply with STOP: when material, domain capability, or a human decision is genuinely missing.`
 
 const SYSTEM = `You are a domain-agnostic Rulith execution agent. The current board and its installed packs are the only source of domain semantics: vocabulary, rules, actions, parameter shapes, and acceptance names. Concrete goals and instance values come from the user task, board facts, and trusted tool results. Placeholders in this prompt are not domain facts.
 
@@ -975,7 +1010,7 @@ await probeLawLock(defaultSlot)
 //
 // 走滚动窗不走摘要压缩(用户裁定): 摘要要多一次模型调用(长跑下是持续成本),而且**摘要本身会失真**,
 // 失真的摘要没有板那样的诚实档可查。板才是权威记录——细节本来就该在板上,不在转录里。
-// 丢掉的段各留一行痕,模型知道"之前办过这些",要细节自己发 BOARD:。
+// 丢掉的段各留一行痕,模型知道"之前办过这些",要当前状态自己刷新 Case View。
 //
 // **切口必须落在 user 上**: 模型线型要求首条是 user,切在 assistant/user 配对中间会 400。
 const KEEP_MESSAGES = Number(process.env.RULITH_KEEP_MESSAGES ?? 24)
@@ -990,7 +1025,7 @@ function compactTranscript(ctx) {
   // 留痕**并进**第一条 user,不新增消息——不动角色结构,任何线型都不会因此变形
   messages[0] = {
     ...messages[0],
-    content: `[Transcript compacted] ${cut.length} earlier message(s) were removed. The board remains authoritative; reply BOARD: to read it.
+    content: `[Transcript compacted] ${cut.length} earlier message(s) were removed. The Case View remains authoritative; reply VIEW: to refresh it.
 Earlier segments:
 ${trail}
 
@@ -1018,7 +1053,7 @@ let pollInterject = null
  *  `caseId` is the Case handled by this segment, and `pendingCaseId` is present only
  *  when that Case Context remains open. Together they distinguish a completed segment
  *  from a paused Case without inferring lifecycle state from prose. */
-async function runSegment(ctx, userText, caseType = selectedCaseType) {
+async function runSegment(ctx, userText, caseType = selectedCaseType, businessKey = selectedBusinessKey) {
   const messages = ctx.messages
   compactTranscript(ctx) // 段起始先收窗——切口落在段边界最干净,不会切断本段的推理链
   const useResume = resumeCase
@@ -1027,7 +1062,7 @@ async function runSegment(ctx, userText, caseType = selectedCaseType) {
   ctx.case = undefined
   await probeLawLock(ctx)
   ctx.system = ctx.lawLocked ? SYSTEM_LOCKED : caseType === 'exploration' ? SYSTEM_EXPLORATION : SYSTEM
-  const opened = await ensureCaseContext(ctx, caseId, caseType)
+  const opened = await ensureCaseContext(ctx, caseId, caseType, businessKey)
   if (opened === undefined) {
     const note = `Could not open Case Context "${caseId}" on Agent Board "${ctx.board}"; this task did not start.`
     log(`\n✗ ${note}`)
@@ -1040,7 +1075,7 @@ async function runSegment(ctx, userText, caseType = selectedCaseType) {
   const proj = await projectionText(ctx)
   messages.push({ role: 'user', content: `${CHAT ? 'User message' : 'Task'}: ${userText}
 
-Current board:
+Current Case View:
 ${proj}` })
   let done = false
   let note = 'in progress'
@@ -1070,9 +1105,9 @@ ${proj}` })
 ${say.slice(0, 1200)}`)
     messages.push({ role: 'assistant', content: reply })
     const stopping = /^\s*DONE:/m.test(reply) || /^\s*STOP:/m.test(reply)
-    // BOARD: = 重读全板(不受注意力预算收窄)。沿用本文件既有的**裸行标记**约定
+    // VIEW: = refresh the bounded Case View. It never opens an unbounded Board dump.
     // (DONE:/STOP: 同族),不引第二套工具语法——JSON 数组仍然只表示"提交这批操作"。
-    const wantsBoard = !stopping && /^\s*BOARD:/m.test(reply)
+    const wantsBoard = !stopping && /^\s*VIEW:/m.test(reply)
     const sub = stopping ? null : extractSubmission(reply)
     const ops = sub?.ops ?? null
     const cmds = sub?.cmds ?? null
@@ -1086,8 +1121,8 @@ ${say.slice(0, 1200)}`)
 
     let feedback = ''
     if (wantsBoard) {
-      feedback = `Full board:\n${await projectionText(ctx, { full: true })}`
-      log('(The model requested the full board.)')
+      feedback = `Current Case View:\n${await projectionText(ctx)}`
+      log('(The model refreshed the bounded Case View.)')
     } else if (stopping) {
       // done/stop = **请求**不是结论(viz 同律: 模型只请求,板裁决)。本轮照常走完放电与裁决,
       // 收尾那句话报板的判词——本文件第一条纪律就是「结论不是模型写的」。
@@ -1324,7 +1359,7 @@ ${say.slice(0, 1200)}`)
     lastRevision = await revisionNow(ctx)
     // 结算过就把落定的板面一起端上（省掉模型那一轮 `BOARD:` 的要价）。
     messages.push({ role: 'user', content: `[Result] ${feedback}\n[Completion] certified=${c.certified} floor=${c.floor} ${c.state}`
-      + (settledBoard !== '' ? `\n\nCurrent landed board state:\n${settledBoard}` : '')
+      + (settledBoard !== '' ? `\n\nCurrent Case View after settlement:\n${settledBoard}` : '')
       + `\n\nContinue, or finish with DONE:.` })
   }
   if (note === 'in progress') { note = `Stopped at the ${MAX_ROUNDS}-round limit.`; log(`
@@ -1360,7 +1395,7 @@ ${say.slice(0, 1200)}`)
 async function shadowReview(ctx, userText, opts = {}) {
   const proj = await projectionText(ctx)
   const verdict = await ask(
-    [{ role: 'user', content: `Completed segment: ${userText}\n\nCurrent board:\n${proj}` }],
+    [{ role: 'user', content: `Completed segment: ${userText}\n\nCurrent Case View:\n${proj}` }],
     `You are the Agent's adversarial shadow reviewer. Assume the primary Agent may be wrong and identify only concrete defects:
 - Is every conclusion actually supported? Are values abnormal, sources doubtful, or expected materials missing?
 - Did claims that require verification go through a trusted computation or source, or were they merely stated?
@@ -1492,20 +1527,27 @@ if (SERVE) {
         let text = ''
         let sessionKey = ''
         let caseType = selectedCaseType
+        let businessKey = selectedBusinessKey
         try {
           const b = JSON.parse(raw || '{}')
           text = String(b.text ?? '').trim()
           sessionKey = String(b.sessionKey ?? '').trim()
           caseType = String(b.caseType ?? selectedCaseType).trim()
-        } catch { return deny('Body is not valid JSON. Expected {"text":"...","caseType":"exploration","sessionKey":"optional"}.') }
+          businessKey = b.businessKey ?? selectedBusinessKey
+        } catch { return deny('Body is not valid JSON. Expected {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional"}.') }
         if (text === '') return deny('Missing text. Expected {"text":"process this task","caseType":"exploration"}.', 400)
         if (!/^[a-z][a-z0-9_-]{1,63}$/.test(caseType)) return deny('caseType must be a 2-64 character lowercase identifier from the Agent Case Type catalog.', 400)
+        if (businessKey !== undefined && (businessKey === null || typeof businessKey !== 'object' || Array.isArray(businessKey)
+          || Object.keys(businessKey).length === 0 || !Object.values(businessKey).every((v) => typeof v === 'string'
+            || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))))) {
+          return deny('businessKey must be a non-empty JSON object whose keys match the selected Case Contract and whose values are finite JSON scalars.', 400)
+        }
         // Session keys select bounded local transcript/queue slots. They never select a Board.
         if (sessionKey.length > SESSION_KEY_MAX) {
           return deny(`sessionKey exceeds ${SESSION_KEY_MAX} characters (${sessionKey.length} received). It cannot be truncated because it identifies a local conversation slot. Use a short opaque identifier.`, 400)
         }
         const slot = slotFor(sessionKey)
-        const item = { id: nextCaseId(), text, caseType, at: Date.now(), sessionKey }
+        const item = { id: nextCaseId(), text, caseType, businessKey, at: Date.now(), sessionKey }
         slot.queue.push(item)
         slot.lastUsed = item.at
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0)
@@ -1535,12 +1577,13 @@ if (SERVE) {
       req.on('close', () => clients.delete(res))
       return
     }
-    return deny('Available endpoints: POST /task {"text":"...","caseType":"exploration","sessionKey":"optional"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
+    return deny('Available endpoints: POST /task {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
   })
   await new Promise((r) => serveSrv.listen(SERVE_PORT, '127.0.0.1', r))
   log(`
 Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent Case Context(s) · ${SERVE_SLOTS_MAX} session limit): http://127.0.0.1:${SERVE_PORT}
   Submit: curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…","caseType":"exploration"}'
+  Contracted Case Types also send businessKey with the exact Case Contract argument names.
   Optional session: -d '{"text":"…","sessionKey":"conversation-1"}'
   Every task receives its own Case Context on Agent Board "${agentId}". Sessions only isolate local transcripts and queues.
   Inspect: curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
@@ -1564,7 +1607,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
     let note = ''
     let pendingCaseId = null
     try {
-      const seg = await runSegment(slot, item.text, item.caseType)
+      const seg = await runSegment(slot, item.text, item.caseType, item.businessKey)
       note = seg.note
       pendingCaseId = seg.pendingCaseId
     } catch (e) {
@@ -1614,7 +1657,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
   }
   // 带任务参数启动 = 第一单已经在手上(脚本可以"起进程即办一单,之后接着收单")。
   // 它没有 sessionKey,所以进缺省槽——与从前一字不差。
-  if (TASK !== '') { defaultSlot.queue.push({ id: nextCaseId(), text: TASK, caseType: selectedCaseType, at: Date.now(), sessionKey: '' }); pump() }
+  if (TASK !== '') { defaultSlot.queue.push({ id: nextCaseId(), text: TASK, caseType: selectedCaseType, businessKey: selectedBusinessKey, at: Date.now(), sessionKey: '' }); pump() }
 } else if (!CHAT) {
   // ── 一次办完(CI/脚本形态,行为不变) ──
   log(`Task: ${TASK}

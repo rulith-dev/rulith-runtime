@@ -51,13 +51,21 @@ Case Type catalog exposed by Rulith Cloud; exploratory work defaults to the
 platform-owned `exploration` contract:
 
 ```powershell
-node agent/rulith-agent.mjs --agent default --case-type verified_calculation "calculate and verify this job"
+node agent/rulith-agent.mjs --agent default --case-type verified_calculation --business-key '{"job_id":"calc-001"}' "calculate and verify this job"
 ```
 
 For the loopback service, `POST /task` accepts the same selection as
-`{"text":"...","caseType":"verified_calculation","sessionKey":"optional"}`.
-`RULITH_CASE_TYPE` sets the local default. The Runtime proposes only the Case Type;
-Cloud pins the exact Capability Release and Case Contract digests before the Case opens.
+`{"text":"...","caseType":"verified_calculation","businessKey":{"job_id":"calc-001"},"sessionKey":"optional"}`.
+`RULITH_CASE_TYPE` and `RULITH_BUSINESS_KEY_JSON` set local defaults. Contracted
+Case Types require the exact business-key argument names shown by their Case
+Contract; exploration omits them. The Runtime sends values only. Cloud computes
+and pins the business-key, Capability Release, Case Contract, generation, and
+commercial-term digests before the Case opens, so the model never fills them.
+
+The working model receives one bounded **Case View**: the current terminal Goal,
+verified acceptance state, frontier, missing evidence, blocking reasons, and the
+relevant actions/state. It does not receive the complete Board history or billing
+and Release-control records. Replying `VIEW:` refreshes that same bounded view.
 
 The `exploration` Case Type is the only mode that permits provisional Case-local
 predicates, rules, Actions, and Goals. They never modify installed Capabilities
