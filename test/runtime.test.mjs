@@ -98,9 +98,15 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
     const tools = builtinWorkspaceTools('read-write')
     const sources = { workspace: { access: root, type: 'file' } }
     const call = (id, args) => {
+      if (Object.values(args).some((value) => value !== null && typeof value === 'object')) {
+        const definition = tools[id]
+        const local = { name: id, kind: 'write', impl: definition.adapter, source: 'workspace', operation: definition.entry }
+        return execute(id, args, { [id]: local }, sources)
+      }
+      const params = Object.fromEntries(Object.entries(args).map(([name, value]) => [name, typeof value]))
       const local = toolFromSpec(JSON.stringify({
         name: id, kind: id.includes('write_') ? 'write' : 'read', impl: 'worker-tool',
-        source: 'workspace', exec: id, params: {},
+        source: 'workspace', exec: id, params,
       }), JSON.stringify(args), tools, tools[id].digest, sources)
       return execute(id, args, { [id]: local }, sources)
     }
@@ -121,6 +127,16 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
       params: { path: 'string', recursive: 'boolean' },
       returns: [{ predicate: 'acme.files.directory_count', args: { source: '$source', path: '$path', file_count: '$file_count', digest: '$digest' } }],
     }), JSON.stringify({ path: '.', recursive: false }), tools, tools['rulith.workspace.count@1'].digest, sources)
+    for (const [args, expected] of [
+      [{ path: '.', recursive: false, surprise: true }, /undeclared parameter/i],
+      [{ path: '.' }, /missing required parameter/i],
+      [{ path: '.', recursive: 'false' }, /recursive must be boolean/i],
+    ]) {
+      assert.throws(() => toolFromSpec(JSON.stringify({
+        name: 'count_source', kind: 'read', impl: 'worker-tool', source: 'workspace', exec: 'rulith.workspace.count@1',
+        params: { path: 'string', recursive: 'boolean' },
+      }), JSON.stringify(args), tools, tools['rulith.workspace.count@1'].digest, sources), expected)
+    }
     const counted = await execute('count_source', { path: '.', recursive: false }, { count_source: countTool }, sources)
     assert.deepEqual(counted.facts, [{ predicate: 'acme.files.directory_count', args: {
       source: 'workspace', path: '.', file_count: 2, digest: count.rows[0].digest,
@@ -257,6 +273,12 @@ test('exploration uses an explicit Case-local provisional program without wideni
   assert.match(source, /caseType === 'exploration' \? SYSTEM_EXPLORATION : SYSTEM/)
   assert.match(source, /const SYSTEM = `[\s\S]*Do not add temporary axioms, define actions, or register packs/,
     'normal Capability execution must remain closed to provisional semantics')
+})
+
+test('the Agent teaches the same typed Action parameter contract enforced by Core and Worker', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /Every argument must be declared, present when required, and match its declared string\/number\/boolean type/)
+  assert.match(source, /rejects the call before creating an invocation/)
 })
 
 test('agent lifecycle events shown to users use the English product vocabulary', () => {

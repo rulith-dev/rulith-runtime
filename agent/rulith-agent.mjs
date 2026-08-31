@@ -942,7 +942,7 @@ Read-only Source acquisition Actions may explicitly accept Case clue bindings de
 \`\`\`json
 {"kind":"ApplyAction","action":"<source-access-action>","args":{"<declared-slot>":"<clue-from-user-task>"}}
 \`\`\`
-Never pass a parameter not declared by the Action. Never use clue bindings to invoke a write/run Action unless its installed declaration explicitly says inputPolicy=clue; otherwise wait for Source-backed board facts.
+Every argument must be declared, present when required, and match its declared string/number/boolean type; the authority rejects the call before creating an invocation otherwise. Never use clue bindings to invoke a write/run Action unless its installed declaration explicitly says inputPolicy=clue; otherwise wait for Source-backed board facts.
 
 The other bootstrap exception is an action whose description begins with [intake]. It atomically claims external work and returns its task structure. When no target leaf exists, invoke it once without target:
 \`\`\`json

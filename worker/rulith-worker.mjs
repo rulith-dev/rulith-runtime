@@ -1388,6 +1388,33 @@ function canonical(value) {
   return value
 }
 
+function validateInvocationArgs(params, argsJson) {
+  const declared = params && typeof params === 'object' && !Array.isArray(params) ? params : {}
+  let supplied = {}
+  if (typeof argsJson === 'string' && argsJson !== '') supplied = JSON.parse(argsJson)
+  else if (argsJson && typeof argsJson === 'object' && !Array.isArray(argsJson)) supplied = argsJson
+  if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) throw new Error('Action args must be an object')
+  const allowedTypes = new Set(['string', 'number', 'boolean', 'string?', 'number?', 'boolean?'])
+  for (const [name, type] of Object.entries(declared)) {
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(name) || typeof type !== 'string' || !allowedTypes.has(type)) {
+      throw new Error(`Action parameter ${name || '(empty)'} has an invalid declaration`)
+    }
+  }
+  const unknown = Object.keys(supplied).filter((name) => declared[name] === undefined).sort()
+  if (unknown.length > 0) throw new Error(`Action args contain undeclared parameter(s): ${unknown.join(', ')}`)
+  const missing = Object.entries(declared)
+    .filter(([name, type]) => !type.endsWith('?') && supplied[name] === undefined)
+    .map(([name]) => name).sort()
+  if (missing.length > 0) throw new Error(`Action args are missing required parameter(s): ${missing.join(', ')}`)
+  for (const [name, value] of Object.entries(supplied)) {
+    const expected = String(declared[name]).replace(/\?$/, '')
+    if (typeof value !== expected || (expected === 'number' && !Number.isFinite(value))) {
+      throw new Error(`Action parameter ${name} must be ${expected}`)
+    }
+  }
+  return supplied
+}
+
 export function toolDigest(definition) {
   return createHash('sha256').update(JSON.stringify(canonical(definition))).digest('hex')
 }
@@ -1464,6 +1491,7 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
   const source = sources?.[spec.source]
   if (source === undefined) throw new Error(`Source ${spec.source} is not available on this Connection`)
   if (!def.sourceTypes.includes(source.type)) throw new Error(`Worker Tool ${ref} accepts Source types ${def.sourceTypes.join(' / ')}, not ${String(source.type)}`)
+  validateInvocationArgs(spec.params, argsJson)
   const local = {
     name: ref, kind: spec.kind, impl: def.adapter, source: spec.source,
     exec: def.entry, params: spec.params ?? {}, returns: spec.returns ?? [],
