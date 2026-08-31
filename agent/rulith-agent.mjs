@@ -194,7 +194,7 @@ async function sourceAccessGuide() {
   })()
   return await sourceAccessGuidePromise
 }
-async function evidenceChaseGuide(gaps) {
+async function evidenceChaseGuide(ctx, gaps) {
   if (!Array.isArray(gaps) || gaps.length === 0) return ''
   try {
     const response = await fetch(`${URL_BASE}/agent/v1/evidence-chase`, {
@@ -207,6 +207,10 @@ async function evidenceChaseGuide(gaps) {
     const body = await response.json()
     const plans = Array.isArray(body.plans) ? body.plans : []
     if (plans.length === 0) return ''
+    emitOn(ctx, 'source-plan', { plans: plans.slice(0, 12).map((plan) => ({
+      action: plan.action, source: plan.source, predicate: plan.predicate,
+      bound: Object.keys(plan.bindings ?? {}).sort(), missing: Array.isArray(plan.missing) ? plan.missing : [],
+    })) })
     const lines = plans.map((plan, index) => {
       const bound = Object.entries(plan.bindings ?? {}).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(', ') || '(none)'
       const missing = Array.isArray(plan.missing) && plan.missing.length > 0 ? plan.missing.join(', ') : '(none)'
@@ -585,7 +589,7 @@ const projectionText = async (ctx) => {
     const lines = inFlight.slice(0, 12).map((x) => `- ${String(x.args?.node ?? '')}: verification dispatched; waiting for evidence`)
     text += ['', '', 'Verification in flight (not a gap; wait for the next round and do not rewrite the leaf or close the task):', ...lines].join(String.fromCharCode(10))
   }
-  text += await evidenceChaseGuide(gaps)
+  text += await evidenceChaseGuide(ctx, gaps)
   return text
 }
 
