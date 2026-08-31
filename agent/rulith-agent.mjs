@@ -194,6 +194,27 @@ async function sourceAccessGuide() {
   })()
   return await sourceAccessGuidePromise
 }
+async function evidenceChaseGuide(gaps) {
+  if (!Array.isArray(gaps) || gaps.length === 0) return ''
+  try {
+    const response = await fetch(`${URL_BASE}/agent/v1/evidence-chase`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ agentId, gaps: gaps.slice(0, 64), limit: 12 }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!response.ok) return ''
+    const body = await response.json()
+    const plans = Array.isArray(body.plans) ? body.plans : []
+    if (plans.length === 0) return ''
+    const lines = plans.map((plan, index) => {
+      const bound = Object.entries(plan.bindings ?? {}).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(', ') || '(none)'
+      const missing = Array.isArray(plan.missing) && plan.missing.length > 0 ? plan.missing.join(', ') : '(none)'
+      return `${index + 1}. ${plan.action} via ${plan.source} -> ${plan.predicate} · bound {${bound}} · missing {${missing}} · cost ${plan.costUnits ?? 0}`
+    })
+    return `\n\nGrounded Source routes for the current frontier (ranked hints, not automatic authority):\n${lines.join('\n')}\nUse a route only when the Action is currently available. Supply missing clue bindings; never assert them as facts.`
+  } catch { return '' }
+}
 /** 段内事件带上**槽/任务**标注(2026-08-07 跨槽并发): 一条 SSE 流上现在会有几个段交叉着发
  *  round/propose/verdict,不标注的话读流的人分不清哪一行属于哪位客户。缺省槽不带 `session`
  *  字段——不带 sessionKey 的形态下事件形状与从前逐字节一致(旧 UI/旧测试零回归)。 */
@@ -564,6 +585,7 @@ const projectionText = async (ctx) => {
     const lines = inFlight.slice(0, 12).map((x) => `- ${String(x.args?.node ?? '')}: verification dispatched; waiting for evidence`)
     text += ['', '', 'Verification in flight (not a gap; wait for the next round and do not rewrite the leaf or close the task):', ...lines].join(String.fromCharCode(10))
   }
+  text += await evidenceChaseGuide(gaps)
   return text
 }
 

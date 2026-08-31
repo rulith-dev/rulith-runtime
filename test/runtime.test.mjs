@@ -386,6 +386,13 @@ test('the Agent teaches the same typed Action parameter contract enforced by Cor
   assert.match(source, /rejects the call before creating an invocation/)
 })
 
+test('the Agent asks Cloud for ranked frontier routes without treating a plan as authority', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /\/agent\/v1\/evidence-chase/)
+  assert.match(source, /ranked hints, not automatic authority/)
+  assert.match(source, /Supply missing clue bindings; never assert them as facts/)
+})
+
 test('agent lifecycle events shown to users use the English product vocabulary', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /\[Verification\]/)

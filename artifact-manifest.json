@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "b9288c9dfecf4a7ccf9c12d76c0a5d0085e7dc4d4f0f27954e370915e66b5552"
+      "sha256": "a635dc580c31258da6b36aa64241b14b631144d78261659cf4a5d575256c4879"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "876ffc17ce02935c665d08de672a9c334ede326db2691a16150eef40c982a2a9"
