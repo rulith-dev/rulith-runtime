@@ -171,6 +171,29 @@ function flushTrace() {
     body: JSON.stringify({ agentId, events: batch }),
   }).catch(() => {})
 }
+let sourceAccessGuidePromise
+async function sourceAccessGuide() {
+  sourceAccessGuidePromise ??= (async () => {
+    try {
+      const response = await fetch(`${URL_BASE}/agent/v1/source-access?agentId=${encodeURIComponent(agentId)}`, {
+        headers: { authorization: `Bearer ${TOKEN}` }, signal: AbortSignal.timeout(10_000),
+      })
+      if (!response.ok) return `\n\nSource Access catalogue is unavailable (HTTP ${response.status}). Do not invent an access Action; report the missing configuration.`
+      const body = await response.json()
+      const rows = (Array.isArray(body.sources) ? body.sources : []).flatMap((source) =>
+        (Array.isArray(source.accessModes) ? source.accessModes : []).map((mode) => {
+          const params = Object.entries(mode.params ?? {}).map(([name, type]) => `${name}:${type}`).join(', ') || '(none)'
+          const produces = (Array.isArray(mode.returns) ? mode.returns : []).map((row) => row.predicate).filter(Boolean).join(', ') || '(none)'
+          return `- ApplyAction ${mode.action} via Source ${source.name} (${source.type}; ceiling ${source.trustCeiling}) · bindings {${params}} · produces ${produces} · operation ${mode.operation}`
+        }))
+      if (rows.length === 0) return '\n\nNo governed Source Access Actions are configured for this Agent. Do not invent one; report the missing Source configuration.'
+      return `\n\nGoverned Source Access Actions available in this Agent:\n${rows.join('\n')}\nThese Actions may consume Case clue bindings. A clue is not a fact and carries no trust tier; only the Tool receipt may add Source-backed facts.`
+    } catch (error) {
+      return `\n\nSource Access catalogue could not be read (${String(error.message).slice(0, 120)}). Do not invent an access Action; report the missing configuration.`
+    }
+  })()
+  return await sourceAccessGuidePromise
+}
 /** 段内事件带上**槽/任务**标注(2026-08-07 跨槽并发): 一条 SSE 流上现在会有几个段交叉着发
  *  round/propose/verdict,不标注的话读流的人分不清哪一行属于哪位客户。缺省槽不带 `session`
  *  字段——不带 sessionKey 的形态下事件形状与从前逐字节一致(旧 UI/旧测试零回归)。 */
@@ -901,16 +924,22 @@ Board-local action template (the actions section shows PRE/EFFECT and no paramet
 {"kind":"ApplyAction","action":"<board-local-action>"}
 \`\`\`
 
-External action template (select a target node already on the board; the host binds business arguments from uniquely matching trusted facts):
+External effect Action template (select a target node already on the board; the host binds business arguments from uniquely matching trusted facts):
 \`\`\`json
 {"kind":"ApplyAction","action":"<external-action>","target":"<leaf-owned-by-the-action>"}
 \`\`\`
-The only bootstrap exception is an action whose description begins with [intake]. It atomically claims external work and returns its task structure. When no target leaf exists, invoke it once without target:
+Read-only Source acquisition Actions may explicitly accept Case clue bindings declared in their parameter table. Those values seed a query and never become facts merely because they were supplied:
+\`\`\`json
+{"kind":"ApplyAction","action":"<source-access-action>","args":{"<declared-slot>":"<clue-from-user-task>"}}
+\`\`\`
+Never pass a parameter not declared by the Action. Never use clue bindings to invoke a write/run Action unless its installed declaration explicitly says inputPolicy=clue; otherwise wait for Source-backed board facts.
+
+The other bootstrap exception is an action whose description begins with [intake]. It atomically claims external work and returns its task structure. When no target leaf exists, invoke it once without target:
 \`\`\`json
 {"kind":"ApplyAction","action":"<[intake]-action>"}
 \`\`\`
 Do not create a temporary task tree before intake. After its terminal receipt, read the board again and bind every later external action to a real returned leaf. Without the [intake] marker, never guess that an action may run without a target.
-Do not supply business identifiers, amounts, addresses, or other business arguments from conversation. Action arguments must come from board-grounded bindings. Continue only after a terminal receipt with done=true; done=false means accepted for processing, not succeeded.
+For ordinary effect Actions, do not supply business identifiers, amounts, addresses, or other arguments from conversation; they must come from board-grounded bindings. Continue only after a terminal receipt with done=true; done=false means accepted for processing, not succeeded.
 
 Reply with VIEW: alone to refresh the bounded Case View. Reply with DONE: only when the Case View is complete. Reply with STOP: when material, domain capability, or a human decision is genuinely missing.`
 
@@ -1064,7 +1093,8 @@ async function runSegment(ctx, userText, caseType = selectedCaseType, businessKe
   const caseId = useResume || ctx.taskId || nextCaseId()
   ctx.case = undefined
   await probeLawLock(ctx)
-  ctx.system = ctx.lawLocked ? SYSTEM_LOCKED : caseType === 'exploration' ? SYSTEM_EXPLORATION : SYSTEM
+  const baseSystem = ctx.lawLocked ? SYSTEM_LOCKED : caseType === 'exploration' ? SYSTEM_EXPLORATION : SYSTEM
+  ctx.system = caseType === 'exploration' ? `${baseSystem}${await sourceAccessGuide()}` : baseSystem
   const opened = await ensureCaseContext(ctx, caseId, caseType, businessKey)
   if (opened === undefined) {
     const note = `Could not open Case Context "${caseId}" on Agent Board "${ctx.board}"; this task did not start.`

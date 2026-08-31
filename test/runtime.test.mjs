@@ -74,6 +74,7 @@ test('station masks secrets and never persists the mask as a credential', () => 
 test('built-in workspace Tools expose a bounded read set and require an explicit write mode', () => {
   const readOnly = builtinWorkspaceTools('read')
   assert.deepEqual(Object.keys(readOnly).sort(), [
+    'rulith.workspace.count@1',
     'rulith.workspace.hash@1',
     'rulith.workspace.list@1',
     'rulith.workspace.read_json@1',
@@ -109,6 +110,12 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
     const search = JSON.parse(String(await call('rulith.workspace.search@1', { query: 'alpha', path: '.' })))
     assert.equal(search.matches.length, 2)
     assert.ok(search.matches.every((row) => row.path === 'notes.txt'))
+    const count = JSON.parse(String(await call('rulith.workspace.count@1', { path: '.', recursive: false })))
+    assert.deepEqual(count.rows[0], {
+      source: 'workspace', path: '.', recursive: false, file_count: 2, directory_count: 0,
+      digest: count.rows[0].digest,
+    })
+    assert.match(count.rows[0].digest, /^[a-f0-9]{64}$/)
     const digest = String(await call('rulith.workspace.hash@1', { path: 'input.json' }))
     assert.match(digest, /^[a-f0-9]{64}$/)
 

@@ -135,6 +135,7 @@ function say(line, type, data = {}) {
 const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp', 'workspace'])
 const WORKSPACE_READ_TOOLS = Object.freeze({
   'rulith.workspace.list@1': 'list',
+  'rulith.workspace.count@1': 'count',
   'rulith.workspace.search@1': 'search',
   'rulith.workspace.read_text@1': 'read_text',
   'rulith.workspace.read_json@1': 'read_json',
@@ -518,6 +519,37 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
       })
     }
     return JSON.stringify({ entries: rows, truncated: entries.length > rows.length })
+  }
+  if (operation === 'count') {
+    const target = await existingWorkspaceTarget(root, input.path, true)
+    const targetInfo = await stat(target)
+    if (!targetInfo.isDirectory()) throw new Error('Workspace count target must be a directory')
+    if (typeof input.recursive !== 'boolean') throw new Error('Workspace count requires a boolean argument named recursive')
+    const queue = [{ dir: target, depth: 0 }]
+    const entries = []
+    while (queue.length > 0) {
+      const current = queue.shift()
+      for (const entry of await readdir(current.dir, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) continue
+        const absolute = resolve(current.dir, entry.name)
+        const rel = relative(root, absolute).replace(/\\/g, '/')
+        if (entry.isFile()) entries.push(`f:${rel}`)
+        else if (entry.isDirectory()) {
+          entries.push(`d:${rel}`)
+          if (input.recursive && current.depth < 8) queue.push({ dir: absolute, depth: current.depth + 1 })
+        }
+        if (entries.length > 10_000) throw new Error('Workspace count exceeds the 10000-entry exact-count limit; narrow the path')
+      }
+    }
+    entries.sort()
+    return JSON.stringify({ rows: [{
+      source: t.source,
+      path: relative(root, target).replace(/\\/g, '/') || '.',
+      recursive: input.recursive,
+      file_count: entries.filter((entry) => entry.startsWith('f:')).length,
+      directory_count: entries.filter((entry) => entry.startsWith('d:')).length,
+      digest: createHash('sha256').update(entries.join('\n')).digest('hex'),
+    }] })
   }
   if (operation === 'search') {
     if (typeof input.query !== 'string' || input.query.length < 1 || input.query.length > 200) {

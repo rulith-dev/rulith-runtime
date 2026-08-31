@@ -96,6 +96,7 @@ without exposing a shell:
 | Tool id | Operation | Local ceiling |
 | --- | --- | --- |
 | `rulith.workspace.list@1` | List one directory | Read |
+| `rulith.workspace.count@1` | Count files and directories exactly within a bounded path | Read |
 | `rulith.workspace.search@1` | Search bounded text files | Read |
 | `rulith.workspace.read_text@1` | Read bounded UTF-8 text | Read |
 | `rulith.workspace.read_json@1` | Parse and return JSON | Read |
