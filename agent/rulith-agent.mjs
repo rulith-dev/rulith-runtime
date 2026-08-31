@@ -400,7 +400,7 @@ const CASE_CONTEXT_OPERATIONS = new Set([
 const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed', 'unknown_case'])
 let seq = 0
 /** The only Board address and Case envelope constructor in the runtime. */
-async function board(operation, ctx) {
+async function board(operation, ctx, retryStale = true) {
   if (ctx === null || typeof ctx !== 'object' || typeof ctx.board !== 'string' || ctx.board === '') {
     throw new Error(`board(): missing execution context for ${String(operation?.kind ?? '?')}.`)
   }
@@ -442,7 +442,17 @@ async function board(operation, ctx) {
         (head !== '' ? `\n   First 160 response characters: ${head}` : '\n   The server returned an empty body.'),
     }
   }
-  if (bound !== undefined && STALE_CASE.has(String(j?.errorCode ?? ''))) ctx.case = undefined
+  if (bound !== undefined && STALE_CASE.has(String(j?.errorCode ?? ''))) {
+    ctx.case = undefined
+    if (retryStale) {
+      const manifest = await board({ kind: 'GetBoardManifest' }, ctx, false)
+      const current = (manifest.payload?.cases ?? []).find((candidate) => candidate?.id === bound.id && candidate?.status === 'running')
+      if (current !== undefined && current.root === bound.root && current.caseType === bound.caseType && typeof current.revision === 'string' && current.revision !== '') {
+        ctx.case = { ...bound, revision: current.revision }
+        return await board(operation, ctx, false)
+      }
+    }
+  }
   if (bound !== undefined && j?.accepted === true && typeof j.caseRevision === 'string') {
     ctx.case = { ...bound, revision: j.caseRevision }
   }
@@ -584,12 +594,7 @@ const projectionText = async (ctx) => {
 
 /** 板上现有的根（枚举给放电/完成态/结案共用）。 */
 async function boardRoots(ctx) {
-  const selected = ctx.case
-  let pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
-  if (selected !== undefined && ctx.case === undefined && STALE_CASE.has(String(pj?.errorCode ?? ''))) {
-    const restored = await ensureCaseContext(ctx, selected.id, selected.caseType)
-    if (restored !== undefined) pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
-  }
+  const pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
   if (pj.accepted !== true) return { roots: [], facts: [] }
   const facts = pj.payload?.context?.facts ?? []
   const roots = [...new Set(facts.filter((f) => f.atom?.predicate === 'root').map((f) => String(f.atom.args?.node ?? '')))].filter(Boolean)
