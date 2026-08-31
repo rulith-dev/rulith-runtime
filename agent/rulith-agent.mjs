@@ -400,7 +400,7 @@ const CASE_CONTEXT_OPERATIONS = new Set([
 const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed', 'unknown_case'])
 let seq = 0
 /** The only Board address and Case envelope constructor in the runtime. */
-async function board(operation, ctx, retryStale = true) {
+async function board(operation, ctx, staleRetries = 5) {
   if (ctx === null || typeof ctx !== 'object' || typeof ctx.board !== 'string' || ctx.board === '') {
     throw new Error(`board(): missing execution context for ${String(operation?.kind ?? '?')}.`)
   }
@@ -444,12 +444,12 @@ async function board(operation, ctx, retryStale = true) {
   }
   if (bound !== undefined && STALE_CASE.has(String(j?.errorCode ?? ''))) {
     ctx.case = undefined
-    if (retryStale) {
-      const manifest = await board({ kind: 'GetBoardManifest' }, ctx, false)
+    if (staleRetries > 0) {
+      const manifest = await board({ kind: 'GetBoardManifest' }, ctx, 0)
       const current = (manifest.payload?.cases ?? []).find((candidate) => candidate?.id === bound.id && candidate?.status === 'running')
       if (current !== undefined && current.root === bound.root && current.caseType === bound.caseType && typeof current.revision === 'string' && current.revision !== '') {
         ctx.case = { ...bound, revision: current.revision }
-        return await board(operation, ctx, false)
+        return await board(operation, ctx, staleRetries - 1)
       }
     }
   }
