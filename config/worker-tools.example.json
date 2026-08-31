@@ -1,10 +1,42 @@
 {
   "format": "rulith-worker-tools/1",
   "tools": {
-    "acme.read_report@1": {
-      "adapter": "run",
-      "sourceTypes": ["file"],
-      "entry": "adapters/read-report.mjs"
+    "acme.orders.lookup@1": {
+      "adapter": "db-query",
+      "sourceTypes": ["db"],
+      "entry": "SELECT order_id, status FROM orders WHERE order_id={order_id}"
+    },
+    "acme.orders.search@1": {
+      "adapter": "db-query",
+      "sourceTypes": ["db"],
+      "entry": "SELECT order_id, status FROM orders WHERE customer_name ILIKE {query} ORDER BY order_id LIMIT 50"
+    },
+    "acme.orders.aggregate@1": {
+      "adapter": "db-query",
+      "sourceTypes": ["db"],
+      "entry": "SELECT status, COUNT(*)::int AS count FROM orders GROUP BY status ORDER BY status"
+    },
+    "acme.catalog.get@1": {
+      "adapter": "http",
+      "sourceTypes": ["http"],
+      "entry": "/items/{item_id}",
+      "fence": { "method": "GET", "timeoutMs": 10000, "maxResponseBytes": 65536 }
+    },
+    "acme.erp.lookup@1": {
+      "adapter": "mcp",
+      "sourceTypes": ["mcp"],
+      "entry": "orders.lookup"
+    },
+    "acme.orders.update_status@1": {
+      "adapter": "db-exec-fenced",
+      "sourceTypes": ["db"],
+      "entry": "UPDATE orders SET status={status} WHERE order_id={order_id}"
+    },
+    "acme.webhook.post@1": {
+      "adapter": "http",
+      "sourceTypes": ["http"],
+      "entry": "/events",
+      "fence": { "method": "POST", "timeoutMs": 10000, "maxResponseBytes": 65536 }
     }
   }
 }

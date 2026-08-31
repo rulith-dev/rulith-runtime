@@ -47,7 +47,7 @@
  *   → ReportWork(回执,与领取配对,板侧防重放) → 立即回到 Poll。
  */
 import { readFileSync, existsSync } from 'node:fs'
-import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
@@ -82,6 +82,7 @@ let SOURCE_CONTEXT = {}
 // 首张工单也必须拿到完整执行契约。来源地址同步失败可以降级到本机密文库，
 // 但不能一边同步一边先 Poll——否则同一配置会因网络时序偶发地报“缺端点”。
 let SOURCES_READY = Promise.resolve()
+let AUTHORIZED_TOOL_IDS
 /** 纯函数:按来源引用合成凭据面(条目字段优先,库补缺)。导出给测试——解析对错不该靠读源码断言。 */
 function resolveSourceCreds(route, vault) {
   const src = route && typeof route.source === 'string' ? (vault ?? {})[route.source] : undefined
@@ -145,6 +146,9 @@ const WORKSPACE_WRITE_TOOLS = Object.freeze({
   'rulith.workspace.write_text@1': 'write_text',
   'rulith.workspace.write_json@1': 'write_json',
 })
+const SOURCE_READ_TOOLS = Object.freeze({
+  'rulith.mcp.discover@1': { adapter: 'mcp', sourceTypes: ['mcp'], entry: 'discover' },
+})
 
 /**
  * Materialize the fixed Tool implementations shipped with this Worker.
@@ -161,6 +165,10 @@ export function builtinWorkspaceTools(mode = 'read') {
     tools[id] = { ...definition, digest: toolDigest(definition) }
   }
   return tools
+}
+export function builtinSourceTools() {
+  return Object.fromEntries(Object.entries(SOURCE_READ_TOOLS).map(([id, definition]) =>
+    [id, { ...definition, digest: toolDigest(definition) }]))
 }
 /** 锚建议(批C): 把每条取材路线的目标指纹打出来,治理者照抄进控制台的「锚」栏——
  *  钉了锚之后,证词与注册目标对不上会被网关当场拒(漂移可检)。 */
@@ -187,20 +195,23 @@ if (IS_MAIN) {
     // Missing manifest is a valid review-only or idle Worker shape. It must
     // remain visibly different from a malformed manifest: the former carries
     // no Tools and cannot claim action work; the latter is a deployment error.
-    if (!existsSync(TOOLS_FILE)) {
-      TOOLS = {}
-      if (!process.env.RULITH_WORKSPACE_TOOLS) console.log('· No Worker Tool Manifest installed. This Worker will not claim action work.')
-    } else {
+    if (!existsSync(TOOLS_FILE)) TOOLS = {}
+    else {
       TOOLS = workerToolsOf(JSON.parse(readFileSync(TOOLS_FILE, 'utf8')))
     }
-    const workspaceMode = String(process.env.RULITH_WORKSPACE_TOOLS ?? '').trim()
-    if (workspaceMode !== '') {
+    const workspaceMode = String(process.env.RULITH_WORKSPACE_TOOLS ?? 'read').trim()
+    if (workspaceMode !== 'off') {
       const builtins = builtinWorkspaceTools(workspaceMode)
       const collisions = Object.keys(builtins).filter((id) => TOOLS[id] !== undefined)
       if (collisions.length > 0) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
       TOOLS = { ...TOOLS, ...builtins }
       console.log(`· Built-in workspace Tools enabled (${workspaceMode}). A governed Source is injected with each work item; Connection authorization is still required.`)
     }
+    const sourceBuiltins = builtinSourceTools()
+    const sourceCollisions = Object.keys(sourceBuiltins).filter((id) => TOOLS[id] !== undefined)
+    if (sourceCollisions.length > 0) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${sourceCollisions.join(', ')}`)
+    TOOLS = { ...TOOLS, ...sourceBuiltins }
+    if (Object.keys(TOOLS).length === 0) console.log('· No Worker Tools installed. This Worker will not claim action work.')
     printAnchorHints(TOOLS)
     try {
       SOURCE_CONTEXT = JSON.parse(readFileSync(SECRETS_FILE, 'utf8'))
@@ -225,6 +236,7 @@ if (IS_MAIN) {
         return undefined
       }).then((j) => {
         if (!j || !Array.isArray(j.sources)) return
+        if (Array.isArray(j.toolIds) && j.toolIds.every((id) => typeof id === 'string')) AUTHORIZED_TOOL_IDS = new Set(j.toolIds)
         let n = 0
         for (const s of j.sources) {
           if (!s || typeof s.name !== 'string' || s.name === '') continue
@@ -500,6 +512,17 @@ async function boundedText(path, cap = WORKSPACE_MAX_FILE_BYTES) {
   return body.toString('utf8')
 }
 
+async function atomicWorkspaceWrite(target, text) {
+  const temporary = `${target}.rulith-${process.pid}-${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, text, { encoding: 'utf8', flag: 'wx' })
+    await rename(temporary, target)
+  } catch (error) {
+    await unlink(temporary).catch(() => {})
+    throw error
+  }
+}
+
 /** Fixed, path-fenced local implementations used by versioned workspace Tools. */
 async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
   const root = await workspaceRootOf(t, sources)
@@ -622,7 +645,7 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
     if (Buffer.byteLength(text, 'utf8') > WORKSPACE_MAX_FILE_BYTES) {
       throw new Error(`Workspace write exceeds the ${WORKSPACE_MAX_FILE_BYTES}-byte limit`)
     }
-    await writeFile(target, text, 'utf8')
+    await atomicWorkspaceWrite(target, text)
     return JSON.stringify({ path: relative(root, target).replace(/\\/g, '/'), bytes: Buffer.byteLength(text, 'utf8') })
   }
   throw new Error(`Unsupported workspace operation "${operation}"`)
@@ -680,7 +703,7 @@ function selectOnlyGuard(sql) {
 }
 
 /** pg 单语句执行（惰性 import——没装 pg 的宿主只在真调 db 工具时收到诚实教学，其余手零依赖）。 */
-async function pgRun(dsn, sql) {
+async function pgRun(dsn, sql, values = []) {
   let Client
   try { ({ Client } = await import('pg')) } catch {
     throw new Error('The pg driver is not installed. Database tools require: npm i pg')
@@ -688,7 +711,7 @@ async function pgRun(dsn, sql) {
   const client = new Client({ connectionString: dsn, connectionTimeoutMillis: 5000, query_timeout: 20_000, statement_timeout: 20_000 })
   await client.connect()
   try {
-    const r = await client.query(sql)
+    const r = await client.query({ text: sql, values })
     return { rows: r.rows ?? [], rowCount: r.rowCount ?? 0, command: String(r.command ?? '') }
   } finally { await client.end().catch(() => {}) }
 }
@@ -699,16 +722,29 @@ const dbUrl = () => process.env.RULITH_DB_URL ?? process.env.DEMO_DB_URL
 /** 具名工具 mcp(SRC-35,出向载体): JSON-RPC tools/call 打第三方 MCP 服务。
  *  端点与凭据从密文库按来源名取(工具声明写 source);remoteTool 缺省=工具名。
  *  返回物是材料不是指令——它经板围栏进案卷,不直接进模型上下文。 */
-async function handMcp(t, args) {
-  const r = resolveSourceCreds(t, SOURCE_CONTEXT)
+async function handMcp(t, args, sources = SOURCE_CONTEXT) {
+  const r = resolveSourceCreds(t, sources)
   if (!r.url) return 'error: MCP tools require a source endpoint. Declare "source": "<source-name>" and configure {"url": "...", "token"?: "..."} under that source in the local secret store.'
-  const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: t.remoteTool ?? t.name, arguments: args ?? {} } }
+  const discovering = t.operation === 'discover'
+  const body = discovering
+    ? { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }
+    : { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: t.remoteTool ?? t.name, arguments: args ?? {} } }
   const res = await fetch(r.url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(r.headers ?? {}) }, body: JSON.stringify(body) })
   const text = await res.text()
   if (!res.ok) return `error: MCP HTTP ${res.status}: ${text.slice(0, 160)}`
   let j
   try { j = JSON.parse(text) } catch { return `error: MCP endpoint returned non-JSON content: ${text.slice(0, 120)}` }
   if (j.error) return `error: MCP ${j.error.code ?? ''}: ${String(j.error.message ?? '').slice(0, 160)}`
+  if (discovering) {
+    const tools = Array.isArray(j.result?.tools) ? j.result.tools.slice(0, 200) : []
+    const rows = tools.flatMap((tool) => typeof tool?.name === 'string' && tool.name !== '' ? [{
+      source: t.source,
+      tool_name: tool.name,
+      description: typeof tool.description === 'string' ? tool.description.slice(0, 1000) : '',
+      input_schema_json: JSON.stringify(tool.inputSchema ?? {}),
+    }] : [])
+    return { result: JSON.stringify({ tools: rows, truncated: Array.isArray(j.result?.tools) && j.result.tools.length > rows.length }), rows }
+  }
   const content = (j.result && j.result.content) || []
   // **MCP 有两条失败通道,这里原来只认一条**(2026-08-22,RT-WK-HONEST-5)。
   // `j.error` 是 JSON-RPC 传输层的失败;而工具自己办砸了走的是 `result.isError:true`
@@ -734,7 +770,7 @@ async function handDbQuery(t, args) {
   const sql = String(args?.sql ?? t.sql ?? '')
   const refused = selectOnlyGuard(sql)
   if (refused !== undefined) return refused
-  const r = await pgRun(dsn, sql)
+  const r = await pgRun(dsn, sql, t.values ?? [])
   const rows = r.rows.slice(0, Number(t.maxRows ?? 50))
   const result = `rows=${r.rowCount}${r.rows.length > rows.length ? ` (showing first ${rows.length})` : ''} ${JSON.stringify(rows)}`.slice(0, 4000)
   return Array.isArray(t.returns) && t.returns.length > 0 ? { result, rows } : result
@@ -780,7 +816,7 @@ async function handDbExec(t, args) {
   if (cls === 'destructive' && t.requireSigned !== false) {
     return `error: This is a destructive SQL statement (${verb}). It requires sql:destructive human clearance before execution.`
   }
-  const r = await pgRun(dsn, sql)
+  const r = await pgRun(dsn, sql, t.values ?? [])
   return `sql:${cls} ${verb} ok rows=${r.rowCount} ${r.command}`.slice(0, 2000)
 }
 
@@ -817,7 +853,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   if (t.impl === 'http') out = await handHttp(t, args, sources)
   else if (t.impl === 'run') out = await handRun(t, args, context, sources)
   else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
-  else if (t.impl === 'mcp') out = await handMcp(t, args)
+  else if (t.impl === 'mcp') out = await handMcp(t, args, sources)
   else if (t.impl === 'db-query') out = await handDbQuery(t, args)
   else if (t.impl === 'db-exec-fenced') out = await handDbExec(t, args)
   else throw new Error(`Unsupported impl "${t.impl}"; this Worker supports: ${[...KNOWN_IMPLS].join(' / ')}`)
@@ -1305,8 +1341,7 @@ async function handleAction(w) {
  * Adapter compiler used only for a locally trusted Worker manifest.
  * Board work items cannot call this function directly.
  * - 只认声明过的参数槽(params);exec 里出现未声明的 {占位} 或缺实参 = 抛(如实 ok=false);
- * - number 槽只收真数值(数字或纯数字串)——「1;DROP TABLE」这种进不了数值槽;
- * - string 槽单引号包裹、内部单引号翻倍(SQL 字面量转义),模板里**不要**再自带引号;
+ * - 每个槽编译为数据库驱动的 `$1…$n` 参数，值永不拼进 SQL 文本;
  * - 填完的 SQL 照走 db-exec-fenced 的分类门/db-query 的 SELECT-only 守卫——牙齿不因参数化让位。
  */
 function adapterToolFromSpec(specJson, argsJson) {
@@ -1315,7 +1350,9 @@ function adapterToolFromSpec(specJson, argsJson) {
   if (spec.impl === 'mcp') {
     let margs = {}
     if (typeof argsJson === 'string' && argsJson !== '') margs = JSON.parse(argsJson)
-    return { impl: 'mcp', ...(typeof spec.source === 'string' ? { source: spec.source } : {}), remoteTool: spec.name, _args: margs }
+    return { impl: 'mcp', ...(typeof spec.source === 'string' ? { source: spec.source } : {}),
+      ...(spec.exec === 'discover' ? { operation: 'discover' } : { remoteTool: spec.exec }), _args: margs,
+      ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}) }
   }
   if (spec.impl === 'http') {
     if (typeof spec.source !== 'string' || spec.source === '') throw new Error('HTTP toolSpec is missing source')
@@ -1332,6 +1369,7 @@ function adapterToolFromSpec(specJson, argsJson) {
       impl: 'http', source: spec.source, path: spec.exec, params: spec.params ?? {}, method,
       ...(fence.timeoutMs !== undefined ? { timeoutMs: Number(fence.timeoutMs) } : {}),
       ...(fence.maxResponseBytes !== undefined ? { maxResponseBytes: Number(fence.maxResponseBytes) } : {}),
+      ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}),
       _args: hargs,
     }
   }
@@ -1371,21 +1409,30 @@ function adapterToolFromSpec(specJson, argsJson) {
   const params = spec.params ?? {}
   let args = {}
   if (typeof argsJson === 'string' && argsJson !== '') args = JSON.parse(argsJson)
+  const positions = new Map()
+  const values = []
   const sql = spec.exec.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => {
     const ty = params[name]
     if (ty === undefined) throw new Error(`exec template references undeclared parameter {${name}}`)
     const v = args[name]
     if (v === undefined) throw new Error(`Missing argument ${name} in the work item args`)
+    if (positions.has(name)) return `$${positions.get(name)}`
     if (ty === 'number') {
-      const n = typeof v === 'number' ? v : Number(String(v))
-      if (!Number.isFinite(n) || String(v).trim() === '' || !/^-?[0-9]+([.][0-9]+)?$/.test(String(v).trim())) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) {
         throw new Error(`Argument ${name} is declared as number, but "${String(v).slice(0, 40)}" is not numeric`)
       }
-      return String(n)
+    } else if (ty === 'string' && typeof v !== 'string') {
+      throw new Error(`Argument ${name} must be a string`)
+    } else if (ty === 'boolean' && typeof v !== 'boolean') {
+      throw new Error(`Argument ${name} must be a boolean`)
+    } else if (!['string', 'number', 'boolean'].includes(String(ty))) {
+      throw new Error(`Unsupported database parameter type ${String(ty)} for ${name}`)
     }
-    return `'${String(v).replace(/'/g, "''")}'`
+    values.push(v)
+    positions.set(name, values.length)
+    return `$${values.length}`
   })
-  return { impl: spec.impl, ...(typeof spec.source === 'string' ? { source: spec.source } : {}), sql,
+  return { impl: spec.impl, ...(typeof spec.source === 'string' ? { source: spec.source } : {}), sql, values,
     ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}) }
 }
 
@@ -1476,8 +1523,10 @@ export function workerToolsOf(raw) {
   return out
 }
 
-export function workerToolManifest(tools) {
-  return Object.entries(tools).map(([id, def]) => ({ id, digest: def.digest ?? toolDigest(def), sourceTypes: [...def.sourceTypes].sort() }))
+export function workerToolManifest(tools, authorized = AUTHORIZED_TOOL_IDS) {
+  return Object.entries(tools)
+    .filter(([id]) => authorized === undefined || authorized.has(id))
+    .map(([id, def]) => ({ id, digest: def.digest ?? toolDigest(def), sourceTypes: [...def.sourceTypes].sort() }))
 }
 
 /**

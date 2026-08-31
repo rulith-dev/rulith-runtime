@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-import { builtinWorkspaceTools, execute, orderWork, toolFromSpec } from '../worker/rulith-worker.mjs'
+import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, toolFromSpec, workerToolManifest } from '../worker/rulith-worker.mjs'
 import { applyEnvEdit, maskEnv, stationPage } from '../station/rulith-station.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -88,6 +88,8 @@ test('built-in workspace Tools expose a bounded read set and require an explicit
   assert.ok(readWrite['rulith.workspace.write_text@1'])
   assert.ok(readWrite['rulith.workspace.write_json@1'])
   assert.throws(() => builtinWorkspaceTools('all'), /read or read-write/)
+  assert.deepEqual(workerToolManifest(readOnly, new Set(['rulith.workspace.count@1'])).map((row) => row.id), ['rulith.workspace.count@1'],
+    'the Worker presents only the built-ins authorized by its exact Connection recipe')
 })
 
 test('built-in workspace Tools stay inside their Source root and return bounded machine-readable results', async () => {
@@ -151,12 +153,110 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
 
     await call('rulith.workspace.write_json@1', { path: 'out/result.json', value: { ok: true } })
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'out', 'result.json'), 'utf8')), { ok: true })
+    assert.ok(!readdirSync(join(root, 'out')).some((name) => name.includes('.rulith-') && name.endsWith('.tmp')),
+      'strict file writes must publish by same-directory rename and leave no partial artifact')
     await assert.rejects(
       call('rulith.workspace.read_text@1', { path: '../outside.txt' }),
       /outside the configured Source root/,
     )
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('database Tool templates compile to driver parameters and never interpolate model values into SQL', () => {
+  const compiled = adapterToolFromSpec(JSON.stringify({
+    name: 'orders.lookup', impl: 'db-query', source: 'orders',
+    exec: 'SELECT * FROM orders WHERE id={order_id} OR parent_id={order_id} AND active={active} AND label={label}',
+    params: { order_id: 'number', active: 'boolean', label: 'string' },
+  }), JSON.stringify({ order_id: 702, active: true, label: "x' OR 1=1 --" }))
+  assert.equal(compiled.sql, 'SELECT * FROM orders WHERE id=$1 OR parent_id=$1 AND active=$2 AND label=$3')
+  assert.deepEqual(compiled.values, [702, true, "x' OR 1=1 --"])
+  assert.ok(!compiled.sql.includes('702') && !compiled.sql.includes('OR 1=1'),
+    'business values must reach the database only through the driver values array')
+})
+
+test('MCP discovery returns bounded governed rows without authorizing a generic remote call', async () => {
+  const requests = []
+  const server = createServer(async (req, res) => {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const request = JSON.parse(Buffer.concat(chunks).toString())
+    requests.push(request)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(request.method === 'tools/list'
+      ? { jsonrpc: '2.0', id: 1, result: { tools: [{
+          name: 'orders.lookup', description: 'Look up one order', inputSchema: { type: 'object', properties: { order_id: { type: 'string' } } },
+        }] } }
+      : { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"rows":[{"exists":true}]}' }] } }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const tools = builtinSourceTools()
+    const id = 'rulith.mcp.discover@1'
+    const sources = { erp: { type: 'mcp', url: `http://127.0.0.1:${server.address().port}` } }
+    const local = toolFromSpec(JSON.stringify({
+      name: 'discover_erp', kind: 'read', impl: 'worker-tool', source: 'erp', exec: id, params: {},
+      returns: [{ predicate: 'rulith.source.mcp_tool', args: {
+        source: '$source', tool_name: '$tool_name', description: '$description', input_schema_json: '$input_schema_json',
+      } }],
+    }), '{}', tools, tools[id].digest, sources)
+    const out = await execute('discover_erp', {}, { discover_erp: local }, sources)
+    assert.equal(requests[0].method, 'tools/list')
+    assert.deepEqual(out.facts, [{ predicate: 'rulith.source.mcp_tool', args: {
+      source: 'erp', tool_name: 'orders.lookup', description: 'Look up one order',
+      input_schema_json: '{"type":"object","properties":{"order_id":{"type":"string"}}}',
+    } }])
+    const named = adapterToolFromSpec(JSON.stringify({
+      name: 'acme.erp.lookup@1', impl: 'mcp', source: 'erp', exec: 'orders.lookup',
+    }), JSON.stringify({ order_id: 'O-1' }))
+    await execute('named_mcp_call', { order_id: 'O-1' }, { named_mcp_call: named }, sources)
+    assert.equal(requests[1].method, 'tools/call')
+    assert.equal(requests[1].params.name, 'orders.lookup',
+      'the local manifest entry fixes the remote Tool; an Action name cannot choose an arbitrary MCP Tool')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    server.closeAllConnections()
+  }
+})
+
+test('HTTP Tools stay under the governed Source origin and preserve typed GET/write result rows', async () => {
+  const requests = []
+  const server = createServer(async (req, res) => {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    requests.push({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString() })
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ rows: req.method === 'GET'
+      ? [{ item_id: 'O-1', exists: true }]
+      : [{ accepted: true }] }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const sources = { api: { type: 'http', url: `http://127.0.0.1:${server.address().port}/` } }
+    const read = adapterToolFromSpec(JSON.stringify({
+      name: 'catalog.get', kind: 'read', impl: 'http', source: 'api', exec: '/items/{item_id}',
+      params: { item_id: 'string' }, fence: { method: 'GET', maxResponseBytes: 4096 },
+      returns: [{ predicate: 'acme.catalog.item_exists', args: { item_id: '$item_id', exists: '$exists' } }],
+    }), JSON.stringify({ item_id: 'O-1' }))
+    const readOut = await execute('catalog_get', { item_id: 'O-1' }, { catalog_get: read }, sources)
+    assert.deepEqual(readOut.facts, [{ predicate: 'acme.catalog.item_exists', args: { item_id: 'O-1', exists: true } }])
+    assert.deepEqual(requests[0], { method: 'GET', url: '/items/O-1', body: '' })
+
+    const write = adapterToolFromSpec(JSON.stringify({
+      name: 'webhook.post', kind: 'write', impl: 'http', source: 'api', exec: '/events',
+      params: { event: 'string' }, fence: { method: 'POST', maxResponseBytes: 4096 },
+      returns: [{ predicate: 'acme.webhook.accepted', args: { accepted: '$accepted' } }],
+    }), JSON.stringify({ event: 'closed' }))
+    const writeOut = await execute('webhook_post', { event: 'closed' }, { webhook_post: write }, sources)
+    assert.deepEqual(writeOut.facts, [{ predicate: 'acme.webhook.accepted', args: { accepted: true } }])
+    assert.deepEqual(requests[1], { method: 'POST', url: '/events', body: '{"event":"closed"}' })
+    assert.throws(() => adapterToolFromSpec(JSON.stringify({
+      name: 'escape', kind: 'read', impl: 'http', source: 'api', exec: 'https://other.example/data', params: {},
+    }), '{}'), /relative path/)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    server.closeAllConnections()
   }
 })
 

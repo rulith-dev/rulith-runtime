@@ -6,7 +6,7 @@
       "sha256": "b9288c9dfecf4a7ccf9c12d76c0a5d0085e7dc4d4f0f27954e370915e66b5552"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "d8441d67c78a96547a7a6b9e49f6db64935ba801f12fac6eb26ace705250d05a"
+      "sha256": "4a04617224e4168c724d772c1838c47e92b7b736dfdd39993f4828e43d1c355f"
     },
     "station/rulith-station.mjs": {
       "sha256": "5daa7c0e32243453c5fa56c72a366571b8cfaa2c1937906d8ff5d2bbe5301c2d"
@@ -18,7 +18,7 @@
       "sha256": "f2e7d63c230e380a34cb04c9d77c66a3549ca6b3a8ed786db696cc5f3f858bcb"
     },
     "config/worker-tools.example.json": {
-      "sha256": "b66b81d3cccafa04399e8cd1c6360fc708f3a9de8309e984f7615ca516ec3795"
+      "sha256": "7140c9ca07ee24a50b5ade9bb7259def605ffead753716fe8047cf698494d772"
     },
     "examples/verified-calculation/README.md": {
       "sha256": "900555e44f7c0e8b568371bba662764a443b36e2400800b15882e05552d31677"

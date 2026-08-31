@@ -103,11 +103,15 @@ without exposing a shell:
 | `rulith.workspace.hash@1` | Compute SHA-256 | Read |
 | `rulith.workspace.write_text@1` | Write bounded UTF-8 text | Read-write only |
 | `rulith.workspace.write_json@1` | Serialize and write JSON | Read-write only |
+| `rulith.mcp.discover@1` | List bounded MCP Tool metadata | Read |
 
 Every path is relative to the bound file Source's `access` root. Traversal, absolute
 model-supplied paths, symbolic-link writes, binary text reads, oversized files, delete,
-and arbitrary command execution are rejected. `RULITH_WORKSPACE_TOOLS` is only a local
-host ceiling; it never grants the Agent permission to use a Tool.
+and arbitrary command execution are rejected. Bounded read Tools are enabled by default;
+set `RULITH_WORKSPACE_TOOLS=off` for a review-only process or `read-write` when the
+workflow needs governed writes. This setting is only a local host ceiling; it never
+grants the Agent permission to use a Tool. The Worker presents only the Tool ids carried
+by its exact Connection recipe.
 
 For a package that needs no private credential, run:
 
@@ -124,7 +128,7 @@ manifest is unnecessary:
 ```powershell
 $env:RULITH_CONNECTION = '<connection-id>'
 $env:RULITH_CONNECTION_KEY = '<connection-key>'
-$env:RULITH_WORKSPACE_TOOLS = 'read' # use read-write only when the workflow needs writes
+$env:RULITH_WORKSPACE_TOOLS = 'read-write' # optional; bounded read is the default
 node worker/rulith-worker.mjs
 ```
 
@@ -147,14 +151,24 @@ example:
 {
   "format": "rulith-worker-tools/1",
   "tools": {
-    "acme.read_report@1": {
-      "adapter": "run",
-      "source": "reports",
-      "entry": "adapters/read-report.mjs"
+    "acme.orders.lookup@1": {
+      "adapter": "db-query",
+      "sourceTypes": ["db"],
+      "entry": "SELECT order_id, status FROM orders WHERE order_id={order_id}"
+    },
+    "acme.erp.lookup@1": {
+      "adapter": "mcp",
+      "sourceTypes": ["mcp"],
+      "entry": "orders.lookup"
     }
   }
 }
 ```
+
+The governed Action declares the typed `order_id` slot and result mapping. The Worker
+compiles database placeholders to driver parameters, never SQL interpolation. MCP
+discovery is read-only; it does not grant a generic call surface. Each remote MCP Tool
+must still be approved as its own versioned local Tool and governed Action.
 
 ## Station
 
@@ -193,8 +207,9 @@ The model never supplies the trusted input values or the calculated output value
 - `run` tools execute relative adapters beneath the Worker root with the current Node
   runtime; packages cannot select arbitrary commands or escape that directory.
 - HTTP tools are constrained to their declared source or allowlist.
-- Database read tools accept a single `SELECT`; fenced write tools classify and
-  reject unsupported or destructive statements unless the declared contract allows them.
+- Database read tools accept a single `SELECT`; every model value is passed through the
+  database driver's parameter array rather than interpolated into SQL. Fenced write tools
+  classify and reject unsupported or destructive statements unless the declared contract allows them.
 - Submitted work is not self-verification. Acceptance remains a board and policy decision.
 
 See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.
