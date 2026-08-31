@@ -72,7 +72,7 @@ test('station masks secrets and never persists the mask as a credential', () => 
 })
 
 test('built-in workspace Tools expose a bounded read set and require an explicit write mode', () => {
-  const readOnly = builtinWorkspaceTools('workspace', 'read')
+  const readOnly = builtinWorkspaceTools('read')
   assert.deepEqual(Object.keys(readOnly).sort(), [
     'rulith.workspace.hash@1',
     'rulith.workspace.list@1',
@@ -80,14 +80,13 @@ test('built-in workspace Tools expose a bounded read set and require an explicit
     'rulith.workspace.read_text@1',
     'rulith.workspace.search@1',
   ])
-  assert.ok(Object.values(readOnly).every((tool) => tool.adapter === 'workspace' && tool.source === 'workspace'))
+  assert.ok(Object.values(readOnly).every((tool) => tool.adapter === 'workspace' && JSON.stringify(tool.sourceTypes) === '["file"]'))
   assert.equal(readOnly['rulith.workspace.write_text@1'], undefined)
 
-  const readWrite = builtinWorkspaceTools('workspace', 'read-write')
+  const readWrite = builtinWorkspaceTools('read-write')
   assert.ok(readWrite['rulith.workspace.write_text@1'])
   assert.ok(readWrite['rulith.workspace.write_json@1'])
-  assert.throws(() => builtinWorkspaceTools('', 'read'), /source name/)
-  assert.throws(() => builtinWorkspaceTools('workspace', 'all'), /read or read-write/)
+  assert.throws(() => builtinWorkspaceTools('all'), /read or read-write/)
 })
 
 test('built-in workspace Tools stay inside their Source root and return bounded machine-readable results', async () => {
@@ -95,13 +94,13 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
   try {
     writeFileSync(join(root, 'input.json'), JSON.stringify({ amount: 7 }))
     writeFileSync(join(root, 'notes.txt'), 'alpha\nbeta\nalpha again\n')
-    const tools = builtinWorkspaceTools('workspace', 'read-write')
+    const tools = builtinWorkspaceTools('read-write')
     const sources = { workspace: { access: root, type: 'file' } }
     const call = (id, args) => {
       const local = toolFromSpec(JSON.stringify({
         name: id, kind: id.includes('write_') ? 'write' : 'read', impl: 'worker-tool',
         source: 'workspace', exec: id, params: {},
-      }), JSON.stringify(args), tools, tools[id].digest)
+      }), JSON.stringify(args), tools, tools[id].digest, sources)
       return execute(id, args, { [id]: local }, sources)
     }
 
@@ -180,6 +179,40 @@ test('worker rejects bad credentials before claiming to be online and exits clea
   assert.doesNotMatch(stdout, /online/)
   assert.match(stderr, /Connection credential rejected/)
   assert.doesNotMatch(stderr, /edge preserves|Assertion failed|UV_HANDLE_CLOSING/)
+})
+
+test('worker surfaces non-authenticated Poll refusal instead of printing an idle heartbeat', async () => {
+  const server = createServer((request, response) => {
+    response.writeHead(request.method === 'GET' ? 200 : 403, { 'content-type': 'application/json' })
+    response.end(JSON.stringify(request.method === 'GET'
+      ? { sources: [] }
+      : { accepted: false, errorCode: 'worker_tool_not_authorized', teaching: 'versioned Tool id is not carried by this Connection' }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const child = spawn(process.execPath, ['worker/rulith-worker.mjs'], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      RULITH_WORK_URL: `http://127.0.0.1:${port}/work`,
+      RULITH_CONNECTION: 'test-connection',
+      RULITH_CONNECTION_KEY: 'test-key',
+      RULITH_TOOLS_FILE: join(ROOT, 'test', 'does-not-exist.json'),
+      RULITH_SOURCES_FILE: join(ROOT, 'test', 'does-not-exist.json'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+  const deadline = Date.now() + 5_000
+  while (!/Worker endpoint rejected Poll with HTTP 403/.test(stderr) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  child.kill('SIGKILL')
+  await new Promise((resolve) => child.once('close', resolve))
+  await new Promise((resolve) => server.close(resolve))
+
+  assert.match(stderr, /Worker endpoint rejected Poll with HTTP 403: versioned Tool id is not carried by this Connection/)
 })
 
 test('the local Agent does not assemble, fingerprint, or install governance recipes', () => {

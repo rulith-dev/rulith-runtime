@@ -105,7 +105,7 @@ without exposing a shell:
 
 Every path is relative to the bound file Source's `access` root. Traversal, absolute
 model-supplied paths, symbolic-link writes, binary text reads, oversized files, delete,
-and arbitrary command execution are rejected. `RULITH_WORKSPACE_MODE` is only a local
+and arbitrary command execution are rejected. `RULITH_WORKSPACE_TOOLS` is only a local
 host ceiling; it never grants the Agent permission to use a Tool.
 
 For a package that needs no private credential, run:
@@ -123,19 +123,18 @@ manifest is unnecessary:
 ```powershell
 $env:RULITH_CONNECTION = '<connection-id>'
 $env:RULITH_CONNECTION_KEY = '<connection-key>'
-$env:RULITH_WORKSPACE_SOURCE = 'workspace'
-$env:RULITH_WORKSPACE_MODE = 'read' # use read-write only when the workflow needs writes
+$env:RULITH_WORKSPACE_TOOLS = 'read' # use read-write only when the workflow needs writes
 node worker/rulith-worker.mjs
 ```
 
-The Source named `workspace` must be bound to this Agent Connection and configured with
-the allowed root directory. The Connection must already carry each exact versioned Tool
+Each work item names a governed file Source bound to this Agent Connection and configured
+with an allowed root directory. The Connection must already carry each exact versioned Tool
 id through an installed governed Action. A Worker's first poll pins implementation
 digests; it cannot authorize Tools merely by presenting them.
 
-The Worker polls outbound and presents only Tool id, digest, and Source. Rulith checks
+The Worker polls outbound and presents only Tool id, digest, and accepted Source types. Rulith checks
 that every presented Tool was authorized for the Agent-owned Connection, pins the
-implementation set, and dispatches an Action only when its Tool and Source match. The
+implementation set, and dispatches an Action only when its Tool accepts the Cloud-injected Source type. The
 Worker resolves the Adapter locally, executes it, and reports a receipt before polling
 again. A model request cannot grant itself a Tool, Source, credential, Adapter, or
 verification authority.

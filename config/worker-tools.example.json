@@ -3,7 +3,7 @@
   "tools": {
     "acme.read_report@1": {
       "adapter": "run",
-      "source": "reports",
+      "sourceTypes": ["file"],
       "entry": "adapters/read-report.mjs"
     }
   }

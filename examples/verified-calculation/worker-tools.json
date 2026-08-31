@@ -3,17 +3,17 @@
   "tools": {
     "rulith.verified_calculation.read_input@1": {
       "adapter": "run",
-      "source": "verified-calculation-local",
+      "sourceTypes": ["file"],
       "entry": "adapters/verified-calculation/read-input.mjs"
     },
     "rulith.verified_calculation.write_output@1": {
       "adapter": "run",
-      "source": "verified-calculation-local",
+      "sourceTypes": ["file"],
       "entry": "adapters/verified-calculation/write-output.mjs"
     },
     "rulith.verified_calculation.verify_output@1": {
       "adapter": "run",
-      "source": "verified-calculation-local",
+      "sourceTypes": ["file"],
       "entry": "adapters/verified-calculation/verify-output.mjs",
       "handles": {
         "verification": ["rulith.verified_calculation.output_record"]

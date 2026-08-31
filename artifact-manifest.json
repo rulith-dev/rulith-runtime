@@ -6,7 +6,7 @@
       "sha256": "d52350beda89a3742ca6a6dd88ef1517add0411675e53bd3df536584bd84fc54"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "d71e5c32aa20108d8c820635c9f95bf583a5b554e4f8a923198a5b61b2c0e979"
+      "sha256": "9ee43b4b27d6f14297c4e9e233630648b5eeb3a86eeac4e717db3faf626fc148"
     },
     "station/rulith-station.mjs": {
       "sha256": "5daa7c0e32243453c5fa56c72a366571b8cfaa2c1937906d8ff5d2bbe5301c2d"
@@ -18,7 +18,7 @@
       "sha256": "f2e7d63c230e380a34cb04c9d77c66a3549ca6b3a8ed786db696cc5f3f858bcb"
     },
     "config/worker-tools.example.json": {
-      "sha256": "884b534c23eddb04a2e0ef3e38d3b1393f77e2448ba7bfafd6f219249a64929e"
+      "sha256": "b66b81d3cccafa04399e8cd1c6360fc708f3a9de8309e984f7615ca516ec3795"
     },
     "examples/verified-calculation/README.md": {
       "sha256": "900555e44f7c0e8b568371bba662764a443b36e2400800b15882e05552d31677"
@@ -42,7 +42,7 @@
       "sha256": "61f3457e1ef2a7bb3f8892efc9485b9d5ac3ab4e83758821da6a9916bdc7490e"
     },
     "examples/verified-calculation/worker-tools.json": {
-      "sha256": "b3d87e45585df0efb6f4f57768a6707e37383b5103cbb2e5070759c63b9ea998"
+      "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"
     },
     "examples/verified-calculation/verify-output.mjs": {
       "sha256": "65ead0238bda0b732dbbe57fa4188304953ed84ca82c66cd1ee7e4fe726653ba"

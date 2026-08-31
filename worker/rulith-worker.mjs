@@ -13,8 +13,7 @@
  *   RULITH_CONNECTION       Agent-owned Connection id
  *   RULITH_CONNECTION_KEY   Connection credential shown once at registration
  *   RULITH_TOOLS_FILE    Worker Tool Manifest JSON, default ./worker-tools.json
- *   RULITH_WORKSPACE_SOURCE  Enable fixed workspace Tools for this Source name
- *   RULITH_WORKSPACE_MODE    read (default) or read-write
+ *   RULITH_WORKSPACE_TOOLS   Enable fixed workspace Tools: read or read-write
  *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
  *
@@ -26,8 +25,8 @@
  *   {
  *     "format": "rulith-worker-tools/1",
  *     "tools": {
- *       "acme.notify@1": { "adapter": "run", "source": "crm", "entry": "adapters/notify.mjs" },
- *       "acme.verify_cert@1": { "adapter": "http", "source": "certifier", "entry": "/verify",
+ *       "acme.notify@1": { "adapter": "run", "sourceTypes": ["http"], "entry": "adapters/notify.mjs" },
+ *       "acme.verify_cert@1": { "adapter": "http", "sourceTypes": ["http"], "entry": "/verify",
  *         "handles": { "verification": ["cert"] } }
  *     }
  *   }
@@ -152,13 +151,12 @@ const WORKSPACE_WRITE_TOOLS = Object.freeze({
  * presenting. The Agent Connection must still carry every Tool id, and a
  * governed Action must still reference it before any work can be dispatched.
  */
-export function builtinWorkspaceTools(source, mode = 'read') {
-  if (typeof source !== 'string' || source.trim() === '') throw new Error('Built-in workspace Tools require one source name')
-  if (mode !== 'read' && mode !== 'read-write') throw new Error('RULITH_WORKSPACE_MODE must be read or read-write')
+export function builtinWorkspaceTools(mode = 'read') {
+  if (mode !== 'read' && mode !== 'read-write') throw new Error('RULITH_WORKSPACE_TOOLS must be read or read-write')
   const catalog = mode === 'read-write' ? { ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS } : WORKSPACE_READ_TOOLS
   const tools = {}
   for (const [id, entry] of Object.entries(catalog)) {
-    const definition = { adapter: 'workspace', source: source.trim(), entry }
+    const definition = { adapter: 'workspace', sourceTypes: ['file'], entry }
     tools[id] = { ...definition, digest: toolDigest(definition) }
   }
   return tools
@@ -190,17 +188,17 @@ if (IS_MAIN) {
     // no Tools and cannot claim action work; the latter is a deployment error.
     if (!existsSync(TOOLS_FILE)) {
       TOOLS = {}
-      if (!process.env.RULITH_WORKSPACE_SOURCE) console.log('· No Worker Tool Manifest installed. This Worker will not claim action work.')
+      if (!process.env.RULITH_WORKSPACE_TOOLS) console.log('· No Worker Tool Manifest installed. This Worker will not claim action work.')
     } else {
       TOOLS = workerToolsOf(JSON.parse(readFileSync(TOOLS_FILE, 'utf8')))
     }
-    const workspaceSource = String(process.env.RULITH_WORKSPACE_SOURCE ?? '').trim()
-    if (workspaceSource !== '') {
-      const builtins = builtinWorkspaceTools(workspaceSource, process.env.RULITH_WORKSPACE_MODE ?? 'read')
+    const workspaceMode = String(process.env.RULITH_WORKSPACE_TOOLS ?? '').trim()
+    if (workspaceMode !== '') {
+      const builtins = builtinWorkspaceTools(workspaceMode)
       const collisions = Object.keys(builtins).filter((id) => TOOLS[id] !== undefined)
       if (collisions.length > 0) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
       TOOLS = { ...TOOLS, ...builtins }
-      console.log(`· Built-in workspace Tools enabled for source ${workspaceSource} (${process.env.RULITH_WORKSPACE_MODE ?? 'read'}). Connection authorization is still required.`)
+      console.log(`· Built-in workspace Tools enabled (${workspaceMode}). A governed Source is injected with each work item; Connection authorization is still required.`)
     }
     printAnchorHints(TOOLS)
     try {
@@ -277,6 +275,13 @@ async function work(operation) {
   })
   const j = await r.json().catch(() => ({}))
   if (r.status === 401) throw new CredentialRejectedError(j.teaching ?? '')
+  // Poll refusal is a readiness failure and must never masquerade as an empty
+  // queue. Mutating calls deliberately return their body/status to the caller:
+  // ReportWork owns byte-identical transport retry after the executor ran.
+  if (!r.ok && operation.kind === 'Poll') {
+    const detail = String(j.teaching ?? j.errorCode ?? j.errors?.join?.('; ') ?? '').slice(0, 300)
+    throw new Error(`Worker endpoint rejected ${operation.kind ?? 'operation'} with HTTP ${r.status}${detail ? `: ${detail}` : ''}`)
+  }
   return j
 }
 
@@ -856,24 +861,24 @@ function verificationResult(raw) {
 }
 
 /** Resolve verification and evidence work through the same versioned Tool inventory. */
-function toolForHandle(tools, kind, value) {
+function toolForHandle(tools, kind, value, sourceType) {
   for (const [id, definition] of Object.entries(tools ?? {})) {
     const handled = definition?.handles?.[kind]
-    if (Array.isArray(handled) && handled.includes(value)) return { id, definition }
+    if (Array.isArray(handled) && handled.includes(value) && definition.sourceTypes?.includes(sourceType)) return { id, definition }
   }
   return undefined
 }
 
-function handledLocalTool(id, definition, payload, kind = 'read') {
+function handledLocalTool(id, definition, source, payload, kind = 'read') {
   const params = Object.fromEntries(Object.keys(payload ?? {}).map((name) => [name, 'json']))
   return adapterToolFromSpec(JSON.stringify({
-    name: id, kind, impl: definition.adapter, source: definition.source,
+    name: id, kind, impl: definition.adapter, source,
     exec: definition.entry, params, ...(definition.fence ? { fence: definition.fence } : {}),
   }), JSON.stringify(payload ?? {}))
 }
 
-async function runHandledTool(id, definition, payload, caseId, kind = 'read') {
-  const local = handledLocalTool(id, definition, payload, kind)
+async function runHandledTool(id, definition, source, payload, caseId, kind = 'read') {
+  const local = handledLocalTool(id, definition, source, payload, kind)
   const raw = await execute(id, payload, { [id]: local }, SOURCE_CONTEXT, { caseId })
   const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
   return text.replace(/^HTTP [0-9]+:\s*/, '')
@@ -883,7 +888,7 @@ async function runHandledTool(id, definition, payload, caseId, kind = 'read') {
 // an internal gateway-to-boardd operation. Work type distinguishes verification,
 // action, review, and evidence items.
 async function handleClaimWork(w) {
-  const picked = toolForHandle(TOOLS, 'verification', w.claim?.predicate)
+  const picked = toolForHandle(TOOLS, 'verification', w.claim?.predicate, w.sourceType)
   if (picked === undefined) { console.log(`· Skipping work item ${w.work}: no versioned Tool handles verification for claim ${w.claim?.predicate}`); return }
   const { id: toolId, definition: t } = picked
   if (w.connectionId !== CONNECTION_ID) return
@@ -904,7 +909,7 @@ async function handleClaimWork(w) {
   // 载荷作为**同级字段**附在主张旁——只读 predicate/args 的老手不受影响。
   const body = w.payload !== undefined ? { ...w.claim, payload: w.payload } : w.claim
   try {
-    const result = verificationResult(await runHandledTool(toolId, t, body, w.caseId, 'read'))
+    const result = verificationResult(await runHandledTool(toolId, t, w.source, body, w.caseId, 'read'))
     ;({ ok, outcome, evidence, tier: backTier, facts: backFacts, reason: backReason } = result)
   } catch (e) {
     ok = false
@@ -939,7 +944,7 @@ async function handleClaimWork(w) {
 // 本地实现同样是版本化 Tool，只是以 `handles.evidence` 声明它承接哪类取材工单。
 // 后端收 {snapshot,key,metric,args},回一个 {facts:[{predicate,args}]} 或裸事实数组。
 async function handleEvidence(w) {
-  const picked = toolForHandle(TOOLS, 'evidence', w.material)
+  const picked = toolForHandle(TOOLS, 'evidence', w.material, w.sourceType)
   if (picked === undefined) {
     console.log(`· Skipping material request ${w.material}: no versioned Tool handles this evidence request`)
     return
@@ -951,10 +956,10 @@ async function handleEvidence(w) {
   let exhibit
   let err
   try {
-    const out = await runHandledTool(toolId, route, { material: w.material, ...(w.payload ?? {}) }, w.caseId, 'read')
+    const out = await runHandledTool(toolId, route, w.source, { material: w.material, ...(w.payload ?? {}) }, w.caseId, 'read')
     const parsed = JSON.parse(out)
     facts = Array.isArray(parsed) ? parsed : (parsed.facts ?? [])
-    exhibit = { target: `tool:${toolId}`, item: route.source, digest: 'sha256:' + createHash('sha256').update(out).digest('hex').slice(0, 16) }
+    exhibit = { target: `tool:${toolId}`, item: w.source, digest: 'sha256:' + createHash('sha256').update(out).digest('hex').slice(0, 16) }
   } catch (e) { err = String(e.message).slice(0, 200) }
   if (err !== undefined || facts.length === 0) {
     // **查不出就不回报**: 回一条空材料等于伪造"查过了没事"。门那边会一直等,
@@ -1359,12 +1364,15 @@ export function workerToolsOf(raw) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Worker Tool ${id} must be an object`)
     const adapter = value.adapter
     if (typeof adapter !== 'string' || !KNOWN_IMPLS.has(adapter)) throw new Error(`Worker Tool ${id} uses unsupported adapter "${String(adapter)}"`)
-    if (typeof value.source !== 'string' || value.source === '') throw new Error(`Worker Tool ${id} must bind one source`)
+    if (!Array.isArray(value.sourceTypes) || value.sourceTypes.length === 0
+        || value.sourceTypes.some((type) => !['db', 'file', 'http', 'mcp', 'sensor', 'compute', 'human'].includes(type))) {
+      throw new Error(`Worker Tool ${id}.sourceTypes must be a non-empty array of supported Source types`)
+    }
     if (typeof value.entry !== 'string' || value.entry === '') throw new Error(`Worker Tool ${id} must define an adapter entry`)
     if (adapter === 'workspace' && !Object.values({ ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS }).includes(value.entry)) {
       throw new Error(`Worker Tool ${id} uses unknown workspace operation "${value.entry}"`)
     }
-    const unknown = Object.keys(value).filter((key) => !['adapter', 'source', 'entry', 'fence', 'handles', 'tier'].includes(key))
+    const unknown = Object.keys(value).filter((key) => !['adapter', 'sourceTypes', 'entry', 'fence', 'handles', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
     if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {
       throw new Error(`Worker Tool ${id}.fence must be an object`)
@@ -1392,7 +1400,7 @@ export function workerToolsOf(raw) {
 }
 
 export function workerToolManifest(tools) {
-  return Object.entries(tools).map(([id, def]) => ({ id, digest: def.digest ?? toolDigest(def), source: def.source }))
+  return Object.entries(tools).map(([id, def]) => ({ id, digest: def.digest ?? toolDigest(def), sourceTypes: [...def.sourceTypes].sort() }))
 }
 
 /**
@@ -1400,7 +1408,7 @@ export function workerToolManifest(tools) {
  * versioned Tool reference plus its board-owned invocation contract. Any
  * adapter/entry supplied by the board is rejected instead of executed.
  */
-function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest) {
+function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources = SOURCE_CONTEXT) {
   const spec = JSON.parse(specJson)
   if (spec.impl !== 'worker-tool') throw new Error('work item must reference a Worker Tool; adapter implementation is not accepted from the board')
   const ref = spec.exec
@@ -1409,9 +1417,12 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest) {
   if (!def) throw new Error(`Worker Tool ${ref} is not installed on this connection`)
   const digest = def.digest ?? toolDigest(def)
   if (expectedDigest !== undefined && digest !== expectedDigest) throw new Error(`Worker Tool ${ref} digest does not match the connection pin`)
-  if (typeof spec.source !== 'string' || spec.source !== def.source) throw new Error(`Worker Tool ${ref} is bound to source ${def.source}, not ${String(spec.source)}`)
+  if (typeof spec.source !== 'string' || spec.source === '') throw new Error(`Worker Tool ${ref} requires an injected Source`)
+  const source = sources?.[spec.source]
+  if (source === undefined) throw new Error(`Source ${spec.source} is not available on this Connection`)
+  if (!def.sourceTypes.includes(source.type)) throw new Error(`Worker Tool ${ref} accepts Source types ${def.sourceTypes.join(' / ')}, not ${String(source.type)}`)
   const local = {
-    name: ref, kind: spec.kind, impl: def.adapter, source: def.source,
+    name: ref, kind: spec.kind, impl: def.adapter, source: spec.source,
     exec: def.entry, params: spec.params ?? {}, returns: spec.returns ?? [],
     ...(def.fence && typeof def.fence === 'object' ? { fence: def.fence } : {}),
   }

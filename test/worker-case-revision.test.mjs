@@ -95,9 +95,9 @@ const ADAPTERS = {
 const TOOLS = {
   format: 'rulith-worker-tools/1',
   tools: {
-    'acme.ship@1': { adapter: 'run', source: 'orders', entry: 'ship-adapter.mjs' },
-    'acme.check@1': { adapter: 'run', source: 'orders', entry: 'check-adapter.mjs', handles: { verification: ['output_record'] } },
-    'acme.fetch@1': { adapter: 'run', source: 'orders', entry: 'fetch-adapter.mjs', handles: { evidence: ['inventory'] } },
+    'acme.ship@1': { adapter: 'run', sourceTypes: ['file'], entry: 'ship-adapter.mjs' },
+    'acme.check@1': { adapter: 'run', sourceTypes: ['file'], entry: 'check-adapter.mjs', handles: { verification: ['output_record'] } },
+    'acme.fetch@1': { adapter: 'run', sourceTypes: ['file'], entry: 'fetch-adapter.mjs', handles: { evidence: ['inventory'] } },
   },
 }
 
@@ -109,6 +109,8 @@ function actionRow(overrides = {}) {
     connectionId: 'conn-p2',
     caseId: CASE,
     caseRevision: POLLED,
+    source: 'orders',
+    sourceType: 'file',
     executionGrant: 'grant_p2',
     toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.ship@1', source: 'orders', kind: 'act', params: {} }),
     args: '{}',
@@ -123,6 +125,8 @@ function verificationRow(overrides = {}) {
     connectionId: 'conn-p2',
     caseId: CASE,
     caseRevision: POLLED,
+    source: 'orders',
+    sourceType: 'file',
     claim: { predicate: 'output_record', args: { node: 'n1' } },
     ...overrides,
   }
@@ -172,7 +176,7 @@ async function driveWorker({ reply, done, reviewer, timeoutMs = 20_000 }) {
   const server = createServer((request, response) => {
     if ((request.method ?? 'GET') === 'GET') {
       response.writeHead(200, { 'content-type': 'application/json' })
-      return void response.end(JSON.stringify({ sources: [] }))
+      return void response.end(JSON.stringify({ sources: [{ name: 'orders', type: 'file', access: dir }] }))
     }
     let raw = ''
     request.setEncoding('utf8')
@@ -381,7 +385,7 @@ test('RT-WK-CLAIMREV-6: evidence and review never claim, so they keep the Poll r
   // two: neither flow claims, so no newer revision exists and the Poll row's value is right.
   let polls = 0
   const rows = [
-    { workType: 'evidence', material: 'inventory', tool: 'acme.fetch@1', norm: 'norm_1', caseId: CASE, caseRevision: POLLED, payload: { snapshot: 's1' } },
+    { workType: 'evidence', material: 'inventory', tool: 'acme.fetch@1', norm: 'norm_1', caseId: CASE, caseRevision: POLLED, source: 'orders', sourceType: 'file', payload: { snapshot: 's1' } },
     { workType: 'review', tool: 'acme.ship@1', norm: 'norm_1', caseId: CASE, caseRevision: POLLED, caseFile: { rendered: 'Action acme.ship@1 under clause norm_1.' } },
   ]
   const run = await driveWorker({
