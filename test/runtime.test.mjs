@@ -252,6 +252,8 @@ test('exploration uses an explicit Case-local provisional program without wideni
   assert.match(source, /const SYSTEM_EXPLORATION =/)
   assert.match(source, /case_context\(case_id, root, case_type\)/)
   assert.match(source, /rulith\.exploration\.completed\(case_id\)/)
+  assert.match(source, /platform-owned bridge/)
+  assert.match(source, /do not create pack_acceptance, pack_bridge_evidence, pack_loaded, or pack_rule bookkeeping/)
   assert.match(source, /caseType === 'exploration' \? SYSTEM_EXPLORATION : SYSTEM/)
   assert.match(source, /const SYSTEM = `[\s\S]*Do not add temporary axioms, define actions, or register packs/,
     'normal Capability execution must remain closed to provisional semantics')
