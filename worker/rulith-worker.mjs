@@ -76,7 +76,7 @@ const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToP
  *
  *  两个落点：① 横幅（人当场看得见）② 随每一发派工请求发头（网关记得下最后见到的版本）。
  *  版本对不上时能问出「你那台跑的是哪一版」——在此之前这句话问不出答案。 */
-export const WORKER_VERSION = '2026-08-23'
+export const WORKER_VERSION = '2026-09-01'
 const SECRETS_FILE = process.env.RULITH_SECRETS_FILE ?? './worker-secrets.json'
 let SOURCE_CONTEXT = {}
 // 首张工单也必须拿到完整执行契约。来源地址同步失败可以降级到本机密文库，
