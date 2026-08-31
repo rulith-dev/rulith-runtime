@@ -111,12 +111,15 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
       return execute(id, args, { [id]: local }, sources)
     }
 
-    const read = JSON.parse(String(await call('rulith.workspace.read_json@1', { path: 'input.json' })))
+    const readResult = await call('rulith.workspace.read_json@1', { path: 'input.json' })
+    const read = JSON.parse(String(readResult.result))
     assert.deepEqual(read, { amount: 7 })
-    const search = JSON.parse(String(await call('rulith.workspace.search@1', { query: 'alpha', path: '.' })))
+    assert.deepEqual(readResult.rows[0], { source: 'workspace', path: 'input.json', json: '{"amount":7}', digest: readResult.rows[0].digest })
+    const searchResult = await call('rulith.workspace.search@1', { query: 'alpha', path: '.' })
+    const search = JSON.parse(String(searchResult.result))
     assert.equal(search.matches.length, 2)
     assert.ok(search.matches.every((row) => row.path === 'notes.txt'))
-    const count = JSON.parse(String(await call('rulith.workspace.count@1', { path: '.', recursive: false })))
+    const count = await call('rulith.workspace.count@1', { path: '.', recursive: false })
     assert.deepEqual(count.rows[0], {
       source: 'workspace', path: '.', recursive: false, file_count: 2, directory_count: 0,
       digest: count.rows[0].digest,
@@ -141,8 +144,10 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
     assert.deepEqual(counted.facts, [{ predicate: 'acme.files.directory_count', args: {
       source: 'workspace', path: '.', file_count: 2, digest: count.rows[0].digest,
     } }], 'workspace returns must cross the same structured result membrane as run adapters')
-    const digest = String(await call('rulith.workspace.hash@1', { path: 'input.json' }))
+    const hash = await call('rulith.workspace.hash@1', { path: 'input.json' })
+    const digest = String(hash.result)
     assert.match(digest, /^[a-f0-9]{64}$/)
+    assert.deepEqual(hash.rows[0], { source: 'workspace', path: 'input.json', sha256: digest, size: 12 })
 
     await call('rulith.workspace.write_json@1', { path: 'out/result.json', value: { ok: true } })
     assert.deepEqual(JSON.parse(readFileSync(join(root, 'out', 'result.json'), 'utf8')), { ok: true })

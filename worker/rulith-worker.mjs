@@ -513,12 +513,13 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
       const absolute = resolve(target, entry.name)
       const info = entry.isSymbolicLink() ? undefined : await stat(absolute)
       rows.push({
+        source: t.source,
         path: relative(root, absolute).replace(/\\/g, '/'),
-        type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other',
+        entry_type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other',
         ...(info?.isFile() ? { size: info.size } : {}),
       })
     }
-    return JSON.stringify({ entries: rows, truncated: entries.length > rows.length })
+    return { result: JSON.stringify({ entries: rows, truncated: entries.length > rows.length }), rows }
   }
   if (operation === 'count') {
     const target = await existingWorkspaceTarget(root, input.path, true)
@@ -542,14 +543,15 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
       }
     }
     entries.sort()
-    return JSON.stringify({ rows: [{
+    const rows = [{
       source: t.source,
       path: relative(root, target).replace(/\\/g, '/') || '.',
       recursive: input.recursive,
       file_count: entries.filter((entry) => entry.startsWith('f:')).length,
       directory_count: entries.filter((entry) => entry.startsWith('d:')).length,
       digest: createHash('sha256').update(entries.join('\n')).digest('hex'),
-    }] })
+    }]
+    return { result: JSON.stringify({ rows }), rows }
   }
   if (operation === 'search') {
     if (typeof input.query !== 'string' || input.query.length < 1 || input.query.length > 200) {
@@ -579,14 +581,14 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
         while (matches.length < WORKSPACE_MAX_SEARCH_MATCHES) {
           const column = line.indexOf(input.query, from)
           if (column < 0) break
-          matches.push({ path: relative(root, file).replace(/\\/g, '/'), line: index + 1, column: column + 1, text: line.slice(0, 300) })
+          matches.push({ source: t.source, path: relative(root, file).replace(/\\/g, '/'), line: index + 1, column: column + 1, text: line.slice(0, 300) })
           from = column + Math.max(1, input.query.length)
         }
         if (matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
       }
       if (matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
     }
-    return JSON.stringify({ matches, truncated: matches.length >= WORKSPACE_MAX_SEARCH_MATCHES || files.length >= WORKSPACE_MAX_LIST_ENTRIES })
+    return { result: JSON.stringify({ matches, truncated: matches.length >= WORKSPACE_MAX_SEARCH_MATCHES || files.length >= WORKSPACE_MAX_LIST_ENTRIES }), rows: matches }
   }
   if (operation === 'read_text' || operation === 'read_json' || operation === 'hash') {
     const target = await existingWorkspaceTarget(root, input.path)
@@ -594,13 +596,18 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
       const info = await stat(target)
       if (!info.isFile()) throw new Error('Workspace hash target must be a regular file')
       if (info.size > 16 * 1024 * 1024) throw new Error('Workspace hash target exceeds the 16-MiB limit')
-      return createHash('sha256').update(await readFile(target)).digest('hex')
+      const sha256 = createHash('sha256').update(await readFile(target)).digest('hex')
+      const rows = [{ source: t.source, path: relative(root, target).replace(/\\/g, '/'), sha256, size: info.size }]
+      return { result: sha256, rows }
     }
     const text = await boundedText(target)
-    if (operation === 'read_text') return text
+    const path = relative(root, target).replace(/\\/g, '/')
+    const digest = createHash('sha256').update(text).digest('hex')
+    if (operation === 'read_text') return { result: text, rows: [{ source: t.source, path, text, digest }] }
     let value
     try { value = JSON.parse(text) } catch (error) { throw new Error(`Workspace JSON is invalid: ${error.message}`) }
-    return JSON.stringify(value)
+    const json = JSON.stringify(value)
+    return { result: json, rows: [{ source: t.source, path, json, digest }] }
   }
   if (operation === 'write_text' || operation === 'write_json') {
     const target = await writableWorkspaceTarget(root, input.path)
