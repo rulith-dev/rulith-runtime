@@ -4,6 +4,11 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.6.2 - 2026-09-02
+
+- Keeps the center Case stream independently scrollable inside the viewport so long runs remain reachable above the fixed composer.
+- Reserves a stable bottom safe area for the composer without pushing the workbench footer outside the visible window.
+
 ## 0.6.1 - 2026-09-02
 
 - Resolves Agent identity from the authenticated public MCP surface so short opaque credentials never need client-side decoding.

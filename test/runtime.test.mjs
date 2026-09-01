@@ -87,7 +87,7 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.1')
+  assert.equal(pkg.version, '0.6.2')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
@@ -650,6 +650,13 @@ test('Rulith Local presents a familiar Case-first Agent workbench in English', (
   assert.doesNotMatch(localPage, /padding:12px max\(/, 'percentage padding collapses the composer inside the center grid column')
   assert.match(hostSource, /'cache-control': 'no-store'/)
   assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
+})
+
+test('Rulith Local keeps the center stream independently scrollable above the fixed composer', () => {
+  const page = readFileSync(join(ROOT, 'local', 'local-ui.mjs'), 'utf8')
+  assert.match(page, /\.main\{[^}]*min-height:0[^}]*height:100vh[^}]*overflow:hidden[^}]*\}/)
+  assert.match(page, /\.stream\{[^}]*min-height:0[^}]*overflow:auto[^}]*padding:[^}]*130px/)
+  assert.match(page, /\.composer\{[^}]*bottom:0/)
 })
 
 test('production-facing runtime text is English-only', () => {
