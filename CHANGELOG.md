@@ -4,6 +4,11 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.4.1 - 2026-09-01
+
+- Replaced the below-fold Local settings disclosure with a centered, accessible settings modal.
+- Added role-aware settings panes and one-click save-and-restart for Agent and Worker.
+
 ## 0.4.0 - 2026-09-01
 
 - Hard-cut the existing `rulith` npm package from the retired MCP executable to Rulith Local.

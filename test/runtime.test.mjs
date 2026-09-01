@@ -84,7 +84,7 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.4.0')
+  assert.equal(pkg.version, '0.4.1')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
@@ -474,6 +474,10 @@ test('Rulith Local presents a familiar Case-first Agent workbench in English', (
   assert.match(localPage, /Authoritative receipt/)
   assert.match(localPage, /e\.invocation/)
   assert.match(localPage, /'remote'/)
+  assert.match(localPage, /role="dialog"/)
+  assert.match(localPage, /Save &amp; restart Agent/)
+  assert.match(localPage, /Save &amp; restart Worker/)
+  assert.doesNotMatch(localPage, /<details>/, 'settings must open in a visible modal rather than below the inspector fold')
   assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
 })
 

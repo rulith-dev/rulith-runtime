@@ -27,17 +27,23 @@ hidden order-processing policy or other business workflow.
 - A model endpoint compatible with Anthropic Messages or OpenAI Chat Completions
 - A Rulith Connection id and key when a workflow needs local execution
 
-Install the current Rulith Local CLI:
+Run the current Rulith Local CLI without writing to a system-wide npm directory:
 
 ```bash
-npm install --global rulith
-rulith --help
-rulith start --role agent+worker
+npx --yes rulith@latest --help
+npx --yes rulith@latest start --role agent+worker
 ```
 
 The first start creates `~/.rulith/local.json` with owner-only permissions and
 prints the loopback Local UI address. Add the credentials for the selected roles
 under **Local settings**, then restart them.
+
+For a persistent command, install globally into a user-writable npm prefix:
+
+```bash
+npm install --global rulith
+rulith start
+```
 
 To inspect or contribute to the source instead:
 
