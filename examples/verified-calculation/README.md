@@ -53,12 +53,10 @@ cd examples/verified-calculation
 node prepare-runtime.mjs
 ```
 
-Configure Rulith Local in Agent+Worker mode. The business-key values
-name this Case; Cloud computes the digest and pins it before opening:
-
-```text
-agent.env.RULITH_AGENT: verified-calculation
-```
+Configure Rulith Local in Agent+Worker mode with the token created under the
+Verified Calculation Agent's Runtime tab. The token itself selects that Agent;
+there is no second Agent-name field. Business-key values name the Case, while
+Cloud computes the digest and pins it before opening.
 
 Configure the Worker with its Connection credentials and local Adapter Manifest. The governed
 Actions name versioned Tools and Sources; the manifest is the Worker-local binding

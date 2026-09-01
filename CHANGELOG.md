@@ -4,6 +4,13 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.6.0 - 2026-09-01
+
+- Moved the first-party Agent onto the same public MCP tools/call surface used by third-party Agent clients.
+- Made the one rotatable Agent token the only Agent identity source; removed `RULITH_AGENT` and `--agent`.
+- Sends the Agent token only as an Authorization Bearer header and never in an MCP URL.
+- Routes Case commands, Source access planning, evidence chase, and non-authoritative trace through the public `agent_protocol` MCP tool.
+
 ## 0.5.2 - 2026-09-01
 
 - Hard-cut Rulith Local back to a single-Agent, configuration-driven Runtime; interactive multi-Agent Studio work is deferred.

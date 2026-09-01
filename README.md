@@ -74,11 +74,10 @@ tools load the optional `pg` package only when used.
 
 ```powershell
 $env:RULITH_TOKEN = '<agent-token>'
-$env:RULITH_AGENT = 'default'
 $env:RULITH_MODEL_KEY = '<model-key>'
 $env:RULITH_MODEL = '<model-id>'
 $env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'
-node agent/rulith-agent.mjs --agent default
+node agent/rulith-agent.mjs
 ```
 
 Each task opens one Case under an installed Capability's Case Type. Use the
@@ -86,7 +85,7 @@ Case Type catalog exposed by Rulith Cloud; exploratory work defaults to the
 platform-owned `exploration` contract:
 
 ```powershell
-node agent/rulith-agent.mjs --agent default --case-type verified_calculation --business-key '{"job_id":"calc-001"}' "calculate and verify this job"
+node agent/rulith-agent.mjs --case-type verified_calculation --business-key '{"job_id":"calc-001"}' "calculate and verify this job"
 ```
 
 For the loopback service, `POST /task` accepts the same selection as

@@ -35,7 +35,6 @@ const config = {
     args: [],
     env: {
       ...(source.agent?.env ?? {}),
-      RULITH_AGENT: 'verified-calculation',
       RULITH_SERVE_CONCURRENCY: '1',
       RULITH_SERVE_PORT: process.env.RULITH_CALC_SERVE_PORT ?? '7800',
     },
@@ -53,6 +52,7 @@ const config = {
     worker: resolve(gateway, 'worker', 'rulith-worker.mjs'),
   },
 }
+delete config.agent.env.RULITH_AGENT
 const output = join(runtime, 'rulith-local.json')
 writeFileSync(output, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
 console.log(`Rulith Local config prepared at ${output} (credential values intentionally not printed)`)

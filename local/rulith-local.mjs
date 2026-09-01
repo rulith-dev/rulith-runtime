@@ -19,6 +19,15 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROLE_SET = new Set(['agent', 'worker'])
 const MAX_BODY = 64 * 1024
 
+const agentIdFromToken = (token) => {
+  const payload = String(token ?? '').split('.')[1]
+  if (payload === undefined) throw new Error('Agent MCP token is not a JWT with an Agent scope.')
+  let decoded
+  try { decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { throw new Error('Agent MCP token payload cannot be decoded.') }
+  if (typeof decoded.agent !== 'string' || decoded.agent.trim() === '') throw new Error('Agent MCP token has no Agent scope. Rotate it under Agent → Runtime in Console.')
+  return decoded.agent
+}
+
 export function rolesOf(value) {
   const raw = Array.isArray(value) ? value : String(value ?? '').replaceAll('+', ',').split(',')
   const roles = [...new Set(raw.map((role) => String(role).trim()).filter(Boolean))]
@@ -47,7 +56,7 @@ export function defaultLocalConfig() {
   return {
     roles: ['agent', 'worker'],
     agent: { args: [], env: {
-      RULITH_URL: 'https://api.rulith.ai', RULITH_AGENT: 'default', RULITH_TOKEN: '',
+      RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '',
       RULITH_MODEL_URL: 'https://api.anthropic.com/v1/messages', RULITH_MODEL: 'claude-sonnet-5', RULITH_MODEL_KEY: '',
     } },
     worker: { env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '' } },
@@ -60,10 +69,12 @@ export function defaultConfigPath(home = homedir()) { return join(home, '.rulith
 export function normalizeLocalConfig(config) {
   const defaults = defaultLocalConfig()
   const { cloud: _retiredCloud, ...current } = config ?? {}
+  const agentEnv = { ...defaults.agent.env, ...(config?.agent?.env ?? {}) }
+  delete agentEnv.RULITH_AGENT
   return {
     ...defaults, ...current,
     roles: rolesOf(config?.roles ?? defaults.roles),
-    agent: { ...defaults.agent, ...(config?.agent ?? {}), env: { ...defaults.agent.env, ...(config?.agent?.env ?? {}) } },
+    agent: { ...defaults.agent, ...(config?.agent ?? {}), env: agentEnv },
     worker: { ...defaults.worker, ...(config?.worker ?? {}), env: { ...defaults.worker.env, ...(config?.worker?.env ?? {}) } },
     paths: { ...defaults.paths, ...(config?.paths ?? {}) },
   }
@@ -79,9 +90,9 @@ function loadConfig(configFile) {
   }
   const raw = JSON.parse(readFileSync(configFile, 'utf8'))
   const config = normalizeLocalConfig(raw)
-  if (raw.cloud !== undefined) {
+  if (raw.cloud !== undefined || raw.agent?.env?.RULITH_AGENT !== undefined) {
     saveConfig(configFile, config)
-    console.warn('Removed the retired interactive Cloud account session from the Runtime configuration. Runtime identity continues to come only from the configured Agent credential; revoke the old Rulith Local OAuth client in Console if it is still listed.')
+    console.warn('Removed retired Cloud-session or Agent-selector fields. The configured MCP token is now the only Agent identity source.')
   }
   return config
 }
@@ -221,13 +232,15 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       }
       if (path === '/status' && req.method === 'GET') {
         const agentEnv = config.agent?.env ?? {}, workerEnv = config.worker?.env ?? {}
+        let configuredAgent = 'unconfigured'
+        try { configuredAgent = agentIdFromToken(agentEnv.RULITH_TOKEN) } catch { /* status remains honest without exposing the token */ }
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
           agent: running('agent'), worker: running('worker'), maxConcurrentCases: components.agent.maxConcurrentCases,
           runtime: {
             configFile,
             agent: {
-              id: String(agentEnv.RULITH_AGENT ?? 'default'), credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
+              id: configuredAgent, credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
               modelService: safeUrl(agentEnv.RULITH_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
               modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? process.env.ANTHROPIC_API_KEY ?? '') !== '',
               thinking: String(agentEnv.RULITH_MODEL_THINKING ?? '') === 'enabled' ? 'extended' : 'standard',

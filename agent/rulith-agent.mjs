@@ -16,7 +16,16 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 
 const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/$/, '')
+const MCP_URL = `${URL_BASE}/mcp`
 const TOKEN = process.env.RULITH_TOKEN ?? ''
+const agentIdFromToken = (token) => {
+  const payload = String(token ?? '').split('.')[1]
+  if (payload === undefined) throw new Error('Agent MCP token is not a JWT with an Agent scope.')
+  let decoded
+  try { decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { throw new Error('Agent MCP token payload cannot be decoded.') }
+  if (typeof decoded.agent !== 'string' || decoded.agent.trim() === '') throw new Error('Agent MCP token has no Agent scope. Rotate it under Agent → Runtime in Console.')
+  return decoded.agent
+}
 const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
 const MODEL_URL_INPUT = process.env.RULITH_MODEL_URL ?? 'https://api.anthropic.com/v1/messages'
@@ -39,7 +48,6 @@ Usage:
   node agent/rulith-agent.mjs [options] [task]
 
 Options:
-  --agent <id>       Agent id in Console (default: default)
   --serve            Accept tasks through the local service endpoint
   --case <id>        Resume an existing case for the first segment
   --case-type <id>   Case Type from the installed Capability catalog (default: exploration)
@@ -52,7 +60,6 @@ Required environment:
 
 Common optional environment:
   RULITH_URL         Cloud API base (default: https://api.rulith.ai)
-  RULITH_AGENT       Agent id in Console (default: default)
   RULITH_MODEL       Model identifier
   RULITH_MODEL_URL   Model API endpoint
   RULITH_MODEL_KEY   Provider key (optional only for a loopback model endpoint)
@@ -61,7 +68,6 @@ Common optional environment:
 `)
   process.exit(0)
 }
-let agentId = (process.env.RULITH_AGENT ?? 'default').trim() || 'default'
 let withShadow = false
 let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
 /** Resume one existing Case Context for the first segment only. */
@@ -70,7 +76,6 @@ let selectedCaseType = (process.env.RULITH_CASE_TYPE ?? 'exploration').trim() ||
 let selectedBusinessKeyRaw = (process.env.RULITH_BUSINESS_KEY_JSON ?? '').trim()
 const rest = []
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--agent' && argv[i + 1] !== undefined) { agentId = argv[++i]; continue }
   if (argv[i] === '--serve') { withServe = true; continue }
   if (argv[i] === '--shadow') { withShadow = true; continue }
   if (argv[i] === '--case' && argv[i + 1] !== undefined) { resumeCase = argv[++i]; continue }
@@ -100,7 +105,9 @@ const businessKeyOf = (raw, label = 'businessKey') => {
 }
 const selectedBusinessKey = businessKeyOf(selectedBusinessKeyRaw, 'RULITH_BUSINESS_KEY_JSON / --business-key')
 
-if (TOKEN === '') die('RULITH_TOKEN is missing. Create an Agent token in Console under Access & credentials; it is shown only once.')
+if (TOKEN === '') die('RULITH_TOKEN is missing. Create this Agent\'s MCP token under Agent → Runtime in Console; it is shown only once.')
+let agentId
+try { agentId = agentIdFromToken(TOKEN) } catch (error) { die(error.message) }
 let parsedModelUrl
 try { parsedModelUrl = new URL(MODEL_URL_INPUT) } catch { die('RULITH_MODEL_URL must be one absolute HTTP(S) model service URL.') }
 if (!['http:', 'https:'].includes(parsedModelUrl.protocol)) die('RULITH_MODEL_URL must use HTTP or HTTPS.')
@@ -131,6 +138,70 @@ const nextCaseId = () => {
 // ── 事件总线：终端与界面看同一份流（界面晚开也能补看，历史全留） ──────────
 const events = []
 const clients = new Set()
+
+// ── Public MCP client ───────────────────────────────────────────────────────
+// First-party and third-party Agent hosts cross the exact same tools/list and
+// tools/call membrane. The one Agent token is a client configuration secret,
+// sent only as an Authorization header; it never appears in a URL.
+let mcpSeq = 0
+async function mcpRpc(method, params = {}) {
+  let response
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 45_000)
+  timeout.unref?.()
+  try {
+    response = await fetch(MCP_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        connection: 'close',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: `runtime_${++mcpSeq}`, method, params }),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    throw new Error(`Cannot reach the public MCP endpoint ${MCP_URL}: ${error?.cause?.code ?? error?.message ?? error}`)
+  } finally {
+    clearTimeout(timeout)
+  }
+  const raw = await response.text().catch(() => '')
+  let body
+  try { body = JSON.parse(raw) } catch { body = undefined }
+  if (response.status === 401) throw new Error(`Agent MCP token rejected (401): ${body?.teaching ?? 'rotate the Agent token in Console and update this client configuration.'}`)
+  if (!response.ok || body === undefined || body.error !== undefined) {
+    const teaching = body?.error?.message ?? body?.teaching ?? raw.replace(/\s+/g, ' ').trim().slice(0, 240)
+    throw new Error(`MCP ${method} failed (HTTP ${response.status}): ${teaching || 'empty response'}`)
+  }
+  return body.result
+}
+
+let mcpSurfacePromise
+async function requirePublicMcpSurface() {
+  mcpSurfacePromise ??= (async () => {
+    const listed = await mcpRpc('tools/list')
+    const names = new Set((Array.isArray(listed?.tools) ? listed.tools : []).map((tool) => String(tool?.name ?? '')))
+    if (!names.has('agent_protocol')) {
+      throw new Error('The public MCP endpoint does not advertise agent_protocol in tools/list. Upgrade the Cloud endpoint; the Runtime will not fall back to a native privileged route.')
+    }
+  })()
+  return await mcpSurfacePromise
+}
+
+async function mcpTool(name, args = {}) {
+  await requirePublicMcpSurface()
+  const result = await mcpRpc('tools/call', { name, arguments: args })
+  const text = (Array.isArray(result?.content) ? result.content : [])
+    .filter((item) => item?.type === 'text').map((item) => String(item.text ?? '')).join('\n')
+  if (text === '') throw new Error(`MCP tool ${name} returned no text result.`)
+  return text
+}
+
+async function agentProtocol(mode, args = {}) {
+  const text = await mcpTool('agent_protocol', { mode, ...args })
+  try { return JSON.parse(text) } catch { throw new Error(`agent_protocol returned invalid JSON: ${text.slice(0, 240)}`) }
+}
 function emit(type, data) {
   const ev = { t: Date.now(), type, ...data }
   if (process.env.RULITH_LOCAL_EVENTS === 'ipc' && typeof process.send === 'function') {
@@ -167,21 +238,14 @@ function flushTrace() {
   if (traceTimer !== null) { clearTimeout(traceTimer); traceTimer = null }
   if (traceBuf.length === 0) return
   const batch = traceBuf.splice(0, 200)
-  fetch(`${URL_BASE}/agent/v1/trace`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
-    body: JSON.stringify({ agentId, events: batch }),
-  }).catch(() => {})
+  agentProtocol('trace', { events: batch }).catch(() => {})
 }
 let sourceAccessGuidePromise
 async function sourceAccessGuide() {
   sourceAccessGuidePromise ??= (async () => {
     try {
-      const response = await fetch(`${URL_BASE}/agent/v1/source-access?agentId=${encodeURIComponent(agentId)}`, {
-        headers: { authorization: `Bearer ${TOKEN}` }, signal: AbortSignal.timeout(10_000),
-      })
-      if (!response.ok) return `\n\nSource Access catalogue is unavailable (HTTP ${response.status}). Do not invent an access Action; report the missing configuration.`
-      const body = await response.json()
+      const body = await agentProtocol('source_access')
+      if (body.ok !== true) return `\n\nSource Access catalogue is unavailable (${body.teaching ?? body.errorCode ?? 'rejected'}). Do not invent an access Action; report the missing configuration.`
       const rows = (Array.isArray(body.sources) ? body.sources : []).flatMap((source) =>
         (Array.isArray(source.accessModes) ? source.accessModes : []).map((mode) => {
           const params = Object.entries(mode.params ?? {}).map(([name, type]) => `${name}:${type}`).join(', ') || '(none)'
@@ -199,14 +263,8 @@ async function sourceAccessGuide() {
 async function evidenceChaseGuide(ctx, gaps) {
   if (!Array.isArray(gaps) || gaps.length === 0) return ''
   try {
-    const response = await fetch(`${URL_BASE}/agent/v1/evidence-chase`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
-      body: JSON.stringify({ agentId, gaps: gaps.slice(0, 64), limit: 12 }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!response.ok) return ''
-    const body = await response.json()
+    const body = await agentProtocol('evidence_chase', { gaps: gaps.slice(0, 64), limit: 12 })
+    if (body.ok !== true) return ''
     const plans = Array.isArray(body.plans) ? body.plans : []
     if (plans.length === 0) return ''
     emitOn(ctx, 'source-plan', { plans: plans.slice(0, 12).map((plan) => ({
@@ -241,8 +299,8 @@ const CASE_CONTEXT_OPERATIONS = new Set([
   'CloseCase', 'PauseCase', 'Explain', 'IngestObservation', 'GrantClearance', 'ClaimWork', 'ApplyAction', 'ReportWork',
 ])
 const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed', 'unknown_case'])
-let seq = 0
-/** The only Board address and Case envelope constructor in the runtime. */
+/** The only Case command adapter in the runtime. It calls the public MCP tool
+ * advertised to every client; Agent and Case identities never enter the URL. */
 async function board(operation, ctx, staleRetries = 5) {
   if (ctx === null || typeof ctx !== 'object' || typeof ctx.board !== 'string' || ctx.board === '') {
     throw new Error(`board(): missing execution context for ${String(operation?.kind ?? '?')}.`)
@@ -250,42 +308,23 @@ async function board(operation, ctx, staleRetries = 5) {
   const bound = CASE_CONTEXT_OPERATIONS.has(String(operation?.kind ?? '')) ? ctx.case : undefined
   let r
   try {
-    r = await fetch(`${URL_BASE}/board/v1/command`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
-      body: JSON.stringify({ protocol: 'rulith-board/1', boardId: ctx.board, requestId: `agent_${Date.now().toString(36)}_${seq++}`, operation,
-        ...(bound !== undefined ? { case: { id: bound.id, expectedRevision: bound.revision } } : {}) }),
+    r = await agentProtocol('board', {
+      operation,
+      ...(bound !== undefined ? { case: { id: bound.id, expectedRevision: bound.revision } } : {}),
     })
-  } catch (e) {
-    die(`Cannot reach ${URL_BASE}: ${e?.cause?.code ?? e?.message ?? e}. Check the network or point RULITH_URL at your deployment.`)
-  }
-  const raw = await r.text().catch(() => '')
-  let j
-  try { j = JSON.parse(raw) } catch { j = {} }
-  if (r.status === 401) die(`Token rejected (401): ${j.teaching ?? ''}`)
-  // **没有内容的报错不是接口**(2026-08-22,RT-ALOOP-TRANSPORT)。
-  //
-  // 本函数原来除 401 外**从不看 HTTP 状态**:502 + HTML 正文、200 + 半截 JSON、网关重启,
-  // 一律折成一次"语义拒"——而调用点读的是 `teaching ?? errorCode ?? ''`,于是模型收到的是
-  //   「板拒绝了这一批,原话:(空)。照它说的改,再提一次。」
-  // 模型照着空气改,烧到 MAX_ROUNDS。实测两种载荷都是这个形状。
-  //
-  // 判据是**「这份回执里有没有板的裁决」**,不是「HTTP 通没通」——初版写的是 `!r.ok`,
-  // 而 `200 + 半截 JSON` 那一格 `r.ok` 为真,判据当场漏(枪的第二臂逮住的)。
-  // 板的回执**必然带 `accepted` 这个布尔**(接受与拒绝都带);两个字段都没有 ⇒ 这根本不是回执。
-  // 合成一条真的教学,用网关既有的 `upstream_unavailable`,并把 HTTP 状态与正文头带上。
-  // 这是本文件第二条纪律(报错是接口)在传输面的同一句话。
-  if (typeof j?.accepted !== 'boolean' && typeof j?.errorCode !== 'string') {
-    const head = raw.replace(/\s+/g, ' ').trim().slice(0, 160)
-    j = {
+  } catch (error) {
+    const teaching = String(error?.message ?? error)
+    if (/token rejected \(401\)/i.test(teaching)) die(teaching)
+    r = {
       accepted: false,
       errorCode: 'upstream_unavailable',
-      teaching: `The Cloud hop failed (HTTP ${r.status}); the board never received this batch.` +
-        ` Retry it unchanged. If it keeps failing, check whether ${URL_BASE} is reachable.` +
-        (head !== '' ? `\n   First 160 response characters: ${head}` : '\n   The server returned an empty body.'),
+      teaching: `The public MCP hop failed; no authoritative receipt was returned. Retry unchanged. ${teaching.slice(0, 240)}`,
     }
   }
-  if (bound !== undefined && STALE_CASE.has(String(j?.errorCode ?? ''))) {
+  if (typeof r?.accepted !== 'boolean' && typeof r?.errorCode !== 'string') {
+    r = { accepted: false, errorCode: 'upstream_unavailable', teaching: 'agent_protocol returned no authoritative receipt. Retry unchanged.' }
+  }
+  if (bound !== undefined && STALE_CASE.has(String(r?.errorCode ?? ''))) {
     ctx.case = undefined
     if (staleRetries > 0) {
       const manifest = await board({ kind: 'GetBoardManifest' }, ctx, 0)
@@ -296,10 +335,10 @@ async function board(operation, ctx, staleRetries = 5) {
       }
     }
   }
-  if (bound !== undefined && j?.accepted === true && typeof j.caseRevision === 'string') {
-    ctx.case = { ...bound, revision: j.caseRevision }
+  if (bound !== undefined && r?.accepted === true && typeof r.caseRevision === 'string') {
+    ctx.case = { ...bound, revision: r.caseRevision }
   }
-  return j
+  return r
 }
 /** Open or resume exactly one named Case Context. Never adopt another Case. */
 async function ensureCaseContext(ctx, caseId, caseType, businessKey) {

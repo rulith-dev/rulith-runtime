@@ -76,8 +76,10 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
   assert.equal(config.agent.env.RULITH_MODEL_URL, 'https://api.anthropic.com/v1/messages')
   assert.equal(config.agent.env.RULITH_MODEL, 'claude-sonnet-5')
   assert.equal(config.agent.env.RULITH_MODEL_KEY, '')
-  const upgraded = normalizeLocalConfig({ roles: ['agent'], cloud: { refreshToken: 'retired' }, agent: { env: { RULITH_TOKEN: 'kept' } } })
+  assert.equal(config.agent.env.RULITH_AGENT, undefined)
+  const upgraded = normalizeLocalConfig({ roles: ['agent'], cloud: { refreshToken: 'retired' }, agent: { env: { RULITH_AGENT: 'retired-selector', RULITH_TOKEN: 'kept' } } })
   assert.equal(upgraded.agent.env.RULITH_TOKEN, 'kept')
+  assert.equal(upgraded.agent.env.RULITH_AGENT, undefined)
   assert.equal(upgraded.agent.env.RULITH_MODEL_URL, 'https://api.anthropic.com/v1/messages')
   assert.equal(upgraded.cloud, undefined)
 })
@@ -85,13 +87,100 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.5.2')
+  assert.equal(pkg.version, '0.6.0')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
   assert.equal(pkg.files.includes('examples/'), false, 'generated example runtime directories must never enter the npm package')
   assert.ok(pkg.files.includes('examples/verified-calculation/setup.mjs'))
   assert.match(defaultConfigPath('C:\\Users\\example'), /\.rulith[\\/]local\.json$/)
+})
+
+test('the first-party Agent uses the same public MCP bearer surface as every other Agent client', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /\/mcp/)
+  assert.match(source, /authorization:\s*`Bearer \$\{TOKEN\}`/)
+  assert.match(source, /mcpRpc\('tools\/list'\)/)
+  assert.doesNotMatch(source, /agentToken=/, 'Agent credentials must never enter a URL query string')
+  assert.doesNotMatch(source, /\/board\/v1\/command|\/agent\/v1\//,
+    'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
+})
+
+test('Agent and Local decode the one token scope with the same non-authoritative helper', () => {
+  const helper = (file) => readFileSync(join(ROOT, file), 'utf8').match(/const agentIdFromToken = \(token\) => \{[\s\S]*?\n\}/)?.[0]
+  assert.ok(helper('agent/rulith-agent.mjs'))
+  assert.equal(helper('agent/rulith-agent.mjs'), helper('local/rulith-local.mjs'))
+})
+
+test('the Agent completes a minimal run through plain public MCP JSON-RPC with no native Cloud route', async () => {
+  const paths = []
+  const server = createServer(async (req, res) => {
+    paths.push(String(req.url ?? ''))
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const input = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+    res.setHeader('content-type', 'application/json')
+    if (req.url === '/v1/chat/completions') {
+      res.end(JSON.stringify({ choices: [{ message: { content: 'DONE:' } }] }))
+      return
+    }
+    assert.equal(req.url, '/mcp')
+    assert.match(String(req.headers.authorization), /^Bearer x\.[A-Za-z0-9_-]+\.test-agent-token$/)
+    if (input.method === 'tools/list') {
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools: [{ name: 'agent_protocol', inputSchema: { type: 'object' } }] } }))
+      return
+    }
+    assert.equal(input.method, 'tools/call')
+    assert.equal(input.params?.name, 'agent_protocol')
+    const args = input.params?.arguments ?? {}
+    let result
+    if (args.mode === 'source_access') result = { ok: true, sources: [] }
+    else if (args.mode === 'evidence_chase') result = { ok: true, plans: [] }
+    else if (args.mode === 'trace') result = { ok: true, took: (args.events ?? []).length }
+    else {
+      const operation = args.operation ?? {}
+      if (operation.kind === 'GetBoardManifest') result = { accepted: true, revision: 'r1', payload: { status: 'open', cases: [], operations: { topLevel: ['GetCompletion', 'QueryBoard', 'ApplyBatch', 'CloseCase'], workingMemory: ['assert_fact'] } } }
+      else if (operation.kind === 'OpenCase') result = { accepted: true, revision: 'r2', caseRevision: 'c0', payload: { caseId: operation.caseId, caseRevision: 'c0', capabilityReleaseDigest: 'sha256:cap', caseContractDigest: 'sha256:contract' } }
+      else if (operation.kind === 'GetProjection' && operation.format === 'json') result = { accepted: true, revision: 'r3', payload: { context: { facts: [{ atom: { predicate: 'root', args: { node: 'case-test' } } }] } } }
+      else if (operation.kind === 'GetProjection') result = { accepted: true, revision: 'r3', payload: { text: 'logic_context case-test' } }
+      else if (operation.kind === 'GetCompletion') result = { accepted: true, revision: 'r3', payload: { state: 'done', certified: true, floor: 'attested', leaves: [], gaps: [], frontier: [], blocked: [] } }
+      else if (operation.kind === 'QueryBoard') result = { accepted: true, revision: 'r3', payload: { facts: [] } }
+      else if (operation.kind === 'GetHealth') result = { accepted: true, revision: 'r3', payload: {} }
+      else if (operation.kind === 'CloseCase') result = { accepted: true, revision: 'r4', caseRevision: 'c1', payload: { disposition: 'completed' } }
+      else if (operation.kind === 'ApplyBatch') result = { accepted: true, revision: 'r3', caseRevision: 'c1', payload: { text: '' }, delta: { added: [], removed: [] } }
+      else result = { accepted: true, revision: 'r3', payload: {} }
+    }
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
+  })
+  let port
+  await new Promise((resolveReady) => server.listen(0, '127.0.0.1', () => { port = server.address().port; resolveReady() }))
+  const payload = Buffer.from(JSON.stringify({ agent: 'agent-public-1' })).toString('base64url')
+  const child = spawn(process.execPath, ['agent/rulith-agent.mjs', '--case', 'case-test', 'test'], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      RULITH_URL: `http://127.0.0.1:${port}`,
+      RULITH_TOKEN: `x.${payload}.test-agent-token`,
+      RULITH_MODEL_URL: `http://127.0.0.1:${port}`,
+      RULITH_MODEL: 'test-model', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '',
+      RULITH_TRACE: 'off', RULITH_AUTO_DISCHARGE: 'off', RULITH_MAX_ROUNDS: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = '', stderr = ''
+  child.stdout.on('data', (chunk) => { stdout += chunk })
+  child.stderr.on('data', (chunk) => { stderr += chunk })
+  let timeout
+  const status = await Promise.race([
+    new Promise((resolveExit) => child.on('exit', (code) => resolveExit(code))),
+    new Promise((resolveTimeout) => { timeout = setTimeout(() => { child.kill(); resolveTimeout('timeout') }, 12_000) }),
+  ])
+  clearTimeout(timeout)
+  await new Promise((resolveClose) => server.close(resolveClose))
+  assert.equal(status, 0, `${stdout}\n${stderr}`)
+  assert.ok(paths.includes('/mcp'))
+  assert.ok(paths.includes('/v1/chat/completions'))
+  assert.ok(paths.every((path) => path === '/mcp' || path === '/v1/chat/completions'), `unexpected privileged path: ${paths.join(', ')}`)
 })
 
 test('rulith --help is side-effect free and does not create a credential file', () => {
@@ -137,8 +226,7 @@ test('Rulith Local status is a read-only redacted runtime projection', async () 
   await new Promise((resolveReady) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(resolveReady) }))
   const config = defaultLocalConfig()
   config.paths = { agent: child }
-  config.agent.env.RULITH_AGENT = 'agent-public-1'
-  config.agent.env.RULITH_TOKEN = 'agent-secret-value'
+  config.agent.env.RULITH_TOKEN = `x.${Buffer.from(JSON.stringify({ agent: 'agent-public-1' })).toString('base64url')}.agent-secret-value`
   config.agent.env.RULITH_MODEL_KEY = 'model-secret-value'
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'status-key' })
   try {
@@ -507,7 +595,8 @@ test('the Agent teaches the same typed Action parameter contract enforced by Cor
 
 test('the Agent asks Cloud for ranked frontier routes without treating a plan as authority', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /\/agent\/v1\/evidence-chase/)
+  assert.match(source, /agentProtocol\('evidence_chase'/)
+  assert.doesNotMatch(source, /\/agent\/v1\/evidence-chase/)
   assert.match(source, /ranked hints, not automatic authority/)
   assert.match(source, /Supply missing clue bindings; never assert them as facts/)
 })
@@ -721,7 +810,7 @@ test('committed public files only teach environment variables the runtime reads'
 test('committed public files only teach Agent flags the Agent accepts', () => {
   const accepted = agentFlagsAccepted()
   assert.ok(accepted.size >= 4, `only extracted ${accepted.size} accepted flags — the parser scan failed`)
-  assert.ok(accepted.has('--agent') && accepted.has('--serve'), 'the flag extractor is not reading the real parser')
+  assert.ok(!accepted.has('--agent') && accepted.has('--serve'), 'the Agent id must come only from the MCP token')
 
   // Only flags on an Agent invocation count. `git clone --depth` in the same README
   // belongs to another command; widening the scan to every flag would make this guard
