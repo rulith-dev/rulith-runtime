@@ -93,7 +93,7 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.5.0')
+  assert.equal(pkg.version, '0.5.1')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
@@ -579,6 +579,9 @@ test('Rulith Local presents a familiar Case-first Agent workbench in English', (
   assert.match(localPage, /id="caseoptions"/)
   assert.match(localPage, /aria-label="Local Tool ceiling"/)
   assert.match(localPage, /id="modelbadge"/)
+  assert.match(localPage, /for="modelkey"/)
+  assert.match(localPage, /id="modelkey" type="password"/)
+  assert.match(localPage, /Provider API key/)
   assert.match(localPage, /data-view="case"/)
   assert.match(localPage, /Session log/)
   assert.match(hostSource, /\/local\/v1\/account/)

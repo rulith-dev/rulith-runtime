@@ -4,6 +4,11 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.5.1 - 2026-09-01
+
+- Added a dedicated password input for the local model-provider API key.
+- Preserves an existing key when the input is left empty, shows only a masked saved-state hint, and provides an explicit clear-and-stop action.
+
 ## 0.5.0 - 2026-09-01
 
 - Added loopback PKCE sign-in to Rulith Cloud, account projection, Cloud Agent selection, credential rotation, and sign-out revocation.
