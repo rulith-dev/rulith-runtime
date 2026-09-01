@@ -4,6 +4,8 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.1.0-beta.2 - 2026-09-01
+
 - Replaced Station as a separate product surface with one role-aware Rulith Local host and Agent workbench.
 - Added Agent, Worker, and Agent+Worker startup modes while preserving separate child-process credentials.
 - Unified Agent and Worker display events over structured child-process IPC.
@@ -12,6 +14,7 @@ All notable changes to the local runtime are documented here.
 - Compiled database templates to driver parameters instead of interpolated SQL values.
 - Added bounded MCP Tool discovery while keeping every remote call behind a separately approved local Tool and governed Action.
 - Kept restricted HTTP GET and fenced HTTP write results on the same governed result membrane.
+- Generated every manifest digest from repository-canonical LF bytes and pinned LF in Git, fixing the broken manifest carried by the previous beta tag.
 
 ## 0.1.0-beta.1 - 2026-08-25
 

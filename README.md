@@ -30,7 +30,7 @@ hidden order-processing policy or other business workflow.
 Clone the current beta release:
 
 ```bash
-git clone --branch v0.1.0-beta.1 --depth 1 https://github.com/rulith-dev/rulith-runtime.git
+git clone --depth 1 https://github.com/rulith-dev/rulith-runtime.git
 cd rulith-runtime
 npm test
 ```
