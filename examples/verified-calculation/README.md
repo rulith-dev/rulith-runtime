@@ -31,7 +31,7 @@ installation ritual and there is no starter-only installer. After installation, 
 **Agent → Configuration → Data sources**
 and bind `verified-calculation-local` to `verified-calc-worker`. This deployment
 binding belongs to the Agent and is deliberately absent from the reusable Source package.
-Governance owns the installed recipe and binding; the local REPL and Worker cannot replace
+Governance owns the installed recipe and binding; the local Agent and Worker cannot replace
 either. Then run:
 
 ```powershell
@@ -40,8 +40,8 @@ node verified-calculation-setup.mjs
 cd rulith-verified-calculation
 ```
 
-The setup program downloads the public REPL and Worker plus `worker-tools.json`, the local
-Adapters, and sample data. It does not request or store your Agent token, model key,
+The setup program downloads `worker-tools.json`, the local Adapters, and sample data.
+It does not request or store your Agent token, model key,
 Connection key, or Agent configuration.
 
 ## Prepare from this source checkout
@@ -53,11 +53,11 @@ cd examples/verified-calculation
 node prepare-runtime.mjs
 ```
 
-Configure the Agent Runtime directly or through Station. The business-key values
+Configure Rulith Local in Agent+Worker mode. The business-key values
 name this Case; Cloud computes the digest and pins it before opening:
 
 ```text
-args: --agent verified-calculation --case-type verified_calculation --business-key {"job_id":"calc-001"} --ui
+agent.args: --agent verified-calculation
 ```
 
 Configure the Worker with its Connection credentials and local Adapter Manifest. The governed
@@ -71,21 +71,20 @@ RULITH_TOOLS_FILE=<this-directory>/runtime/worker-tools.json
 RULITH_WORKER_ROOT=<this-directory>/runtime
 ```
 
-If another Station already works on this machine, derive a separate local config
+If another Rulith Local configuration already works on this machine, derive a separate config
 without changing the existing one:
 
 ```powershell
-node prepare-station.mjs D:\path\to\working\rulith-station.json
-$env:RULITH_STATION_CONFIG="$PWD\runtime\rulith-station.json"
-$env:RULITH_STATION_PORT="7791"
-$env:RULITH_STATION_KEY="st-calculation-demo"
-node ..\..\station\rulith-station.mjs
+node prepare-local.mjs D:\path\to\working\rulith-local.json
+$env:RULITH_LOCAL_CONFIG="$PWD\runtime\rulith-local.json"
+$env:RULITH_LOCAL_PORT="7791"
+node ..\..\local\rulith-local.mjs start --role agent+worker
 ```
 
-`prepare-station.mjs` copies credential values only into the ignored local runtime
+`prepare-local.mjs` copies credential values only into the ignored local runtime
 directory and never prints them.
 
-Start REPL and Worker, then submit:
+Open the printed Local UI, then submit:
 
 ```text
 Read the configured calculation input, calculate the exact total, and write the verified result.

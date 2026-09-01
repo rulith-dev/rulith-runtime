@@ -8,11 +8,12 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, toolFromSpec, workerToolManifest } from '../worker/rulith-worker.mjs'
-import { applyEnvEdit, maskEnv, stationPage } from '../station/rulith-station.mjs'
+import { applyEnvEdit, createLocalHost, defaultLocalConfig, maskEnv, modeOf, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
+import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
-const PRODUCTION_DIRS = ['agent', 'worker', 'station', 'examples', 'config']
+const PRODUCTION_DIRS = ['agent', 'worker', 'local', 'examples', 'config']
 const LEGACY_RESPONSE_PATTERNS = [
   '/不认|不收|未知|无此|不支持|不识别|unknown|unsupported|unrecognized|not recognized/i',
   '/(?:已存在|already exists)/i',
@@ -64,11 +65,41 @@ test('worker prioritizes world-changing actions while preserving stable order', 
   assert.deepEqual(orderWork(rows).map((x) => x.id), ['a1', 'a2', 'v1', 'e1'])
 })
 
-test('station masks secrets and never persists the mask as a credential', () => {
+test('Rulith Local masks secrets and never persists the mask as a credential', () => {
   const prior = { RULITH_TOKEN: 'token-123456', RULITH_URL: 'https://api.rulith.ai' }
   const view = maskEnv(prior)
   assert.equal(view.RULITH_TOKEN, '••••3456')
   assert.deepEqual(applyEnvEdit(prior, view), prior)
+})
+
+test('Rulith Local has exactly agent, worker, and combined startup modes', () => {
+  assert.deepEqual(rolesOf('agent'), ['agent'])
+  assert.deepEqual(rolesOf('worker'), ['worker'])
+  assert.deepEqual(rolesOf('agent+worker'), ['agent', 'worker'])
+  assert.equal(modeOf(['agent', 'worker']), 'agent+worker')
+  assert.deepEqual(rolesFromArgs(['start', '--role', 'worker'], ['agent']), ['worker'])
+  assert.throws(() => rolesOf('operator'), /agent, worker, or both/)
+})
+
+test('Rulith Local starts exactly the selected roles and receives structured child events', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-roles-'))
+  const child = join(dir, 'role.mjs')
+  writeFileSync(child, `process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'ready'}});setInterval(()=>{},1000)\n`)
+  try {
+    for (const [mode, expected] of [['agent', { agent: true, worker: false }], ['worker', { agent: false, worker: true }], ['agent+worker', { agent: true, worker: true }]]) {
+      const config = defaultLocalConfig()
+      config.paths = { agent: child, worker: child }
+      const host = createLocalHost({ configFile: join(dir, `${mode}.json`), config, roles: rolesOf(mode), port: 0, key: 'test-key' })
+      try {
+        await host.listen()
+        await new Promise((accept) => setTimeout(accept, 80))
+        assert.deepEqual(host.status(), { mode, roles: rolesOf(mode), ...expected })
+        const sources = new Set(host.events().filter((event) => event.type === 'ready').map((event) => event.src))
+        assert.equal(sources.has('agent'), expected.agent)
+        assert.equal(sources.has('worker'), expected.worker)
+      } finally { await host.close() }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('built-in workspace Tools expose a bounded read set and require an explicit write mode', () => {
@@ -260,14 +291,15 @@ test('HTTP Tools stay under the governed Source origin and preserve typed GET/wr
   }
 })
 
-test('agent help is available before credentials and documents the UI port', () => {
+test('agent help is available before credentials and points automation at the service port', () => {
   const run = spawnSync(process.execPath, ['agent/rulith-agent.mjs', '--help'], {
     cwd: ROOT,
     env: { ...process.env, RULITH_TOKEN: '', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '' },
     encoding: 'utf8',
   })
   assert.equal(run.status, 0, run.stderr)
-  assert.match(run.stdout, /RULITH_UI_PORT/)
+  assert.match(run.stdout, /RULITH_SERVE_PORT/)
+  assert.doesNotMatch(run.stdout, /--ui|RULITH_UI_PORT/)
   assert.match(run.stdout, /--case <id>/)
   assert.doesNotMatch(run.stdout, /--case-boards|--recipe/)
   assert.doesNotMatch(run.stderr, /missing/i)
@@ -403,12 +435,17 @@ test('agent lifecycle events shown to users use the English product vocabulary',
   assert.doesNotMatch(source, /log\(`◎ 案卷/)
 })
 
-test('station presents the public local workflow in English', () => {
-  const visible = stationPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
-  assert.match(stationPage, /Local control room/)
-  assert.match(stationPage, /Maximum concurrent cases/)
-  assert.match(stationPage, /Worker activity/)
-  assert.match(stationPage, /Board: action/)
+test('Rulith Local presents a familiar Case-first Agent workbench in English', () => {
+  const visible = localPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
+  const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(localPage)?.[1]
+  assert.ok(script)
+  assert.doesNotThrow(() => new Function(script), 'the embedded Local UI script must compile')
+  assert.match(localPage, /New Case/)
+  assert.match(localPage, /Case View/)
+  assert.match(localPage, /Current frontier/)
+  assert.match(localPage, /Worker activity/)
+  assert.match(localPage, /Give the Agent a task/)
+  assert.match(localPage, /receipt committed/)
   assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
 })
 
@@ -484,7 +521,8 @@ test('public runtime contains no private deployment addresses or credential mate
   for (const rel of [
     'agent/rulith-agent.mjs',
     'worker/rulith-worker.mjs',
-    'station/rulith-station.mjs',
+    'local/rulith-local.mjs',
+    'local/local-ui.mjs',
   ]) {
     const source = readFileSync(join(ROOT, rel), 'utf8')
     assert.doesNotMatch(source, /-----BEGIN [A-Z ]*PRIVATE KEY-----/)
@@ -513,7 +551,7 @@ test('public runtime contains no private deployment addresses or credential mate
 /** Environment variable names the shipped runtime actually reads. */
 function runtimeEnvNamesRead() {
   const names = new Set()
-  const roots = ['agent', 'worker', 'station', 'examples', 'scripts']
+  const roots = ['agent', 'worker', 'local', 'examples', 'scripts']
   for (const root of roots) {
     const dir = join(ROOT, root)
     if (!existsSync(dir)) continue
@@ -542,7 +580,7 @@ const PUBLIC_INSTRUCTION_FILES = [
   'SUPPORT.md',
   'CONTRIBUTING.md',
   'examples/verified-calculation/README.md',
-  'config/rulith-station.example.json',
+  'config/rulith-local.example.json',
   'config/rulith-sources.example.json',
   'config/worker-tools.example.json',
 ]
@@ -573,7 +611,7 @@ test('committed public files only teach environment variables the runtime reads'
 test('committed public files only teach Agent flags the Agent accepts', () => {
   const accepted = agentFlagsAccepted()
   assert.ok(accepted.size >= 4, `only extracted ${accepted.size} accepted flags — the parser scan failed`)
-  assert.ok(accepted.has('--agent') && accepted.has('--ui'), 'the flag extractor is not reading the real parser')
+  assert.ok(accepted.has('--agent') && accepted.has('--serve'), 'the flag extractor is not reading the real parser')
 
   // Only flags on an Agent invocation count. `git clone --depth` in the same README
   // belongs to another command; widening the scan to every flag would make this guard
@@ -587,11 +625,11 @@ test('committed public files only teach Agent flags the Agent accepts', () => {
       for (const m of line.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]*)/g)) taught.push({ flag: m[1], rel })
     }
   }
-  // The Station example launches the Agent through `paths.repl`, so its argument
+  // The Local example launches the Agent through `paths.agent`, so its argument
   // array is an Agent invocation even though the binary name is on another line.
-  const station = JSON.parse(readFileSync(join(ROOT, 'config', 'rulith-station.example.json'), 'utf8'))
-  for (const arg of station.repl?.args ?? []) {
-    if (/^--/.test(arg)) taught.push({ flag: arg, rel: 'config/rulith-station.example.json' })
+  const local = JSON.parse(readFileSync(join(ROOT, 'config', 'rulith-local.example.json'), 'utf8'))
+  for (const arg of local.agent?.args ?? []) {
+    if (/^--/.test(arg)) taught.push({ flag: arg, rel: 'config/rulith-local.example.json' })
   }
   assert.ok(taught.length >= 3, `only found ${taught.length} taught Agent flags — the invocation scan is not matching`)
 

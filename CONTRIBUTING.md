@@ -4,7 +4,7 @@ The local runtime is intentionally small and protocol-focused. Contributions sho
 preserve these boundaries:
 
 - Business vocabulary and workflow policy belong in capability packages and examples,
-  not in Agent Runtime, Worker, or Station.
+  not in Agent Runtime, Worker, or the Rulith Local host.
 - Worker implementations must remain capability-scoped and fail closed when a tool,
   source, credential, or argument contract is missing.
 - A work receipt is evidence of execution, not authority to verify or close a case.

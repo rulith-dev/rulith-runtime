@@ -4,7 +4,7 @@
 
 Do not open a public issue for a vulnerability involving credentials, cross-tenant
 access, command execution, source access, or receipt forgery. Email
-`security@rulith.com` with a minimal reproduction and affected version. Do not include
+`security@rulith.ai` with a minimal reproduction and affected version. Do not include
 live customer data or reusable credentials.
 
 ## Credential placement
@@ -12,15 +12,15 @@ live customer data or reusable credentials.
 - Keep `RULITH_TOKEN` and model credentials in the Agent Runtime environment.
 - Keep `RULITH_CONNECTION_KEY` and source credentials on the Worker machine.
 - Do not put passwords, tokens, private keys, or DSNs with embedded passwords in
-  capability packages, recipes, board facts, Station configuration committed to Git,
+  capability packages, recipes, board facts, Rulith Local configuration committed to Git,
   or issue reports.
 - Restrict local configuration files to the operating-system account that runs the
   process.
 
 ## Network boundary
 
-Agent Runtime and Worker use outbound connections. Station and the optional Agent UI
-listen on loopback only and require random per-run keys. Do not publish those ports
+Agent Runtime and Worker use outbound connections. The Local UI listens on loopback
+only and requires a random per-run key. Do not publish that port
 through a reverse proxy or bind them to a public interface.
 
 ## Tool boundary

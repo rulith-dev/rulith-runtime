@@ -13,7 +13,6 @@
  * evidence, decisions, receipts, and the Case lifecycle.
  */
 import http from 'node:http'
-import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
 const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/$/, '')
@@ -22,15 +21,7 @@ const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY 
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
 const MODEL_URL = process.env.RULITH_MODEL_URL ?? 'https://api.anthropic.com/v1/messages'
 const MAX_ROUNDS = Number(process.env.RULITH_MAX_ROUNDS ?? 12)
-const UI_PORT = Number(process.env.RULITH_UI_PORT ?? 7788)
-// 本机界面的门钥: 每次启动随机。回环不是边界——浏览器里的任意网页都能往 127.0.0.1 发
-// 简单请求(text/plain 连预检都不触发),没这把钥等于给任何网页留了个盲注入口。
-// RULITH_UI_KEY=托管方注入(2026-08-18 本地站): 站拉起本进程时传自己生成的钥,才订阅得了
-// /events。嵌入合同本来就写明"嵌入方带钥"——这只是让钥可以由嵌入方发,门的三道一道不少。
-const UI_KEY = (process.env.RULITH_UI_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
-const UI_MAX_BODY = 64 * 1024
-// 接单脑的门钥: 与界面钥同律(每次启动随机、回环不是边界)。**两把不同的钥**——
-// 收单口能塞任务给一个有板写权限的智能体,权限比"看时间线"高一档,不该共用一把。
+const LOCAL_REQUEST_MAX_BODY = 64 * 1024
 const SERVE_PORT = Number(process.env.RULITH_SERVE_PORT ?? 7799)
 const SERVE_KEY = (process.env.RULITH_SERVE_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
 const SERVE_RUNS_MAX = Math.max(1, Number(process.env.RULITH_SERVE_RUNS ?? 200))
@@ -49,7 +40,6 @@ Usage:
 
 Options:
   --agent <id>       Agent id in Console (default: default)
-  --ui               Open the loopback timeline UI
   --serve            Accept tasks through the local service endpoint
   --case <id>        Resume an existing case for the first segment
   --case-type <id>   Case Type from the installed Capability catalog (default: exploration)
@@ -66,14 +56,11 @@ Common optional environment:
   RULITH_MODEL       Model identifier
   RULITH_MODEL_URL   Model API endpoint
   RULITH_MAX_ROUNDS  Maximum model rounds (default: 12)
-  RULITH_UI_PORT     Timeline UI port (default: 7788)
-  RULITH_UI_OPEN     Set to off to serve the UI without opening a browser
   RULITH_SERVE_PORT  Local task endpoint port (default: 7799)
 `)
   process.exit(0)
 }
 let agentId = 'default'
-let withUi = false
 let withShadow = false
 let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
 /** Resume one existing Case Context for the first segment only. */
@@ -83,7 +70,6 @@ let selectedBusinessKeyRaw = (process.env.RULITH_BUSINESS_KEY_JSON ?? '').trim()
 const rest = []
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--agent' && argv[i + 1] !== undefined) { agentId = argv[++i]; continue }
-  if (argv[i] === '--ui') { withUi = true; continue }
   if (argv[i] === '--serve') { withServe = true; continue }
   if (argv[i] === '--shadow') { withShadow = true; continue }
   if (argv[i] === '--case' && argv[i + 1] !== undefined) { resumeCase = argv[++i]; continue }
@@ -129,15 +115,18 @@ const nextCaseId = () => {
   caseSeq += 1
   return `${CASE_PREFIX}-${ymd}-${String(caseSeq).padStart(2, '0')}-${randomUUID().slice(0, 4)}`
 }
-
 // ── 事件总线：终端与界面看同一份流（界面晚开也能补看，历史全留） ──────────
 const events = []
 const clients = new Set()
 function emit(type, data) {
   const ev = { t: Date.now(), type, ...data }
-  events.push(ev)
-  const line = `data: ${JSON.stringify(ev)}\n\n`
-  for (const res of clients) { try { res.write(line) } catch { clients.delete(res) } }
+  if (process.env.RULITH_LOCAL_EVENTS === 'ipc' && typeof process.send === 'function') {
+    try { process.send({ protocol: 'rulith-local-event', event: ev }) } catch { /* Local display must never block a Case. */ }
+  } else {
+    events.push(ev)
+    const line = `data: ${JSON.stringify(ev)}\n\n`
+    for (const res of clients) { try { res.write(line) } catch { clients.delete(res) } }
+  }
   traceForward(ev)
 }
 
@@ -230,190 +219,6 @@ const emitOn = (ctx, type, data) => emit(type, {
   ...(ctx.board === undefined || ctx.board === '' ? {} : { board: ctx.board }),
   ...data,
 })
-
-// ── 界面（零依赖：内置 http + 内联页面 + SSE） ─────────────────────────
-const PAGE = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>rulith-agent · reasoning timeline</title>
-<style>
-:root{--bg:#0a0d13;--panel:#10161f;--line:#1d2735;--fg:#e8eef5;--dim:#8b98a8;--faint:#707d8e;
---cyan:#35d0ba;--amber:#e0a03a;--green:#34d399;--red:#f87171}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
-font:14.5px/1.7 -apple-system,"Segoe UI",system-ui,sans-serif}
-.wrap{max-width:900px;margin:0 auto;padding:26px 20px 60px}
-h1{font-size:19px;margin:0 0 4px}.sub{color:var(--dim);font-size:13px}
-.pill{display:inline-flex;gap:6px;align-items:center;padding:3px 10px;border-radius:99px;font-size:12px;
-border:1px solid var(--line);color:var(--dim)}
-.pill.run{color:var(--cyan);border-color:rgba(53,208,186,.4)}
-.pill.ok{color:var(--green);border-color:rgba(52,211,153,.4)}
-.pill.stop{color:var(--amber);border-color:rgba(224,160,58,.4)}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
-.round{color:var(--faint);font-size:12px;letter-spacing:.6px;margin:22px 0 6px}
-.say{white-space:pre-wrap}
-.verdict{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
-.accept{color:var(--green)}.reject{color:var(--amber)}
-pre{background:#0b1119;border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow:auto;
-font:12.5px/1.6 ui-monospace,Consolas,monospace;margin:8px 0 0;white-space:pre-wrap;word-break:break-all}
-details summary{cursor:pointer;color:var(--faint);font-size:12.5px}
-a{color:var(--cyan)}
-.why{color:var(--dim);font-size:13px;margin-top:4px}
-</style></head><body><div class="wrap">
-<h1>rulith-agent · reasoning timeline</h1>
-<p class="sub" id="head">Connecting…</p>
-<div id="feed"></div>
-<div id="saybox" style="display:none;position:sticky;bottom:0;background:var(--bg);padding:12px 0 18px">
-  <form id="sayform" style="display:flex;gap:8px">
-    <input id="saytext" placeholder="Continue the conversation…" style="flex:1;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:14px">
-    <button style="background:var(--cyan);color:#06231f;border:0;border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer">Send</button>
-  </form>
-</div>
-</div>
-<script data-k="__UI_KEY__">
-const esc=(s)=>String(s).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
-const feed=document.getElementById('feed')
-const add=(html)=>{const d=document.createElement('div');d.innerHTML=html;feed.appendChild(d);window.scrollTo(0,document.body.scrollHeight)}
-const UIK=document.currentScript?document.currentScript.dataset.k:window.__UIK
-const es=new EventSource('/events?k='+encodeURIComponent(UIK))
-es.onmessage=(m)=>{
-  const e=JSON.parse(m.data)
-  if(e.type==='start'){
-    document.getElementById('head').innerHTML='Agent <b>'+esc(e.agent)+'</b> · '+esc(e.url)+
-      ' <span class="pill run">Running</span><div class="why">Task: '+esc(e.task)+'</div>'
-    add('<div class="card"><div class="sub">Initial board state</div><pre>'+esc(e.projection||'(empty)')+'</pre></div>')
-  }
-  if(e.type==='user'){
-    document.getElementById('saybox').style.display='block' // 对话形态才会有 user 事件——露出输入框
-    add('<div class="card" style="border-color:rgba(53,208,186,.35)"><div class="sub">You</div><div class="say">'+esc(e.text)+'</div></div>')
-  }
-  if(e.type==='case-open') add('<div class="round">'+(e.ok?(e.healed?'Previous case closed → new case ':'Case opened · ')+esc(e.board):'Could not open case · '+esc(e.teaching||''))+'</div>')
-  if(e.type==='segment-end') add('<div class="round">'+esc(e.note||'')+'</div>')
-  if(e.type==='round') add('<div class="round">Round '+e.n+'</div>')
-  if(e.type==='propose') add('<div class="card"><div class="say">'+esc(e.say||'(The model proposed operations only.)')+'</div>'+
-    (e.ops?'<details><summary>Proposed '+e.ops.length+' operation(s)</summary><pre>'+esc(JSON.stringify(e.ops,null,2))+'</pre></details>':'')+
-    (e.cmds?'<details><summary>Issued '+e.cmds.length+' command(s) ('+esc(e.cmds.map((c)=>c.action||c.kind).join(' → '))+')</summary><pre>'+esc(JSON.stringify(e.cmds,null,2))+'</pre></details>':'')+'</div>')
-  if(e.type==='verdict'){
-    const box=e.accepted
-      ? e.cmd
-        ? e.done===true
-          ? '<div class="verdict '+(e.ok===true?'accept':'reject')+'"><b>Board: action '+(e.ok===true?'completed':'failed')+'</b> · '+esc(e.cmd)+' · invocation '+esc(e.invocation||'')+' · revision '+esc(e.revision||'')+'</div>'
-          : '<div class="verdict reject"><b>Board: action accepted but not completed synchronously</b> · '+esc(e.cmd)+' · invocation '+esc(e.invocation||'')+' · revision '+esc(e.revision||'')+'</div>'
-        : '<div class="verdict accept"><b>Board: accepted</b> · '+e.added+' item(s) added · revision '+esc(e.revision||'')+'</div>'
-      : '<div class="verdict reject"><b>Board: rejected</b><div class="why">'+esc(e.teaching)+'</div>'+
-        '<div class="why" style="color:var(--faint)">The board returns this guidance to the model so it can correct the request.</div></div>'
-    feed.lastElementChild.firstElementChild.insertAdjacentHTML('beforeend',box)
-    window.scrollTo(0,document.body.scrollHeight)
-  }
-  if(e.type==='end'){
-    document.getElementById('head').querySelector('.pill').outerHTML=
-      '<span class="pill '+(e.ok?'ok':'stop')+'">'+esc(e.note)+'</span>'
-    add('<div class="round">Final authoritative board state</div><div class="card"><pre>'+esc(e.projection)+'</pre>'+
-      '<p class="sub" style="margin:10px 0 0">Verify in Console: <a href="'+esc(e.console)+'" target="_blank" rel="noopener">'+esc(e.console)+'</a></p></div>')
-  }
-}
-document.getElementById('sayform').addEventListener('submit',async(ev)=>{
-  ev.preventDefault()
-  const t=document.getElementById('saytext')
-  const v=t.value.trim(); if(!v)return
-  t.value=''
-  await fetch('/say',{method:'POST',headers:{'content-type':'application/json','x-rulith-ui':UIK},body:JSON.stringify({text:v})}).catch(()=>{})
-})
-</script></body></html>`
-
-let server = null
-// 浏览器/GUI 脸的输入面挂点: REPL 收件箱把自己注册进来(--ui 且对话形态时),POST /say 即投递。
-// 这就是「嵌入别的应用」的全部合同: GET /events 出(SSE,晚开补看全史) + POST /say 进。
-let uiInput = null
-if (withUi) {
-  // 门(三道,都便宜): ① 随机钥(头或 query) ② Origin/Host 必须是本机自己 ③ 只收 JSON、封顶 64KB。
-  // 任何一道不过就 403 并说清缘由——嵌入方照着补,攻击者拿不到钥。
-  const uiGate = (req) => {
-    const url = new URL(req.url, 'http://127.0.0.1')
-    const key = req.headers['x-rulith-ui'] ?? url.searchParams.get('k') ?? ''
-    if (key !== UI_KEY) return 'Missing or invalid UI key. Use the key printed at startup: x-rulith-ui for requests, or ?k= for SSE.'
-    const origin = req.headers.origin
-    if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return `Cross-origin request rejected (Origin: ${origin}). The local UI accepts local origins only.`
-    const host = String(req.headers.host ?? '')
-    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return `Non-local Host rejected (${host}) to prevent DNS rebinding.`
-    return null
-  }
-  server = http.createServer((req, res) => {
-    // 缺省 403 是**门**的码(钥/源/内容类型);`bad_command` 那一类要显式给 400——
-    // 「不许你」和「这条命令不成形」是两件事,拿同一个码说会让客户端分不开该改什么。
-    // (本文件下方 `--serve` 那个 deny 一直有这个形参,这一处 2026-08-22 补齐——
-    //  同一个仓里两份同名助手,一份没跟上,正是本轮两仓反复撞见的形状。)
-    const deny = (why, status = 403) => {
-      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ ok: false, teaching: why }))
-    }
-    if (req.method === 'POST' && req.url === '/say') {
-      const bad = uiGate(req)
-      if (bad !== null) return deny(bad)
-      const ct = String(req.headers['content-type'] ?? '')
-      if (!ct.startsWith('application/json')) return deny('Only application/json is accepted; plain-text bodies can bypass browser preflight checks.')
-      // 按字节收、收完再解码(2026-08-18): 逐块拼字符串会把跨块的多字节字符切坏——
-      // 短消息永远正常、长消息偶发乱码,是最难查的那一类。
-      const chunks = []
-      let size = 0
-      let over = false
-      req.on('data', (c) => {
-        size += c.length
-        if (size > UI_MAX_BODY) { over = true; req.destroy(); return }
-        chunks.push(c)
-      })
-      req.on('end', () => {
-        if (over) return deny('Request body exceeds 64KB.')
-        let text = ''
-        try { text = String(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}').text ?? '') } catch { return deny('Body is not valid JSON. Expected {"text":"…"}.') }
-        // **一段全是 `�` 的文字不是任务**(2026-08-22 真机看图撞出,RT-AUI-4)。
-        //
-        // 那次的 `推理时间线` 页面上「你」整行是替换字符,而它下面照样写着
-        // 「开案 · 案卷 orders-…-41d9」——**乱码开成了一件案卷**,上了板、烧了模型轮、留在「在办」。
-        //
-        // 成因不在这里(那次是 `curl.exe` 收命令行参数时按 Windows ANSI 码页转过一道,
-        // 中文在参数里就烂了;本函数上面那句「按字节收、收完再解码」是对的)。
-        // **但"来源不是我们"不等于"我们不用管"**:非法字节被 Node 解成 U+FFFD 之后,
-        // 这里拿到的是一个**合法的 JS 字符串**,于是一路放行。凡是编码坏掉的客户端
-        // (不同的终端、代理、被截断的多字节流)都会走到这一格。
-        //
-        // 判据看**占比**不看"有没有":正文里偶尔一个替换字符是他的**内容**脏,不是他的编码坏。
-        const bad = (text.match(/�/g) ?? []).length
-        if (text.length >= 4 && bad / text.length > 0.3) {
-          return deny(`The text contains ${bad}/${text.length} Unicode replacement characters (�), so the incoming bytes were not valid UTF-8. ` +
-            `The board would preserve the corrupted text. Send a UTF-8 file (for example, curl --data-binary @file) or fix the sender encoding.`, 400)
-        }
-        if (uiInput === null) {
-          res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ ok: false, teaching: 'This one-shot run does not accept follow-up messages. Start without a task argument to enter interactive mode.' }))
-          return
-        }
-        uiInput(text)
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end('{"ok":true}')
-      })
-      return
-    }
-    if (req.url.startsWith('/events')) {
-      const bad = uiGate(req)
-      if (bad !== null) return deny(bad)
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
-      for (const ev of events) res.write(`data: ${JSON.stringify(ev)}\n\n`) // 晚开的页面补看全程
-      clients.add(res)
-      req.on('close', () => clients.delete(res))
-      return
-    }
-    const bad = uiGate(req)
-    if (bad !== null) return deny(bad)
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    res.end(PAGE.replace('__UI_KEY__', UI_KEY))
-  })
-  await new Promise((r) => server.listen(UI_PORT, '127.0.0.1', r))
-  const url = `http://127.0.0.1:${UI_PORT}/?k=${UI_KEY}`
-  console.log(`\nLocal UI: ${url} (loopback only; the key is randomized at every start; embedded clients should send x-rulith-ui)`)
-  // 无头/嵌入场景(以及自动化测试)不该弹浏览器: RULITH_UI_OPEN=off 只起服务不开窗
-  const opener = (process.env.RULITH_UI_OPEN ?? '') === 'off' ? null
-    : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
-    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]]
-  try { if (opener !== null) spawn(opener[0], opener[1], { stdio: 'ignore', detached: true }).unref() } catch { /* 打不开就手点上面那个地址 */ }
-}
 
 // ── Board Protocol client ─────────────────────────────────────────────────
 // Configuration and Board lifecycle belong to Console/governance. This local
@@ -600,9 +405,8 @@ const projectionText = async (ctx) => {
 
 // ══ viz 那套循环的四个器官（2026-08-06 搬进来）══════════════════════════
 //
-// 用户裁定：viz 演示里的循环是唯一满意的形态，REPL 要照它的功能来，但**全部走云协议 op**。
-// 它在 apps 侧是 `runProtocolAgent`（rulith-agent-runtime），本文件不能 import 它——
-// REPL 是**单文件零依赖可分发物**，客户机上只有一个 node 就得能跑，接那个包会拖进整个 rulith-core。
+// This loop follows the protocol-native execution behavior while remaining a
+// zero-dependency distributable Agent role. It cannot import the private Core.
 // 所以这里是**按协议面重新实现**，不是复制代码：能对齐的是行为，对不齐的是实现。
 //
 // 搬了什么、为什么：
@@ -1106,7 +910,7 @@ ${messages[0].content}`,
 /** 插话取件口（viz 的 pollUserMsg 在协议面的对应）。CHAT 形态由收件箱挂上；
  *  CLI 形态**故意留空**——一次办完的脚本/CI 没有第二个说话的人,给它一个空钩比给它半个功能诚实。
  *
- *  **只喂缺省槽**(2026-08-07 分槽): stdin 与 --ui 的 /say 是**一个人**在这台机器前说话,
+ *  **只喂缺省槽**(2026-08-07 分槽): stdin belongs to the one local terminal operator,
  *  他说的话属于他自己那条对话,不属于某位远程客户的会话槽。把它散给所有槽=把本机操作者的
  *  插话注进别人的案子;随便挑一个槽=更糟(不确定注给了谁)。所以判据是"槽是不是缺省槽"。 */
 let pollInterject = null
@@ -1549,7 +1353,7 @@ if (SERVE) {
     return slot
   }
 
-  // 门与 --ui 同律同码: 随机钥(头或 query) + Origin/Host 只认本机 + 只收 JSON 封顶 64KB。
+  // The local service uses a random key, a loopback Host/Origin gate, and a 64KB JSON body cap.
   const serveGate = (req) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     const key = req.headers['x-rulith-serve'] ?? url.searchParams.get('k') ?? ''
@@ -1589,7 +1393,7 @@ if (SERVE) {
       const bodyChunks = []
       let size = 0
       let over = false
-      req.on('data', (c) => { size += c.length; if (size > UI_MAX_BODY) { over = true; req.destroy(); return } bodyChunks.push(c) })
+      req.on('data', (c) => { size += c.length; if (size > LOCAL_REQUEST_MAX_BODY) { over = true; req.destroy(); return } bodyChunks.push(c) })
       req.on('end', () => {
         if (over) return deny('Request body exceeds 64KB.')
         const raw = Buffer.concat(bodyChunks).toString('utf8')
@@ -1639,7 +1443,7 @@ if (SERVE) {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         return void res.end(JSON.stringify(snapshot()))
       }
-      // SSE: 与 --ui 的 /events 是**同一条事件流**(晚开补看全史)——两张脸不各写一套时间线
+      // Standalone automation may observe the same bounded event stream that Local receives over IPC.
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
       for (const ev of events) res.write(`data: ${JSON.stringify(ev)}\n\n`)
       clients.add(res)
@@ -1754,12 +1558,9 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     console: seen,
     ...(pendingCaseId === null ? {} : { pendingCaseId }),
   })
-  if (withUi) log(`The local timeline remains available at http://127.0.0.1:${UI_PORT}. Press Ctrl+C to exit.`)
-  else process.exit(0)
+  process.exit(0)
 } else {
-  // ── 多轮对话(桌面主形态,2026-08-01): **REPL 进程是本体,界面是可插拔的脸**——
-  //    终端(人敲)、管道(脚本/别的智能体把它当子进程)、浏览器/GUI(--ui: SSE /events 出 + POST /say 进)
-  //    全部汇入同一个收件箱、驱动同一个循环。嵌进别的应用=接管这两条流,不必改本体。
+  // Interactive terminal client. Browser interaction belongs to the Rulith Local host.
   const inbox = []
   let wake = null
   let stdinOpen = true
@@ -1773,7 +1574,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     for (;;) {
       if (inbox.length > 0) return inbox.shift()
       // stdin 关了(管道用完)且没有别的脸在喂 → 如实收工,不是炸(ERR_USE_AFTER_CLOSE 真机踩过)
-      if (!stdinOpen && !withUi) return null
+      if (!stdinOpen) return null
       await new Promise((r) => { wake = r })
     }
   }
@@ -1781,7 +1582,6 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   const rl = createInterface({ input: process.stdin })
   rl.on('line', (l) => pushInput(l))
   rl.on('close', () => { stdinOpen = false; if (wake) { const w = wake; wake = null; w() } })
-  if (withUi) uiInput = pushInput // 浏览器脸的输入面挂进来(POST /say)
   // 插话不打断: 段跑着的时候来的话,当轮就进对话——不必排队等本段跑完(viz 逐义)。
   // 取自**同一个收件箱**,所以终端/管道/浏览器三张脸都自动获得这个能力,无需各自接线。
   //
@@ -1795,7 +1595,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   log('The transcript stays on this machine and is not written to the board. Empty lines are ignored. Use exit, quit, or Ctrl+C to stop.\n')
   emit('start', { agentId, url: URL_BASE, task: '(interactive)', projection: '' })
   for (;;) {
-    if (inbox.length === 0 && (stdinOpen || withUi)) process.stdout.write('You> ')
+    if (inbox.length === 0 && stdinOpen) process.stdout.write('You> ')
     const line = await nextInput()
     if (line === null) break
     if (line === 'exit' || line === 'quit') break

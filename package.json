@@ -3,7 +3,10 @@
   "version": "0.1.0-beta.1",
   "private": true,
   "type": "module",
-  "description": "Open-source local Agent Runtime, Worker, and Station for Rulith Cloud",
+  "description": "Open-source Rulith Local runtime with Agent, Worker, and combined modes",
+  "bin": {
+    "rulith": "local/rulith-local.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/rulith-dev/rulith-runtime.git"
@@ -14,7 +17,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check station/rulith-station.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-station.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs",
+    "start": "node local/rulith-local.mjs start",
+    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-local.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs",
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "test": "node --test test/*.test.mjs"
   }

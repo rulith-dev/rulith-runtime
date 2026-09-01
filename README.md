@@ -1,16 +1,18 @@
 # Rulith Local Runtime
 
-This repository contains the local half of Rulith:
+This repository contains **Rulith Local**, the local half of Rulith. One runtime
+can start in Agent, Worker, or Agent+Worker mode and always exposes the same
+loopback Local UI.
 
 It is the canonical source for the downloadable local runtime. Hosted services may
 carry release copies of these files, but changes must originate here and retain the
 hashes recorded in `artifact-manifest.json`.
 
-| Component | Responsibility | Trust boundary |
+| Role | Responsibility | Trust boundary |
 | --- | --- | --- |
 | Agent Runtime | Drives the model-to-board loop | Model credentials stay in this process |
 | Worker | Executes declared tools and reports synchronous receipts | Source credentials stay in the local vault |
-| Station | Starts, stops, configures, and observes both processes | Listens on loopback and requires a per-run key |
+| Local host | Starts selected roles and projects one Case-aware CLI/Web experience | Listens on loopback and requires a per-run key |
 
 The runtime is domain-neutral. An Agent reasons in Actions. Its installed Capability
 defines vocabulary, criteria, Actions, and Source requirements; an independent
@@ -33,8 +35,17 @@ cd rulith-runtime
 npm test
 ```
 
-No build step is required. The three entry points are dependency-free single-file
-ES modules. Database tools load the optional `pg` package only when used.
+No build step is required. Start one of the three supported modes:
+
+```powershell
+npm start -- --role agent
+npm start -- --role worker
+npm start -- --role agent+worker
+```
+
+`rulith start` is the equivalent command after linking or installing this package.
+The Agent and Worker remain separate child processes even in combined mode. Database
+tools load the optional `pg` package only when used.
 
 ## Agent Runtime
 
@@ -43,7 +54,7 @@ $env:RULITH_TOKEN = '<agent-token>'
 $env:RULITH_MODEL_KEY = '<model-key>'
 $env:RULITH_MODEL = '<model-id>'
 $env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'
-node agent/rulith-agent.mjs --agent default --ui
+node agent/rulith-agent.mjs --agent default
 ```
 
 Each task opens one Case under an installed Capability's Case Type. Use the
@@ -73,9 +84,9 @@ or shared Agent law and disappear when the Case closes. Its Terminal Receipt is
 exploratory and never Publisher-billable; only later attribution and replay may
 turn repeated paths into a Capability draft.
 
-`--ui` opens the loopback-only timeline at `http://127.0.0.1:7788`. If that port is
-already in use, set `RULITH_UI_PORT` to another local port. Run
-`node agent/rulith-agent.mjs --help` to inspect options without configuring credentials.
+Use Rulith Local for the browser workbench. The direct Agent entry point remains a
+terminal and automation surface. Run `node agent/rulith-agent.mjs --help` to inspect
+its options without configuring credentials.
 
 The Agent Runtime sends board commands to Rulith Cloud and model requests directly
 to the configured model endpoint. It does not upload the model key to Rulith.
@@ -170,18 +181,25 @@ compiles database placeholders to driver parameters, never SQL interpolation. MC
 discovery is read-only; it does not grant a generic call surface. Each remote MCP Tool
 must still be approved as its own versioned local Tool and governed Action.
 
-## Station
+## Rulith Local
 
-Copy `config/rulith-station.example.json` outside the repository, fill in the local
-values, and run:
+Copy `config/rulith-local.example.json` outside the repository, select `agent`,
+`worker`, or both roles, fill in the local values, and run:
 
 ```powershell
-$env:RULITH_STATION_CONFIG = 'C:\path\to\rulith-station.json'
-node station/rulith-station.mjs
+$env:RULITH_LOCAL_CONFIG = 'C:\path\to\rulith-local.json'
+npm start
 ```
 
-Station prints a loopback URL containing a random key. It is a local process host and
-timeline, not a board and not an authority service.
+Rulith Local prints one loopback URL containing a random key. In Agent+Worker mode,
+the Local UI uses the familiar Agent-workbench shape: Case/conversation navigation on
+the left, dialogue and governed execution in the center, a composer at the bottom,
+and Case View, frontier, Worker activity, evidence, and receipts on the right. Agent
+and Worker modes use role-specific projections of the same UI and event contract.
+
+The Local UI is a view of the runtime, not a board or authority service. A remote
+Worker remains independently deployed and outbound-only; its authoritative activity
+appears through the Cloud Connection and receipts rather than direct Local control.
 
 ## Five-minute verified file workflow
 
@@ -217,9 +235,9 @@ See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.
 ## Project status
 
 The runtime is beta software. Protocol compatibility is versioned, but command-line
-flags and the Station UI may still change before 1.0.
+flags and the Local UI may still change before 1.0.
 
-The Station UI and primary onboarding path are English. Runtime-facing diagnostics
+The Local UI and primary onboarding path are English. Runtime-facing diagnostics
 must be English; internal source comments may use another language.
 
 Please use the [setup question template](https://github.com/rulith-dev/rulith-runtime/issues/new?template=question.yml)

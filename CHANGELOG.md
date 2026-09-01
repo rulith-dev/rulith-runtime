@@ -4,6 +4,9 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Replaced Station as a separate product surface with one role-aware Rulith Local host and Agent workbench.
+- Added Agent, Worker, and Agent+Worker startup modes while preserving separate child-process credentials.
+- Unified Agent and Worker display events over structured child-process IPC.
 - Enabled bounded file list/count/search/read/hash Tools by default; write Tools still require an explicit `read-write` host ceiling.
 - Returned structured, attestable rows from every workspace read Tool and published file writes atomically.
 - Compiled database templates to driver parameters instead of interpolated SQL values.
@@ -12,7 +15,7 @@ All notable changes to the local runtime are documented here.
 
 ## 0.1.0-beta.1 - 2026-08-25
 
-- Published the domain-neutral Agent Runtime, Worker, and Station as an independent
+- Published the domain-neutral Agent Runtime, Worker, and local control host as an independent
   Apache-2.0 repository.
 - Added the verified file calculation workflow: local JSON read, exact board
   derivation, local JSON write, independent read-back, and board acceptance.

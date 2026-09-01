@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Download the public REPL + Worker reference files and prepare a local verified
+ * Download the public Tool manifest and Adapters, then prepare a local verified
  * JSON calculation workspace. Agent capabilities are installed in Console;
  * credentials are never requested or written here.
  */

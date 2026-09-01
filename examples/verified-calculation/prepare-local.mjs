@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Derive a calculation Station config from an existing working Station config.
+ * Derive a verified-calculation Rulith Local config from an existing config.
  * Secrets are copied locally but never printed. The source config is not modified.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -11,7 +11,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const runtime = resolve(process.env.RULITH_CALC_RUNTIME ?? join(HERE, 'runtime'))
 const sourcePath = process.argv[2]
 if (!sourcePath || !existsSync(sourcePath)) {
-  console.error('usage: node prepare-station.mjs <existing-working-rulith-station.json>')
+  console.error('usage: node prepare-local.mjs <existing-working-rulith-local.json>')
   process.exit(2)
 }
 for (const required of ['input.json']) {
@@ -23,19 +23,19 @@ for (const required of ['input.json']) {
 
 let source
 try { source = JSON.parse(readFileSync(resolve(sourcePath), 'utf8')) } catch (error) {
-  console.error(`cannot read source Station config: ${error?.message ?? error}`)
+  console.error(`cannot read source Rulith Local config: ${error?.message ?? error}`)
   process.exit(2)
 }
 const gateway = resolve(HERE, '..', '..')
 const config = {
   ...source,
-  repl: {
-    ...(source.repl ?? {}),
-    args: ['--agent', 'verified-calculation', '--ui'],
+  roles: ['agent', 'worker'],
+  agent: {
+    ...(source.agent ?? {}),
+    args: ['--agent', 'verified-calculation'],
     env: {
-      ...(source.repl?.env ?? {}),
+      ...(source.agent?.env ?? {}),
       RULITH_SERVE_CONCURRENCY: '1',
-      RULITH_UI_PORT: process.env.RULITH_CALC_UI_PORT ?? '7789',
       RULITH_SERVE_PORT: process.env.RULITH_CALC_SERVE_PORT ?? '7800',
     },
   },
@@ -48,10 +48,10 @@ const config = {
     },
   },
   paths: {
-    repl: resolve(gateway, 'agent', 'rulith-agent.mjs'),
+    agent: resolve(gateway, 'agent', 'rulith-agent.mjs'),
     worker: resolve(gateway, 'worker', 'rulith-worker.mjs'),
   },
 }
-const output = join(runtime, 'rulith-station.json')
+const output = join(runtime, 'rulith-local.json')
 writeFileSync(output, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
-console.log(`Station config prepared at ${output} (credential values intentionally not printed)`)
+console.log(`Rulith Local config prepared at ${output} (credential values intentionally not printed)`)

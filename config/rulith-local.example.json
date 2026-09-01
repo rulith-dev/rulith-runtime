@@ -1,6 +1,7 @@
 {
-  "repl": {
-    "args": ["--agent", "default", "--ui"],
+  "roles": ["agent", "worker"],
+  "agent": {
+    "args": ["--agent", "default"],
     "env": {
       "RULITH_URL": "https://api.rulith.ai",
       "RULITH_TOKEN": "",
@@ -17,7 +18,7 @@
     }
   },
   "paths": {
-    "repl": "../agent/rulith-agent.mjs",
+    "agent": "../agent/rulith-agent.mjs",
     "worker": "../worker/rulith-worker.mjs"
   }
 }

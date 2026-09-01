@@ -113,14 +113,18 @@ if (IS_MAIN && (!CONNECTION_ID || !CONNECTION_KEY)) {
   process.exit(2)
 }
 
-// ── 结构化事件（RULITH_WORKER_EVENTS=jsonl，2026-08-18 本地站）───────────────
-// 开了就往 stdout 逐行吐 JSON——**stdout 管道不是网络口**: worker 仍纯出站零入站,
-// 站(rulith-station)作为父进程读自己孩子的标准输出。缺省关闭,人读日志一字不变。
-// 事件与人读日志是同一批挂点的两种写法,不是第二本账。
-const WEV_ON = (process.env.RULITH_WORKER_EVENTS ?? '') === 'jsonl'
+// Structured runtime events use Node IPC under Rulith Local. A standalone
+// Worker may still request JSONL explicitly for a machine-readable terminal.
+const WEV_IPC = process.env.RULITH_LOCAL_EVENTS === 'ipc' && typeof process.send === 'function'
+const WEV_JSONL = (process.env.RULITH_WORKER_EVENTS ?? '') === 'jsonl'
+const WEV_ON = WEV_IPC || WEV_JSONL
 export function wev(type, data = {}) {
   if (!WEV_ON) return
-  try { process.stdout.write(JSON.stringify({ t: Date.now(), type, ...data }) + '\n') } catch { /* 视窗不拦路 */ }
+  const event = { t: Date.now(), type, ...data }
+  try {
+    if (WEV_IPC) process.send({ protocol: 'rulith-local-event', event })
+    else process.stdout.write(JSON.stringify(event) + '\n')
+  } catch { /* Observability never blocks execution. */ }
 }
 /** 人读行与结构化事件是**同一件事的两种写法**，不是两件事（2026-08-18 用户看站输出：
  *  每条流水显示了两遍）。结构化模式下人读行退位——读它的那位（站）本来就在读事件；
