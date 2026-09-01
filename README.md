@@ -35,9 +35,13 @@ npx --yes rulith@latest start --role agent+worker
 ```
 
 The first start creates `~/.rulith/local.json` with owner-only permissions and
-prints the loopback Local UI address. Open **Local settings**, sign in to Rulith
-Cloud, choose the Agent to run on this host, and configure the local model and
-Worker. Manual Agent tokens remain available for headless or CI deployments.
+prints the loopback Local UI address. Edit that file or inject equivalent secrets
+through the deployment environment: one Agent identity and token, one local model
+configuration, and—when Worker is enabled—one Agent-owned Connection and key.
+
+For an OpenAI-compatible local model service, set `RULITH_MODEL_URL` to its server
+root such as `http://127.0.0.1:1234`; the Agent derives `/v1/chat/completions`.
+A model key is optional only for a loopback endpoint; remote providers still require one.
 
 For a persistent command, install globally into a user-writable npm prefix:
 
@@ -217,20 +221,18 @@ the left, dialogue and governed execution in the center, a composer at the botto
 and Case View, frontier, Worker activity, evidence, and receipts on the right. Agent
 and Worker modes use role-specific projections of the same UI and event contract.
 
-The lower-left account entry uses OAuth dynamic client registration and loopback
-PKCE. It reads the signed-in account's Cloud Agents and exchanges the account session
-for one credential scoped to the selected Agent. The account ticket never enters the
-Agent process, and the Agent credential cannot list other Agents or mint another
-credential. Sign-out revokes both credentials before clearing them locally; any remote
-revocation failure is reported explicitly.
+The browser UI is a read-only runtime observer. It shows the configured Agent identity,
+credential presence, model profile, Worker Connection, Tool and Source file locations,
+process health, Cases, Trace, Frontier, evidence, and receipts. It never signs in to a
+Cloud account, selects an Agent, edits credentials, or changes Worker and Source wiring.
 
-Local owns execution configuration: model endpoint and key, selected Agent runtime,
+The deployment configuration owns the model endpoint and key, Agent runtime,
 Worker Connection key, Source credentials, Tool adapters, workspace roots, local Tool
-ceiling, process lifecycle, logs, and UI preferences. Cloud remains authoritative for
+ceiling, and process policy. Cloud remains authoritative for
 account and Agent identity, Capability and Constitution Releases, Connection and exact
 Tool authorization, Source attestation scope, Case acceptance, Terminal Receipts,
-Entitlement, and Billing. Local may display or invoke those Cloud decisions, but never
-keeps a second governance ledger.
+Entitlement, and Billing. Local observes those Cloud decisions but never keeps a second
+governance ledger.
 
 The Local UI is a view of the runtime, not a board or authority service. A remote
 Worker remains independently deployed and outbound-only; its authoritative activity
@@ -254,7 +256,7 @@ The model never supplies the trusted input values or the calculated output value
 ## Security model
 
 - Agent tokens and model keys belong to the Agent Runtime process.
-- OAuth account and refresh credentials belong only to the Local host; the model process receives only the selected Agent-scoped token.
+- Rulith Local stores no Cloud account session. Runtime identity comes only from the configured Agent-scoped credential.
 - Connection keys and source credentials belong to the Worker machine.
 - Built-in workspace Tools are fenced to the configured Source root, bounded in size and
   result count, and expose neither delete nor arbitrary shell execution.

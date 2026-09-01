@@ -4,6 +4,16 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.5.2 - 2026-09-01
+
+- Hard-cut Rulith Local back to a single-Agent, configuration-driven Runtime; interactive multi-Agent Studio work is deferred.
+- Removed Local account login, Agent selection, OAuth refresh storage, browser configuration writes, and model switching.
+- Replaced Local settings with read-only Runtime details and redacted credential-presence indicators.
+- Accepts an OpenAI-compatible server root in the configuration and derives its chat-completions endpoint.
+- Allows an unauthenticated model endpoint only on loopback and omits empty authorization headers.
+- Omits non-standard thinking options in Standard mode.
+- Reports immediate Agent or Worker startup exit as failure instead of claiming the role restarted.
+
 ## 0.5.1 - 2026-09-01
 
 - Added a dedicated password input for the local model-provider API key.

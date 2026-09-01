@@ -19,7 +19,7 @@ const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/
 const TOKEN = process.env.RULITH_TOKEN ?? ''
 const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
-const MODEL_URL = process.env.RULITH_MODEL_URL ?? 'https://api.anthropic.com/v1/messages'
+const MODEL_URL_INPUT = process.env.RULITH_MODEL_URL ?? 'https://api.anthropic.com/v1/messages'
 const MAX_ROUNDS = Number(process.env.RULITH_MAX_ROUNDS ?? 12)
 const LOCAL_REQUEST_MAX_BODY = 64 * 1024
 const SERVE_PORT = Number(process.env.RULITH_SERVE_PORT ?? 7799)
@@ -49,13 +49,13 @@ Options:
 
 Required environment:
   RULITH_TOKEN       Agent token from Console
-  ANTHROPIC_API_KEY or RULITH_MODEL_KEY
 
 Common optional environment:
   RULITH_URL         Cloud API base (default: https://api.rulith.ai)
   RULITH_AGENT       Agent id in Console (default: default)
   RULITH_MODEL       Model identifier
   RULITH_MODEL_URL   Model API endpoint
+  RULITH_MODEL_KEY   Provider key (optional only for a loopback model endpoint)
   RULITH_MAX_ROUNDS  Maximum model rounds (default: 12)
   RULITH_SERVE_PORT  Local task endpoint port (default: 7799)
 `)
@@ -101,7 +101,19 @@ const businessKeyOf = (raw, label = 'businessKey') => {
 const selectedBusinessKey = businessKeyOf(selectedBusinessKeyRaw, 'RULITH_BUSINESS_KEY_JSON / --business-key')
 
 if (TOKEN === '') die('RULITH_TOKEN is missing. Create an Agent token in Console under Access & credentials; it is shown only once.')
-if (MODEL_KEY === '') die('A model key is missing. Set ANTHROPIC_API_KEY or RULITH_MODEL_KEY. It stays in this local process and is never sent to Rulith.')
+let parsedModelUrl
+try { parsedModelUrl = new URL(MODEL_URL_INPUT) } catch { die('RULITH_MODEL_URL must be one absolute HTTP(S) model service URL.') }
+if (!['http:', 'https:'].includes(parsedModelUrl.protocol)) die('RULITH_MODEL_URL must use HTTP or HTTPS.')
+const keylessLoopbackModel = ['127.0.0.1', 'localhost', '[::1]'].includes(parsedModelUrl.hostname)
+if (MODEL_KEY === '' && !keylessLoopbackModel) {
+  die('A remote model key is missing. Set ANTHROPIC_API_KEY or RULITH_MODEL_KEY. A key may be omitted only for a loopback model endpoint.')
+}
+const pathNoSlash = parsedModelUrl.pathname.replace(/\/+$/, '')
+const MODEL_URL = pathNoSlash.endsWith('/chat/completions') || pathNoSlash.endsWith('/messages')
+  ? parsedModelUrl.toString().replace(/\/$/, '')
+  : pathNoSlash === '' ? new URL('/v1/chat/completions', parsedModelUrl).toString()
+    : pathNoSlash.endsWith('/v1') ? new URL(`${pathNoSlash}/chat/completions`, parsedModelUrl.origin).toString()
+      : die('OpenAI-compatible model service URLs must be the server root, end in /v1, or end in /chat/completions.')
 // 无任务=进入多轮对话(2026-08-01 起 CLI 是桌面主形态);带任务=一次办完后退出(CI/脚本兼容不变)。
 // **接单脑不是对话**: 收单口进来的每一条都是「任务」,所以 --serve 下按 CLI 语义走
 // (纯回话不算办完,照旧催它给 JSON 或 DONE:/STOP:)——排队的是活,不是聊天。
@@ -703,19 +715,20 @@ const SHADOW_CFG = {
 }
 async function ask(messages, system, cfg = MAIN_CFG) {
   const openaiStyle = /\/chat\/completions\/?$/.test(cfg.url)
+  const baseHeaders = { 'content-type': 'application/json' }
   let r
   try {
     r = await fetch(cfg.url, {
       method: 'POST',
       headers: openaiStyle
-        ? { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}` }
-        : { 'content-type': 'application/json', 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' },
+        ? (cfg.key === '' ? baseHeaders : { ...baseHeaders, authorization: `Bearer ${cfg.key}` })
+        : (cfg.key === '' ? baseHeaders : { ...baseHeaders, 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' }),
       body: openaiStyle
         ? JSON.stringify({
             model: cfg.model, max_tokens: 6000,
             // 混合思考模型(DeepSeek v4-pro 等)不关思考会把 token 烧在 reasoning 上,content 回空
             // ——真机 12 轮全空说才找到的。RULITH_MODEL_THINKING=enabled 可打开。
-            thinking: { type: process.env.RULITH_MODEL_THINKING === 'enabled' ? 'enabled' : 'disabled' },
+            ...(process.env.RULITH_MODEL_THINKING === 'enabled' ? { thinking: { type: 'enabled' } } : {}),
             messages: [{ role: 'system', content: system }, ...messages],
           })
         : JSON.stringify({ model: cfg.model, max_tokens: 6000, system, messages }),

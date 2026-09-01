@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, toolFromSpec, workerToolManifest } from '../worker/rulith-worker.mjs'
-import { applyEnvEdit, createLocalHost, defaultConfigPath, defaultLocalConfig, maskEnv, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
+import { createLocalHost, defaultConfigPath, defaultLocalConfig, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -65,13 +65,6 @@ test('worker prioritizes world-changing actions while preserving stable order', 
   assert.deepEqual(orderWork(rows).map((x) => x.id), ['a1', 'a2', 'v1', 'e1'])
 })
 
-test('Rulith Local masks secrets and never persists the mask as a credential', () => {
-  const prior = { RULITH_TOKEN: 'token-123456', RULITH_URL: 'https://api.rulith.ai' }
-  const view = maskEnv(prior)
-  assert.equal(view.RULITH_TOKEN, '••••3456')
-  assert.deepEqual(applyEnvEdit(prior, view), prior)
-})
-
 test('Rulith Local has exactly agent, worker, and combined startup modes', () => {
   assert.deepEqual(rolesOf('agent'), ['agent'])
   assert.deepEqual(rolesOf('worker'), ['worker'])
@@ -83,17 +76,16 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
   assert.equal(config.agent.env.RULITH_MODEL_URL, 'https://api.anthropic.com/v1/messages')
   assert.equal(config.agent.env.RULITH_MODEL, 'claude-sonnet-5')
   assert.equal(config.agent.env.RULITH_MODEL_KEY, '')
-  assert.equal(config.cloud.issuer, 'https://api.rulith.ai')
-  const upgraded = normalizeLocalConfig({ roles: ['agent'], agent: { env: { RULITH_TOKEN: 'kept' } } })
+  const upgraded = normalizeLocalConfig({ roles: ['agent'], cloud: { refreshToken: 'retired' }, agent: { env: { RULITH_TOKEN: 'kept' } } })
   assert.equal(upgraded.agent.env.RULITH_TOKEN, 'kept')
   assert.equal(upgraded.agent.env.RULITH_MODEL_URL, 'https://api.anthropic.com/v1/messages')
-  assert.equal(upgraded.cloud.issuer, 'https://api.rulith.ai')
+  assert.equal(upgraded.cloud, undefined)
 })
 
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.5.1')
+  assert.equal(pkg.version, '0.5.2')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
@@ -136,89 +128,56 @@ test('Rulith Local starts exactly the selected roles and receives structured chi
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('Rulith Local signs into Cloud with loopback PKCE and stores only the selected Agent credential in the Agent role', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-login-'))
+test('Rulith Local status is a read-only redacted runtime projection', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-status-'))
   const child = join(dir, 'role.mjs')
-  const configFile = join(dir, 'local.json')
   writeFileSync(child, 'setInterval(()=>{},1000)\n')
-  let agentRevoked = false
-  let refreshRevoked = false
-  let localPort
   const probe = createServer()
-  await new Promise((resolveReady) => probe.listen(0, '127.0.0.1', () => { localPort = probe.address().port; probe.close(resolveReady) }))
-  const cloud = createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://cloud.test')
-    if (url.pathname === '/register') {
-      res.writeHead(201, { 'content-type': 'application/json' }); res.end(JSON.stringify({ client_id: 'local-client' })); return
-    }
-    if (url.pathname === '/authorize') {
-      const callback = new URL(url.searchParams.get('redirect_uri'))
-      callback.searchParams.set('code', 'account-code')
-      callback.searchParams.set('state', url.searchParams.get('state'))
-      res.writeHead(302, { location: callback.toString() }); res.end(); return
-    }
-    if (url.pathname === '/token') {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ access_token: 'account-access', refresh_token: 'account-refresh', expires_in: 3600 })); return
-    }
-    if (url.pathname === '/local/v1/account') {
-      assert.equal(req.headers.authorization, 'Bearer account-access')
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, account: { login: 'victor', name: 'Victor' }, agents: [{ agentId: 'agent-public-1', displayName: 'Finance', isDefault: true }] })); return
-    }
-    if (url.pathname === '/local/v1/agent-token') {
-      assert.equal(req.headers.authorization, 'Bearer account-access')
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, token: 'agent.scoped.signature', jti: 'jti-1', agentId: 'agent-public-1' })); return
-    }
-    if (url.pathname === '/local/v1/agent-token/revoke') {
-      assert.equal(req.headers.authorization, 'Bearer account-access')
-      agentRevoked = true
-      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true })); return
-    }
-    if (url.pathname === '/revoke') {
-      refreshRevoked = true
-      res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); return
-    }
-    res.writeHead(404); res.end()
-  })
-  await new Promise((resolveReady) => cloud.listen(0, '127.0.0.1', resolveReady))
+  let port
+  await new Promise((resolveReady) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(resolveReady) }))
   const config = defaultLocalConfig()
-  config.cloud.issuer = `http://127.0.0.1:${cloud.address().port}`
   config.paths = { agent: child }
-  const host = createLocalHost({ configFile, config, roles: ['agent'], port: localPort, key: 'test-key' })
+  config.agent.env.RULITH_AGENT = 'agent-public-1'
+  config.agent.env.RULITH_TOKEN = 'agent-secret-value'
+  config.agent.env.RULITH_MODEL_KEY = 'model-secret-value'
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'status-key' })
   try {
     await host.listen()
-    const started = await fetch(`http://127.0.0.1:${localPort}/auth/start?k=test-key`, { redirect: 'manual' })
-    assert.equal(started.status, 302)
-    const authorized = await fetch(started.headers.get('location'), { redirect: 'manual' })
-    assert.equal(authorized.status, 302)
-    const completed = await fetch(authorized.headers.get('location'), { redirect: 'manual' })
-    assert.equal(completed.status, 200, await completed.clone().text())
-    const account = await (await fetch(`http://127.0.0.1:${localPort}/account?k=test-key`)).json()
-    assert.equal(account.account.login, 'victor')
-    assert.equal(account.agents[0].agentId, 'agent-public-1')
-    const selected = await fetch(`http://127.0.0.1:${localPort}/account/select?k=test-key`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId: 'agent-public-1' }),
-    })
-    assert.equal(selected.status, 200, await selected.clone().text())
-    const saved = JSON.parse(readFileSync(configFile, 'utf8'))
-    assert.equal(saved.agent.env.RULITH_AGENT, 'agent-public-1')
-    assert.equal(saved.agent.env.RULITH_TOKEN, 'agent.scoped.signature')
-    assert.equal(saved.cloud.accessToken, 'account-access')
-    assert.equal(saved.cloud.refreshToken, 'account-refresh')
-    const loggedOut = await fetch(`http://127.0.0.1:${localPort}/account/logout?k=test-key`, { method: 'POST' })
-    assert.equal(loggedOut.status, 200, await loggedOut.clone().text())
-    const cleared = JSON.parse(readFileSync(configFile, 'utf8'))
-    assert.equal(cleared.agent.env.RULITH_TOKEN, '')
-    assert.equal(cleared.cloud.accessToken, '')
-    assert.equal(cleared.cloud.refreshToken, '')
-    assert.equal(agentRevoked, true)
-    assert.equal(refreshRevoked, true)
+    const response = await fetch(`http://127.0.0.1:${port}/status?k=status-key`)
+    const text = await response.text()
+    assert.equal(response.status, 200)
+    assert.doesNotMatch(text, /agent-secret-value|model-secret-value/)
+    const status = JSON.parse(text)
+    assert.equal(status.runtime.agent.id, 'agent-public-1')
+    assert.equal(status.runtime.agent.credentialConfigured, true)
+    assert.equal(status.runtime.agent.modelKeyConfigured, true)
   } finally {
     await host.close()
-    await new Promise((resolveClose) => cloud.close(resolveClose))
-    cloud.closeAllConnections()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('Rulith Local reports an immediate child exit instead of claiming the role restarted', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-exit-'))
+  const child = join(dir, 'exit.mjs')
+  writeFileSync(child, 'process.exit(3)\n')
+  const probe = createServer()
+  let port
+  await new Promise((resolveReady) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(resolveReady) }))
+  const config = defaultLocalConfig()
+  config.paths = { agent: child }
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'exit-key' })
+  try {
+    await host.listen()
+    await new Promise((resolveWait) => setTimeout(resolveWait, 80))
+    const response = await fetch(`http://127.0.0.1:${port}/control?k=exit-key`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', operation: 'start' }),
+    })
+    assert.equal(response.status, 400)
+    assert.match(String((await response.json()).teaching), /exited during startup/i)
+  } finally {
+    await host.close()
     rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -426,6 +385,13 @@ test('agent help is available before credentials and points automation at the se
   assert.doesNotMatch(run.stderr, /missing/i)
 })
 
+test('the Agent permits a keyless loopback model without sending an empty authorization header', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  assert.match(source, /keylessLoopbackModel/)
+  assert.match(source, /cfg\.key === '' \? baseHeaders/)
+  assert.match(source, /OpenAI-compatible model service URLs must be the server root/)
+})
+
 test('the local runtime has no client-owned recipe or Board-profile surface', () => {
   const run = spawnSync(process.execPath, ['agent/rulith-agent.mjs', '--case-boards', '--recipe', 'client-owned.json', 'test'], {
     cwd: ROOT,
@@ -572,21 +538,19 @@ test('Rulith Local presents a familiar Case-first Agent workbench in English', (
   assert.match(localPage, /e\.invocation/)
   assert.match(localPage, /'remote'/)
   assert.match(localPage, /role="dialog"/)
-  assert.match(localPage, /Save &amp; restart Agent/)
-  assert.match(localPage, /Save &amp; restart Worker/)
-  assert.match(localPage, /Sign in to Rulith Cloud/)
-  assert.match(localPage, /Cloud remains authoritative for identity, governance, acceptance, and billing/)
+  assert.match(localPage, /Runtime details/)
+  assert.match(localPage, /Read-only projection of the single-Agent Runtime configuration/)
+  assert.match(localPage, /Start Agent/)
+  assert.match(localPage, /Stop Worker/)
+  assert.match(localPage, /id="detailconfig"/)
   assert.match(localPage, /id="caseoptions"/)
-  assert.match(localPage, /aria-label="Local Tool ceiling"/)
   assert.match(localPage, /id="modelbadge"/)
-  assert.match(localPage, /for="modelkey"/)
-  assert.match(localPage, /id="modelkey" type="password"/)
-  assert.match(localPage, /Provider API key/)
   assert.match(localPage, /data-view="case"/)
   assert.match(localPage, /Session log/)
-  assert.match(hostSource, /\/local\/v1\/account/)
-  assert.match(hostSource, /\/local\/v1\/agent-token/)
-  assert.match(hostSource, /\/account\/logout/)
+  assert.doesNotMatch(localPage, /Sign in to Rulith Cloud|Use this Agent|Bind to this Local/)
+  assert.doesNotMatch(localPage, /Provider API key|Load models|data-save=/)
+  assert.doesNotMatch(hostSource, /\/local\/v1\/account|\/account\/logout|\/auth\/start/)
+  assert.doesNotMatch(hostSource, /path === '\/config'/, 'the observer UI has no browser configuration write surface')
   assert.doesNotMatch(localPage, /<details>/, 'settings must open in a visible modal rather than below the inspector fold')
   assert.match(localPage, /response\?\.status===403\)\{location\.reload\(\)/)
   assert.match(localPage, /\.composebox\{position:relative;width:min\(790px,100%\)/)

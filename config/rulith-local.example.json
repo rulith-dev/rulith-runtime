@@ -1,8 +1,5 @@
 {
   "roles": ["agent", "worker"],
-  "cloud": {
-    "issuer": "https://api.rulith.ai"
-  },
   "agent": {
     "args": [],
     "env": {
