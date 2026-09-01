@@ -51,6 +51,7 @@ tools load the optional `pg` package only when used.
 
 ```powershell
 $env:RULITH_TOKEN = '<agent-token>'
+$env:RULITH_AGENT = 'default'
 $env:RULITH_MODEL_KEY = '<model-key>'
 $env:RULITH_MODEL = '<model-id>'
 $env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'

@@ -32,9 +32,10 @@ const config = {
   roles: ['agent', 'worker'],
   agent: {
     ...(source.agent ?? {}),
-    args: ['--agent', 'verified-calculation'],
+    args: [],
     env: {
       ...(source.agent?.env ?? {}),
+      RULITH_AGENT: 'verified-calculation',
       RULITH_SERVE_CONCURRENCY: '1',
       RULITH_SERVE_PORT: process.env.RULITH_CALC_SERVE_PORT ?? '7800',
     },

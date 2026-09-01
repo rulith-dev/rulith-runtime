@@ -67,7 +67,7 @@ export function applyEnvEdit(prior, edit) {
 export function defaultLocalConfig() {
   return {
     roles: ['agent', 'worker'],
-    agent: { args: ['--agent', 'default'], env: { RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '', RULITH_MODEL_KEY: '' } },
+    agent: { args: [], env: { RULITH_URL: 'https://api.rulith.ai', RULITH_AGENT: 'default', RULITH_TOKEN: '', RULITH_MODEL_KEY: '' } },
     worker: { env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '' } },
     paths: {},
   }

@@ -1,9 +1,10 @@
 {
   "roles": ["agent", "worker"],
   "agent": {
-    "args": ["--agent", "default"],
+    "args": [],
     "env": {
       "RULITH_URL": "https://api.rulith.ai",
+      "RULITH_AGENT": "default",
       "RULITH_TOKEN": "",
       "RULITH_MODEL_URL": "",
       "RULITH_MODEL": "",

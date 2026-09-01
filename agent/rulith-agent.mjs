@@ -53,6 +53,7 @@ Required environment:
 
 Common optional environment:
   RULITH_URL         Cloud API base (default: https://api.rulith.ai)
+  RULITH_AGENT       Agent id in Console (default: default)
   RULITH_MODEL       Model identifier
   RULITH_MODEL_URL   Model API endpoint
   RULITH_MAX_ROUNDS  Maximum model rounds (default: 12)
@@ -60,7 +61,7 @@ Common optional environment:
 `)
   process.exit(0)
 }
-let agentId = 'default'
+let agentId = (process.env.RULITH_AGENT ?? 'default').trim() || 'default'
 let withShadow = false
 let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
 /** Resume one existing Case Context for the first segment only. */

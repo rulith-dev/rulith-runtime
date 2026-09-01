@@ -57,7 +57,7 @@ Configure Rulith Local in Agent+Worker mode. The business-key values
 name this Case; Cloud computes the digest and pins it before opening:
 
 ```text
-agent.args: --agent verified-calculation
+agent.env.RULITH_AGENT: verified-calculation
 ```
 
 Configure the Worker with its Connection credentials and local Adapter Manifest. The governed

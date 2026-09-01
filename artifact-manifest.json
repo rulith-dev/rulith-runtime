@@ -3,13 +3,13 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "f6611d42df1f451fa3956f82a5abc6522705fae20bcbbd563b3deacfe46abfc3"
+      "sha256": "5d1befd5713f830bdf616e2c63c5ae904015467d009fdada797b34149214ec33"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "985247b570d3e43c00eaca99871a2af82622c52ea736a8dc05a3ec1491a408e4"
     },
     "local/rulith-local.mjs": {
-      "sha256": "6cb3c263c2a167f7f746ea0ed1b5138c9948dd904c969dbd494390a99b41dfb7"
+      "sha256": "afeb4a72189a283b56a36ef672211abec5f44e06ce9ff00cf2c333ef603c9670"
     },
     "local/local-ui.mjs": {
       "sha256": "da8a1b85bd8b2d68397bfd50aa5df993e7dac87422c93cf244f5e27c29c75116"
@@ -18,13 +18,13 @@
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
     },
     "config/rulith-local.example.json": {
-      "sha256": "27659e28d76760a6849cf0a5609365812c039b5a2881e9840ddf568ddb2b081a"
+      "sha256": "3cb88cca72655be0a1ef31ba3c098494619523755be0629596a22812a119f2fa"
     },
     "config/worker-tools.example.json": {
       "sha256": "7140c9ca07ee24a50b5ade9bb7259def605ffead753716fe8047cf698494d772"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "db6ca2cf4669d3074da9b4b453069326561e5a11603c4b6b61a7c9021ffbbc83"
+      "sha256": "3c34b67425a509ba48916b5d85e811c017b3c6abc1b5398ed57a0212aaf26b28"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
@@ -33,7 +33,7 @@
       "sha256": "bbf32059e524e278431fcade0ed5112fde4010936ba4d8515b13e44bbf1a864a"
     },
     "examples/verified-calculation/prepare-local.mjs": {
-      "sha256": "3ecb1933c876fdd54daf6f8354f34caf89b226471af8b9100be9230f1c78db6c"
+      "sha256": "1347d175e8e39ef6e7ed4416c0cba0be80127104386c7d72548d78d6264d4a50"
     },
     "examples/verified-calculation/read-input.mjs": {
       "sha256": "9b360e7a6dd108657e7b4946d9f63128f02d86e31087fe50b60bcfe0830bcabd"
