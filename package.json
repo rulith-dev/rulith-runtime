@@ -1,9 +1,8 @@
 {
-  "name": "rulith-runtime",
-  "version": "0.1.0-beta.2",
-  "private": true,
+  "name": "rulith",
+  "version": "0.4.0",
   "type": "module",
-  "description": "Open-source Rulith Local runtime with Agent, Worker, and combined modes",
+  "description": "Rulith Local: one Case-first Agent workbench with Agent, Worker, and combined modes",
   "bin": {
     "rulith": "local/rulith-local.mjs"
   },
@@ -13,6 +12,31 @@
   },
   "homepage": "https://github.com/rulith-dev/rulith-runtime#readme",
   "license": "Apache-2.0",
+  "files": [
+    "agent/",
+    "worker/",
+    "local/",
+    "config/",
+    "examples/verified-calculation/README.md",
+    "examples/verified-calculation/data/input.json",
+    "examples/verified-calculation/prepare-local.mjs",
+    "examples/verified-calculation/prepare-runtime.mjs",
+    "examples/verified-calculation/read-input.mjs",
+    "examples/verified-calculation/recipe.template.json",
+    "examples/verified-calculation/setup.mjs",
+    "examples/verified-calculation/verify-output.mjs",
+    "examples/verified-calculation/worker-tools.json",
+    "examples/verified-calculation/write-output.mjs",
+    "artifact-manifest.json",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -20,6 +44,10 @@
     "start": "node local/rulith-local.mjs start",
     "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-local.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs",
     "manifest": "node scripts/update-artifact-manifest.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "prepack": "npm run manifest && npm run check && npm test"
+  },
+  "optionalDependencies": {
+    "pg": "^8.23.0"
   }
 }

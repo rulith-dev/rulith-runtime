@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, toolFromSpec, workerToolManifest } from '../worker/rulith-worker.mjs'
-import { applyEnvEdit, createLocalHost, defaultLocalConfig, maskEnv, modeOf, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
+import { applyEnvEdit, createLocalHost, defaultConfigPath, defaultLocalConfig, maskEnv, modeOf, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -79,6 +79,31 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
   assert.equal(modeOf(['agent', 'worker']), 'agent+worker')
   assert.deepEqual(rolesFromArgs(['start', '--role', 'worker'], ['agent']), ['worker'])
   assert.throws(() => rolesOf('operator'), /agent, worker, or both/)
+})
+
+test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  assert.equal(pkg.name, 'rulith')
+  assert.equal(pkg.version, '0.4.0')
+  assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
+  assert.equal(pkg.private, undefined)
+  assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
+  assert.equal(pkg.files.includes('examples/'), false, 'generated example runtime directories must never enter the npm package')
+  assert.ok(pkg.files.includes('examples/verified-calculation/setup.mjs'))
+  assert.match(defaultConfigPath('C:\\Users\\example'), /\.rulith[\\/]local\.json$/)
+})
+
+test('rulith --help is side-effect free and does not create a credential file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-help-'))
+  const config = join(dir, 'local.json')
+  try {
+    const run = spawnSync(process.execPath, ['local/rulith-local.mjs', '--help'], {
+      cwd: ROOT, env: { ...process.env, RULITH_LOCAL_CONFIG: config }, encoding: 'utf8',
+    })
+    assert.equal(run.status, 0, run.stderr)
+    assert.match(run.stdout, /rulith start/)
+    assert.equal(existsSync(config), false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('Rulith Local starts exactly the selected roles and receives structured child events', async () => {

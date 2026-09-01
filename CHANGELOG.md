@@ -4,6 +4,13 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-01
+
+- Hard-cut the existing `rulith` npm package from the retired MCP executable to Rulith Local.
+- Added the global `rulith start --role agent|worker|agent+worker` command.
+- Moved the default private configuration to `~/.rulith/local.json`; `rulith --help` is side-effect free.
+- Restricted the npm publication to canonical runtime and example files, excluding generated local workspaces.
+
 ## 0.1.0-beta.2 - 2026-09-01
 
 - Replaced Station as a separate product surface with one role-aware Rulith Local host and Agent workbench.

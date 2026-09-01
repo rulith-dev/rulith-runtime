@@ -27,7 +27,19 @@ hidden order-processing policy or other business workflow.
 - A model endpoint compatible with Anthropic Messages or OpenAI Chat Completions
 - A Rulith Connection id and key when a workflow needs local execution
 
-Clone the current beta release:
+Install the current Rulith Local CLI:
+
+```bash
+npm install --global rulith
+rulith --help
+rulith start --role agent+worker
+```
+
+The first start creates `~/.rulith/local.json` with owner-only permissions and
+prints the loopback Local UI address. Add the credentials for the selected roles
+under **Local settings**, then restart them.
+
+To inspect or contribute to the source instead:
 
 ```bash
 git clone --depth 1 https://github.com/rulith-dev/rulith-runtime.git
@@ -43,7 +55,7 @@ npm start -- --role worker
 npm start -- --role agent+worker
 ```
 
-`rulith start` is the equivalent command after linking or installing this package.
+`rulith start` is the installed command.
 The Agent and Worker remain separate child processes even in combined mode. Database
 tools load the optional `pg` package only when used.
 

@@ -8,8 +8,9 @@
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { localPage } from './local-ui.mjs'
 
@@ -73,10 +74,13 @@ export function defaultLocalConfig() {
   }
 }
 
+export function defaultConfigPath(home = homedir()) { return join(home, '.rulith', 'local.json') }
+
 function loadConfig(configFile) {
   if (!existsSync(configFile)) {
     const config = defaultLocalConfig()
-    writeFileSync(configFile, JSON.stringify(config, null, 2))
+    mkdirSync(dirname(resolve(configFile)), { recursive: true, mode: 0o700 })
+    writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 })
     console.log(`Created ${configFile}. Add credentials for the selected roles, then restart Rulith Local.`)
     return config
   }
@@ -85,7 +89,10 @@ function loadConfig(configFile) {
   return config
 }
 
-function saveConfig(configFile, config) { writeFileSync(configFile, JSON.stringify(config, null, 2)) }
+function saveConfig(configFile, config) {
+  mkdirSync(dirname(resolve(configFile)), { recursive: true, mode: 0o700 })
+  writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 })
+}
 
 const readJson = (req) => new Promise((accept, reject) => {
   const chunks = []
@@ -277,14 +284,14 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
 if (IS_MAIN) {
   const port = Number(process.env.RULITH_LOCAL_PORT ?? 7790)
   const key = (process.env.RULITH_LOCAL_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
-  const configFile = process.env.RULITH_LOCAL_CONFIG ?? './rulith-local.json'
+  if (process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')) {
+    console.log('Rulith Local\n\nUsage:\n  rulith start [--role agent|worker|agent+worker]\n\nThe configured roles are used when --role is omitted. Configuration defaults to ~/.rulith/local.json.')
+    process.exit(0)
+  }
+  const configFile = process.env.RULITH_LOCAL_CONFIG ?? defaultConfigPath()
   const config = loadConfig(configFile)
   let roles
   try { roles = rolesFromArgs(process.argv.slice(2), config.roles) } catch (error) { console.error(error.message); process.exit(1) }
-  if (roles === null) {
-    console.log('Rulith Local\n\nUsage:\n  rulith start [--role agent|worker|agent+worker]\n\nThe configured roles are used when --role is omitted.')
-    process.exit(0)
-  }
   const host = createLocalHost({ configFile, config, roles, port, key })
   await host.listen()
   console.log(`Rulith Local · mode ${host.mode}`)

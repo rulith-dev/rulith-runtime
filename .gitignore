@@ -1,4 +1,6 @@
 node_modules/
+.npm-smoke/
+*.tgz
 examples/**/runtime/
 examples/**/.runtime-test/
 rulith-station.json
