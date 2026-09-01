@@ -35,8 +35,9 @@ npx --yes rulith@latest start --role agent+worker
 ```
 
 The first start creates `~/.rulith/local.json` with owner-only permissions and
-prints the loopback Local UI address. Add the credentials for the selected roles
-under **Local settings**, then restart them.
+prints the loopback Local UI address. Open **Local settings**, sign in to Rulith
+Cloud, choose the Agent to run on this host, and configure the local model and
+Worker. Manual Agent tokens remain available for headless or CI deployments.
 
 For a persistent command, install globally into a user-writable npm prefix:
 
@@ -216,6 +217,21 @@ the left, dialogue and governed execution in the center, a composer at the botto
 and Case View, frontier, Worker activity, evidence, and receipts on the right. Agent
 and Worker modes use role-specific projections of the same UI and event contract.
 
+The lower-left account entry uses OAuth dynamic client registration and loopback
+PKCE. It reads the signed-in account's Cloud Agents and exchanges the account session
+for one credential scoped to the selected Agent. The account ticket never enters the
+Agent process, and the Agent credential cannot list other Agents or mint another
+credential. Sign-out revokes both credentials before clearing them locally; any remote
+revocation failure is reported explicitly.
+
+Local owns execution configuration: model endpoint and key, selected Agent runtime,
+Worker Connection key, Source credentials, Tool adapters, workspace roots, local Tool
+ceiling, process lifecycle, logs, and UI preferences. Cloud remains authoritative for
+account and Agent identity, Capability and Constitution Releases, Connection and exact
+Tool authorization, Source attestation scope, Case acceptance, Terminal Receipts,
+Entitlement, and Billing. Local may display or invoke those Cloud decisions, but never
+keeps a second governance ledger.
+
 The Local UI is a view of the runtime, not a board or authority service. A remote
 Worker remains independently deployed and outbound-only; its authoritative activity
 appears through the Cloud Connection and receipts rather than direct Local control.
@@ -238,6 +254,7 @@ The model never supplies the trusted input values or the calculated output value
 ## Security model
 
 - Agent tokens and model keys belong to the Agent Runtime process.
+- OAuth account and refresh credentials belong only to the Local host; the model process receives only the selected Agent-scoped token.
 - Connection keys and source credentials belong to the Worker machine.
 - Built-in workspace Tools are fenced to the configured Source root, bounded in size and
   result count, and expose neither delete nor arbitrary shell execution.

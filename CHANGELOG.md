@@ -4,6 +4,14 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.5.0 - 2026-09-01
+
+- Added loopback PKCE sign-in to Rulith Cloud, account projection, Cloud Agent selection, credential rotation, and sign-out revocation.
+- Kept Cloud as the sole authority for identity, governance, acceptance, and billing while Local owns model, Tool, Source, workspace, and process configuration.
+- Moved account and settings controls to the lower-left workbench area and added a mobile settings entry.
+- Added backed Case/Trace views, JSON session-log export, Case option popover, local Tool ceiling, model badge, thinking control, and busy send state.
+- Added a browser-verified responsive workbench layout and strict hidden-state handling for signed-out Agent controls.
+
 ## 0.4.3 - 2026-09-01
 
 - Added model URL and model ID to the generated Local Agent configuration.

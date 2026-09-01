@@ -1,13 +1,16 @@
 {
   "roles": ["agent", "worker"],
+  "cloud": {
+    "issuer": "https://api.rulith.ai"
+  },
   "agent": {
     "args": [],
     "env": {
       "RULITH_URL": "https://api.rulith.ai",
       "RULITH_AGENT": "default",
       "RULITH_TOKEN": "",
-      "RULITH_MODEL_URL": "",
-      "RULITH_MODEL": "",
+      "RULITH_MODEL_URL": "https://api.anthropic.com/v1/messages",
+      "RULITH_MODEL": "claude-sonnet-5",
       "RULITH_MODEL_KEY": ""
     }
   },

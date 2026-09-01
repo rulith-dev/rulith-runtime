@@ -7,7 +7,7 @@
  */
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -68,6 +68,10 @@ export function applyEnvEdit(prior, edit) {
 export function defaultLocalConfig() {
   return {
     roles: ['agent', 'worker'],
+    cloud: {
+      issuer: 'https://api.rulith.ai', clientId: '', accessToken: '', refreshToken: '', expiresAt: 0,
+      selectedAgentId: '', agentTokenJti: '',
+    },
     agent: { args: [], env: {
       RULITH_URL: 'https://api.rulith.ai', RULITH_AGENT: 'default', RULITH_TOKEN: '',
       RULITH_MODEL_URL: 'https://api.anthropic.com/v1/messages', RULITH_MODEL: 'claude-sonnet-5', RULITH_MODEL_KEY: '',
@@ -84,6 +88,7 @@ export function normalizeLocalConfig(config) {
   return {
     ...defaults, ...(config ?? {}),
     roles: rolesOf(config?.roles ?? defaults.roles),
+    cloud: { ...defaults.cloud, ...(config?.cloud ?? {}) },
     agent: { ...defaults.agent, ...(config?.agent ?? {}), env: { ...defaults.agent.env, ...(config?.agent?.env ?? {}) } },
     worker: { ...defaults.worker, ...(config?.worker ?? {}), env: { ...defaults.worker.env, ...(config?.worker?.env ?? {}) } },
     paths: { ...defaults.paths, ...(config?.paths ?? {}) },
@@ -134,6 +139,38 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
   const components = {
     agent: { child: null, serveKey: '', servePort: 7799, maxConcurrentCases: 1 },
     worker: { child: null },
+  }
+  let pendingAuth = null
+  const issuerOf = () => String(config.cloud?.issuer ?? config.agent?.env?.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/+$/, '')
+  const saveCurrentConfig = () => { config.roles = selectedRoles; saveConfig(configFile, config) }
+  const refreshCloudAccess = async () => {
+    const cloud = config.cloud ?? {}
+    if (!cloud.clientId || !cloud.refreshToken) return false
+    const response = await fetch(`${issuerOf()}/token`, {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: String(cloud.refreshToken), client_id: String(cloud.clientId) }),
+    }).catch(() => undefined)
+    if (response === undefined || !response.ok) return false
+    const tokens = await response.json().catch(() => ({}))
+    if (typeof tokens.access_token !== 'string' || typeof tokens.refresh_token !== 'string') return false
+    Object.assign(cloud, {
+      accessToken: tokens.access_token, refreshToken: tokens.refresh_token,
+      expiresAt: Date.now() + Math.max(60, Number(tokens.expires_in ?? 3600)) * 1000,
+    })
+    config.cloud = cloud
+    saveCurrentConfig()
+    return true
+  }
+  const cloudRequest = async (path, init = {}, mayRetry = true) => {
+    const cloud = config.cloud ?? {}
+    if (!cloud.accessToken && !(await refreshCloudAccess())) return undefined
+    if (Number(cloud.expiresAt ?? 0) <= Date.now() + 30_000 && cloud.refreshToken) await refreshCloudAccess()
+    const response = await fetch(`${issuerOf()}${path}`, {
+      ...init,
+      headers: { ...(init.headers ?? {}), authorization: `Bearer ${config.cloud?.accessToken ?? ''}` },
+    }).catch(() => undefined)
+    if (response?.status === 401 && mayRetry && await refreshCloudAccess()) return cloudRequest(path, init, false)
+    return response
   }
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
   const emit = (src, type, data = {}) => {
@@ -223,6 +260,119 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       }
       const denied = gate(req)
       if (denied !== null) return void json(res, 403, { ok: false, teaching: denied })
+      if (path === '/auth/start' && req.method === 'GET') {
+        const address = server.address()
+        const localPort = typeof address === 'object' && address !== null ? address.port : port
+        const redirectUri = `http://127.0.0.1:${localPort}/oauth/callback?k=${encodeURIComponent(key)}`
+        const registration = await fetch(`${issuerOf()}/register`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            redirect_uris: [redirectUri], token_endpoint_auth_method: 'none',
+            grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], client_name: 'Rulith Local', scope: 'local',
+          }),
+        }).catch(() => undefined)
+        if (registration === undefined || !registration.ok) return void json(res, 502, { ok: false, teaching: 'Cloud client registration failed. Check the Cloud URL and network, then try again.' })
+        const registered = await registration.json().catch(() => ({}))
+        if (typeof registered.client_id !== 'string' || registered.client_id === '') return void json(res, 502, { ok: false, teaching: 'Cloud registration returned no client identity.' })
+        const verifier = randomBytes(32).toString('base64url')
+        const state = randomBytes(24).toString('base64url')
+        const challenge = createHash('sha256').update(verifier).digest('base64url')
+        pendingAuth = { at: Date.now(), state, verifier, clientId: registered.client_id, redirectUri }
+        const authorize = new URL(`${issuerOf()}/authorize`)
+        authorize.search = new URLSearchParams({
+          client_id: registered.client_id, redirect_uri: redirectUri, response_type: 'code',
+          code_challenge: challenge, code_challenge_method: 'S256', scope: 'local', state,
+        }).toString()
+        res.writeHead(302, { location: authorize.toString(), 'cache-control': 'no-store' })
+        return void res.end()
+      }
+      if (path === '/oauth/callback' && req.method === 'GET') {
+        const url = new URL(req.url, 'http://127.0.0.1')
+        const auth = pendingAuth
+        pendingAuth = null
+        if (auth === null || Date.now() - auth.at > 10 * 60_000 || url.searchParams.get('state') !== auth.state || !url.searchParams.get('code')) {
+          return void json(res, 400, { ok: false, teaching: 'The Local sign-in session is missing, expired, or has the wrong state. Start sign-in again.' })
+        }
+        const tokenResponse = await fetch(`${issuerOf()}/token`, {
+          method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code', code: url.searchParams.get('code'), code_verifier: auth.verifier,
+            client_id: auth.clientId, redirect_uri: auth.redirectUri,
+          }),
+        }).catch(() => undefined)
+        if (tokenResponse === undefined || !tokenResponse.ok) return void json(res, 502, { ok: false, teaching: 'Cloud rejected the Local authorization-code exchange. Start sign-in again.' })
+        const tokens = await tokenResponse.json().catch(() => ({}))
+        if (typeof tokens.access_token !== 'string' || typeof tokens.refresh_token !== 'string') return void json(res, 502, { ok: false, teaching: 'Cloud returned an incomplete Local account session.' })
+        config.cloud = {
+          ...(config.cloud ?? {}), issuer: issuerOf(), clientId: auth.clientId,
+          accessToken: tokens.access_token, refreshToken: tokens.refresh_token,
+          expiresAt: Date.now() + Math.max(60, Number(tokens.expires_in ?? 3600)) * 1000,
+        }
+        saveCurrentConfig()
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+        return void res.end('<!doctype html><meta charset="utf-8"><title>Rulith Local connected</title><body style="background:#0d0f12;color:#eef1f4;font:15px system-ui;padding:48px">Rulith Local is connected. This window can close.<script>window.opener?.postMessage({type:"rulith-auth-complete"},location.origin);setTimeout(()=>window.close(),150)</script></body>')
+      }
+      if (path === '/account' && req.method === 'GET') {
+        const response = await cloudRequest('/local/v1/account')
+        if (response === undefined) return void json(res, 401, { ok: false, teaching: 'Sign in to Rulith Cloud from Local settings.' })
+        const body = await response.json().catch(() => ({}))
+        return void json(res, response.status, { ...body, selectedAgentId: config.cloud?.selectedAgentId ?? '' })
+      }
+      if (path === '/account/select' && req.method === 'POST') {
+        const body = await readJson(req)
+        const agentId = String(body.agentId ?? '').trim()
+        if (agentId === '') return void json(res, 400, { ok: false, teaching: 'Choose one Cloud Agent.' })
+        const priorJti = String(config.cloud?.agentTokenJti ?? '')
+        const response = await cloudRequest('/local/v1/agent-token', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId, label: String(body.label ?? 'Rulith Local').slice(0, 40) }),
+        })
+        if (response === undefined) return void json(res, 401, { ok: false, teaching: 'The Cloud account session expired. Sign in again.' })
+        const selected = await response.json().catch(() => ({}))
+        if (!response.ok || typeof selected.token !== 'string') return void json(res, response.status, selected)
+        const warnings = []
+        if (priorJti !== '' && priorJti !== String(selected.jti ?? '')) {
+          const revoked = await cloudRequest('/local/v1/agent-token/revoke', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jti: priorJti }),
+          })
+          if (revoked === undefined || !revoked.ok) warnings.push('The previous Local Agent credential could not be revoked. Revoke it from Console if this host was exposed.')
+        }
+        config.cloud = { ...(config.cloud ?? {}), selectedAgentId: agentId, agentTokenJti: String(selected.jti ?? '') }
+        config.agent = { ...(config.agent ?? {}), env: { ...(config.agent?.env ?? {}), RULITH_AGENT: agentId, RULITH_TOKEN: selected.token } }
+        saveCurrentConfig()
+        return void json(res, 200, { ok: true, agentId, warnings, teaching: warnings.length === 0
+          ? 'The selected Agent credential is stored on this host. Restart Agent to apply it.'
+          : `The selected Agent is connected. ${warnings.join(' ')}` })
+      }
+      if (path === '/account/logout' && req.method === 'POST') {
+        const warnings = []
+        const jti = String(config.cloud?.agentTokenJti ?? '')
+        if (jti !== '') {
+          const revoked = await cloudRequest('/local/v1/agent-token/revoke', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jti }),
+          })
+          if (revoked === undefined || !revoked.ok) warnings.push('The selected Agent credential could not be revoked at Cloud. Revoke it from Console if this host was exposed.')
+        }
+        const clientId = String(config.cloud?.clientId ?? '')
+        const refreshToken = String(config.cloud?.refreshToken ?? '')
+        if (clientId !== '' && refreshToken !== '') {
+          const revoked = await fetch(`${issuerOf()}/revoke`, {
+            method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ token: refreshToken, token_type_hint: 'refresh_token', client_id: clientId }),
+          }).catch(() => undefined)
+          if (revoked === undefined || !revoked.ok) warnings.push('The Cloud account session could not be revoked remotely. Remove the Rulith Local client from Console if this host was exposed.')
+        }
+        if (running('agent')) stop('agent')
+        config.cloud = {
+          ...(config.cloud ?? {}), clientId: '', accessToken: '', refreshToken: '', expiresAt: 0,
+          selectedAgentId: '', agentTokenJti: '',
+        }
+        config.agent = { ...(config.agent ?? {}), env: { ...(config.agent?.env ?? {}), RULITH_AGENT: 'default', RULITH_TOKEN: '' } }
+        saveCurrentConfig()
+        return void json(res, 200, { ok: true, warnings, teaching: warnings.length === 0
+          ? 'Signed out. The Cloud session and selected Agent credential were revoked, and the local Agent stopped.'
+          : `Signed out locally. ${warnings.join(' ')}` })
+      }
       if (path === '/events' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
         for (const event of events) res.write(`data: ${JSON.stringify(event)}\n\n`)
@@ -239,8 +389,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
         const role = String(body.comp ?? '')
         if (!ROLE_SET.has(role)) return void json(res, 400, { ok: false, teaching: 'comp must be agent or worker.' })
         config[role] = { ...(config[role] ?? {}), env: applyEnvEdit(config[role]?.env, body.env ?? {}), ...(role === 'agent' && Array.isArray(body.args) ? { args: body.args.map(String) } : {}) }
-        config.roles = selectedRoles
-        saveConfig(configFile, config)
+        saveCurrentConfig()
         return void json(res, 200, { ok: true, teaching: running(role) ? 'Saved. Restart this role to apply the change.' : 'Saved.' })
       }
       if (path === '/control' && req.method === 'POST') {
