@@ -87,7 +87,7 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.0')
+  assert.equal(pkg.version, '0.6.1')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
@@ -106,10 +106,13 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('Agent and Local decode the one token scope with the same non-authoritative helper', () => {
-  const helper = (file) => readFileSync(join(ROOT, file), 'utf8').match(/const agentIdFromToken = \(token\) => \{[\s\S]*?\n\}/)?.[0]
-  assert.ok(helper('agent/rulith-agent.mjs'))
-  assert.equal(helper('agent/rulith-agent.mjs'), helper('local/rulith-local.mjs'))
+test('Agent identity comes from the authenticated public MCP surface, never from decoding the bearer secret', () => {
+  const agent = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  const local = readFileSync(join(ROOT, 'local', 'rulith-local.mjs'), 'utf8')
+  assert.match(agent, /agentProtocol\('identity'\)/)
+  assert.match(agent, /legacyAgentIdHint/, 'old JWTs may remain a non-authoritative display fallback during migration')
+  assert.doesNotMatch(agent, /agentIdFromToken/)
+  assert.doesNotMatch(local, /agentIdFromToken|split\('\.'\).*token|base64url/)
 })
 
 test('the Agent completes a minimal run through plain public MCP JSON-RPC with no native Cloud route', async () => {
@@ -125,7 +128,7 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
       return
     }
     assert.equal(req.url, '/mcp')
-    assert.match(String(req.headers.authorization), /^Bearer x\.[A-Za-z0-9_-]+\.test-agent-token$/)
+    assert.equal(String(req.headers.authorization), `Bearer rlt_agt_${'a'.repeat(43)}`)
     if (input.method === 'tools/list') {
       res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools: [{ name: 'agent_protocol', inputSchema: { type: 'object' } }] } }))
       return
@@ -134,7 +137,8 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
     assert.equal(input.params?.name, 'agent_protocol')
     const args = input.params?.arguments ?? {}
     let result
-    if (args.mode === 'source_access') result = { ok: true, sources: [] }
+    if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
+    else if (args.mode === 'source_access') result = { ok: true, sources: [] }
     else if (args.mode === 'evidence_chase') result = { ok: true, plans: [] }
     else if (args.mode === 'trace') result = { ok: true, took: (args.events ?? []).length }
     else {
@@ -154,13 +158,12 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
   })
   let port
   await new Promise((resolveReady) => server.listen(0, '127.0.0.1', () => { port = server.address().port; resolveReady() }))
-  const payload = Buffer.from(JSON.stringify({ agent: 'agent-public-1' })).toString('base64url')
   const child = spawn(process.execPath, ['agent/rulith-agent.mjs', '--case', 'case-test', 'test'], {
     cwd: ROOT,
     env: {
       ...process.env,
       RULITH_URL: `http://127.0.0.1:${port}`,
-      RULITH_TOKEN: `x.${payload}.test-agent-token`,
+      RULITH_TOKEN: `rlt_agt_${'a'.repeat(43)}`,
       RULITH_MODEL_URL: `http://127.0.0.1:${port}`,
       RULITH_MODEL: 'test-model', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '',
       RULITH_TRACE: 'off', RULITH_AUTO_DISCHARGE: 'off', RULITH_MAX_ROUNDS: '1',
@@ -220,17 +223,18 @@ test('Rulith Local starts exactly the selected roles and receives structured chi
 test('Rulith Local status is a read-only redacted runtime projection', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-status-'))
   const child = join(dir, 'role.mjs')
-  writeFileSync(child, 'setInterval(()=>{},1000)\n')
+  writeFileSync(child, "process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start',agentId:'agent-public-1',concurrency:1}});setInterval(()=>{},1000)\n")
   const probe = createServer()
   let port
   await new Promise((resolveReady) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(resolveReady) }))
   const config = defaultLocalConfig()
   config.paths = { agent: child }
-  config.agent.env.RULITH_TOKEN = `x.${Buffer.from(JSON.stringify({ agent: 'agent-public-1' })).toString('base64url')}.agent-secret-value`
+  config.agent.env.RULITH_TOKEN = `rlt_agt_${'a'.repeat(43)}`
   config.agent.env.RULITH_MODEL_KEY = 'model-secret-value'
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'status-key' })
   try {
     await host.listen()
+    await new Promise((accept) => setTimeout(accept, 80))
     const response = await fetch(`http://127.0.0.1:${port}/status?k=status-key`)
     const text = await response.text()
     assert.equal(response.status, 200)

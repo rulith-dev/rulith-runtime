@@ -4,6 +4,12 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.6.1 - 2026-09-02
+
+- Resolves Agent identity from the authenticated public MCP surface so short opaque credentials never need client-side decoding.
+- Keeps legacy JWT Agent credentials usable during the Cloud cutover; rotating them adopts the short credential format.
+- Reports the Cloud-resolved Agent identity in the read-only Local runtime projection without exposing the credential.
+
 ## 0.6.0 - 2026-09-01
 
 - Moved the first-party Agent onto the same public MCP tools/call surface used by third-party Agent clients.

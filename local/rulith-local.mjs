@@ -19,15 +19,6 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROLE_SET = new Set(['agent', 'worker'])
 const MAX_BODY = 64 * 1024
 
-const agentIdFromToken = (token) => {
-  const payload = String(token ?? '').split('.')[1]
-  if (payload === undefined) throw new Error('Agent MCP token is not a JWT with an Agent scope.')
-  let decoded
-  try { decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { throw new Error('Agent MCP token payload cannot be decoded.') }
-  if (typeof decoded.agent !== 'string' || decoded.agent.trim() === '') throw new Error('Agent MCP token has no Agent scope. Rotate it under Agent → Runtime in Console.')
-  return decoded.agent
-}
-
 export function rolesOf(value) {
   const raw = Array.isArray(value) ? value : String(value ?? '').replaceAll('+', ',').split(',')
   const roles = [...new Set(raw.map((role) => String(role).trim()).filter(Boolean))]
@@ -134,7 +125,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
   const clients = new Set()
   let nextSequence = 1
   const components = {
-    agent: { child: null, serveKey: '', servePort: 7799, maxConcurrentCases: 1 },
+    agent: { child: null, serveKey: '', servePort: 7799, maxConcurrentCases: 1, agentId: 'unconfigured' },
     worker: { child: null },
   }
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
@@ -152,6 +143,9 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       if (event === null || typeof event !== 'object' || Array.isArray(event)) return
       if (src === 'agent' && event.type === 'start' && Number.isInteger(event.concurrency)
         && event.concurrency >= 1 && event.concurrency <= 8) components.agent.maxConcurrentCases = event.concurrency
+      if (src === 'agent' && event.type === 'start' && typeof event.agentId === 'string' && event.agentId.trim() !== '') {
+        components.agent.agentId = event.agentId
+      }
       const { type: _type, t: _time, ...rest } = event
       emit(src, event.type ?? 'log', { ...rest, at: event.t })
     })
@@ -232,15 +226,13 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       }
       if (path === '/status' && req.method === 'GET') {
         const agentEnv = config.agent?.env ?? {}, workerEnv = config.worker?.env ?? {}
-        let configuredAgent = 'unconfigured'
-        try { configuredAgent = agentIdFromToken(agentEnv.RULITH_TOKEN) } catch { /* status remains honest without exposing the token */ }
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
           agent: running('agent'), worker: running('worker'), maxConcurrentCases: components.agent.maxConcurrentCases,
           runtime: {
             configFile,
             agent: {
-              id: configuredAgent, credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
+              id: components.agent.agentId, credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
               modelService: safeUrl(agentEnv.RULITH_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
               modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? process.env.ANTHROPIC_API_KEY ?? '') !== '',
               thinking: String(agentEnv.RULITH_MODEL_THINKING ?? '') === 'enabled' ? 'extended' : 'standard',

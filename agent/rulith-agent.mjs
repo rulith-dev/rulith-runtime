@@ -18,13 +18,15 @@ import { randomUUID } from 'node:crypto'
 const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/$/, '')
 const MCP_URL = `${URL_BASE}/mcp`
 const TOKEN = process.env.RULITH_TOKEN ?? ''
-const agentIdFromToken = (token) => {
+// Compatibility hint for Cloud versions before agent_protocol identity. It is
+// never authorization: every operation still crosses authenticated MCP and a
+// current Cloud response overrides this unverified legacy JWT display hint.
+const legacyAgentIdHint = (token) => {
   const payload = String(token ?? '').split('.')[1]
-  if (payload === undefined) throw new Error('Agent MCP token is not a JWT with an Agent scope.')
+  if (payload === undefined) return undefined
   let decoded
-  try { decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { throw new Error('Agent MCP token payload cannot be decoded.') }
-  if (typeof decoded.agent !== 'string' || decoded.agent.trim() === '') throw new Error('Agent MCP token has no Agent scope. Rotate it under Agent → Runtime in Console.')
-  return decoded.agent
+  try { decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { return undefined }
+  return typeof decoded.agent === 'string' && decoded.agent.trim() !== '' ? decoded.agent : undefined
 }
 const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
@@ -106,8 +108,7 @@ const businessKeyOf = (raw, label = 'businessKey') => {
 const selectedBusinessKey = businessKeyOf(selectedBusinessKeyRaw, 'RULITH_BUSINESS_KEY_JSON / --business-key')
 
 if (TOKEN === '') die('RULITH_TOKEN is missing. Create this Agent\'s MCP token under Agent → Runtime in Console; it is shown only once.')
-let agentId
-try { agentId = agentIdFromToken(TOKEN) } catch (error) { die(error.message) }
+let agentId = ''
 let parsedModelUrl
 try { parsedModelUrl = new URL(MODEL_URL_INPUT) } catch { die('RULITH_MODEL_URL must be one absolute HTTP(S) model service URL.') }
 if (!['http:', 'https:'].includes(parsedModelUrl.protocol)) die('RULITH_MODEL_URL must use HTTP or HTTPS.')
@@ -876,6 +877,18 @@ const extractSubmission = (text) => {
 
 // ── 主循环：提议 → 裁决 → 教学回流 ──────────────────────────────────
 const log = (s) => console.log(s)
+try {
+  const identity = await agentProtocol('identity')
+  if (identity?.ok !== true || typeof identity.agentId !== 'string' || identity.agentId.trim() === '') {
+    throw new Error('agent_protocol identity returned no Agent ID.')
+  }
+  agentId = identity.agentId
+} catch (error) {
+  const legacy = legacyAgentIdHint(TOKEN)
+  if (legacy === undefined) die(`Cloud could not resolve this opaque Agent MCP token: ${error?.message ?? error}`)
+  agentId = legacy
+  console.warn('Cloud does not yet expose authenticated Agent identity over public MCP; using the legacy JWT scope as a non-authoritative display hint until Cloud is upgraded.')
+}
 log(`
 rulith-agent · Agent "${agentId}" · ${URL_BASE}`)
 const consoleUrlOf = (name) => `https://console.rulith.ai/agents/${encodeURIComponent(name)}`
