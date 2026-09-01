@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, toolFromSpec, workerToolManifest } from '../worker/rulith-worker.mjs'
-import { applyEnvEdit, createLocalHost, defaultConfigPath, defaultLocalConfig, maskEnv, modeOf, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
+import { applyEnvEdit, createLocalHost, defaultConfigPath, defaultLocalConfig, maskEnv, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -79,12 +79,19 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
   assert.equal(modeOf(['agent', 'worker']), 'agent+worker')
   assert.deepEqual(rolesFromArgs(['start', '--role', 'worker'], ['agent']), ['worker'])
   assert.throws(() => rolesOf('operator'), /agent, worker, or both/)
+  const config = defaultLocalConfig()
+  assert.equal(config.agent.env.RULITH_MODEL_URL, 'https://api.anthropic.com/v1/messages')
+  assert.equal(config.agent.env.RULITH_MODEL, 'claude-sonnet-5')
+  assert.equal(config.agent.env.RULITH_MODEL_KEY, '')
+  const upgraded = normalizeLocalConfig({ roles: ['agent'], agent: { env: { RULITH_TOKEN: 'kept' } } })
+  assert.equal(upgraded.agent.env.RULITH_TOKEN, 'kept')
+  assert.equal(upgraded.agent.env.RULITH_MODEL_URL, 'https://api.anthropic.com/v1/messages')
 })
 
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.4.2')
+  assert.equal(pkg.version, '0.4.3')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))

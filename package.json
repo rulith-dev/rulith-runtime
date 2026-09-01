@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "description": "Rulith Local: one Case-first Agent workbench with Agent, Worker, and combined modes",
   "bin": {

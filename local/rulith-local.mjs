@@ -68,13 +68,27 @@ export function applyEnvEdit(prior, edit) {
 export function defaultLocalConfig() {
   return {
     roles: ['agent', 'worker'],
-    agent: { args: [], env: { RULITH_URL: 'https://api.rulith.ai', RULITH_AGENT: 'default', RULITH_TOKEN: '', RULITH_MODEL_KEY: '' } },
+    agent: { args: [], env: {
+      RULITH_URL: 'https://api.rulith.ai', RULITH_AGENT: 'default', RULITH_TOKEN: '',
+      RULITH_MODEL_URL: 'https://api.anthropic.com/v1/messages', RULITH_MODEL: 'claude-sonnet-5', RULITH_MODEL_KEY: '',
+    } },
     worker: { env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '' } },
     paths: {},
   }
 }
 
 export function defaultConfigPath(home = homedir()) { return join(home, '.rulith', 'local.json') }
+
+export function normalizeLocalConfig(config) {
+  const defaults = defaultLocalConfig()
+  return {
+    ...defaults, ...(config ?? {}),
+    roles: rolesOf(config?.roles ?? defaults.roles),
+    agent: { ...defaults.agent, ...(config?.agent ?? {}), env: { ...defaults.agent.env, ...(config?.agent?.env ?? {}) } },
+    worker: { ...defaults.worker, ...(config?.worker ?? {}), env: { ...defaults.worker.env, ...(config?.worker?.env ?? {}) } },
+    paths: { ...defaults.paths, ...(config?.paths ?? {}) },
+  }
+}
 
 function loadConfig(configFile) {
   if (!existsSync(configFile)) {
@@ -85,8 +99,7 @@ function loadConfig(configFile) {
     return config
   }
   const config = JSON.parse(readFileSync(configFile, 'utf8'))
-  config.roles = rolesOf(config.roles ?? ['agent', 'worker'])
-  return config
+  return normalizeLocalConfig(config)
 }
 
 function saveConfig(configFile, config) {

@@ -4,6 +4,12 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.4.3 - 2026-09-01
+
+- Added model URL and model ID to the generated Local Agent configuration.
+- Upgrades existing Local configuration views with missing model fields while preserving credentials.
+- Clarified the separate Cloud-token and model-provider credentials inside the settings modal.
+
 ## 0.4.2 - 2026-09-01
 
 - Marked the Local UI document `no-store` so a restarted runtime cannot reuse stale HTML.
