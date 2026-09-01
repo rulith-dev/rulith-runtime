@@ -9,10 +9,10 @@
       "sha256": "985247b570d3e43c00eaca99871a2af82622c52ea736a8dc05a3ec1491a408e4"
     },
     "local/rulith-local.mjs": {
-      "sha256": "db49ae8c512c699326edc2fb286eb4cb535aa1232157e5762e316da677b1f10c"
+      "sha256": "da6f41b5d975ba6a48e4e90119828340ea194aac9e0fb7e18867905fb870a855"
     },
     "local/local-ui.mjs": {
-      "sha256": "85c33e5c32d4b4f2e2967725dd8fecbf27cd47b7dda2e1c24dec2fdd2e6eafdd"
+      "sha256": "3eb9cb52973f2186d16ea0dffd0a367800911ea3975434fff9517895f468f8ec"
     },
     "config/rulith-sources.example.json": {
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"

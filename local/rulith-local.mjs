@@ -205,7 +205,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
     const path = (req.url ?? '/').split('?')[0]
     try {
       if (path === '/' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
         return void res.end(localPage.replace('__KEY__', key))
       }
       const denied = gate(req)

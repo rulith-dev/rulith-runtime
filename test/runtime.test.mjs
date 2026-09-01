@@ -84,7 +84,7 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.4.1')
+  assert.equal(pkg.version, '0.4.2')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
@@ -461,6 +461,7 @@ test('agent lifecycle events shown to users use the English product vocabulary',
 })
 
 test('Rulith Local presents a familiar Case-first Agent workbench in English', () => {
+  const hostSource = readFileSync(join(ROOT, 'local', 'rulith-local.mjs'), 'utf8')
   const visible = localPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
   const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(localPage)?.[1]
   assert.ok(script)
@@ -478,6 +479,10 @@ test('Rulith Local presents a familiar Case-first Agent workbench in English', (
   assert.match(localPage, /Save &amp; restart Agent/)
   assert.match(localPage, /Save &amp; restart Worker/)
   assert.doesNotMatch(localPage, /<details>/, 'settings must open in a visible modal rather than below the inspector fold')
+  assert.match(localPage, /response\?\.status===403\)\{location\.reload\(\)/)
+  assert.match(localPage, /\.composebox\{width:min\(790px,100%\)/)
+  assert.doesNotMatch(localPage, /padding:12px max\(/, 'percentage padding collapses the composer inside the center grid column')
+  assert.match(hostSource, /'cache-control': 'no-store'/)
   assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
 })
 

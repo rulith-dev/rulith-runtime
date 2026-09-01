@@ -4,6 +4,11 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.4.2 - 2026-09-01
+
+- Marked the Local UI document `no-store` so a restarted runtime cannot reuse stale HTML.
+- Automatically reloads an old Local tab when its per-run key is rejected by the new process.
+
 ## 0.4.1 - 2026-09-01
 
 - Replaced the below-fold Local settings disclosure with a centered, accessible settings modal.
