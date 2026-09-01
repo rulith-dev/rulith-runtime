@@ -446,6 +446,9 @@ test('Rulith Local presents a familiar Case-first Agent workbench in English', (
   assert.match(localPage, /Worker activity/)
   assert.match(localPage, /Give the Agent a task/)
   assert.match(localPage, /receipt committed/)
+  assert.match(localPage, /Authoritative receipt/)
+  assert.match(localPage, /e\.invocation/)
+  assert.match(localPage, /'remote'/)
   assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
 })
 
