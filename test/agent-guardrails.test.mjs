@@ -391,3 +391,47 @@ test('a valid numeric knob is used and produces no warning (calibration)', async
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.doesNotMatch(run.stderr, /RULITH_MAX_ROUNDS/)
 })
+
+// ── K. Trace never becomes the reason a finished run is still running ────────
+//
+// Trace is on by default and is fire-and-forget by design, which is exactly why its
+// failure mode is quiet: the run is finished, the exit status is set, and the process
+// is still there. Two handles did it — the unref'd-nothing 1.5s batching timer, and the
+// socket under the flush's own request, which the 45s abort budget was the only thing
+// bounding. Both arms below time the exit from the endpoint's own clock rather than
+// from the harness's, so a slow machine cannot turn either into a flake.
+
+test('a trace endpoint that never answers does not hold a finished one-shot run open', async () => {
+  const started = Date.now()
+  const run = await runAgent({
+    argv: ['--case', 'case-trace-hang', 'do the work'],
+    env: { RULITH_TRACE: '' },
+    holdTrace: true,
+    timeoutMs: 20_000,
+  })
+  assert.notEqual(run.code, 'timeout', `the run never exited:\n${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.ok(run.firstTraceAt !== undefined,
+    'no trace batch was sent, so this arm proves nothing about the flush that used to hang')
+  // The bound is 1500ms; 8s leaves room for a loaded machine while staying far below the
+  // 45s MCP abort budget that was the only thing ending this before.
+  const heldFor = run.exitedAt - run.firstTraceAt
+  assert.ok(heldFor < 8_000,
+    `the wedged trace endpoint held the process for ${heldFor}ms after the batch arrived`
+    + ` (total run ${run.exitedAt - started}ms):\n${run.stdout}\n${run.stderr}`)
+})
+
+test('trace is still sent when the endpoint answers, and the run still exits promptly (calibration)', async () => {
+  // Without this arm, an Agent that had simply stopped tracing would satisfy the one
+  // above — and the fix under test is about when the batch leaves, not whether it does.
+  const run = await runAgent({
+    argv: ['--case', 'case-trace-ok', 'do the work'],
+    env: { RULITH_TRACE: '' },
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const traced = run.calls.filter((call) => call.mode === 'trace')
+  assert.ok(traced.length >= 1, 'the run reported no trace batch at all')
+  const types = traced.flatMap((call) => (call.events ?? []).map((event) => String(event.type ?? '')))
+  assert.ok(types.includes('end'),
+    `the final batch was dropped rather than flushed; types seen: ${JSON.stringify(types)}`)
+})

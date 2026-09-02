@@ -37,6 +37,12 @@
       "sourceTypes": ["http"],
       "entry": "/events",
       "fence": { "method": "POST", "timeoutMs": 10000, "maxResponseBytes": 65536 }
+    },
+    "acme.report.publish@1": {
+      "adapter": "run",
+      "sourceTypes": ["file"],
+      "entry": "adapters/publish-report.mjs",
+      "env": { "pass": ["ACME_REGION"] }
     }
   }
 }

@@ -28,6 +28,24 @@ a test that fails when the fix is reverted.
   Agent token, model provider keys, reviewer key, serve key and database DSN are removed
   from the child environment; `PATH`, `HOME` and the rest pass through, and what an
   Adapter needs is still handed to it explicitly.
+- That fence matches variable names case-insensitively. Windows environment variables
+  are case-insensitive, so a Connection key stored as `Rulith_Connection_Key` — the
+  casing a Windows shell keeps — reached the Adapter untouched, as did `rulith_token`
+  and `openai_api_key`. Surviving variables keep the casing they arrived with, because a
+  child that inherits neither spelling of `Path` cannot resolve a program at all.
+- The fence covers the credential families a host actually carries, not only this
+  runtime's own variables: `*_API_KEY`, `*_TOKEN`, anything containing `SECRET` or
+  `PASSWORD`, `*_PRIVATE_KEY`, `DATABASE_URL`, `*_DB_URL`, `*_DSN`, and the `AWS_`,
+  `AZURE_`, `GOOGLE_`, `ANTHROPIC_` and `OPENAI_` families. `OPENAI_API_KEY`,
+  `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` previously
+  reached every Adapter.
+- A `run` Tool may declare `"env": {"pass": ["NAME"]}` in the Worker Tool Manifest. Its
+  Adapter then receives the `PATH` / `HOME` / `TEMP` / `SystemRoot`-class basics plus
+  exactly those names and nothing else — the only fence that covers a credential name no
+  deny-list describes. The field is part of the Tool digest, is refused on the Adapters
+  that start no process, and is never accepted from a work item. Neither mode is a
+  sandbox: an Adapter runs with the Worker user's rights, and README and SECURITY now
+  say so in those words.
 
 ### Agent Runtime
 
@@ -52,6 +70,12 @@ a test that fails when the fix is reverted.
 - A finished one-shot run sets its exit status instead of forcing `process.exit`. On
   Windows the forced exit raced libuv's handle teardown, so roughly half of successful
   runs reported the crash code 3221226505 and lost the tail of their output.
+- Trace no longer keeps a finished one-shot run alive. Its batching timer is unref'd and
+  the run flushes explicitly when it ends, so an exit that took about 150 ms of work no
+  longer waits out the 1.5-second batching window; and the flush carries its own
+  1.5-second bound, so a trace endpoint that accepts the connection and never answers
+  can no longer hold the process up to the 45-second MCP abort budget. The batch is
+  still sent, and trace failures are still silent.
 
 ### Rulith Local
 
@@ -74,6 +98,14 @@ a test that fails when the fix is reverted.
 - `SUPPORT.md` pointed at `security@rulith.com`; the address is `security@rulith.ai`.
 - `SECURITY.md` and `README.md` now state that Windows does not enforce the `0o600` mode
   on `~/.rulith/local.json`, and describe the gate and Adapter fences as implemented.
+- `config/worker-tools.example.json` shows a `run` Tool with an environment allow-list,
+  and a test parses that shipped example through the Worker's own manifest validator —
+  an example is a file readers copy, and until now nothing checked that the Worker would
+  accept it.
+- The Worker fence tests assert on upper-cased variable names. The end-to-end arm looked
+  for `PATH` and read the environment exactly, so under PowerShell — which spells it
+  `Path` — it failed on a correct Worker, and it would have passed a Worker leaking
+  `Rulith_Token`. The suite is green from PowerShell and from a POSIX shell.
 
 ## 0.6.2 - 2026-09-02
 

@@ -207,6 +207,47 @@ compiles database placeholders to driver parameters, never SQL interpolation. MC
 discovery is read-only; it does not grant a generic call surface. Each remote MCP Tool
 must still be approved as its own versioned local Tool and governed Action.
 
+### What a `run` Adapter's process environment contains
+
+A `run` Adapter is an ordinary local program started with the Worker user's rights.
+**This is not a sandbox.** What the Worker controls is the environment it is handed, in
+two modes:
+
+- **By default, a deny-list of known credential patterns.** Removed are this runtime's
+  own credentials (Connection key, Agent token, model and reviewer keys, database DSN)
+  and the common credential name families a developer machine tends to carry: `*_API_KEY`,
+  `*_TOKEN`, anything containing `SECRET` or `PASSWORD`, `*_PRIVATE_KEY`, `DATABASE_URL`
+  and `*_DB_URL`, `*_DSN`, and everything under `AWS_`, `AZURE_`, `GOOGLE_`, `ANTHROPIC_`
+  and `OPENAI_`. `PATH`, `HOME`, `TEMP`, `SystemRoot`, locale and proxy settings pass
+  through. Names outside those families still reach the Adapter — a deny-list only covers
+  what it names.
+- **Per Tool, an allow-list, when the Tool declares one.** Add `env` to a `run` entry and
+  the child receives the `PATH` / `HOME` / `TEMP` / `SystemRoot`-class basics plus exactly
+  the names listed, and nothing else:
+
+```json
+{
+  "acme.report.publish@1": {
+    "adapter": "run",
+    "sourceTypes": ["file"],
+    "entry": "adapters/publish-report.mjs",
+    "env": { "pass": ["ACME_REGION"] }
+  }
+}
+```
+
+`"pass": []` passes only the basics. A listed name is passed even when a deny-list family
+would otherwise strip it; the Tool Manifest is local, operator-written configuration, and
+this is how one specific variable is handed over deliberately. Matching ignores case, so
+the fence holds on Windows, where `Rulith_Token` and `RULITH_TOKEN` are one variable.
+`env` on any other Adapter is refused when the manifest is read rather than ignored. The
+field is part of the Tool digest, so adding it changes what the Cloud pin authorizes.
+
+What an Adapter needs is still handed to it explicitly, past either fence:
+`RULITH_CASE_ID` comes from the trusted work item and `RULITH_SOURCE_ACCESS` from the
+local Source vault, never from the ambient environment. The example adapters under
+`examples/verified-calculation/` read exactly those two.
+
 ## Rulith Local
 
 Copy `config/rulith-local.example.json` outside the repository, select `agent`,
@@ -266,9 +307,10 @@ The model never supplies the trusted input values or the calculated output value
   result count, and expose neither delete nor arbitrary shell execution.
 - `run` tools execute relative adapters beneath the Worker root with the current Node
   runtime; packages cannot select arbitrary commands or escape that directory. The
-  Adapter process does not inherit the runtime's own credentials — the Connection key,
-  Agent token, model keys and database DSN are removed from its environment, and what an
-  Adapter needs is passed explicitly.
+  Adapter process receives a deny-list of known credential patterns by default, and an
+  allow-list per Tool when the Tool declares `env.pass`. This is not a sandbox: an Adapter
+  runs with the Worker user's rights. See
+  [What a `run` Adapter's process environment contains](#what-a-run-adapters-process-environment-contains).
 - HTTP tools are constrained to their declared source or allowlist. Outbound MCP calls
   are bounded by a timeout and a 1 MiB response cap.
 - Database tools take their statement from the Tool's own `exec` template. An Action

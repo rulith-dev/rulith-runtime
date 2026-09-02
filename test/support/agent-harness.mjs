@@ -55,13 +55,19 @@ export function defaultBoard({ cases = [], caseType = 'exploration' } = {}) {
  * @param {object}   [options.env]      Extra environment; overrides the fast defaults.
  * @param {Function} [options.board]    (args, calls) => result | HTTP_FAILURE marker.
  * @param {Function} [options.model]    (round, body) => assistant text.
+ * @param {boolean}  [options.holdTrace] Accept the trace request and never answer it.
+ *   The shape of a trace endpoint that is up but wedged — the one that cannot be
+ *   distinguished from a slow one, and the one that used to hold the process open.
  * @param {number}   [options.timeoutMs]
  */
-export async function runAgent({ argv = ['test task'], env = {}, board, model, timeoutMs = 20_000 } = {}) {
+export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, timeoutMs = 20_000 } = {}) {
   const answerBoard = board ?? defaultBoard()
   const calls = []
   const modelRequests = []
   const answerModel = model ?? (() => 'DONE:')
+  /** Responses accepted and deliberately never sent; destroyed during cleanup. */
+  const held = []
+  let firstTraceAt
 
   const server = createServer(async (request, response) => {
     const chunks = []
@@ -83,7 +89,11 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, t
     if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
     else if (args.mode === 'source_access') result = { ok: true, sources: [] }
     else if (args.mode === 'evidence_chase') result = { ok: true, plans: [] }
-    else if (args.mode === 'trace') result = { ok: true, took: (args.events ?? []).length }
+    else if (args.mode === 'trace') {
+      firstTraceAt ??= Date.now()
+      if (holdTrace) return void held.push(response)
+      result = { ok: true, took: (args.events ?? []).length }
+    }
     else result = answerBoard(args, calls)
     // A scenario may model an MCP hop that fails rather than a Board that answers.
     if (result === undefined) {
@@ -127,13 +137,19 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, t
     new Promise((exited) => child.on('exit', exited)),
     new Promise((late) => { timer = setTimeout(() => { child.kill('SIGKILL'); late('timeout') }, timeoutMs) }),
   ])
+  const exitedAt = Date.now()
   clearTimeout(timer)
+  // Held responses first: `server.close` waits for open connections, so a wedged
+  // request the scenario asked for would otherwise wedge the harness's own cleanup.
+  for (const response of held) response.destroy()
   await new Promise((closed) => server.close(closed))
   server.closeAllConnections()
 
   const operations = calls.filter((call) => call.mode === 'board').map((call) => call.operation ?? {})
   return {
-    code, stdout, stderr, calls, modelRequests, operations, port,
+    code, stdout, stderr, calls, modelRequests, operations, port, exitedAt,
+    /** When the endpoint first saw a trace batch, so a test can time the exit from it. */
+    firstTraceAt,
     boardCalls: calls.filter((call) => call.mode === 'board'),
     kinds: operations.map((operation) => String(operation.kind ?? '')),
   }

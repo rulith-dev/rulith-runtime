@@ -11,12 +11,14 @@
  * that had already been handed everything it needed.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { join } from 'node:path'
 import test from 'node:test'
 
 import {
   adapterEnv, adapterToolFromSpec, databaseDriver, execute, invocationArgs,
-  refuseSqlParameter, toolFromSpec,
+  refuseSqlParameter, toolFromSpec, workerToolsOf,
 } from '../worker/rulith-worker.mjs'
 
 // ── A. SQL text comes from the Tool, never from an argument ──────────────────
@@ -234,4 +236,148 @@ test('adapterEnv removes the runtime credentials and keeps the ordinary environm
     'serve-secret', 'local-secret', 'password', 'model-provider-secret', 'not-yet-invented', 'also-not-yet-invented']) {
     assert.doesNotMatch(serialized, new RegExp(secret), `${secret} survived into the Adapter environment`)
   }
+})
+
+test('the credential fence matches the name however Windows spells it', () => {
+  // Windows environment variables are case-insensitive, so `Rulith_Connection_Key` and
+  // `RULITH_CONNECTION_KEY` are one variable: a child reading `process.env.RULITH_TOKEN`
+  // is answered by whichever casing the parent shell stored. The fence compared names
+  // exactly, so every credential here reached the Adapter untouched under a casing no
+  // one had thought to list — and the deny-list read as if it were doing its job.
+  const stripped = adapterEnv({
+    Path: 'C:\\Windows\\System32',
+    PATH: '/usr/bin',
+    HOME: '/home/operator',
+    SystemRoot: 'C:\\Windows',
+    Rulith_Connection_Key: 'connection-secret',
+    rulith_token: 'agent-secret',
+    RULITH_DB_URL: 'postgres://user:dbpassword@db/orders',
+    openai_api_key: 'openai-secret',
+    Anthropic_Api_Key: 'anthropic-secret',
+  })
+  assert.deepEqual(Object.keys(stripped).sort(), ['HOME', 'PATH', 'Path', 'SystemRoot'],
+    `a credential survived under an unexpected casing: ${JSON.stringify(Object.keys(stripped))}`)
+  // Surviving names keep the casing they arrived with. Rewriting `Path` to `PATH` or
+  // `SystemRoot` to `SYSTEMROOT` would be a second, quieter defect on Windows, where a
+  // child that inherits neither spelling of PATH cannot resolve a program at all.
+  assert.equal(stripped.Path, 'C:\\Windows\\System32')
+  assert.equal(stripped.SystemRoot, 'C:\\Windows')
+  const serialized = JSON.stringify(stripped)
+  for (const secret of ['connection-secret', 'agent-secret', 'dbpassword', 'openai-secret', 'anthropic-secret']) {
+    assert.doesNotMatch(serialized, new RegExp(secret), `${secret} survived into the Adapter environment`)
+  }
+})
+
+test('the deny list covers the credential families a host actually carries', () => {
+  // The fence used to be the runtime's own variables and nothing else, so an Adapter
+  // still inherited every other credential on the machine. This is a deny-list of known
+  // patterns, not a sandbox: a name outside these families still reaches the Adapter,
+  // which is what `env.pass` below is for.
+  const denied = {
+    OPENAI_API_KEY: 'openai-secret',
+    GEMINI_APIKEY: 'gemini-secret',
+    AWS_SECRET_ACCESS_KEY: 'aws-secret',
+    AWS_REGION: 'aws-region',
+    AZURE_CLIENT_SECRET: 'azure-secret',
+    GOOGLE_APPLICATION_CREDENTIALS: '/home/operator/gcp.json',
+    ANTHROPIC_AUTH_TOKEN: 'anthropic-secret',
+    GITHUB_TOKEN: 'github-secret',
+    CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret',
+    NPM_TOKEN: 'npm-secret',
+    DATABASE_URL: 'postgres://user:dbpassword@db/app',
+    SENTRY_DSN: 'https://key@sentry.io/1',
+    PGPASSWORD: 'pg-secret',
+    SSH_PRIVATE_KEY: 'ssh-secret',
+    CLIENT_SECRET: 'client-secret',
+  }
+  const kept = {
+    PATH: '/usr/bin', HOME: '/home/operator', TEMP: '/tmp', TMPDIR: '/tmp',
+    SystemRoot: 'C:\\Windows', LANG: 'en_US.UTF-8', HTTPS_PROXY: 'http://proxy:8080',
+    ACME_REGION: 'eu-west-1', NODE_ENV: 'production',
+  }
+  const stripped = adapterEnv({ ...denied, ...kept })
+  assert.deepEqual(Object.keys(stripped).sort(), Object.keys(kept).sort(),
+    `the fence kept or dropped the wrong names: ${JSON.stringify(Object.keys(stripped))}`)
+  for (const name of Object.keys(denied)) {
+    assert.equal(stripped[name], undefined, `${name} reached the Adapter`)
+  }
+})
+
+// ── I. A Tool may declare exactly what its Adapter receives ──────────────────
+
+test('a run Tool that declares env.pass receives the basics plus those names and nothing else', () => {
+  const stripped = adapterEnv({
+    PATH: '/usr/bin', HOME: '/home/operator', TEMP: '/tmp', SystemRoot: 'C:\\Windows',
+    ACME_REGION: 'eu-west-1', ACME_TIMEOUT: '30',
+    HTTPS_PROXY: 'http://proxy:8080', LANG: 'en_US.UTF-8', NODE_ENV: 'production',
+    OPENAI_API_KEY: 'openai-secret', RULITH_CONNECTION_KEY: 'connection-secret',
+  }, ['ACME_REGION'])
+  assert.deepEqual(Object.keys(stripped).sort(), ['ACME_REGION', 'HOME', 'LANG', 'PATH', 'SystemRoot', 'TEMP'],
+    `an allow-list must be exhaustive apart from the basics: ${JSON.stringify(Object.keys(stripped))}`)
+  // A name outside the deny-list families — the very thing the deny-list cannot reach —
+  // is gone here, which is the whole reason to declare an allow-list.
+  assert.equal(stripped.NODE_ENV, undefined)
+  assert.equal(stripped.HTTPS_PROXY, undefined)
+  // The listed name is matched case-insensitively too, for the same Windows reason.
+  assert.equal(adapterEnv({ Acme_Region: 'eu-west-1', OTHER: 'x' }, ['ACME_REGION']).Acme_Region, 'eu-west-1')
+  // An empty list is a real setting, not a missing one: basics only.
+  assert.deepEqual(Object.keys(adapterEnv({ PATH: '/usr/bin', ACME_REGION: 'eu-west-1' }, [])), ['PATH'])
+})
+
+test('a declared env.pass reaches the compiled run Tool from the local manifest only', () => {
+  const tools = workerToolsOf({
+    format: 'rulith-worker-tools/1',
+    tools: {
+      'acme.report@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/report.mjs', env: { pass: ['ACME_REGION'] } },
+      'acme.plain@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/plain.mjs' },
+    },
+  })
+  const sources = { docs: { type: 'file', access: '.' } }
+  const compiled = (ref) => toolFromSpec(JSON.stringify({
+    name: ref, kind: 'act', impl: 'worker-tool', source: 'docs', exec: ref, params: {},
+  }), '{}', tools, undefined, sources)
+
+  assert.deepEqual(compiled('acme.report@1').envPass, ['ACME_REGION'])
+  assert.equal('envPass' in compiled('acme.plain@1'), false,
+    'a Tool that declares no allow-list must keep the deny-list behaviour, not an empty allow-list')
+
+  // The digest covers it, so a Tool cannot gain an allow-list without the Cloud pin moving.
+  assert.notEqual(tools['acme.report@1'].digest, tools['acme.plain@1'].digest)
+
+  // The board cannot supply one. `toolFromSpec` reads it off the installed definition;
+  // an `env` in the work item's own spec is not consulted.
+  const smuggled = toolFromSpec(JSON.stringify({
+    name: 'acme.plain@1', kind: 'act', impl: 'worker-tool', source: 'docs', exec: 'acme.plain@1',
+    params: {}, env: { pass: ['RULITH_CONNECTION_KEY'] },
+  }), '{}', tools, undefined, sources)
+  assert.equal('envPass' in smuggled, false, 'a work item supplied its own Adapter environment allow-list')
+})
+
+test('a malformed or misplaced env.pass is refused when the manifest is read', () => {
+  const manifest = (entry) => ({ format: 'rulith-worker-tools/1', tools: { 'acme.t@1': entry } })
+  const run = (extra) => ({ adapter: 'run', sourceTypes: ['file'], entry: 'adapters/report.mjs', ...extra })
+
+  assert.throws(() => workerToolsOf(manifest(run({ env: { pass: 'ACME_REGION' } }))), /env\.pass must be an array/)
+  assert.throws(() => workerToolsOf(manifest(run({ env: { pass: ['ACME REGION'] } }))), /env\.pass must be an array/)
+  assert.throws(() => workerToolsOf(manifest(run({ env: { pass: [42] } }))), /env\.pass must be an array/)
+  assert.throws(() => workerToolsOf(manifest(run({ env: ['ACME_REGION'] }))), /env must be an object/)
+  assert.throws(() => workerToolsOf(manifest(run({ env: { allow: ['ACME_REGION'] } }))), /env has unknown field\(s\): allow/)
+  // Refused, not ignored: an allow-list on an Adapter that starts no process would read
+  // as a fence the operator had applied.
+  assert.throws(() => workerToolsOf(manifest({ adapter: 'http', sourceTypes: ['http'], entry: '/x', env: { pass: ['ACME_REGION'] } })),
+    /env applies only to a run Adapter/)
+  // Calibration: the well-formed shapes are accepted.
+  assert.doesNotThrow(() => workerToolsOf(manifest(run({ env: { pass: [] } }))))
+  assert.doesNotThrow(() => workerToolsOf(manifest(run({ env: { pass: ['ACME_REGION', '_private'] } }))))
+})
+
+test('the shipped example Tool Manifest is one the Worker accepts', () => {
+  // `config/worker-tools.example.json` is a file readers copy. A field taught there that
+  // the validator refuses costs them an exit before their first poll, and nothing in the
+  // suite would have noticed: the example is data, not code.
+  const raw = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'config', 'worker-tools.example.json'), 'utf8'))
+  const tools = workerToolsOf(raw)
+  assert.ok(Object.keys(tools).length >= 7, `only ${Object.keys(tools).length} example Tools parsed`)
+  assert.deepEqual(tools['acme.report.publish@1'].env, { pass: ['ACME_REGION'] },
+    'the example must keep demonstrating the environment allow-list it documents')
 })

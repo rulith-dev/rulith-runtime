@@ -26,10 +26,18 @@
  *     "format": "rulith-worker-tools/1",
  *     "tools": {
  *       "acme.notify@1": { "adapter": "run", "sourceTypes": ["http"], "entry": "adapters/notify.mjs" },
+ *       "acme.report@1": { "adapter": "run", "sourceTypes": ["file"], "entry": "adapters/report.mjs",
+ *         "env": { "pass": ["ACME_REGION"] } },
  *       "acme.verify_cert@1": { "adapter": "http", "sourceTypes": ["http"], "entry": "/verify",
  *         "handles": { "verification": ["cert"] } }
  *     }
  *   }
+ *
+ * `env.pass` is the opt-in environment allow-list for a `run` Adapter (see adapterEnv).
+ * Without it the Adapter inherits the environment minus a deny-list of this runtime's
+ * credentials and the common credential name families; with it the Adapter sees the
+ * PATH / HOME / TEMP / SystemRoot basics plus exactly the listed names. Neither is a
+ * sandbox: an Adapter runs with the Worker user's rights.
  *
  * 动作工具改变世界(回执 effect_confirmed);放电工具兑现主张(证据带档回板,缺省 attested)。
  * 主张载荷随工单来(claim.predicate/args),http 放电工具把它作为请求体 POST 给后端。
@@ -400,9 +408,31 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT) {
  * Everything else — PATH, HOME, TEMP, locale, proxy settings — passes through, because
  * an Adapter is an ordinary local program.
  *
- * The explicit list is every credential-bearing variable this runtime reads; the
- * pattern is the ratchet, so a `RULITH_*_KEY` added later is stripped without anyone
- * remembering to edit a list.
+ * **This is a deny-list, not a sandbox.** A `run` Adapter is an ordinary local process
+ * with the Worker user's rights: it can read files, open sockets, and read whatever
+ * environment survives the list below. What the fence buys is that the credentials this
+ * runtime and its common neighbours are known to carry do not arrive for free.
+ *
+ * Three layers, in the order they are consulted:
+ *   1. `ADAPTER_ENV_DENY` — every credential-bearing variable this runtime itself reads.
+ *   2. `ADAPTER_ENV_DENY_PATTERNS` — the ratchet. A `RULITH_*_KEY` added later, and the
+ *      credential names a developer machine is likely to be carrying for some *other*
+ *      tool (`OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `DATABASE_URL`,
+ *      `CLAUDE_CODE_OAUTH_TOKEN`, `SENTRY_DSN`), are stripped without anyone remembering
+ *      to edit a list. Names outside these families still reach the Adapter.
+ *   3. A Tool's own `env.pass` allow-list, when it declares one: the child then receives
+ *      the `PATH`/`HOME`/`TEMP`/`SystemRoot`-class basics plus exactly the names listed,
+ *      and nothing else. That is the only way to hand an Adapter one specific variable,
+ *      and it is a decision the local operator writes into their own Tool Manifest —
+ *      a listed name is passed even when the deny-list families would strip it.
+ *
+ * Matching is on the **upper-cased** name, because Windows environment variables are
+ * case-insensitive: a child asking for `process.env.RULITH_TOKEN` on Windows is answered
+ * by a variable stored as `Rulith_Token`, so a case-sensitive list let every credential
+ * through under a different casing. Surviving variables keep the casing they arrived
+ * with — Windows spells them `Path` and `SystemRoot`, and rewriting those breaks the
+ * child. On POSIX a lower-cased `rulith_token` is a genuinely different variable, so
+ * this over-strips there; a credential-shaped name is not worth the exception.
  */
 const ADAPTER_ENV_DENY = new Set([
   'ANTHROPIC_API_KEY',
@@ -416,11 +446,44 @@ const ADAPTER_ENV_DENY = new Set([
   'RULITH_SHADOW_KEY',
   'RULITH_TOKEN',
 ])
-export function adapterEnv(base = process.env) {
+const ADAPTER_ENV_DENY_PATTERNS = [
+  /^RULITH_[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)$/, // this runtime's own future knobs
+  /(?:^|_)API_?KEY$/, //            OPENAI_API_KEY, GEMINI_APIKEY
+  /(?:^|_)PRIVATE_KEY$/, //         SSH_PRIVATE_KEY, GITHUB_APP_PRIVATE_KEY
+  /(?:^|_)TOKEN$/, //               GITHUB_TOKEN, NPM_TOKEN, CLAUDE_CODE_OAUTH_TOKEN
+  /SECRET/, //                      AWS_SECRET_ACCESS_KEY, CLIENT_SECRET, SECRET_KEY
+  /PASSWORD|PASSWD/, //             PGPASSWORD, MYSQL_ROOT_PASSWORD
+  /(?:^|_)(?:DATABASE|DB)_URL$/, // DATABASE_URL, PG_DATABASE_URL
+  /(?:^|_)DSN$/, //                 SENTRY_DSN
+  /^(?:AWS|AZURE|GOOGLE|ANTHROPIC|OPENAI)_/, // whole provider families
+]
+/**
+ * Variables an ordinary local program cannot start without. They survive an `env.pass`
+ * allow-list, which is otherwise exhaustive: without `PATH` and `SystemRoot` a Node
+ * Adapter on Windows fails before it reads its first argument, and the failure looks
+ * like a broken Tool rather than a fence.
+ */
+const ADAPTER_ENV_BASICS = new Set([
+  'COMSPEC', 'HOME', 'HOMEDRIVE', 'HOMEPATH', 'LANG', 'LC_ALL', 'NUMBER_OF_PROCESSORS',
+  'OS', 'PATH', 'PATHEXT', 'PROCESSOR_ARCHITECTURE', 'SHELL', 'SYSTEMDRIVE', 'SYSTEMROOT',
+  'TEMP', 'TMP', 'TMPDIR', 'USERPROFILE', 'WINDIR',
+])
+/**
+ * @param {object} [base] Environment to filter; the Worker's own by default.
+ * @param {string[]} [pass] A Tool's declared allow-list. When present it replaces the
+ *   deny-list entirely: basics plus these names, nothing else.
+ */
+export function adapterEnv(base = process.env, pass) {
+  const allow = Array.isArray(pass) ? new Set(pass.map((name) => String(name).toUpperCase())) : undefined
   const out = {}
   for (const [name, value] of Object.entries(base)) {
-    if (ADAPTER_ENV_DENY.has(name)) continue
-    if (/^RULITH_[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)$/.test(name)) continue
+    const upper = name.toUpperCase()
+    if (allow !== undefined) {
+      if (ADAPTER_ENV_BASICS.has(upper) || allow.has(upper)) out[name] = value
+      continue
+    }
+    if (ADAPTER_ENV_DENY.has(upper)) continue
+    if (ADAPTER_ENV_DENY_PATTERNS.some((pattern) => pattern.test(upper))) continue
     out[name] = value
   }
   return out
@@ -440,7 +503,7 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       ? (isAbsolute(source.access) ? source.access : resolve(WORKER_ROOT, source.access))
       : undefined
     const env = {
-      ...adapterEnv(),
+      ...adapterEnv(process.env, t.envPass),
       ...(context.caseId ? { RULITH_CASE_ID: String(context.caseId) } : {}),
       ...(access ? { RULITH_SOURCE_ACCESS: access } : {}),
       ...(source.sourceType ? { RULITH_SOURCE_TYPE: String(source.sourceType) } : {}),
@@ -1044,6 +1107,7 @@ function handledLocalTool(id, definition, source, payload, kind = 'read') {
   return adapterToolFromSpec(JSON.stringify({
     name: id, kind, impl: definition.adapter, source,
     exec: definition.entry, params, ...(definition.fence ? { fence: definition.fence } : {}),
+    ...(Array.isArray(definition.env?.pass) ? { env: { pass: definition.env.pass } } : {}),
   }), JSON.stringify(payload ?? {}))
 }
 
@@ -1527,8 +1591,13 @@ function adapterToolFromSpec(specJson, argsJson) {
     }
     let rargs = {}
     if (typeof argsJson === 'string' && argsJson !== '') rargs = JSON.parse(argsJson)
+    // The environment allow-list travels with the compiled Tool, in the same shape the
+    // local Tool Manifest declares it. It comes from that manifest and never from a work
+    // item: `toolFromSpec` copies it off the installed definition, and the board's spec
+    // is not consulted for it.
     return {
       impl: 'run', source: spec.source, cmd: process.execPath, args: [adapter], passArgs: true,
+      ...(Array.isArray(spec.env?.pass) ? { envPass: spec.env.pass } : {}),
       ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}),
       _args: rargs,
     }
@@ -1638,10 +1707,28 @@ export function workerToolsOf(raw) {
     if (adapter === 'workspace' && !Object.values({ ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS }).includes(value.entry)) {
       throw new Error(`Worker Tool ${id} uses unknown workspace operation "${value.entry}"`)
     }
-    const unknown = Object.keys(value).filter((key) => !['adapter', 'sourceTypes', 'entry', 'fence', 'handles', 'tier'].includes(key))
+    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'sourceTypes', 'entry', 'fence', 'handles', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
     if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {
       throw new Error(`Worker Tool ${id}.fence must be an object`)
+    }
+    // The opt-in environment allow-list. Declaring it replaces the deny-list for this
+    // Tool: the Adapter then sees the basics plus exactly these names. It is refused on
+    // the other Adapters rather than ignored, because a fence that silently does nothing
+    // is worse than no fence — the operator would believe it applied.
+    if (value.env !== undefined) {
+      if (adapter !== 'run') {
+        throw new Error(`Worker Tool ${id}.env applies only to a run Adapter; a ${adapter} Adapter starts no process and receives no environment`)
+      }
+      if (!value.env || typeof value.env !== 'object' || Array.isArray(value.env)) {
+        throw new Error(`Worker Tool ${id}.env must be an object of the shape {"pass":["ACME_REGION"]}`)
+      }
+      const unknownEnv = Object.keys(value.env).filter((key) => key !== 'pass')
+      if (unknownEnv.length > 0) throw new Error(`Worker Tool ${id}.env has unknown field(s): ${unknownEnv.join(', ')}`)
+      if (!Array.isArray(value.env.pass) || value.env.pass.some((name) => typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))) {
+        throw new Error(`Worker Tool ${id}.env.pass must be an array of environment variable names, for example ["ACME_REGION"].`
+          + ' An empty array passes only the PATH / HOME / TEMP / SystemRoot basics.')
+      }
     }
     if (value.handles !== undefined) {
       if (!value.handles || typeof value.handles !== 'object' || Array.isArray(value.handles)) throw new Error(`Worker Tool ${id}.handles must be an object`)
@@ -1695,6 +1782,7 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
     name: ref, kind: spec.kind, impl: def.adapter, source: spec.source,
     exec: def.entry, params: spec.params ?? {}, returns: spec.returns ?? [],
     ...(def.fence && typeof def.fence === 'object' ? { fence: def.fence } : {}),
+    ...(Array.isArray(def.env?.pass) ? { env: { pass: def.env.pass } } : {}),
   }
   return adapterToolFromSpec(JSON.stringify(local), argsJson)
 }

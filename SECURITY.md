@@ -39,5 +39,19 @@ Treat every capability package as code-adjacent configuration. Review tool and s
 declarations before installation. Prefer read-only source credentials, narrowly scoped
 Connection identities, explicit host allowlists, and fixed `run` commands.
 
+A `run` Adapter is an ordinary local process with the Worker user's rights. **It is not
+sandboxed.** Its environment is fenced in two modes: a deny-list of known credential
+patterns by default, and an allow-list per Tool when the Tool declares one. The deny-list
+removes this runtime's own credentials and the common credential name families
+(`*_API_KEY`, `*_TOKEN`, anything containing `SECRET` or `PASSWORD`, `*_PRIVATE_KEY`,
+`DATABASE_URL`, `*_DB_URL`, `*_DSN`, and the `AWS_`, `AZURE_`, `GOOGLE_`, `ANTHROPIC_`
+and `OPENAI_` families), keeping `PATH`, `HOME`, `TEMP`, `SystemRoot`, locale and proxy
+settings. It cannot cover a credential name it does not describe. A `run` Tool that
+declares `"env": {"pass": ["NAME"]}` in the Worker Tool Manifest receives those basics
+plus exactly the listed names and nothing else; matching ignores case, because Windows
+environment variables are case-insensitive. Declare an allow-list for any Adapter you do
+not fully trust with the rest of the machine's environment, and do not rely on either
+fence to contain an Adapter that can already read the filesystem.
+
 Open source makes the local execution path inspectable; it does not replace server-side
 identity, authorization, leases, replay protection, clearance, or verification.

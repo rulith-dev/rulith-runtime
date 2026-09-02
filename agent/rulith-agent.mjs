@@ -184,10 +184,10 @@ const clients = new Set()
 // tools/call membrane. The one Agent token is a client configuration secret,
 // sent only as an Authorization header; it never appears in a URL.
 let mcpSeq = 0
-async function mcpRpc(method, params = {}) {
+async function mcpRpc(method, params = {}, { timeoutMs = 45_000 } = {}) {
   let response
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 45_000)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   timeout.unref?.()
   try {
     response = await fetch(MCP_URL, {
@@ -229,17 +229,17 @@ async function requirePublicMcpSurface() {
   return await mcpSurfacePromise
 }
 
-async function mcpTool(name, args = {}) {
+async function mcpTool(name, args = {}, options = {}) {
   await requirePublicMcpSurface()
-  const result = await mcpRpc('tools/call', { name, arguments: args })
+  const result = await mcpRpc('tools/call', { name, arguments: args }, options)
   const text = (Array.isArray(result?.content) ? result.content : [])
     .filter((item) => item?.type === 'text').map((item) => String(item.text ?? '')).join('\n')
   if (text === '') throw new Error(`MCP tool ${name} returned no text result.`)
   return text
 }
 
-async function agentProtocol(mode, args = {}) {
-  const text = await mcpTool('agent_protocol', { mode, ...args })
+async function agentProtocol(mode, args = {}, options = {}) {
+  const text = await mcpTool('agent_protocol', { mode, ...args }, options)
   try { return JSON.parse(text) } catch { throw new Error(`agent_protocol returned invalid JSON: ${text.slice(0, 240)}`) }
 }
 
@@ -294,6 +294,22 @@ function emit(type, data) {
 // 体积纪律: propose 的 ops 全文**不出进程**（只带条数 opsN）;长文本截断;
 // start/end 的板面投影不上传（板上真有什么，控制台自己会去板上读）。
 const TRACE_ON = (process.env.RULITH_TRACE ?? '') !== 'off'
+/**
+ * Trace is a window, not an obligation — and it may not become the reason a run is
+ * still alive. Two handles held the process open after the work was finished:
+ *
+ *   · the 1.5s batching timer. It is a plain `setTimeout`, so a one-shot run that
+ *     emitted its `end` event 40ms before finishing waited out the full window before
+ *     exiting. A run that took ~150ms to do its work took ~1600ms to leave;
+ *   · the flush's own request. `mcpRpc`'s 45s abort timer is unref'd, but the socket
+ *     under an in-flight `fetch` is not, so a trace endpoint that accepted the
+ *     connection and never answered kept the process up until that abort fired.
+ *
+ * So: the timer is unref'd (a pending batch never delays exit on its own) and the
+ * request carries its own short bound. The one-shot path flushes explicitly when the
+ * run ends, which is what keeps the last events from being dropped by the unref.
+ */
+const TRACE_FLUSH_TIMEOUT_MS = 1500
 let traceBuf = []
 let traceTimer = null
 function traceForward(ev) {
@@ -306,13 +322,13 @@ function traceForward(ev) {
   if (Array.isArray(e.notes)) e.notes = e.notes.map((n) => String(n).slice(0, 200)).slice(0, 8)
   traceBuf.push(e)
   if (traceBuf.length >= 50) flushTrace()
-  else if (traceTimer === null) traceTimer = setTimeout(flushTrace, 1500)
+  else if (traceTimer === null) { traceTimer = setTimeout(flushTrace, 1500); traceTimer.unref?.() }
 }
 function flushTrace() {
   if (traceTimer !== null) { clearTimeout(traceTimer); traceTimer = null }
   if (traceBuf.length === 0) return
   const batch = traceBuf.splice(0, 200)
-  agentProtocol('trace', { events: batch }).catch(() => {})
+  agentProtocol('trace', { events: batch }, { timeoutMs: TRACE_FLUSH_TIMEOUT_MS }).catch(() => {})
 }
 let sourceAccessGuidePromise
 async function sourceAccessGuide() {
@@ -1826,6 +1842,11 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     console: seen,
     ...(pendingCaseId === null ? {} : { pendingCaseId }),
   })
+  // Send the last trace batch now instead of leaving it to the 1.5s timer, which is
+  // unref'd and would simply be dropped when the loop drains. The request is bounded by
+  // TRACE_FLUSH_TIMEOUT_MS, so a trace endpoint that hangs delays this exit by that
+  // much and no more — reporting is never the reason a finished run is still running.
+  flushTrace()
   // A task that never opened a Case did not run. Exiting 0 told every caller — CI step,
   // shell script, cron wrapper — that the work was attempted and finished.
   //
@@ -1834,8 +1855,8 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   // libuv aborts on that (`!(handle->flags & UV_HANDLE_CLOSING)`, src/win/async.c):
   // roughly half of successful runs on this platform reported 3221226505 — a crash
   // code — instead of 0, and the tail of stdout was lost with it. Verified against
-  // 1e39d55, so it predates this change. Nothing keeps the loop alive at this point,
-  // so the process still exits immediately.
+  // 1e39d55, so it predates this change. What remains on the loop is the trace request
+  // above and nothing else, so the process leaves as soon as that settles.
   if (opened !== true) {
     console.error(`\n✗ No Case Context was opened, so this task never started: ${note}`
       + '\n   Nothing was executed and no Case record exists. Fix the reported cause and run the task again.\n')

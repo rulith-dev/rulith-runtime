@@ -106,13 +106,21 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
   // with RULITH_CONNECTION_KEY set, which is exactly the deployment shape: an Adapter
   // shipped by a capability package would otherwise read the Connection key, the Agent
   // token and the model key out of its own process environment.
+  // The probe reports under the UPPER-CASED name, and so must every assertion below.
+  // Windows environment variables are case-insensitive: a shell that stores `Path` and a
+  // fence that strips `RULITH_TOKEN` are talking about the same namespace, and a probe
+  // that compared names exactly answered two different questions on two shells. It read
+  // `PATH` as absent under PowerShell (which spells it `Path`), failing this test on a
+  // correct Worker; and it would have read a credential arriving as `Rulith_Token` as
+  // absent too, passing on a broken one.
   const probe = {
     'env-probe.mjs':
       "import { appendFileSync } from 'node:fs'\n"
       + "appendFileSync(process.env.P2_EFFECT_LOG, 'probe\\n')\n"
+      + "const want = ['RULITH_CONNECTION_KEY','RULITH_TOKEN','RULITH_MODEL_KEY','ANTHROPIC_API_KEY',"
+      + "'RULITH_DB_URL','RULITH_SERVE_KEY','RULITH_CASE_ID','RULITH_SOURCE_ACCESS','PATH']\n"
       + "const seen = Object.fromEntries(Object.entries(process.env)"
-      + ".filter(([name]) => ['RULITH_CONNECTION_KEY','RULITH_TOKEN','RULITH_MODEL_KEY','ANTHROPIC_API_KEY',"
-      + "'RULITH_DB_URL','RULITH_SERVE_KEY','RULITH_CASE_ID','RULITH_SOURCE_ACCESS','PATH'].includes(name)))\n"
+      + ".map(([name, value]) => [name.toUpperCase(), value]).filter(([name]) => want.includes(name)))\n"
       + "process.stdout.write(JSON.stringify({ rows: [], seen }))\n",
   }
   let polls = 0
@@ -155,4 +163,65 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
   assert.equal(typeof seen.PATH, 'string', 'stripping must not empty the environment')
   assert.equal(seen.RULITH_CASE_ID, 'CASE_p2', 'the trusted Case id is still supplied explicitly')
   assert.equal(typeof seen.RULITH_SOURCE_ACCESS, 'string', 'the Source access root is still supplied explicitly')
+})
+
+test('RT-WK-RECEIPT-5: a run Tool that declares env.pass receives only what it declared', async () => {
+  // The deny-list is the default and covers known credential patterns; it cannot cover a
+  // name nobody has heard of. `env.pass` is the operator's opt-in for a Tool that should
+  // see one specific variable and no other — including the harness's own effect log,
+  // which has to be declared here precisely because the allow-list is exhaustive.
+  const probe = {
+    'env-allow-probe.mjs':
+      "import { appendFileSync } from 'node:fs'\n"
+      + "appendFileSync(process.env.P2_EFFECT_LOG, 'allow\\n')\n"
+      + "const seen = Object.fromEntries(Object.entries(process.env).map(([n, v]) => [n.toUpperCase(), v]))\n"
+      + "process.stdout.write(JSON.stringify({ rows: [], seen }))\n",
+  }
+  let polls = 0
+  const run = await driveWorker({
+    extraAdapters: probe,
+    extraTools: {
+      'acme.allow@1': {
+        adapter: 'run', sourceTypes: ['file'], entry: 'env-allow-probe.mjs',
+        env: { pass: ['ACME_REGION', 'P2_EFFECT_LOG'] },
+      },
+    },
+    env: {
+      ACME_REGION: 'eu-west-1',
+      ACME_UNLISTED: 'ordinary-but-undeclared',
+      RULITH_TOKEN: `rlt_agt_${'z'.repeat(43)}`,
+    },
+    reply: (operation) => {
+      if (operation.kind === 'Poll') {
+        return ++polls === 1
+          ? { body: { accepted: true, payload: { work: [actionRow({
+              work: 'inv_allow', tool: 'acme.allow@1',
+              toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.allow@1', source: 'orders', kind: 'act', params: {} }),
+            })] } } }
+          : HOLD
+      }
+      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12', caseRevision: CLAIMED } }
+      if (operation.kind === 'ReportWork') return caseRevisionGate(CLAIMED, () => ({ body: { accepted: true, revision: 'b13', caseRevision: REPORTED } }))(operation)
+      throw new Error(`unexpected operation ${String(operation.kind)}`)
+    },
+    done: (seen, output) => DONE.action.test(output),
+  })
+
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.ran('allow'), 1, `the Adapter must actually have run; effect log: ${JSON.stringify(run.effects)}`)
+  const report = run.of('ReportWork')[0]
+  assert.ok(report, `no receipt was filed:\n${run.output}`)
+  const seen = JSON.parse(String(report.operation.result)).seen
+
+  assert.equal(seen.ACME_REGION, 'eu-west-1', 'a declared name must still be handed to the Adapter')
+  // The arm that only an allow-list can produce: an ordinary variable no deny-list
+  // pattern describes, which the default fence passes through and this Tool does not.
+  assert.equal(seen.ACME_UNLISTED, undefined,
+    `an undeclared variable reached a Tool with an allow-list: ${JSON.stringify(Object.keys(seen).sort())}`)
+  assert.equal(seen.RULITH_TOKEN, undefined)
+  assert.equal(seen.RULITH_CONNECTION_KEY, undefined)
+  // Basics and the explicit hand-off survive, or the Tool could not run at all.
+  assert.equal(typeof seen.PATH, 'string', 'the allow-list must keep the basics an Adapter needs to start')
+  assert.equal(seen.RULITH_CASE_ID, 'CASE_p2')
+  assert.equal(typeof seen.RULITH_SOURCE_ACCESS, 'string')
 })
