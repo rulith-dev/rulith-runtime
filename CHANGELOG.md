@@ -46,6 +46,10 @@ a test that fails when the fix is reverted.
   that start no process, and is never accepted from a work item. Neither mode is a
   sandbox: an Adapter runs with the Worker user's rights, and README and SECURITY now
   say so in those words.
+- Ambient `RULITH_CASE_ID`, `RULITH_SOURCE_ACCESS`, and `RULITH_SOURCE_TYPE` are stripped
+  even when a Tool's `env.pass` names them. The Worker supplies current Case and Source
+  context explicitly from the trusted work item, so a reused process cannot hand an
+  Adapter stale execution context from its parent environment.
 
 ### Agent Runtime
 
@@ -70,12 +74,14 @@ a test that fails when the fix is reverted.
 - A finished one-shot run sets its exit status instead of forcing `process.exit`. On
   Windows the forced exit raced libuv's handle teardown, so roughly half of successful
   runs reported the crash code 3221226505 and lost the tail of their output.
+- Public MCP calls keep one deadline across both response headers and body and refuse a
+  response larger than 1 MiB instead of buffering it without bound.
 - Trace no longer keeps a finished one-shot run alive. Its batching timer is unref'd and
   the run flushes explicitly when it ends, so an exit that took about 150 ms of work no
   longer waits out the 1.5-second batching window; and the flush carries its own
-  1.5-second bound, so a trace endpoint that accepts the connection and never answers
-  can no longer hold the process up to the 45-second MCP abort budget. The batch is
-  still sent, and trace failures are still silent.
+  1.5-second bound across both response headers and body, so a trace endpoint that never
+  answers—or sends headers and then stalls its body—cannot hold the process up to the
+  45-second MCP abort budget. The batch is still sent, and trace failures are still silent.
 
 ### Rulith Local
 

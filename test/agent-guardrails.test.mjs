@@ -94,6 +94,15 @@ test('a batch of board operations is still forwarded as ApplyBatch', async () =>
   assert.doesNotMatch(run.stdout, /Refused locally/)
 })
 
+test('an oversized public MCP response is refused before the Agent buffers it without bound', async () => {
+  const run = await runAgent({ oversizeMcpResponse: true })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.notEqual(run.code, 0, 'an oversized tools/list response must stop startup')
+  assert.match(run.stderr, /MCP response exceeded the 1048576-byte limit/)
+  assert.doesNotMatch(run.stderr, /Cannot reach the public MCP endpoint/,
+    'a size refusal must not be mislabeled as a connectivity failure')
+})
+
 // ── E. One task's failure is not the process's ───────────────────────────────
 
 test('a model-provider error in --serve fails the task and leaves the server accepting work', async () => {
@@ -134,7 +143,13 @@ test('a model-provider error in --serve fails the task and leaves the server acc
   let port
   await new Promise((ready) => server.listen(0, '127.0.0.1', () => { port = server.address().port; ready() }))
 
-  const servePort = port + 1
+  // Ask the OS for an independent free port. `modelPort + 1` races Windows' ephemeral
+  // allocator and collided under a parallel full-suite run even though the model port was
+  // valid; that turned a server-survival assertion into an unrelated EADDRINUSE failure.
+  const serveProbe = createServer()
+  let servePort
+  await new Promise((ready) => serveProbe.listen(0, '127.0.0.1', () => { servePort = serveProbe.address().port; ready() }))
+  await new Promise((closed) => serveProbe.close(closed))
   const child = spawn(process.execPath, ['agent/rulith-agent.mjs', '--serve'], {
     cwd: ROOT,
     env: {
@@ -149,6 +164,10 @@ test('a model-provider error in --serve fails the task and leaves the server acc
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  // Subscribe at spawn time. If the child fails before cleanup (for example because a
+  // parallel test briefly owns the chosen port), attaching `once('close')` in `finally`
+  // misses the event and turns a useful failure into an unbounded suite hang.
+  const childClosed = new Promise((closed) => child.once('close', closed))
   let output = ''
   child.stdout.setEncoding('utf8').on('data', (chunk) => { output += chunk })
   child.stderr.setEncoding('utf8').on('data', (chunk) => { output += chunk })
@@ -191,10 +210,11 @@ test('a model-provider error in --serve fails the task and leaves the server acc
       return (runs?.runs ?? []).length >= 2
     }), `the second task never ran, so the queue did not survive:\n${output}`)
   } finally {
-    child.kill('SIGKILL')
-    await new Promise((closed) => child.once('close', closed))
-    await new Promise((closed) => server.close(closed))
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    await childClosed
+    const serverClosed = new Promise((closed) => server.close(closed))
     server.closeAllConnections()
+    await serverClosed
   }
 })
 
@@ -398,8 +418,8 @@ test('a valid numeric knob is used and produces no warning (calibration)', async
 // failure mode is quiet: the run is finished, the exit status is set, and the process
 // is still there. Two handles did it — the unref'd-nothing 1.5s batching timer, and the
 // socket under the flush's own request, which the 45s abort budget was the only thing
-// bounding. Both arms below time the exit from the endpoint's own clock rather than
-// from the harness's, so a slow machine cannot turn either into a flake.
+// bounding. Every arm below times the exit from the endpoint's own clock rather than
+// from the harness's, so a slow machine cannot turn it into a flake.
 
 test('a trace endpoint that never answers does not hold a finished one-shot run open', async () => {
   const started = Date.now()
@@ -419,6 +439,21 @@ test('a trace endpoint that never answers does not hold a finished one-shot run 
   assert.ok(heldFor < 8_000,
     `the wedged trace endpoint held the process for ${heldFor}ms after the batch arrived`
     + ` (total run ${run.exitedAt - started}ms):\n${run.stdout}\n${run.stderr}`)
+})
+
+test('a trace endpoint that sends headers but never finishes its body does not hold a finished run open', async () => {
+  const run = await runAgent({
+    argv: ['--case', 'case-trace-body-hang', 'do the work'],
+    env: { RULITH_TRACE: '' },
+    holdTraceBody: true,
+    timeoutMs: 20_000,
+  })
+  assert.notEqual(run.code, 'timeout', `response headers must not end the trace timeout:\n${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.ok(run.firstTraceAt !== undefined, 'no trace batch reached the body-hanging endpoint')
+  const heldFor = run.exitedAt - run.firstTraceAt
+  assert.ok(heldFor < 8_000,
+    `the body-hanging trace endpoint held the process for ${heldFor}ms after its headers arrived`)
 })
 
 test('trace is still sent when the endpoint answers, and the run still exits promptly (calibration)', async () => {

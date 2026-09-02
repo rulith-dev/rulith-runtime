@@ -229,7 +229,7 @@ test('adapterEnv removes the runtime credentials and keeps the ordinary environm
     RULITH_SOMETHING_TOKEN: 'also-not-yet-invented',
   })
   assert.deepEqual(Object.keys(stripped).sort(), [
-    'HOME', 'HTTPS_PROXY', 'LANG', 'PATH', 'RULITH_CASE_ID', 'RULITH_SOURCE_ACCESS', 'RULITH_WORKER_ROOT', 'TEMP',
+    'HOME', 'HTTPS_PROXY', 'LANG', 'PATH', 'RULITH_WORKER_ROOT', 'TEMP',
   ])
   const serialized = JSON.stringify(stripped)
   for (const secret of ['connection-secret', 'agent-secret', 'model-secret', 'shadow-secret', 'reviewer-secret',
@@ -252,6 +252,9 @@ test('the credential fence matches the name however Windows spells it', () => {
     Rulith_Connection_Key: 'connection-secret',
     rulith_token: 'agent-secret',
     RULITH_DB_URL: 'postgres://user:dbpassword@db/orders',
+    Rulith_Case_Id: 'CASE_STALE',
+    rulith_source_access: '/stale/source',
+    Rulith_Source_Type: 'stale-type',
     openai_api_key: 'openai-secret',
     Anthropic_Api_Key: 'anthropic-secret',
   })
@@ -320,6 +323,8 @@ test('a run Tool that declares env.pass receives the basics plus those names and
   assert.equal(stripped.HTTPS_PROXY, undefined)
   // The listed name is matched case-insensitively too, for the same Windows reason.
   assert.equal(adapterEnv({ Acme_Region: 'eu-west-1', OTHER: 'x' }, ['ACME_REGION']).Acme_Region, 'eu-west-1')
+  assert.deepEqual(adapterEnv({ Rulith_Case_Id: 'CASE_STALE', ACME_REGION: 'eu-west-1' }, ['RULITH_CASE_ID', 'ACME_REGION']), { ACME_REGION: 'eu-west-1' },
+    'trusted Case/Source context must be supplied by the current work item, never env.pass')
   // An empty list is a real setting, not a missing one: basics only.
   assert.deepEqual(Object.keys(adapterEnv({ PATH: '/usr/bin', ACME_REGION: 'eu-west-1' }, [])), ['PATH'])
 })

@@ -58,9 +58,11 @@ export function defaultBoard({ cases = [], caseType = 'exploration' } = {}) {
  * @param {boolean}  [options.holdTrace] Accept the trace request and never answer it.
  *   The shape of a trace endpoint that is up but wedged — the one that cannot be
  *   distinguished from a slow one, and the one that used to hold the process open.
+ * @param {boolean}  [options.holdTraceBody] Send trace response headers, then never finish its body.
+ * @param {boolean}  [options.oversizeMcpResponse] Return a tools/list body larger than the Agent limit.
  * @param {number}   [options.timeoutMs]
  */
-export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, timeoutMs = 20_000 } = {}) {
+export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false, timeoutMs = 20_000 } = {}) {
   const answerBoard = board ?? defaultBoard()
   const calls = []
   const modelRequests = []
@@ -81,6 +83,7 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
     }
     response.setHeader('content-type', 'application/json')
     if (input.method === 'tools/list') {
+      if (oversizeMcpResponse) return void response.end(JSON.stringify({ padding: 'x'.repeat(1_048_576) }))
       return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools: [{ name: 'agent_protocol', inputSchema: { type: 'object' } }] } }))
     }
     const args = input.params?.arguments ?? {}
@@ -92,6 +95,11 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
     else if (args.mode === 'trace') {
       firstTraceAt ??= Date.now()
       if (holdTrace) return void held.push(response)
+      if (holdTraceBody) {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.flushHeaders()
+        return void held.push(response)
+      }
       result = { ok: true, took: (args.events ?? []).length }
     }
     else result = answerBoard(args, calls)
@@ -142,8 +150,9 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
   // Held responses first: `server.close` waits for open connections, so a wedged
   // request the scenario asked for would otherwise wedge the harness's own cleanup.
   for (const response of held) response.destroy()
-  await new Promise((closed) => server.close(closed))
+  const serverClosed = new Promise((closed) => server.close(closed))
   server.closeAllConnections()
+  await serverClosed
 
   const operations = calls.filter((call) => call.mode === 'board').map((call) => call.operation ?? {})
   return {

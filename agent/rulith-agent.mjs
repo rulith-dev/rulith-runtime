@@ -184,8 +184,33 @@ const clients = new Set()
 // tools/call membrane. The one Agent token is a client configuration secret,
 // sent only as an Authorization header; it never appears in a URL.
 let mcpSeq = 0
+const MCP_RESPONSE_MAX_BYTES = 1_048_576
+class McpResponseLimitError extends Error {}
+async function readMcpResponseBody(response) {
+  const announced = Number(response.headers.get('content-length') ?? 0)
+  if (announced > MCP_RESPONSE_MAX_BYTES) {
+    await response.body?.cancel()
+    throw new McpResponseLimitError(`MCP response exceeded the ${MCP_RESPONSE_MAX_BYTES}-byte limit`)
+  }
+  if (response.body === null) return ''
+  const reader = response.body.getReader()
+  const chunks = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > MCP_RESPONSE_MAX_BYTES) {
+      await reader.cancel()
+      throw new McpResponseLimitError(`MCP response exceeded the ${MCP_RESPONSE_MAX_BYTES}-byte limit`)
+    }
+    chunks.push(Buffer.from(value))
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
 async function mcpRpc(method, params = {}, { timeoutMs = 45_000 } = {}) {
   let response
+  let raw
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   timeout.unref?.()
@@ -201,12 +226,22 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000 } = {}) {
       body: JSON.stringify({ jsonrpc: '2.0', id: `runtime_${++mcpSeq}`, method, params }),
       signal: controller.signal,
     })
+    // Keep the same deadline over the response body. `fetch` resolves as soon as headers
+    // arrive; clearing here left a peer free to send 200 and hold `response.text()` forever.
+    try {
+      raw = await readMcpResponseBody(response)
+    } catch (error) {
+      // Status is already authoritative. Preserve the credential-specific 401 teaching
+      // even if its optional body is truncated or fails while being read.
+      if (response.status === 401) raw = ''
+      else throw error
+    }
   } catch (error) {
+    if (error instanceof McpResponseLimitError) throw error
     throw new Error(`Cannot reach the public MCP endpoint ${MCP_URL}: ${error?.cause?.code ?? error?.message ?? error}`)
   } finally {
     clearTimeout(timeout)
   }
-  const raw = await response.text().catch(() => '')
   let body
   try { body = JSON.parse(raw) } catch { body = undefined }
   if (response.status === 401) throw new Error(`Agent MCP token rejected (401): ${body?.teaching ?? 'rotate the Agent token in Console and update this client configuration.'}`)

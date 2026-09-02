@@ -243,7 +243,13 @@ test('Rulith Local status is a read-only redacted runtime projection', async () 
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'status-key' })
   try {
     await host.listen()
-    await new Promise((accept) => setTimeout(accept, 80))
+    const deadline = Date.now() + 5_000
+    while (!host.events().some((event) => event.src === 'agent' && event.type === 'start' && event.agentId === 'agent-public-1')
+      && Date.now() < deadline) {
+      await new Promise((accept) => setTimeout(accept, 25))
+    }
+    assert.ok(host.events().some((event) => event.src === 'agent' && event.type === 'start' && event.agentId === 'agent-public-1'),
+      'the child never published its Agent identity')
     const response = await fetch(`http://127.0.0.1:${port}/status?k=status-key`)
     const text = await response.text()
     assert.equal(response.status, 200)
@@ -270,7 +276,12 @@ test('Rulith Local reports an immediate child exit instead of claiming the role 
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'exit-key' })
   try {
     await host.listen()
-    await new Promise((resolveWait) => setTimeout(resolveWait, 80))
+    const deadline = Date.now() + 5_000
+    while (!host.events().some((event) => event.src === 'agent' && event.type === 'exit') && Date.now() < deadline) {
+      await new Promise((accept) => setTimeout(accept, 25))
+    }
+    assert.ok(host.events().some((event) => event.src === 'agent' && event.type === 'exit'),
+      'the immediate child exit never reached the Local host')
     const response = await fetch(`http://127.0.0.1:${port}/control?k=exit-key`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'agent', operation: 'start' }),

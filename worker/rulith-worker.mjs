@@ -333,7 +333,10 @@ function httpArgs(params, raw) {
 async function readHttpBody(r, maxBytes) {
   const cap = Number.isFinite(maxBytes) ? Math.max(1, Math.min(Number(maxBytes), 1_048_576)) : 16_384
   const announced = Number(r.headers.get('content-length') ?? 0)
-  if (announced > cap) throw new Error(`HTTP response declares ${announced} bytes, exceeding the ${cap}-byte limit`)
+  if (announced > cap) {
+    await r.body?.cancel()
+    throw new Error(`HTTP response declares ${announced} bytes, exceeding the ${cap}-byte limit`)
+  }
   if (!r.body) return ''
   const reader = r.body.getReader()
   const chunks = []
@@ -438,12 +441,15 @@ const ADAPTER_ENV_DENY = new Set([
   'ANTHROPIC_API_KEY',
   'DEMO_DB_URL',
   'RULITH_CONNECTION_KEY',
+  'RULITH_CASE_ID',
   'RULITH_DB_URL',
   'RULITH_LOCAL_KEY',
   'RULITH_MODEL_KEY',
   'RULITH_REVIEWER_KEY',
   'RULITH_SERVE_KEY',
   'RULITH_SHADOW_KEY',
+  'RULITH_SOURCE_ACCESS',
+  'RULITH_SOURCE_TYPE',
   'RULITH_TOKEN',
 ])
 const ADAPTER_ENV_DENY_PATTERNS = [
@@ -457,6 +463,11 @@ const ADAPTER_ENV_DENY_PATTERNS = [
   /(?:^|_)DSN$/, //                 SENTRY_DSN
   /^(?:AWS|AZURE|GOOGLE|ANTHROPIC|OPENAI)_/, // whole provider families
 ]
+// These are trusted execution context, not operator pass-through knobs. Strip ambient
+// copies even when env.pass names them; handRun adds the current work item's values later.
+const ADAPTER_TRUSTED_CONTEXT = new Set([
+  'RULITH_CASE_ID', 'RULITH_SOURCE_ACCESS', 'RULITH_SOURCE_TYPE',
+])
 /**
  * Variables an ordinary local program cannot start without. They survive an `env.pass`
  * allow-list, which is otherwise exhaustive: without `PATH` and `SystemRoot` a Node
@@ -478,6 +489,7 @@ export function adapterEnv(base = process.env, pass) {
   const out = {}
   for (const [name, value] of Object.entries(base)) {
     const upper = name.toUpperCase()
+    if (ADAPTER_TRUSTED_CONTEXT.has(upper)) continue
     if (allow !== undefined) {
       if (ADAPTER_ENV_BASICS.has(upper) || allow.has(upper)) out[name] = value
       continue
