@@ -210,9 +210,18 @@ test('Rulith Local starts exactly the selected roles and receives structured chi
       const host = createLocalHost({ configFile: join(dir, `${mode}.json`), config, roles: rolesOf(mode), port: 0, key: 'test-key' })
       try {
         await host.listen()
-        await new Promise((accept) => setTimeout(accept, 80))
+        // Wait for the events this arm is about rather than for a fixed 80ms. Spawning a
+        // Node child and receiving its first IPC message takes longer than that on a
+        // loaded Windows host, and the arm failed intermittently against a correct host —
+        // a flake that names its own subject reads exactly like the defect coming back.
+        const readySources = () => new Set(host.events().filter((event) => event.type === 'ready').map((event) => event.src))
+        const wanted = Object.entries(expected).filter(([, on]) => on).map(([role]) => role)
+        const deadline = Date.now() + 5_000
+        while (wanted.some((role) => !readySources().has(role)) && Date.now() < deadline) {
+          await new Promise((accept) => setTimeout(accept, 25))
+        }
         assert.deepEqual(host.status(), { mode, roles: rolesOf(mode), ...expected })
-        const sources = new Set(host.events().filter((event) => event.type === 'ready').map((event) => event.src))
+        const sources = readySources()
         assert.equal(sources.has('agent'), expected.agent)
         assert.equal(sources.has('worker'), expected.worker)
       } finally { await host.close() }
@@ -573,7 +582,7 @@ test('the local Agent sends business values while Cloud injects commercial pins 
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /--business-key <json>/)
   assert.match(source, /kind: 'OpenCase'[\s\S]{0,180}businessKey/)
-  assert.match(source, /RULITH_ATTENTION_FACTS \?\? 80/)
+  assert.match(source, /envNumber\('RULITH_ATTENTION_FACTS', 80/)
   assert.match(source, /kind: 'GetCompletion'/)
   assert.match(source, /reply VIEW: to refresh it/)
   assert.doesNotMatch(source, /projectionText\(ctx, \{ full: true \}\)/)
@@ -645,7 +654,11 @@ test('Rulith Local presents a familiar Case-first Agent workbench in English', (
   assert.doesNotMatch(hostSource, /\/local\/v1\/account|\/account\/logout|\/auth\/start/)
   assert.doesNotMatch(hostSource, /path === '\/config'/, 'the observer UI has no browser configuration write surface')
   assert.doesNotMatch(localPage, /<details>/, 'settings must open in a visible modal rather than below the inspector fold')
-  assert.match(localPage, /response\?\.status===403\)\{location\.reload\(\)/)
+  // The page reloads whenever the gate refuses it. Since `/` is now gated too, a missing
+  // or rotated key answers 401 and a rebound Host or foreign Origin answers 403; both
+  // must send the tab back through the gate rather than leave it showing stale state.
+  assert.match(localPage, /response\?\.status===401\|\|response\?\.status===403\)\{location\.reload\(\)/)
+  assert.doesNotMatch(localPage, /__KEY__/, 'the page must not carry a server-substituted key')
   assert.match(localPage, /\.composebox\{position:relative;width:min\(790px,100%\)/)
   assert.doesNotMatch(localPage, /padding:12px max\(/, 'percentage padding collapses the composer inside the center grid column')
   assert.match(hostSource, /'cache-control': 'no-store'/)

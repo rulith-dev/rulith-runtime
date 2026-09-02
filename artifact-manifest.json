@@ -3,16 +3,16 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "c08305c169595186accc63e6600ff5f65d8023a9c29834d561a7ace18b5ce978"
+      "sha256": "06b02edd14e72e4b37caafca87fa8c7ac4ad526f48083bb74b0c4dc904f74ba3"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "985247b570d3e43c00eaca99871a2af82622c52ea736a8dc05a3ec1491a408e4"
+      "sha256": "f3521f3071aa21971c8615eaae11ca78602d1d46a7136afbc22946bb72acc9d8"
     },
     "local/rulith-local.mjs": {
-      "sha256": "bc053b03c9a610e039cd6b1adc91b2310b4cfce5abe3f32c7402a29fcabbedc7"
+      "sha256": "3097c214e075f5de6a84dfbb6c3aaee2409ffb740a2746bedd5be17798274a32"
     },
     "local/local-ui.mjs": {
-      "sha256": "14d420a20a6e305c39d8cfc8de7f1232e8a1d056fbf09197e43a0cbfec2d57ba"
+      "sha256": "8a37300c6f18dea83fef6df01cdd8a3ae14d6b56ac81371fd2449e4c19636cb1"
     },
     "config/rulith-sources.example.json": {
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
@@ -42,7 +42,7 @@
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "bc199dd91dc1479b6d9772a420128c664951741f2343b6079fac1b2e94262525"
+      "sha256": "f006b3227974cd8246490d4d4d57ae196233ceb103d5f71a8c8960b2b803a8ed"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

@@ -384,6 +384,48 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT) {
   return `HTTP ${r.status}: ${text}`
 }
 
+/**
+ * Runtime secrets that must not be inherited by a `run` Adapter's process.
+ *
+ * A `run` Adapter is fenced on *what it may execute* (a fixed relative path under the
+ * Worker root, no shell, no interpolation) but it used to inherit the Worker's entire
+ * environment — which in a Rulith Local deployment carries the Connection key, the
+ * Agent token, the model provider key and the database DSN. A capability package that
+ * ships one legitimate Adapter would have read every credential on the host by
+ * printing `process.env`, and nothing in the fence above says otherwise.
+ *
+ * The Adapter contract is the other direction: what an Adapter needs is handed to it
+ * explicitly (`RULITH_CASE_ID`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`), and a
+ * Source credential belongs in the local secret store, not in the ambient environment.
+ * Everything else — PATH, HOME, TEMP, locale, proxy settings — passes through, because
+ * an Adapter is an ordinary local program.
+ *
+ * The explicit list is every credential-bearing variable this runtime reads; the
+ * pattern is the ratchet, so a `RULITH_*_KEY` added later is stripped without anyone
+ * remembering to edit a list.
+ */
+const ADAPTER_ENV_DENY = new Set([
+  'ANTHROPIC_API_KEY',
+  'DEMO_DB_URL',
+  'RULITH_CONNECTION_KEY',
+  'RULITH_DB_URL',
+  'RULITH_LOCAL_KEY',
+  'RULITH_MODEL_KEY',
+  'RULITH_REVIEWER_KEY',
+  'RULITH_SERVE_KEY',
+  'RULITH_SHADOW_KEY',
+  'RULITH_TOKEN',
+])
+export function adapterEnv(base = process.env) {
+  const out = {}
+  for (const [name, value] of Object.entries(base)) {
+    if (ADAPTER_ENV_DENY.has(name)) continue
+    if (/^RULITH_[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)$/.test(name)) continue
+    out[name] = value
+  }
+  return out
+}
+
 /** 原语工具 run: 只执行表里写死的 cmd/args,零 shell、零命令插值。
  *  `passArgs:true` 只把动态实参序列化成**一个 JSON argv**追加给固定程序；
  *  它不会改变 cmd，也不会拆成多个参数。程序自己校验这份数据。
@@ -398,7 +440,7 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       ? (isAbsolute(source.access) ? source.access : resolve(WORKER_ROOT, source.access))
       : undefined
     const env = {
-      ...process.env,
+      ...adapterEnv(),
       ...(context.caseId ? { RULITH_CASE_ID: String(context.caseId) } : {}),
       ...(access ? { RULITH_SOURCE_ACCESS: access } : {}),
       ...(source.sourceType ? { RULITH_SOURCE_TYPE: String(source.sourceType) } : {}),
@@ -707,7 +749,7 @@ function selectOnlyGuard(sql) {
 }
 
 /** pg 单语句执行（惰性 import——没装 pg 的宿主只在真调 db 工具时收到诚实教学，其余手零依赖）。 */
-async function pgRun(dsn, sql, values = []) {
+export async function pgRun(dsn, sql, values = []) {
   let Client
   try { ({ Client } = await import('pg')) } catch {
     throw new Error('The pg driver is not installed. Database tools require: npm i pg')
@@ -720,8 +762,23 @@ async function pgRun(dsn, sql, values = []) {
   } finally { await client.end().catch(() => {}) }
 }
 
+/**
+ * The one place a database statement reaches a driver.
+ *
+ * It is a mutable holder rather than a direct call so the statement that actually
+ * executes can be asserted in a test. "The template ran, not the model's text" is a
+ * claim about the executed SQL; without a seam it could only be argued from source
+ * reading, and the argument-injection defect below is exactly the kind that reads fine.
+ */
+export const databaseDriver = { run: pgRun }
+
 /** DSN 只住宿主 env——**绝不进工具表、绝不上板**。 */
 const dbUrl = () => process.env.RULITH_DB_URL ?? process.env.DEMO_DB_URL
+
+/** 出向 MCP 调用的缺省围栏。两者都可被**宿主自己的**配置收紧(工具表 fence / 来源库条目),
+ *  绝不由工单或模型实参放宽——放宽的那一侧正是要防的那一侧。 */
+const MCP_TIMEOUT_MS = 30_000
+const MCP_MAX_RESPONSE_BYTES = 1_048_576
 
 /** 具名工具 mcp(SRC-35,出向载体): JSON-RPC tools/call 打第三方 MCP 服务。
  *  端点与凭据从密文库按来源名取(工具声明写 source);remoteTool 缺省=工具名。
@@ -733,8 +790,17 @@ async function handMcp(t, args, sources = SOURCE_CONTEXT) {
   const body = discovering
     ? { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }
     : { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: t.remoteTool ?? t.name, arguments: args ?? {} } }
-  const res = await fetch(r.url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(r.headers ?? {}) }, body: JSON.stringify(body) })
-  const text = await res.text()
+  // 出向调用要有**时限与体积上限**,与 handHttp 同律(2026-09-02 补齐): 没有这两道闸,
+  // 一个不回话的第三方端点能把这条单线程轮询挂住不放,一个巨大的回包能把宿主内存吃光——
+  // 两种形状都不是"工具失败",而是**worker 整体停摆**,板上什么都不会红。
+  // 时限只从宿主自己的配置取(工具表/来源库),工单与模型实参碰不到它。
+  const timeoutMs = Math.max(100, Math.min(Number(r.timeoutMs ?? MCP_TIMEOUT_MS), 300_000))
+  const res = await fetch(r.url, {
+    method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(r.headers ?? {}) },
+    body: JSON.stringify(body),
+  })
+  const text = await readHttpBody(res, Number(r.maxResponseBytes ?? MCP_MAX_RESPONSE_BYTES))
   if (!res.ok) return `error: MCP HTTP ${res.status}: ${text.slice(0, 160)}`
   let j
   try { j = JSON.parse(text) } catch { return `error: MCP endpoint returned non-JSON content: ${text.slice(0, 120)}` }
@@ -767,14 +833,28 @@ async function handMcp(t, args, sources = SOURCE_CONTEXT) {
   return String(out).slice(0, 4000)
 }
 
+/**
+ * The SQL text of a database Tool is the compiled template and nothing else.
+ *
+ * `String(args?.sql ?? t.sql ?? '')` used to let an invocation argument named `sql`
+ * take the template's place. Model-supplied arguments are the untrusted half of a
+ * work item; the fences below (SELECT-only, single statement, destructive class) then
+ * classify whatever the model wrote instead of what the Tool declares, so the whole
+ * parameterization apparatus above it — driver `$1…$n` values, typed slots, the
+ * declared exec template — could be bypassed by naming one argument `sql`.
+ *
+ * The compiled tool carries `sql` and `values`; args carry no SQL text and never did.
+ */
+const templateSql = (t) => String(t?.sql ?? '')
+
 /** 具名工具 db-query：SELECT-only 硬守卫 + 行数截断。 */
-async function handDbQuery(t, args) {
+async function handDbQuery(t) {
   const dsn = resolveSourceCreds(t, SOURCE_CONTEXT).dsn ?? dbUrl()
   if (!dsn) return 'error: Database connection is not configured. Set RULITH_DB_URL locally; it is never stored in the tool package or on the Board.'
-  const sql = String(args?.sql ?? t.sql ?? '')
+  const sql = templateSql(t)
   const refused = selectOnlyGuard(sql)
   if (refused !== undefined) return refused
-  const r = await pgRun(dsn, sql, t.values ?? [])
+  const r = await databaseDriver.run(dsn, sql, t.values ?? [])
   const rows = r.rows.slice(0, Number(t.maxRows ?? 50))
   const result = `rows=${r.rowCount}${r.rows.length > rows.length ? ` (showing first ${rows.length})` : ''} ${JSON.stringify(rows)}`.slice(0, 4000)
   return Array.isArray(t.returns) && t.returns.length > 0 ? { result, rows } : result
@@ -811,16 +891,16 @@ export function resultFactsFromRows(t, rows) {
 }
 
 /** 具名工具 db-exec-fenced：**分类进门**——破坏性语句须经人签，这件工具不绕过。 */
-async function handDbExec(t, args) {
+async function handDbExec(t) {
   const dsn = resolveSourceCreds(t, SOURCE_CONTEXT).dsn ?? dbUrl()
   if (!dsn) return 'error: Database connection is not configured. Set RULITH_DB_URL locally; it is never stored in the tool package or on the Board.'
-  const sql = String(args?.sql ?? t.sql ?? '')
+  const sql = templateSql(t)
   if (multiStatement(sql)) return 'error: db_exec accepts one statement only; chained statements can hide a destructive operation behind a benign prefix'
   const { cls, verb } = classifySql(sql)
   if (cls === 'destructive' && t.requireSigned !== false) {
     return `error: This is a destructive SQL statement (${verb}). It requires sql:destructive human clearance before execution.`
   }
-  const r = await pgRun(dsn, sql, t.values ?? [])
+  const r = await databaseDriver.run(dsn, sql, t.values ?? [])
   return `sql:${cls} ${verb} ok rows=${r.rowCount} ${r.command}`.slice(0, 2000)
 }
 
@@ -858,8 +938,9 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   else if (t.impl === 'run') out = await handRun(t, args, context, sources)
   else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
   else if (t.impl === 'mcp') out = await handMcp(t, args, sources)
-  else if (t.impl === 'db-query') out = await handDbQuery(t, args)
-  else if (t.impl === 'db-exec-fenced') out = await handDbExec(t, args)
+  // The database hands take no args: their statement is the compiled template.
+  else if (t.impl === 'db-query') out = await handDbQuery(t)
+  else if (t.impl === 'db-exec-fenced') out = await handDbExec(t)
   else throw new Error(`Unsupported impl "${t.impl}"; this Worker supports: ${[...KNOWN_IMPLS].join(' / ')}`)
   // 手的失败形态是 'error: …' 文本(mcp/db 同族十处)。必须在这唯一出口折成异常——
   // 返回值路径会把失败洗成 ok=true 的回执: 库一行没动,板却记「已执行」(RT-WK-HONEST,2026-08-17 真机)。
@@ -1245,6 +1326,25 @@ function saySkipOnce(caseId, action, why, humanLine) {
   wev('skip', { kind: 'action', id: action, why, ...(caseId ? { caseId } : {}) })
 }
 
+/**
+ * The arguments one Action invocation executes with.
+ *
+ * Only two sources are legitimate: the compiled `_args` the Adapter compiler produced
+ * from the declared parameter slots, and `w.args` — the invocation contract that
+ * `toolFromSpec` already put through `validateInvocationArgs`.
+ *
+ * `w.payload?.args` used to sit between them. Every non-database Adapter sets `_args`
+ * (to `{}` when empty), so the door was closed for them by accident of `??` rather
+ * than by decision; the database compiler produces no `_args`, so for db-query and
+ * db-exec-fenced the payload really did win over the validated contract, carrying an
+ * object nothing on this path had type-checked. `payload` is the verification/evidence
+ * channel (see handleClaimWork and handleEvidence); it was never an action-argument
+ * channel, and an inert door in three arms out of four is still a door.
+ */
+export function invocationArgs(resolved, w) {
+  return resolved?._args ?? w?.args
+}
+
 async function handleAction(w) {
   // **工单的键是一次调用,不是一只手**(核心 2026-08-20 工具面收敛,board-spec §4.7 TOOL-02)。
   // `w.work` = invocation(领取/回报按它键;同一只手可以有多次在飞的调用,发三个订单就是三条)。
@@ -1287,7 +1387,7 @@ async function handleAction(w) {
   let resultFacts = []
   let reason
   try {
-    const executed = await execute(action, resolved._args ?? w.payload?.args ?? w.args, { [action]: resolved }, SOURCE_CONTEXT, { caseId: w.caseId })
+    const executed = await execute(action, invocationArgs(resolved, w), { [action]: resolved }, SOURCE_CONTEXT, { caseId: w.caseId })
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
@@ -1311,19 +1411,31 @@ async function handleAction(w) {
   // 两条修:① 落不了账就**原样重发**(同 id,板侧本就防重放;不是重跑那只手);
   // ② 那一行把「手成没成」与「账落没落」**分开说**。
   const RETRY_MS = [1_000, 4_000, 12_000]
+  // **抛出来的传输故障也是"没落账"**(2026-09-02 补齐)。`work()` 只把 `r.json()` 包在
+  // try 里;`fetch` 自己抛(连接被重置/DNS 抖/对端半途关连接)时异常越过整条阶梯,
+  // 落进轮询那个 catch —— 于是这条 invocation 的**手已经动过而回执一次都没重发**,
+  // 与 500 空正文那一发是同一个后果,只是走了另一条通道。
+  // 判据仍是那一条: 没有 errorCode = 板没裁决 = 原样重发。
+  const sendReceipt = async (payload) => {
+    try { return await work(payload) } catch (e) {
+      if (e instanceof CredentialRejectedError) throw e
+      return { accepted: false, transport: String(e?.message ?? e).slice(0, 200) }
+    }
+  }
   // 只算一次, 循环里原样重发——**上游按操作身份(含 caseRevision)铸幂等键**,
   // 差一个字节就落到另一格缓存, 于是已提交的回执被答成 `already_reported`(RT-WK-RID-1)。
   const body = afterClaim(w, claimedRevision, { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant, ok,
     ...(ok ? { result, ...(resultFacts.length > 0 ? { facts: resultFacts } : {}) } : { result: '', reason }) }
   )
-  let rep = await work(body)
+  let rep = await sendReceipt(body)
   for (let i = 0; rep.accepted !== true && i < RETRY_MS.length; i++) {
     // **只重发"没落账"的**: 板语义拒(带 errorCode)是板的裁决,重发一百次也是同一个答案。
     // 没有 errorCode = 这一跳没通(与 agent 侧 `board()` 同一条判据)。
     if (typeof rep.errorCode === 'string') break
-    if (!WEV_ON) console.error(`· Receipt was not committed (attempt ${i + 1}); retrying unchanged in ${RETRY_MS[i] / 1000}s. The action already ran; this retry records its receipt only.`)
+    if (!WEV_ON) console.error(`· Receipt was not committed (attempt ${i + 1}); retrying unchanged in ${RETRY_MS[i] / 1000}s. The action already ran; this retry records its receipt only.`
+      + (rep.transport ? ` Transport: ${rep.transport}` : ''))
     await new Promise((r) => setTimeout(r, RETRY_MS[i]))
-    rep = await work(body)
+    rep = await sendReceipt(body)
   }
   const landed = rep.accepted === true
   wev('reported', { kind: 'action', id: action, ok, landed,
@@ -1342,6 +1454,26 @@ async function handleAction(w) {
 }
 
 /**
+ * Database Adapters read their statement from the Tool, never from an argument.
+ *
+ * A declared parameter named `sql` is refused at declaration time rather than at
+ * invocation time. The execution fences only ever see the compiled template, so such
+ * a slot cannot smuggle statements today — but a Tool that publishes it is teaching
+ * every caller a slot that does nothing, and the next person who "restores" the
+ * argument read to make it work reopens the injection path. Refusing the declaration
+ * keeps the contract and the enforcement saying the same thing.
+ */
+export function refuseSqlParameter(impl, params) {
+  if (impl !== 'db-query' && impl !== 'db-exec-fenced') return
+  const declared = params && typeof params === 'object' && !Array.isArray(params) ? params : {}
+  const offending = Object.keys(declared).filter((name) => name.toLowerCase() === 'sql')
+  if (offending.length === 0) return
+  throw new Error(`Database Tool declares parameter "${offending[0]}": SQL text is never an Action argument.`
+    + ' The statement comes from the Tool\'s exec template; declare typed value slots such as {order_id} instead,'
+    + ' which compile to driver parameters $1…$n.')
+}
+
+/**
  * Adapter compiler used only for a locally trusted Worker manifest.
  * Board work items cannot call this function directly.
  * - 只认声明过的参数槽(params);exec 里出现未声明的 {占位} 或缺实参 = 抛(如实 ok=false);
@@ -1354,8 +1486,13 @@ function adapterToolFromSpec(specJson, argsJson) {
   if (spec.impl === 'mcp') {
     let margs = {}
     if (typeof argsJson === 'string' && argsJson !== '') margs = JSON.parse(argsJson)
+    // The Worker Tool Manifest may tighten the outbound fence, exactly as it may for
+    // http. It comes from the local manifest, never from the work item.
+    const mfence = spec.fence && typeof spec.fence === 'object' && !Array.isArray(spec.fence) ? spec.fence : {}
     return { impl: 'mcp', ...(typeof spec.source === 'string' ? { source: spec.source } : {}),
       ...(spec.exec === 'discover' ? { operation: 'discover' } : { remoteTool: spec.exec }), _args: margs,
+      ...(mfence.timeoutMs !== undefined ? { timeoutMs: Number(mfence.timeoutMs) } : {}),
+      ...(mfence.maxResponseBytes !== undefined ? { maxResponseBytes: Number(mfence.maxResponseBytes) } : {}),
       ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}) }
   }
   if (spec.impl === 'http') {
@@ -1411,6 +1548,7 @@ function adapterToolFromSpec(specJson, argsJson) {
   }
   if (typeof spec.exec !== 'string' || spec.exec === '') throw new Error('Database toolSpec is missing an exec template')
   const params = spec.params ?? {}
+  refuseSqlParameter(spec.impl, params)
   let args = {}
   if (typeof argsJson === 'string' && argsJson !== '') args = JSON.parse(argsJson)
   const positions = new Map()
@@ -1551,6 +1689,7 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
   const source = sources?.[spec.source]
   if (source === undefined) throw new Error(`Source ${spec.source} is not available on this Connection`)
   if (!def.sourceTypes.includes(source.type)) throw new Error(`Worker Tool ${ref} accepts Source types ${def.sourceTypes.join(' / ')}, not ${String(source.type)}`)
+  refuseSqlParameter(def.adapter, spec.params)
   validateInvocationArgs(spec.params, argsJson)
   const local = {
     name: ref, kind: spec.kind, impl: def.adapter, source: spec.source,

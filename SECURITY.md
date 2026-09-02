@@ -14,14 +14,24 @@ live customer data or reusable credentials.
 - Do not put passwords, tokens, private keys, or DSNs with embedded passwords in
   capability packages, recipes, board facts, Rulith Local configuration committed to Git,
   or issue reports.
-- Restrict local configuration files to the operating-system account that runs the
-  process.
+- Rulith Local creates `~/.rulith/local.json` with mode `0o600` and its directory with
+  `0o700`. POSIX systems enforce that; **Windows ignores the mode bits**, so on Windows
+  the file inherits the parent directory's ACL and is readable by any process running as
+  the same user and by administrators. Restrict it yourself, or keep credentials in the
+  deployment environment instead of the file.
 
 ## Network boundary
 
 Agent Runtime and Worker use outbound connections. The Local UI listens on loopback
 only and requires a random per-run key. Do not publish that port
 through a reverse proxy or bind them to a public interface.
+
+Loopback is not an authorization boundary: every process on the machine can reach it.
+The per-run key is what separates them, so every route — including the page at `/` —
+requires it. A request without the key is refused with 401 and a request with a
+non-loopback `Host` or a cross-origin `Origin` with 403, before any response body is
+produced. The key appears only in the URL that Rulith Local prints at startup and in
+the browser tab opened from it; the page contains no embedded copy.
 
 ## Tool boundary
 

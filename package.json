@@ -42,7 +42,7 @@
   },
   "scripts": {
     "start": "node local/rulith-local.mjs start",
-    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-local.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs",
+    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-local.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs",
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "test": "node --test test/*.test.mjs",
     "prepack": "npm run manifest && npm run check && npm test"

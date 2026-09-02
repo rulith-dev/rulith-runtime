@@ -34,10 +34,13 @@ npx --yes rulith@latest --help
 npx --yes rulith@latest start --role agent+worker
 ```
 
-The first start creates `~/.rulith/local.json` with owner-only permissions and
-prints the loopback Local UI address. Edit that file or inject equivalent secrets
-through the deployment environment: one Agent identity and token, one local model
-configuration, and—when Worker is enabled—one Agent-owned Connection and key.
+The first start creates `~/.rulith/local.json` (mode `0o600`, in a `0o700` directory)
+and prints the loopback Local UI address, which carries the per-run key as `?k=`.
+Windows does not enforce those mode bits, so on Windows restrict the file through its
+ACL or keep the secrets in the deployment environment instead. Edit that file or inject
+equivalent secrets through the deployment environment: one Agent identity and token,
+one local model configuration, and—when Worker is enabled—one Agent-owned Connection
+and key.
 
 For an OpenAI-compatible local model service, set `RULITH_MODEL_URL` to its server
 root such as `http://127.0.0.1:1234`; the Agent derives `/v1/chat/completions`.
@@ -214,7 +217,9 @@ $env:RULITH_LOCAL_CONFIG = 'C:\path\to\rulith-local.json'
 npm start
 ```
 
-Rulith Local prints one loopback URL containing a random key. In Agent+Worker mode,
+Rulith Local prints one loopback URL containing a random key. Open that exact URL: the
+key gates every route, including the page itself, and the page reads it from its own
+address rather than carrying an embedded copy. In Agent+Worker mode,
 the Local UI uses the familiar Agent-workbench shape: Case/conversation navigation on
 the left, dialogue and governed execution in the center, a composer at the bottom,
 and Case View, frontier, Worker activity, evidence, and receipts on the right. Agent
@@ -260,11 +265,23 @@ The model never supplies the trusted input values or the calculated output value
 - Built-in workspace Tools are fenced to the configured Source root, bounded in size and
   result count, and expose neither delete nor arbitrary shell execution.
 - `run` tools execute relative adapters beneath the Worker root with the current Node
-  runtime; packages cannot select arbitrary commands or escape that directory.
-- HTTP tools are constrained to their declared source or allowlist.
-- Database read tools accept a single `SELECT`; every model value is passed through the
-  database driver's parameter array rather than interpolated into SQL. Fenced write tools
-  classify and reject unsupported or destructive statements unless the declared contract allows them.
+  runtime; packages cannot select arbitrary commands or escape that directory. The
+  Adapter process does not inherit the runtime's own credentials — the Connection key,
+  Agent token, model keys and database DSN are removed from its environment, and what an
+  Adapter needs is passed explicitly.
+- HTTP tools are constrained to their declared source or allowlist. Outbound MCP calls
+  are bounded by a timeout and a 1 MiB response cap.
+- Database tools take their statement from the Tool's own `exec` template. An Action
+  argument never supplies or selects SQL text, and a database Tool that declares a
+  parameter named `sql` is refused at declaration time. Read tools accept a single
+  `SELECT`; every model value is passed through the database driver's parameter array
+  rather than interpolated into SQL. Fenced write tools classify and reject unsupported
+  or destructive statements unless the declared contract allows them.
+- The model may emit only reads, `ApplyBatch`, `ApplyAction`, and `RunDischarge`. Case
+  lifecycle, work receipts, clearance, and package or Board governance are refused by the
+  Agent Runtime before they reach Cloud, so injected text in a task, document, or tool
+  result cannot spend the Agent's credential on them.
+- The Local UI requires its per-run key on every route, including the page itself.
 - Submitted work is not self-verification. Acceptance remains a board and policy decision.
 
 See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.

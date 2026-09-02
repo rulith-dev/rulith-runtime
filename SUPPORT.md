@@ -8,7 +8,7 @@ Use the narrowest public channel that fits the question:
   for a reproducible runtime defect.
 - [Workflow feedback](https://github.com/rulith-dev/rulith-runtime/issues/new?template=workflow-feedback.yml)
   after trying a real process.
-- `security@rulith.com` for vulnerabilities or anything involving reusable credentials.
+- `security@rulith.ai` for vulnerabilities or anything involving reusable credentials.
 
 Do not paste Agent tokens, Connection keys, model keys, source credentials, private
 input files, or customer data into an issue.

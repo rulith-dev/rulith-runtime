@@ -201,24 +201,40 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
     child.kill()
     return null
   }
+  /**
+   * One gate for every route, including `/`.
+   *
+   * `/` used to be served ahead of this function and had the per-run key substituted
+   * into the page body, so any process on the machine could read the key with a single
+   * unauthenticated `curl 127.0.0.1:7790/` — and, because the Host check also lives
+   * here, a page reached through a rebound DNS name was served the key too. Loopback is
+   * not a user boundary: every other local account, every other application, and any
+   * process a browser page can talk to shares it.
+   *
+   * The key now travels the same way for the page as for the data routes: in the URL
+   * the CLI prints. A missing or wrong key is 401 (this request did not authenticate);
+   * a bad Origin or Host is 403 (authenticated shape, refused context).
+   */
   const gate = (req) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     const presented = req.headers['x-rulith-local'] ?? url.searchParams.get('k') ?? ''
-    if (presented !== key) return 'Missing or invalid Rulith Local key. Use the key printed at startup.'
+    if (presented !== key) return { status: 401, teaching: 'Missing or invalid Rulith Local key. Open the URL printed at startup, which carries ?k=<key>.' }
     const origin = req.headers.origin
-    if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return `Cross-origin request rejected (Origin: ${origin}).`
-    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host ?? ''))) return 'Non-local Host rejected to prevent DNS rebinding.'
+    if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return { status: 403, teaching: `Cross-origin request rejected (Origin: ${origin}).` }
+    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host ?? ''))) return { status: 403, teaching: 'Non-local Host rejected to prevent DNS rebinding.' }
     return null
   }
   const server = http.createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0]
     try {
+      const denied = gate(req)
+      if (denied !== null) return void json(res, denied.status, { ok: false, teaching: denied.teaching })
       if (path === '/' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-        return void res.end(localPage.replace('__KEY__', key))
+        // The page carries no embedded secret. It reads the key from its own URL, so a
+        // response that escapes the gate would still not hand anyone a working key.
+        return void res.end(localPage)
       }
-      const denied = gate(req)
-      if (denied !== null) return void json(res, 403, { ok: false, teaching: denied })
       if (path === '/events' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
         for (const event of events) res.write(`data: ${JSON.stringify(event)}\n\n`)

@@ -15,6 +15,30 @@
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 
+/**
+ * Numeric knobs fall back to their default, loudly, instead of becoming NaN.
+ *
+ * `Number(process.env.RULITH_MAX_ROUNDS ?? 12)` on a typo produced NaN, and every
+ * comparison against NaN is false: `round <= MAX_ROUNDS` was false on the first
+ * iteration, so the segment loop ran zero rounds and the run reported "stopped at the
+ * NaN-round limit" as if it had worked. A bound that silently stops bounding is the
+ * worse half — the same shape in a wait budget or a slot ceiling removes the limit
+ * rather than the work. Out-of-range values are refused on the same grounds: a
+ * concurrency of -3 is a typo, not a request.
+ */
+function envNumber(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER, integer = true } = {}) {
+  const raw = process.env[name]
+  if (raw === undefined || String(raw).trim() === '') return fallback
+  const value = Number(raw)
+  const bad = !Number.isFinite(value) || (integer && !Number.isInteger(value)) || value < min || value > max
+  if (bad) {
+    console.error(`⚠ ${name}="${String(raw)}" is not ${integer ? 'an integer' : 'a number'} between ${min} and ${max};`
+      + ` using the default ${fallback}. Fix the value or unset the variable.`)
+    return fallback
+  }
+  return value
+}
+
 const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/$/, '')
 const MCP_URL = `${URL_BASE}/mcp`
 const TOKEN = process.env.RULITH_TOKEN ?? ''
@@ -31,14 +55,14 @@ const legacyAgentIdHint = (token) => {
 const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
 const MODEL_URL_INPUT = process.env.RULITH_MODEL_URL ?? 'https://api.anthropic.com/v1/messages'
-const MAX_ROUNDS = Number(process.env.RULITH_MAX_ROUNDS ?? 12)
+const MAX_ROUNDS = envNumber('RULITH_MAX_ROUNDS', 12, { min: 1, max: 1000 })
 const LOCAL_REQUEST_MAX_BODY = 64 * 1024
-const SERVE_PORT = Number(process.env.RULITH_SERVE_PORT ?? 7799)
+const SERVE_PORT = envNumber('RULITH_SERVE_PORT', 7799, { min: 1, max: 65_535 })
 const SERVE_KEY = (process.env.RULITH_SERVE_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
-const SERVE_RUNS_MAX = Math.max(1, Number(process.env.RULITH_SERVE_RUNS ?? 200))
+const SERVE_RUNS_MAX = envNumber('RULITH_SERVE_RUNS', 200, { min: 1, max: 100_000 })
 // 会话槽上界(只数 sessionKey 槽,缺省槽不占位): 一个进程服务几万客户、活跃 1% 是这个形态的常态,
 // 内存里的转录必须有上界。到界=LRU 驱逐**闲置**槽——丢的是内存转录,板在服务端 journal 里不丢。
-const SERVE_SLOTS_MAX = Math.max(1, Number(process.env.RULITH_SERVE_SLOTS_MAX ?? 64))
+const SERVE_SLOTS_MAX = envNumber('RULITH_SERVE_SLOTS_MAX', 64, { min: 1, max: 10_000 })
 // sessionKey 长度上限: 它要参与板名推导,也要当 Map 键。**教学拒不截断**——静默截断会把两个
 // 不同客户的长 key 折成同一块板(串板),那比拒绝一单严重得多。
 const SESSION_KEY_MAX = 128
@@ -92,6 +116,21 @@ for (let i = 0; i < argv.length; i++) {
 const TASK = rest.join(' ').trim()
 const SERVE = withServe
 const die = (msg) => { console.error(`\n✗ ${msg}\n`); process.exit(1) }
+/**
+ * A failure that belongs to one task, not to the process.
+ *
+ * Outside `--serve` a model-provider outage is the whole run, so exiting non-zero is
+ * the honest answer for CI and scripts. Inside `--serve` the same outage used to call
+ * `process.exit(1)` from inside one queued task: every other queued and in-flight Case
+ * was discarded, the HTTP callers that received `202 Queued` never heard anything, and
+ * the supervisor saw a clean exit. An unattended server's first duty is to stay up and
+ * report the failure of the one thing that failed — `runOne` already records a thrown
+ * segment as a completed run with its reason and keeps serving.
+ */
+const failTask = (msg) => {
+  if (SERVE) throw new Error(msg)
+  die(msg)
+}
 
 const businessKeyOf = (raw, label = 'businessKey') => {
   if (raw === '' || raw === undefined || raw === null) return undefined
@@ -203,6 +242,40 @@ async function agentProtocol(mode, args = {}) {
   const text = await mcpTool('agent_protocol', { mode, ...args })
   try { return JSON.parse(text) } catch { throw new Error(`agent_protocol returned invalid JSON: ${text.slice(0, 240)}`) }
 }
+
+/**
+ * One `requestId` per board submission, reused by an unchanged retry.
+ *
+ * When the MCP hop fails there is no authoritative receipt: the runtime cannot tell a
+ * request that never arrived from one that was applied and whose answer was lost, and
+ * it tells the model to "retry unchanged". Without a caller-supplied identity, an
+ * upstream idempotency cache has to key on whatever it can reconstruct, and a retried
+ * write can be applied twice. The id is minted per distinct submission payload and
+ * held until an authoritative answer arrives, so:
+ *   · retrying the same submission after a transport failure reuses the id;
+ *   · a genuinely new submission with identical bytes (the next round's GetProjection,
+ *     a second identical batch) gets a fresh one, because the previous id was released
+ *     when the Board answered.
+ *
+ * Older Cloud endpoints accept the field and ignore it: `agent_protocol` validates a
+ * non-strict object, so an unknown property is dropped rather than refused.
+ */
+const REQUEST_IDS_MAX = 256
+const requestIds = new Map()
+const submissionKey = (value) => JSON.stringify(value, (_key, item) =>
+  (item !== null && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map((name) => [name, item[name]]))
+    : item))
+function requestIdFor(key) {
+  const held = requestIds.get(key)
+  if (held !== undefined) return held
+  const minted = randomUUID()
+  requestIds.set(key, minted)
+  // The map is a retry ledger, not a history. Bound it: a runtime whose upstream is
+  // down must not grow one entry per attempt for the life of the process.
+  while (requestIds.size > REQUEST_IDS_MAX) requestIds.delete(requestIds.keys().next().value)
+  return minted
+}
 function emit(type, data) {
   const ev = { t: Date.now(), type, ...data }
   if (process.env.RULITH_LOCAL_EVENTS === 'ipc' && typeof process.send === 'function') {
@@ -300,6 +373,52 @@ const CASE_CONTEXT_OPERATIONS = new Set([
   'CloseCase', 'PauseCase', 'Explain', 'IngestObservation', 'GrantClearance', 'ClaimWork', 'ApplyAction', 'ReportWork',
 ])
 const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed', 'unknown_case'])
+/**
+ * The only top-level command kinds a model turn may put on the wire.
+ *
+ * `extractSubmission` accepts any object carrying a string `kind`, and `board()`
+ * forwarded it. The model's turn is untrusted input — a task description, a tool
+ * result, a fetched document or a Source row can all end up in the transcript — so any
+ * text that reaches the model could emit `{"kind":"RemovePack",…}`, `{"kind":"SealBoard"}`
+ * or `{"kind":"SetBoardSuspended"}` and the runtime would carry it to the authority
+ * under the Agent's own credential. Cloud authorization is the second line, not the
+ * first: the runtime must not offer to speak governance on the model's behalf at all.
+ *
+ * What stays: the bounded reads the loop already performs, the batch of working-memory
+ * operations the prompt teaches, the Action verb the prompt teaches, and the discharge
+ * the host itself runs — nothing here grants authority the loop does not already
+ * exercise for the model each round.
+ *
+ * What is refused, and why it is not a regression:
+ *   · Case lifecycle (`OpenCase` / `CloseCase` / `PauseCase` / `ResumeCase`) is the
+ *     host's. EXECUTION_GUIDE tells the model to finish with `DONE:` or `STOP:` and
+ *     never mentions closing a Case; `deliverableNow` + `archiveCaseContext` decide
+ *     that from the Board's verdict. A model-issued `CloseCase` would let a stuck or
+ *     manipulated turn book an unfinished Case as completed.
+ *   · `ClaimWork` / `ReportWork` are the Worker's receipt surface. A model that can
+ *     file receipts can assert that an external effect happened.
+ *   · `GrantClearance` is the clearance surface a Constitution gate depends on.
+ *   · `IngestObservation` writes observations with their own provenance; the model's
+ *     channel for stating things is `assert_fact` inside a batch, where it lands as
+ *     `asserted`.
+ *   · Governance (`RegisterPack`, `RemovePack`, `SealBoard`, `SetBoardSuspended`,
+ *     `MaintainBoardShared`, role and law-lock operations) is Console's, and the
+ *     system prompt already tells the model so in prose. This is the same rule with
+ *     an enforcement point.
+ */
+const MODEL_COMMAND_KINDS = new Set([
+  'ApplyAction', 'ApplyBatch', 'Explain', 'GetBoardManifest', 'GetChanges',
+  'GetCompletion', 'GetHealth', 'GetProjection', 'QueryBoard', 'RunDischarge',
+])
+/** Teaching for a refused kind, or undefined when the model may send it. */
+function modelCommandRefusal(kind) {
+  const name = String(kind ?? '')
+  if (MODEL_COMMAND_KINDS.has(name)) return undefined
+  return `${name || '(missing kind)'} is not a command this Agent Runtime sends on a model's behalf, so it was refused locally and never reached the authority.`
+    + ` A turn may issue: ${[...MODEL_COMMAND_KINDS].sort().join(', ')}.`
+    + ' Case lifecycle, work receipts, clearance, and package or Board governance belong to the host and to Console.'
+    + ' Finish with DONE: when the Case View is complete, or STOP: when something is genuinely missing.'
+}
 /** The only Case command adapter in the runtime. It calls the public MCP tool
  * advertised to every client; Agent and Case identities never enter the URL. */
 async function board(operation, ctx, staleRetries = 5) {
@@ -307,15 +426,20 @@ async function board(operation, ctx, staleRetries = 5) {
     throw new Error(`board(): missing execution context for ${String(operation?.kind ?? '?')}.`)
   }
   const bound = CASE_CONTEXT_OPERATIONS.has(String(operation?.kind ?? '')) ? ctx.case : undefined
+  const submission = {
+    operation,
+    ...(bound !== undefined ? { case: { id: bound.id, expectedRevision: bound.revision } } : {}),
+  }
+  const idKey = `${ctx.board}\u0000${submissionKey(submission)}`
+  const requestId = requestIdFor(idKey)
   let r
+  let authoritative = true
   try {
-    r = await agentProtocol('board', {
-      operation,
-      ...(bound !== undefined ? { case: { id: bound.id, expectedRevision: bound.revision } } : {}),
-    })
+    r = await agentProtocol('board', { ...submission, requestId })
   } catch (error) {
     const teaching = String(error?.message ?? error)
-    if (/token rejected \(401\)/i.test(teaching)) die(teaching)
+    if (/token rejected \(401\)/i.test(teaching)) failTask(teaching)
+    authoritative = false
     r = {
       accepted: false,
       errorCode: 'upstream_unavailable',
@@ -323,8 +447,13 @@ async function board(operation, ctx, staleRetries = 5) {
     }
   }
   if (typeof r?.accepted !== 'boolean' && typeof r?.errorCode !== 'string') {
+    authoritative = false
     r = { accepted: false, errorCode: 'upstream_unavailable', teaching: 'agent_protocol returned no authoritative receipt. Retry unchanged.' }
   }
+  // Release the id only once the Board has actually answered. While the answer is
+  // unknown the submission is still in flight, and the next unchanged attempt must
+  // present the same identity.
+  if (authoritative) requestIds.delete(idKey)
   if (bound !== undefined && STALE_CASE.has(String(r?.errorCode ?? ''))) {
     ctx.case = undefined
     if (staleRetries > 0) {
@@ -341,6 +470,59 @@ async function board(operation, ctx, staleRetries = 5) {
   }
   return r
 }
+/**
+ * Bring a paused Case back to running, or report why it cannot be.
+ *
+ * A paused Case used to be a dead end for this runtime: `PauseCase` is issued
+ * elsewhere, `ResumeCase` appeared nowhere, and `--case <id>` on a paused Case fell
+ * through the "running" filter to `OpenCase`, which answered `id_reused`. The Case was
+ * recoverable in the Console and unreachable from the thing that had been working it.
+ *
+ * `ResumeCase` is `caseContext: "boardOnly"` in the protocol registry
+ * (`protocol/operations.json`): it takes `caseId` on the operation and must not carry a
+ * `case: {id, expectedRevision}` binding — the Case is not the execution scope of the
+ * command that resumes it. `CASE_CONTEXT_OPERATIONS` therefore does not list it, and
+ * `board()` attaches no binding. The revision is read back from the Board Manifest
+ * afterwards rather than assumed, so a resume that did not actually take is visible.
+ *
+ * Returns the manifest row of the now-running Case, or undefined.
+ */
+async function resumePausedCase(ctx, caseId) {
+  const before = await board({ kind: 'GetBoardManifest' }, ctx)
+  if (before.accepted !== true) return undefined
+  const paused = (before.payload?.cases ?? []).find((row) => row?.id === caseId && row?.status === 'paused')
+  if (paused === undefined) return undefined
+  const resumed = await board({ kind: 'ResumeCase', caseId }, ctx)
+  if (resumed.accepted !== true) {
+    log(`✗ Case "${caseId}" is paused and could not be resumed: ${String(resumed.teaching ?? resumed.errorCode ?? '').slice(0, 240)}`)
+    return undefined
+  }
+  const after = await board({ kind: 'GetBoardManifest' }, ctx)
+  if (after.accepted !== true) return undefined
+  const running = (after.payload?.cases ?? []).find((row) => row?.id === caseId && row?.status === 'running')
+  if (running === undefined) {
+    log(`✗ ResumeCase for "${caseId}" was accepted, but the Board Manifest still does not report it as running. Inspect the Case in Console.`)
+    return undefined
+  }
+  log(`◎ Resumed paused Case "${caseId}" on Agent Board "${ctx.board}".`)
+  return running
+}
+
+/** Bind one manifest row as this segment's Case Context, refusing an identity mismatch. */
+function bindCaseRow(ctx, caseId, caseType, row) {
+  if (row.root !== caseId) {
+    log(`✗ Case Context "${caseId}" has root "${String(row.root)}". Case identity and acceptance root must be identical.`)
+    return undefined
+  }
+  if (row.caseType !== caseType) {
+    log(`✗ Case Context "${caseId}" is pinned to Case Type "${String(row.caseType)}", not "${caseType}".`)
+    return undefined
+  }
+  ctx.case = { id: caseId, root: caseId, revision: String(row.revision), caseType,
+    capabilityReleaseDigest: String(row.capabilityReleaseDigest), caseContractDigest: String(row.caseContractDigest) }
+  return ctx.case
+}
+
 /** Open or resume exactly one named Case Context. Never adopt another Case. */
 async function ensureCaseContext(ctx, caseId, caseType, businessKey) {
   if (ctx.case?.id === caseId && ctx.case?.root === caseId && ctx.case?.caseType === caseType && typeof ctx.case?.revision === 'string' && ctx.case.revision !== '') return ctx.case
@@ -354,25 +536,31 @@ async function ensureCaseContext(ctx, caseId, caseType, businessKey) {
     log(`✗ Agent Board "${ctx.board}" is still initializing. Complete Capability and shared-state setup in Console; the execution runtime will not perform governance activation.`)
     return undefined
   }
-  const running = (mf.payload?.cases ?? []).filter((candidate) => candidate !== null && typeof candidate === 'object' && candidate.status === 'running')
-  const hit = running.find((w) => w.id === caseId)
+  const rows = (mf.payload?.cases ?? []).filter((candidate) => candidate !== null && typeof candidate === 'object')
+  const hit = rows.filter((candidate) => candidate.status === 'running').find((w) => w.id === caseId)
   if (hit !== undefined) {
-    if (hit.root !== caseId) {
-      log(`✗ Case Context "${caseId}" has root "${String(hit.root)}". Case identity and acceptance root must be identical.`)
-      return undefined
-    }
-    if (hit.caseType !== caseType) {
-      log(`✗ Case Context "${caseId}" is pinned to Case Type "${String(hit.caseType)}", not "${caseType}".`)
-      return undefined
-    }
-    ctx.case = { id: caseId, root: caseId, revision: String(hit.revision), caseType,
-      capabilityReleaseDigest: String(hit.capabilityReleaseDigest), caseContractDigest: String(hit.caseContractDigest) }
-    log(`◎ Resuming Case "${caseId}" on Agent Board "${ctx.board}".`)
-    return ctx.case
+    const bound = bindCaseRow(ctx, caseId, caseType, hit)
+    if (bound !== undefined) log(`◎ Resuming Case "${caseId}" on Agent Board "${ctx.board}".`)
+    return bound
+  }
+  // A paused Case is resumable work, not a new Case. Sending OpenCase for it earns
+  // `id_reused`, which reads like a naming collision and hides that the Case is right
+  // there waiting.
+  if (rows.some((candidate) => candidate.id === caseId && candidate.status === 'paused')) {
+    const revived = await resumePausedCase(ctx, caseId)
+    if (revived === undefined) return undefined
+    return bindCaseRow(ctx, caseId, caseType, revived)
   }
   const opened = await board({ kind: 'OpenCase', caseType, caseId, root: caseId,
     ...(businessKey === undefined ? {} : { businessKey }) }, ctx)
   if (opened.accepted !== true) {
+    // The manifest read above and this write are not one atomic step, and the Case may
+    // also have been paused between them. `id_reused` is the authority saying "that
+    // Case already exists" — ask what state it is in before treating it as a failure.
+    if (String(opened.errorCode ?? '') === 'id_reused') {
+      const revived = await resumePausedCase(ctx, caseId)
+      if (revived !== undefined) return bindCaseRow(ctx, caseId, caseType, revived)
+    }
     log(`✗ Could not open Case "${caseId}" on Agent Board "${ctx.board}": ${String(opened.teaching ?? opened.errorCode ?? '').slice(0, 240)}`)
     return undefined
   }
@@ -413,7 +601,7 @@ async function archiveCaseContext(ctx, disposition) {
 // 所以模型知道自己看的是窄视图,不会把"没看见"当成"不存在"。
 // Hosted execution defaults to a bounded Case-focused view. Operators may tune
 // the budget, but the working Agent never receives an unbounded whole-Board dump.
-const ATTENTION_FACTS = Math.max(20, Number(process.env.RULITH_ATTENTION_FACTS ?? 80))
+const ATTENTION_FACTS = envNumber('RULITH_ATTENTION_FACTS', 80, { min: 20, max: 100_000 })
 const attnArg = (ctx) => ({ attention: { focus: ctx.case?.root, budget: { facts: ATTENTION_FACTS, findings: Math.max(10, Math.floor(ATTENTION_FACTS / 4)) } } })
 
 const projectionText = async (ctx) => {
@@ -745,8 +933,8 @@ async function boardGaps(ctx) {
 /** 收工前等在途求证的上限(0=不等,老行为)。真探跑几秒到几十秒,而模型常在派完那轮就 DONE。 */
 /** 在途就地结算的上限(0=关,老行为=每轮问一次模型)。派出去的求证/查询要几秒到几十秒才回,
  *  而模型在这段时间里除了「我等等」什么也说不出——**那几轮是纯烧**。宿主替它等,不花钱。 */
-const SETTLE_WAIT_MS = Number(process.env.RULITH_SETTLE_WAIT_MS ?? 60_000)
-const DELIVERABLE_WAIT_MS = Number(process.env.RULITH_DELIVERABLE_WAIT_MS ?? 45_000)
+const SETTLE_WAIT_MS = envNumber('RULITH_SETTLE_WAIT_MS', 60_000, { min: 0, max: 3_600_000 })
+const DELIVERABLE_WAIT_MS = envNumber('RULITH_DELIVERABLE_WAIT_MS', 45_000, { min: 0, max: 3_600_000 })
 const MAIN_CFG = { url: MODEL_URL, key: MODEL_KEY, model: MODEL }
 const SHADOW_CFG = {
   url: process.env.RULITH_SHADOW_URL ?? MODEL_URL,
@@ -775,11 +963,11 @@ async function ask(messages, system, cfg = MAIN_CFG) {
     })
   } catch (e) {
     // 用户面工具不该抛原始堆栈: 说清连的是谁、怎么改(2026-08-01 自跑时踩到)
-    die(`Cannot reach model service ${cfg.url}: ${e?.cause?.code ?? e?.message ?? e}.
+    failTask(`Cannot reach model service ${cfg.url}: ${e?.cause?.code ?? e?.message ?? e}.
    Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
   }
   const j = await r.json().catch(() => ({}))
-  if (!r.ok) die(`Model service error (${r.status}): ${JSON.stringify(j).slice(0, 300)}`)
+  if (!r.ok) failTask(`Model service error (${r.status}): ${JSON.stringify(j).slice(0, 300)}`)
   if (openaiStyle) return String(j.choices?.[0]?.message?.content ?? '')
   return (j.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n')
 }
@@ -951,7 +1139,7 @@ await probeLawLock(defaultSlot)
 // 丢掉的段各留一行痕,模型知道"之前办过这些",要当前状态自己刷新 Case View。
 //
 // **切口必须落在 user 上**: 模型线型要求首条是 user,切在 assistant/user 配对中间会 400。
-const KEEP_MESSAGES = Number(process.env.RULITH_KEEP_MESSAGES ?? 24)
+const KEEP_MESSAGES = envNumber('RULITH_KEEP_MESSAGES', 24, { min: 2, max: 10_000 })
 function compactTranscript(ctx) {
   const messages = ctx.messages
   if (messages.length <= KEEP_MESSAGES) return
@@ -1007,7 +1195,11 @@ async function runSegment(ctx, userText, caseType = selectedCaseType, businessKe
     log(`\n✗ ${note}`)
     emitOn(ctx, 'case-open', { board: ctx.board, caseId, ok: false })
     ctx.segmentTrail.push(`[case ${caseId} · open] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
-    return { note, caseId, pendingCaseId: caseId }
+    // `opened:false` is the machine-readable half of that sentence. Callers used to have
+    // to read the prose to tell "the Case ran and did not certify" from "no Case ever
+    // existed", and the one-shot CLI did not read it at all: it exited 0 for a task that
+    // never started, so a scripted pipeline continued as though the work had been done.
+    return { note, caseId, pendingCaseId: caseId, opened: false }
   }
   log(`\nCase Context opened: "${caseId}" · Case Type "${caseType}" on Agent Board "${ctx.board}".`)
   emitOn(ctx, 'case-open', { board: ctx.board, caseId, caseType, ok: true })
@@ -1080,6 +1272,16 @@ ${say.slice(0, 1200)}`)
         let succeeded = 0
         for (let ci = 0; ci < cmds.length; ci++) {
           const c = cmds[ci]
+          // Refuse before the wire, not after. A rejection that travels has already
+          // spent the Agent's credential on it, and a Cloud that ever grew a permissive
+          // default would make this runtime the thing that forwarded it.
+          const refusal = modelCommandRefusal(c.kind)
+          if (refusal !== undefined) {
+            log(`Refused locally: ${refusal.slice(0, 200)}`)
+            emitOn(ctx, 'verdict', { accepted: false, cmd: String(c.kind ?? ''), teaching: refusal, refusedLocally: true })
+            lines.push(refusal)
+            break
+          }
           const r = await board(c, ctx)
           const head = `${c.kind}${typeof c.action === 'string' ? ` ${c.action}` : ''}`
           if (r.accepted === true) {
@@ -1320,7 +1522,7 @@ ${say.slice(0, 1200)}`)
   }
   ctx.segmentTrail.push(`[case ${caseId}${pendingCaseId === null ? '' : ' · open'}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
   if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40) // 留痕本身也要有上界
-  return { note, caseId, pendingCaseId }
+  return { note, caseId, pendingCaseId, opened: true }
 }
 
 /** 影子审阅: 对抗立场读板与本段经过,专挑真缺陷。发现→落板 shadow_finding + 返回 false(拦结案)。
@@ -1368,7 +1570,7 @@ if (SERVE) {
   // **同槽恒串行,跨槽按 SERVE_CONCURRENCY 并行**。旧门牌写的是"并发恒为 1",前提是四处
   // 进程级单例(尤其 messages 转录);那四处已全部入槽(见 makeSlot),前提失效 ⇒ 裁决作废。
   // 留下来的那半条仍然成立: **一个客户的两单不能织进同一条转录**,所以每槽自己一条 FIFO。
-  const wantedConcurrency = Number(process.env.RULITH_SERVE_CONCURRENCY ?? 1)
+  const wantedConcurrency = envNumber('RULITH_SERVE_CONCURRENCY', 1, { min: 1, max: 1000 })
   // 上限 8 是**保守的闸不是测出来的极限**: 每个并行段都在烧模型配额与云上写配额,
   // 一个手滑的 =200 会把这两样同时打爆,而爆的形状是 429/超时,不是干净的报错。
   // 要更高的并发,形态仍是多开进程(那样每个进程的资源账是分开的)。
@@ -1602,7 +1804,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
   log(`Task: ${TASK}
 `)
   emit('start', { agentId, url: URL_BASE, task: TASK, projection: '' })
-  const { note, caseId, pendingCaseId } = await runSegment(defaultSlot, TASK)
+  const { note, caseId, pendingCaseId, opened } = await runSegment(defaultSlot, TASK)
   // A closed or rejected Case has no active execution envelope. Do not fall back
   // to an unscoped Agent Board read: the Console case record is the authority.
   const after = pendingCaseId !== null && defaultSlot.case?.id === pendingCaseId
@@ -1624,7 +1826,23 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     console: seen,
     ...(pendingCaseId === null ? {} : { pendingCaseId }),
   })
-  process.exit(0)
+  // A task that never opened a Case did not run. Exiting 0 told every caller — CI step,
+  // shell script, cron wrapper — that the work was attempted and finished.
+  //
+  // The status is set rather than forced. `process.exit()` here tore the loop down
+  // while pipe writes and the HTTP client's sockets were still closing, and on Windows
+  // libuv aborts on that (`!(handle->flags & UV_HANDLE_CLOSING)`, src/win/async.c):
+  // roughly half of successful runs on this platform reported 3221226505 — a crash
+  // code — instead of 0, and the tail of stdout was lost with it. Verified against
+  // 1e39d55, so it predates this change. Nothing keeps the loop alive at this point,
+  // so the process still exits immediately.
+  if (opened !== true) {
+    console.error(`\n✗ No Case Context was opened, so this task never started: ${note}`
+      + '\n   Nothing was executed and no Case record exists. Fix the reported cause and run the task again.\n')
+    process.exitCode = 1
+  } else {
+    process.exitCode = 0
+  }
 } else {
   // Interactive terminal client. Browser interaction belongs to the Rulith Local host.
   const inbox = []

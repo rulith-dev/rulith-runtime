@@ -2,7 +2,78 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.6.3 - unreleased
+
+Security and correctness fixes from a pre-release review. Every item below is covered by
+a test that fails when the fix is reverted.
+
+### Worker
+
+- Database Tools take their statement only from the Tool's own `exec` template. An
+  invocation argument named `sql` used to replace it, so the SELECT-only guard and the
+  destructive-statement classifier judged model-supplied text instead of the declared
+  template, and the driver-parameter compilation above them could be bypassed entirely.
+- A database Tool that declares a parameter named `sql` is now refused when the Tool is
+  resolved, rather than accepted and ignored.
+- An Action work item's `payload.args` can no longer replace the validated invocation
+  arguments. The door was inert for http, run, workspace and mcp Adapters, which always
+  produce compiled args, and live for the two database Adapters, which do not.
+- A thrown transport failure on an action receipt (connection reset, peer gone) is
+  retried inside the receipt ladder instead of escaping into the poll loop. The claim has
+  already recorded a trusted `dispatched`, so a dropped receipt meant the executor had
+  changed the world and the Case could never complete.
+- Outbound MCP calls carry a 30-second timeout and a 1 MiB response cap, both tightenable
+  from the local Worker Tool Manifest and neither settable from a work item.
+- A `run` Adapter no longer inherits the runtime's own credentials. The Connection key,
+  Agent token, model provider keys, reviewer key, serve key and database DSN are removed
+  from the child environment; `PATH`, `HOME` and the rest pass through, and what an
+  Adapter needs is still handed to it explicitly.
+
+### Agent Runtime
+
+- The model may emit only reads, `ApplyBatch`, `ApplyAction` and `RunDischarge`. Case
+  lifecycle, work receipts, clearance, and package or Board governance are refused
+  locally with teaching and never reach Cloud, so text arriving through a task, a
+  document or a tool result cannot spend the Agent credential on `RemovePack`,
+  `SealBoard`, `CloseCase` or `ReportWork`.
+- In `--serve`, a model-provider failure fails that task and leaves the server running.
+  It previously exited the process from inside one queued Case, discarding every other
+  queued and in-flight Case without telling their callers.
+- A one-shot run whose Case never opened exits non-zero instead of 0.
+- A paused Case can be resumed. `--case <id>` on a paused Case sends `ResumeCase`
+  (board-scoped, per `protocol/operations.json`) instead of falling through to `OpenCase`
+  and its `id_reused` refusal, both when the Board Manifest already reports it paused and
+  when `OpenCase` reveals it.
+- Each board submission carries a `requestId`; an unchanged retry after a failed MCP hop
+  reuses it, and it is released once the Board answers. Older Cloud endpoints ignore it.
+- Numeric environment knobs fall back to their default with a stderr warning instead of
+  becoming `NaN`. `RULITH_MAX_ROUNDS=twelve` previously made every round comparison false,
+  so the segment loop ran zero rounds and reported a limit it had never applied.
+- A finished one-shot run sets its exit status instead of forcing `process.exit`. On
+  Windows the forced exit raced libuv's handle teardown, so roughly half of successful
+  runs reported the crash code 3221226505 and lost the tail of their output.
+
+### Rulith Local
+
+- The per-run key gates every route, including the page at `/`. The page was previously
+  served before the gate with the key substituted into its body, so any local process
+  could read a working key with one unauthenticated request, and the Host check that
+  prevents DNS rebinding did not apply to it. The page now reads the key from its own
+  address; a missing or wrong key answers 401 and a bad Host or Origin answers 403.
+
+### Packaging and documentation
+
+- `npm run check`, which `prepack` runs, refuses to pack when a manifest-listed file
+  contains a CR byte. `artifact-manifest.json` hashes LF text while `npm pack` ships
+  working-tree bytes, so a release cut from a CRLF checkout shipped a tarball that failed
+  its own manifest — the published 0.4.0 is CRLF throughout.
+- `examples/verified-calculation/setup.mjs` verifies every download against
+  `artifact-manifest.json` before writing anything, and fails closed with teaching.
+  It previously fetched `rulith-agent.mjs` and `rulith-worker.mjs` from
+  `RULITH_DOWNLOAD_ORIGIN` and wrote them to be executed without checking them.
+- `SUPPORT.md` pointed at `security@rulith.com`; the address is `security@rulith.ai`.
+- `SECURITY.md` and `README.md` now state that Windows does not enforce the `0o600` mode
+  on `~/.rulith/local.json`, and describe the gate and Adapter fences as implemented.
 
 ## 0.6.2 - 2026-09-02
 
