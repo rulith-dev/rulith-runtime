@@ -430,8 +430,8 @@ const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed',
  * `extractSubmission` accepts any object carrying a string `kind`, and `board()`
  * forwarded it. The model's turn is untrusted input — a task description, a tool
  * result, a fetched document or a Source row can all end up in the transcript — so any
- * text that reaches the model could emit `{"kind":"RemovePack",…}`, `{"kind":"SealBoard"}`
- * or `{"kind":"SetBoardSuspended"}` and the runtime would carry it to the authority
+ * text that reaches the model could emit a configuration or Board-governance command
+ * and the runtime would carry it to the authority
  * under the Agent's own credential. Cloud authorization is the second line, not the
  * first: the runtime must not offer to speak governance on the model's behalf at all.
  *
@@ -452,7 +452,7 @@ const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed',
  *   · `IngestObservation` writes observations with their own provenance; the model's
  *     channel for stating things is `assert_fact` inside a batch, where it lands as
  *     `asserted`.
- *   · Governance (`RegisterPack`, `RemovePack`, `SealBoard`, `SetBoardSuspended`,
+ *   · Governance (`RegisterPack`, `RemovePack`, `SetBoardSuspended`,
  *     `MaintainBoardShared`, role and law-lock operations) is Console's, and the
  *     system prompt already tells the model so in prose. This is the same rule with
  *     an enforcement point.

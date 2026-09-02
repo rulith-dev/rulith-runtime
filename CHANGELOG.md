@@ -57,7 +57,7 @@ a test that fails when the fix is reverted.
   lifecycle, work receipts, clearance, and package or Board governance are refused
   locally with teaching and never reach Cloud, so text arriving through a task, a
   document or a tool result cannot spend the Agent credential on `RemovePack`,
-  `SealBoard`, `CloseCase` or `ReportWork`.
+  `CloseCase` or `ReportWork`.
 - In `--serve`, a model-provider failure fails that task and leaves the server running.
   It previously exited the process from inside one queued Case, discarding every other
   queued and in-flight Case without telling their callers.
