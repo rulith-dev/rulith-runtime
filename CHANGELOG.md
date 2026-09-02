@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## 0.6.3 - unreleased
+## 0.6.3 - 2026-09-02
 
 Security and correctness fixes from a pre-release review. Every item below is covered by
 a test that fails when the fix is reverted.
@@ -93,7 +93,7 @@ a test that fails when the fix is reverted.
 
 ### Packaging and documentation
 
-- `npm run check`, which `prepack` runs, refuses to pack when a manifest-listed file
+- `npm run check`, which `prepack` runs, refuses to pack when a published canonical file
   contains a CR byte. `artifact-manifest.json` hashes LF text while `npm pack` ships
   working-tree bytes, so a release cut from a CRLF checkout shipped a tarball that failed
   its own manifest — the published 0.4.0 is CRLF throughout.

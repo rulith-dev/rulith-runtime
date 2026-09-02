@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Refuse to pack a tarball whose files cannot match their own manifest.
+ * Refuse to pack a tarball whose files do not match their repository-canonical bytes.
  *
  * `artifact-manifest.json` records the sha256 of each file's repository-canonical
  * (LF) text. `npm pack` ships the working-tree bytes. On a Windows checkout made with
@@ -15,20 +15,39 @@
  * the shipped file would still differ — the discrepancy would move rather than close,
  * and it would be invisible again.
  */
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { relative, resolve, sep } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
-/** Files listed in the manifest that contain a CR byte in the working tree. */
+function relativeFile(root, path) {
+  return relative(root, path).split(sep).join('/')
+}
+
+function expandDeclared(root, entry) {
+  const path = resolve(root, entry)
+  const stat = statSync(path)
+  if (stat.isFile()) return [relativeFile(root, path)]
+  if (!stat.isDirectory()) return []
+  return readdirSync(path, { withFileTypes: true }).flatMap((child) =>
+    expandDeclared(root, resolve(path, child.name)))
+}
+
+/** Published canonical files that contain a CR byte in the working tree. */
 export function carriageReturnOffenders(root = ROOT) {
   const manifest = JSON.parse(readFileSync(resolve(root, 'artifact-manifest.json'), 'utf8'))
-  const files = Object.keys(manifest.files ?? {})
-  if (files.length === 0) throw new Error('artifact-manifest.json lists no files; the check would pass vacuously')
+  const manifested = Object.keys(manifest.files ?? {})
+  if (manifested.length === 0) throw new Error('artifact-manifest.json lists no files; the check would pass vacuously')
+  const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+  const declared = Array.isArray(pkg.files) ? pkg.files.flatMap((entry) => expandDeclared(root, entry)) : []
+  // npm includes package.json, README and LICENSE independently of `files`. Everything
+  // else is expanded from the exact allow-list the package declares.
+  const automatic = readdirSync(root).filter((name) => /^(?:readme|licen[cs]e)/iu.test(name))
+  const files = [...new Set(['package.json', ...automatic, ...declared, ...manifested])]
   return files.filter((file) => readFileSync(resolve(root, file)).includes(0x0d))
 }
 
-export const teaching = (offenders) => `Refusing to pack: ${offenders.length} manifest-listed file(s) contain CR bytes.
+export const teaching = (offenders) => `Refusing to pack: ${offenders.length} published file(s) contain CR bytes.
 
 ${offenders.map((file) => `  · ${file}`).join('\n')}
 
@@ -53,5 +72,5 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
     console.error(teaching(offenders))
     process.exit(1)
   }
-  console.log('line endings: all manifest-listed files are LF')
+  console.log('line endings: all published canonical files are LF')
 }

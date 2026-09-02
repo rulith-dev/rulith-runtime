@@ -33,10 +33,13 @@ const ROOT = resolve(import.meta.dirname, '..')
  * the behaviour of the check. The pack step is where the checkout itself is judged, and
  * `npm run check` — which prepack runs — is where that judgement is wired up.
  */
-function packageTree({ crlf }) {
+function packageTree({ crlf, packageCrlf = false, contributionCrlf = false }) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-crlf-'))
   const manifest = { schema: 'rulith-local-runtime-artifacts/v1', files: { 'a/one.mjs': { sha256: 'x' }, 'b/two.mjs': { sha256: 'y' } } }
   writeFileSync(join(dir, 'artifact-manifest.json'), JSON.stringify(manifest))
+  const pkgLf = '{\n  "name": "rulith",\n  "files": ["CONTRIBUTING.md"]\n}\n'
+  writeFileSync(join(dir, 'package.json'), packageCrlf ? pkgLf.replaceAll('\n', '\r\n') : pkgLf)
+  writeFileSync(join(dir, 'CONTRIBUTING.md'), contributionCrlf ? 'one\r\ntwo\r\n' : 'one\ntwo\n')
   mkdirSync(join(dir, 'a')); mkdirSync(join(dir, 'b'))
   writeFileSync(join(dir, 'a', 'one.mjs'), 'const a = 1\nconst b = 2\n')
   writeFileSync(join(dir, 'b', 'two.mjs'), crlf ? 'const c = 3\r\nconst d = 4\r\n' : 'const c = 3\nconst d = 4\n')
@@ -61,6 +64,16 @@ test('the line-ending check passes an all-LF tree (calibration)', () => {
   try { assert.deepEqual(carriageReturnOffenders(dir), []) } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('the line-ending check covers package.json even though it is not a runtime artifact', () => {
+  const dir = packageTree({ crlf: false, packageCrlf: true })
+  try { assert.deepEqual(carriageReturnOffenders(dir), ['package.json']) } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the line-ending check expands package files instead of guarding one hard-coded filename', () => {
+  const dir = packageTree({ crlf: false, contributionCrlf: true })
+  try { assert.deepEqual(carriageReturnOffenders(dir), ['CONTRIBUTING.md']) } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('the check refuses to pass vacuously when the manifest lists nothing', () => {
   // The shrunken-denominator failure: an empty list makes `every file is LF` true and
   // the guard silently stops guarding.
@@ -78,10 +91,10 @@ test('running the check as a command exits 1 with teaching on a CR tree and 0 on
       const run = spawnSync(process.execPath, ['scripts/check-line-endings.mjs', dir], { cwd: ROOT, encoding: 'utf8' })
       assert.equal(run.status, status, `crlf=${crlf}: ${run.stdout}\n${run.stderr}`)
       if (crlf) {
-        assert.match(run.stderr, /Refusing to pack: 1 manifest-listed file\(s\) contain CR bytes/)
+        assert.match(run.stderr, /Refusing to pack: 1 published file\(s\) contain CR bytes/)
         assert.match(run.stderr, /b\/two\.mjs/)
       } else {
-        assert.match(run.stdout, /all manifest-listed files are LF/)
+        assert.match(run.stdout, /all published canonical files are LF/)
       }
     } finally { rmSync(dir, { recursive: true, force: true }) }
   }
