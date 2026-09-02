@@ -116,6 +116,7 @@ for (let i = 0; i < argv.length; i++) {
 const TASK = rest.join(' ').trim()
 const SERVE = withServe
 const die = (msg) => { console.error(`\n✗ ${msg}\n`); process.exit(1) }
+class AgentCredentialRejectedError extends Error {}
 /**
  * A failure that belongs to one task, not to the process.
  *
@@ -244,7 +245,7 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000 } = {}) {
   }
   let body
   try { body = JSON.parse(raw) } catch { body = undefined }
-  if (response.status === 401) throw new Error(`Agent MCP token rejected (401): ${body?.teaching ?? 'rotate the Agent token in Console and update this client configuration.'}`)
+  if (response.status === 401) throw new AgentCredentialRejectedError(`Agent MCP token rejected (401): ${body?.teaching ?? 'rotate the Agent token in Console and update this client configuration.'}`)
   if (!response.ok || body === undefined || body.error !== undefined) {
     const teaching = body?.error?.message ?? body?.teaching ?? raw.replace(/\s+/g, ' ').trim().slice(0, 240)
     throw new Error(`MCP ${method} failed (HTTP ${response.status}): ${teaching || 'empty response'}`)
@@ -489,7 +490,7 @@ async function board(operation, ctx, staleRetries = 5) {
     r = await agentProtocol('board', { ...submission, requestId })
   } catch (error) {
     const teaching = String(error?.message ?? error)
-    if (/token rejected \(401\)/i.test(teaching)) failTask(teaching)
+    if (error instanceof AgentCredentialRejectedError) throw error
     authoritative = false
     r = {
       accepted: false,
@@ -1116,6 +1117,7 @@ const extractSubmission = (text) => {
 
 // ── 主循环：提议 → 裁决 → 教学回流 ──────────────────────────────────
 const log = (s) => console.log(s)
+let identityCredentialRejected = false
 try {
   const identity = await agentProtocol('identity')
   if (identity?.ok !== true || typeof identity.agentId !== 'string' || identity.agentId.trim() === '') {
@@ -1123,11 +1125,18 @@ try {
   }
   agentId = identity.agentId
 } catch (error) {
-  const legacy = legacyAgentIdHint(TOKEN)
-  if (legacy === undefined) die(`Cloud could not resolve this opaque Agent MCP token: ${error?.message ?? error}`)
-  agentId = legacy
-  console.warn('Cloud does not yet expose authenticated Agent identity over public MCP; using the legacy JWT scope as a non-authoritative display hint until Cloud is upgraded.')
+  if (error instanceof AgentCredentialRejectedError) {
+    console.error(`\n✗ ${error.message}\n`)
+    process.exitCode = 3
+    identityCredentialRejected = true
+  } else {
+    const legacy = legacyAgentIdHint(TOKEN)
+    if (legacy === undefined) die(`Cloud could not resolve this opaque Agent MCP token: ${error?.message ?? error}`)
+    agentId = legacy
+    console.warn('Cloud does not yet expose authenticated Agent identity over public MCP; using the legacy JWT scope as a non-authoritative display hint until Cloud is upgraded.')
+  }
 }
+if (!identityCredentialRejected) {
 log(`
 rulith-agent · Agent "${agentId}" · ${URL_BASE}`)
 const consoleUrlOf = (name) => `https://console.rulith.ai/agents/${encodeURIComponent(name)}`
@@ -1178,7 +1187,17 @@ async function probeLawLock(ctx) {
     log(`Board legislation is locked. Rules come from packages installed by the board owner; this Agent executes under them.${ctx.key === '' ? '' : ` (session ${ctx.key})`}`)
   }
 }
-await probeLawLock(defaultSlot)
+let startupCredentialRejected = false
+try {
+  await probeLawLock(defaultSlot)
+} catch (error) {
+  if (!(error instanceof AgentCredentialRejectedError)) throw error
+  console.error(`\n✗ ${error.message}\n`)
+  process.exitCode = 3
+  startupCredentialRejected = true
+}
+
+if (!startupCredentialRejected) {
 
 // ── 转录压缩：滚动窗 + 段边界留痕（2026-08-06 用户裁定）────────────────────
 //
@@ -1637,6 +1656,7 @@ if (SERVE) {
   // 它同时是 /runs 快照里 running/runningAll 的来源——**一份状态一处存**。
   const inFlight = []
   const pushRun = (r) => { runs.push(r); while (runs.length > SERVE_RUNS_MAX) runs.shift() }
+  let acceptingTasks = true
 
   // Session slots isolate local transcripts and queues. They do not create Boards:
   // every slot opens Case Contexts on the same persistent Agent Board.
@@ -1696,6 +1716,23 @@ if (SERVE) {
     queued: allSlots().flatMap((s) => s.queue.map((q) => ({ id: q.id, text: q.text, at: q.at, ...(s.key === '' ? {} : { sessionKey: s.key }) }))),
     runs: runs.slice(-SERVE_RUNS_MAX),
   })
+  const terminalizeQueuedTasks = (reason) => {
+    for (const slot of allSlots()) {
+      for (const item of slot.queue.splice(0)) {
+        const rec = {
+          id: item.id, text: item.text, at: item.at,
+          startedAt: item.at, endedAt: Date.now(),
+          note: `Task never started: ${reason}`,
+          board: slot.board,
+          ...(slot.key === '' ? {} : { sessionKey: slot.key }),
+          console: consoleUrl,
+        }
+        pushRun(rec)
+        emit('task-done', rec)
+        log(`✗ ${rec.note} (task ${item.id})`)
+      }
+    }
+  }
 
   const serveSrv = http.createServer((req, res) => {
     const deny = (why, status = 403) => {
@@ -1706,6 +1743,7 @@ if (SERVE) {
     if (req.method === 'POST' && path === '/task') {
       const bad = serveGate(req)
       if (bad !== null) return deny(bad)
+      if (!acceptingTasks) return deny('The Agent credential was rejected. Rotate it in Console and restart Rulith Local.', 503)
       const ct = String(req.headers['content-type'] ?? '')
       if (!ct.startsWith('application/json')) return deny('Only application/json is accepted; plain-text bodies can bypass browser preflight checks.')
       // 按字节收、收完再解码（同 /say）：逐块拼字符串会把跨块的多字节字符切坏。
@@ -1798,14 +1836,27 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
 ▶ Case ${item.id}${slot.key === '' ? '' : ` (session ${slot.key})`}: ${item.text}`)
     let note = ''
     let pendingCaseId = null
+    let actualCaseId = null
     try {
       const seg = await runSegment(slot, item.text, item.caseType, item.businessKey)
       note = seg.note
       pendingCaseId = seg.pendingCaseId
+      actualCaseId = seg.caseId
     } catch (e) {
-      // 一单办炸**不许掀翻整个队列**: 如实记档,接着办下一单(无人值守的第一要务是活着)
-      note = `Task aborted with an unexpected error: ${e?.message ?? e}`
-      pendingCaseId = slot.case?.id ?? item.id
+      const credentialRejected = e instanceof AgentCredentialRejectedError
+      note = credentialRejected
+        ? `Agent credential rejected: ${e.message}`
+        : `Task aborted with an unexpected error: ${e?.message ?? e}`
+      actualCaseId = slot.case?.id ?? null
+      pendingCaseId = actualCaseId
+      if (credentialRejected) {
+        // A revoked/rotated credential belongs to the whole host, not one task. Stop
+        // admission and let the supervisor restart with new configuration after every
+        // already-running slot has recorded its real outcome.
+        acceptingTasks = false
+        process.exitCode = 3
+        terminalizeQueuedTasks(note)
+      }
       log(`✗ ${note}`)
     } finally {
       // 清账落 **finally**: 上面任何一处炸了都不许把这个槽永久钉成 busy——那位客户从此再也
@@ -1820,7 +1871,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
       id: item.id, text: item.text, at: item.at,
       startedAt: flight.startedAt, endedAt: Date.now(), note,
       board: slot.board,
-      caseId: item.id,
+      ...(actualCaseId === null ? {} : { caseId: actualCaseId }),
       ...(slot.key === '' ? {} : { sessionKey: slot.key }),
       // 未结的案号进 run 记录: 调用方(网站后端)据它决定"要不要接着办 / 要不要报给人",
       // 只给一句 note 的话,"停轮"与"办结"在机器眼里长得一模一样。
@@ -1831,11 +1882,17 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
     emit('task-done', rec)
     log(`· ${note}${pendingLine(pendingCaseId)} · Verify in Console: ${rec.console}
 `)
+    if (!acceptingTasks && inFlight.length === 0) {
+      for (const client of clients) client.end()
+      serveSrv.close()
+      serveSrv.closeAllConnections()
+    }
   }
   // 泵(槽感知调度): 扫一遍槽,把**空闲且有排队**的槽开起来,直到跨槽并发到顶。
   // 段是 async 的,这里**不 await**——await 一条就等于把并发压回 1。每条办完再泵一次,
   // 于是"有空位就立刻开下一条"这件事不需要定时器。
   function pump() {
+    if (!acceptingTasks) return
     for (const slot of allSlots()) {
       if (inFlight.length >= SERVE_CONCURRENCY) return
       if (slot.busy || slot.queue.length === 0) continue
@@ -1852,6 +1909,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
   if (TASK !== '') { defaultSlot.queue.push({ id: nextCaseId(), text: TASK, caseType: selectedCaseType, businessKey: selectedBusinessKey, at: Date.now(), sessionKey: '' }); pump() }
 } else if (!CHAT) {
   // ── 一次办完(CI/脚本形态,行为不变) ──
+  try {
   log(`Task: ${TASK}
 `)
   emit('start', { agentId, url: URL_BASE, task: TASK, projection: '' })
@@ -1899,6 +1957,11 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   } else {
     process.exitCode = 0
   }
+  } catch (error) {
+    if (!(error instanceof AgentCredentialRejectedError)) throw error
+    console.error(`\n✗ ${error.message}\n`)
+    process.exitCode = 3
+  }
 } else {
   // Interactive terminal client. Browser interaction belongs to the Rulith Local host.
   const inbox = []
@@ -1941,7 +2004,16 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     if (line === 'exit' || line === 'quit') break
     emit('user', { text: line }) // 每张脸都看得到谁问了什么(晚开的浏览器也补得到)
     queuedAtSegmentStart = inbox.length // 水位线: 此刻排着的都是「下一段」,之后到的才是插话
-    const { note, caseId, pendingCaseId } = await runSegment(defaultSlot, line)
+    let segment
+    try {
+      segment = await runSegment(defaultSlot, line)
+    } catch (error) {
+      if (!(error instanceof AgentCredentialRejectedError)) throw error
+      console.error(`\n✗ ${error.message}\n`)
+      process.exitCode = 3
+      break
+    }
+    const { note, caseId, pendingCaseId } = segment
     emit('segment-end', { note, board: defaultSlot.board, caseId, ...(pendingCaseId === null ? {} : { pendingCaseId }) })
     log(`
 · ${note}${pendingLine(pendingCaseId)} · Verify in Console: ${consoleUrl}
@@ -1949,5 +2021,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   }
   rl.close()
   log('Stopped.')
-  process.exit(0)
+  if (process.exitCode === undefined) process.exitCode = 0
+}
+}
 }

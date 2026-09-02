@@ -218,6 +218,48 @@ test('a model-provider error in --serve fails the task and leaves the server acc
   }
 })
 
+test('an Agent credential rejection terminates the process and never invents a pending Case id', async () => {
+  const { createServer } = await import('node:http')
+  const probe = createServer()
+  let servePort
+  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { servePort = probe.address().port; ready() }))
+  await new Promise((closed) => probe.close(closed))
+  const run = await runAgent({
+    argv: ['--serve'],
+    env: { RULITH_SERVE_PORT: String(servePort), RULITH_SERVE_KEY: 'credential-test-key' },
+    rejectBoardAfter: 2,
+    rejectBoardDelayMs: 250,
+    serveTasks: ['first accepted task', 'second accepted task'],
+  })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 3, `credential rejection must stop the host, not only one task:\n${run.stdout}\n${run.stderr}`)
+  assert.match(run.stdout, /Task endpoint ready/, 'the test never entered --serve, so it proved only startup failure')
+  assert.deepEqual(run.serveStatuses, [202, 202], 'both tasks must have crossed admission before the credential failure')
+  assert.match(`${run.stdout}\n${run.stderr}`, /Agent MCP token rejected \(401\)/)
+  assert.match(run.stdout, /Task never started: Agent credential rejected/,
+    'the already-accepted queued task vanished without a terminal run record')
+  assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /pending_case_id|Case remains open/,
+    'no Case was opened, so the failure must not manufacture a resumable Case identity')
+})
+
+test('a token rejected by tools/list exits 3 instead of masquerading as an identity parse failure', async () => {
+  const run = await runAgent({ rejectAllCredential: true })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 3, `${run.stdout}\n${run.stderr}`)
+  assert.match(run.stderr, /Agent MCP token rejected \(401\)/)
+  assert.doesNotMatch(run.stderr, /could not resolve this opaque Agent MCP token/i)
+})
+
+test('interactive mode reports a mid-session credential rejection without an unhandled stack', async () => {
+  const run = await runAgent({ argv: [], chatLines: ['do the work'], rejectBoardAfter: 2 })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 3, `${run.stdout}\n${run.stderr}`)
+  assert.match(run.stderr, /Agent MCP token rejected \(401\)/)
+  assert.doesNotMatch(run.stderr, /at mcpRpc|AgentCredentialRejectedError:/,
+    'interactive credential failure leaked an unhandled exception stack')
+  assert.match(run.stdout, /Stopped\./)
+})
+
 test('a one-shot run whose Case never opened exits non-zero', async () => {
   const run = await runAgent({
     argv: ['--case', 'case-never-opens', 'do the work'],

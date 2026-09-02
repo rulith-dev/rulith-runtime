@@ -60,9 +60,15 @@ export function defaultBoard({ cases = [], caseType = 'exploration' } = {}) {
  *   distinguished from a slow one, and the one that used to hold the process open.
  * @param {boolean}  [options.holdTraceBody] Send trace response headers, then never finish its body.
  * @param {boolean}  [options.oversizeMcpResponse] Return a tools/list body larger than the Agent limit.
+ * @param {boolean}  [options.rejectBoardCredential] Reject board calls with HTTP 401.
+ * @param {boolean}  [options.rejectAllCredential] Reject the public MCP surface with HTTP 401.
+ * @param {number}   [options.rejectBoardAfter] Reject this and later board call with HTTP 401.
+ * @param {number}   [options.rejectBoardDelayMs] Delay the credential rejection response.
+ * @param {string[]} [options.serveTasks] Submit these tasks after a --serve endpoint is ready.
+ * @param {string[]} [options.chatLines] Send these lines to interactive stdin.
  * @param {number}   [options.timeoutMs]
  */
-export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false, timeoutMs = 20_000 } = {}) {
+export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false, rejectBoardCredential = false, rejectAllCredential = false, rejectBoardAfter, rejectBoardDelayMs = 0, serveTasks = [], chatLines = [], timeoutMs = 20_000 } = {}) {
   const answerBoard = board ?? defaultBoard()
   const calls = []
   const modelRequests = []
@@ -70,6 +76,7 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
   /** Responses accepted and deliberately never sent; destroyed during cleanup. */
   const held = []
   let firstTraceAt
+  let boardRequests = 0
 
   const server = createServer(async (request, response) => {
     const chunks = []
@@ -82,11 +89,21 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
       return void response.end(JSON.stringify({ choices: [{ message: { content } }] }))
     }
     response.setHeader('content-type', 'application/json')
+    if (rejectAllCredential) {
+      response.writeHead(401, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
+    }
     if (input.method === 'tools/list') {
       if (oversizeMcpResponse) return void response.end(JSON.stringify({ padding: 'x'.repeat(1_048_576) }))
       return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools: [{ name: 'agent_protocol', inputSchema: { type: 'object' } }] } }))
     }
     const args = input.params?.arguments ?? {}
+    if (args.mode === 'board') boardRequests += 1
+    if ((rejectBoardCredential || (Number.isInteger(rejectBoardAfter) && boardRequests >= rejectBoardAfter)) && args.mode === 'board') {
+      if (rejectBoardDelayMs > 0) await new Promise((ready) => setTimeout(ready, rejectBoardDelayMs))
+      response.writeHead(401, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
+    }
     calls.push(args)
     let result
     if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
@@ -132,13 +149,40 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
       RULITH_SERVE: '',
       ...env,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [chatLines.length > 0 ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   })
 
   let stdout = ''
   let stderr = ''
   child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
   child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+
+  if (chatLines.length > 0) {
+    const deadline = Date.now() + 10_000
+    while (!/Interactive mode/.test(stdout) && Date.now() < deadline) {
+      await new Promise((ready) => setTimeout(ready, 25))
+    }
+    if (!/Interactive mode/.test(stdout)) throw new Error(`interactive Agent did not become ready:\n${stdout}\n${stderr}`)
+    child.stdin.end(`${chatLines.join('\n')}\n`)
+  }
+
+  const serveStatuses = []
+  if (serveTasks.length > 0) {
+    const deadline = Date.now() + 10_000
+    while (!/Task endpoint ready/.test(stdout) && Date.now() < deadline) {
+      await new Promise((ready) => setTimeout(ready, 25))
+    }
+    if (!/Task endpoint ready/.test(stdout)) throw new Error(`serve endpoint did not become ready:\n${stdout}\n${stderr}`)
+    for (const task of serveTasks) {
+      const response = await fetch(`http://127.0.0.1:${env.RULITH_SERVE_PORT}/task`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-rulith-serve': String(env.RULITH_SERVE_KEY ?? '') },
+        body: JSON.stringify({ text: task }),
+      })
+      serveStatuses.push(response.status)
+      await response.arrayBuffer()
+    }
+  }
 
   let timer
   const code = await Promise.race([
@@ -156,7 +200,7 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
 
   const operations = calls.filter((call) => call.mode === 'board').map((call) => call.operation ?? {})
   return {
-    code, stdout, stderr, calls, modelRequests, operations, port, exitedAt,
+    code, stdout, stderr, calls, modelRequests, operations, port, exitedAt, serveStatuses,
     /** When the endpoint first saw a trace batch, so a test can time the exit from it. */
     firstTraceAt,
     boardCalls: calls.filter((call) => call.mode === 'board'),

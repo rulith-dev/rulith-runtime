@@ -2,6 +2,15 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.4 - 2026-09-02
+
+- A standalone verified-calculation setup downloaded from Console now verifies and
+  fetches its seven files from the immutable `v0.6.4` Runtime release instead of
+  relying on retired per-file Console routes or a package-local manifest it cannot have.
+- A rejected Agent credential is a host-level failure: Rulith Local stops accepting
+  tasks and exits with status 3 without inventing a pending Case identity. Model-provider
+  failures remain isolated to the task that encountered them.
+
 ## 0.6.3 - 2026-09-02
 
 Security and correctness fixes from a pre-release review. Every item below is covered by

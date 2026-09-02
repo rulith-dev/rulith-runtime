@@ -4,19 +4,17 @@
  * JSON calculation workspace. Agent capabilities are installed in Console;
  * credentials are never requested or written here.
  *
- * Every downloaded file is checked against `artifact-manifest.json` before anything
- * is written. Two of these files — `rulith-agent.mjs` and `rulith-worker.mjs` — are the
- * runtime itself: this script fetched them over the network and then executed them by
- * name, so whoever could answer `RULITH_DOWNLOAD_ORIGIN` (a typo, a stale mirror, a
- * proxy, a compromised host) decided what ran on the machine holding the Connection key
- * and the model key. The manifest ships in this repository and in the npm package, so
- * the comparison is against bytes the reader already has, not against the same server.
+ * Every downloaded file is checked before anything is written. An installed package or
+ * checkout supplies `artifact-manifest.json`; the standalone Console download carries
+ * the same seven immutable v0.6.4 pins inside this script. Runtime bytes come from the
+ * immutable Git tag by default, not from Console's retired per-file download routes.
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const ORIGIN = process.env.RULITH_DOWNLOAD_ORIGIN ?? 'https://console.rulith.ai'
+const ORIGIN = process.env.RULITH_DOWNLOAD_ORIGIN
+  ?? 'https://raw.githubusercontent.com/rulith-dev/rulith-runtime/v0.6.4'
 const target = resolve(process.argv[2] ?? 'rulith-verified-calculation')
 
 /** Download path under the origin -> where it lands in the prepared workspace. */
@@ -26,8 +24,8 @@ const FILES = new Map([
   ['examples/verified-calculation/verify-output.mjs', 'adapters/verified-calculation/verify-output.mjs'],
   ['examples/verified-calculation/worker-tools.json', 'worker-tools.json'],
   ['examples/verified-calculation/data/input.json', 'runtime/input.json'],
-  ['rulith-agent.mjs', 'rulith-agent.mjs'],
-  ['rulith-worker.mjs', 'rulith-worker.mjs'],
+  ['agent/rulith-agent.mjs', 'rulith-agent.mjs'],
+  ['worker/rulith-worker.mjs', 'rulith-worker.mjs'],
 ])
 
 /**
@@ -42,9 +40,21 @@ const MANIFEST_KEYS = new Map([
   ['examples/verified-calculation/verify-output.mjs', 'examples/verified-calculation/verify-output.mjs'],
   ['examples/verified-calculation/worker-tools.json', 'examples/verified-calculation/worker-tools.json'],
   ['examples/verified-calculation/data/input.json', 'examples/verified-calculation/data/input.json'],
-  ['rulith-agent.mjs', 'agent/rulith-agent.mjs'],
-  ['rulith-worker.mjs', 'worker/rulith-worker.mjs'],
+  ['agent/rulith-agent.mjs', 'agent/rulith-agent.mjs'],
+  ['worker/rulith-worker.mjs', 'worker/rulith-worker.mjs'],
 ])
+
+// Standalone trust anchor. Keep this deliberately narrow: only the files setup writes.
+// Packaging tests compare both success and tamper arms against these exact pins.
+const EMBEDDED_MANIFEST_FILES = Object.freeze({
+  'examples/verified-calculation/read-input.mjs': { sha256: '9b360e7a6dd108657e7b4946d9f63128f02d86e31087fe50b60bcfe0830bcabd' },
+  'examples/verified-calculation/write-output.mjs': { sha256: '3e937bcf28306b5cc317b65a61310f64cc91134c74b39a6f90cd70ea84e150ca' },
+  'examples/verified-calculation/verify-output.mjs': { sha256: '65ead0238bda0b732dbbe57fa4188304953ed84ca82c66cd1ee7e4fe726653ba' },
+  'examples/verified-calculation/worker-tools.json': { sha256: 'bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c' },
+  'examples/verified-calculation/data/input.json': { sha256: '93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7' },
+  'agent/rulith-agent.mjs': { sha256: '992a636ce33c02c05b4d1da563230af8813dfc842e0bb6c8a91fb3cae18f6c6d' },
+  'worker/rulith-worker.mjs': { sha256: 'b690aaec93c9d396bc3b9b6c7df275814cf0eb2cef501dc636c434062d697017' },
+})
 
 // The manifest sits at the package root in both shapes this script ships in: a git
 // checkout (`examples/verified-calculation/setup.mjs` with `artifact-manifest.json` two
@@ -56,9 +66,7 @@ class Refusal extends Error {}
 
 function loadManifest() {
   if (!existsSync(MANIFEST_PATH)) {
-    throw new Refusal(`Cannot verify downloads: artifact-manifest.json was not found at ${MANIFEST_PATH}.
-Run this script from a checkout of rulith-runtime or from an installed \`rulith\` package,
-so the expected hashes come from something other than the server being downloaded from.`)
+    return EMBEDDED_MANIFEST_FILES
   }
   let parsed
   try { parsed = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) } catch (error) {

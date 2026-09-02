@@ -116,8 +116,8 @@ const SERVED = new Map([
   ['examples/verified-calculation/verify-output.mjs', 'examples/verified-calculation/verify-output.mjs'],
   ['examples/verified-calculation/worker-tools.json', 'examples/verified-calculation/worker-tools.json'],
   ['examples/verified-calculation/data/input.json', 'examples/verified-calculation/data/input.json'],
-  ['rulith-agent.mjs', 'agent/rulith-agent.mjs'],
-  ['rulith-worker.mjs', 'worker/rulith-worker.mjs'],
+  ['agent/rulith-agent.mjs', 'agent/rulith-agent.mjs'],
+  ['worker/rulith-worker.mjs', 'worker/rulith-worker.mjs'],
 ])
 
 /** Run a child to completion without blocking this process: the download origin below
@@ -135,7 +135,7 @@ function runChild(args, options) {
 }
 
 /** Serve this checkout as if it were the download origin, optionally tampering with one file. */
-async function withOrigin({ tamper }, run) {
+async function withOrigin({ tamper, orphan = false }, run) {
   const requested = []
   const server = createServer((request, response) => {
     const path = String(request.url ?? '').replace(/^\//, '')
@@ -151,7 +151,14 @@ async function withOrigin({ tamper }, run) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-setup-'))
   const target = join(dir, 'workspace')
   try {
-    const result = await runChild(['examples/verified-calculation/setup.mjs', target], {
+    let setupPath = join(ROOT, 'examples', 'verified-calculation', 'setup.mjs')
+    if (orphan) {
+      const nested = join(dir, 'examples', 'verified-calculation')
+      mkdirSync(nested, { recursive: true })
+      setupPath = join(nested, 'setup.mjs')
+      writeFileSync(setupPath, readFileSync(join(ROOT, 'examples', 'verified-calculation', 'setup.mjs')))
+    }
+    const result = await runChild([setupPath, target], {
       cwd: ROOT,
       env: { ...process.env, RULITH_DOWNLOAD_ORIGIN: `http://127.0.0.1:${server.address().port}` },
     })
@@ -180,7 +187,7 @@ test('setup.mjs writes the workspace when every download matches the manifest (c
 
 // Both runtime files matter, and so does an example Adapter: a tampered `read-input.mjs`
 // runs as a `run` Adapter on the Worker machine with the Source root in its environment.
-for (const target of ['rulith-worker.mjs', 'rulith-agent.mjs', 'examples/verified-calculation/read-input.mjs']) {
+for (const target of ['worker/rulith-worker.mjs', 'agent/rulith-agent.mjs', 'examples/verified-calculation/read-input.mjs']) {
   test(`setup.mjs refuses tampered ${target} and writes nothing`, async () => {
     await withOrigin({ tamper: target }, ({ result, target: dir }) => {
       assert.equal(result.status, 2, `tampered bytes were accepted:\n${result.stdout}\n${result.stderr}`)
@@ -194,23 +201,22 @@ for (const target of ['rulith-worker.mjs', 'rulith-agent.mjs', 'examples/verifie
   })
 }
 
-test('setup.mjs refuses to run at all when the manifest is not beside it', () => {
-  // The manifest is the trust anchor. If it is missing, "verified" would silently become
-  // "downloaded", which is the state this whole change exists to end.
-  const dir = mkdtempSync(join(tmpdir(), 'rulith-setup-orphan-'))
-  try {
-    const nested = join(dir, 'examples', 'verified-calculation')
-    mkdirSync(nested, { recursive: true })
-    const orphan = join(nested, 'setup.mjs')
-    writeFileSync(orphan, readFileSync(join(ROOT, 'examples', 'verified-calculation', 'setup.mjs')))
-    const result = spawnSync(process.execPath, [orphan, join(dir, 'workspace')], {
-      cwd: dir, encoding: 'utf8',
-      env: { ...process.env, RULITH_DOWNLOAD_ORIGIN: 'http://127.0.0.1:1' },
-    })
-    assert.equal(result.status, 2, `${result.stdout}\n${result.stderr}`)
-    assert.match(result.stderr, /artifact-manifest\.json was not found/)
-    assert.equal(existsSync(join(dir, 'workspace')), false)
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+test('the standalone Console setup uses embedded release pins when no package manifest is beside it', async () => {
+  await withOrigin({ orphan: true }, ({ result, target, requested }) => {
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.equal(existsSync(join(target, 'rulith-agent.mjs')), true)
+    assert.ok(requested.includes('agent/rulith-agent.mjs'))
+    assert.ok(requested.includes('worker/rulith-worker.mjs'))
+  })
+})
+
+test('the standalone Console setup rejects tampered runtime bytes using its embedded pins', async () => {
+  await withOrigin({ orphan: true, tamper: 'agent/rulith-agent.mjs' }, ({ result, target }) => {
+    assert.equal(result.status, 2, `tampered standalone bytes were accepted:\n${result.stdout}\n${result.stderr}`)
+    assert.match(result.stderr, /Refusing agent\/rulith-agent\.mjs/)
+    assert.match(result.stderr, /does not match artifact-manifest\.json/)
+    assert.equal(existsSync(target) && readdirSync(target).length > 0, false)
+  })
 })
 
 test('the npm package ships the manifest where setup.mjs looks for it', () => {
