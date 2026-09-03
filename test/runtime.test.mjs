@@ -95,7 +95,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.9')
+  assert.equal(pkg.version, '0.6.10')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -456,7 +456,7 @@ test('RT-WORKSPACE-CODE-1: read-write workspace access cannot cover Worker execu
     }), JSON.stringify({ path: 'package.json' }), tools, tools[id].digest, sources)
     await assert.rejects(
       execute(id, { path: 'package.json' }, { [id]: local }, sources),
-      /Worker executable code/i,
+      /Worker implementation/i,
     )
     process.env.RULITH_WORKSPACE_TOOLS = 'off'
     const manifestTools = workerToolsOf({ format: 'rulith-worker-tools/1', tools: {

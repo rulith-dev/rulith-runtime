@@ -2,6 +2,12 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.10 - 2026-09-03
+
+- Writable workspace Sources must be separate from the entire Worker implementation
+  root. This closes Windows short-path aliases and not-yet-created run Adapter paths
+  without relying on per-file canonicalization.
+
 ## 0.6.9 - 2026-09-03
 
 - File exploration Sources fail closed when their selected root contains an existing

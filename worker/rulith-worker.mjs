@@ -622,6 +622,12 @@ async function workspaceRootOf(t, sources) {
       throw new Error('Workspace Source root includes a Rulith runtime credential or manifest file. Choose a narrower data-only directory.')
     }
   }
+  if (workspaceWriteEnabled(TOOLS)) {
+    const actualWorkerRoot = await realpath(WORKER_ROOT).catch(() => resolve(WORKER_ROOT))
+    if (pathInside(root, actualWorkerRoot) || pathInside(actualWorkerRoot, root)) {
+      throw new Error('Workspace Source root overlaps the Worker implementation while write Tools are enabled. Choose a separate data-only directory.')
+    }
+  }
   for (const executable of protectedWorkerExecutables()) {
     if (await rootContainsPath(root, executable)) {
       throw new Error('Workspace Source root includes Worker executable code while read-write Tools are enabled. Choose a narrower data-only directory outside the Worker implementation.')
