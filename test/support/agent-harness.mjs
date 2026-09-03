@@ -62,6 +62,8 @@ export function defaultBoard({ cases = [], caseType = 'exploration' } = {}) {
  * @param {boolean}  [options.oversizeMcpResponse] Return a tools/list body larger than the Agent limit.
  * @param {boolean}  [options.rejectBoardCredential] Reject board calls with HTTP 401.
  * @param {boolean}  [options.rejectAllCredential] Reject the public MCP surface with HTTP 401.
+ * @param {boolean}  [options.rejectSourceCredential] Reject Source Access with HTTP 401 after startup identity succeeds.
+ * @param {object}   [options.sourceAccessResult] Override the Source Access catalogue result.
  * @param {number}   [options.rejectBoardAfter] Reject this and later board call with HTTP 401.
  * @param {number}   [options.rejectBoardDelayMs] Delay the credential rejection response.
  * @param {(string|object)[]} [options.serveTasks] Submit these task bodies after a --serve endpoint is ready.
@@ -70,7 +72,7 @@ export function defaultBoard({ cases = [], caseType = 'exploration' } = {}) {
  * @param {string[]} [options.chatLines] Send these lines to interactive stdin.
  * @param {number}   [options.timeoutMs]
  */
-export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false, rejectBoardCredential = false, rejectAllCredential = false, rejectBoardAfter, rejectBoardDelayMs = 0, serveTasks = [], waitForServeCompletion = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000 } = {}) {
+export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false, rejectBoardCredential = false, rejectAllCredential = false, rejectSourceCredential = false, sourceAccessResult, rejectBoardAfter, rejectBoardDelayMs = 0, serveTasks = [], waitForServeCompletion = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000 } = {}) {
   const answerBoard = board ?? defaultBoard()
   const calls = []
   const modelRequests = []
@@ -101,6 +103,10 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
       return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools: [{ name: 'agent_protocol', inputSchema: { type: 'object' } }] } }))
     }
     const args = input.params?.arguments ?? {}
+    if (rejectSourceCredential && args.mode === 'source_access') {
+      response.writeHead(401, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
+    }
     if (args.mode === 'board') boardRequests += 1
     if ((rejectBoardCredential || (Number.isInteger(rejectBoardAfter) && boardRequests >= rejectBoardAfter)) && args.mode === 'board') {
       if (rejectBoardDelayMs > 0) await new Promise((ready) => setTimeout(ready, rejectBoardDelayMs))
@@ -110,7 +116,7 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
     calls.push(args)
     let result
     if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
-    else if (args.mode === 'source_access') result = { ok: true, sources: [] }
+    else if (args.mode === 'source_access') result = sourceAccessResult ?? { ok: true, sources: [] }
     else if (args.mode === 'evidence_chase') result = { ok: true, plans: [] }
     else if (args.mode === 'trace') {
       firstTraceAt ??= Date.now()

@@ -2,6 +2,16 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.8 - 2026-09-03
+
+- Local activity refreshes preserve the reader’s scroll position unless the view was
+  already following the tail; explicit navigation and message sends still jump to the
+  newest event.
+- Conversational active Cases refresh the Source Access catalog once per user message, so an Agent-owned
+  exploration Source and its bounded read tools become visible without restarting Local.
+- Agent-only workbenches now say `Rulith MCP` and `not local` instead of implying that a
+  remote Worker is connected.
+
 ## 0.6.7 - 2026-09-03
 
 - Finalizes the safe conversation-first tool transport after the unpublished 0.6.6

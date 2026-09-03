@@ -95,7 +95,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.7')
+  assert.equal(pkg.version, '0.6.8')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -677,7 +677,8 @@ test('Rulith Local presents a conversation-first Agent workbench with optional R
   assert.match(localPage, /receipt committed/)
   assert.match(localPage, /Authoritative receipt/)
   assert.match(localPage, /e\.invocation/)
-  assert.match(localPage, /'remote'/)
+  assert.match(localPage, /Rulith MCP/)
+  assert.match(localPage, /'not local'/)
   assert.match(localPage, /role="dialog"/)
   assert.match(localPage, /Runtime details/)
   assert.match(localPage, /Read-only projection of the single-Agent Runtime configuration/)
@@ -709,6 +710,20 @@ test('Rulith Local keeps the center stream independently scrollable above the fi
   assert.match(page, /\.main\{[^}]*min-height:0[^}]*height:100vh[^}]*overflow:hidden[^}]*\}/)
   assert.match(page, /\.stream\{[^}]*min-height:0[^}]*overflow:auto[^}]*padding:[^}]*130px/)
   assert.match(page, /\.composer\{[^}]*bottom:0/)
+  assert.match(page, /stick=forceTail===true\|\|stream\.scrollHeight-stream\.scrollTop-stream\.clientHeight<80/)
+  assert.match(page, /stream\.scrollTop=stick\?stream\.scrollHeight:oldTop/,
+    'a background refresh must preserve a reader who scrolled away from the tail')
+  assert.match(page, /if\(markup!==state\.lastStream\)\{stream\.innerHTML=markup/,
+    'an unchanged status poll must not destroy text selection or nested scroll positions')
+  assert.match(page, /else if\(stick\)stream\.scrollTop=stream\.scrollHeight/,
+    'an explicit send or navigation must follow the tail even when markup has not changed yet')
+  assert.match(page, /if\(html===state\.lastCases\)return/,
+    'an unchanged status poll must not rebuild and scroll the Activity sidebar')
+  assert.match(page, /frontierMarkup!==state\.lastFrontier/)
+  assert.match(page, /workerMarkup!==state\.lastWorkers/,
+    'an unchanged status poll must not rebuild the inspector and destroy copied text')
+  assert.doesNotMatch(page, /\$\('stream'\)\.scrollTop=\$\('stream'\)\.scrollHeight/,
+    'every refresh must not force the conversation back to the bottom')
 })
 
 test('production-facing runtime text is English-only', () => {

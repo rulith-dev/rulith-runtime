@@ -370,25 +370,33 @@ function flushTrace() {
   const batch = traceBuf.splice(0, 200)
   agentProtocol('trace', { events: batch }, { timeoutMs: TRACE_FLUSH_TIMEOUT_MS }).catch(() => {})
 }
-let sourceAccessGuidePromise
-async function sourceAccessGuide() {
-  sourceAccessGuidePromise ??= (async () => {
-    try {
-      const body = await agentProtocol('source_access')
-      if (body.ok !== true) return `\n\nSource Access catalogue is unavailable (${body.teaching ?? body.errorCode ?? 'rejected'}). Do not invent an access Action; report the missing configuration.`
-      const rows = (Array.isArray(body.sources) ? body.sources : []).flatMap((source) =>
-        (Array.isArray(source.accessModes) ? source.accessModes : []).map((mode) => {
-          const params = Object.entries(mode.params ?? {}).map(([name, type]) => `${name}:${type}`).join(', ') || '(none)'
-          const produces = (Array.isArray(mode.returns) ? mode.returns : []).map((row) => row.predicate).filter(Boolean).join(', ') || '(none)'
-          return `- ApplyAction ${mode.action} via Source ${source.name} (${source.type}; ceiling ${source.trustCeiling}) · bindings {${params}} · produces ${produces} · operation ${mode.operation}`
-        }))
-      if (rows.length === 0) return '\n\nNo governed Source Access Actions are configured for this Agent. Do not invent one; report the missing Source configuration.'
-      return `\n\nGoverned Source Access Actions available in this Agent:\n${rows.join('\n')}\nThese Actions may consume Case clue bindings. A clue is not a fact and carries no trust tier; only the Tool receipt may add Source-backed facts.`
-    } catch (error) {
-      return `\n\nSource Access catalogue could not be read (${String(error.message).slice(0, 120)}). Do not invent an access Action; report the missing configuration.`
+async function sourceAccessGuide(ctx) {
+  try {
+    // Runtime Sources may be established while this long-lived Agent process is online.
+    // Refresh once per active-Case user message; a process-lifetime promise made a newly
+    // configured Source invisible until restart, while once per tool round multiplied a
+    // slow catalogue into minutes. Ordinary conversation never calls this helper.
+    const body = await agentProtocol('source_access', {}, { timeoutMs: 5000 })
+    if (body.ok !== true) {
+      const note = `Source Access catalogue is unavailable: ${String(body.teaching ?? body.errorCode ?? 'rejected').slice(0, 240)}`
+      log(`✗ ${note}`); emitOn(ctx, 'error', { note, scope: 'source-access' })
+      return `\n\n${note}. Do not invent an access Action; report the missing configuration.`
     }
-  })()
-  return await sourceAccessGuidePromise
+    const rows = (Array.isArray(body.sources) ? body.sources : []).flatMap((source) =>
+      (Array.isArray(source.accessModes) ? source.accessModes : []).map((mode) => {
+        const params = Object.entries(mode.params ?? {}).map(([name, type]) => `${name}:${type}`).join(', ') || '(none)'
+        const produces = (Array.isArray(mode.returns) ? mode.returns : []).map((row) => row.predicate).filter(Boolean).join(', ') || '(none)'
+        return `- ApplyAction ${mode.action} via Source ${source.name} (${source.type}; ceiling ${source.trustCeiling}) · bindings {${params}} · produces ${produces} · operation ${mode.operation}`
+      }))
+    if (rows.length === 0) return '\n\nNo governed Source Access Actions are configured for this Agent. Define an Agent-owned File or MCP exploration Source under Agent Runtime, bind it to a Worker Connection, or report the missing Source configuration.'
+    return `\n\nGoverned Source Access Actions available in this Agent:\n${rows.join('\n')}\nThese Actions may consume Case clue bindings. A clue is not a fact and carries no trust tier; only the Tool receipt may add Source-backed facts.`
+  } catch (error) {
+    if (error instanceof AgentCredentialRejectedError) throw error
+    const note = 'Source Access catalogue could not be read. Continue without Source actions and report the runtime configuration problem.'
+    log(`✗ ${note} ${String(error?.message ?? error).slice(0, 240)}`)
+    emitOn(ctx, 'error', { note, scope: 'source-access' })
+    return `\n\n${note}`
+  }
 }
 async function evidenceChaseGuide(ctx, gaps) {
   if (!Array.isArray(gaps) || gaps.length === 0) return ''
@@ -1371,7 +1379,7 @@ function emitConversationVerdict(ctx, result, cmd) {
   } else log(`Board rejected ${cmd}: ${String(result?.teaching ?? result?.errorCode ?? '').slice(0, 240)}`)
 }
 
-async function conversationalSystem(ctx, requestedCaseType) {
+async function conversationalSystem(ctx, requestedCaseType, sourceGuide = '') {
   const guide = ctx.case === undefined
     ? OPTIONAL_RULITH_GUIDE_UNSCOPED
     : ctx.lawLocked
@@ -1389,7 +1397,7 @@ async function conversationalSystem(ctx, requestedCaseType) {
     : ctx.case.caseType === 'exploration'
       ? '\nThis is an exploration Case. Provisional scratch.* vocabulary and Case-local axioms are permitted, but asserted material is not attested evidence and cannot by itself certify completion.'
       : '\nThis is a contracted Case. Do not invent predicates, acceptance names, rules, or Actions; the installed Capability is authoritative.'
-  return `${guide}${selection}${active}${lock}${await sourceAccessGuide()}`
+  return `${guide}${selection}${active}${lock}${sourceGuide}`
 }
 
 /**
@@ -1408,6 +1416,7 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
   let caseId = ctx.case?.id ?? null
   let detachedPendingCaseId = null
   let startId = ctx.taskId || nextCaseId()
+  let sourceGuideForTurn
   const configuredResume = resumeCase
   resumeCase = ''
   const explicitResume = requestedCaseId || configuredResume
@@ -1434,7 +1443,8 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
 
   for (let turn = 1; turn <= MAX_ROUNDS; turn++) {
     emitOn(ctx, 'round', { n: turn, conversational: true })
-    const reply = await ask(messages, await conversationalSystem(ctx, requestedCaseType))
+    if (ctx.case !== undefined && sourceGuideForTurn === undefined) sourceGuideForTurn = await sourceAccessGuide(ctx)
+    const reply = await ask(messages, await conversationalSystem(ctx, requestedCaseType, sourceGuideForTurn ?? ''))
     const sub = extractSubmission(reply, { requireToolEnvelope: true })
     const say = (sub === null ? reply : reply.replace(/```[\s\S]*?```/g, '')).trim()
     if (say) log(`\n${say.slice(0, 1200)}`)
@@ -1604,7 +1614,7 @@ async function runAutopilotCase(ctx, userText, caseType = selectedCaseType, busi
   ctx.case = undefined
   await probeLawLock(ctx)
   const baseSystem = ctx.lawLocked ? SYSTEM_LOCKED : caseType === 'exploration' ? SYSTEM_EXPLORATION : SYSTEM
-  ctx.system = caseType === 'exploration' ? `${baseSystem}${await sourceAccessGuide()}` : baseSystem
+  ctx.system = caseType === 'exploration' ? `${baseSystem}${await sourceAccessGuide(ctx)}` : baseSystem
   const opened = await ensureCaseContext(ctx, caseId, caseType, businessKey)
   if (opened === undefined) {
     const note = `Could not open Case Context "${caseId}" on Agent Board "${ctx.board}"; this task did not start.`

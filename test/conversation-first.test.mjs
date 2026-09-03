@@ -31,6 +31,8 @@ test('a greeting is answered normally with no Case or Board operation', async ()
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.modelRequests.length, 1, 'a plain conversational reply must return control to the user')
   assert.deepEqual(run.kinds, [], `a greeting unexpectedly touched the Board: ${run.kinds.join(', ')}`)
+  assert.equal(run.calls.filter((call) => call.mode === 'source_access').length, 0,
+    'ordinary conversation must not read the Source catalog before the Agent selects Rulith')
   assert.match(run.stdout, /你好！有什么想一起处理的吗？/)
   assert.doesNotMatch(run.stdout, /Case Context opened|pending_case_id|Stopped at the .*round limit/)
 })
@@ -223,6 +225,63 @@ test('a selected Case persists across conversational messages without being adva
   assert.equal(run.kinds.includes('CloseCase'), false)
   assert.match(JSON.stringify(run.modelRequests[2]), /Current Rulith Case View/,
     'the next conversational turn must receive the selected Case state as guidance')
+})
+
+test('an active conversation refreshes Source Access so newly configured read tools do not require restart', async () => {
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Open an exploration Case.', 'Check whether a new Source is available now.'],
+    model: (round) => round === 1 ? rulith('start_case') : 'I will use the currently advertised Source tools when they are useful.',
+  })
+
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const reads = run.calls.filter((call) => call.mode === 'source_access')
+  assert.ok(reads.length >= 2,
+    `Source Access was cached for the process lifetime (${reads.length} read); runtime additions would remain invisible`)
+})
+
+test('one user message reads Source Access at most once even across several Rulith tool rounds', async () => {
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Inspect the governed Source catalogue.'],
+    model: (round) => {
+      if (round === 1) return rulith('start_case')
+      if (round === 2) return rulith('read_case')
+      return 'I inspected the current Case and Source catalogue once for this message.'
+    },
+  })
+
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.calls.filter((call) => call.mode === 'source_access').length, 1,
+    'one user message multiplied Source Access reads across tool rounds')
+})
+
+test('a rejected Source Access credential stops the Agent instead of becoming model prompt text', async () => {
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Start governed work.'],
+    rejectSourceCredential: true,
+    model: () => rulith('start_case'),
+  })
+
+  assert.equal(run.code, 3, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.modelRequests.length, 1, 'the rejected credential was sent to the model instead of stopping the host')
+  assert.match(run.stderr, /Agent MCP token rejected \(401\)/)
+})
+
+test('a non-auth Source Access failure is visible to the operator and the model', async () => {
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Start governed work.'],
+    captureLocalEvents: true,
+    sourceAccessResult: { ok: false, errorCode: 'catalogue_unavailable', teaching: 'Source registry is temporarily unavailable.' },
+    model: (round) => round === 1 ? rulith('start_case') : 'The Source catalogue is unavailable, so I will not invent an access Action.',
+  })
+
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.match(run.stdout, /Source Access catalogue is unavailable/)
+  assert.ok(run.localEvents.some((event) => event.type === 'error' && event.scope === 'source-access'))
+  assert.match(JSON.stringify(run.modelRequests.at(-1)), /Source registry is temporarily unavailable/)
 })
 
 test('conversation trail remains bounded when transcript compaction runs repeatedly', async () => {
