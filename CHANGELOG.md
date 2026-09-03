@@ -2,6 +2,17 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.9 - 2026-09-03
+
+- File exploration Sources fail closed when their selected root contains an existing
+  Rulith Local credential file, Worker credential vault, or Worker Tool Manifest.
+  Local passes the resolved configuration path into its Worker, so relative launch
+  paths cannot make the parent and child protect different files.
+- Whenever the Worker has workspace write capability—through built-ins or a custom
+  Tool Manifest—a Source root cannot contain the Worker executable or any configured
+  run Adapter, including an Adapter file not created yet. Choose a narrower data-only
+  directory so model-writable files cannot become executable code.
+
 ## 0.6.8 - 2026-09-03
 
 - Local activity refreshes preserve the reader’s scroll position unless the view was

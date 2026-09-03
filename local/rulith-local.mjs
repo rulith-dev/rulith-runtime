@@ -207,7 +207,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
     const path = config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')
     if (!existsSync(path)) return `Worker runtime not found at ${path}. Set paths.worker in the Rulith Local configuration.`
     const child = spawn(process.execPath, [path], {
-      env: { ...process.env, ...(config.worker?.env ?? {}), RULITH_LOCAL_EVENTS: 'ipc' },
+      env: { ...process.env, ...(config.worker?.env ?? {}), RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
     components.worker.child = child

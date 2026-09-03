@@ -58,6 +58,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { lstat, mkdir, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { homedir } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -576,6 +577,36 @@ function pathInside(root, target) {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
+function protectedRuntimeFiles() {
+  return [
+    resolve(TOOLS_FILE),
+    resolve(SECRETS_FILE),
+    resolve(process.env.RULITH_LOCAL_CONFIG ?? resolve(homedir(), '.rulith', 'local.json')),
+  ].filter((path) => existsSync(path))
+}
+
+function workspaceWriteEnabled(tools = TOOLS) {
+  return String(process.env.RULITH_WORKSPACE_TOOLS ?? 'read').trim() === 'read-write'
+    || Object.values(tools).some((tool) => tool?.adapter === 'workspace'
+      && Object.values(WORKSPACE_WRITE_TOOLS).includes(tool.entry))
+}
+
+function protectedWorkerExecutables(tools = TOOLS) {
+  if (!workspaceWriteEnabled(tools)) return []
+  return [
+    fileURLToPath(import.meta.url),
+    ...Object.values(tools)
+      .filter((tool) => tool?.adapter === 'run' && typeof tool.entry === 'string')
+      .map((tool) => resolve(WORKER_ROOT, tool.entry)),
+  ]
+}
+
+async function rootContainsPath(root, configuredPath) {
+  const configured = resolve(configuredPath)
+  const actual = await realpath(configured).catch(() => undefined)
+  return pathInside(root, configured) || (actual !== undefined && pathInside(root, actual))
+}
+
 async function workspaceRootOf(t, sources) {
   const source = resolveSourceCreds(t, sources)
   if (typeof source.access !== 'string' || source.access.trim() === '') {
@@ -586,6 +617,16 @@ async function workspaceRootOf(t, sources) {
   try { root = await realpath(configured) } catch { throw new Error(`Workspace Source root does not exist: ${configured}`) }
   const info = await stat(root)
   if (!info.isDirectory()) throw new Error(`Workspace Source access must name a directory: ${configured}`)
+  for (const configuredFile of protectedRuntimeFiles()) {
+    if (await rootContainsPath(root, configuredFile)) {
+      throw new Error('Workspace Source root includes a Rulith runtime credential or manifest file. Choose a narrower data-only directory.')
+    }
+  }
+  for (const executable of protectedWorkerExecutables()) {
+    if (await rootContainsPath(root, executable)) {
+      throw new Error('Workspace Source root includes Worker executable code while read-write Tools are enabled. Choose a narrower data-only directory outside the Worker implementation.')
+    }
+  }
   return root
 }
 
@@ -1813,7 +1854,7 @@ export function orderWork(items) {
     .map(([w]) => w)
 }
 
-export { parseVerdict, resolveSourceCreds, execute, toolFromSpec, adapterToolFromSpec, toolWithContract, shouldReview, noteReviewed, verificationResult, weakerTier, tierRank, TIER_ORDER }
+export { parseVerdict, resolveSourceCreds, execute, toolFromSpec, adapterToolFromSpec, toolWithContract, shouldReview, noteReviewed, verificationResult, weakerTier, tierRank, TIER_ORDER, workspaceWriteEnabled, protectedWorkerExecutables }
 
 let running = true
 let sawReview = false

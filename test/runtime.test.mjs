@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, toolFromSpec, workerToolManifest } from '../worker/rulith-worker.mjs'
+import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, protectedWorkerExecutables, toolFromSpec, workerToolManifest, workerToolsOf, workspaceWriteEnabled } from '../worker/rulith-worker.mjs'
 import { createLocalHost, defaultConfigPath, defaultLocalConfig, localInteger, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
@@ -95,7 +95,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.8')
+  assert.equal(pkg.version, '0.6.9')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -237,6 +237,28 @@ test('Rulith Local starts exactly the selected roles and receives structured chi
       } finally { await host.close() }
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('RT-LOCAL-CONFIG-1: Worker receives the absolute Local config path even when the host was given a relative path', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-config-'))
+  const child = join(dir, 'worker.mjs')
+  writeFileSync(child, `process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'config-path',configFile:process.env.RULITH_LOCAL_CONFIG}});setInterval(()=>{},1000)\n`)
+  const configFile = relative(process.cwd(), join(ROOT, 'test', 'fixtures', 'relative-local.json'))
+  const config = defaultLocalConfig()
+  config.paths = { worker: child }
+  const host = createLocalHost({ configFile, config, roles: ['worker'], port: 0, key: 'config-key' })
+  try {
+    await host.listen()
+    const deadline = Date.now() + 5_000
+    while (!host.events().some((event) => event.type === 'config-path') && Date.now() < deadline) {
+      await new Promise((accept) => setTimeout(accept, 25))
+    }
+    const event = host.events().find((candidate) => candidate.type === 'config-path')
+    assert.equal(event?.configFile, resolve(configFile))
+  } finally {
+    await host.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('Rulith Local status is a read-only redacted runtime projection', async () => {
@@ -394,6 +416,60 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
     )
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('RT-WORKSPACE-SECRET-1: a workspace Source cannot contain the Local runtime credential file', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-workspace-sensitive-'))
+  const previous = process.env.RULITH_LOCAL_CONFIG
+  try {
+    const configFile = join(root, 'local.json')
+    writeFileSync(configFile, JSON.stringify({ agent: { env: { RULITH_MODEL_KEY: 'must-not-leak' } } }))
+    writeFileSync(join(root, 'notes.txt'), 'safe-looking content')
+    process.env.RULITH_LOCAL_CONFIG = configFile
+    const tools = builtinWorkspaceTools('read')
+    const id = 'rulith.workspace.read_text@1'
+    const sources = { workspace: { access: root, type: 'file' } }
+    const local = toolFromSpec(JSON.stringify({
+      name: id, kind: 'read', impl: 'worker-tool', source: 'workspace', exec: id, params: { path: 'string' },
+    }), JSON.stringify({ path: 'notes.txt' }), tools, tools[id].digest, sources)
+    await assert.rejects(
+      execute(id, { path: 'notes.txt' }, { [id]: local }, sources),
+      /runtime credential or manifest file/i,
+    )
+  } finally {
+    if (previous === undefined) delete process.env.RULITH_LOCAL_CONFIG
+    else process.env.RULITH_LOCAL_CONFIG = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('RT-WORKSPACE-CODE-1: read-write workspace access cannot cover Worker executable code', async () => {
+  const previous = process.env.RULITH_WORKSPACE_TOOLS
+  try {
+    process.env.RULITH_WORKSPACE_TOOLS = 'read-write'
+    const tools = builtinWorkspaceTools('read-write')
+    const id = 'rulith.workspace.read_text@1'
+    const sources = { workspace: { access: ROOT, type: 'file' } }
+    const local = toolFromSpec(JSON.stringify({
+      name: id, kind: 'read', impl: 'worker-tool', source: 'workspace', exec: id, params: { path: 'string' },
+    }), JSON.stringify({ path: 'package.json' }), tools, tools[id].digest, sources)
+    await assert.rejects(
+      execute(id, { path: 'package.json' }, { [id]: local }, sources),
+      /Worker executable code/i,
+    )
+    process.env.RULITH_WORKSPACE_TOOLS = 'off'
+    const manifestTools = workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+      'acme.workspace.write@1': { adapter: 'workspace', sourceTypes: ['file'], entry: 'write_text' },
+      'acme.future.run@1': { adapter: 'run', sourceTypes: ['file'], entry: 'future-adapter.mjs' },
+    } })
+    assert.equal(workspaceWriteEnabled(manifestTools), true,
+      'a manifest-declared workspace writer is write capability even when built-ins are off')
+    assert.ok(protectedWorkerExecutables(manifestTools).includes(join(ROOT, 'worker', 'future-adapter.mjs')),
+      'a declared run Adapter is protected before the file is created')
+  } finally {
+    if (previous === undefined) delete process.env.RULITH_WORKSPACE_TOOLS
+    else process.env.RULITH_WORKSPACE_TOOLS = previous
   }
 })
 
