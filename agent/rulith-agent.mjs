@@ -1182,13 +1182,16 @@ ${'```json'}
 {"tool":"rulith","action":"command","command":{"kind":"ApplyAction","action":"<available-action>","target":"<board-node>"}}
 ${'```'}`
 
-const OPTIONAL_RULITH_EXPLORATION_GUIDE = `Never assert acceptance_met, test_result, certification, or rulith.exploration.completed. For a real exploration Case, the terminal predicate must be derived from case_context plus positive task evidence supplied by an authenticated Source or Tool. If no such evidence route exists, explain the gap or pause; do not manufacture proof. A provisional completion rule has this complete atom shape:
+const OPTIONAL_RULITH_COMMON_SAFETY = 'Never assert acceptance_met, test_result, certification, or rulith.exploration.completed.'
+const OPTIONAL_RULITH_EXPLORATION_GUIDE = `For a real exploration Case, the terminal predicate must be derived from case_context plus positive task evidence supplied by an authenticated Source or Tool. If no such evidence route exists, explain the gap or pause; do not manufacture proof. A provisional completion rule has this complete atom shape:
 ${'```json'}
 {"tool":"rulith","action":"apply_batch","operations":[{"op":"add_axiom","id":"AX_EXPLORATION_COMPLETE","when":[{"predicate":"case_context","args":{"case_id":"?case","root":"?root","case_type":"exploration"}},{"predicate":"<positive-evidence-predicate-from-a-Source-or-Tool>","args":{"<key>":"?value"}}],"then":[{"predicate":"rulith.exploration.completed","args":{"case_id":"?case"}}]}]}
 ${'```'}`
 
-const OPTIONAL_RULITH_GUIDE = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_EXPLORATION_GUIDE}\n\nAfter every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.`
-const OPTIONAL_RULITH_GUIDE_LOCKED = `${OPTIONAL_RULITH_BASE_GUIDE}\n\nBoard legislation is locked. Do not propose or submit add_axiom, provisional rules, or provisional Actions; use only installed Capability vocabulary and available Actions.\n\nAfter every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.`
+const OPTIONAL_RULITH_TAIL = 'After every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.'
+const OPTIONAL_RULITH_GUIDE = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_COMMON_SAFETY}\n\n${OPTIONAL_RULITH_EXPLORATION_GUIDE}\n\n${OPTIONAL_RULITH_TAIL}`
+const OPTIONAL_RULITH_GUIDE_UNSCOPED = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_COMMON_SAFETY}\n\nOpen a Case before asking for Case-specific vocabulary or provisional exploration tools.\n\n${OPTIONAL_RULITH_TAIL}`
+const OPTIONAL_RULITH_GUIDE_LOCKED = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_COMMON_SAFETY}\n\nBoard legislation is locked. Do not propose or submit add_axiom, provisional rules, or provisional Actions; use only installed Capability vocabulary and available Actions.\n\n${OPTIONAL_RULITH_TAIL}`
 
 /** 模型这一轮提交了什么: `{ops:[…]}`=一批板内操作 · `{cmd:{kind,…}}`=一条顶层命令 · null=没提交。
  *
@@ -1198,14 +1201,22 @@ const OPTIONAL_RULITH_GUIDE_LOCKED = `${OPTIONAL_RULITH_BASE_GUIDE}\n\nBoard leg
  *  处理，还回一句「没读到 JSON 操作块」。**教学教了一条客户端运不了的路，而且丢得无声无息**：
  *  模型照着模板发、看见什么也没发生、于是开始猜别的写法——四发实跑 `dispatched` 全是 0，
  *  根子就在这一行。纪律 4 的最坏形态不是没有模板，是模板抄了不管用。 */
+const parseRulithEnvelope = (raw) => {
+  let candidate
+  try { candidate = JSON.parse(raw.trim()) } catch { return null }
+  return candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
+    && candidate.tool === 'rulith' && typeof candidate.action === 'string' ? candidate : null
+}
+const containsNonExclusiveRulithEnvelope = (text) => {
+  if (/^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.test(text)) return false
+  return [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].some((block) => parseRulithEnvelope(block[1]) !== null)
+}
 const extractSubmission = (text, { requireToolEnvelope = false } = {}) => {
   if (requireToolEnvelope) {
     const exact = /^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.exec(text)
     if (exact === null) return null
-    let candidate
-    try { candidate = JSON.parse(exact[1].trim()) } catch { return null }
-    return candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
-      && candidate.tool === 'rulith' && typeof candidate.action === 'string' ? { tool: candidate } : null
+    const candidate = parseRulithEnvelope(exact[1])
+    return candidate === null ? null : { tool: candidate }
   }
   const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
   if (blocks.length === 0) return null
@@ -1361,7 +1372,11 @@ function emitConversationVerdict(ctx, result, cmd) {
 }
 
 async function conversationalSystem(ctx, requestedCaseType) {
-  const guide = ctx.lawLocked ? OPTIONAL_RULITH_GUIDE_LOCKED : OPTIONAL_RULITH_GUIDE
+  const guide = ctx.case === undefined
+    ? OPTIONAL_RULITH_GUIDE_UNSCOPED
+    : ctx.lawLocked
+      ? OPTIONAL_RULITH_GUIDE_LOCKED
+      : ctx.case.caseType === 'exploration' ? OPTIONAL_RULITH_GUIDE : OPTIONAL_RULITH_GUIDE_UNSCOPED
   const selection = `\n\nIf you choose start_case, the host will open the configured Case Type ${JSON.stringify(requestedCaseType)}. You may decide whether Rulith is useful, but you may not replace this governance selection.`
   const recovery = ctx.detachedCase === undefined ? ''
     : ctx.detachedCase.source === 'paused'
@@ -1432,6 +1447,13 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
     // No tool call is a complete conversational answer. An active Case is deliberately
     // left untouched; the next user message may continue it, ask a question, or ignore it.
     if (sub === null) {
+      if (containsNonExclusiveRulithEnvelope(reply)) {
+        const correction = 'The Rulith tool-shaped JSON was not executed because a tool call must be the entire response: exactly one JSON code block with no prose or other blocks. Reply normally without a Rulith envelope, or retry the intended tool call in that exact exclusive form.'
+        emitOn(ctx, 'verdict', { accepted: false, cmd: 'rulith-envelope', teaching: correction, refusedLocally: true })
+        log(`Rulith tool call not executed: ${correction}`)
+        messages.push({ role: 'user', content: `[Rulith tool result]\n${correction}` })
+        continue
+      }
       const note = ctx.case === undefined
         ? 'Response delivered without opening a Rulith Case.'
         : `Response delivered; Rulith Case "${ctx.case.id}" remains open.`

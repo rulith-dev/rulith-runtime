@@ -99,13 +99,17 @@ test('a Rulith envelope quoted alongside explanatory content is never executed',
   const run = await runAgent({
     argv: [],
     chatLines: ['Use Rulith after showing the illustrative shape.'],
-    model: () => 'This first block is only an example:\n```json\n{"example":true}\n```\nHere is a Rulith example too:\n' + rulith('start_case'),
+    model: (round) => round === 1
+      ? 'This first block is only an example:\n```json\n{"example":true}\n```\nHere is a Rulith example too:\n' + rulith('start_case')
+      : 'Those blocks were explanatory examples; I did not execute either one.',
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.modelRequests.length, 1)
+  assert.equal(run.modelRequests.length, 2)
   assert.equal(run.kinds.filter((kind) => kind === 'OpenCase').length, 0,
     'a tool-shaped example embedded in ordinary prose became an authority-bearing call')
+  assert.match(JSON.stringify(run.modelRequests[1]), /tool-shaped JSON was not executed/,
+    'a malformed tool attempt was silently swallowed instead of receiving corrective teaching')
 })
 
 test('a locked Board never gives the conversational Agent an add_axiom handle', async () => {
@@ -120,8 +124,12 @@ test('a locked Board never gives the conversational Agent an add_axiom handle', 
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const beforeOpen = JSON.stringify(run.modelRequests[0])
   const afterOpen = JSON.stringify(run.modelRequests[1])
+  assert.doesNotMatch(beforeOpen, /AX_EXPLORATION_COMPLETE|\\"op\\":\\"add_axiom\\"/,
+    'the unscoped first turn exposed an exploration-law handle before lock state was known')
   assert.match(afterOpen, /Board legislation is locked/)
+  assert.match(afterOpen, /Never assert acceptance_met/)
   assert.doesNotMatch(afterOpen, /AX_EXPLORATION_COMPLETE|\\"op\\":\\"add_axiom\\"/,
     'the locked prompt exposed a copyable provisional-law tool')
 })

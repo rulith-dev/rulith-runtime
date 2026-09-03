@@ -2,6 +2,12 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.7 - 2026-09-03
+
+- Finalizes the safe conversation-first tool transport after the unpublished 0.6.6
+  release candidate: unscoped and locked prompts expose no provisional-law template,
+  and malformed tool-shaped replies fail visibly without gaining authority.
+
 ## 0.6.6 - 2026-09-03
 
 - The compatibility tool transport now executes a Rulith call only when the entire

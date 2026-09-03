@@ -95,7 +95,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.6')
+  assert.equal(pkg.version, '0.6.7')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })

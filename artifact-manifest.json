@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "46415c472e6c7fea59daa02aca3aa82392728f799f26f1eb34e20417d42d9b27"
+      "sha256": "40695d744a423de24fcf80abe1bc51c85c961b542aec3abce69314c78cf5e487"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "b690aaec93c9d396bc3b9b6c7df275814cf0eb2cef501dc636c434062d697017"
@@ -42,7 +42,7 @@
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "bbc8023ff2d1e5846a8bf243cd10c27ad1d7d45340679a5ec0a7df786a204101"
+      "sha256": "8256ff1d189db34bd6f9d9fee9168651cbbe8727ca33d082e95a6ba1a4c95bf6"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"
