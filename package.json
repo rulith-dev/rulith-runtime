@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "type": "module",
   "description": "Rulith Local: a conversation-first Agent workbench with optional governed Cases",
   "bin": {

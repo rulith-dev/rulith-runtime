@@ -95,17 +95,35 @@ test('only an explicit Rulith tool envelope can turn JSON into a Board write', a
     `a conversational JSON example was written to the Board: ${run.kinds.join(', ')}`)
 })
 
-test('a later explicit Rulith envelope is not hidden by an earlier JSON example', async () => {
+test('a Rulith envelope quoted alongside explanatory content is never executed', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['Use Rulith after showing the illustrative shape.'],
-    model: (round) => round === 1
-      ? 'This first block is only an example:\n```json\n{"example":true}\n```\nThe actual tool choice follows:\n' + rulith('start_case')
-      : 'The Case was opened only by the explicit envelope.',
+    model: () => 'This first block is only an example:\n```json\n{"example":true}\n```\nHere is a Rulith example too:\n' + rulith('start_case'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.kinds.filter((kind) => kind === 'OpenCase').length, 1)
+  assert.equal(run.modelRequests.length, 1)
+  assert.equal(run.kinds.filter((kind) => kind === 'OpenCase').length, 0,
+    'a tool-shaped example embedded in ordinary prose became an authority-bearing call')
+})
+
+test('a locked Board never gives the conversational Agent an add_axiom handle', async () => {
+  const normal = defaultBoard()
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Use Rulith under the installed governance.'],
+    board: (args) => args.operation?.kind === 'GetBoardManifest'
+      ? { accepted: true, revision: 'r1', payload: { status: 'open', lawLocked: true, cases: [] } }
+      : normal(args),
+    model: (round) => round === 1 ? rulith('start_case') : 'The locked Case exposes installed capabilities only.',
+  })
+
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const afterOpen = JSON.stringify(run.modelRequests[1])
+  assert.match(afterOpen, /Board legislation is locked/)
+  assert.doesNotMatch(afterOpen, /AX_EXPLORATION_COMPLETE|\\"op\\":\\"add_axiom\\"/,
+    'the locked prompt exposed a copyable provisional-law tool')
 })
 
 test('the configured Case Type cannot be overridden by model output', async () => {

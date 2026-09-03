@@ -467,13 +467,16 @@ const MODEL_COMMAND_KINDS = new Set([
   'GetCompletion', 'GetHealth', 'GetProjection', 'QueryBoard', 'RunDischarge',
 ])
 /** Teaching for a refused kind, or undefined when the model may send it. */
-function modelCommandRefusal(kind) {
+function modelCommandRefusal(kind, { conversational = false } = {}) {
   const name = String(kind ?? '')
   if (MODEL_COMMAND_KINDS.has(name)) return undefined
+  const recovery = conversational
+    ? ' In conversation mode, request finish_case only when the current Case is ready, or reply normally when something is missing.'
+    : ' Finish with DONE: when the Case View is complete, or STOP: when something is genuinely missing.'
   return `${name || '(missing kind)'} is not a command this Agent Runtime sends on a model's behalf, so it was refused locally and never reached the authority.`
     + ` A turn may issue: ${[...MODEL_COMMAND_KINDS].sort().join(', ')}.`
     + ' Case lifecycle, work receipts, clearance, and package or Board governance belong to the host and to Console.'
-    + ' Finish with DONE: when the Case View is complete, or STOP: when something is genuinely missing.'
+    + recovery
 }
 /** The only Case command adapter in the runtime. It calls the public MCP tool
  * advertised to every client; Agent and Case identities never enter the URL. */
@@ -1141,11 +1144,11 @@ OpenCase has injected the trusted system fact case_context(case_id, root, case_t
 
 ${EXECUTION_GUIDE}`
 
-const OPTIONAL_RULITH_GUIDE = `You are a normal conversational Agent. Answer greetings, questions, and discussion directly. Rulith is an optional governed-work tool, not the container for every message. Use it only when the current work benefits from persistent Case state, rules, evidence, external Actions, verification, or an auditable conclusion. The choice to use it is yours unless the user explicitly requires or forbids it.
+const OPTIONAL_RULITH_BASE_GUIDE = `You are a normal conversational Agent. Answer greetings, questions, and discussion directly. Rulith is an optional governed-work tool, not the container for every message. Use it only when the current work benefits from persistent Case state, rules, evidence, external Actions, verification, or an auditable conclusion. The choice to use it is yours unless the user explicitly requires or forbids it.
 
-An ordinary reply contains no explicit {"tool":"rulith",...} envelope and immediately returns control to the user. It may include JSON examples or fenced code without executing them. It creates no Case and performs no Board operation. If a Rulith Case is already active, an ordinary reply leaves it open exactly as it is; you may ask for clarification between Case steps.
+An ordinary reply immediately returns control to the user. It may include JSON examples or fenced code without executing them. It creates no Case and performs no Board operation. If a Rulith Case is already active, an ordinary reply leaves it open exactly as it is; you may ask for clarification between Case steps.
 
-To take one Rulith step, return one JSON code block with an explicit Rulith tool envelope. The host-selected Case Type is authoritative; start_case therefore has no caseType argument:
+To take one Rulith step, the entire response must be exactly one JSON code block containing an explicit Rulith tool envelope, with no prose or other code blocks. The host-selected Case Type is authoritative; start_case therefore has no caseType argument:
 
 ${'```json'}
 {"tool":"rulith","action":"start_case"}
@@ -1177,14 +1180,15 @@ ${'```'}
 One top-level command may select an available Action or an explicit read/discharge step:
 ${'```json'}
 {"tool":"rulith","action":"command","command":{"kind":"ApplyAction","action":"<available-action>","target":"<board-node>"}}
-${'```'}
+${'```'}`
 
-Never assert acceptance_met, test_result, certification, or rulith.exploration.completed. For a real exploration Case, the terminal predicate must be derived from case_context plus positive task evidence supplied by an authenticated Source or Tool. If no such evidence route exists, explain the gap or pause; do not manufacture proof. A provisional completion rule has this complete atom shape:
+const OPTIONAL_RULITH_EXPLORATION_GUIDE = `Never assert acceptance_met, test_result, certification, or rulith.exploration.completed. For a real exploration Case, the terminal predicate must be derived from case_context plus positive task evidence supplied by an authenticated Source or Tool. If no such evidence route exists, explain the gap or pause; do not manufacture proof. A provisional completion rule has this complete atom shape:
 ${'```json'}
 {"tool":"rulith","action":"apply_batch","operations":[{"op":"add_axiom","id":"AX_EXPLORATION_COMPLETE","when":[{"predicate":"case_context","args":{"case_id":"?case","root":"?root","case_type":"exploration"}},{"predicate":"<positive-evidence-predicate-from-a-Source-or-Tool>","args":{"<key>":"?value"}}],"then":[{"predicate":"rulith.exploration.completed","args":{"case_id":"?case"}}]}]}
-${'```'}
+${'```'}`
 
-After every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.`
+const OPTIONAL_RULITH_GUIDE = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_EXPLORATION_GUIDE}\n\nAfter every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.`
+const OPTIONAL_RULITH_GUIDE_LOCKED = `${OPTIONAL_RULITH_BASE_GUIDE}\n\nBoard legislation is locked. Do not propose or submit add_axiom, provisional rules, or provisional Actions; use only installed Capability vocabulary and available Actions.\n\nAfter every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.`
 
 /** 模型这一轮提交了什么: `{ops:[…]}`=一批板内操作 · `{cmd:{kind,…}}`=一条顶层命令 · null=没提交。
  *
@@ -1195,19 +1199,16 @@ After every tool result, decide afresh whether another Rulith step is useful or 
  *  模型照着模板发、看见什么也没发生、于是开始猜别的写法——四发实跑 `dispatched` 全是 0，
  *  根子就在这一行。纪律 4 的最坏形态不是没有模板，是模板抄了不管用。 */
 const extractSubmission = (text, { requireToolEnvelope = false } = {}) => {
+  if (requireToolEnvelope) {
+    const exact = /^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.exec(text)
+    if (exact === null) return null
+    let candidate
+    try { candidate = JSON.parse(exact[1].trim()) } catch { return null }
+    return candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
+      && candidate.tool === 'rulith' && typeof candidate.action === 'string' ? { tool: candidate } : null
+  }
   const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
   if (blocks.length === 0) return null
-  if (requireToolEnvelope) {
-    for (const block of blocks) {
-      let candidate
-      try { candidate = JSON.parse(block[1].trim()) } catch { continue }
-      if (candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
-        && candidate.tool === 'rulith' && typeof candidate.action === 'string') return { tool: candidate }
-    }
-    // A model may explain an API with any number of JSON blocks. Without the explicit
-    // tool envelope they are all ordinary assistant content, never authority.
-    return null
-  }
   let v
   try { v = JSON.parse(blocks[0][1].trim()) } catch { return null }
   if (v !== null && typeof v === 'object' && !Array.isArray(v) && v.tool === 'rulith' && typeof v.action === 'string') return { tool: v }
@@ -1353,22 +1354,27 @@ function emitConversationVerdict(ctx, result, cmd) {
         ...(invocation === '' ? {} : { invocation }),
       }
     : { accepted: false, cmd, teaching: String(result?.teaching ?? result?.errorCode ?? 'Board rejected the Rulith step.') })
+  if (result?.accepted === true) {
+    const status = payload.done === true ? (payload.ok === false ? 'completed with failure' : 'completed') : 'accepted'
+    log(`Board: ${cmd} ${status}${invocation === '' ? '' : ` · ${invocation}`}.`)
+  } else log(`Board rejected ${cmd}: ${String(result?.teaching ?? result?.errorCode ?? '').slice(0, 240)}`)
 }
 
 async function conversationalSystem(ctx, requestedCaseType) {
+  const guide = ctx.lawLocked ? OPTIONAL_RULITH_GUIDE_LOCKED : OPTIONAL_RULITH_GUIDE
   const selection = `\n\nIf you choose start_case, the host will open the configured Case Type ${JSON.stringify(requestedCaseType)}. You may decide whether Rulith is useful, but you may not replace this governance selection.`
   const recovery = ctx.detachedCase === undefined ? ''
     : ctx.detachedCase.source === 'paused'
       ? `\n\nThis conversation explicitly paused Rulith Case ${JSON.stringify(ctx.detachedCase.caseId)}. Decide whether to select it again with resume_case or leave it paused; do not claim it is active before selecting it.`
       : `\n\nThis conversation previously selected Rulith Case ${JSON.stringify(ctx.detachedCase.caseId)}, which remains on the Board after its old local transcript was reclaimed. Decide explicitly whether to select it with resume_case or start fresh; do not claim it is active before selecting it.`
-  if (ctx.case === undefined) return `${OPTIONAL_RULITH_GUIDE}${selection}${recovery}`
+  if (ctx.case === undefined) return `${guide}${selection}${recovery}`
   const active = `\n\nAn active Rulith Case is selected: ${ctx.case.id} (Case Type ${ctx.case.caseType}). Its current revision is ${ctx.case.revision}. Use only one explicit Rulith step at a time; a normal reply leaves this Case open.`
   const lock = ctx.lawLocked
     ? '\nBoard legislation is locked. Do not propose provisional rules or Actions; use only installed capability vocabulary and available Actions.'
     : ctx.case.caseType === 'exploration'
       ? '\nThis is an exploration Case. Provisional scratch.* vocabulary and Case-local axioms are permitted, but asserted material is not attested evidence and cannot by itself certify completion.'
       : '\nThis is a contracted Case. Do not invent predicates, acceptance names, rules, or Actions; the installed Capability is authoritative.'
-  return `${OPTIONAL_RULITH_GUIDE}${selection}${active}${lock}${await sourceAccessGuide()}`
+  return `${guide}${selection}${active}${lock}${await sourceAccessGuide()}`
 }
 
 /**
@@ -1534,7 +1540,7 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
         else if (command === null || typeof command !== 'object' || Array.isArray(command) || typeof command.kind !== 'string') {
           feedback = 'command requires one command object with a string kind; nothing was forwarded.'
         } else {
-          const refusal = modelCommandRefusal(command.kind)
+          const refusal = modelCommandRefusal(command.kind, { conversational: true })
           if (refusal !== undefined) {
             emitOn(ctx, 'verdict', { accepted: false, cmd: String(command.kind), teaching: refusal, refusedLocally: true })
             feedback = refusal
@@ -2218,6 +2224,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
         : `Task aborted with an unexpected error: ${e?.message ?? e}`
       actualCaseId = slot.case?.id ?? null
       activeCaseId = actualCaseId
+      pendingCaseId = actualCaseId
       if (credentialRejected) {
         // A revoked/rotated credential belongs to the whole host, not one task. Stop
         // admission and let the supervisor restart with new configuration after every

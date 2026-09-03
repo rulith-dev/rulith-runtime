@@ -2,6 +2,16 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.6 - 2026-09-03
+
+- The compatibility tool transport now executes a Rulith call only when the entire
+  model response is exactly one JSON tool block. Quoted examples and explanatory prose
+  can never become authority-bearing calls.
+- A locked Board receives a conversational guide with no provisional-rule or
+  `add_axiom` template, and an aborted turn reports its still-open Case as pending.
+- Conversational Board verdicts are visible in the terminal as well as the Local event
+  stream, and rejected commands teach the lifecycle vocabulary of their active mode.
+
 ## 0.6.5 - 2026-09-03
 
 - Rulith Local is now a normal conversational Agent with Rulith as an optional tool.

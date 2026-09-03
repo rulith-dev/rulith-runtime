@@ -233,4 +233,4 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
 }
 
 /** A fenced JSON block, the exact shape the Agent's prompt teaches the model to emit. */
-export const fenced = (value) => `Here is the submission.\n\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\``
+export const fenced = (value) => `\`\`\`json\n${JSON.stringify(value)}\n\`\`\``

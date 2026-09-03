@@ -227,3 +227,21 @@ test('the npm package ships the manifest where setup.mjs looks for it', () => {
   const setup = readFileSync(join(ROOT, 'examples', 'verified-calculation', 'setup.mjs'), 'utf8')
   assert.match(setup, /resolve\(import\.meta\.dirname, '\.\.', '\.\.', 'artifact-manifest\.json'\)/)
 })
+
+test('the release version, immutable download tag, changelog, and embedded pins move together', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'artifact-manifest.json'), 'utf8'))
+  const setup = readFileSync(join(ROOT, 'examples', 'verified-calculation', 'setup.mjs'), 'utf8')
+  const changelog = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8')
+
+  assert.match(setup, new RegExp(`rulith-runtime/v${pkg.version.replaceAll('.', '\\.')}`),
+    'the standalone downloader does not point at this package version')
+  assert.match(changelog, new RegExp(`^## ${pkg.version.replaceAll('.', '\\.')} - \\d{4}-\\d{2}-\\d{2}$`, 'm'),
+    'the current package version has no dated changelog entry')
+
+  const pins = [...setup.matchAll(/^\s*'([^']+)': \{ sha256: '([0-9a-f]{64})' \},?$/gm)]
+  assert.equal(pins.length, 7, 'the standalone downloader must pin exactly its seven downloaded files')
+  for (const [, file, hash] of pins) {
+    assert.equal(manifest.files?.[file]?.sha256, hash, `${file} embedded pin differs from artifact-manifest.json`)
+  }
+})
