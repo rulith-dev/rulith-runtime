@@ -2,6 +2,26 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.5 - 2026-09-03
+
+- Rulith Local is now a normal conversational Agent with Rulith as an optional tool.
+  A plain response creates no Case and touches no Board. The model must explicitly
+  select `start_case`, a Case operation, pause, resume, or finish; an unfinished Case
+  no longer causes the host to keep calling the model until certification or the round
+  limit. The existing one-shot positional-task CLI remains the explicit autopilot path.
+- Local browser messages retain one bounded local `sessionKey`, so follow-up messages
+  continue the same transcript and selected Case until the user starts a new conversation.
+  The service generates distinct keys for callers that omit one. At the bounded session
+  limit, it records a recoverable Case ID before reclaiming an abandoned local transcript;
+  memory pressure never pauses or otherwise changes the Board Case lifecycle. Returning
+  sessions receive that bounded recovery hint, and callers may explicitly pass a recorded
+  `caseId` to select the same Case again.
+- The workbench now labels conversation activity separately from the optional Rulith
+  Case inspector and receives Board verdict/completion events from the conversational path.
+- Every mutating model step now requires an explicit `{ "tool": "rulith", ... }`
+  envelope, so JSON examples in ordinary answers cannot write the Board. The configured
+  Case Type remains host-owned and cannot be replaced by model output.
+
 ## 0.6.4 - 2026-09-02
 
 - A standalone verified-calculation setup downloaded from Console now verifies and

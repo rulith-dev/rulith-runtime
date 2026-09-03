@@ -3,16 +3,16 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "992a636ce33c02c05b4d1da563230af8813dfc842e0bb6c8a91fb3cae18f6c6d"
+      "sha256": "1a386bdb1cdd3f100bc81654975e762ed4ea984596b9faae0e8392725e598de0"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "b690aaec93c9d396bc3b9b6c7df275814cf0eb2cef501dc636c434062d697017"
     },
     "local/rulith-local.mjs": {
-      "sha256": "3097c214e075f5de6a84dfbb6c3aaee2409ffb740a2746bedd5be17798274a32"
+      "sha256": "a74895b352f309beb7a64c6e8f76c97f86a3033cf8c58543b9c2dffdcb3eb18c"
     },
     "local/local-ui.mjs": {
-      "sha256": "8a37300c6f18dea83fef6df01cdd8a3ae14d6b56ac81371fd2449e4c19636cb1"
+      "sha256": "bfeb158bbd575fb55db028716e284ce5c2712a262614bd752fee08d024ca6146"
     },
     "config/rulith-sources.example.json": {
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
@@ -42,7 +42,7 @@
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "e5c7132979c858be2b6105503802286b844015762a8f6c56f58f5033d8aef8dd"
+      "sha256": "8d42ad9abbeccd20ada6022e2e5dfa485624719c6e713f614d47af06597e95f1"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

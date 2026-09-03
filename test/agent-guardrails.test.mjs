@@ -227,6 +227,7 @@ test('an Agent credential rejection terminates the process and never invents a p
   const run = await runAgent({
     argv: ['--serve'],
     env: { RULITH_SERVE_PORT: String(servePort), RULITH_SERVE_KEY: 'credential-test-key' },
+    model: () => fenced({ tool: 'rulith', action: 'start_case', caseType: 'exploration' }),
     rejectBoardAfter: 2,
     rejectBoardDelayMs: 250,
     serveTasks: ['first accepted task', 'second accepted task'],
@@ -251,7 +252,12 @@ test('a token rejected by tools/list exits 3 instead of masquerading as an ident
 })
 
 test('interactive mode reports a mid-session credential rejection without an unhandled stack', async () => {
-  const run = await runAgent({ argv: [], chatLines: ['do the work'], rejectBoardAfter: 2 })
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['do the work'],
+    model: () => fenced({ tool: 'rulith', action: 'start_case', caseType: 'exploration' }),
+    rejectBoardAfter: 2,
+  })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 3, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stderr, /Agent MCP token rejected \(401\)/)

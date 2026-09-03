@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, toolFromSpec, workerToolManifest } from '../worker/rulith-worker.mjs'
-import { createLocalHost, defaultConfigPath, defaultLocalConfig, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
+import { createLocalHost, defaultConfigPath, defaultLocalConfig, localInteger, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -84,11 +84,18 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
   assert.equal(upgraded.cloud, undefined)
 })
 
+test('Rulith Local validates shared port settings once instead of letting parent and Agent diverge', () => {
+  assert.equal(localInteger('RULITH_SERVE_PORT', '7798', 7799), 7798)
+  assert.equal(localInteger('RULITH_SERVE_PORT', undefined, 7799), 7799)
+  assert.throws(() => localInteger('RULITH_SERVE_PORT', 'NaN', 7799), /integer between 1 and 65535/)
+  assert.throws(() => localInteger('RULITH_SERVE_CONCURRENCY', '9', 1, { min: 1, max: 8 }), /between 1 and 8/)
+})
+
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.4')
+  assert.equal(pkg.version, '0.6.5')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -638,17 +645,35 @@ test('agent lifecycle events shown to users use the English product vocabulary',
   assert.doesNotMatch(source, /log\(`◎ 案卷/)
 })
 
-test('Rulith Local presents a familiar Case-first Agent workbench in English', () => {
+test('Rulith Local presents a conversation-first Agent workbench with optional Rulith Cases', () => {
   const hostSource = readFileSync(join(ROOT, 'local', 'rulith-local.mjs'), 'utf8')
   const visible = localPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
   const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(localPage)?.[1]
   assert.ok(script)
   assert.doesNotThrow(() => new Function(script), 'the embedded Local UI script must compile')
-  assert.match(localPage, /New Case/)
-  assert.match(localPage, /Case View/)
+  assert.match(localPage, /New conversation/)
+  assert.match(localPage, /Rulith Case/)
   assert.match(localPage, /Current frontier/)
   assert.match(localPage, /Worker activity/)
-  assert.match(localPage, /Give the Agent a task/)
+  assert.match(localPage, /Message the Agent/)
+  assert.match(localPage, /Rulith available/)
+  assert.match(localPage, /Chat normally/)
+  assert.match(localPage, /sessionKey:state\.session/,
+    'browser follow-ups must stay in one local conversation slot')
+  assert.match(localPage, /state\.session=r\.sessionKey/,
+    'the first accepted message must retain the host-issued conversation identity')
+  assert.match(localPage, /e\.session\|\|e\.sessionKey/,
+    'all events from one local session must render in one conversation')
+  assert.match(localPage, /state\.active=r\.sessionKey/,
+    'the selected sidebar item must be the conversation, not one message id')
+  assert.doesNotMatch(localPage, /state\.active=r\.id/,
+    'a follow-up message must not split the current conversation into a new sidebar item')
+  assert.match(localPage, /if\(n\.dataset\.case\)state\.session=n\.dataset\.case/,
+    'selecting an earlier conversation must route composer follow-ups back to that session')
+  assert.match(localPage, /session-detached/,
+    'a reclaimed local conversation must visibly retain the recoverable Rulith Case id')
+  assert.match(localPage, /state\.session=''/,
+    'New conversation must explicitly leave the prior local transcript slot')
   assert.match(localPage, /receipt committed/)
   assert.match(localPage, /Authoritative receipt/)
   assert.match(localPage, /e\.invocation/)

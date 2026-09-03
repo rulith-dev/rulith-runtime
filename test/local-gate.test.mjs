@@ -96,7 +96,7 @@ test('GET /?k=<key> from loopback serves the workbench page (calibration)', asyn
     assert.match(response.head, /content-type: text\/html/i)
     assert.match(response.head, /cache-control: no-store/i)
     assert.match(response.body, /<!DOCTYPE html>/i)
-    assert.match(response.body, /New Case/, 'the page must still be the workbench, not an empty shell')
+    assert.match(response.body, /New conversation/, 'the page must still be the Agent workbench, not an empty shell')
   })
 })
 

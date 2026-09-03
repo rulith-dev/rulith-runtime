@@ -64,14 +64,17 @@ export function defaultBoard({ cases = [], caseType = 'exploration' } = {}) {
  * @param {boolean}  [options.rejectAllCredential] Reject the public MCP surface with HTTP 401.
  * @param {number}   [options.rejectBoardAfter] Reject this and later board call with HTTP 401.
  * @param {number}   [options.rejectBoardDelayMs] Delay the credential rejection response.
- * @param {string[]} [options.serveTasks] Submit these tasks after a --serve endpoint is ready.
+ * @param {(string|object)[]} [options.serveTasks] Submit these task bodies after a --serve endpoint is ready.
+ * @param {boolean} [options.waitForServeCompletion] Wait for each accepted task's run record before submitting the next.
+ * @param {boolean} [options.captureLocalEvents] Capture the Agent's IPC event stream.
  * @param {string[]} [options.chatLines] Send these lines to interactive stdin.
  * @param {number}   [options.timeoutMs]
  */
-export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false, rejectBoardCredential = false, rejectAllCredential = false, rejectBoardAfter, rejectBoardDelayMs = 0, serveTasks = [], chatLines = [], timeoutMs = 20_000 } = {}) {
+export async function runAgent({ argv = ['test task'], env = {}, board, model, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false, rejectBoardCredential = false, rejectAllCredential = false, rejectBoardAfter, rejectBoardDelayMs = 0, serveTasks = [], waitForServeCompletion = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000 } = {}) {
   const answerBoard = board ?? defaultBoard()
   const calls = []
   const modelRequests = []
+  const localEvents = []
   const answerModel = model ?? (() => 'DONE:')
   /** Responses accepted and deliberately never sent; destroyed during cleanup. */
   const held = []
@@ -147,9 +150,13 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
       RULITH_SETTLE_WAIT_MS: '0',
       RULITH_DELIVERABLE_WAIT_MS: '0',
       RULITH_SERVE: '',
+      ...(captureLocalEvents ? { RULITH_LOCAL_EVENTS: 'ipc' } : {}),
       ...env,
     },
-    stdio: [chatLines.length > 0 ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    stdio: [chatLines.length > 0 ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(captureLocalEvents ? ['ipc'] : [])],
+  })
+  if (captureLocalEvents) child.on('message', (message) => {
+    if (message?.protocol === 'rulith-local-event' && message.event !== null && typeof message.event === 'object') localEvents.push(message.event)
   })
 
   let stdout = ''
@@ -167,6 +174,8 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
   }
 
   const serveStatuses = []
+  const serveResponses = []
+  let serveSnapshot
   if (serveTasks.length > 0) {
     const deadline = Date.now() + 10_000
     while (!/Task endpoint ready/.test(stdout) && Date.now() < deadline) {
@@ -174,14 +183,29 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
     }
     if (!/Task endpoint ready/.test(stdout)) throw new Error(`serve endpoint did not become ready:\n${stdout}\n${stderr}`)
     for (const task of serveTasks) {
+      const body = typeof task === 'string' ? { text: task } : task
       const response = await fetch(`http://127.0.0.1:${env.RULITH_SERVE_PORT}/task`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-rulith-serve': String(env.RULITH_SERVE_KEY ?? '') },
-        body: JSON.stringify({ text: task }),
+        body: JSON.stringify(body),
       })
       serveStatuses.push(response.status)
-      await response.arrayBuffer()
+      const responseBody = await response.json().catch(() => ({}))
+      serveResponses.push({ status: response.status, body: responseBody })
+      if (waitForServeCompletion && response.ok && typeof responseBody.id === 'string') {
+        const deadline = Date.now() + 10_000
+        let completed = false
+        while (Date.now() < deadline) {
+          const snapshot = await fetch(`http://127.0.0.1:${env.RULITH_SERVE_PORT}/runs?k=${encodeURIComponent(String(env.RULITH_SERVE_KEY ?? ''))}`)
+            .then((candidate) => candidate.json()).catch(() => undefined)
+          if ((snapshot?.runs ?? []).some((candidate) => candidate.id === responseBody.id)) { completed = true; break }
+          await new Promise((ready) => setTimeout(ready, 25))
+        }
+        if (!completed) throw new Error(`serve task ${responseBody.id} did not produce a run record:\n${stdout}\n${stderr}`)
+      }
     }
+    serveSnapshot = await fetch(`http://127.0.0.1:${env.RULITH_SERVE_PORT}/runs?k=${encodeURIComponent(String(env.RULITH_SERVE_KEY ?? ''))}`)
+      .then((candidate) => candidate.json()).catch(() => undefined)
   }
 
   let timer
@@ -200,7 +224,7 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
 
   const operations = calls.filter((call) => call.mode === 'board').map((call) => call.operation ?? {})
   return {
-    code, stdout, stderr, calls, modelRequests, operations, port, exitedAt, serveStatuses,
+    code, stdout, stderr, calls, modelRequests, localEvents, operations, port, exitedAt, serveStatuses, serveResponses, serveSnapshot,
     /** When the endpoint first saw a trace batch, so a test can time the exit from it. */
     firstTraceAt,
     boardCalls: calls.filter((call) => call.mode === 'board'),

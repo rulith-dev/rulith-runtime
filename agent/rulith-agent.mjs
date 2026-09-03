@@ -5,9 +5,10 @@
  *
  * The model proposes; the Board validates, derives, and explains rejection.
  * External execution belongs to the Worker. Configuration and governance
- * belong to Console. Every task runs inside one Case Context on a persistent
- * Board. A Case Context is opened with OpenCase(caseId), and completed with
- * CloseCase. Creating or sealing a Board is never part of task execution.
+ * belong to Console. The Agent remains a normal conversational Agent; Rulith
+ * is an optional tool it may call when work benefits from governed state,
+ * evidence, Actions, or an auditable conclusion. A conversation may use no
+ * Case, or may advance a persistent Case one explicit tool step at a time.
  *
  * The transcript and model credential remain local. The Board stores work,
  * evidence, decisions, receipts, and the Case lifecycle.
@@ -61,7 +62,9 @@ const SERVE_PORT = envNumber('RULITH_SERVE_PORT', 7799, { min: 1, max: 65_535 })
 const SERVE_KEY = (process.env.RULITH_SERVE_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
 const SERVE_RUNS_MAX = envNumber('RULITH_SERVE_RUNS', 200, { min: 1, max: 100_000 })
 // 会话槽上界(只数 sessionKey 槽,缺省槽不占位): 一个进程服务几万客户、活跃 1% 是这个形态的常态,
-// 内存里的转录必须有上界。到界=LRU 驱逐**闲置**槽——丢的是内存转录,板在服务端 journal 里不丢。
+// 内存里的转录必须有上界。到界优先 LRU 驱逐没有活跃 Case 的闲置槽；若只能回收一个
+// 已被用户放弃的闲置对话，则不改变 Board 上的 Case 状态，而是把 Case ID 写入事件与 run
+// 记录后脱离本地转录。运行中的槽绝不被驱逐；若所有槽都在忙，新会话 fail visibly。
 const SERVE_SLOTS_MAX = envNumber('RULITH_SERVE_SLOTS_MAX', 64, { min: 1, max: 10_000 })
 // sessionKey 长度上限: 它要参与板名推导,也要当 Map 键。**教学拒不截断**——静默截断会把两个
 // 不同客户的长 key 折成同一块板(串板),那比拒绝一单严重得多。
@@ -75,7 +78,7 @@ Usage:
 
 Options:
   --serve            Accept tasks through the local service endpoint
-  --case <id>        Resume an existing case for the first segment
+  --case <id>        Select a running Case or resume a paused Case for the first message
   --case-type <id>   Case Type from the installed Capability catalog (default: exploration)
   --business-key <json>  Contract business-key values, for example {"job_id":"calc-001"}
   --shadow           Run the configured shadow verification path
@@ -89,7 +92,7 @@ Common optional environment:
   RULITH_MODEL       Model identifier
   RULITH_MODEL_URL   Model API endpoint
   RULITH_MODEL_KEY   Provider key (optional only for a loopback model endpoint)
-  RULITH_MAX_ROUNDS  Maximum model rounds (default: 12)
+  RULITH_MAX_ROUNDS  Maximum model/tool turns per user message (default: 12)
   RULITH_SERVE_PORT  Local task endpoint port (default: 7799)
 `)
   process.exit(0)
@@ -162,9 +165,9 @@ const MODEL_URL = pathNoSlash.endsWith('/chat/completions') || pathNoSlash.endsW
   : pathNoSlash === '' ? new URL('/v1/chat/completions', parsedModelUrl).toString()
     : pathNoSlash.endsWith('/v1') ? new URL(`${pathNoSlash}/chat/completions`, parsedModelUrl.origin).toString()
       : die('OpenAI-compatible model service URLs must be the server root, end in /v1, or end in /chat/completions.')
-// 无任务=进入多轮对话(2026-08-01 起 CLI 是桌面主形态);带任务=一次办完后退出(CI/脚本兼容不变)。
-// **接单脑不是对话**: 收单口进来的每一条都是「任务」,所以 --serve 下按 CLI 语义走
-// (纯回话不算办完,照旧催它给 JSON 或 DONE:/STOP:)——排队的是活,不是聊天。
+// 无任务=进入多轮对话;带任务=显式 one-shot/autopilot,一次办完后退出(CI/脚本兼容)。
+// `--serve` is conversational too: an HTTP message is not authority to create a Case.
+// The model chooses whether to call the optional Rulith tool, one step at a time.
 const CHAT = TASK === '' && !SERVE
 // Case IDs identify accounting, acceptance, distillation, and audit atoms.
 // They are not Board IDs: all compatible Cases for an Agent share its Board.
@@ -318,6 +321,7 @@ function emit(type, data) {
     try { process.send({ protocol: 'rulith-local-event', event: ev }) } catch { /* Local display must never block a Case. */ }
   } else {
     events.push(ev)
+    if (events.length > 2000) events.splice(0, events.length - 1500)
     const line = `data: ${JSON.stringify(ev)}\n\n`
     for (const res of clients) { try { res.write(line) } catch { clients.delete(res) } }
   }
@@ -560,6 +564,21 @@ async function resumePausedCase(ctx, caseId) {
   return running
 }
 
+/** Select a Case that is already running, or resume it when it is paused. */
+async function selectExistingCase(ctx, caseId) {
+  const manifest = await board({ kind: 'GetBoardManifest' }, ctx)
+  if (manifest.accepted !== true) return undefined
+  const row = (manifest.payload?.cases ?? []).find((candidate) => candidate?.id === caseId)
+  if (row?.status === 'running') {
+    log(`◎ Selected running Case "${caseId}" on Agent Board "${ctx.board}".`)
+    return row
+  }
+  if (row?.status === 'paused') return await resumePausedCase(ctx, caseId)
+  if (row !== undefined) log(`✗ Case "${caseId}" is ${String(row.status)} and cannot be selected for execution.`)
+  else log(`✗ Case "${caseId}" was not found on Agent Board "${ctx.board}".`)
+  return undefined
+}
+
 /** Bind one manifest row as this segment's Case Context, refusing an identity mismatch. */
 function bindCaseRow(ctx, caseId, caseType, row) {
   if (row.root !== caseId) {
@@ -632,10 +651,11 @@ async function ensureCaseContext(ctx, caseId, caseType, businessKey) {
   return ctx.case
 }
 /** Close the current Case Context with an explicit disposition. */
-async function archiveCaseContext(ctx, disposition) {
+async function archiveCaseContext(ctx, disposition, reason) {
   const bound = ctx.case
   if (bound === undefined) return false
-  const r = await board({ kind: 'CloseCase', root: bound.root, disposition }, ctx)
+  const r = await board({ kind: 'CloseCase', root: bound.root, disposition,
+    ...(typeof reason === 'string' && reason.trim() !== '' ? { reason: reason.trim() } : {}) }, ctx)
   if (r.accepted === true) {
     ctx.case = undefined
     log(`◎ Closed Case "${bound.root}" with disposition "${disposition}". Its record remains available in Console.`)
@@ -656,7 +676,7 @@ async function archiveCaseContext(ctx, disposition) {
 const ATTENTION_FACTS = envNumber('RULITH_ATTENTION_FACTS', 80, { min: 20, max: 100_000 })
 const attnArg = (ctx) => ({ attention: { focus: ctx.case?.root, budget: { facts: ATTENTION_FACTS, findings: Math.max(10, Math.floor(ATTENTION_FACTS / 4)) } } })
 
-const projectionText = async (ctx) => {
+const projectionText = async (ctx, { emitState = false } = {}) => {
   const r = await board({ kind: 'GetProjection', ...attnArg(ctx) }, ctx)
   if (r.accepted !== true) return `(board unavailable: ${r.teaching ?? r.errorCode ?? ''})`
   let text = String(r.payload?.text ?? '')
@@ -664,6 +684,10 @@ const projectionText = async (ctx) => {
     const completion = await board({ kind: 'GetCompletion', root: ctx.case.root }, ctx)
     if (completion.accepted === true) {
       const p = completion.payload ?? {}
+      if (emitState) emitOn(ctx, 'board', {
+        caseId: ctx.case.id, certified: p.certified === true, floor: String(p.floor ?? '—'),
+        state: String(p.state ?? ''), breached: p.breached === true,
+      })
       text = `Case View\n${JSON.stringify({
         goal: ctx.case.root,
         goalState: p.state,
@@ -674,7 +698,9 @@ const projectionText = async (ctx) => {
         missingEvidence: p.gaps ?? [],
         blocked: p.blocked ?? [],
       }, null, 2)}\n\nRelevant verified state and available actions:\n${text}`
-    }
+    } else if (emitState) emitOn(ctx, 'board', {
+      caseId: ctx.case.id, accepted: false, teaching: String(completion.teaching ?? completion.errorCode ?? 'Completion state unavailable.'),
+    })
   }
   // 板报缺口(QueryBoard include:gaps,0.11): 「现在该干嘛」由板自己说——桥缺可信来源/放电卡点/
   // 交付义务,不靠模型对着全量投影猜。老 boardd 无 QueryBoard=拒,静默略过(缺口段是增益不是依赖)。
@@ -691,10 +717,10 @@ const projectionText = async (ctx) => {
   return text
 }
 
-// One persistent Agent Board carries governance and shared state. Every task
-// gets exactly one Case Context, opened by OpenCase(caseId) and closed by
-// CloseCase. Board creation, package installation, and board sealing belong
-// to the governance plane and are deliberately absent from this runtime.
+// One persistent Agent Board carries governance and shared state. A conversation
+// touches it only after the model explicitly selects the Rulith tool. Each selected
+// Case persists across conversational turns until the Agent requests pause or finish;
+// Board creation, package installation, and board sealing remain governance-only.
 
 // ══ viz 那套循环的四个器官（2026-08-06 搬进来）══════════════════════════
 //
@@ -890,6 +916,30 @@ async function deliverableNow(ctx) {
     ? 'The board has no task tree, so this segment has no deliverable.'
     : `The board has not established deliverability (certified=${final.certified} · floor=${final.floor} · ${final.state}).`
   return { final, deliverable, why }
+}
+
+/** Read-only close gate for the conversation-first tool surface.
+ * Unlike the one-shot/autopilot compatibility path above, this never runs discharge,
+ * waits, retries verification, or creates work. The Agent selected finish_case; the host
+ * only reports whether the Board already permits that transition. */
+async function conversationalDeliverability(ctx) {
+  const final = await completionAll(ctx)
+  emitOn(ctx, 'board', {
+    caseId: ctx.case?.id, certified: final.certified, floor: final.floor,
+    state: final.state, breached: final.breached,
+  })
+  const { facts } = await boardRoots(ctx)
+  const obligations = openObligations(facts)
+  const deliverable = final.roots.length > 0
+    && final.certified === true
+    && final.allDone === true
+    && obligations.length === 0
+  const why = final.roots.length === 0
+    ? 'The Board has no task tree.'
+    : final.certified !== true || final.allDone !== true
+      ? `The Board has not established deliverability (certified=${final.certified} · floor=${final.floor} · ${final.state}).`
+      : `The Case still has unreceipted obligations: ${obligations.join(', ')}.`
+  return { deliverable, why }
 }
 
 /** 未结义务(已派发未回执的动作 + 待清关的审查)。**唯一判据**: 脉冲与收工闸共用这一份。 */
@@ -1091,6 +1141,51 @@ OpenCase has injected the trusted system fact case_context(case_id, root, case_t
 
 ${EXECUTION_GUIDE}`
 
+const OPTIONAL_RULITH_GUIDE = `You are a normal conversational Agent. Answer greetings, questions, and discussion directly. Rulith is an optional governed-work tool, not the container for every message. Use it only when the current work benefits from persistent Case state, rules, evidence, external Actions, verification, or an auditable conclusion. The choice to use it is yours unless the user explicitly requires or forbids it.
+
+An ordinary reply contains no explicit {"tool":"rulith",...} envelope and immediately returns control to the user. It may include JSON examples or fenced code without executing them. It creates no Case and performs no Board operation. If a Rulith Case is already active, an ordinary reply leaves it open exactly as it is; you may ask for clarification between Case steps.
+
+To take one Rulith step, return one JSON code block with an explicit Rulith tool envelope. The host-selected Case Type is authoritative; start_case therefore has no caseType argument:
+
+${'```json'}
+{"tool":"rulith","action":"start_case"}
+${'```'}
+
+${'```json'}
+{"tool":"rulith","action":"read_case"}
+${'```'}
+
+${'```json'}
+{"tool":"rulith","action":"finish_case","disposition":"completed"}
+${'```'}
+
+${'```json'}
+{"tool":"rulith","action":"pause_case"}
+${'```'}
+
+${'```json'}
+{"tool":"rulith","action":"resume_case","caseId":"<existing-case-id>"}
+${'```'}
+
+The host owns credentials, Case identity, revision, and lifecycle enforcement. finish_case is a request: completed closes only after the Board reports a certified, fully settled result. To stop unsuccessful work explicitly, use disposition cancelled, failed, or abandoned and include a non-empty reason. Never emit raw OpenCase, CloseCase, PauseCase, ResumeCase, Worker receipts, clearance, or governance commands.
+
+With an active Case, apply one Board batch through this explicit envelope. Use only predicates and shapes from the Case View, installed capability, or exploration rules:
+${'```json'}
+{"tool":"rulith","action":"apply_batch","operations":[{"op":"assert_fact","id":"<fact-id>","predicate":"<available-predicate>","args":{"<argument>":"<value>"}}]}
+${'```'}
+
+One top-level command may select an available Action or an explicit read/discharge step:
+${'```json'}
+{"tool":"rulith","action":"command","command":{"kind":"ApplyAction","action":"<available-action>","target":"<board-node>"}}
+${'```'}
+
+Never assert acceptance_met, test_result, certification, or rulith.exploration.completed. For a real exploration Case, the terminal predicate must be derived from case_context plus positive task evidence supplied by an authenticated Source or Tool. If no such evidence route exists, explain the gap or pause; do not manufacture proof. A provisional completion rule has this complete atom shape:
+${'```json'}
+{"tool":"rulith","action":"apply_batch","operations":[{"op":"add_axiom","id":"AX_EXPLORATION_COMPLETE","when":[{"predicate":"case_context","args":{"case_id":"?case","root":"?root","case_type":"exploration"}},{"predicate":"<positive-evidence-predicate-from-a-Source-or-Tool>","args":{"<key>":"?value"}}],"then":[{"predicate":"rulith.exploration.completed","args":{"case_id":"?case"}}]}]}
+${'```'}
+
+After every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.`
+
 /** 模型这一轮提交了什么: `{ops:[…]}`=一批板内操作 · `{cmd:{kind,…}}`=一条顶层命令 · null=没提交。
  *
  *  **顶层命令这一支是 2026-08-21 真机演练撞出来补的(P0)**: 此前这里是
@@ -1099,11 +1194,23 @@ ${EXECUTION_GUIDE}`
  *  处理，还回一句「没读到 JSON 操作块」。**教学教了一条客户端运不了的路，而且丢得无声无息**：
  *  模型照着模板发、看见什么也没发生、于是开始猜别的写法——四发实跑 `dispatched` 全是 0，
  *  根子就在这一行。纪律 4 的最坏形态不是没有模板，是模板抄了不管用。 */
-const extractSubmission = (text) => {
-  const m = /```(?:json)?\s*([\s\S]*?)```/.exec(text)
-  if (!m) return null
+const extractSubmission = (text, { requireToolEnvelope = false } = {}) => {
+  const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
+  if (blocks.length === 0) return null
+  if (requireToolEnvelope) {
+    for (const block of blocks) {
+      let candidate
+      try { candidate = JSON.parse(block[1].trim()) } catch { continue }
+      if (candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
+        && candidate.tool === 'rulith' && typeof candidate.action === 'string') return { tool: candidate }
+    }
+    // A model may explain an API with any number of JSON blocks. Without the explicit
+    // tool envelope they are all ordinary assistant content, never authority.
+    return null
+  }
   let v
-  try { v = JSON.parse(m[1].trim()) } catch { return null }
+  try { v = JSON.parse(blocks[0][1].trim()) } catch { return null }
+  if (v !== null && typeof v === 'object' && !Array.isArray(v) && v.tool === 'rulith' && typeof v.action === 'string') return { tool: v }
   if (Array.isArray(v)) {
     // 顶层命令数组仍要识别出来，交给循环作 fail-visible 单发拒绝；若误归成 ops，
     // 模型只会收到一段无关的 ApplyBatch 形状错误。产品面缺省每轮只执行一个外向动作。
@@ -1159,6 +1266,7 @@ const makeSlot = (key) => ({
   key,                              // sessionKey; '' is the local/default conversation
   board: agentId,                   // public Agent identity; Gateway resolves its Board
   case: undefined,                  // the currently active Case Context, if any
+  detachedCase: undefined,          // bounded recovery hint after local transcript reclamation
   messages: [],                     // 转录(**只在本机**,不上板)
   segmentTrail: [],                 // 段留痕(压缩后唯一留下来的东西)
   dischargedDigest: new Map(),      // 放电守卫: `板::节点` → 放过的 spec 版本
@@ -1187,17 +1295,10 @@ async function probeLawLock(ctx) {
     log(`Board legislation is locked. Rules come from packages installed by the board owner; this Agent executes under them.${ctx.key === '' ? '' : ` (session ${ctx.key})`}`)
   }
 }
-let startupCredentialRejected = false
-try {
-  await probeLawLock(defaultSlot)
-} catch (error) {
-  if (!(error instanceof AgentCredentialRejectedError)) throw error
-  console.error(`\n✗ ${error.message}\n`)
-  process.exitCode = 3
-  startupCredentialRejected = true
-}
-
-if (!startupCredentialRejected) {
+// Board state is not part of conversational startup. Identity is authenticated above, but
+// the first GetBoardManifest is deferred until the Agent explicitly chooses a Rulith tool.
+// Otherwise even "hello" touches the Board before the model has decided whether Rulith is
+// useful, which makes the tool mandatory in everything but name.
 
 // ── 转录压缩：滚动窗 + 段边界留痕（2026-08-06 用户裁定）────────────────────
 //
@@ -1239,7 +1340,224 @@ ${messages[0].content}`,
  *  插话注进别人的案子;随便挑一个槽=更糟(不确定注给了谁)。所以判据是"槽是不是缺省槽"。 */
 let pollInterject = null
 
-/** 办一段: 把一句用户输入推进到 DONE/STOP/轮上限。chat 形态下模型纯回话(不带 JSON)也算一段说完。
+const boundedToolResult = (value) => JSON.stringify(value, null, 2).slice(0, 12_000)
+
+function emitConversationVerdict(ctx, result, cmd) {
+  const payload = result?.payload ?? {}
+  const invocation = payload.invocation ?? payload.invocationId ?? ''
+  emitOn(ctx, 'verdict', result?.accepted === true
+    ? {
+        accepted: true, cmd, done: payload.done,
+        ...(typeof payload.ok === 'boolean' ? { ok: payload.ok } : {}),
+        added: (result.delta?.added ?? []).length, revision: result.revision ?? '',
+        ...(invocation === '' ? {} : { invocation }),
+      }
+    : { accepted: false, cmd, teaching: String(result?.teaching ?? result?.errorCode ?? 'Board rejected the Rulith step.') })
+}
+
+async function conversationalSystem(ctx, requestedCaseType) {
+  const selection = `\n\nIf you choose start_case, the host will open the configured Case Type ${JSON.stringify(requestedCaseType)}. You may decide whether Rulith is useful, but you may not replace this governance selection.`
+  const recovery = ctx.detachedCase === undefined ? ''
+    : ctx.detachedCase.source === 'paused'
+      ? `\n\nThis conversation explicitly paused Rulith Case ${JSON.stringify(ctx.detachedCase.caseId)}. Decide whether to select it again with resume_case or leave it paused; do not claim it is active before selecting it.`
+      : `\n\nThis conversation previously selected Rulith Case ${JSON.stringify(ctx.detachedCase.caseId)}, which remains on the Board after its old local transcript was reclaimed. Decide explicitly whether to select it with resume_case or start fresh; do not claim it is active before selecting it.`
+  if (ctx.case === undefined) return `${OPTIONAL_RULITH_GUIDE}${selection}${recovery}`
+  const active = `\n\nAn active Rulith Case is selected: ${ctx.case.id} (Case Type ${ctx.case.caseType}). Its current revision is ${ctx.case.revision}. Use only one explicit Rulith step at a time; a normal reply leaves this Case open.`
+  const lock = ctx.lawLocked
+    ? '\nBoard legislation is locked. Do not propose provisional rules or Actions; use only installed capability vocabulary and available Actions.'
+    : ctx.case.caseType === 'exploration'
+      ? '\nThis is an exploration Case. Provisional scratch.* vocabulary and Case-local axioms are permitted, but asserted material is not attested evidence and cannot by itself certify completion.'
+      : '\nThis is a contracted Case. Do not invent predicates, acceptance names, rules, or Actions; the installed Capability is authoritative.'
+  return `${OPTIONAL_RULITH_GUIDE}${selection}${active}${lock}${await sourceAccessGuide()}`
+}
+
+/**
+ * One ordinary conversational turn with optional, model-selected Rulith tool steps.
+ *
+ * The continuation condition is not "the Case is unfinished". The host calls the model
+ * again only after the model explicitly emitted a Rulith tool/Board submission and needs
+ * the resulting receipt. A plain assistant reply returns control to the user immediately,
+ * whether or not a Case is active. Rulith state guides the next decision; it does not own
+ * the conversation scheduler.
+ */
+async function runConversationTurn(ctx, userText, requestedCaseType = selectedCaseType, businessKey = selectedBusinessKey, requestedCaseId = '') {
+  compactTranscript(ctx)
+  const messages = ctx.messages
+  let opened = false
+  let caseId = ctx.case?.id ?? null
+  let detachedPendingCaseId = null
+  let startId = ctx.taskId || nextCaseId()
+  const configuredResume = resumeCase
+  resumeCase = ''
+  const explicitResume = requestedCaseId || configuredResume
+  let selectionNotice = ''
+
+  if (explicitResume !== '') {
+    if (ctx.case !== undefined) {
+      if (ctx.case.id === explicitResume) caseId = explicitResume
+      else selectionNotice = `Rulith Case ${JSON.stringify(explicitResume)} was not selected because this conversation already owns active Case ${JSON.stringify(ctx.case.id)}. Pause or finish the active Case before selecting another.`
+    } else {
+      await probeLawLock(ctx)
+      const row = await selectExistingCase(ctx, explicitResume)
+      if (row !== undefined && bindCaseRow(ctx, explicitResume, String(row.caseType ?? requestedCaseType), row) !== undefined) {
+        opened = true
+        caseId = explicitResume
+        ctx.detachedCase = undefined
+      } else selectionNotice = `The requested existing Rulith Case ${JSON.stringify(explicitResume)} could not be selected. Answer the user normally; do not claim that Case is active.`
+    }
+  }
+
+  const resumeNotice = selectionNotice === '' ? '' : `\n\n${selectionNotice}`
+  const initialView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true })}`
+  messages.push({ role: 'user', content: `User message: ${userText}${resumeNotice}${initialView}` })
+
+  for (let turn = 1; turn <= MAX_ROUNDS; turn++) {
+    emitOn(ctx, 'round', { n: turn, conversational: true })
+    const reply = await ask(messages, await conversationalSystem(ctx, requestedCaseType))
+    const sub = extractSubmission(reply, { requireToolEnvelope: true })
+    const say = (sub === null ? reply : reply.replace(/```[\s\S]*?```/g, '')).trim()
+    if (say) log(`\n${say.slice(0, 1200)}`)
+    messages.push({ role: 'assistant', content: reply })
+    emitOn(ctx, 'propose', {
+      say,
+      ...(sub?.tool ? { tool: { action: sub.tool.action } } : {}),
+    })
+
+    // No tool call is a complete conversational answer. An active Case is deliberately
+    // left untouched; the next user message may continue it, ask a question, or ignore it.
+    if (sub === null) {
+      const note = ctx.case === undefined
+        ? 'Response delivered without opening a Rulith Case.'
+        : `Response delivered; Rulith Case "${ctx.case.id}" remains open.`
+      ctx.segmentTrail.push(`[conversation${ctx.case ? ` · case ${ctx.case.id} open` : ''}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
+      if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40)
+      return { note, caseId: ctx.case?.id ?? caseId, activeCaseId: ctx.case?.id ?? null, pendingCaseId: detachedPendingCaseId, opened }
+    }
+
+    let feedback = ''
+    if (sub.tool !== undefined) {
+      const tool = sub.tool
+      const action = String(tool.action)
+      if (action === 'start_case') {
+        if (ctx.case !== undefined) {
+          feedback = `Rulith Case "${ctx.case.id}" is already active. Read, advance, pause, or finish it before starting another Case.`
+        } else {
+          const caseType = requestedCaseType
+          await probeLawLock(ctx)
+          const openedCase = await ensureCaseContext(ctx, startId, caseType, businessKey)
+          if (openedCase === undefined) {
+            feedback = `The requested Rulith Case "${startId}" could not be opened. No Case-scoped work was attempted.`
+          } else {
+            ctx.detachedCase = undefined
+            opened = true
+            caseId = startId
+            startId = nextCaseId()
+            emitOn(ctx, 'case-open', { board: ctx.board, caseId, caseType, ok: true })
+            feedback = `Rulith Case "${caseId}" is active under the host-selected Case Type ${JSON.stringify(caseType)}.`
+          }
+        }
+      } else if (action === 'read_case') {
+        feedback = ctx.case === undefined
+          ? 'No Rulith Case is active. Use start_case only if governed work is useful.'
+          : `Current Rulith Case View:\n${await projectionText(ctx, { emitState: true })}`
+      } else if (action === 'resume_case') {
+        if (ctx.case !== undefined) {
+          feedback = `Rulith Case "${ctx.case.id}" is already active; another Case cannot be selected implicitly.`
+        } else if (typeof tool.caseId !== 'string' || tool.caseId.trim() === '') {
+          feedback = 'resume_case requires a non-empty caseId from a prior Case record.'
+        } else {
+          await probeLawLock(ctx)
+          const resumed = await selectExistingCase(ctx, tool.caseId.trim())
+          if (resumed === undefined) {
+            feedback = `Rulith Case "${tool.caseId.trim()}" could not be resumed.`
+          }
+          else {
+            const resumedType = String(resumed.caseType ?? requestedCaseType)
+            const bound = bindCaseRow(ctx, tool.caseId.trim(), resumedType, resumed)
+            if (bound === undefined) feedback = `Rulith Case "${tool.caseId.trim()}" could not be selected because its identity did not match.`
+            else {
+              opened = true
+              caseId = bound.id
+              detachedPendingCaseId = null
+              ctx.detachedCase = undefined
+              feedback = `Rulith Case "${bound.id}" selected.`
+            }
+          }
+        }
+      } else if (action === 'pause_case') {
+        if (ctx.case === undefined) feedback = 'No Rulith Case is active.'
+        else {
+          const activeId = ctx.case.id
+          const paused = await board({ kind: 'PauseCase' }, ctx)
+          if (paused.accepted === true) {
+            const activeType = ctx.case.caseType
+            ctx.case = undefined
+            ctx.detachedCase = { caseId: activeId, caseType: activeType, detachedAt: Date.now(), source: 'paused' }
+            detachedPendingCaseId = activeId
+            emitOn(ctx, 'case-pending', { board: ctx.board, caseId: activeId, reason: 'Paused by the Agent.' })
+            feedback = `Rulith Case "${activeId}" is paused. The conversation remains active.`
+          } else feedback = `The Board refused pause_case: ${String(paused.teaching ?? paused.errorCode ?? '')}`
+        }
+      } else if (action === 'finish_case') {
+        if (ctx.case === undefined) feedback = 'No Rulith Case is active.'
+        else {
+          const disposition = typeof tool.disposition === 'string' ? tool.disposition : 'completed'
+          const reason = typeof tool.reason === 'string' ? tool.reason.trim() : ''
+          if (!['completed', 'cancelled', 'failed', 'abandoned'].includes(disposition)) {
+            feedback = 'finish_case disposition must be completed, cancelled, failed, or abandoned.'
+          } else if (disposition !== 'completed' && reason === '') {
+            feedback = `finish_case with disposition ${disposition} requires a non-empty reason.`
+          } else {
+            const activeId = ctx.case.id
+            if (disposition === 'completed') {
+              const { deliverable, why } = await conversationalDeliverability(ctx)
+              if (!deliverable) feedback = `The Board did not permit completed closure: ${why}. The Case remains open.`
+              else if (withShadow && !(await shadowReview(ctx, userText))) feedback = 'Shadow review raised a finding. The Case remains open.'
+              else if (await archiveCaseContext(ctx, disposition)) feedback = `Rulith Case "${activeId}" closed as completed.`
+              else feedback = `Rulith Case "${activeId}" could not be closed and remains open.`
+            } else if (await archiveCaseContext(ctx, disposition, reason)) {
+              feedback = `Rulith Case "${activeId}" closed as ${disposition}.`
+            } else feedback = `Rulith Case "${activeId}" could not be closed and remains open.`
+          }
+        }
+      } else if (action === 'apply_batch') {
+        if (ctx.case === undefined) feedback = 'No Rulith Case is active. Use start_case first; nothing was forwarded.'
+        else if (!Array.isArray(tool.operations)) feedback = 'apply_batch requires an operations array; nothing was forwarded.'
+        else {
+          const result = await board({ kind: 'ApplyBatch', operations: tool.operations }, ctx)
+          emitConversationVerdict(ctx, result, 'ApplyBatch')
+          feedback = boundedToolResult(result)
+        }
+      } else if (action === 'command') {
+        const command = tool.command
+        if (ctx.case === undefined) feedback = 'No Rulith Case is active. Use start_case first; nothing was forwarded.'
+        else if (command === null || typeof command !== 'object' || Array.isArray(command) || typeof command.kind !== 'string') {
+          feedback = 'command requires one command object with a string kind; nothing was forwarded.'
+        } else {
+          const refusal = modelCommandRefusal(command.kind)
+          if (refusal !== undefined) {
+            emitOn(ctx, 'verdict', { accepted: false, cmd: String(command.kind), teaching: refusal, refusedLocally: true })
+            feedback = refusal
+          } else {
+            const result = await board(command, ctx)
+            emitConversationVerdict(ctx, result, command.kind)
+            feedback = boundedToolResult(result)
+          }
+        }
+      } else {
+        feedback = `Unknown Rulith tool action ${JSON.stringify(action)}. Use start_case, read_case, resume_case, pause_case, finish_case, apply_batch, or command.`
+      }
+    }
+
+    const caseView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true })}`
+    messages.push({ role: 'user', content: `[Rulith tool result]\n${feedback}${caseView}\n\nDecide whether another Rulith step is useful or reply normally to the user.` })
+  }
+
+  const note = `Returned control after the ${MAX_ROUNDS}-tool-turn safety limit; no further step was forced.`
+  return { note, caseId: ctx.case?.id ?? caseId, activeCaseId: ctx.case?.id ?? null, pendingCaseId: detachedPendingCaseId, opened }
+}
+
+/** Explicit one-shot/autopilot compatibility path: drive one Case to DONE/STOP/round limit.
  *
  *  **一轮的拍序是命门**（viz 逐义）：提议 → 裁决 → 影子审 → 放电 → 读完成态 → 回喂。
  *  影子必须排在放电**之前**：它的缺陷主张要与主人格的叶子挤进同一次放电才接得了地，
@@ -1249,7 +1567,7 @@ let pollInterject = null
  *  `caseId` is the Case handled by this segment, and `pendingCaseId` is present only
  *  when that Case Context remains open. Together they distinguish a completed segment
  *  from a paused Case without inferring lifecycle state from prose. */
-async function runSegment(ctx, userText, caseType = selectedCaseType, businessKey = selectedBusinessKey) {
+async function runAutopilotCase(ctx, userText, caseType = selectedCaseType, businessKey = selectedBusinessKey) {
   const messages = ctx.messages
   compactTranscript(ctx) // 段起始先收窗——切口落在段边界最干净,不会切断本段的推理链
   const useResume = resumeCase
@@ -1658,23 +1976,58 @@ if (SERVE) {
   const pushRun = (r) => { runs.push(r); while (runs.length > SERVE_RUNS_MAX) runs.shift() }
   let acceptingTasks = true
 
-  // Session slots isolate local transcripts and queues. They do not create Boards:
-  // every slot opens Case Contexts on the same persistent Agent Board.
+  // Session slots isolate local transcripts, queues, and the currently selected Case.
+  // They do not create Boards: every slot opens Case Contexts on the same persistent Agent Board.
   const sessions = new Map()
+  const detachedCases = new Map()
+  const rememberDetachedCase = (session, recovery) => {
+    detachedCases.delete(session)
+    detachedCases.set(session, recovery)
+    while (detachedCases.size > SERVE_SLOTS_MAX) detachedCases.delete(detachedCases.keys().next().value)
+  }
+  const detachIdleCase = (session, slot) => {
+    const recovery = slot.case === undefined ? slot.detachedCase : {
+      caseId: slot.case.id, caseType: slot.case.caseType, detachedAt: Date.now(),
+    }
+    if (recovery === undefined) return
+    rememberDetachedCase(session, recovery)
+    // A recovery hint that was already detached is merely moving between bounded maps.
+    // Emit the public recovery record once, when an actively selected Case first leaves its slot.
+    if (slot.case === undefined) return
+    const caseId = recovery.caseId
+    const at = Date.now()
+    const note = `Conversation "${session}" was reclaimed at the local session limit. Rulith Case "${caseId}" remains unchanged on the Board and may be selected explicitly later.`
+    const rec = {
+      id: `detached-${randomUUID()}`, text: '(conversation reclaimed)', at,
+      startedAt: at, endedAt: at, note, board: slot.board, sessionKey: session,
+      caseId, pendingCaseId: caseId, console: consoleUrl,
+    }
+    pushRun(rec)
+    emit('session-detached', { session, caseId, pendingCaseId: caseId, note, board: slot.board, console: consoleUrl })
+    log(`◎ ${note}`)
+  }
   const evictIfNeeded = () => {
     while (sessions.size >= SERVE_SLOTS_MAX) {
       let victim
-      for (const [k, s] of sessions) { if (!s.busy && s.queue.length === 0) { victim = k; break } }
-      if (victim === undefined) {
-        // 全都在忙: 这时候硬驱逐等于打断一位客户办到一半的段。**如实超一格**并说出来——
-        // 闲下来的那一刻下一次准入就会把它收回去(稳态仍有界)。
-        log(`All ${SERVE_SLOTS_MAX} session slots are busy. Temporarily admitting slot ${sessions.size + 1}; the next idle slot will be reclaimed.`)
-        return
+      for (const [k, s] of sessions) {
+        if (!s.busy && s.queue.length === 0 && s.case === undefined) { victim = k; break }
       }
+      if (victim === undefined) {
+        for (const [k, s] of sessions) {
+          if (!s.busy && s.queue.length === 0) { victim = k; break }
+        }
+      }
+      if (victim === undefined) {
+        log(`All ${SERVE_SLOTS_MAX} session slots are busy. Refusing a new conversation rather than interrupting an Agent turn.`)
+        return false
+      }
+      const slot = sessions.get(victim)
+      detachIdleCase(victim, slot)
       sessions.delete(victim)
-      log(`Evicted least-recently-used idle session "${victim}" at the ${SERVE_SLOTS_MAX}-slot limit. Only its local transcript was released.`)
+      if (slot.case === undefined) log(`Evicted least-recently-used idle conversation "${victim}" at the ${SERVE_SLOTS_MAX}-slot limit. It had no active Rulith Case.`)
       emit('slot-evicted', { session: victim, slots: sessions.size })
     }
+    return true
   }
   const slotFor = (sessionKey) => {
     if (sessionKey === '') return defaultSlot
@@ -1684,8 +2037,13 @@ if (SERVE) {
       hit.lastUsed = Date.now()
       return hit
     }
-    evictIfNeeded()
+    if (!evictIfNeeded()) return undefined
     const slot = makeSlot(sessionKey)
+    const recovery = detachedCases.get(sessionKey)
+    if (recovery !== undefined) {
+      detachedCases.delete(sessionKey)
+      slot.detachedCase = recovery
+    }
     sessions.set(sessionKey, slot)
     log(`Opened session "${sessionKey}" (${sessions.size}/${SERVE_SLOTS_MAX} slots).`)
     emit('slot-open', { session: sessionKey, slots: sessions.size })
@@ -1725,7 +2083,7 @@ if (SERVE) {
           note: `Task never started: ${reason}`,
           board: slot.board,
           ...(slot.key === '' ? {} : { sessionKey: slot.key }),
-          console: consoleUrl,
+          ...(slot.case === undefined ? {} : { console: consoleUrl }),
         }
         pushRun(rec)
         emit('task-done', rec)
@@ -1756,36 +2114,44 @@ if (SERVE) {
         const raw = Buffer.concat(bodyChunks).toString('utf8')
         let text = ''
         let sessionKey = ''
+        let requestedCaseId = ''
+        let requestedCaseIdValue
         let caseType = selectedCaseType
         let businessKey = selectedBusinessKey
         try {
           const b = JSON.parse(raw || '{}')
           text = String(b.text ?? '').trim()
           sessionKey = String(b.sessionKey ?? '').trim()
+          requestedCaseIdValue = b.caseId
           caseType = String(b.caseType ?? selectedCaseType).trim()
           businessKey = b.businessKey ?? selectedBusinessKey
-        } catch { return deny('Body is not valid JSON. Expected {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional"}.') }
+        } catch { return deny('Body is not valid JSON. Expected {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional","caseId":"optional-existing-case"}.') }
         if (text === '') return deny('Missing text. Expected {"text":"process this task","caseType":"exploration"}.', 400)
+        if (requestedCaseIdValue !== undefined && typeof requestedCaseIdValue !== 'string') return deny('caseId must be a string copied exactly from /runs or Console.', 400)
+        requestedCaseId = String(requestedCaseIdValue ?? '').trim()
         if (!/^[a-z][a-z0-9_-]{1,63}$/.test(caseType)) return deny('caseType must be a 2-64 character lowercase identifier from the Agent Case Type catalog.', 400)
         if (businessKey !== undefined && (businessKey === null || typeof businessKey !== 'object' || Array.isArray(businessKey)
           || Object.keys(businessKey).length === 0 || !Object.values(businessKey).every((v) => typeof v === 'string'
             || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))))) {
           return deny('businessKey must be a non-empty JSON object whose keys match the selected Case Contract and whose values are finite JSON scalars.', 400)
         }
+        // Missing keys start independent conversations. The caller receives the generated
+        // key and must echo it on follow-ups; unrelated clients never share a default Case.
+        if (sessionKey === '') sessionKey = `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`
         // Session keys select bounded local transcript/queue slots. They never select a Board.
         if (sessionKey.length > SESSION_KEY_MAX) {
           return deny(`sessionKey exceeds ${SESSION_KEY_MAX} characters (${sessionKey.length} received). It cannot be truncated because it identifies a local conversation slot. Use a short opaque identifier.`, 400)
         }
+        if (requestedCaseId.length > 256) return deny('caseId exceeds 256 characters. Use the exact Case ID returned by /runs or shown in Console.', 400)
         const slot = slotFor(sessionKey)
-        const item = { id: nextCaseId(), text, caseType, businessKey, at: Date.now(), sessionKey }
+        if (slot === undefined) return deny(`Conversation capacity is full (${SERVE_SLOTS_MAX} slots), and every slot is busy. Retry later or continue an existing sessionKey.`, 429)
+        const item = { id: nextCaseId(), text, caseType, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey }
         slot.queue.push(item)
         slot.lastUsed = item.at
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0)
-        emit('task-queued', { id: item.id, text: item.text, depth,
-          ...(sessionKey === '' ? {} : { session: sessionKey }) })
+        emit('task-queued', { id: item.id, text: item.text, depth, session: sessionKey })
         res.writeHead(202, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ ok: true, id: item.id, queued: depth,
-          ...(sessionKey === '' ? {} : { sessionKey }),
+        res.end(JSON.stringify({ ok: true, id: item.id, queued: depth, sessionKey,
           teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }))
         pump()
       })
@@ -1807,15 +2173,16 @@ if (SERVE) {
       req.on('close', () => clients.delete(res))
       return
     }
-    return deny('Available endpoints: POST /task {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
+    return deny('Available endpoints: POST /task {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional","caseId":"optional-existing-case"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
   })
   await new Promise((r) => serveSrv.listen(SERVE_PORT, '127.0.0.1', r))
   log(`
 Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent Case Context(s) · ${SERVE_SLOTS_MAX} session limit): http://127.0.0.1:${SERVE_PORT}
   Submit: curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…","caseType":"exploration"}'
   Contracted Case Types also send businessKey with the exact Case Contract argument names.
-  Optional session: -d '{"text":"…","sessionKey":"conversation-1"}'
-  Every task receives its own Case Context on Agent Board "${agentId}". Sessions only isolate local transcripts and queues.
+  Continue a conversation by echoing the sessionKey returned by the first request: -d '{"text":"…","sessionKey":"conversation-1"}'
+  Select an existing running or paused Case without advancing it: add "caseId":"<id>" from /runs or Console.
+  Messages are ordinary conversation. The Agent opens or advances a Rulith Case only when it chooses the optional Rulith tool.
   Inspect: curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
   The key is randomized on every start. Loopback alone is not an authorization boundary.`)
   emit('start', { agentId, url: URL_BASE, task: '(task endpoint)', projection: '', concurrency: SERVE_CONCURRENCY })
@@ -1833,14 +2200,16 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
     emit('task-start', { id: item.id, text: item.text,
       ...(slot.key === '' ? {} : { session: slot.key }) })
     log(`
-▶ Case ${item.id}${slot.key === '' ? '' : ` (session ${slot.key})`}: ${item.text}`)
+▶ Message ${item.id}${slot.key === '' ? '' : ` (session ${slot.key})`}: ${item.text}`)
     let note = ''
     let pendingCaseId = null
+    let activeCaseId = null
     let actualCaseId = null
     try {
-      const seg = await runSegment(slot, item.text, item.caseType, item.businessKey)
+      const seg = await runConversationTurn(slot, item.text, item.caseType, item.businessKey, item.caseId)
       note = seg.note
       pendingCaseId = seg.pendingCaseId
+      activeCaseId = seg.activeCaseId
       actualCaseId = seg.caseId
     } catch (e) {
       const credentialRejected = e instanceof AgentCredentialRejectedError
@@ -1848,7 +2217,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
         ? `Agent credential rejected: ${e.message}`
         : `Task aborted with an unexpected error: ${e?.message ?? e}`
       actualCaseId = slot.case?.id ?? null
-      pendingCaseId = actualCaseId
+      activeCaseId = actualCaseId
       if (credentialRejected) {
         // A revoked/rotated credential belongs to the whole host, not one task. Stop
         // admission and let the supervisor restart with new configuration after every
@@ -1872,15 +2241,16 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
       startedAt: flight.startedAt, endedAt: Date.now(), note,
       board: slot.board,
       ...(actualCaseId === null ? {} : { caseId: actualCaseId }),
+      ...(activeCaseId === null ? {} : { activeCaseId }),
       ...(slot.key === '' ? {} : { sessionKey: slot.key }),
-      // 未结的案号进 run 记录: 调用方(网站后端)据它决定"要不要接着办 / 要不要报给人",
-      // 只给一句 note 的话,"停轮"与"办结"在机器眼里长得一模一样。
+      // pendingCaseId is reserved for a detached/paused Case. A healthy Case selected by
+      // this conversation is activeCaseId; callers must not escalate ordinary dialogue.
       ...(pendingCaseId === null ? {} : { pendingCaseId }),
-      console: consoleUrl,
+      ...(actualCaseId === null ? {} : { console: consoleUrl }),
     }
     pushRun(rec)
     emit('task-done', rec)
-    log(`· ${note}${pendingLine(pendingCaseId)} · Verify in Console: ${rec.console}
+    log(`· ${note}${activeCaseId === null ? '' : ` · Active Rulith Case: ${activeCaseId}.`}${pendingLine(pendingCaseId)}${actualCaseId === null ? '' : ` · Verify in Console: ${consoleUrl}`}
 `)
     if (!acceptingTasks && inFlight.length === 0) {
       for (const client of clients) client.end()
@@ -1913,7 +2283,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
   log(`Task: ${TASK}
 `)
   emit('start', { agentId, url: URL_BASE, task: TASK, projection: '' })
-  const { note, caseId, pendingCaseId, opened } = await runSegment(defaultSlot, TASK)
+  const { note, caseId, pendingCaseId, opened } = await runAutopilotCase(defaultSlot, TASK)
   // A closed or rejected Case has no active execution envelope. Do not fall back
   // to an unscoped Agent Board read: the Console case record is the authority.
   const after = pendingCaseId !== null && defaultSlot.case?.id === pendingCaseId
@@ -1994,7 +2364,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   let queuedAtSegmentStart = 0
   pollInterject = () => (inbox.length > queuedAtSegmentStart ? inbox.splice(queuedAtSegmentStart, 1)[0] : undefined)
 
-  log(`Interactive mode. Every message opens a Case Context on Agent Board "${defaultSlot.board}". Verify Cases and conclusions in Console: ${consoleUrl}`)
+  log(`Interactive mode. This is a normal Agent conversation; Rulith is an optional tool. Cases are created only when the Agent chooses governed work on "${defaultSlot.board}". Verify any resulting Cases and conclusions in Console: ${consoleUrl}`)
   log('The transcript stays on this machine and is not written to the board. Empty lines are ignored. Use exit, quit, or Ctrl+C to stop.\n')
   emit('start', { agentId, url: URL_BASE, task: '(interactive)', projection: '' })
   for (;;) {
@@ -2006,22 +2376,23 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     queuedAtSegmentStart = inbox.length // 水位线: 此刻排着的都是「下一段」,之后到的才是插话
     let segment
     try {
-      segment = await runSegment(defaultSlot, line)
+      segment = await runConversationTurn(defaultSlot, line)
     } catch (error) {
       if (!(error instanceof AgentCredentialRejectedError)) throw error
       console.error(`\n✗ ${error.message}\n`)
       process.exitCode = 3
       break
     }
-    const { note, caseId, pendingCaseId } = segment
-    emit('segment-end', { note, board: defaultSlot.board, caseId, ...(pendingCaseId === null ? {} : { pendingCaseId }) })
+    const { note, caseId, activeCaseId, pendingCaseId } = segment
+    emit('segment-end', { note, board: defaultSlot.board, caseId,
+      ...(activeCaseId === null ? {} : { activeCaseId }),
+      ...(pendingCaseId === null ? {} : { pendingCaseId }) })
     log(`
-· ${note}${pendingLine(pendingCaseId)} · Verify in Console: ${consoleUrl}
+· ${note}${activeCaseId === null ? '' : ` · Active Rulith Case: ${activeCaseId}.`}${pendingLine(pendingCaseId)}${caseId === null ? '' : ` · Verify in Console: ${consoleUrl}`}
 `)
   }
   rl.close()
   log('Stopped.')
   if (process.exitCode === undefined) process.exitCode = 0
-}
 }
 }

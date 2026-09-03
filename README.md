@@ -83,26 +83,33 @@ $env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'
 node agent/rulith-agent.mjs
 ```
 
-Each task opens one Case under an installed Capability's Case Type. Use the
-Case Type catalog exposed by Rulith Cloud; exploratory work defaults to the
-platform-owned `exploration` contract:
+With no positional task, the Agent starts an ordinary conversation. It opens no
+Case until the model explicitly selects the optional Rulith tool. A positional
+task is the explicit one-shot/autopilot compatibility path and opens one Case
+under the host-selected installed Capability Case Type:
 
 ```powershell
 node agent/rulith-agent.mjs --case-type verified_calculation --business-key '{"job_id":"calc-001"}' "calculate and verify this job"
 ```
 
-For the loopback service, `POST /task` accepts the same selection as
-`{"text":"...","caseType":"verified_calculation","businessKey":{"job_id":"calc-001"},"sessionKey":"optional"}`.
+For the loopback service, `POST /task` accepts the same host-owned selection as
+`{"text":"...","caseType":"verified_calculation","businessKey":{"job_id":"calc-001"},"sessionKey":"conversation-1"}`.
+The first request may omit `sessionKey`; the service returns a newly generated one,
+which the caller must echo on follow-ups. Two clients that omit it never share a
+conversation or selected Case. A caller may also send an existing `caseId` from
+`/runs` or Console to select a running Case or resume a paused one without opening a
+replacement Case.
 `RULITH_CASE_TYPE` and `RULITH_BUSINESS_KEY_JSON` set local defaults. Contracted
 Case Types require the exact business-key argument names shown by their Case
 Contract; exploration omits them. The Runtime sends values only. Cloud computes
 and pins the business-key, Capability Release, Case Contract, generation, and
 commercial-term digests before the Case opens, so the model never fills them.
 
-The working model receives one bounded **Case View**: the current terminal Goal,
+Once it has selected a Case, the working model receives one bounded **Case View**: the current terminal Goal,
 verified acceptance state, frontier, missing evidence, blocking reasons, and the
 relevant actions/state. It does not receive the complete Board history or billing
-and Release-control records. Replying `VIEW:` refreshes that same bounded view.
+and Release-control records. In conversation mode it explicitly selects `read_case`
+to refresh that view; `VIEW:` remains part of the one-shot autopilot protocol.
 
 The `exploration` Case Type is the only mode that permits provisional Case-local
 predicates, rules, Actions, and Goals. They never modify installed Capabilities
@@ -260,11 +267,18 @@ npm start
 
 Rulith Local prints one loopback URL containing a random key. Open that exact URL: the
 key gates every route, including the page itself, and the page reads it from its own
-address rather than carrying an embedded copy. In Agent+Worker mode,
-the Local UI uses the familiar Agent-workbench shape: Case/conversation navigation on
-the left, dialogue and governed execution in the center, a composer at the bottom,
-and Case View, frontier, Worker activity, evidence, and receipts on the right. Agent
-and Worker modes use role-specific projections of the same UI and event contract.
+address rather than carrying an embedded copy. The Agent is conversational first:
+greetings and ordinary discussion create no Case and perform no Board operation.
+Rulith is an optional tool the model selects when work benefits from persistent state,
+rules, evidence, external Actions, verification, or an auditable conclusion. Each
+selected tool call advances at most one explicit Case step; an unfinished Case guides
+later decisions but never forces another model turn.
+
+In Agent+Worker mode, the Local UI uses a familiar Agent-workbench shape: conversation
+activity on the left, dialogue and selected governed execution in the center, a composer
+at the bottom, and the active Rulith Case, frontier, Worker activity, evidence, and
+receipts on the right. Agent and Worker modes use role-specific projections of the same
+UI and event contract.
 
 The browser UI is a read-only runtime observer. It shows the configured Agent identity,
 credential presence, model profile, Worker Connection, Tool and Source file locations,

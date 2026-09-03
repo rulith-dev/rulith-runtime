@@ -1,8 +1,8 @@
 {
   "name": "rulith",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "type": "module",
-  "description": "Rulith Local: one Case-first Agent workbench with Agent, Worker, and combined modes",
+  "description": "Rulith Local: a conversation-first Agent workbench with optional governed Cases",
   "bin": {
     "rulith": "local/rulith-local.mjs"
   },

@@ -19,6 +19,18 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROLE_SET = new Set(['agent', 'worker'])
 const MAX_BODY = 64 * 1024
 
+/** Local owns both sides of each port connection, so it validates once and gives the
+ * parent and child the same integer. Falling back independently lets the Agent listen on
+ * 7799 while Local keeps calling NaN or another value. */
+export function localInteger(name, raw, fallback, { min = 1, max = 65_535 } = {}) {
+  if (raw === undefined || String(raw).trim() === '') return fallback
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}; received ${JSON.stringify(String(raw))}.`)
+  }
+  return value
+}
+
 export function rolesOf(value) {
   const raw = Array.isArray(value) ? value : String(value ?? '').replaceAll('+', ',').split(',')
   const roles = [...new Set(raw.map((role) => String(role).trim()).filter(Boolean))]
@@ -167,7 +179,11 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
     const path = config.paths?.agent ? resolve(configDir, config.paths.agent) : resolve(HERE, '../agent/rulith-agent.mjs')
     if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.agent in the Rulith Local configuration.`
     const serveKey = randomUUID().replace(/-/g, '')
-    const servePort = Number(config.agent?.env?.RULITH_SERVE_PORT ?? 7799)
+    const servePort = localInteger(
+      'RULITH_SERVE_PORT',
+      config.agent?.env?.RULITH_SERVE_PORT ?? process.env.RULITH_SERVE_PORT,
+      7799,
+    )
     const args = Array.isArray(config.agent?.args) ? [...config.agent.args] : []
     if (!args.includes('--serve')) args.push('--serve')
     const child = spawn(process.execPath, [path, ...args], {
@@ -175,7 +191,12 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
     components.agent = { ...components.agent, child, serveKey, servePort,
-      maxConcurrentCases: Math.max(1, Math.min(8, Math.trunc(Number(config.agent?.env?.RULITH_SERVE_CONCURRENCY ?? 1)) || 1)) }
+      maxConcurrentCases: localInteger(
+        'RULITH_SERVE_CONCURRENCY',
+        config.agent?.env?.RULITH_SERVE_CONCURRENCY ?? process.env.RULITH_SERVE_CONCURRENCY,
+        1,
+        { min: 1, max: 8 },
+      ) }
     wireChild('agent', child)
     child.on('exit', (code) => { emit('agent', 'exit', { code }); components.agent.child = null })
     emit('agent', 'spawn', { pid: child.pid })
@@ -282,7 +303,10 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
         const sessionKey = String(body.sessionKey ?? '').trim() || `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`
         const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/task`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey },
-          body: JSON.stringify({ text: String(body.text ?? ''), sessionKey, ...(body.caseType === undefined ? {} : { caseType: body.caseType }), ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) }),
+          body: JSON.stringify({ text: String(body.text ?? ''), sessionKey,
+            ...(body.caseId === undefined ? {} : { caseId: body.caseId }),
+            ...(body.caseType === undefined ? {} : { caseType: body.caseType }),
+            ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) }),
         }).catch(() => undefined)
         if (response === undefined) return void json(res, 502, { ok: false, teaching: 'The Agent task endpoint did not respond.' })
         return void json(res, response.status, await response.json().catch(() => ({ ok: response.ok })))
@@ -322,7 +346,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
 }
 
 if (IS_MAIN) {
-  const port = Number(process.env.RULITH_LOCAL_PORT ?? 7790)
+  const port = localInteger('RULITH_LOCAL_PORT', process.env.RULITH_LOCAL_PORT, 7790)
   const key = (process.env.RULITH_LOCAL_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
   if (process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')) {
     console.log('Rulith Local\n\nUsage:\n  rulith start [--role agent|worker|agent+worker]\n\nThe configured roles are used when --role is omitted. Configuration defaults to ~/.rulith/local.json.')
