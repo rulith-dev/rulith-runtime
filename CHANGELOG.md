@@ -36,6 +36,26 @@ dialect will not work against this runtime.
   prompt-side catalogue that was a second, staler copy of the Board.
 - A one-shot run now prints its own verdict on the terminal, and reports success from the
   loop's outcome rather than from the wording of that sentence.
+- Worker Tools have one standing (board-spec TOOL-08). A built-in and a Tool-Manifest
+  entry are advertised in the same descriptor — `id`, `digest`, `sourceTypes`, `kind`,
+  `params`, `returns` — on the startup banner and in the poll body alike, so a host can
+  synthesize a governed Action for either. The built-in workspace and MCP-discovery Tools
+  now state the parameter tables and result columns their handlers have always had; their
+  digests cover the definition those are derived from, so no Connection pin moves.
+- The Worker no longer filters its own advertisement. A Tool absent from the id list
+  Cloud returned beside the Source definitions used to be dropped silently, making the
+  Worker a second and unlogged authorization point; authorization is the Connection lock
+  in Console, which decides what receives work.
+- A Tool Manifest entry may declare `kind` (`read`, `write`, `run`), `params`, and
+  `returns`; omitted, `kind` is derived from the adapter and falls to `write` wherever
+  the entry has not said otherwise. A declared contract is part of the definition and so
+  moves that Tool's digest. Malformed declarations are refused when the manifest is read,
+  as is any restatement of a built-in implementation's fixed contract.
+- `json` joins `string` / `number` / `boolean` as a declarable parameter type, so
+  `rulith.workspace.write_json@1` can state the `value` argument it has always taken;
+  database templates still refuse it. Both workspace write Tools now return a result row
+  (`source`, `path`, `bytes`) like every other workspace Tool, so a governed Action can
+  map a write receipt into facts; the receipt text is unchanged.
 
 ## 0.6.11 - 2026-09-04
 

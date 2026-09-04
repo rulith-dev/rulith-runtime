@@ -197,8 +197,21 @@ model-supplied paths, symbolic-link writes, binary text reads, oversized files, 
 and arbitrary command execution are rejected. Bounded read Tools are enabled by default;
 set `RULITH_WORKSPACE_TOOLS=off` for a review-only process or `read-write` when the
 workflow needs governed writes. This setting is only a local host ceiling; it never
-grants the Agent permission to use a Tool. The Worker presents only the Tool ids carried
-by its exact Connection recipe.
+grants the Agent permission to use a Tool.
+
+A built-in Tool and one declared in the Tool Manifest have the same standing. Both are
+resolved by the same code, pinned by the same digest over their definition, and
+advertised in the same descriptor — `id`, `digest`, `sourceTypes`, `kind` (`read`,
+`write`, or `run`), `params`, and `returns` — so a host can synthesize a governed Action
+for either without a Capability having declared it first. The Worker advertises every
+Tool it has and authorizes none of them: a Tool is usable only while it is locked on this
+Connection in Console, and one that is not locked simply never receives work. The startup
+banner prints the same list the first poll sends, each Tool with its kind, so the line in
+the terminal and the locks in Console are two views of one thing. A manifest entry may
+state `kind`, `params`, and `returns` itself; left out, `kind` is derived from the
+adapter and falls to `write` wherever the entry has not said otherwise. An entry that
+names a built-in implementation states none of the three — that contract is fixed, and
+restating it is refused when the manifest is read rather than quietly ignored.
 
 For a package that needs no private credential, run:
 
@@ -220,13 +233,13 @@ node worker/rulith-worker.mjs
 ```
 
 Each work item names a governed file Source bound to this Agent Connection and configured
-with an allowed root directory. The Connection must already carry each exact versioned Tool
-id through an installed governed Action. A Worker's first poll pins implementation
-digests; it cannot authorize Tools merely by presenting them.
+with an allowed root directory. A Worker's first poll pins implementation digests; it
+cannot authorize Tools merely by presenting them.
 
-The Worker polls outbound and presents only Tool id, digest, and accepted Source types. Rulith checks
-that every presented Tool was authorized for the Agent-owned Connection, pins the
-implementation set, and dispatches an Action only when its Tool accepts the Cloud-injected Source type. The
+The Worker polls outbound and presents each Tool's id, digest, accepted Source types,
+kind, parameters, and returned columns. Rulith checks that every presented Tool is locked
+on the Agent-owned Connection, pins the implementation set, and dispatches an Action only
+when its Tool accepts the Cloud-injected Source type. The
 Worker resolves the Adapter locally, executes it, and reports a receipt before polling
 again. A model request cannot grant itself a Tool, Source, credential, Adapter, or
 verification authority.
@@ -241,7 +254,9 @@ example:
     "acme.orders.lookup@1": {
       "adapter": "db-query",
       "sourceTypes": ["db"],
-      "entry": "SELECT order_id, status FROM orders WHERE order_id={order_id}"
+      "entry": "SELECT order_id, status FROM orders WHERE order_id={order_id}",
+      "params": { "order_id": "number" },
+      "returns": { "order_id": "number", "status": "string" }
     },
     "acme.erp.lookup@1": {
       "adapter": "mcp",
@@ -252,7 +267,8 @@ example:
 }
 ```
 
-The governed Action declares the typed `order_id` slot and result mapping. The Worker
+A governed Action may declare the typed `order_id` slot and result mapping itself; a Tool
+that states its own `params` and `returns` is one a host can build that Action from. The Worker
 compiles database placeholders to driver parameters, never SQL interpolation. MCP
 discovery is read-only; it does not grant a generic call surface. Each remote MCP Tool
 must still be approved as its own versioned local Tool and governed Action.

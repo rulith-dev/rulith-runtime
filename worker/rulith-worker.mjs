@@ -27,11 +27,24 @@
  *     "tools": {
  *       "acme.notify@1": { "adapter": "run", "sourceTypes": ["http"], "entry": "adapters/notify.mjs" },
  *       "acme.report@1": { "adapter": "run", "sourceTypes": ["file"], "entry": "adapters/report.mjs",
- *         "env": { "pass": ["ACME_REGION"] } },
+ *         "env": { "pass": ["ACME_REGION"] },
+ *         "kind": "run", "params": { "region": "string" },
+ *         "returns": { "report_id": "string", "line_count": "number" } },
  *       "acme.verify_cert@1": { "adapter": "http", "sourceTypes": ["http"], "entry": "/verify",
  *         "handles": { "verification": ["cert"] } }
  *     }
  *   }
+ *
+ * A declared Tool and a built-in are the same family (board-spec TOOL-08): same resolver,
+ * same digest pinning the definition, same advertised descriptor `{id, digest,
+ * sourceTypes, kind, params, returns}`, same Connection lock. `kind` is read / write /
+ * run and may be left out — it is then derived from the adapter. `params` names the
+ * arguments an invocation may carry (string / number / boolean / json, `?` = optional);
+ * `returns` names the scalar columns each result row carries, which a governed Action's
+ * result mapping references as `$column`. An entry naming a handler that ships here (a
+ * workspace operation, MCP discovery) states none of the three: that contract is fixed,
+ * and a restatement is refused rather than ignored. This Worker advertises everything it
+ * has and authorizes nothing: a Tool receives work only while its Connection lock holds.
  *
  * `env.pass` is the opt-in environment allow-list for a `run` Adapter (see adapterEnv).
  * Without it the Adapter inherits the environment minus a deny-list of this runtime's
@@ -91,7 +104,6 @@ let SOURCE_CONTEXT = {}
 // 首张工单也必须拿到完整执行契约。来源地址同步失败可以降级到本机密文库，
 // 但不能一边同步一边先 Poll——否则同一配置会因网络时序偶发地报“缺端点”。
 let SOURCES_READY = Promise.resolve()
-let AUTHORIZED_TOOL_IDS
 /** 纯函数:按来源引用合成凭据面(条目字段优先,库补缺)。导出给测试——解析对错不该靠读源码断言。 */
 function resolveSourceCreds(route, vault) {
   const src = route && typeof route.source === 'string' ? (vault ?? {})[route.source] : undefined
@@ -147,6 +159,39 @@ function say(line, type, data = {}) {
  *  但它函数体里引用的这个 `const` **不会**——放在后面就是模块顶层执行时踩进暂时性死区。
  *  「函数提升了，常量没有」——而当时那一发还落在读工具表的 try 里，被报成了"读不了工具表"。 */
 const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp', 'workspace'])
+
+/**
+ * The parameter types a Tool may declare, in the Tool Manifest and on the wire alike.
+ *
+ * `json` is one of them because one shipped Tool has always taken a whole JSON value:
+ * `write_json` serializes its `value` argument. With only the three scalars declarable,
+ * that Tool could not state its own parameter table truthfully — the only way to call it
+ * was to build the compiled Tool by hand and step around `toolFromSpec` entirely, which
+ * is what this Worker's own test had to do. A declared contract nothing can satisfy is
+ * worse than none: it reads as supported. Database templates still refuse it, where a
+ * value must compile to a driver parameter.
+ *
+ * These live above the manifest-loading block on purpose: `workerToolsOf` runs at load
+ * time, and a `const` referenced from it but declared further down is a temporal dead
+ * zone, reported as whatever the enclosing catch happens to say (see KNOWN_IMPLS).
+ */
+const PARAM_TYPES = Object.freeze(['string', 'number', 'boolean', 'json'])
+/** Result columns stay scalar: `resultFactsFromRows` maps only scalars into fact args. */
+const RETURN_TYPES = Object.freeze(['string', 'number', 'boolean'])
+
+function assertTypeTable(table, label, types, noun) {
+  if (!table || typeof table !== 'object' || Array.isArray(table)) throw new Error(`${label} must be an object of ${noun} name to type`)
+  const allowed = new Set(types.flatMap((type) => [type, `${type}?`]))
+  for (const [name, type] of Object.entries(table)) {
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(name) || typeof type !== 'string' || !allowed.has(type)) {
+      throw new Error(`${label}.${name || '(empty)'} must name a lower-case ${noun} and one of ${types.join(' / ')} (a trailing ? marks it optional)`)
+    }
+  }
+  return table
+}
+export function assertParamTable(table, label) { return assertTypeTable(table, label, PARAM_TYPES, 'parameter') }
+export function assertReturnTable(table, label) { return assertTypeTable(table, label, RETURN_TYPES, 'column') }
+
 const WORKSPACE_READ_TOOLS = Object.freeze({
   'rulith.workspace.list@1': 'list',
   'rulith.workspace.count@1': 'count',
@@ -164,6 +209,102 @@ const SOURCE_READ_TOOLS = Object.freeze({
 })
 
 /**
+ * One descriptor shape for every Tool this Worker advertises (board-spec TOOL-08).
+ *
+ * A built-in and a Tool-Manifest entry are the same family: same resolver, same digest
+ * pinning the definition, same advertised shape, same Connection lock. So the fixed
+ * tables below are written down rather than left implicit — a built-in that could not
+ * state its own `params` and `returns` would be a Tool the host cannot synthesize a
+ * direct Action for, which is exactly the second-class standing TOOL-08 removes.
+ *
+ * `params` is the parameter table in the same language `validateInvocationArgs` speaks
+ * (`string` / `number` / `boolean` / `json`, `?` suffix = optional). `returns` is the
+ * column contract: the scalar columns each result row carries, which is what a board
+ * `returns` mapping references as `$column` (see resultFactsFromRows). It is a column
+ * table, not that mapping — the predicates belong to the pack, never to the Worker.
+ *
+ * Keyed by adapter entry, not by Tool id: a manifest entry that names the same
+ * workspace operation runs the same handler and therefore has the same contract.
+ */
+const WORKSPACE_TOOL_CONTRACTS = Object.freeze({
+  list: { kind: 'read', params: { path: 'string?' },
+    returns: { source: 'string', path: 'string', entry_type: 'string', size: 'number?' } },
+  count: { kind: 'read', params: { path: 'string?', recursive: 'boolean' },
+    returns: { source: 'string', path: 'string', recursive: 'boolean', file_count: 'number', directory_count: 'number', digest: 'string' } },
+  search: { kind: 'read', params: { query: 'string', path: 'string?' },
+    returns: { source: 'string', path: 'string', line: 'number', column: 'number', text: 'string' } },
+  read_text: { kind: 'read', params: { path: 'string' },
+    returns: { source: 'string', path: 'string', text: 'string', digest: 'string' } },
+  read_json: { kind: 'read', params: { path: 'string' },
+    returns: { source: 'string', path: 'string', json: 'string', digest: 'string' } },
+  hash: { kind: 'read', params: { path: 'string' },
+    returns: { source: 'string', path: 'string', sha256: 'string', size: 'number' } },
+  write_text: { kind: 'write', params: { path: 'string', text: 'string' },
+    returns: { source: 'string', path: 'string', bytes: 'number' } },
+  write_json: { kind: 'write', params: { path: 'string', value: 'json' },
+    returns: { source: 'string', path: 'string', bytes: 'number' } },
+})
+const SOURCE_TOOL_CONTRACTS = Object.freeze({
+  discover: { kind: 'read', params: {},
+    returns: { source: 'string', tool_name: 'string', description: 'string', input_schema_json: 'string' } },
+})
+
+/** The fixed contract of a Tool whose handler ships with this Worker, if it has one. */
+function builtinContract(definition) {
+  if (definition?.adapter === 'workspace') return WORKSPACE_TOOL_CONTRACTS[definition.entry]
+  if (definition?.adapter === 'mcp') return SOURCE_TOOL_CONTRACTS[definition.entry]
+  return undefined
+}
+
+/**
+ * `read` | `write` | `run` for one Tool definition.
+ *
+ * A Tool whose handler ships here has a fixed contract and that one wins; otherwise a
+ * manifest entry may declare it, and otherwise it is derived from the adapter, where an
+ * adapter carrying both ceilings reads a field the digest already covers: the workspace
+ * operation, and the http fence method. Every guess falls to
+ * `write` — the stronger binding on the host side, where a read Tool's arguments may be
+ * bound by clue and a write Tool's may not. An http entry with no `fence.method` has not
+ * said it is a read, so it is not treated as one; a read-only endpoint declares either
+ * `"kind": "read"` or `"fence": {"method": "GET"}`, and an MCP `tools/call` that changes
+ * the world declares `"kind": "write"`.
+ */
+export function toolKind(definition) {
+  const contract = builtinContract(definition)
+  if (contract !== undefined) return contract.kind
+  if (typeof definition?.kind === 'string') return definition.kind
+  switch (definition?.adapter) {
+    case 'run': return 'run'
+    case 'db-query': return 'read'
+    case 'db-exec-fenced': return 'write'
+    case 'mcp': return 'read'
+    case 'http': return ['GET', 'HEAD'].includes(String(definition?.fence?.method ?? '').toUpperCase()) ? 'read' : 'write'
+    default: return 'write'
+  }
+}
+
+/**
+ * The advertised descriptor of one installed Tool. Built-in or declared, the shape is
+ * the same and every field is a function of what the digest already pins: the written
+ * definition for a manifest entry, and the adapter entry for a built-in (whose fixed
+ * table is selected by that entry). So a descriptor cannot move without the pin moving.
+ */
+export function workerToolDescriptor(id, definition) {
+  const contract = builtinContract(definition)
+  return {
+    id,
+    digest: definition.digest ?? toolDigest(definition),
+    sourceTypes: [...definition.sourceTypes].sort(),
+    kind: toolKind(definition),
+    // The shipped contract first: what a handler in this file takes and produces is not
+    // an operator's to restate. `workerToolsOf` refuses the restatement outright, so
+    // this order only matters for a definition assembled in code.
+    params: { ...(contract?.params ?? definition.params ?? {}) },
+    returns: { ...(contract?.returns ?? definition.returns ?? {}) },
+  }
+}
+
+/**
  * Materialize the fixed Tool implementations shipped with this Worker.
  * Selecting a mode only controls what the local process is capable of
  * presenting. The Agent Connection must still carry every Tool id, and a
@@ -174,14 +315,19 @@ export function builtinWorkspaceTools(mode = 'read') {
   const catalog = mode === 'read-write' ? { ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS } : WORKSPACE_READ_TOOLS
   const tools = {}
   for (const [id, entry] of Object.entries(catalog)) {
+    // The digest covers the definition — adapter, Source types, entry — and nothing else,
+    // exactly as before this Worker learned to state kind/params/returns. Those three are
+    // derived from `entry`, which is inside the digest, so the pin already fixes them and
+    // no built-in digest moves. A manifest entry is the other case: there an operator
+    // writes them, so they are part of the definition and do enter its digest.
     const definition = { adapter: 'workspace', sourceTypes: ['file'], entry }
-    tools[id] = { ...definition, digest: toolDigest(definition) }
+    tools[id] = { ...definition, ...WORKSPACE_TOOL_CONTRACTS[entry], digest: toolDigest(definition) }
   }
   return tools
 }
 export function builtinSourceTools() {
   return Object.fromEntries(Object.entries(SOURCE_READ_TOOLS).map(([id, definition]) =>
-    [id, { ...definition, digest: toolDigest(definition) }]))
+    [id, { ...definition, ...SOURCE_TOOL_CONTRACTS[definition.entry], digest: toolDigest(definition) }]))
 }
 /** 锚建议(批C): 把每条取材路线的目标指纹打出来,治理者照抄进控制台的「锚」栏——
  *  钉了锚之后,证词与注册目标对不上会被网关当场拒(漂移可检)。 */
@@ -218,7 +364,7 @@ if (IS_MAIN) {
       const collisions = Object.keys(builtins).filter((id) => TOOLS[id] !== undefined)
       if (collisions.length > 0) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
       TOOLS = { ...TOOLS, ...builtins }
-      console.log(`· Built-in workspace Tools enabled (${workspaceMode}). A governed Source is injected with each work item; Connection authorization is still required.`)
+      console.log(`· Built-in workspace Tools enabled (${workspaceMode}). A governed Source is injected with each work item; a Tool is usable only while it is locked on this Connection in Console.`)
     }
     const sourceBuiltins = builtinSourceTools()
     const sourceCollisions = Object.keys(sourceBuiltins).filter((id) => TOOLS[id] !== undefined)
@@ -248,8 +394,10 @@ if (IS_MAIN) {
         console.error(`· Could not load source definitions from Rulith Cloud (HTTP ${r.status}). Local secrets remain available, but cloud source endpoints were not loaded.`)
         return undefined
       }).then((j) => {
+        // `j.toolIds` is read no more (board-spec TOOL-08). It used to become a local
+        // advertisement filter; the Connection lock in Console is the only authority,
+        // and a Worker that also decided made the two disagree invisibly.
         if (!j || !Array.isArray(j.sources)) return
-        if (Array.isArray(j.toolIds) && j.toolIds.every((id) => typeof id === 'string')) AUTHORIZED_TOOL_IDS = new Set(j.toolIds)
         let n = 0
         for (const s of j.sources) {
           if (!s || typeof s.name !== 'string' || s.name === '') continue
@@ -814,7 +962,11 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
       throw new Error(`Workspace write exceeds the ${WORKSPACE_MAX_FILE_BYTES}-byte limit`)
     }
     await atomicWorkspaceWrite(target, text)
-    return JSON.stringify({ path: relative(root, target).replace(/\\/g, '/'), bytes: Buffer.byteLength(text, 'utf8') })
+    // Row-shaped like every other workspace operation, and for the same reason: a Tool
+    // whose declared columns cannot reach `resultFactsFromRows` states a contract the
+    // board can never use. The `result` text is the same JSON object it always was.
+    const written = { source: t.source, path: relative(root, target).replace(/\\/g, '/'), bytes: Buffer.byteLength(text, 'utf8') }
+    return { result: JSON.stringify({ path: written.path, bytes: written.bytes }), rows: [written] }
   }
   throw new Error(`Unsupported workspace operation "${operation}"`)
 }
@@ -1718,7 +1870,7 @@ function validateInvocationArgs(params, argsJson) {
   if (typeof argsJson === 'string' && argsJson !== '') supplied = JSON.parse(argsJson)
   else if (argsJson && typeof argsJson === 'object' && !Array.isArray(argsJson)) supplied = argsJson
   if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) throw new Error('Action args must be an object')
-  const allowedTypes = new Set(['string', 'number', 'boolean', 'string?', 'number?', 'boolean?'])
+  const allowedTypes = new Set(PARAM_TYPES.flatMap((type) => [type, `${type}?`]))
   for (const [name, type] of Object.entries(declared)) {
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(name) || typeof type !== 'string' || !allowedTypes.has(type)) {
       throw new Error(`Action parameter ${name || '(empty)'} has an invalid declaration`)
@@ -1732,6 +1884,9 @@ function validateInvocationArgs(params, argsJson) {
   if (missing.length > 0) throw new Error(`Action args are missing required parameter(s): ${missing.join(', ')}`)
   for (const [name, value] of Object.entries(supplied)) {
     const expected = String(declared[name]).replace(/\?$/, '')
+    // A `json` slot accepts any JSON value the transport already parsed. `undefined`
+    // cannot reach here: it is absence, and absence was decided by the two checks above.
+    if (expected === 'json') continue
     if (typeof value !== expected || (expected === 'number' && !Number.isFinite(value))) {
       throw new Error(`Action parameter ${name} must be ${expected}`)
     }
@@ -1766,8 +1921,29 @@ export function workerToolsOf(raw) {
     if (adapter === 'workspace' && !Object.values({ ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS }).includes(value.entry)) {
       throw new Error(`Worker Tool ${id} uses unknown workspace operation "${value.entry}"`)
     }
-    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'sourceTypes', 'entry', 'fence', 'handles', 'tier'].includes(key))
+    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'sourceTypes', 'entry', 'fence', 'handles', 'kind', 'params', 'returns', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
+    // A declared Tool states the same three things a built-in states, and they are
+    // checked here rather than at dispatch: the advertisement goes out at the first
+    // poll, so a malformed contract must fail while the operator is still reading the
+    // startup output, not on the work item that finally exercises it.
+    const shipped = builtinContract(value)
+    const restated = ['kind', 'params', 'returns'].filter((key) => value[key] !== undefined)
+    if (shipped !== undefined && restated.length > 0) {
+      // Refused, not ignored — the same rule as a misplaced `env.pass`. This entry names
+      // a handler in this file, whose contract is fixed; a restatement here would be
+      // dropped on the floor while reading like the thing that governs the Tool.
+      throw new Error(`Worker Tool ${id} names the built-in "${value.entry}" implementation, so its ${restated.join(' / ')} `
+        + `cannot be redeclared: it is ${JSON.stringify({ kind: shipped.kind, params: shipped.params, returns: shipped.returns })}.`)
+    }
+    if (value.kind !== undefined && !['read', 'write', 'run'].includes(value.kind)) {
+      throw new Error(`Worker Tool ${id}.kind must be read, write, or run`)
+    }
+    if (value.params !== undefined) {
+      assertParamTable(value.params, `Worker Tool ${id}.params`)
+      refuseSqlParameter(adapter, value.params)
+    }
+    if (value.returns !== undefined) assertReturnTable(value.returns, `Worker Tool ${id}.returns`)
     if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {
       throw new Error(`Worker Tool ${id}.fence must be an object`)
     }
@@ -1811,10 +1987,19 @@ export function workerToolsOf(raw) {
   return out
 }
 
-export function workerToolManifest(tools, authorized = AUTHORIZED_TOOL_IDS) {
-  return Object.entries(tools)
-    .filter(([id]) => authorized === undefined || authorized.has(id))
-    .map(([id, def]) => ({ id, digest: def.digest ?? toolDigest(def), sourceTypes: [...def.sourceTypes].sort() }))
+/**
+ * Everything this Worker has, described alike (board-spec TOOL-08).
+ *
+ * There used to be a filter here: a Tool absent from the ids the Cloud returned beside
+ * the Source definitions was dropped from the advertisement without a word. That made
+ * the Worker a second authorization point, and a silent one — an operator who had
+ * installed a Tool locally and locked it in Console could still watch it never appear,
+ * with nothing anywhere saying why. Authorization is the Console lock on the Connection:
+ * the gateway grants or refuses each ClaimWork, and a Tool that is not locked simply
+ * never receives work. The Worker states what it has and lets the lock decide.
+ */
+export function workerToolManifest(tools) {
+  return Object.entries(tools).map(([id, definition]) => workerToolDescriptor(id, definition))
 }
 
 /**
@@ -1878,10 +2063,16 @@ if (IS_MAIN) {
     } else throw e
   }
   if (running) {
-    const seats = [Object.keys(TOOLS).length ? `tools: ${Object.keys(TOOLS).join(', ')}` : 'tools: none (action work disabled)']
+    // The banner says exactly what the first poll will advertise, read from the same
+    // function, with the ceiling of each Tool beside it. An operator comparing this line
+    // with the Connection lock in Console is comparing the two lists that matter.
+    const advertised = workerToolManifest(TOOLS)
+    const seats = [advertised.length
+      ? `tools: ${advertised.map((tool) => `${tool.id} (${tool.kind})`).join(', ')}`
+      : 'tools: none (action work disabled)']
     if (REVIEWER_URL && REVIEWER_MODEL) seats.push(`reviewer: ${REVIEWER_MODEL}`)
     say(`rulith-worker ${WORKER_VERSION} online · connection ${CONNECTION_ID} · ${seats.join(' · ')}`, 'up',
-      { connectionId: CONNECTION_ID, version: WORKER_VERSION, tools: Object.keys(TOOLS).length, reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
+      { connectionId: CONNECTION_ID, version: WORKER_VERSION, tools: advertised.length, reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
   }
   while (running) {
     try {

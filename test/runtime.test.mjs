@@ -418,8 +418,12 @@ test('built-in workspace Tools expose a bounded read set and require an explicit
   assert.ok(readWrite['rulith.workspace.write_text@1'])
   assert.ok(readWrite['rulith.workspace.write_json@1'])
   assert.throws(() => builtinWorkspaceTools('all'), /read or read-write/)
-  assert.deepEqual(workerToolManifest(readOnly, new Set(['rulith.workspace.count@1'])).map((row) => row.id), ['rulith.workspace.count@1'],
-    'the Worker presents only the built-ins authorized by its exact Connection recipe')
+  // Mode is a local capability ceiling, not an authorization: what this process can
+  // present at all. Everything it does present, it presents (board-spec TOOL-08, and
+  // RT-WK-TOOLS-2) — the Connection lock in Console decides what receives work.
+  assert.deepEqual(workerToolManifest(readOnly).map((row) => row.id).sort(), Object.keys(readOnly).sort(),
+    'the Worker advertises every built-in it has; it is not the authorization point')
+  assert.ok(workerToolManifest(readWrite).every((row) => ['read', 'write', 'run'].includes(row.kind)))
 })
 
 test('built-in workspace Tools stay inside their Source root and return bounded machine-readable results', async () => {
