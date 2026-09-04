@@ -137,7 +137,7 @@ Inside `ApplyBatch`, a step of reasoning takes one of five shapes:
 | `add_axiom` | A rule the Board may derive with |
 | `declare_hypothesis` | A claim under test; the Board reports its status |
 | `record_result` | A conclusion, with references to the evidence it rests on |
-| `record_conflict` | Two things that cannot both hold |
+| `retract_node` / `revise_fact` | Withdraw or correct one of your own assertions |
 
 Explanation and argument stay in the model's reply. They are not Board material.
 

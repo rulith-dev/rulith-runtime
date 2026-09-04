@@ -772,7 +772,7 @@ test('one system prompt carries the five reasoning shapes and exactly two condit
   assert.ok(prompt, 'the system prompt could not be found')
   const words = prompt.split(/\s+/).filter(Boolean).length
   assert.ok(words > 100 && words < 220, `the prompt is ${words} words; it is meant to be about 150`)
-  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'record_conflict']) {
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'retract_node', 'revise_fact']) {
     assert.ok(prompt.includes(shape), `the prompt does not name the ${shape} shape`)
   }
   assert.match(prompt, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)

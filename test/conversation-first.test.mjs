@@ -68,7 +68,7 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
     assert.equal(system.includes(forbidden), false, `the system prompt still teaches ${forbidden}`)
   }
   // What it must say instead: the five shapes a step of reasoning may take.
-  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'record_conflict']) {
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'retract_node', 'revise_fact']) {
     assert.ok(system.includes(shape), `the prompt does not name the ${shape} shape`)
   }
   assert.match(system, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
