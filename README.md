@@ -108,8 +108,9 @@ commercial-term digests before the Case opens, so the model never fills them.
 Once it has selected a Case, the working model receives one bounded **Case View**: the current terminal Goal,
 verified acceptance state, frontier, missing evidence, blocking reasons, and the
 relevant actions/state. It does not receive the complete Board history or billing
-and Release-control records. In conversation mode it explicitly selects `read_case`
-to refresh that view; `VIEW:` remains part of the one-shot autopilot protocol.
+and Release-control records. In conversation mode the host refreshes this view after
+each explicit Rulith step; reading state does not consume another model-selected tool.
+`VIEW:` remains part of the one-shot autopilot protocol.
 
 The `exploration` Case Type is the only mode that permits provisional Case-local
 predicates, rules, Actions, and Goals. They never modify installed Capabilities
@@ -333,10 +334,13 @@ The model never supplies the trusted input values or the calculated output value
   `SELECT`; every model value is passed through the database driver's parameter array
   rather than interpolated into SQL. Fenced write tools classify and reject unsupported
   or destructive statements unless the declared contract allows them.
-- The model may emit only reads, `ApplyBatch`, `ApplyAction`, and `RunDischarge`. Case
-  lifecycle, work receipts, clearance, and package or Board governance are refused by the
-  Agent Runtime before they reach Cloud, so injected text in a task, document, or tool
-  result cannot spend the Agent's credential on them.
+- In conversation mode the model sees four Rulith choices: start a Case, apply one batch,
+  request one advertised Action, or ask to finish. The host owns projection refresh,
+  verification settlement, Case identity, revision, and receipts. The direct one-shot
+  compatibility path still accepts its bounded read/action/discharge protocol. Case
+  lifecycle writes, Worker receipts, clearance, and package or Board governance are
+  refused before they reach Cloud, so injected text in a task, document, or tool result
+  cannot spend the Agent's credential on them.
 - The Local UI requires its per-run key on every route, including the page itself.
 - Submitted work is not self-verification. Acceptance remains a board and policy decision.
 

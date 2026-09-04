@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.6.10",
+  "version": "0.6.11",
   "type": "module",
   "description": "Rulith Local: a conversation-first Agent workbench with optional governed Cases",
   "bin": {
@@ -44,8 +44,12 @@
     "start": "node local/rulith-local.mjs start",
     "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-local.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs",
     "manifest": "node scripts/update-artifact-manifest.mjs",
+    "verify:manifest": "node scripts/update-artifact-manifest.mjs --check",
     "test": "node --test test/*.test.mjs",
-    "prepack": "npm run manifest && npm run check && npm test"
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "release:verify": "npm run verify:manifest && npm run check && npm test",
+    "release:tag": "node scripts/tag-release.mjs",
+    "prepack": "npm run release:verify"
   },
   "optionalDependencies": {
     "pg": "^8.23.0"

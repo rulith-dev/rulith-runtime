@@ -174,7 +174,8 @@ test('RT-WK-RECEIPT-5: a run Tool that declares env.pass receives only what it d
     'env-allow-probe.mjs':
       "import { appendFileSync } from 'node:fs'\n"
       + "appendFileSync(process.env.P2_EFFECT_LOG, 'allow\\n')\n"
-      + "const seen = Object.fromEntries(Object.entries(process.env).map(([n, v]) => [n.toUpperCase(), v]))\n"
+      + "const names = ['ACME_REGION','ACME_UNLISTED','RULITH_TOKEN','RULITH_CONNECTION_KEY','PATH','RULITH_CASE_ID','RULITH_SOURCE_ACCESS']\n"
+      + "const seen = Object.fromEntries(names.filter((n) => process.env[n] !== undefined).map((n) => [n, process.env[n]]))\n"
       + "process.stdout.write(JSON.stringify({ rows: [], seen }))\n",
   }
   let polls = 0

@@ -91,20 +91,20 @@ Read the configured calculation input, calculate the exact total, and write the 
 The first model action should be:
 
 ```json
-{"kind":"ApplyAction","action":"load_calculation_input"}
+{"tool":"rulith","action":"request_action","name":"load_calculation_input"}
 ```
 
 After the board derives `calculation_result`, the write call should contain no business
 arguments:
 
 ```json
-{"kind":"ApplyAction","action":"write_calculation_result","target":"CALC_calc-001"}
+{"tool":"rulith","action":"request_action","name":"write_calculation_result","target":"CALC_calc-001"}
 ```
 
 The final read-back uses the same board-bound target:
 
 ```json
-{"kind":"ApplyAction","action":"verify_calculation_output","target":"CALC_calc-001"}
+{"tool":"rulith","action":"request_action","name":"verify_calculation_output","target":"CALC_calc-001"}
 ```
 
 The completed case must contain an `output_written` action effect and an attested

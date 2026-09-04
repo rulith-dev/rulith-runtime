@@ -114,6 +114,41 @@ test('a Rulith envelope quoted alongside explanatory content is never executed',
     'a malformed tool attempt was silently swallowed instead of receiving corrective teaching')
 })
 
+test('a raw ApplyAction copied from a Case View is refused with the exact conversation envelope', async () => {
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Use the available action through Rulith.'],
+    model: (round) => {
+      if (round === 1) return rulith('start_case')
+      if (round === 2) return fenced({ kind: 'ApplyAction', action: 'inspect_records', target: 'leaf-1' })
+      return 'I did not execute the raw command. I will use the conversation tool envelope next.'
+    },
+  })
+
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.kinds.includes('ApplyAction'), false, 'a raw protocol command escaped the conversation parser')
+  assert.match(JSON.stringify(run.modelRequests[2]), /raw Board command was not executed/i)
+  assert.match(JSON.stringify(run.modelRequests[2]), /request_action/,
+    'the correction must give one copyable envelope accepted by the conversation parser')
+})
+
+test('Case View action rows are translated to the conversation request_action surface', async () => {
+  const normal = defaultBoard()
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Open the Case and inspect its available action.'],
+    board: (args) => args.operation?.kind === 'GetProjection' && args.operation?.format !== 'json'
+      ? { accepted: true, revision: 'r3', payload: { text: 'actions:\n- inspect records [ready] - base call: {"kind":"ApplyAction","action":"inspect_records"}; add only target when needed, while business parameters are bound from trusted board facts' } }
+      : normal(args),
+    model: (round) => round === 1 ? rulith('start_case') : 'The Case View exposes the action through the conversation tool surface.',
+  })
+
+  const second = JSON.stringify(run.modelRequests[1])
+  assert.match(second, /Rulith call.*request_action/)
+  assert.doesNotMatch(second, /base call.*\\"kind\\":\\"ApplyAction/,
+    'the model was shown a raw protocol template that its parser refuses')
+})
+
 test('a locked Board never gives the conversational Agent an add_axiom handle', async () => {
   const normal = defaultBoard()
   const run = await runAgent({
@@ -167,6 +202,64 @@ test('a model-selected finish asks the host to enforce the close gate', async ()
   assert.equal(run.kinds.filter((kind) => kind === 'CloseCase').length, 1,
     `finish_case did not cross the host-controlled lifecycle gate: ${run.kinds.join(', ')}`)
   assert.match(run.stdout, /Case .*closed|Closed Case/)
+})
+
+test('finish_case runs deterministic discharge and receipt settlement without another model decision', async () => {
+  const normal = defaultBoard()
+  let discharged = false
+  const run = await runAgent({
+    argv: [],
+    env: { RULITH_AUTO_DISCHARGE: 'on' },
+    chatLines: ['Use Rulith and finish after the evidence is verified.'],
+    board: (args) => {
+      if (args.operation?.kind === 'GetCompletion') return discharged
+        ? { accepted: true, revision: 'r4', payload: { state: 'done', certified: true, floor: 'attested', leaves: [], gaps: [] } }
+        : { accepted: true, revision: 'r3', payload: { state: 'running', certified: false, floor: 'asserted', leaves: [{ node: 'leaf-1', digest: 'sha256:leaf-1', met: false }], gaps: [] } }
+      if (args.operation?.kind === 'RunDischarge') { discharged = true; return { accepted: true, revision: 'r4', payload: { gaps: [] } } }
+      return normal(args)
+    },
+    model: (round) => {
+      if (round === 1) return rulith('start_case')
+      if (round === 2) return rulith('finish_case', { disposition: 'completed' })
+      return 'The host completed verification and the Board permitted closure.'
+    },
+  })
+
+  assert.equal(run.kinds.includes('RunDischarge'), true, `finish_case never armed verification: ${run.kinds.join(', ')}`)
+  assert.equal(run.kinds.includes('CloseCase'), true, `the verified Case did not close: ${run.kinds.join(', ')}`)
+  const openedId = run.boardCalls.find((call) => call.operation?.kind === 'OpenCase')?.operation?.caseId
+  const discharge = run.boardCalls.find((call) => call.operation?.kind === 'RunDischarge')
+  assert.equal(discharge?.case?.id, openedId,
+    'deterministic verification lost the selected Case membrane and could observe another Case')
+})
+
+test('a transport-ambiguous Rulith step teaches an unchanged retry and preserves request identity', async () => {
+  const normal = defaultBoard()
+  let lostAfterCommit = false
+  const batch = { operations: [{ op: 'assert_fact', id: 'F_AMBIG', predicate: 'scratch.demo.value', args: { value: 'one' } }] }
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Record this through Rulith despite a transient network failure.'],
+    board: (args) => {
+      if (args.operation?.kind === 'ApplyBatch' && !lostAfterCommit) { lostAfterCommit = true; return undefined }
+      const result = normal(args)
+      return lostAfterCommit && args.operation?.kind === 'GetProjection'
+        ? { ...result, caseRevision: 'c-after-lost-write' }
+        : result
+    },
+    model: (round) => round === 1 ? rulith('start_case') : rulith('apply_batch', batch),
+  })
+
+  const attempts = run.boardCalls.filter((call) => call.operation?.kind === 'ApplyBatch')
+  assert.equal(attempts.length, 2, JSON.stringify(run.boardCalls))
+  assert.notEqual(attempts[0].case.expectedRevision, attempts[1].case.expectedRevision,
+    'the counterexample did not advance revision after the lost write receipt')
+  assert.equal(attempts[0].requestId, attempts[1].requestId,
+    'an unchanged retry after an unknown outcome must reach the same idempotency slot')
+  const retry = JSON.stringify(run.modelRequests[2])
+  assert.match(retry, /Retry the exact same Rulith step unchanged/)
+  assert.doesNotMatch(retry, /Board refused|Correct the request/,
+    'transport uncertainty was misrepresented as a semantic rejection that invites a new body')
 })
 
 test('finish_case cannot close a Case that the Board has not certified', async () => {
@@ -246,7 +339,7 @@ test('one user message reads Source Access at most once even across several Ruli
     chatLines: ['Inspect the governed Source catalogue.'],
     model: (round) => {
       if (round === 1) return rulith('start_case')
-      if (round === 2) return rulith('read_case')
+      if (round === 2) return rulith('apply_batch', { operations: [] })
       return 'I inspected the current Case and Source catalogue once for this message.'
     },
   })
@@ -368,13 +461,12 @@ test('a reclaimed session receives its detached Case id and may explicitly selec
     serveTasks: [
       { text: 'Open a governed Case.', sessionKey: 'client-a' },
       { text: 'Use a separate ordinary conversation.', sessionKey: 'client-b' },
-      { text: 'Continue the earlier governed work.', sessionKey: 'client-a' },
+      (responses) => ({ text: 'Continue the earlier governed work.', sessionKey: 'client-a', caseId: responses[0].body.id }),
     ],
     waitForServeCompletion: true,
     model: (round) => {
       if (round === 1) return rulith('start_case')
-      if (round === 4) return rulith('resume_case', { caseId: runningCase.id })
-      if (round === 5) return 'The prior Case is selected again without a lifecycle write.'
+      if (round === 4) return 'The prior Case is selected again without a lifecycle write.'
       return 'No Rulith step is needed in this reply.'
     },
     timeoutMs: 900,
@@ -387,6 +479,9 @@ test('a reclaimed session receives its detached Case id and may explicitly selec
     `recovery opened a replacement Case: ${run.kinds.join(', ')}`)
   assert.equal(run.kinds.includes('ResumeCase'), false,
     'selecting a still-running Case must not change its Board lifecycle')
+  const resumedRun = (run.serveSnapshot?.runs ?? []).find((record) => record.id === run.serveResponses[2].body.id)
+  assert.equal(resumedRun?.activeCaseId, runningCase.id,
+    `the client-supplied caseId did not actually select the prior Case: ${JSON.stringify(resumedRun)}`)
 })
 
 test('an explicit caseId cannot silently replace another active Case in the same session', async () => {

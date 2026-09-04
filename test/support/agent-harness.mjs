@@ -66,7 +66,7 @@ export function defaultBoard({ cases = [], caseType = 'exploration' } = {}) {
  * @param {object}   [options.sourceAccessResult] Override the Source Access catalogue result.
  * @param {number}   [options.rejectBoardAfter] Reject this and later board call with HTTP 401.
  * @param {number}   [options.rejectBoardDelayMs] Delay the credential rejection response.
- * @param {(string|object)[]} [options.serveTasks] Submit these task bodies after a --serve endpoint is ready.
+ * @param {(string|object|function)[]} [options.serveTasks] Submit these task bodies after a --serve endpoint is ready. A function receives prior responses.
  * @param {boolean} [options.waitForServeCompletion] Wait for each accepted task's run record before submitting the next.
  * @param {boolean} [options.captureLocalEvents] Capture the Agent's IPC event stream.
  * @param {string[]} [options.chatLines] Send these lines to interactive stdin.
@@ -189,7 +189,8 @@ export async function runAgent({ argv = ['test task'], env = {}, board, model, h
     }
     if (!/Task endpoint ready/.test(stdout)) throw new Error(`serve endpoint did not become ready:\n${stdout}\n${stderr}`)
     for (const task of serveTasks) {
-      const body = typeof task === 'string' ? { text: task } : task
+      const resolvedTask = typeof task === 'function' ? task(serveResponses) : task
+      const body = typeof resolvedTask === 'string' ? { text: resolvedTask } : resolvedTask
       const response = await fetch(`http://127.0.0.1:${env.RULITH_SERVE_PORT}/task`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-rulith-serve': String(env.RULITH_SERVE_KEY ?? '') },

@@ -103,9 +103,21 @@ test('running the check as a command exits 1 with teaching on a CR tree and 0 on
 test('the check is wired into the script npm runs before packing', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   assert.match(pkg.scripts.check, /node scripts\/check-line-endings\.mjs/)
-  assert.match(pkg.scripts.prepack, /npm run check/)
+  assert.match(pkg.scripts['release:verify'], /npm run check/)
   const attributes = readFileSync(join(ROOT, '.gitattributes'), 'utf8')
   assert.match(attributes, /^\* text=auto eol=lf$/m, 'a fresh clone must already be LF, or the check is only a wall')
+})
+
+test('prepack verifies committed trust anchors instead of regenerating its own evidence', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  assert.match(pkg.scripts.prepack, /release:verify/)
+  assert.match(pkg.scripts['release:verify'], /verify:manifest/)
+  assert.doesNotMatch(pkg.scripts.prepack, /npm run manifest/,
+    'a release gate must not rewrite the hashes it is supposed to verify')
+  const generator = readFileSync(join(ROOT, 'scripts', 'update-artifact-manifest.mjs'), 'utf8')
+  assert.match(generator, /process\.argv\.includes\('--check'\)/)
+  const release = readFileSync(join(ROOT, 'scripts', 'tag-release.mjs'), 'utf8')
+  assert.match(release, /git', \['tag', '-a'/, 'release tags must be annotated and pushed explicitly')
 })
 
 // ── setup.mjs verifies what it downloads ─────────────────────────────────────

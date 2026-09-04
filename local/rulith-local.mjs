@@ -83,6 +83,14 @@ export function normalizeLocalConfig(config) {
   }
 }
 
+/** Non-empty deployment config wins; an empty placeholder means "inherit".
+ * Generated example files intentionally contain blank credential slots, and
+ * those blanks must not erase secrets supplied by the process supervisor. */
+export function effectiveChildEnv(base, configured = {}) {
+  const overlay = Object.fromEntries(Object.entries(configured).filter(([, value]) => String(value ?? '').trim() !== ''))
+  return { ...base, ...overlay }
+}
+
 function loadConfig(configFile) {
   if (!existsSync(configFile)) {
     const config = defaultLocalConfig()
@@ -168,7 +176,10 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       while ((boundary = buffers[stream].indexOf('\n')) >= 0) {
         const line = buffers[stream].slice(0, boundary)
         buffers[stream] = buffers[stream].slice(boundary + 1)
-        if (line.trim() !== '') emit(src, 'log', { line: line.slice(0, 400), ...(stream === 'err' ? { stderr: true } : {}) })
+        if (line.trim() !== '') {
+          emit(src, 'log', { line: line.slice(0, 400), ...(stream === 'err' ? { stderr: true } : {}) })
+          if (stream === 'err') console.error(`[${src}] ${line.slice(0, 400)}`)
+        }
       }
     }
     child.stdout.on('data', (chunk) => feed('out', String(chunk)))
@@ -179,21 +190,22 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
     const path = config.paths?.agent ? resolve(configDir, config.paths.agent) : resolve(HERE, '../agent/rulith-agent.mjs')
     if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.agent in the Rulith Local configuration.`
     const serveKey = randomUUID().replace(/-/g, '')
+    const roleEnv = effectiveChildEnv(process.env, config.agent?.env ?? {})
     const servePort = localInteger(
       'RULITH_SERVE_PORT',
-      config.agent?.env?.RULITH_SERVE_PORT ?? process.env.RULITH_SERVE_PORT,
+      roleEnv.RULITH_SERVE_PORT,
       7799,
     )
     const args = Array.isArray(config.agent?.args) ? [...config.agent.args] : []
     if (!args.includes('--serve')) args.push('--serve')
     const child = spawn(process.execPath, [path, ...args], {
-      env: { ...process.env, ...(config.agent?.env ?? {}), RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort) },
+      env: { ...roleEnv, RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
     components.agent = { ...components.agent, child, serveKey, servePort,
       maxConcurrentCases: localInteger(
         'RULITH_SERVE_CONCURRENCY',
-        config.agent?.env?.RULITH_SERVE_CONCURRENCY ?? process.env.RULITH_SERVE_CONCURRENCY,
+        roleEnv.RULITH_SERVE_CONCURRENCY,
         1,
         { min: 1, max: 8 },
       ) }
@@ -206,8 +218,9 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
     if (running('worker')) return 'Worker is already running.'
     const path = config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')
     if (!existsSync(path)) return `Worker runtime not found at ${path}. Set paths.worker in the Rulith Local configuration.`
+    const roleEnv = effectiveChildEnv(process.env, config.worker?.env ?? {})
     const child = spawn(process.execPath, [path], {
-      env: { ...process.env, ...(config.worker?.env ?? {}), RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc' },
+      env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
     components.worker.child = child
@@ -262,7 +275,8 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
         clients.add(res); req.on('close', () => clients.delete(res)); return
       }
       if (path === '/status' && req.method === 'GET') {
-        const agentEnv = config.agent?.env ?? {}, workerEnv = config.worker?.env ?? {}
+        const agentEnv = effectiveChildEnv(process.env, config.agent?.env ?? {})
+        const workerEnv = effectiveChildEnv(process.env, config.worker?.env ?? {})
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
           agent: running('agent'), worker: running('worker'), maxConcurrentCases: components.agent.maxConcurrentCases,
@@ -323,7 +337,10 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       server.listen(port, '127.0.0.1', () => {
         for (const role of selectedRoles) {
           const error = role === 'agent' ? startAgent() : startWorker()
-          if (error !== null) emit('local', 'error', { role, note: error })
+          if (error !== null) {
+            emit('local', 'error', { role, note: error })
+            console.error(`[${role}] ${error}`)
+          }
         }
         emit('local', 'start', { mode: modeOf(selectedRoles), roles: selectedRoles })
         accept()

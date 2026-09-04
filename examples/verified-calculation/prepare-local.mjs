@@ -26,7 +26,6 @@ try { source = JSON.parse(readFileSync(resolve(sourcePath), 'utf8')) } catch (er
   console.error(`cannot read source Rulith Local config: ${error?.message ?? error}`)
   process.exit(2)
 }
-const gateway = resolve(HERE, '..', '..')
 const config = {
   ...source,
   roles: ['agent', 'worker'],
@@ -47,12 +46,9 @@ const config = {
       RULITH_TOOLS_FILE: join(runtime, 'worker-tools.json'),
     },
   },
-  paths: {
-    agent: resolve(gateway, 'agent', 'rulith-agent.mjs'),
-    worker: resolve(gateway, 'worker', 'rulith-worker.mjs'),
-  },
 }
 delete config.agent.env.RULITH_AGENT
+if (config.paths !== undefined && Object.keys(config.paths).length === 0) delete config.paths
 const output = join(runtime, 'rulith-local.json')
 writeFileSync(output, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
 console.log(`Rulith Local config prepared at ${output} (credential values intentionally not printed)`)

@@ -2,6 +2,25 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.6.11 - 2026-09-04
+
+- Conversation mode now exposes one small Rulith surface: start a Case, apply a
+  batch, request an advertised Action, or ask to finish. Case Views translate raw
+  `ApplyAction` examples into that surface, and a copied raw Board command fails
+  visibly instead of becoming an unevaluated user-facing reply.
+- An explicit completed finish runs deterministic verification discharge and waits
+  for authoritative receipts before asking the Board to close. A transport failure
+  is reported as an unknown outcome and may only be retried unchanged with the same
+  request identity; it is never misreported as a semantic refusal.
+- The Runtime trust-floor order now matches every canonical Core evidence tier and
+  fails closed on an unknown tier.
+- Blank placeholders in `~/.rulith/local.json` inherit non-empty supervisor values
+  instead of erasing credentials. Initial role failures and child stderr are visible
+  in the terminal, and the public example no longer installs machine-specific paths.
+- Packaging verifies the committed artifact manifest instead of regenerating its own
+  trust anchors. Release preparation updates version, immutable tag, embedded hashes,
+  and version guards together; release tags are annotated.
+
 ## 0.6.10 - 2026-09-03
 
 - Writable workspace Sources must be separate from the entire Worker implementation

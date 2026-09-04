@@ -3,13 +3,13 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "a5d0811ac89f0ad3c9b7a5bb60ddb8580cad092d86ac5010dc285a3ce33a440a"
+      "sha256": "1b44cbfe70ae4618e140e808fbe61e9e7c77ff160e496fc7a775ae7818ea50a9"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "009241d6bc1f067859795811d076ec581835183eca2a6dae35d52166f6e64c0a"
     },
     "local/rulith-local.mjs": {
-      "sha256": "d809c11f1d25d960189c096c2442d8ab9a3fc430dd997bfc4230ee526e5be2b5"
+      "sha256": "1abc1996541070761d08bf0680a009a30015dc137bc89a61b86f62a5acd4fe76"
     },
     "local/local-ui.mjs": {
       "sha256": "cde43590f1ddd9367787e5c4d66ca7a1072e1001d00f9776e17ab7d75e43d5fa"
@@ -18,13 +18,13 @@
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
     },
     "config/rulith-local.example.json": {
-      "sha256": "69f386c63fc0d830574c49cd10439affd6e22909f92355d6f9819d23061987db"
+      "sha256": "419c0332e4b781c31a383268ad434d51d964155dd2200cd2eca02fea167bb465"
     },
     "config/worker-tools.example.json": {
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "d8ecebf07bb61ecab141c654fcc0a243314555aa90f06f47b21171bead7dd035"
+      "sha256": "24cf8869ddafcc0bbec03212cec421a9d41d3f0384447c16c2da37646be4974a"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
@@ -33,7 +33,7 @@
       "sha256": "bbf32059e524e278431fcade0ed5112fde4010936ba4d8515b13e44bbf1a864a"
     },
     "examples/verified-calculation/prepare-local.mjs": {
-      "sha256": "14eddfb137b5dfe3aecc43f8872c92f6be5b5a16e6b1e86851aa4a938083d20d"
+      "sha256": "2d8a028010342d98b81974cf9259a851180ca3b845c947a783e4ecd9376d8cd1"
     },
     "examples/verified-calculation/read-input.mjs": {
       "sha256": "9b360e7a6dd108657e7b4946d9f63128f02d86e31087fe50b60bcfe0830bcabd"
@@ -42,7 +42,7 @@
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "56c9ca7c29e064f771140135eaa5047f2683e8ddf6391eca274de55e051787cf"
+      "sha256": "2684acc7da59050371641b5a96c55721ca480b8795c014a00ebd010cf1a53879"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, protectedWorkerExecutables, toolFromSpec, workerToolManifest, workerToolsOf, workspaceWriteEnabled } from '../worker/rulith-worker.mjs'
-import { createLocalHost, defaultConfigPath, defaultLocalConfig, localInteger, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
+import { createLocalHost, defaultConfigPath, defaultLocalConfig, effectiveChildEnv, localInteger, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -91,11 +91,26 @@ test('Rulith Local validates shared port settings once instead of letting parent
   assert.throws(() => localInteger('RULITH_SERVE_CONCURRENCY', '9', 1, { min: 1, max: 8 }), /between 1 and 8/)
 })
 
+test('blank example config values inherit non-empty supervisor environment values', () => {
+  const effective = effectiveChildEnv({
+    RULITH_TOKEN: 'supervisor-agent-token',
+    RULITH_CONNECTION_KEY: 'supervisor-worker-key',
+    RULITH_MODEL: 'supervisor-model',
+  }, {
+    RULITH_TOKEN: '',
+    RULITH_CONNECTION_KEY: '   ',
+    RULITH_MODEL: 'configured-model',
+  })
+  assert.equal(effective.RULITH_TOKEN, 'supervisor-agent-token')
+  assert.equal(effective.RULITH_CONNECTION_KEY, 'supervisor-worker-key')
+  assert.equal(effective.RULITH_MODEL, 'configured-model')
+})
+
 test('the npm package installs the Rulith Local command rather than the retired MCP binary', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.10')
+  assert.equal(pkg.version, '0.6.11')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -114,6 +129,21 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
   assert.doesNotMatch(source, /agentToken=/, 'Agent credentials must never enter a URL query string')
   assert.doesNotMatch(source, /\/board\/v1\/command|\/agent\/v1\//,
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
+})
+
+test('conversation mode exposes one small tool vocabulary and the Core trust ladder', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  const guide = /const OPTIONAL_RULITH_BASE_GUIDE = `([\s\S]*?)`\s*\n\s*const OPTIONAL_RULITH_COMMON_SAFETY/.exec(source)?.[1]
+  assert.ok(guide, 'conversation tool guide could not be found')
+  const visible = [...guide.matchAll(/"action":"([a-z_]+)"/g)].map((match) => match[1])
+  assert.deepEqual([...new Set(visible)].sort(), ['apply_batch', 'finish_case', 'request_action', 'start_case'])
+  for (const action of visible) assert.match(source, new RegExp(`action === '${action}'`), `${action} has no accepting parser arm`)
+  for (const retired of ['read_case', 'pause_case', 'resume_case', 'command']) {
+    assert.doesNotMatch(guide, new RegExp(`"action":"${retired}"`))
+    assert.doesNotMatch(source, new RegExp(`action === '${retired}'`), `${retired} remains as a hidden conversation capability`)
+  }
+  assert.match(source, /const FLOOR_ORDER = \['asserted', 'perceived', 'uncertain', 'inductive', 'approximate', 'attested', 'verified'\]/)
+  assert.doesNotMatch(source, /FLOOR_ORDER[^\n]*'assume'/)
 })
 
 test('Agent identity comes from the authenticated public MCP surface, never from decoding the bearer secret', () => {

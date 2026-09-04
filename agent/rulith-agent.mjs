@@ -497,7 +497,12 @@ async function board(operation, ctx, staleRetries = 5) {
     operation,
     ...(bound !== undefined ? { case: { id: bound.id, expectedRevision: bound.revision } } : {}),
   }
-  const idKey = `${ctx.board}\u0000${submissionKey(submission)}`
+  // expectedRevision is an optimistic-concurrency precondition, not request
+  // identity. If a write commits but its response is lost, the next Case read
+  // advances this value. The unchanged retry must still present the original
+  // requestId so Core can replay its authoritative receipt instead of executing
+  // an outward action twice.
+  const idKey = `${ctx.board}\u0000${bound?.id ?? ''}\u0000${submissionKey(operation)}`
   const requestId = requestIdFor(idKey)
   let r
   let authoritative = true
@@ -687,7 +692,30 @@ async function archiveCaseContext(ctx, disposition, reason) {
 const ATTENTION_FACTS = envNumber('RULITH_ATTENTION_FACTS', 80, { min: 20, max: 100_000 })
 const attnArg = (ctx) => ({ attention: { focus: ctx.case?.root, budget: { facts: ATTENTION_FACTS, findings: Math.max(10, Math.floor(ATTENTION_FACTS / 4)) } } })
 
-const projectionText = async (ctx, { emitState = false } = {}) => {
+const conversationalProjection = (text) => String(text).split(/\r?\n/).map((line) => {
+  const marker = 'base call: '
+  const at = line.indexOf(marker)
+  if (at < 0) return line
+  try {
+    const suffix = line.slice(at + marker.length)
+    const delimiter = suffix.indexOf(';')
+    const commandText = delimiter < 0 ? suffix : suffix.slice(0, delimiter)
+    const command = JSON.parse(commandText)
+    if (command === null || typeof command !== 'object' || Array.isArray(command) || command.kind !== 'ApplyAction') return line
+    const envelope = {
+      tool: 'rulith', action: 'request_action', name: command.action,
+      ...(command.target === undefined ? {} : { target: command.target }),
+      ...(command.args === undefined ? {} : { args: command.args }),
+    }
+    const trailing = delimiter < 0 ? '' : suffix.slice(delimiter)
+    return `${line.slice(0, at)}Rulith call: ${JSON.stringify(envelope)}${trailing}`
+  } catch {
+    log('Case View contained an action template that could not be translated to the conversation tool surface; the raw line was retained and will not execute.')
+    return line
+  }
+}).join('\n')
+
+const projectionText = async (ctx, { emitState = false, conversational = false } = {}) => {
   const r = await board({ kind: 'GetProjection', ...attnArg(ctx) }, ctx)
   if (r.accepted !== true) return `(board unavailable: ${r.teaching ?? r.errorCode ?? ''})`
   let text = String(r.payload?.text ?? '')
@@ -725,7 +753,7 @@ const projectionText = async (ctx, { emitState = false } = {}) => {
     text += ['', '', 'Verification in flight (not a gap; wait for the next round and do not rewrite the leaf or close the task):', ...lines].join(String.fromCharCode(10))
   }
   text += await evidenceChaseGuide(ctx, gaps)
-  return text
+  return conversational ? conversationalProjection(text) : text
 }
 
 // One persistent Agent Board carries governance and shared state. A conversation
@@ -752,7 +780,11 @@ const projectionText = async (ctx, { emitState = false } = {}) => {
 // **没搬 actuate（执行器收据面）**，那是故意的：本文件是「脑」，手归 rulith-worker（见文件头边界）。
 // 一个进程既提议又执行，等于把提议方和执行方合成一个人——那正是收据面要拆开的东西。
 
-/** 板上现有的根（枚举给放电/完成态/结案共用）。 */
+/** Roots in the selected Case (shared by discharge/completion/closure).
+ * `board()` attaches ctx.case to GetProjection. Core enters CaseContextOverlay
+ * before this read, so the returned logical facts are BoardShared + this Case
+ * and cannot contain another Case. Attention is intentionally absent here:
+ * authoritative completion must never depend on a lossy model projection. */
 async function boardRoots(ctx) {
   const pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
   if (pj.accepted !== true) return { roots: [], facts: [] }
@@ -843,7 +875,10 @@ async function dischargePass(ctx) {
 //    `allDone` 是**另一根轴**,不能与 certified 混用: certified 说的是「够不够硬」,
 //    state 说的是「还有没有活」。真机上见过 certified=true 而 state=actuating(手领了活没回执)——
 //    只看 certified 就结案,等于把"还在办"记成"办完了"(2026-08-07 review 的假绿正是这个形状)。
-const FLOOR_ORDER = ['asserted', 'assume', 'approximate', 'attested', 'verified']
+// Core TIER_ORDER reversed: weakest -> strongest, because completionAll keeps
+// the weakest floor by choosing the lower index. Keep every real Core tier and
+// never invent a compatibility tier the authority cannot return.
+const FLOOR_ORDER = ['asserted', 'perceived', 'uncertain', 'inductive', 'approximate', 'attested', 'verified']
 async function completionAll(ctx) {
   const { roots } = await boardRoots(ctx)
   if (roots.length === 0) return { certified: false, floor: '—', state: 'empty', allDone: false, breached: false, conflicts: [], roots: [] }
@@ -855,7 +890,9 @@ async function completionAll(ctx) {
     if (p.certified !== true) certified = false
     if (String(p.state ?? '') !== 'done') allDone = false
     const f = String(p.floor ?? 'asserted')
-    if (FLOOR_ORDER.indexOf(f) < FLOOR_ORDER.indexOf(floor)) floor = f
+    const rank = FLOOR_ORDER.indexOf(f)
+    if (rank < 0) { certified = false; floor = 'asserted' }
+    else if (rank < FLOOR_ORDER.indexOf(floor)) floor = f
     if (p.breached === true) breached = true
     for (const x of p.conflicts ?? []) conflicts.push(x)
     states.push(`${root}=${String(p.state ?? '')}`)
@@ -929,26 +966,26 @@ async function deliverableNow(ctx) {
   return { final, deliverable, why }
 }
 
-/** Read-only close gate for the conversation-first tool surface.
- * Unlike the one-shot/autopilot compatibility path above, this never runs discharge,
- * waits, retries verification, or creates work. The Agent selected finish_case; the host
- * only reports whether the Board already permits that transition. */
+/** Close gate for the conversation-first tool surface. finish_case is the
+ * model's explicit decision to attempt closure; deterministic discharge,
+ * receipt waiting, and retry windows are host mechanics and consume no model
+ * turn. The host still closes only after the Board certifies the Case. */
 async function conversationalDeliverability(ctx) {
-  const final = await completionAll(ctx)
+  await dischargePass(ctx)
+  const settled = await deliverableNow(ctx)
+  const final = settled.final
   emitOn(ctx, 'board', {
     caseId: ctx.case?.id, certified: final.certified, floor: final.floor,
     state: final.state, breached: final.breached,
   })
   const { facts } = await boardRoots(ctx)
   const obligations = openObligations(facts)
-  const deliverable = final.roots.length > 0
-    && final.certified === true
-    && final.allDone === true
+  const deliverable = settled.deliverable
     && obligations.length === 0
   const why = final.roots.length === 0
     ? 'The Board has no task tree.'
     : final.certified !== true || final.allDone !== true
-      ? `The Board has not established deliverability (certified=${final.certified} · floor=${final.floor} · ${final.state}).`
+      ? settled.why
       : `The Case still has unreceipted obligations: ${obligations.join(', ')}.`
   return { deliverable, why }
 }
@@ -1154,7 +1191,7 @@ ${EXECUTION_GUIDE}`
 
 const OPTIONAL_RULITH_BASE_GUIDE = `You are a normal conversational Agent. Answer greetings, questions, and discussion directly. Rulith is an optional governed-work tool, not the container for every message. Use it only when the current work benefits from persistent Case state, rules, evidence, external Actions, verification, or an auditable conclusion. The choice to use it is yours unless the user explicitly requires or forbids it.
 
-An ordinary reply immediately returns control to the user. It may include JSON examples or fenced code without executing them. It creates no Case and performs no Board operation. If a Rulith Case is already active, an ordinary reply leaves it open exactly as it is; you may ask for clarification between Case steps.
+An ordinary reply immediately returns control to the user. It may include JSON examples in explanatory prose without executing them. A response that consists only of a raw Board command is treated as a mistaken tool attempt, refused locally, and corrected to the Rulith envelope; quote such an object with prose when the user is asking about syntax. An ordinary reply creates no Case and performs no Board operation. If a Rulith Case is already active, it leaves that Case open exactly as it is; you may ask for clarification between Case steps.
 
 To take one Rulith step, the entire response must be exactly one JSON code block containing an explicit Rulith tool envelope, with no prose or other code blocks. The host-selected Case Type is authoritative; start_case therefore has no caseType argument:
 
@@ -1163,19 +1200,7 @@ ${'```json'}
 ${'```'}
 
 ${'```json'}
-{"tool":"rulith","action":"read_case"}
-${'```'}
-
-${'```json'}
 {"tool":"rulith","action":"finish_case","disposition":"completed"}
-${'```'}
-
-${'```json'}
-{"tool":"rulith","action":"pause_case"}
-${'```'}
-
-${'```json'}
-{"tool":"rulith","action":"resume_case","caseId":"<existing-case-id>"}
 ${'```'}
 
 The host owns credentials, Case identity, revision, and lifecycle enforcement. finish_case is a request: completed closes only after the Board reports a certified, fully settled result. To stop unsuccessful work explicitly, use disposition cancelled, failed, or abandoned and include a non-empty reason. Never emit raw OpenCase, CloseCase, PauseCase, ResumeCase, Worker receipts, clearance, or governance commands.
@@ -1185,9 +1210,9 @@ ${'```json'}
 {"tool":"rulith","action":"apply_batch","operations":[{"op":"assert_fact","id":"<fact-id>","predicate":"<available-predicate>","args":{"<argument>":"<value>"}}]}
 ${'```'}
 
-One top-level command may select an available Action or an explicit read/discharge step:
+Request one available Action. The host constructs the protocol command and keeps Case identity, revision, discharge, and receipts out of the model surface:
 ${'```json'}
-{"tool":"rulith","action":"command","command":{"kind":"ApplyAction","action":"<available-action>","target":"<board-node>"}}
+{"tool":"rulith","action":"request_action","name":"<available-action>","target":"<board-node>"}
 ${'```'}`
 
 const OPTIONAL_RULITH_COMMON_SAFETY = 'Never assert acceptance_met, test_result, certification, or rulith.exploration.completed.'
@@ -1218,6 +1243,15 @@ const parseRulithEnvelope = (raw) => {
 const containsNonExclusiveRulithEnvelope = (text) => {
   if (/^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.test(text)) return false
   return [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].some((block) => parseRulithEnvelope(block[1]) !== null)
+}
+const containsExclusiveRawBoardCommand = (text) => {
+  const exact = /^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.exec(text)
+  const raw = exact?.[1] ?? text.trim()
+  try {
+    const candidate = JSON.parse(raw)
+    return candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
+      && MODEL_COMMAND_KINDS.has(String(candidate.kind ?? ''))
+  } catch { return false }
 }
 const extractSubmission = (text, { requireToolEnvelope = false } = {}) => {
   if (requireToolEnvelope) {
@@ -1360,7 +1394,20 @@ ${messages[0].content}`,
  *  插话注进别人的案子;随便挑一个槽=更糟(不确定注给了谁)。所以判据是"槽是不是缺省槽"。 */
 let pollInterject = null
 
-const boundedToolResult = (value) => JSON.stringify(value, null, 2).slice(0, 12_000)
+const transportAmbiguous = (value) => value?.errorCode === 'upstream_unavailable' || value?.reason === 'transport_ambiguous'
+const transportRetryTeaching = (value) => `No authoritative Board receipt was returned. Retry the exact same Rulith step unchanged so it keeps the same request identity; do not alter the body or infer that it failed. ${String(value?.teaching ?? '').slice(0, 320)}`
+const boundedToolResult = (value) => {
+  if (transportAmbiguous(value)) return transportRetryTeaching(value)
+  if (value?.accepted !== true) return `The Board refused this Rulith step: ${String(value?.teaching ?? value?.errorCode ?? 'No teaching was returned.').slice(0, 1200)}`
+  const payload = value?.payload ?? {}
+  return JSON.stringify({
+    accepted: true,
+    ...(typeof payload.done === 'boolean' ? { done: payload.done } : {}),
+    ...(typeof payload.ok === 'boolean' ? { ok: payload.ok } : {}),
+    added: Array.isArray(value?.delta?.added) ? value.delta.added.length : 0,
+    warnings: Array.isArray(payload.warnings) ? payload.warnings.slice(0, 8) : [],
+  })
+}
 
 function emitConversationVerdict(ctx, result, cmd) {
   const payload = result?.payload ?? {}
@@ -1372,11 +1419,12 @@ function emitConversationVerdict(ctx, result, cmd) {
         added: (result.delta?.added ?? []).length, revision: result.revision ?? '',
         ...(invocation === '' ? {} : { invocation }),
       }
-    : { accepted: false, cmd, teaching: String(result?.teaching ?? result?.errorCode ?? 'Board rejected the Rulith step.') })
+    : { accepted: false, cmd, teaching: transportAmbiguous(result) ? transportRetryTeaching(result) : String(result?.teaching ?? result?.errorCode ?? 'Board rejected the Rulith step.') })
   if (result?.accepted === true) {
     const status = payload.done === true ? (payload.ok === false ? 'completed with failure' : 'completed') : 'accepted'
     log(`Board: ${cmd} ${status}${invocation === '' ? '' : ` · ${invocation}`}.`)
-  } else log(`Board rejected ${cmd}: ${String(result?.teaching ?? result?.errorCode ?? '').slice(0, 240)}`)
+  } else if (transportAmbiguous(result)) log(`Board outcome unknown for ${cmd}: retry the unchanged step; no authoritative receipt returned.`)
+  else log(`Board rejected ${cmd}: ${String(result?.teaching ?? result?.errorCode ?? '').slice(0, 240)}`)
 }
 
 async function conversationalSystem(ctx, requestedCaseType, sourceGuide = '') {
@@ -1387,11 +1435,9 @@ async function conversationalSystem(ctx, requestedCaseType, sourceGuide = '') {
       : ctx.case.caseType === 'exploration' ? OPTIONAL_RULITH_GUIDE : OPTIONAL_RULITH_GUIDE_UNSCOPED
   const selection = `\n\nIf you choose start_case, the host will open the configured Case Type ${JSON.stringify(requestedCaseType)}. You may decide whether Rulith is useful, but you may not replace this governance selection.`
   const recovery = ctx.detachedCase === undefined ? ''
-    : ctx.detachedCase.source === 'paused'
-      ? `\n\nThis conversation explicitly paused Rulith Case ${JSON.stringify(ctx.detachedCase.caseId)}. Decide whether to select it again with resume_case or leave it paused; do not claim it is active before selecting it.`
-      : `\n\nThis conversation previously selected Rulith Case ${JSON.stringify(ctx.detachedCase.caseId)}, which remains on the Board after its old local transcript was reclaimed. Decide explicitly whether to select it with resume_case or start fresh; do not claim it is active before selecting it.`
+    : `\n\nRulith Case ${JSON.stringify(ctx.detachedCase.caseId)} remains on the Board after its old local transcript was reclaimed. It is not selected and may now be running or paused. Tell the user that continuing it requires choosing that Case in Runs or supplying its caseId to the client; do not emit a lifecycle command.`
   if (ctx.case === undefined) return `${guide}${selection}${recovery}`
-  const active = `\n\nAn active Rulith Case is selected: ${ctx.case.id} (Case Type ${ctx.case.caseType}). Its current revision is ${ctx.case.revision}. Use only one explicit Rulith step at a time; a normal reply leaves this Case open.`
+  const active = `\n\nAn active Rulith Case is selected: ${ctx.case.id} (Case Type ${ctx.case.caseType}). Use only one explicit Rulith step at a time; a normal reply leaves this Case open. The host owns and refreshes the Case revision.`
   const lock = ctx.lawLocked
     ? '\nBoard legislation is locked. Do not propose provisional rules or Actions; use only installed capability vocabulary and available Actions.'
     : ctx.case.caseType === 'exploration'
@@ -1414,7 +1460,7 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
   const messages = ctx.messages
   let opened = false
   let caseId = ctx.case?.id ?? null
-  let detachedPendingCaseId = null
+  let detachedPendingCaseId = ctx.detachedCase?.caseId ?? null
   let startId = ctx.taskId || nextCaseId()
   let sourceGuideForTurn
   const configuredResume = resumeCase
@@ -1433,12 +1479,13 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
         opened = true
         caseId = explicitResume
         ctx.detachedCase = undefined
+        detachedPendingCaseId = null
       } else selectionNotice = `The requested existing Rulith Case ${JSON.stringify(explicitResume)} could not be selected. Answer the user normally; do not claim that Case is active.`
     }
   }
 
   const resumeNotice = selectionNotice === '' ? '' : `\n\n${selectionNotice}`
-  const initialView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true })}`
+  const initialView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true, conversational: true })}`
   messages.push({ role: 'user', content: `User message: ${userText}${resumeNotice}${initialView}` })
 
   for (let turn = 1; turn <= MAX_ROUNDS; turn++) {
@@ -1457,6 +1504,13 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
     // No tool call is a complete conversational answer. An active Case is deliberately
     // left untouched; the next user message may continue it, ask a question, or ignore it.
     if (sub === null) {
+      if (ctx.case !== undefined && containsExclusiveRawBoardCommand(reply)) {
+        const correction = 'The raw Board command was not executed. In conversation mode, request the available Action with exactly one Rulith envelope: {"tool":"rulith","action":"request_action","name":"<available-action>","target":"<board-node>"}. Case identity, revision, and protocol commands belong to the host.'
+        emitOn(ctx, 'verdict', { accepted: false, cmd: 'raw-board-command', teaching: correction, refusedLocally: true })
+        log(`Raw Board command not executed: ${correction}`)
+        messages.push({ role: 'user', content: `[Rulith tool result]\n${correction}` })
+        continue
+      }
       if (containsNonExclusiveRulithEnvelope(reply)) {
         const correction = 'The Rulith tool-shaped JSON was not executed because a tool call must be the entire response: exactly one JSON code block with no prose or other blocks. Reply normally without a Rulith envelope, or retry the intended tool call in that exact exclusive form.'
         emitOn(ctx, 'verdict', { accepted: false, cmd: 'rulith-envelope', teaching: correction, refusedLocally: true })
@@ -1478,7 +1532,7 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
       const action = String(tool.action)
       if (action === 'start_case') {
         if (ctx.case !== undefined) {
-          feedback = `Rulith Case "${ctx.case.id}" is already active. Read, advance, pause, or finish it before starting another Case.`
+          feedback = `Rulith Case "${ctx.case.id}" is already active. Advance or finish it before starting another Case.`
         } else {
           const caseType = requestedCaseType
           await probeLawLock(ctx)
@@ -1493,48 +1547,6 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
             emitOn(ctx, 'case-open', { board: ctx.board, caseId, caseType, ok: true })
             feedback = `Rulith Case "${caseId}" is active under the host-selected Case Type ${JSON.stringify(caseType)}.`
           }
-        }
-      } else if (action === 'read_case') {
-        feedback = ctx.case === undefined
-          ? 'No Rulith Case is active. Use start_case only if governed work is useful.'
-          : `Current Rulith Case View:\n${await projectionText(ctx, { emitState: true })}`
-      } else if (action === 'resume_case') {
-        if (ctx.case !== undefined) {
-          feedback = `Rulith Case "${ctx.case.id}" is already active; another Case cannot be selected implicitly.`
-        } else if (typeof tool.caseId !== 'string' || tool.caseId.trim() === '') {
-          feedback = 'resume_case requires a non-empty caseId from a prior Case record.'
-        } else {
-          await probeLawLock(ctx)
-          const resumed = await selectExistingCase(ctx, tool.caseId.trim())
-          if (resumed === undefined) {
-            feedback = `Rulith Case "${tool.caseId.trim()}" could not be resumed.`
-          }
-          else {
-            const resumedType = String(resumed.caseType ?? requestedCaseType)
-            const bound = bindCaseRow(ctx, tool.caseId.trim(), resumedType, resumed)
-            if (bound === undefined) feedback = `Rulith Case "${tool.caseId.trim()}" could not be selected because its identity did not match.`
-            else {
-              opened = true
-              caseId = bound.id
-              detachedPendingCaseId = null
-              ctx.detachedCase = undefined
-              feedback = `Rulith Case "${bound.id}" selected.`
-            }
-          }
-        }
-      } else if (action === 'pause_case') {
-        if (ctx.case === undefined) feedback = 'No Rulith Case is active.'
-        else {
-          const activeId = ctx.case.id
-          const paused = await board({ kind: 'PauseCase' }, ctx)
-          if (paused.accepted === true) {
-            const activeType = ctx.case.caseType
-            ctx.case = undefined
-            ctx.detachedCase = { caseId: activeId, caseType: activeType, detachedAt: Date.now(), source: 'paused' }
-            detachedPendingCaseId = activeId
-            emitOn(ctx, 'case-pending', { board: ctx.board, caseId: activeId, reason: 'Paused by the Agent.' })
-            feedback = `Rulith Case "${activeId}" is paused. The conversation remains active.`
-          } else feedback = `The Board refused pause_case: ${String(paused.teaching ?? paused.errorCode ?? '')}`
         }
       } else if (action === 'finish_case') {
         if (ctx.case === undefined) feedback = 'No Rulith Case is active.'
@@ -1566,28 +1578,23 @@ async function runConversationTurn(ctx, userText, requestedCaseType = selectedCa
           emitConversationVerdict(ctx, result, 'ApplyBatch')
           feedback = boundedToolResult(result)
         }
-      } else if (action === 'command') {
-        const command = tool.command
+      } else if (action === 'request_action') {
         if (ctx.case === undefined) feedback = 'No Rulith Case is active. Use start_case first; nothing was forwarded.'
-        else if (command === null || typeof command !== 'object' || Array.isArray(command) || typeof command.kind !== 'string') {
-          feedback = 'command requires one command object with a string kind; nothing was forwarded.'
-        } else {
-          const refusal = modelCommandRefusal(command.kind, { conversational: true })
-          if (refusal !== undefined) {
-            emitOn(ctx, 'verdict', { accepted: false, cmd: String(command.kind), teaching: refusal, refusedLocally: true })
-            feedback = refusal
-          } else {
-            const result = await board(command, ctx)
-            emitConversationVerdict(ctx, result, command.kind)
-            feedback = boundedToolResult(result)
-          }
+        else if (typeof tool.name !== 'string' || tool.name.trim() === '') feedback = 'request_action requires the exact name of an available Action.'
+        else {
+          const command = { kind: 'ApplyAction', action: tool.name.trim(),
+            ...(typeof tool.target === 'string' && tool.target !== '' ? { target: tool.target } : {}),
+            ...(tool.args !== undefined ? { args: tool.args } : {}) }
+          const result = await board(command, ctx)
+          emitConversationVerdict(ctx, result, 'ApplyAction')
+          feedback = boundedToolResult(result)
         }
       } else {
-        feedback = `Unknown Rulith tool action ${JSON.stringify(action)}. Use start_case, read_case, resume_case, pause_case, finish_case, apply_batch, or command.`
+        feedback = `Unknown Rulith tool action ${JSON.stringify(action)}. Use start_case, apply_batch, request_action, or finish_case.`
       }
     }
 
-    const caseView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true })}`
+    const caseView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true, conversational: true })}`
     messages.push({ role: 'user', content: `[Rulith tool result]\n${feedback}${caseView}\n\nDecide whether another Rulith step is useful or reply normally to the user.` })
   }
 
@@ -1756,10 +1763,10 @@ ${say.slice(0, 1200)}`)
               break
             }
           } else {
-            const t = String(r.teaching ?? r.errorCode ?? '')
-            log(`Board rejected ${head}: ${t.slice(0, 160)}`)
-            emitOn(ctx, 'verdict', { accepted: false, cmd: c.kind, teaching: t })
-            lines.push(`${head} was rejected: ${t}`)
+            const t = transportAmbiguous(r) ? transportRetryTeaching(r) : String(r.teaching ?? r.errorCode ?? '')
+            log(transportAmbiguous(r) ? `Board outcome unknown for ${head}: retry unchanged.` : `Board rejected ${head}: ${t.slice(0, 160)}`)
+            emitOn(ctx, 'verdict', { accepted: false, cmd: c.kind, teaching: t, ...(transportAmbiguous(r) ? { transportAmbiguous: true } : {}) })
+            lines.push(transportAmbiguous(r) ? t : `${head} was rejected: ${t}`)
             if (ci < cmds.length - 1) {
               lines.push(`${cmds.length - 1 - ci} remaining action(s) were not executed because the sequence stops at the first rejection.`)
             }
@@ -1796,9 +1803,15 @@ ${say.slice(0, 1200)}`)
       } else {
         // **报错是接口**：原样回喂，不改写——板的教学比我们的转述准
         const teaching = String(r.teaching ?? r.errorCode ?? '')
-        log(`Board rejected the batch: ${teaching.slice(0, 300)}`)
-        emitOn(ctx, 'verdict', { accepted: false, teaching })
-        feedback = `The board rejected this batch:\n${teaching}\n\nCorrect the request using that guidance and submit again.`
+        if (transportAmbiguous(r)) {
+          feedback = transportRetryTeaching(r)
+          log('Board outcome unknown for ApplyBatch: retry the unchanged batch; no authoritative receipt returned.')
+          emitOn(ctx, 'verdict', { accepted: false, teaching: feedback, transportAmbiguous: true })
+        } else {
+          log(`Board rejected the batch: ${teaching.slice(0, 300)}`)
+          emitOn(ctx, 'verdict', { accepted: false, teaching })
+          feedback = `The board rejected this batch:\n${teaching}\n\nCorrect the request using that guidance and submit again.`
+        }
       }
     }
 

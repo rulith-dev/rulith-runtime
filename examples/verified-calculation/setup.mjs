@@ -6,7 +6,7 @@
  *
  * Every downloaded file is checked before anything is written. An installed package or
  * checkout supplies `artifact-manifest.json`; the standalone Console download carries
- * the same seven immutable v0.6.10 pins inside this script. Runtime bytes come from the
+ * the same seven immutable v0.6.11 pins inside this script. Runtime bytes come from the
  * immutable Git tag by default, not from Console's retired per-file download routes.
  */
 import { createHash } from 'node:crypto'
@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { resolve } from 'node:path'
 
 const ORIGIN = process.env.RULITH_DOWNLOAD_ORIGIN
-  ?? 'https://raw.githubusercontent.com/rulith-dev/rulith-runtime/v0.6.10'
+  ?? 'https://raw.githubusercontent.com/rulith-dev/rulith-runtime/v0.6.11'
 const target = resolve(process.argv[2] ?? 'rulith-verified-calculation')
 
 /** Download path under the origin -> where it lands in the prepared workspace. */
@@ -52,7 +52,7 @@ const EMBEDDED_MANIFEST_FILES = Object.freeze({
   'examples/verified-calculation/verify-output.mjs': { sha256: '65ead0238bda0b732dbbe57fa4188304953ed84ca82c66cd1ee7e4fe726653ba' },
   'examples/verified-calculation/worker-tools.json': { sha256: 'bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c' },
   'examples/verified-calculation/data/input.json': { sha256: '93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7' },
-  'agent/rulith-agent.mjs': { sha256: 'a5d0811ac89f0ad3c9b7a5bb60ddb8580cad092d86ac5010dc285a3ce33a440a' },
+  'agent/rulith-agent.mjs': { sha256: '1b44cbfe70ae4618e140e808fbe61e9e7c77ff160e496fc7a775ae7818ea50a9' },
   'worker/rulith-worker.mjs': { sha256: '009241d6bc1f067859795811d076ec581835183eca2a6dae35d52166f6e64c0a' },
 })
 

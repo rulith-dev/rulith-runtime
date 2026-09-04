@@ -42,5 +42,15 @@ const manifest = {
   files: Object.fromEntries(files.map((file) => [file, { sha256: sha256(file) }])),
 }
 
-writeFileSync(resolve(root, 'artifact-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
-console.log(`wrote ${files.length} artifact hashes`)
+const output = `${JSON.stringify(manifest, null, 2)}\n`
+const target = resolve(root, 'artifact-manifest.json')
+if (process.argv.includes('--check')) {
+  const current = readFileSync(target, 'utf8').replace(/\r\n/g, '\n')
+  if (current !== output) {
+    throw new Error('artifact-manifest.json is stale. Run npm run manifest, review the changed trust anchors, and commit them before packing.')
+  }
+  console.log(`verified ${files.length} artifact hashes`)
+} else {
+  writeFileSync(target, output)
+  console.log(`wrote ${files.length} artifact hashes`)
+}

@@ -16,9 +16,5 @@
       "RULITH_CONNECTION": "",
       "RULITH_CONNECTION_KEY": ""
     }
-  },
-  "paths": {
-    "agent": "../agent/rulith-agent.mjs",
-    "worker": "../worker/rulith-worker.mjs"
   }
 }
