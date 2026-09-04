@@ -198,7 +198,7 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
       }))
       return
     }
-    assert.equal(req.url, '/mcp')
+    assert.equal(req.url, '/mcp/host', 'the first-party runtime is a host: it connects to the host surface, never to the model surface')
     assert.equal(String(req.headers.authorization), `Bearer rlt_agt_${'a'.repeat(43)}`)
     if (input.method === 'tools/list') {
       res.end(JSON.stringify({
@@ -266,9 +266,9 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
   await new Promise((resolveClose) => server.close(resolveClose))
   assert.equal(status, 0, `${stdout}\n${stderr}`)
   assert.deepEqual(toolNames, ['OpenCase', 'CloseCase'], `the model surface did not reach the Board as tools/call: ${toolNames.join(', ')}`)
-  assert.ok(paths.includes('/mcp'))
+  assert.ok(paths.includes('/mcp/host'))
   assert.ok(paths.includes('/v1/chat/completions'))
-  assert.ok(paths.every((path) => path === '/mcp' || path === '/v1/chat/completions'), `unexpected privileged path: ${paths.join(', ')}`)
+  assert.ok(paths.every((path) => path === '/mcp/host' || path === '/v1/chat/completions'), `unexpected privileged path: ${paths.join(', ')}`)
 })
 
 test('rulith --help is side-effect free and does not create a credential file', () => {

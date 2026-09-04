@@ -52,7 +52,7 @@ const EMBEDDED_MANIFEST_FILES = Object.freeze({
   'examples/verified-calculation/verify-output.mjs': { sha256: '65ead0238bda0b732dbbe57fa4188304953ed84ca82c66cd1ee7e4fe726653ba' },
   'examples/verified-calculation/worker-tools.json': { sha256: 'bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c' },
   'examples/verified-calculation/data/input.json': { sha256: '93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7' },
-  'agent/rulith-agent.mjs': { sha256: 'd325eefc2c56334646c1228347f49360a4c5676b8d1a54c38611302491c1cd7b' },
+  'agent/rulith-agent.mjs': { sha256: 'f2e493c2550d5e20552366511102530eef92cfc92c3b0a6516e5fc65b416a449' },
   'worker/rulith-worker.mjs': { sha256: '73aaccd30e803e214f736f4dccb062f7fb82bef7e594dbfa66f088a8fec3cb33' },
 })
 

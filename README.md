@@ -129,6 +129,19 @@ the Local UI. Verification discharge, receipt waiting, and reading the view are 
 mechanics: they consume no model turn. `CloseCase completed` is only ever sent by the
 model, and the Board runs verification before it closes anything.
 
+Two MCP paths carry this split. `/mcp` is the model surface: a generic MCP client
+connected there shows its model the four verbs and nothing else. `/mcp/host` is the host
+surface: the same four verbs plus `GetCompletion` (the bounded view read) and
+`agent_protocol` (the protocol path for pause, resume, discharge and identity). This
+runtime connects to `/mcp/host`. Both paths take the same Agent token and grant the same
+authority; the split decides what a model is offered, not who may act.
+
+When the Board answers `stale_case_revision`, the runtime does not retry the step. The
+Case moved — a receipt landed, a discharge ran, another session wrote — and the refusal
+already carries the current view, so the model re-reads and decides again. Only a
+transport failure with no authoritative answer is retried, unchanged and with the same
+request identity.
+
 Inside `ApplyBatch`, a step of reasoning takes one of five shapes:
 
 | Shape | What it puts on the Board |

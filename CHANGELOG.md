@@ -36,6 +36,19 @@ dialect will not work against this runtime.
   prompt-side catalogue that was a second, staler copy of the Board.
 - A one-shot run now prints its own verdict on the terminal, and reports success from the
   loop's outcome rather than from the wording of that sentence.
+- The Agent Runtime connects to the host surface `/mcp/host`. The model surface `/mcp`
+  advertises the four verbs only; `GetCompletion` and `agent_protocol` are host tools and
+  live on the host surface. Same token, same authority — the split decides what a model
+  is offered, not who may act.
+- A `stale_case_revision` refusal is handed back to the model together with the current
+  view; the host no longer reads the new revision out of the refusal and replays the step.
+  Only a transport failure with no authoritative answer is retried, unchanged and with the
+  same request identity.
+- Exact-or-fail at the first membrane: a tool call whose arguments carry an integer beyond
+  ±9007199254740991, or a non-finite number, is refused locally with a teaching before
+  anything is sent. The look is on the text — the Chat Completions `arguments` string, the
+  Messages response body, the emulated reply — because `JSON.parse` has already rounded
+  such a literal by the time a value exists.
 - Worker Tools have one standing (board-spec TOOL-08). A built-in and a Tool-Manifest
   entry are advertised in the same descriptor — `id`, `digest`, `sourceTypes`, `kind`,
   `params`, `returns` — on the startup banner and in the poll body alike, so a host can

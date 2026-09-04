@@ -41,7 +41,12 @@ function envNumber(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER, int
 }
 
 const URL_BASE = (process.env.RULITH_URL ?? 'https://api.rulith.ai').replace(/\/$/, '')
-const MCP_URL = `${URL_BASE}/mcp`
+// The host surface. `/mcp` is the model surface — the four verbs and nothing else, which
+// is what a generic MCP client shows its model. A protocol-native host connects one
+// path deeper and also gets the two host tools (`GetCompletion`, `agent_protocol`).
+// Same token, same authority; the split is about what a model is offered, not about
+// who may do what.
+const MCP_URL = `${URL_BASE}/mcp/host`
 const TOKEN = process.env.RULITH_TOKEN ?? ''
 // Compatibility hint for Cloud versions before agent_protocol identity. It is
 // never authorization: every operation still crosses authenticated MCP and a
@@ -656,7 +661,7 @@ const transportRetryTeaching = (value) => 'No authoritative Board receipt was re
  * asks for does not exist yet, and presenting the previous one would bind new work to
  * the wrong context.
  */
-async function callTool(name, input, ctx, { staleRetries = 1 } = {}) {
+async function callTool(name, input, ctx) {
   if (ctx === null || typeof ctx !== 'object' || typeof ctx.board !== 'string' || ctx.board === '') {
     throw new Error(`callTool(): missing execution context for ${String(name)}.`)
   }
@@ -690,11 +695,13 @@ async function callTool(name, input, ctx, { staleRetries = 1 } = {}) {
   if (!authoritative) text = JSON.stringify({ ...result, teaching: transportRetryTeaching(result) })
   const previous = bound?.revision
   trackCase(ctx, result)
-  if (authoritative && result.accepted !== true && String(result.errorCode ?? '') === 'stale_case_revision'
-    && staleRetries > 0 && ctx.case !== undefined && ctx.case.revision !== previous) {
-    // The refusal itself carried the current revision, so the retry is not a guess.
-    return await callTool(name, input, ctx, { staleRetries: staleRetries - 1 })
-  }
+  // A stale revision is not retried here. The Case moved under the model — a Worker
+  // receipt landed, a discharge ran, another session wrote — and the step it just chose was
+  // formed against a view that no longer holds. Replaying that step against the new
+  // revision would be the host judging on the model's behalf. The refusal already carries
+  // the current view, so the model re-reads and decides again; only a transport failure
+  // (no authoritative answer) is retried, and then unchanged, with the same requestId.
+  void previous
   return { result, text, authoritative, view: viewOf(result) }
 }
 
@@ -893,6 +900,46 @@ const emulatedToolGuide = (tools) => [
   ...tools.map((tool) => `${tool.name}: ${tool.description}\ninput schema: ${JSON.stringify(tool.schema)}`),
 ].join('\n')
 
+/**
+ * The first number literal in a JSON text that the exact number domain cannot hold, or
+ * undefined. The Board holds integers within ±(2^53 − 1) and finite numbers only
+ * (exact-or-fail), and a literal beyond that has already lost precision by the time
+ * `JSON.parse` returns — 9007199254740993 comes back as 9007199254740992 — so the look
+ * happens on the text, before parsing. Strings are skipped: a number inside a string is
+ * text, and writing a large identifier as a string is exactly what the teaching asks for.
+ */
+export function inexactNumberLiteral(text) {
+  const s = String(text ?? '')
+  const number = /-?\d+(\.\d+)?([eE][+-]?\d+)?/y
+  let i = 0
+  while (i < s.length) {
+    const c = s[i]
+    if (c === '"') {
+      i += 1
+      while (i < s.length && s[i] !== '"') i += s[i] === '\\' ? 2 : 1
+      i += 1
+      continue
+    }
+    if (c === '-' || (c >= '0' && c <= '9')) {
+      number.lastIndex = i
+      const m = number.exec(s)
+      if (m === null) { i += 1; continue }
+      const literal = m[0]
+      i += literal.length
+      if (m[1] === undefined && m[2] === undefined) {
+        const digits = literal.startsWith('-') ? literal.slice(1) : literal
+        if (digits.length >= 16 && BigInt(digits) > 9007199254740991n) return literal
+      } else {
+        const value = Number(literal)
+        if (!Number.isFinite(value) || (Number.isInteger(value) && Math.abs(value) > 9007199254740991)) return literal
+      }
+      continue
+    }
+    i += 1
+  }
+  return undefined
+}
+
 /** One JSON object is one call; anything else is an ordinary answer. */
 function parseEmulated(text) {
   const trimmed = String(text ?? '').trim()
@@ -905,7 +952,8 @@ function parseEmulated(text) {
     return { text: trimmed, toolCalls: [] }
   }
   const input = value.input !== null && typeof value.input === 'object' && !Array.isArray(value.input) ? value.input : {}
-  return { text: '', toolCalls: [{ id: `emulated_${++emulatedSeq}`, name: value.tool, input }] }
+  const inexact = inexactNumberLiteral(candidate)
+  return { text: '', toolCalls: [{ id: `emulated_${++emulatedSeq}`, name: value.tool, input, ...(inexact === undefined ? {} : { inexact }) }] }
 }
 
 /** Tool arguments that are not a JSON object are refused locally rather than guessed at. */
@@ -984,13 +1032,23 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
     const message = payload.choices?.[0]?.message ?? {}
     return {
       text: String(message.content ?? ''),
-      toolCalls: (Array.isArray(message.tool_calls) ? message.tool_calls : []).map((call, index) => ({
-        id: String(call.id ?? `call_${index}`),
-        name: String(call.function?.name ?? ''),
-        input: parseToolArguments(call.function?.arguments),
-      })),
+      toolCalls: (Array.isArray(message.tool_calls) ? message.tool_calls : []).map((call, index) => {
+        // Chat Completions carries the arguments as JSON *text*, so the exactness look
+        // is on that text; a literal beyond the exact domain is refused before parsing.
+        const inexact = typeof call.function?.arguments === 'string' ? inexactNumberLiteral(call.function.arguments) : undefined
+        return {
+          id: String(call.id ?? `call_${index}`),
+          name: String(call.function?.name ?? ''),
+          input: parseToolArguments(call.function?.arguments),
+          ...(inexact === undefined ? {} : { inexact }),
+        }
+      }),
     }
   }
+  // Messages carries `input` as parsed JSON inside the response, so the only place a
+  // literal beyond the exact domain is still visible is the response text itself. Provider
+  // metadata carries small integers only; a hit is attributed to the calls of this turn.
+  const inexact = inexactNumberLiteral(raw)
   const blocks = Array.isArray(payload.content) ? payload.content : []
   return {
     text: blocks.filter((block) => block?.type === 'text').map((block) => String(block.text ?? '')).join('\n'),
@@ -998,6 +1056,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
       id: String(block.id ?? `call_${index}`),
       name: String(block.name ?? ''),
       input: parseToolArguments(block.input),
+      ...(inexact === undefined ? {} : { inexact }),
     })),
   }
 }
@@ -1209,6 +1268,17 @@ async function executeToolCall(ctx, call, options) {
     log(`Refused locally: ${teaching.slice(0, 200)}`)
     emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, refusedLocally: true })
     return { text: refusal('tool_not_carried', teaching), accepted: false }
+  }
+  if (call.inexact !== undefined) {
+    // Exact-or-fail, at the first membrane the literal crosses. Forwarding the parsed value
+    // would send the Board a number the model never wrote, and the Board would then judge
+    // (and possibly ground) that other number.
+    const teaching = `${name}: the number ${call.inexact} is outside the exact number domain, so nothing was sent.`
+      + ' Integers must stay within \u00b19007199254740991 (2^53-1) and every number must be finite.'
+      + ' Pass large identifiers as strings (for example "1234567890123456789"); strings compare by exact text and are never rounded.'
+    log(`Refused locally: ${teaching.slice(0, 200)}`)
+    emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, refusedLocally: true })
+    return { text: refusal('bad_command', teaching), accepted: false }
   }
   if (call.input === undefined) {
     const teaching = `${name} arguments were not a JSON object, so nothing was sent. Send arguments matching the tool schema.`

@@ -210,6 +210,22 @@ export function defaultGateway({ cases = [], caseType = 'exploration', certifyAf
   }
 }
 
+/**
+ * The response text the provider sends. A raw tool input (`rawInput`, a JSON text) is
+ * spliced into that text after serialization: `JSON.stringify` would round a literal
+ * beyond 2^53 before the runtime ever saw it, and what the exactness arms test is
+ * precisely the text on the wire.
+ */
+function serializeModelAnswer(answer, provider) {
+  const value = typeof answer === 'string' ? { text: answer } : (answer ?? { text: '' })
+  const raws = (Array.isArray(value.toolCalls) ? value.toolCalls : [])
+    .map((call, index) => [String(call.id ?? `call_${index + 1}`), call.rawInput])
+    .filter(([, raw]) => typeof raw === 'string')
+  let body = JSON.stringify(renderModelAnswer(answer, provider))
+  for (const [id, raw] of raws) body = body.replace(JSON.stringify(`__RAW_INPUT_${id}__`), () => raw)
+  return body
+}
+
 /** Turn a scripted model answer into the shape the requested provider would send. */
 function renderModelAnswer(answer, provider) {
   const value = typeof answer === 'string' ? { text: answer } : (answer ?? { text: '' })
@@ -219,12 +235,15 @@ function renderModelAnswer(answer, provider) {
     name: String(call.name ?? ''),
     input: call.input ?? {},
     rawArguments: call.rawArguments,
+    rawInput: call.rawInput,
   }))
   if (provider === 'anthropic') {
     return {
       content: [
         ...(text === '' ? [] : [{ type: 'text', text }]),
-        ...calls.map((call) => ({ type: 'tool_use', id: call.id, name: call.name, input: call.input })),
+        // A raw input is a marker here; `serializeModelAnswer` splices the text in after
+        // JSON.stringify, which would otherwise round any literal beyond 2^53.
+        ...calls.map((call) => ({ type: 'tool_use', id: call.id, name: call.name, input: call.rawInput === undefined ? call.input : `__RAW_INPUT_${call.id}__` })),
       ],
     }
   }
@@ -305,7 +324,7 @@ export async function runAgent({
         return void response.end(JSON.stringify(answer.body ?? { error: 'model provider unavailable' }))
       }
       response.writeHead(200, { 'content-type': 'application/json' })
-      return void response.end(JSON.stringify(renderModelAnswer(answer, provider)))
+      return void response.end(serializeModelAnswer(answer, provider))
     }
     response.setHeader('content-type', 'application/json')
     if (rejectAllCredential) {
