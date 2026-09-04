@@ -2,96 +2,80 @@
 /**
  * What one model turn is allowed to make this Agent Runtime do.
  *
- * The four defects these arms close share a shape: the runtime treated a model turn as
- * an instruction rather than as a proposal, or treated one task's failure as the
- * process's. Each arm therefore asserts on the wire — what reached the scripted Board,
- * and what the process did afterwards — rather than on a message the Agent printed.
+ * The defects these arms close share a shape: the runtime treated a model turn as an
+ * instruction rather than as a proposal, or treated one task's failure as the process's.
+ * Each arm therefore asserts on the wire — what reached the scripted Board, and what the
+ * process did afterwards — rather than on a message the Agent printed.
+ *
+ * The allow-list is now the tool list itself: four verbs, and nothing else can be named.
+ * That is a stronger guard than the refusal table it replaced, so these arms enumerate
+ * the family anyway: a guard written against one name passes while the sibling that
+ * matters walks through.
  */
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import test from 'node:test'
 
-import { defaultBoard, fenced, runAgent } from './support/agent-harness.mjs'
+import { MODEL_VERBS, callTool, defaultGateway, runAgent } from './support/agent-harness.mjs'
 
-// ── D. The model may not speak governance ────────────────────────────────────
+// ── D. The model may not speak governance, lifecycle selection, or receipts ──
 
-test('a fenced governance command from the model is refused locally and never reaches the authority', async () => {
-  const run = await runAgent({
-    argv: ['--case', 'case-guard-1', 'remove the pack'],
-    model: (round) => (round === 1
-      ? fenced({ kind: 'RemovePack', packType: 'domain', name: 'verified-calculation', expectedDigest: 'sha256:current' })
-      : 'DONE:'),
-  })
-
-  assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-  assert.equal(run.kinds.includes('RemovePack'), false,
-    `RemovePack was forwarded to the authority under the Agent's own credential. Operations seen: ${run.kinds.join(', ')}`)
-  assert.match(run.stdout, /Refused locally/)
-  assert.match(run.stdout, /RemovePack is not a command this Agent Runtime sends/)
-})
-
-// Every kind here is either governance, a lifecycle verb the host owns, or a receipt
-// surface that belongs to the Worker. Enumerating the family is the point: a guard
-// written against one name passes while the sibling that matters walks through.
-for (const command of [
-  { kind: 'SealBoard' },
-  { kind: 'RegisterPack', packType: 'domain', pack: {} },
-  { kind: 'SetBoardSuspended', suspended: true, reason: 'r' },
-  { kind: 'MaintainBoardShared', operations: [] },
-  // `abandoned`, not `completed`: the host closes a deliverable segment with
-  // `completed`, so a model command carrying that disposition is indistinguishable
-  // from the host's own and the arm would pass without proving anything.
-  { kind: 'CloseCase', root: 'case-guard-2', disposition: 'abandoned' },
-  { kind: 'PauseCase' },
-  { kind: 'ReportWork', workType: 'action', id: 'inv_1', ok: true, result: 'shipped' },
-  { kind: 'ClaimWork', workType: 'action', id: 'inv_1' },
-  { kind: 'GrantClearance', norm: 'sql:destructive' },
-  { kind: 'DefineRole', role: 'admin' },
+for (const forbidden of [
+  { name: 'SealBoard', input: {} },
+  { name: 'RegisterPack', input: { packType: 'domain', pack: {} } },
+  { name: 'RemovePack', input: { packType: 'domain', name: 'verified-calculation' } },
+  { name: 'SetBoardSuspended', input: { suspended: true, reason: 'r' } },
+  { name: 'MaintainBoardShared', input: { operations: [] } },
+  { name: 'PauseCase', input: {} },
+  { name: 'ResumeCase', input: { caseId: 'case-guard-2' } },
+  { name: 'RunDischarge', input: { root: 'case-guard-2' } },
+  { name: 'GetProjection', input: {} },
+  { name: 'ReportWork', input: { workType: 'action', id: 'inv_1', ok: true, result: 'shipped' } },
+  { name: 'ClaimWork', input: { workType: 'action', id: 'inv_1' } },
+  { name: 'GrantClearance', input: { norm: 'sql:destructive' } },
+  { name: 'DefineRole', input: { role: 'admin' } },
 ]) {
-  test(`the model cannot emit ${command.kind}`, async () => {
+  test(`the model cannot call ${forbidden.name}`, async () => {
     const run = await runAgent({
-      argv: ['--case', 'case-guard-2', 'do the thing'],
-      model: (round) => (round === 1 ? fenced(command) : 'DONE:'),
+      argv: ['do the thing'],
+      model: (round) => (round === 1 ? callTool(forbidden.name, forbidden.input) : 'I could not do that.'),
     })
     assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-    const forwarded = run.operations.filter((operation) => operation.kind === command.kind)
-    // CloseCase is issued by the host at the end of a deliverable segment, so the
-    // question is never "did the string appear" but "did one carry the model's own
-    // fields" — here, its disposition and root.
-    const fromModel = forwarded.filter((operation) => JSON.stringify(operation) === JSON.stringify(command))
-    assert.deepEqual(fromModel, [],
-      `${command.kind} was forwarded verbatim from the model turn: ${JSON.stringify(fromModel)}`)
+    assert.equal(run.verbs.includes(forbidden.name), false,
+      `${forbidden.name} was forwarded to the authority under the Agent's own credential: ${run.verbs.join(', ')}`)
+    assert.equal(run.kinds.includes(forbidden.name), false,
+      `${forbidden.name} reached the authority through the host protocol path: ${run.kinds.join(', ')}`)
     assert.match(run.stdout, /Refused locally/)
   })
 }
 
-test('the commands the prompt actually teaches are still forwarded', async () => {
-  // Calibration. Without this arm, an allow-list that refused everything would make
-  // every assertion above green while breaking the runtime.
+test('the four verbs the tool list advertises are still forwarded (calibration)', async () => {
+  // Without this arm, an allow-list that refused everything would make every assertion
+  // above green while breaking the runtime.
   const run = await runAgent({
-    argv: ['--case', 'case-guard-3', 'apply an action'],
-    model: (round) => (round === 1 ? fenced({ kind: 'ApplyAction', action: 'acme.ship', target: 'L1' }) : 'DONE:'),
-    board: (args) => {
-      const operation = args.operation ?? {}
-      if (operation.kind === 'ApplyAction') return { accepted: true, revision: 'r5', caseRevision: 'c1', payload: { done: true, ok: true, result: 'shipped', invocation: 'inv_1' } }
-      return defaultBoard()(args)
+    argv: ['apply an action'],
+    env: { RULITH_MAX_ROUNDS: '6' },
+    model: (round) => {
+      if (round === 1) return callTool('OpenCase', {})
+      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
+      if (round === 3) return callTool('ApplyAction', { action: 'acme.ship', target: 'L1' })
+      if (round === 4) return callTool('CloseCase', { disposition: 'abandoned', reason: 'demonstration only' })
+      return 'Done.'
     },
   })
   assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-  assert.equal(run.kinds.filter((kind) => kind === 'ApplyAction').length, 1,
-    `ApplyAction must still reach the Board; operations seen: ${run.kinds.join(', ')}`)
+  assert.deepEqual(run.verbs.filter((verb) => MODEL_VERBS.includes(verb)),
+    ['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase'])
   assert.doesNotMatch(run.stdout, /Refused locally/)
 })
 
-test('a batch of board operations is still forwarded as ApplyBatch', async () => {
-  const run = await runAgent({
-    argv: ['--case', 'case-guard-4', 'assert a fact'],
-    model: (round) => (round === 1
-      ? fenced([{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }])
-      : 'DONE:'),
-  })
-  assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-  assert.ok(run.kinds.includes('ApplyBatch'), `operations seen: ${run.kinds.join(', ')}`)
-  assert.doesNotMatch(run.stdout, /Refused locally/)
+test('a Cloud endpoint that advertises no model verbs stops startup instead of inventing them', async () => {
+  const run = await runAgent({ advertise: ['agent_protocol', 'GetCompletion'] })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.notEqual(run.code, 0)
+  assert.match(run.stderr, /does not advertise OpenCase, ApplyBatch, ApplyAction, CloseCase/)
+  assert.doesNotMatch(run.stderr, /could not resolve this opaque Agent MCP token/i,
+    'a surface that cannot serve this client must not be reported as a credential failure')
 })
 
 test('an oversized public MCP response is refused before the Agent buffers it without bound', async () => {
@@ -105,121 +89,7 @@ test('an oversized public MCP response is refused before the Agent buffers it wi
 
 // ── E. One task's failure is not the process's ───────────────────────────────
 
-test('a model-provider error in --serve fails the task and leaves the server accepting work', async () => {
-  // The model service answers 500 for the first task and normally for the second. The
-  // old behaviour called process.exit(1) from inside the first, discarding the queue.
-  const { createServer } = await import('node:http')
-  const { spawn } = await import('node:child_process')
-  const { resolve } = await import('node:path')
-  const ROOT = resolve(import.meta.dirname, '..')
-
-  let modelCalls = 0
-  const server = createServer(async (request, response) => {
-    const chunks = []
-    for await (const chunk of request) chunks.push(chunk)
-    const input = JSON.parse(Buffer.concat(chunks).toString() || '{}')
-    if ((request.url ?? '').startsWith('/v1/chat/completions')) {
-      modelCalls += 1
-      if (modelCalls === 1) {
-        response.writeHead(500, { 'content-type': 'application/json' })
-        return void response.end(JSON.stringify({ error: 'model provider unavailable' }))
-      }
-      response.writeHead(200, { 'content-type': 'application/json' })
-      return void response.end(JSON.stringify({ choices: [{ message: { content: 'DONE:' } }] }))
-    }
-    response.setHeader('content-type', 'application/json')
-    if (input.method === 'tools/list') {
-      return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools: [{ name: 'agent_protocol' }] } }))
-    }
-    const args = input.params?.arguments ?? {}
-    let result
-    if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
-    else if (args.mode === 'source_access') result = { ok: true, sources: [] }
-    else if (args.mode === 'evidence_chase') result = { ok: true, plans: [] }
-    else if (args.mode === 'trace') result = { ok: true }
-    else result = defaultBoard()(args)
-    response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
-  })
-  let port
-  await new Promise((ready) => server.listen(0, '127.0.0.1', () => { port = server.address().port; ready() }))
-
-  // Ask the OS for an independent free port. `modelPort + 1` races Windows' ephemeral
-  // allocator and collided under a parallel full-suite run even though the model port was
-  // valid; that turned a server-survival assertion into an unrelated EADDRINUSE failure.
-  const serveProbe = createServer()
-  let servePort
-  await new Promise((ready) => serveProbe.listen(0, '127.0.0.1', () => { servePort = serveProbe.address().port; ready() }))
-  await new Promise((closed) => serveProbe.close(closed))
-  const child = spawn(process.execPath, ['agent/rulith-agent.mjs', '--serve'], {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      RULITH_URL: `http://127.0.0.1:${port}`,
-      RULITH_TOKEN: `rlt_agt_${'a'.repeat(43)}`,
-      RULITH_MODEL_URL: `http://127.0.0.1:${port}`,
-      RULITH_MODEL: 'test-model', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '',
-      RULITH_TRACE: 'off', RULITH_AUTO_DISCHARGE: 'off', RULITH_MAX_ROUNDS: '2',
-      RULITH_SETTLE_WAIT_MS: '0', RULITH_DELIVERABLE_WAIT_MS: '0',
-      RULITH_SERVE_KEY: 'serve-key-e', RULITH_SERVE_PORT: String(servePort),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  // Subscribe at spawn time. If the child fails before cleanup (for example because a
-  // parallel test briefly owns the chosen port), attaching `once('close')` in `finally`
-  // misses the event and turns a useful failure into an unbounded suite hang.
-  const childClosed = new Promise((closed) => child.once('close', closed))
-  let output = ''
-  child.stdout.setEncoding('utf8').on('data', (chunk) => { output += chunk })
-  child.stderr.setEncoding('utf8').on('data', (chunk) => { output += chunk })
-
-  const post = (text) => fetch(`http://127.0.0.1:${servePort}/task`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-rulith-serve': 'serve-key-e' },
-    body: JSON.stringify({ text }),
-  })
-  const waitFor = async (predicate, ms = 15_000) => {
-    const deadline = Date.now() + ms
-    while (Date.now() < deadline) {
-      if (await predicate()) return true
-      await new Promise((tick) => setTimeout(tick, 50))
-    }
-    return false
-  }
-
-  try {
-    assert.ok(await waitFor(() => /Task endpoint ready/.test(output)), `the task endpoint never came up:\n${output}`)
-
-    const first = await post('this task hits the broken provider')
-    assert.equal(first.status, 202, await first.text())
-    assert.ok(await waitFor(async () => {
-      const runs = await fetch(`http://127.0.0.1:${servePort}/runs?k=serve-key-e`).then((r) => r.json()).catch(() => null)
-      return (runs?.runs ?? []).length >= 1
-    }), `the failed task never produced a run record:\n${output}`)
-
-    const afterFirst = await fetch(`http://127.0.0.1:${servePort}/runs?k=serve-key-e`).then((r) => r.json())
-    assert.equal(afterFirst.runs.length, 1)
-    assert.match(String(afterFirst.runs[0].note), /Model service error \(500\)/,
-      `the failed task must be recorded with its reason: ${JSON.stringify(afterFirst.runs[0])}`)
-
-    // The whole point: the process is still here and still takes work.
-    assert.equal(child.exitCode, null, `the Agent exited (${child.exitCode}) instead of failing one task:\n${output}`)
-    const second = await post('this task should still be served')
-    assert.equal(second.status, 202, await second.text())
-    assert.ok(await waitFor(async () => {
-      const runs = await fetch(`http://127.0.0.1:${servePort}/runs?k=serve-key-e`).then((r) => r.json()).catch(() => null)
-      return (runs?.runs ?? []).length >= 2
-    }), `the second task never ran, so the queue did not survive:\n${output}`)
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-    await childClosed
-    const serverClosed = new Promise((closed) => server.close(closed))
-    server.closeAllConnections()
-    await serverClosed
-  }
-})
-
 test('an Agent credential rejection terminates the process and never invents a pending Case id', async () => {
-  const { createServer } = await import('node:http')
   const probe = createServer()
   let servePort
   await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { servePort = probe.address().port; ready() }))
@@ -227,9 +97,10 @@ test('an Agent credential rejection terminates the process and never invents a p
   const run = await runAgent({
     argv: ['--serve'],
     env: { RULITH_SERVE_PORT: String(servePort), RULITH_SERVE_KEY: 'credential-test-key' },
-    model: () => fenced({ tool: 'rulith', action: 'start_case', caseType: 'exploration' }),
-    rejectBoardAfter: 2,
-    rejectBoardDelayMs: 250,
+    // The credential is rejected on the first model-verb tool call, which is the first
+    // thing a governed turn does and the surface every client crosses.
+    model: () => callTool('OpenCase', {}),
+    rejectToolAfter: 1,
     serveTasks: ['first accepted task', 'second accepted task'],
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -255,8 +126,8 @@ test('interactive mode reports a mid-session credential rejection without an unh
   const run = await runAgent({
     argv: [],
     chatLines: ['do the work'],
-    model: () => fenced({ tool: 'rulith', action: 'start_case', caseType: 'exploration' }),
-    rejectBoardAfter: 2,
+    model: () => callTool('OpenCase', {}),
+    rejectToolAfter: 1,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 3, `${run.stdout}\n${run.stderr}`)
@@ -268,14 +139,11 @@ test('interactive mode reports a mid-session credential rejection without an unh
 
 test('a one-shot run whose Case never opened exits non-zero', async () => {
   const run = await runAgent({
-    argv: ['--case', 'case-never-opens', 'do the work'],
-    board: (args) => {
-      const operation = args.operation ?? {}
-      if (operation.kind === 'OpenCase') {
-        return { accepted: false, revision: 'r2', errorCode: 'case_admission_refused', teaching: 'the Capability Release is not installed on this Board' }
-      }
-      return defaultBoard()(args)
-    },
+    argv: ['do the work'],
+    tool: (name) => (name === 'OpenCase'
+      ? { accepted: false, errorCode: 'case_admission_refused', teaching: 'the Capability Release is not installed on this Board', view: undefined }
+      : undefined),
+    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The Case could not be opened, so nothing ran.'),
   })
   assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
   assert.equal(run.code, 1,
@@ -283,159 +151,107 @@ test('a one-shot run whose Case never opened exits non-zero', async () => {
   assert.match(run.stderr, /No Case Context was opened, so this task never started/)
 })
 
-test('a one-shot run that completes still exits zero (calibration)', async () => {
-  const run = await runAgent({ argv: ['--case', 'case-opens-fine', 'do the work'] })
+test('a one-shot run that the model closes as completed exits zero (calibration)', async () => {
+  const run = await runAgent({
+    argv: ['do the work'],
+    env: { RULITH_MAX_ROUNDS: '5' },
+    model: (round) => {
+      if (round === 1) return callTool('OpenCase', {})
+      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 3) return callTool('CloseCase', { disposition: 'completed' })
+      return 'Finished.'
+    },
+  })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.match(run.stdout, /Closed Case .* with disposition "completed"/)
 })
 
-// ── F. A paused Case is resumable ────────────────────────────────────────────
-
-const pausedRow = (id) => ({ id, root: id, status: 'paused', caseType: 'exploration', revision: 'c7', capabilityReleaseDigest: 'sha256:cap', caseContractDigest: 'sha256:contract' })
-const runningRow = (id) => ({ ...pausedRow(id), status: 'running', revision: 'c8' })
-
-test('a paused Case named with --case is resumed instead of reopened', async () => {
-  let resumed = false
+test('autopilot nudges once with the current view, then stops rather than looping', async () => {
   const run = await runAgent({
-    argv: ['--case', 'case-paused-1', 'continue the work'],
-    board: (args) => {
-      const operation = args.operation ?? {}
-      if (operation.kind === 'GetBoardManifest') {
-        return { accepted: true, revision: 'r1', payload: { status: 'open', cases: [resumed ? runningRow('case-paused-1') : pausedRow('case-paused-1')] } }
-      }
-      if (operation.kind === 'ResumeCase') { resumed = true; return { accepted: true, revision: 'r2', payload: {} } }
-      return defaultBoard()(args)
+    argv: ['do the work'],
+    env: { RULITH_MAX_ROUNDS: '8' },
+    gateway: defaultGateway({ certifyAfterBatch: false }),
+    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'I have nothing further to add.'),
+  })
+
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.modelRequests.length, 3,
+    `the host must nudge exactly once and then stop; it made ${run.modelRequests.length} model calls`)
+  assert.match(JSON.stringify(run.modelRequests[2]), /The Case is open and the Board has not certified it/)
+  assert.match(run.stdout, /the board did not certify the case/)
+  assert.match(run.stdout, /remains open/)
+  assert.equal(run.verbs.includes('CloseCase'), false, 'the host closed a Case the model never closed')
+})
+
+test('autopilot stops on certification without another model turn spent on waiting', async () => {
+  const run = await runAgent({
+    argv: ['do the work'],
+    env: { RULITH_MAX_ROUNDS: '8' },
+    model: (round) => {
+      if (round === 1) return callTool('OpenCase', {})
+      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      return 'The Board has what it needs.'
     },
   })
 
-  assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-  const resumes = run.boardCalls.filter((call) => call.operation?.kind === 'ResumeCase')
-  assert.equal(resumes.length, 1, `expected exactly one ResumeCase; kinds seen: ${run.kinds.join(', ')}`)
-  assert.equal(resumes[0].operation.caseId, 'case-paused-1')
-  // ResumeCase is caseContext:"boardOnly" in protocol/operations.json: the Case is its
-  // subject, not its execution scope, so a `case` binding on it is a protocol error.
-  assert.equal(resumes[0].case, undefined,
-    `ResumeCase is boardOnly and must carry no case binding: ${JSON.stringify(resumes[0])}`)
-  assert.equal(run.kinds.includes('OpenCase'), false,
-    'a paused Case must not be reopened; OpenCase answers id_reused and loses the work')
-  assert.match(run.stdout, /Resumed paused Case "case-paused-1"/)
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.modelRequests.length, 3)
+  assert.match(run.stdout, /Board certified the case as deliverable \(floor=attested\)/)
+  assert.match(run.stdout, /is certified and still open/,
+    'a certified Case the model did not close must be reported as such, not booked as finished')
 })
 
-test('an OpenCase refused with id_reused resumes the Case when it turns out to be paused', async () => {
-  // The manifest read and the OpenCase write are not one step. This is the race, and it
-  // is also what happens whenever another party pauses the Case between them.
-  let manifestReads = 0
-  let resumed = false
+test('a void disposition ends the autopilot run as an explicit stop', async () => {
   const run = await runAgent({
-    argv: ['--case', 'case-paused-2', 'continue the work'],
-    board: (args) => {
-      const operation = args.operation ?? {}
-      if (operation.kind === 'GetBoardManifest') {
-        manifestReads += 1
-        if (manifestReads === 1) return { accepted: true, revision: 'r1', payload: { status: 'open', cases: [] } }
-        return { accepted: true, revision: 'r1', payload: { status: 'open', cases: [resumed ? runningRow('case-paused-2') : pausedRow('case-paused-2')] } }
-      }
-      if (operation.kind === 'OpenCase') return { accepted: false, revision: 'r2', errorCode: 'id_reused', teaching: 'a Case with this id already exists on this Board' }
-      if (operation.kind === 'ResumeCase') { resumed = true; return { accepted: true, revision: 'r2', payload: {} } }
-      return defaultBoard()(args)
+    argv: ['do the work'],
+    env: { RULITH_MAX_ROUNDS: '8' },
+    gateway: defaultGateway({ certifyAfterBatch: false }),
+    model: (round) => {
+      if (round === 1) return callTool('OpenCase', {})
+      if (round === 2) return callTool('CloseCase', { disposition: 'abandoned', reason: 'the required Source is not configured' })
+      return 'unreachable'
     },
   })
 
-  assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-  assert.equal(run.kinds.filter((kind) => kind === 'ResumeCase').length, 1, `kinds seen: ${run.kinds.join(', ')}`)
-  assert.match(run.stdout, /Resumed paused Case "case-paused-2"/)
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-})
-
-test('a Case that is neither running nor paused is still opened normally (calibration)', async () => {
-  const run = await runAgent({ argv: ['--case', 'case-fresh', 'start the work'] })
-  assert.equal(run.kinds.includes('OpenCase'), true, `kinds seen: ${run.kinds.join(', ')}`)
-  assert.equal(run.kinds.includes('ResumeCase'), false, 'nothing was paused, so nothing may be resumed')
-})
-
-test('a refused ResumeCase stops the segment instead of silently reopening', async () => {
-  const run = await runAgent({
-    argv: ['--case', 'case-paused-3', 'continue the work'],
-    board: (args) => {
-      const operation = args.operation ?? {}
-      if (operation.kind === 'GetBoardManifest') return { accepted: true, revision: 'r1', payload: { status: 'open', cases: [pausedRow('case-paused-3')] } }
-      if (operation.kind === 'ResumeCase') return { accepted: false, revision: 'r2', errorCode: 'board_suspended', teaching: 'the Board is suspended' }
-      return defaultBoard()(args)
-    },
-  })
-  assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-  assert.equal(run.kinds.includes('OpenCase'), false)
-  assert.match(run.stdout, /is paused and could not be resumed/)
-  assert.equal(run.code, 1, 'no Case opened, so the one-shot run must not report success')
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.modelRequests.length, 2, 'an explicit stop must not be followed by another model turn')
+  assert.match(run.stdout, /The Case was closed as abandoned/)
+  const closed = run.toolCalls.find((call) => call.name === 'CloseCase')
+  assert.equal(closed.args.reason, 'the required Source is not configured')
 })
 
 // ── G. One requestId per submission, reused by an unchanged retry ────────────
 
-test('an unchanged retry after a failed MCP hop reuses the same requestId', async () => {
-  const applyBatchIds = []
-  let batchAttempts = 0
-  const ops = [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }]
-  const run = await runAgent({
-    argv: ['--case', 'case-request-id', 'submit the batch'],
-    env: { RULITH_MAX_ROUNDS: '4' },
-    // The model is told to retry unchanged, and does: the identical block twice.
-    model: (round) => (round <= 2 ? fenced(ops) : 'DONE:'),
-    board: (args) => {
-      const operation = args.operation ?? {}
-      if (operation.kind === 'ApplyBatch') {
-        applyBatchIds.push(args.requestId)
-        batchAttempts += 1
-        // First attempt: the hop fails, so no authoritative receipt comes back.
-        if (batchAttempts === 1) return undefined
-      }
-      return defaultBoard()(args)
-    },
-  })
-
-  assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
-  assert.equal(applyBatchIds.length, 2, `expected the original submission and one unchanged retry, saw ${applyBatchIds.length}`)
-  for (const id of applyBatchIds) {
-    assert.match(String(id), /^[0-9a-f-]{36}$/, `requestId must be a UUID, saw ${JSON.stringify(id)}`)
-  }
-  assert.equal(applyBatchIds[0], applyBatchIds[1],
-    'the retry presented a new requestId, so an upstream idempotency cache cannot recognize it as the same submission'
-    + ` and may apply the write twice: ${applyBatchIds.join(' vs ')}`)
-})
-
 test('distinct submissions carry distinct requestIds, and an answered one is not reused', async () => {
-  // The other half of the ledger. An id that never gets released would make every
+  // The other half of the retry ledger. An id that never got released would make every
   // repeated read share one identity, which is the same defect wearing the opposite sign.
-  const byKind = new Map()
   const run = await runAgent({
-    argv: ['--case', 'case-request-id-2', 'just finish'],
-    board: (args) => {
-      const kind = String(args.operation?.kind ?? '')
-      if (!byKind.has(kind)) byKind.set(kind, [])
-      byKind.get(kind).push(args.requestId)
-      return defaultBoard()(args)
+    argv: [],
+    env: { RULITH_MAX_ROUNDS: '6' },
+    chatLines: ['record two facts'],
+    model: (round) => {
+      if (round === 1) return callTool('OpenCase', {})
+      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F2', predicate: 'x', args: {} }] })
+      return 'Both recorded.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const everyId = [...byKind.values()].flat()
-  assert.ok(everyId.length >= 4, `only ${everyId.length} board submissions were observed`)
-  assert.ok(everyId.every((id) => typeof id === 'string' && id !== ''), 'every board submission must carry a requestId')
-
-  const health = byKind.get('GetHealth') ?? []
-  const manifests = byKind.get('GetBoardManifest') ?? []
-  assert.notEqual(manifests[0], health[0], 'different operations must not share one request identity')
-  if (health.length >= 2) {
-    assert.notEqual(health[0], health[1],
-      'an answered submission released its id; a later identical read is a new request, not a retry')
-  }
+  const ids = run.toolCalls.map((call) => call.args.requestId)
+  assert.ok(ids.length >= 3, `only ${ids.length} tool calls were observed`)
+  assert.ok(ids.every((id) => /^[0-9a-f-]{36}$/.test(String(id))), `every submission must carry a UUID requestId: ${ids.join(', ')}`)
+  assert.equal(new Set(ids).size, ids.length, `distinct submissions shared one request identity: ${ids.join(', ')}`)
 })
 
 // ── J. A numeric knob with a typo falls back loudly ──────────────────────────
 
 test('a non-numeric RULITH_MAX_ROUNDS warns and falls back instead of becoming NaN', async () => {
   const run = await runAgent({
-    argv: ['--case', 'case-env-1', 'do the work'],
+    argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: 'twelve' },
+    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
   })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.match(run.stderr, /RULITH_MAX_ROUNDS="twelve" is not an integer between 1 and 1000; using the default 12/)
   // NaN made every `round <= MAX_ROUNDS` false, so the loop ran zero rounds and the
   // segment ended without ever asking the model anything.
@@ -444,41 +260,43 @@ test('a non-numeric RULITH_MAX_ROUNDS warns and falls back instead of becoming N
 
 test('an out-of-range numeric knob is refused the same way', async () => {
   const run = await runAgent({
-    argv: ['--case', 'case-env-2', 'do the work'],
-    env: { RULITH_ATTENTION_FACTS: '-5' },
+    argv: ['do the work'],
+    env: { RULITH_SETTLE_WAIT_MS: '-5' },
+    model: () => 'Nothing further.',
   })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.match(run.stderr, /RULITH_ATTENTION_FACTS="-5" is not an integer between 20 and 100000; using the default 80/)
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.match(run.stderr, /RULITH_SETTLE_WAIT_MS="-5" is not an integer between 0 and 3600000; using the default 60000/)
 })
 
 test('a valid numeric knob is used and produces no warning (calibration)', async () => {
   const run = await runAgent({
-    argv: ['--case', 'case-env-3', 'do the work'],
+    argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '5' },
+    model: () => 'Nothing further.',
   })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.doesNotMatch(run.stderr, /RULITH_MAX_ROUNDS/)
 })
 
 // ── K. Trace never becomes the reason a finished run is still running ────────
 //
-// Trace is on by default and is fire-and-forget by design, which is exactly why its
-// failure mode is quiet: the run is finished, the exit status is set, and the process
-// is still there. Two handles did it — the unref'd-nothing 1.5s batching timer, and the
-// socket under the flush's own request, which the 45s abort budget was the only thing
-// bounding. Every arm below times the exit from the endpoint's own clock rather than
-// from the harness's, so a slow machine cannot turn it into a flake.
+// Trace is on by default and fire-and-forget by design, which is exactly why its failure
+// mode is quiet: the run is finished, the exit status is set, and the process is still
+// there. Two handles did it — the 1.5s batching timer, and the socket under the flush's
+// own request, which the 45s abort budget was the only thing bounding. Every arm below
+// times the exit from the endpoint's own clock rather than the harness's, so a slow
+// machine cannot turn it into a flake.
 
 test('a trace endpoint that never answers does not hold a finished one-shot run open', async () => {
   const started = Date.now()
   const run = await runAgent({
-    argv: ['--case', 'case-trace-hang', 'do the work'],
+    argv: ['do the work'],
     env: { RULITH_TRACE: '' },
+    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
     holdTrace: true,
     timeoutMs: 20_000,
   })
   assert.notEqual(run.code, 'timeout', `the run never exited:\n${run.stdout}\n${run.stderr}`)
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.ok(run.firstTraceAt !== undefined,
     'no trace batch was sent, so this arm proves nothing about the flush that used to hang')
   // The bound is 1500ms; 8s leaves room for a loaded machine while staying far below the
@@ -491,13 +309,13 @@ test('a trace endpoint that never answers does not hold a finished one-shot run 
 
 test('a trace endpoint that sends headers but never finishes its body does not hold a finished run open', async () => {
   const run = await runAgent({
-    argv: ['--case', 'case-trace-body-hang', 'do the work'],
+    argv: ['do the work'],
     env: { RULITH_TRACE: '' },
+    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
     holdTraceBody: true,
     timeoutMs: 20_000,
   })
   assert.notEqual(run.code, 'timeout', `response headers must not end the trace timeout:\n${run.stdout}\n${run.stderr}`)
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.ok(run.firstTraceAt !== undefined, 'no trace batch reached the body-hanging endpoint')
   const heldFor = run.exitedAt - run.firstTraceAt
   assert.ok(heldFor < 8_000,
@@ -508,10 +326,11 @@ test('trace is still sent when the endpoint answers, and the run still exits pro
   // Without this arm, an Agent that had simply stopped tracing would satisfy the one
   // above — and the fix under test is about when the batch leaves, not whether it does.
   const run = await runAgent({
-    argv: ['--case', 'case-trace-ok', 'do the work'],
+    argv: ['do the work'],
     env: { RULITH_TRACE: '' },
+    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
   })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   const traced = run.calls.filter((call) => call.mode === 'trace')
   assert.ok(traced.length >= 1, 'the run reported no trace batch at all')
   const types = traced.flatMap((call) => (call.events ?? []).map((event) => String(event.type ?? '')))

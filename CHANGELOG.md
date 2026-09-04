@@ -2,6 +2,41 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.7.0 - 2026-09-04
+
+**Unreleased.** Not published to npm, and no `v0.7.0` tag exists yet. This is a breaking
+change to the model surface: an integration that scripted the previous fenced-JSON
+dialect will not work against this runtime.
+
+- The model now speaks four protocol verbs as ordinary MCP tools — `OpenCase`,
+  `ApplyBatch`, `ApplyAction`, `CloseCase` — and nothing else. The Runtime reads
+  `tools/list` at startup and offers exactly those four; a tool call by any other name is
+  refused locally and never reaches Cloud. Case identity, revision, request identity,
+  epoch and digest are removed from the advertised schemas and filled by the host.
+- The fenced-JSON grammar is gone: no `{"tool":"rulith",…}` envelope, no first-block-wins
+  parsing, no `DONE:` / `STOP:` / `VIEW:` reply protocol, no `start_case` / `apply_batch` /
+  `request_action` / `finish_case` / `read_case` / `pause_case` / `resume_case`. Pause and
+  resume remain host features, reached through `--case` and the Local UI.
+- Native tool use on both provider shapes: Anthropic Messages (`tools` with
+  `input_schema`, `tool_use` blocks, `tool_result` replies) and OpenAI Chat Completions
+  (`tools` with `function.parameters`, `tool_calls`, role `tool` replies). An endpoint
+  that rejects tool definitions gets the same schemas described in the prompt and answers
+  with one JSON object; `RULITH_MODEL_TOOLS=emulated` selects that transport up front.
+- Conversation and `--task` autopilot are one loop with two policies rather than two
+  loops with two grammars. Autopilot nudges once with the current view, arms verification
+  discharge when no obligation is outstanding, waits for receipts by polling the bounded
+  Case View, and stops on certification, on an explicit close, or on the round budget.
+- Every tool result carries the bounded Case View, so the Runtime no longer keeps a
+  projection of its own, no longer budgets attention locally (`RULITH_ATTENTION_FACTS` is
+  gone), and no longer ranks the grounding floor against a local table of tiers — an
+  unknown tier used to read as the weakest, which is a silent downgrade.
+- One system prompt of about 150 words replaces three prompt families and their guides.
+  It carries no JSON templates; the advertised schemas are the templates. Available
+  Actions and Source routes reach the model through the Case View instead of a
+  prompt-side catalogue that was a second, staler copy of the Board.
+- A one-shot run now prints its own verdict on the terminal, and reports success from the
+  loop's outcome rather than from the wording of that sentence.
+
 ## 0.6.11 - 2026-09-04
 
 - Conversation mode now exposes one small Rulith surface: start a Case, apply a

@@ -110,7 +110,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.6.11')
+  assert.equal(pkg.version, '0.7.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -131,19 +131,25 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('conversation mode exposes one small tool vocabulary and the Core trust ladder', () => {
+test('the model surface is the four protocol verbs, and no second grammar survives', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  const guide = /const OPTIONAL_RULITH_BASE_GUIDE = `([\s\S]*?)`\s*\n\s*const OPTIONAL_RULITH_COMMON_SAFETY/.exec(source)?.[1]
-  assert.ok(guide, 'conversation tool guide could not be found')
-  const visible = [...guide.matchAll(/"action":"([a-z_]+)"/g)].map((match) => match[1])
-  assert.deepEqual([...new Set(visible)].sort(), ['apply_batch', 'finish_case', 'request_action', 'start_case'])
-  for (const action of visible) assert.match(source, new RegExp(`action === '${action}'`), `${action} has no accepting parser arm`)
-  for (const retired of ['read_case', 'pause_case', 'resume_case', 'command']) {
-    assert.doesNotMatch(guide, new RegExp(`"action":"${retired}"`))
-    assert.doesNotMatch(source, new RegExp(`action === '${retired}'`), `${retired} remains as a hidden conversation capability`)
+  assert.match(source, /const MODEL_VERBS = \['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase'\]/)
+  assert.match(source, /const HOST_TOOLS = \['GetCompletion', 'agent_protocol'\]/)
+  // The retired fenced-JSON dialect and its host-invented verbs, by name. A grammar that
+  // is merely unreachable is one edit away from being reachable again.
+  for (const retired of [
+    'EXECUTION_GUIDE', 'OPTIONAL_RULITH', 'SYSTEM_EXPLORATION', 'SYSTEM_LOCKED',
+    'parseRulithEnvelope', 'extractSubmission', 'containsNonExclusiveRulithEnvelope',
+    'MODEL_COMMAND_KINDS', 'modelCommandRefusal', 'FLOOR_ORDER',
+    'start_case', 'apply_batch', 'request_action', 'finish_case', 'read_case', 'pause_case', 'resume_case',
+  ]) {
+    assert.doesNotMatch(source, new RegExp(retired), `${retired} survived the model-surface rewrite`)
   }
-  assert.match(source, /const FLOOR_ORDER = \['asserted', 'perceived', 'uncertain', 'inductive', 'approximate', 'attested', 'verified'\]/)
-  assert.doesNotMatch(source, /FLOOR_ORDER[^\n]*'assume'/)
+  assert.doesNotMatch(source, /DONE:|STOP:|VIEW:/, 'a reply protocol is a second grammar')
+  // The floor is a string the authority chose. The local ladder that used to rank it had
+  // to be edited whenever Core added a tier, and an unknown tier read as the weakest.
+  assert.match(source, /const certifiedOf = \(view\) => view\?\.certified === true/)
+  assert.doesNotMatch(source, /TIER_ORDER|floorRank/)
 })
 
 test('Agent identity comes from the authenticated public MCP surface, never from decoding the bearer secret', () => {
@@ -157,6 +163,13 @@ test('Agent identity comes from the authenticated public MCP surface, never from
 
 test('the Agent completes a minimal run through plain public MCP JSON-RPC with no native Cloud route', async () => {
   const paths = []
+  const toolNames = []
+  let caseRevision = 0
+  let closed = false
+  const view = {
+    goal: 'case-test', state: 'done', certified: true, floor: 'attested',
+    frontier: [], acceptance: [], missingEvidence: [], blocked: [], hypotheses: [], inFlight: [], actions: [],
+  }
   const server = createServer(async (req, res) => {
     paths.push(String(req.url ?? ''))
     const chunks = []
@@ -164,41 +177,71 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
     const input = JSON.parse(Buffer.concat(chunks).toString() || '{}')
     res.setHeader('content-type', 'application/json')
     if (req.url === '/v1/chat/completions') {
-      res.end(JSON.stringify({ choices: [{ message: { content: 'DONE:' } }] }))
+      // Native tool use, not a fenced dialect: the model names a tool the endpoint
+      // advertised, and the runtime carries it as a tools/call.
+      const answered = toolNames.includes('CloseCase')
+      res.end(JSON.stringify({
+        choices: [{
+          message: answered
+            ? { content: 'The Case is closed.' }
+            : {
+                content: null,
+                tool_calls: [{
+                  id: 'call_1', type: 'function',
+                  function: {
+                    name: toolNames.includes('OpenCase') ? 'CloseCase' : 'OpenCase',
+                    arguments: toolNames.includes('OpenCase') ? '{"disposition":"completed"}' : '{}',
+                  },
+                }],
+              },
+        }],
+      }))
       return
     }
     assert.equal(req.url, '/mcp')
     assert.equal(String(req.headers.authorization), `Bearer rlt_agt_${'a'.repeat(43)}`)
     if (input.method === 'tools/list') {
-      res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools: [{ name: 'agent_protocol', inputSchema: { type: 'object' } }] } }))
+      res.end(JSON.stringify({
+        jsonrpc: '2.0', id: input.id,
+        result: {
+          tools: [
+            { name: 'OpenCase', inputSchema: { type: 'object', properties: { caseType: { type: 'string' }, caseId: { type: 'string' }, case: { type: 'object' } } } },
+            { name: 'ApplyBatch', inputSchema: { type: 'object', properties: { operations: { type: 'array' }, case: { type: 'object' } } } },
+            { name: 'ApplyAction', inputSchema: { type: 'object', properties: { action: { type: 'string' }, case: { type: 'object' } } } },
+            { name: 'CloseCase', inputSchema: { type: 'object', properties: { disposition: { type: 'string' }, case: { type: 'object' } } } },
+            { name: 'GetCompletion', inputSchema: { type: 'object' } },
+            { name: 'agent_protocol', inputSchema: { type: 'object' } },
+          ],
+        },
+      }))
       return
     }
     assert.equal(input.method, 'tools/call')
-    assert.equal(input.params?.name, 'agent_protocol')
+    const name = String(input.params?.name ?? '')
     const args = input.params?.arguments ?? {}
     let result
-    if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
-    else if (args.mode === 'source_access') result = { ok: true, sources: [] }
-    else if (args.mode === 'evidence_chase') result = { ok: true, plans: [] }
-    else if (args.mode === 'trace') result = { ok: true, took: (args.events ?? []).length }
-    else {
-      const operation = args.operation ?? {}
-      if (operation.kind === 'GetBoardManifest') result = { accepted: true, revision: 'r1', payload: { status: 'open', cases: [], operations: { topLevel: ['GetCompletion', 'QueryBoard', 'ApplyBatch', 'CloseCase'], workingMemory: ['assert_fact'] } } }
-      else if (operation.kind === 'OpenCase') result = { accepted: true, revision: 'r2', caseRevision: 'c0', payload: { caseId: operation.caseId, caseRevision: 'c0', capabilityReleaseDigest: 'sha256:cap', caseContractDigest: 'sha256:contract' } }
-      else if (operation.kind === 'GetProjection' && operation.format === 'json') result = { accepted: true, revision: 'r3', payload: { context: { facts: [{ atom: { predicate: 'root', args: { node: 'case-test' } } }] } } }
-      else if (operation.kind === 'GetProjection') result = { accepted: true, revision: 'r3', payload: { text: 'logic_context case-test' } }
-      else if (operation.kind === 'GetCompletion') result = { accepted: true, revision: 'r3', payload: { state: 'done', certified: true, floor: 'attested', leaves: [], gaps: [], frontier: [], blocked: [] } }
-      else if (operation.kind === 'QueryBoard') result = { accepted: true, revision: 'r3', payload: { facts: [] } }
-      else if (operation.kind === 'GetHealth') result = { accepted: true, revision: 'r3', payload: {} }
-      else if (operation.kind === 'CloseCase') result = { accepted: true, revision: 'r4', caseRevision: 'c1', payload: { disposition: 'completed' } }
-      else if (operation.kind === 'ApplyBatch') result = { accepted: true, revision: 'r3', caseRevision: 'c1', payload: { text: '' }, delta: { added: [], removed: [] } }
+    if (name === 'agent_protocol') {
+      if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
+      else if (args.mode === 'trace') result = { ok: true, took: (args.events ?? []).length }
+      else if (args.operation?.kind === 'GetBoardManifest') result = { accepted: true, revision: 'r1', payload: { status: 'open', cases: [] } }
       else result = { accepted: true, revision: 'r3', payload: {} }
+    } else {
+      toolNames.push(name)
+      // Every Board tool answers one JSON text carrying the bounded Case View.
+      if (name === 'CloseCase') closed = true
+      caseRevision += 1
+      result = {
+        accepted: true,
+        case: { id: 'case-test', revision: `c${caseRevision}`, status: closed ? 'closed' : 'running', caseType: 'exploration', root: 'case-test' },
+        view,
+        ...(closed ? { receipt: { disposition: 'completed' } } : {}),
+      }
     }
     res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
   })
   let port
   await new Promise((resolveReady) => server.listen(0, '127.0.0.1', () => { port = server.address().port; resolveReady() }))
-  const child = spawn(process.execPath, ['agent/rulith-agent.mjs', '--case', 'case-test', 'test'], {
+  const child = spawn(process.execPath, ['agent/rulith-agent.mjs', 'test'], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -206,7 +249,8 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
       RULITH_TOKEN: `rlt_agt_${'a'.repeat(43)}`,
       RULITH_MODEL_URL: `http://127.0.0.1:${port}`,
       RULITH_MODEL: 'test-model', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '',
-      RULITH_TRACE: 'off', RULITH_AUTO_DISCHARGE: 'off', RULITH_MAX_ROUNDS: '1',
+      RULITH_TRACE: 'off', RULITH_AUTO_DISCHARGE: 'off', RULITH_MAX_ROUNDS: '4',
+      RULITH_SETTLE_WAIT_MS: '0', RULITH_CASE_TYPE: '', RULITH_MODEL_TOOLS: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -221,6 +265,7 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
   clearTimeout(timeout)
   await new Promise((resolveClose) => server.close(resolveClose))
   assert.equal(status, 0, `${stdout}\n${stderr}`)
+  assert.deepEqual(toolNames, ['OpenCase', 'CloseCase'], `the model surface did not reach the Board as tools/call: ${toolNames.join(', ')}`)
   assert.ok(paths.includes('/mcp'))
   assert.ok(paths.includes('/v1/chat/completions'))
   assert.ok(paths.every((path) => path === '/mcp' || path === '/v1/chat/completions'), `unexpected privileged path: ${paths.join(', ')}`)
@@ -702,51 +747,69 @@ test('worker surfaces non-authenticated Poll refusal instead of printing an idle
 test('the local Agent does not assemble, fingerprint, or install governance recipes', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.doesNotMatch(source, /fingerprintRecipePacks|recipeDigestOver|--recipe/)
-  assert.match(source, /Do not attempt add_axiom, define_action, RegisterPack/)
+  // Governance is not refused by prose any more: RegisterPack is simply not a tool this
+  // client carries, and the four it does carry are the whole allow-list.
+  assert.match(source, /is not a tool this Agent Runtime`\s*\n\s*\+ ` carries/)
+  assert.match(source, /package or Board governance belong to the host and to Console/)
 })
 
 test('the local Agent sends business values while Cloud injects commercial pins and exposes one bounded Case View', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /--business-key <json>/)
-  assert.match(source, /kind: 'OpenCase'[\s\S]{0,180}businessKey/)
-  assert.match(source, /envNumber\('RULITH_ATTENTION_FACTS', 80/)
-  assert.match(source, /kind: 'GetCompletion'/)
-  assert.match(source, /reply VIEW: to refresh it/)
-  assert.doesNotMatch(source, /projectionText\(ctx, \{ full: true \}\)/)
+  assert.match(source, /options\.businessKey === undefined \? \{\} : \{ businessKey: options\.businessKey \}/)
+  // The bounded view is the Cloud's, carried on every tool result. The client no longer
+  // budgets a projection of its own, so there is no second, quieter view to drift.
+  assert.match(source, /const viewOf = \(result\) =>/)
+  assert.match(source, /callTool\('GetCompletion'/)
+  assert.doesNotMatch(source, /RULITH_ATTENTION_FACTS|GetProjection/)
+  // Admission fields are Cloud's to mint and must never reach the model surface.
+  assert.match(source, /const HOST_OWNED_TOOL_FIELDS = \['case', 'requestId', 'expectedRevision', 'expectedBoardSharedEpoch'\]/)
 })
 
-test('exploration uses an explicit Case-local provisional program without widening normal execution', () => {
+test('one system prompt carries the five reasoning shapes and exactly two conditional lines', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /const SYSTEM_EXPLORATION =/)
-  assert.match(source, /case_context\(case_id, root, case_type\)/)
-  assert.match(source, /rulith\.exploration\.completed\(case_id\)/)
-  assert.match(source, /platform-owned bridge/)
-  assert.match(source, /do not create pack_acceptance, pack_bridge_evidence, pack_loaded, or pack_rule bookkeeping/)
-  assert.match(source, /caseType === 'exploration' \? SYSTEM_EXPLORATION : SYSTEM/)
-  assert.match(source, /const SYSTEM = `[\s\S]*Do not add temporary axioms, define actions, or register packs/,
-    'normal Capability execution must remain closed to provisional semantics')
+  const prompt = /const SYSTEM_PROMPT = `([\s\S]*?)`\n/.exec(source)?.[1]
+  assert.ok(prompt, 'the system prompt could not be found')
+  const words = prompt.split(/\s+/).filter(Boolean).length
+  assert.ok(words > 100 && words < 220, `the prompt is ${words} words; it is meant to be about 150`)
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'record_conflict']) {
+    assert.ok(prompt.includes(shape), `the prompt does not name the ${shape} shape`)
+  }
+  assert.match(prompt, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
+  // No JSON templates: the advertised tool schemas are the templates.
+  assert.doesNotMatch(prompt, /"kind":|\{"op"|```/)
+  // Exactly two conditional lines, and each says only what it must.
+  assert.match(source, /const EXPLORATION_LINE = 'This Case Type is exploration: add_axiom and define_action are permitted inside this Case/)
+  assert.match(source, /const LOCKED_LINE = 'Legislation is locked on this Board: do not use add_axiom or define_action/)
+  assert.match(source, /const systemFor = \(ctx\) => \{/)
 })
 
-test('the Agent teaches the same typed Action parameter contract enforced by Core and Worker', () => {
+test('the Action parameter contract is the advertised schema, not a hand-written copy of it', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /Every argument must be declared, present when required, and match its declared string\/number\/boolean type/)
-  assert.match(source, /rejects the call before creating an invocation/)
+  // The typed slot contract used to be restated in prose beside the authority's schema.
+  // Two statements of one rule drift; the schema the endpoint advertises is now the only one.
+  assert.match(source, /schema: withoutHostFields\(tool\.inputSchema \?\? tool\.input_schema/)
+  assert.match(source, /their schemas are the templates/)
+  assert.doesNotMatch(source, /Every argument must be declared, present when required/)
 })
 
-test('the Agent asks Cloud for ranked frontier routes without treating a plan as authority', () => {
+test('available Actions reach the model through the Case View, not a prompt-side catalogue', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /agentProtocol\('evidence_chase'/)
+  // The Case View carries name / state / PRE / EFFECT / parameters for every Action
+  // (board-protocol-spec §6.0b), so the Source and frontier catalogues that used to be
+  // pasted into the system prompt were a second, staler copy of the Board.
+  assert.doesNotMatch(source, /sourceAccessGuide|evidenceChaseGuide|source_access|evidence_chase/)
   assert.doesNotMatch(source, /\/agent\/v1\/evidence-chase/)
-  assert.match(source, /ranked hints, not automatic authority/)
-  assert.match(source, /Supply missing clue bindings; never assert them as facts/)
+  assert.match(source, /Every tool result carries the current Case View/)
 })
 
 test('agent lifecycle events shown to users use the English product vocabulary', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /\[Verification\]/)
-  assert.match(source, /Closed Case "\$\{bound\.root\}" with disposition/)
+  assert.match(source, /Closed Case "\$\{id\}" with disposition/)
   assert.match(source, /emitOn\(ctx, 'case-closed'/)
   assert.match(source, /Board certified the case as deliverable/)
+  assert.match(source, /\[Completion\] certified=/)
   assert.doesNotMatch(source, /notes\.push\(`\[放电/)
   assert.doesNotMatch(source, /log\(`◎ 案卷/)
 })

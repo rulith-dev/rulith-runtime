@@ -84,9 +84,8 @@ node agent/rulith-agent.mjs
 ```
 
 With no positional task, the Agent starts an ordinary conversation. It opens no
-Case until the model explicitly selects the optional Rulith tool. A positional
-task is the explicit one-shot/autopilot compatibility path and opens one Case
-under the host-selected installed Capability Case Type:
+Case until the model calls `OpenCase`. A positional task is the autopilot path:
+the same loop, kept going while the Board still has something to say.
 
 ```powershell
 node agent/rulith-agent.mjs --case-type verified_calculation --business-key '{"job_id":"calc-001"}' "calculate and verify this job"
@@ -105,12 +104,55 @@ Contract; exploration omits them. The Runtime sends values only. Cloud computes
 and pins the business-key, Capability Release, Case Contract, generation, and
 commercial-term digests before the Case opens, so the model never fills them.
 
-Once it has selected a Case, the working model receives one bounded **Case View**: the current terminal Goal,
-verified acceptance state, frontier, missing evidence, blocking reasons, and the
-relevant actions/state. It does not receive the complete Board history or billing
-and Release-control records. In conversation mode the host refreshes this view after
-each explicit Rulith step; reading state does not consume another model-selected tool.
-`VIEW:` remains part of the one-shot autopilot protocol.
+### The model surface: four verbs
+
+The Agent Runtime is an ordinary MCP client. At startup it reads `tools/list` and offers
+the model exactly the four Board verbs the protocol marks as an Agent's own:
+
+| Tool | What the model is asking for |
+| --- | --- |
+| `OpenCase` | Open a Case on this Agent Board |
+| `ApplyBatch` | Apply one atomic batch of working-memory operations |
+| `ApplyAction` | Invoke one Action the Case View lists as available |
+| `CloseCase` | Close the Case with an explicit disposition |
+
+There is no second vocabulary and no reply protocol. The tool schemas the Cloud
+advertises are the templates, so nothing in the prompt restates them. Case identity,
+revision, request identity, epochs and digests are removed from those schemas before the
+model sees them: the host fills them from its own Case context on every call. `caseType`
+stays on `OpenCase`, but an operator who pinned one with `--case-type`, `RULITH_CASE_TYPE`
+or a `POST /task` body has made that governance selection, and a model turn cannot move
+the work onto another contract.
+
+Selecting, pausing and resuming a Case are host features, reached through `--case` and
+the Local UI. Verification discharge, receipt waiting, and reading the view are host
+mechanics: they consume no model turn. `CloseCase completed` is only ever sent by the
+model, and the Board runs verification before it closes anything.
+
+Inside `ApplyBatch`, a step of reasoning takes one of five shapes:
+
+| Shape | What it puts on the Board |
+| --- | --- |
+| `assert_fact` | A material fact, with the source it came from |
+| `add_axiom` | A rule the Board may derive with |
+| `declare_hypothesis` | A claim under test; the Board reports its status |
+| `record_result` | A conclusion, with references to the evidence it rests on |
+| `record_conflict` | Two things that cannot both hold |
+
+Explanation and argument stay in the model's reply. They are not Board material.
+
+Every tool result carries one bounded **Case View**: the terminal Goal, state,
+certification, grounding floor, frontier, acceptance, missing evidence, blocking reasons,
+hypotheses with their status, dispatched work awaiting a receipt, and the available
+Actions with their parameters. It is not the complete Board history, and it carries no
+billing or Release-control records. Reading it costs nothing extra — it arrives with the
+answer to the step the model just took.
+
+Anthropic Messages and OpenAI Chat Completions tool use are both spoken natively. An
+endpoint that rejects tool definitions gets the same four schemas described in the system
+prompt and answers with one JSON object; set `RULITH_MODEL_TOOLS=emulated` to select that
+transport up front. It is a transport, not a second surface: the names, the schemas and
+the refusals are identical.
 
 The `exploration` Case Type is the only mode that permits provisional Case-local
 predicates, rules, Actions, and Goals. They never modify installed Capabilities
@@ -271,9 +313,9 @@ key gates every route, including the page itself, and the page reads it from its
 address rather than carrying an embedded copy. The Agent is conversational first:
 greetings and ordinary discussion create no Case and perform no Board operation.
 Rulith is an optional tool the model selects when work benefits from persistent state,
-rules, evidence, external Actions, verification, or an auditable conclusion. Each
-selected tool call advances at most one explicit Case step; an unfinished Case guides
-later decisions but never forces another model turn.
+rules, evidence, external Actions, verification, or an auditable conclusion. One tool
+call advances at most one Case step; an unfinished Case guides later decisions but never
+forces another model turn.
 
 In Agent+Worker mode, the Local UI uses a familiar Agent-workbench shape: conversation
 activity on the left, dialogue and selected governed execution in the center, a composer
@@ -334,13 +376,13 @@ The model never supplies the trusted input values or the calculated output value
   `SELECT`; every model value is passed through the database driver's parameter array
   rather than interpolated into SQL. Fenced write tools classify and reject unsupported
   or destructive statements unless the declared contract allows them.
-- In conversation mode the model sees four Rulith choices: start a Case, apply one batch,
-  request one advertised Action, or ask to finish. The host owns projection refresh,
-  verification settlement, Case identity, revision, and receipts. The direct one-shot
-  compatibility path still accepts its bounded read/action/discharge protocol. Case
-  lifecycle writes, Worker receipts, clearance, and package or Board governance are
-  refused before they reach Cloud, so injected text in a task, document, or tool result
-  cannot spend the Agent's credential on them.
+- The model can name exactly four tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
+  `CloseCase`. Anything else is refused locally and never reaches Cloud, so injected text
+  in a task, a document, or a tool result cannot spend the Agent's credential on Case
+  selection, verification, Worker receipts, clearance, or package and Board governance.
+  Cloud authorization is the second line, not the first. The host owns Case identity,
+  revision, request identity, verification settlement, and receipt waiting; none of them
+  appear in the schemas the model is given.
 - The Local UI requires its per-run key on every route, including the page itself.
 - Submitted work is not self-verification. Acceptance remains a board and policy decision.
 

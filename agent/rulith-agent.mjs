@@ -93,6 +93,8 @@ Common optional environment:
   RULITH_MODEL_URL   Model API endpoint
   RULITH_MODEL_KEY   Provider key (optional only for a loopback model endpoint)
   RULITH_MAX_ROUNDS  Maximum model/tool turns per user message (default: 12)
+  RULITH_MODEL_TOOLS emulated = describe the same tools in the prompt, for an endpoint
+                     that rejects tool definitions (also auto-detected on HTTP 400)
   RULITH_SERVE_PORT  Local task endpoint port (default: 7799)
 `)
   process.exit(0)
@@ -102,13 +104,23 @@ let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
 /** Resume one existing Case Context for the first segment only. */
 let resumeCase = (process.env.RULITH_RESUME_CASE ?? '').trim()
 let selectedCaseType = (process.env.RULITH_CASE_TYPE ?? 'exploration').trim() || 'exploration'
+/**
+ * Whether the operator pinned a Case Type, rather than falling back to the default.
+ *
+ * `OpenCase` offers `caseType` on the model surface, and with nothing pinned the model
+ * may choose from its Agent's catalogue. But a Case Type is a governance contract, so an
+ * operator who named one on the command line or in the environment has selected it: a
+ * model turn — which can carry a task description, a document, or a tool result — must
+ * not be able to move governed work onto a different contract by asking.
+ */
+let caseTypePinned = (process.env.RULITH_CASE_TYPE ?? '').trim() !== ''
 let selectedBusinessKeyRaw = (process.env.RULITH_BUSINESS_KEY_JSON ?? '').trim()
 const rest = []
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--serve') { withServe = true; continue }
   if (argv[i] === '--shadow') { withShadow = true; continue }
   if (argv[i] === '--case' && argv[i + 1] !== undefined) { resumeCase = argv[++i]; continue }
-  if (argv[i] === '--case-type' && argv[i + 1] !== undefined) { selectedCaseType = argv[++i]; continue }
+  if (argv[i] === '--case-type' && argv[i + 1] !== undefined) { selectedCaseType = argv[++i]; caseTypePinned = true; continue }
   if (argv[i] === '--business-key' && argv[i + 1] !== undefined) { selectedBusinessKeyRaw = argv[++i]; continue }
   if (argv[i].startsWith('-')) {
     console.error(`Unknown option: ${argv[i]}. Run with --help to see the supported execution surface.`)
@@ -256,14 +268,74 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000 } = {}) {
   return body.result
 }
 
+// ── Public MCP tool surface ─────────────────────────────────────────────────
+//
+// `tools/list` is the whole discovery step. This runtime is an ordinary MCP client of
+// the same six tools every third-party client sees: four model verbs and two host
+// tools. Nothing here is privileged, and nothing is invented — a tool the authority
+// does not advertise cannot be reached from this process at all.
+//
+// The four names are the machine authority's own (`agentVerb: true` in
+// protocol/operations.json). This list is the vendored copy of it; RT-TOOLS-1 compares
+// the two, so a fifth verb appearing on either side turns a guard red instead of
+// quietly widening what one model turn is allowed to say.
+const MODEL_VERBS = ['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase']
+const HOST_TOOLS = ['GetCompletion', 'agent_protocol']
+/**
+ * Fields the host owns, removed from every schema the model sees.
+ *
+ * Case identity, request identity, revision and epoch are the host's side of the
+ * contract: it fills them from its own Case context on every call. Leaving them in the
+ * advertised schema would teach the model to address a Case, present a revision it
+ * never saw, or mint an identity — and a model that can name another Case can reach
+ * work that was never handed to it.
+ */
+const HOST_OWNED_TOOL_FIELDS = ['case', 'requestId', 'expectedRevision', 'expectedBoardSharedEpoch']
+/** Strip host-owned properties at any depth: a nested copy is as reachable as a top-level one. */
+function withoutHostFields(schema) {
+  if (Array.isArray(schema)) return schema.map(withoutHostFields)
+  if (schema === null || typeof schema !== 'object') return schema
+  const out = {}
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'properties' && value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      out.properties = Object.fromEntries(Object.entries(value)
+        .filter(([name]) => !HOST_OWNED_TOOL_FIELDS.includes(name))
+        .map(([name, child]) => [name, withoutHostFields(child)]))
+      continue
+    }
+    if (key === 'required' && Array.isArray(value)) {
+      out.required = value.filter((name) => !HOST_OWNED_TOOL_FIELDS.includes(String(name)))
+      continue
+    }
+    out[key] = withoutHostFields(value)
+  }
+  return out
+}
+/** A public surface that cannot serve this client. It is not a credential failure. */
+class McpSurfaceError extends Error {}
 let mcpSurfacePromise
+/** The four model-facing tools, in the order the authority names them. */
+let modelTools = []
 async function requirePublicMcpSurface() {
   mcpSurfacePromise ??= (async () => {
     const listed = await mcpRpc('tools/list')
-    const names = new Set((Array.isArray(listed?.tools) ? listed.tools : []).map((tool) => String(tool?.name ?? '')))
-    if (!names.has('agent_protocol')) {
-      throw new Error('The public MCP endpoint does not advertise agent_protocol in tools/list. Upgrade the Cloud endpoint; the Runtime will not fall back to a native privileged route.')
+    const advertised = new Map((Array.isArray(listed?.tools) ? listed.tools : [])
+      .filter((tool) => typeof tool?.name === 'string' && tool.name !== '')
+      .map((tool) => [String(tool.name), tool]))
+    const missing = [...MODEL_VERBS, ...HOST_TOOLS].filter((name) => !advertised.has(name))
+    if (missing.length > 0) {
+      throw new McpSurfaceError(`The public MCP endpoint does not advertise ${missing.join(', ')} in tools/list.`
+        + ' Upgrade the Cloud endpoint. This Runtime will not fall back to a native privileged route,'
+        + ' and it will not offer the model a tool the authority never advertised.')
     }
+    modelTools = MODEL_VERBS.map((name) => {
+      const tool = advertised.get(name)
+      return {
+        name,
+        description: String(tool.description ?? `Rulith Board ${name}`).slice(0, 1024),
+        schema: withoutHostFields(tool.inputSchema ?? tool.input_schema ?? { type: 'object', properties: {} }),
+      }
+    })
   })()
   return await mcpSurfacePromise
 }
@@ -292,7 +364,7 @@ async function agentProtocol(mode, args = {}, options = {}) {
  * write can be applied twice. The id is minted per distinct submission payload and
  * held until an authoritative answer arrives, so:
  *   · retrying the same submission after a transport failure reuses the id;
- *   · a genuinely new submission with identical bytes (the next round's GetProjection,
+ *   · a genuinely new submission with identical bytes (the next round's Case View read,
  *     a second identical batch) gets a fresh one, because the previous id was released
  *     when the Board answered.
  *
@@ -370,53 +442,6 @@ function flushTrace() {
   const batch = traceBuf.splice(0, 200)
   agentProtocol('trace', { events: batch }, { timeoutMs: TRACE_FLUSH_TIMEOUT_MS }).catch(() => {})
 }
-async function sourceAccessGuide(ctx) {
-  try {
-    // Runtime Sources may be established while this long-lived Agent process is online.
-    // Refresh once per active-Case user message; a process-lifetime promise made a newly
-    // configured Source invisible until restart, while once per tool round multiplied a
-    // slow catalogue into minutes. Ordinary conversation never calls this helper.
-    const body = await agentProtocol('source_access', {}, { timeoutMs: 5000 })
-    if (body.ok !== true) {
-      const note = `Source Access catalogue is unavailable: ${String(body.teaching ?? body.errorCode ?? 'rejected').slice(0, 240)}`
-      log(`✗ ${note}`); emitOn(ctx, 'error', { note, scope: 'source-access' })
-      return `\n\n${note}. Do not invent an access Action; report the missing configuration.`
-    }
-    const rows = (Array.isArray(body.sources) ? body.sources : []).flatMap((source) =>
-      (Array.isArray(source.accessModes) ? source.accessModes : []).map((mode) => {
-        const params = Object.entries(mode.params ?? {}).map(([name, type]) => `${name}:${type}`).join(', ') || '(none)'
-        const produces = (Array.isArray(mode.returns) ? mode.returns : []).map((row) => row.predicate).filter(Boolean).join(', ') || '(none)'
-        return `- ApplyAction ${mode.action} via Source ${source.name} (${source.type}; ceiling ${source.trustCeiling}) · bindings {${params}} · produces ${produces} · operation ${mode.operation}`
-      }))
-    if (rows.length === 0) return '\n\nNo governed Source Access Actions are configured for this Agent. Define an Agent-owned File or MCP exploration Source under Agent Runtime, bind it to a Worker Connection, or report the missing Source configuration.'
-    return `\n\nGoverned Source Access Actions available in this Agent:\n${rows.join('\n')}\nThese Actions may consume Case clue bindings. A clue is not a fact and carries no trust tier; only the Tool receipt may add Source-backed facts.`
-  } catch (error) {
-    if (error instanceof AgentCredentialRejectedError) throw error
-    const note = 'Source Access catalogue could not be read. Continue without Source actions and report the runtime configuration problem.'
-    log(`✗ ${note} ${String(error?.message ?? error).slice(0, 240)}`)
-    emitOn(ctx, 'error', { note, scope: 'source-access' })
-    return `\n\n${note}`
-  }
-}
-async function evidenceChaseGuide(ctx, gaps) {
-  if (!Array.isArray(gaps) || gaps.length === 0) return ''
-  try {
-    const body = await agentProtocol('evidence_chase', { gaps: gaps.slice(0, 64), limit: 12 })
-    if (body.ok !== true) return ''
-    const plans = Array.isArray(body.plans) ? body.plans : []
-    if (plans.length === 0) return ''
-    emitOn(ctx, 'source-plan', { plans: plans.slice(0, 12).map((plan) => ({
-      action: plan.action, source: plan.source, predicate: plan.predicate,
-      bound: Object.keys(plan.bindings ?? {}).sort(), missing: Array.isArray(plan.missing) ? plan.missing : [],
-    })) })
-    const lines = plans.map((plan, index) => {
-      const bound = Object.entries(plan.bindings ?? {}).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(', ') || '(none)'
-      const missing = Array.isArray(plan.missing) && plan.missing.length > 0 ? plan.missing.join(', ') : '(none)'
-      return `${index + 1}. ${plan.action} via ${plan.source} -> ${plan.predicate} · bound {${bound}} · missing {${missing}} · cost ${plan.costUnits ?? 0}`
-    })
-    return `\n\nGrounded Source routes for the current frontier (ranked hints, not automatic authority):\n${lines.join('\n')}\nUse a route only when the Action is currently available. Supply missing clue bindings; never assert them as facts.`
-  } catch { return '' }
-}
 /** 段内事件带上**槽/任务**标注(2026-08-07 跨槽并发): 一条 SSE 流上现在会有几个段交叉着发
  *  round/propose/verdict,不标注的话读流的人分不清哪一行属于哪位客户。缺省槽不带 `session`
  *  字段——不带 sessionKey 的形态下事件形状与从前逐字节一致(旧 UI/旧测试零回归)。 */
@@ -429,63 +454,19 @@ const emitOn = (ctx, type, data) => emit(type, {
   ...data,
 })
 
-// ── Board Protocol client ─────────────────────────────────────────────────
-// Configuration and Board lifecycle belong to Console/governance. This local
-// runtime only opens, uses, pauses, and closes Case Contexts on the Agent Board.
-const CASE_CONTEXT_OPERATIONS = new Set([
-  'GetProjection', 'GetChanges', 'GetCompletion', 'GetBoardManifest', 'QueryBoard', 'RunDischarge', 'ApplyBatch',
-  'CloseCase', 'PauseCase', 'Explain', 'IngestObservation', 'GrantClearance', 'ClaimWork', 'ApplyAction', 'ReportWork',
-])
+// ── Host protocol path ────────────────────────────────────────────────────
+//
+// The four model verbs travel as MCP tool calls. What is left here are the operations
+// the *host* performs and the model is never taught: reading the Board Manifest, arming
+// verification, and resuming a Case the operator selected.
+//
+// Which of them carry a Case envelope is not a style choice. `RunDischarge` is
+// CaseRequired. `GetBoardManifest` is CaseOptional and is read here for Board-level
+// facts — the Case list and the legislation lock — so binding it would scope the answer
+// to one Case and quietly answer a different question. `ResumeCase` is BoardOnly: the
+// Case is its subject, not its execution scope, and a binding on it is a protocol error.
+const CASE_CONTEXT_OPERATIONS = new Set(['RunDischarge'])
 const STALE_CASE = new Set(['stale_case_revision', 'case_paused', 'case_closed', 'unknown_case'])
-/**
- * The only top-level command kinds a model turn may put on the wire.
- *
- * `extractSubmission` accepts any object carrying a string `kind`, and `board()`
- * forwarded it. The model's turn is untrusted input — a task description, a tool
- * result, a fetched document or a Source row can all end up in the transcript — so any
- * text that reaches the model could emit a configuration or Board-governance command
- * and the runtime would carry it to the authority
- * under the Agent's own credential. Cloud authorization is the second line, not the
- * first: the runtime must not offer to speak governance on the model's behalf at all.
- *
- * What stays: the bounded reads the loop already performs, the batch of working-memory
- * operations the prompt teaches, the Action verb the prompt teaches, and the discharge
- * the host itself runs — nothing here grants authority the loop does not already
- * exercise for the model each round.
- *
- * What is refused, and why it is not a regression:
- *   · Case lifecycle (`OpenCase` / `CloseCase` / `PauseCase` / `ResumeCase`) is the
- *     host's. EXECUTION_GUIDE tells the model to finish with `DONE:` or `STOP:` and
- *     never mentions closing a Case; `deliverableNow` + `archiveCaseContext` decide
- *     that from the Board's verdict. A model-issued `CloseCase` would let a stuck or
- *     manipulated turn book an unfinished Case as completed.
- *   · `ClaimWork` / `ReportWork` are the Worker's receipt surface. A model that can
- *     file receipts can assert that an external effect happened.
- *   · `GrantClearance` is the clearance surface a Constitution gate depends on.
- *   · `IngestObservation` writes observations with their own provenance; the model's
- *     channel for stating things is `assert_fact` inside a batch, where it lands as
- *     `asserted`.
- *   · Governance (`RegisterPack`, `RemovePack`, `SetBoardSuspended`,
- *     `MaintainBoardShared`, role and law-lock operations) is Console's, and the
- *     system prompt already tells the model so in prose. This is the same rule with
- *     an enforcement point.
- */
-const MODEL_COMMAND_KINDS = new Set([
-  'ApplyAction', 'ApplyBatch', 'Explain', 'GetBoardManifest', 'GetChanges',
-  'GetCompletion', 'GetHealth', 'GetProjection', 'QueryBoard', 'RunDischarge',
-])
-/** Teaching for a refused kind, or undefined when the model may send it. */
-function modelCommandRefusal(kind, { conversational = false } = {}) {
-  const name = String(kind ?? '')
-  if (MODEL_COMMAND_KINDS.has(name)) return undefined
-  const recovery = conversational
-    ? ' In conversation mode, request finish_case only when the current Case is ready, or reply normally when something is missing.'
-    : ' Finish with DONE: when the Case View is complete, or STOP: when something is genuinely missing.'
-  return `${name || '(missing kind)'} is not a command this Agent Runtime sends on a model's behalf, so it was refused locally and never reached the authority.`
-    + ` A turn may issue: ${[...MODEL_COMMAND_KINDS].sort().join(', ')}.`
-    + ' Case lifecycle, work receipts, clearance, and package or Board governance belong to the host and to Console.'
-    + recovery
-}
 /** The only Case command adapter in the runtime. It calls the public MCP tool
  * advertised to every client; Agent and Case identities never enter the URL. */
 async function board(operation, ctx, staleRetries = 5) {
@@ -610,670 +591,444 @@ function bindCaseRow(ctx, caseId, caseType, row) {
   return ctx.case
 }
 
-/** Open or resume exactly one named Case Context. Never adopt another Case. */
-async function ensureCaseContext(ctx, caseId, caseType, businessKey) {
-  if (ctx.case?.id === caseId && ctx.case?.root === caseId && ctx.case?.caseType === caseType && typeof ctx.case?.revision === 'string' && ctx.case.revision !== '') return ctx.case
-  ctx.case = undefined
-  let mf = await board({ kind: 'GetBoardManifest' }, ctx)
-  if (mf.accepted !== true) {
-    log(`✗ Cannot inspect Agent Board "${ctx.board}": ${String(mf.teaching ?? mf.errorCode ?? '').slice(0, 240)}`)
-    return undefined
-  }
-  if (mf.payload?.status === 'initializing') {
-    log(`✗ Agent Board "${ctx.board}" is still initializing. Complete Capability and shared-state setup in Console; the execution runtime will not perform governance activation.`)
-    return undefined
-  }
-  const rows = (mf.payload?.cases ?? []).filter((candidate) => candidate !== null && typeof candidate === 'object')
-  const hit = rows.filter((candidate) => candidate.status === 'running').find((w) => w.id === caseId)
-  if (hit !== undefined) {
-    const bound = bindCaseRow(ctx, caseId, caseType, hit)
-    if (bound !== undefined) log(`◎ Resuming Case "${caseId}" on Agent Board "${ctx.board}".`)
-    return bound
-  }
-  // A paused Case is resumable work, not a new Case. Sending OpenCase for it earns
-  // `id_reused`, which reads like a naming collision and hides that the Case is right
-  // there waiting.
-  if (rows.some((candidate) => candidate.id === caseId && candidate.status === 'paused')) {
-    const revived = await resumePausedCase(ctx, caseId)
-    if (revived === undefined) return undefined
-    return bindCaseRow(ctx, caseId, caseType, revived)
-  }
-  const opened = await board({ kind: 'OpenCase', caseType, caseId, root: caseId,
-    ...(businessKey === undefined ? {} : { businessKey }) }, ctx)
-  if (opened.accepted !== true) {
-    // The manifest read above and this write are not one atomic step, and the Case may
-    // also have been paused between them. `id_reused` is the authority saying "that
-    // Case already exists" — ask what state it is in before treating it as a failure.
-    if (String(opened.errorCode ?? '') === 'id_reused') {
-      const revived = await resumePausedCase(ctx, caseId)
-      if (revived !== undefined) return bindCaseRow(ctx, caseId, caseType, revived)
+// ── The bounded Case View ───────────────────────────────────────────────────
+//
+// Every tool result carries it (board-protocol-spec §6.0b): goal, state, certified,
+// floor, frontier, acceptance, missingEvidence, blocked, hypotheses, inFlight, actions.
+// So the host never reads the Board a second time to learn what just happened, and it
+// ranks nothing locally. `floor` is a string the authority chose. The table of tiers
+// that used to live here had to be edited whenever Core added one, and an unknown tier
+// read as the weakest — a silent downgrade in the direction that looks safe.
+const viewOf = (result) => (result?.view !== null && typeof result?.view === 'object' ? result.view : undefined)
+const listOf = (view, key) => (Array.isArray(view?.[key]) ? view[key] : [])
+/** Dispatched and unreceipted work. The host waits on this; the model is never asked to. */
+const inFlightOf = (view) => listOf(view, 'inFlight')
+const certifiedOf = (view) => view?.certified === true
+const viewText = (view) => (view === undefined ? '(no Case View was returned)' : JSON.stringify(view, null, 2))
+/** How long the host will wait for other people's work before spending a model turn. */
+const SETTLE_WAIT_MS = envNumber('RULITH_SETTLE_WAIT_MS', 60_000, { min: 0, max: 3_600_000 })
+const SETTLE_POLL_MS = 1000
+
+/**
+ * Track the Case the authority says this client is on.
+ *
+ * Revision, epoch and digest never reach the model: the host reads them back from
+ * `result.case` and presents them on the next call. A Case the authority reports as
+ * closed clears the binding here rather than in each caller, so no later step can
+ * address an archived Case and no caller has to remember to forget it.
+ */
+function trackCase(ctx, result) {
+  const bound = result?.case
+  if (bound === null || typeof bound !== 'object') return
+  const id = String(bound.id ?? '')
+  if (id === '') return
+  const status = String(bound.status ?? 'running')
+  if (status === 'closed' || status === 'archived') {
+    if (ctx.case !== undefined) {
+      const disposition = String(result?.receipt?.disposition ?? bound.disposition ?? 'closed')
+      log(`◎ Closed Case "${id}" with disposition "${disposition}". Its record remains available in Console.`)
+      emitOn(ctx, 'case-closed', { caseId: id, disposition })
     }
-    log(`✗ Could not open Case "${caseId}" on Agent Board "${ctx.board}": ${String(opened.teaching ?? opened.errorCode ?? '').slice(0, 240)}`)
-    return undefined
-  }
-  const openedId = String(opened.payload?.caseId ?? '')
-  if (openedId !== caseId) {
-    log(`✗ The authority opened Case Context "${openedId}" for requested Case "${caseId}". Execution stopped before writing task facts.`)
-    return undefined
-  }
-  const revision = String(opened.payload?.caseRevision ?? '')
-  if (revision === '') {
-    log(`✗ The authority opened Case "${caseId}" without a Case revision. Execution stopped before writing task facts.`)
-    return undefined
-  }
-  ctx.case = { id: caseId, root: caseId, revision, caseType,
-    capabilityReleaseDigest: String(opened.payload?.capabilityReleaseDigest ?? ''),
-    caseContractDigest: String(opened.payload?.caseContractDigest ?? '') }
-  return ctx.case
-}
-/** Close the current Case Context with an explicit disposition. */
-async function archiveCaseContext(ctx, disposition, reason) {
-  const bound = ctx.case
-  if (bound === undefined) return false
-  const r = await board({ kind: 'CloseCase', root: bound.root, disposition,
-    ...(typeof reason === 'string' && reason.trim() !== '' ? { reason: reason.trim() } : {}) }, ctx)
-  if (r.accepted === true) {
     ctx.case = undefined
-    log(`◎ Closed Case "${bound.root}" with disposition "${disposition}". Its record remains available in Console.`)
-    emitOn(ctx, 'case-closed', { caseId: bound.root, disposition })
-    return true
-  } else {
-    log(`◎ Case close rejected: ${String(r.teaching ?? r.errorCode ?? '').slice(0, 240)}
-   Case "${bound.root}" remains active so later evidence and receipts still have a valid target.`)
-    return false
+    return
+  }
+  ctx.case = {
+    id,
+    root: String(bound.root ?? ctx.case?.root ?? id),
+    revision: String(bound.revision ?? ctx.case?.revision ?? ''),
+    status,
+    caseType: String(bound.caseType ?? ctx.case?.caseType ?? selectedCaseType),
   }
 }
-// 注意力预算(核心 §6.5.1,协议面 GetProjection.attention): **有损聚焦**,只对模型读用,
-// 不用于裁决读(裁决必须无损)。板一大,全量投影会把窗口吃光——真板实测 364 条事实的板
-// 收到 60 条省约 74% 上下文。text 面自带「本视图已聚焦…要看全板重发不带 attention 的读」,
-// 所以模型知道自己看的是窄视图,不会把"没看见"当成"不存在"。
-// Hosted execution defaults to a bounded Case-focused view. Operators may tune
-// the budget, but the working Agent never receives an unbounded whole-Board dump.
-const ATTENTION_FACTS = envNumber('RULITH_ATTENTION_FACTS', 80, { min: 20, max: 100_000 })
-const attnArg = (ctx) => ({ attention: { focus: ctx.case?.root, budget: { facts: ATTENTION_FACTS, findings: Math.max(10, Math.floor(ATTENTION_FACTS / 4)) } } })
 
-const conversationalProjection = (text) => String(text).split(/\r?\n/).map((line) => {
-  const marker = 'base call: '
-  const at = line.indexOf(marker)
-  if (at < 0) return line
+const transportAmbiguous = (value) => value?.errorCode === 'upstream_unavailable'
+const transportRetryTeaching = (value) => 'No authoritative Board receipt was returned, so the outcome of this step is'
+  + ' unknown. This is not a refusal. Retry the identical step so it keeps the same request identity; do not change'
+  + ` the body and do not infer that it failed. ${String(value?.teaching ?? '').slice(0, 320)}`
+
+/**
+ * Call one advertised tool the way any MCP client would, with the two things the host
+ * owns attached: the Case envelope and the request identity.
+ *
+ * `requestId` is minted per distinct submission and held until the Board answers, so a
+ * retry after a failed hop reaches the same idempotency slot instead of applying an
+ * outward action twice. `OpenCase` deliberately carries no Case envelope: the Case it
+ * asks for does not exist yet, and presenting the previous one would bind new work to
+ * the wrong context.
+ */
+async function callTool(name, input, ctx, { staleRetries = 1 } = {}) {
+  if (ctx === null || typeof ctx !== 'object' || typeof ctx.board !== 'string' || ctx.board === '') {
+    throw new Error(`callTool(): missing execution context for ${String(name)}.`)
+  }
+  const bound = name === 'OpenCase' ? undefined : ctx.case
+  const idKey = `${ctx.board}\u0000${bound?.id ?? ''}\u0000${name}\u0000${submissionKey(input)}`
+  const requestId = requestIdFor(idKey)
+  const args = {
+    ...input,
+    ...(bound === undefined ? {} : { case: { id: bound.id, expectedRevision: bound.revision } }),
+    requestId,
+  }
+  let result
+  let text = ''
+  let authoritative = true
   try {
-    const suffix = line.slice(at + marker.length)
-    const delimiter = suffix.indexOf(';')
-    const commandText = delimiter < 0 ? suffix : suffix.slice(0, delimiter)
-    const command = JSON.parse(commandText)
-    if (command === null || typeof command !== 'object' || Array.isArray(command) || command.kind !== 'ApplyAction') return line
-    const envelope = {
-      tool: 'rulith', action: 'request_action', name: command.action,
-      ...(command.target === undefined ? {} : { target: command.target }),
-      ...(command.args === undefined ? {} : { args: command.args }),
-    }
-    const trailing = delimiter < 0 ? '' : suffix.slice(delimiter)
-    return `${line.slice(0, at)}Rulith call: ${JSON.stringify(envelope)}${trailing}`
-  } catch {
-    log('Case View contained an action template that could not be translated to the conversation tool surface; the raw line was retained and will not execute.')
-    return line
+    text = await mcpTool(name, args)
+    try { result = JSON.parse(text) } catch { result = undefined }
+    if (result === null || typeof result !== 'object' || Array.isArray(result)) result = undefined
+  } catch (error) {
+    if (error instanceof AgentCredentialRejectedError) throw error
+    authoritative = false
+    result = { accepted: false, errorCode: 'upstream_unavailable', teaching: String(error?.message ?? error).slice(0, 320) }
   }
-}).join('\n')
-
-const projectionText = async (ctx, { emitState = false, conversational = false } = {}) => {
-  const r = await board({ kind: 'GetProjection', ...attnArg(ctx) }, ctx)
-  if (r.accepted !== true) return `(board unavailable: ${r.teaching ?? r.errorCode ?? ''})`
-  let text = String(r.payload?.text ?? '')
-  if (ctx.case !== undefined) {
-    const completion = await board({ kind: 'GetCompletion', root: ctx.case.root }, ctx)
-    if (completion.accepted === true) {
-      const p = completion.payload ?? {}
-      if (emitState) emitOn(ctx, 'board', {
-        caseId: ctx.case.id, certified: p.certified === true, floor: String(p.floor ?? '—'),
-        state: String(p.state ?? ''), breached: p.breached === true,
-      })
-      text = `Case View\n${JSON.stringify({
-        goal: ctx.case.root,
-        goalState: p.state,
-        certified: p.certified,
-        groundingFloor: p.floor,
-        frontier: p.frontierDetails ?? p.frontier ?? [],
-        acceptance: p.leaves ?? [],
-        missingEvidence: p.gaps ?? [],
-        blocked: p.blocked ?? [],
-      }, null, 2)}\n\nRelevant verified state and available actions:\n${text}`
-    } else if (emitState) emitOn(ctx, 'board', {
-      caseId: ctx.case.id, accepted: false, teaching: String(completion.teaching ?? completion.errorCode ?? 'Completion state unavailable.'),
-    })
+  if (result === undefined || (typeof result.accepted !== 'boolean' && typeof result.errorCode !== 'string')) {
+    authoritative = false
+    result = { accepted: false, errorCode: 'upstream_unavailable', teaching: `${name} returned no authoritative receipt.` }
   }
-  // 板报缺口(QueryBoard include:gaps,0.11): 「现在该干嘛」由板自己说——桥缺可信来源/放电卡点/
-  // 交付义务,不靠模型对着全量投影猜。老 boardd 无 QueryBoard=拒,静默略过(缺口段是增益不是依赖)。
-  const { gaps, inFlight } = await boardGaps(ctx)
-  if (gaps.length > 0) {
-    const lines = gaps.slice(0, 12).map((x) => `- ${x.gap}(${Object.entries(x.args ?? {}).map(([k, v]) => `${k}=${v}`).join(', ')})`)
-    text += ['', '', 'Board-reported gaps (what remains; handle these first):', ...lines].join(String.fromCharCode(10))
+  // Release the identity only once the Board has actually answered. While the answer is
+  // unknown the submission is still in flight and the next attempt must present the same id.
+  if (authoritative) requestIds.delete(idKey)
+  if (!authoritative) text = JSON.stringify({ ...result, teaching: transportRetryTeaching(result) })
+  const previous = bound?.revision
+  trackCase(ctx, result)
+  if (authoritative && result.accepted !== true && String(result.errorCode ?? '') === 'stale_case_revision'
+    && staleRetries > 0 && ctx.case !== undefined && ctx.case.revision !== previous) {
+    // The refusal itself carried the current revision, so the retry is not a guess.
+    return await callTool(name, input, ctx, { staleRetries: staleRetries - 1 })
   }
-  if (inFlight.length > 0) {
-    const lines = inFlight.slice(0, 12).map((x) => `- ${String(x.args?.node ?? '')}: verification dispatched; waiting for evidence`)
-    text += ['', '', 'Verification in flight (not a gap; wait for the next round and do not rewrite the leaf or close the task):', ...lines].join(String.fromCharCode(10))
-  }
-  text += await evidenceChaseGuide(ctx, gaps)
-  return conversational ? conversationalProjection(text) : text
-}
-
-// One persistent Agent Board carries governance and shared state. A conversation
-// touches it only after the model explicitly selects the Rulith tool. Each selected
-// Case persists across conversational turns until the Agent requests pause or finish;
-// Board creation, package installation, and board sealing remain governance-only.
-
-// ══ viz 那套循环的四个器官（2026-08-06 搬进来）══════════════════════════
-//
-// This loop follows the protocol-native execution behavior while remaining a
-// zero-dependency distributable Agent role. It cannot import the private Core.
-// 所以这里是**按协议面重新实现**，不是复制代码：能对齐的是行为，对不齐的是实现。
-//
-// 搬了什么、为什么：
-//   ① 自动放电（digest 守卫）—— 此前**完全没有**。任务树的叶子带着 spec 躺在板上，
-//      永远等不到后端求证，certified 因此永远不来。这是四个缺口里唯一会让循环**跑不到头**的。
-//   ② 板裁决终态 —— 此前 `DONE:` 就是结论，板没有否决权；而本文件开头第一条纪律写的是
-//      「结论不是模型写的」。现在 DONE 只是**请求**，收尾那句话报的是板的判词。
-//   ③ 影子拍序前移 —— viz 的命门是「影子先审、再放电」：影子的缺陷主张与主叶**同一次**放电接地，
-//      confirmed_defect 才来得及在 certify 之前挡门。影子放最后＝永远慢一拍＝无牙。
-//      段尾那次审阅保留，改称【关门审计】。
-//   ④ stalled 早停 + 插话不打断 —— 连轮空转不再烧到 MAX_ROUNDS；用户中途说话当轮就进对话。
-//
-// **没搬 actuate（执行器收据面）**，那是故意的：本文件是「脑」，手归 rulith-worker（见文件头边界）。
-// 一个进程既提议又执行，等于把提议方和执行方合成一个人——那正是收据面要拆开的东西。
-
-/** Roots in the selected Case (shared by discharge/completion/closure).
- * `board()` attaches ctx.case to GetProjection. Core enters CaseContextOverlay
- * before this read, so the returned logical facts are BoardShared + this Case
- * and cannot contain another Case. Attention is intentionally absent here:
- * authoritative completion must never depend on a lossy model projection. */
-async function boardRoots(ctx) {
-  const pj = await board({ kind: 'GetProjection', format: 'json' }, ctx)
-  if (pj.accepted !== true) return { roots: [], facts: [] }
-  const facts = pj.payload?.context?.facts ?? []
-  const roots = [...new Set(facts.filter((f) => f.atom?.predicate === 'root').map((f) => String(f.atom.args?.node ?? '')))].filter(Boolean)
-  return { roots, facts }
+  return { result, text, authoritative, view: viewOf(result) }
 }
 
 /**
- * Wait for the terminal receipt of one accepted outward action without spending
- * another model turn. Intake actions are the important edge case: before their
- * receipt there is deliberately no task root, so the ordinary settlement loop
- * (which starts from a task tree) cannot observe them.
+ * The host's own read of the bounded Case View.
+ *
+ * `GetCompletion` is a host tool, not a model verb: waiting, polling and resuming are
+ * mechanics, and a model taught to poll spends a full model call saying "still waiting".
  */
-async function waitForTerminalActionReceipt(ctx, invocation) {
-  if (!invocation || SETTLE_WAIT_MS <= 0) return undefined
+async function hostView(ctx) {
+  if (ctx.case === undefined) return undefined
+  let answer = await callTool('GetCompletion', {}, ctx)
+  // Older Cloud builds bind the read to the Case envelope; newer ones also accept the
+  // acceptance root explicitly. Ask again with the root rather than reporting no view.
+  if (answer.result?.accepted !== true && String(answer.result?.errorCode ?? '') === 'bad_command') {
+    answer = await callTool('GetCompletion', { root: ctx.case.root }, ctx)
+  }
+  return answer.view
+}
+
+/**
+ * Verification discharge is a mechanical step, not a model verb (spec §6.0b): the host
+ * arms it once obligations are clear. It travels the host protocol path, so it never
+ * appears in the model's tool list and the model is never taught to trigger it.
+ */
+async function runDischarge(ctx, view) {
+  if ((process.env.RULITH_AUTO_DISCHARGE ?? '') === 'off') return ''
+  const root = String(view?.goal ?? ctx.case?.root ?? '')
+  if (root === '') return ''
+  const answer = await board({ kind: 'RunDischarge', root }, ctx)
+  if (answer.accepted !== true) {
+    // A refused discharge is never silent: "no verification bridge installed" is the
+    // most common cause, and the authority's own words are the interface.
+    const note = `[Verification rejected] ${String(answer.teaching ?? answer.errorCode ?? '').slice(0, 180)}`
+    log(note)
+    emitOn(ctx, 'discharge', { notes: [note] })
+    return note
+  }
+  const gaps = Array.isArray(answer.payload?.gaps) ? answer.payload.gaps : []
+  const note = gaps.length === 0
+    ? '[Verification] every acceptance leaf is closed'
+    : `[Verification] still open: ${gaps.map((gap) => String(gap.node ?? '')).filter(Boolean).join(' · ')}`
+  log(note)
+  emitOn(ctx, 'discharge', { notes: [note] })
+  return note
+}
+
+/**
+ * Host settlement: wait for what someone else is doing, then arm verification once.
+ *
+ * A dispatched Action or a verification work item takes seconds to tens of seconds, and
+ * every round spent asking the model about it is a full model call that produces
+ * nothing. The host waits instead — reading the same bounded view the model would see —
+ * and the model is woken with the landed result. The expensive thing is the model turn,
+ * not the HTTP hop.
+ */
+async function settle(ctx, view) {
+  let current = view ?? await hostView(ctx)
+  const notes = []
+  let waited = false
+  if (ctx.case === undefined) return { view: current, notes, waited }
   const until = Date.now() + SETTLE_WAIT_MS
   let announced = false
-  while (Date.now() < until) {
-    const { facts } = await boardRoots(ctx)
-    for (const fact of facts) {
-      const predicate = fact.atom?.predicate
-      const args = fact.atom?.args ?? {}
-      if (String(args.invocation ?? '') !== invocation) continue
-      if (predicate === 'effect_confirmed') {
-        return { ok: true, detail: String(args.result ?? '') }
-      }
-      if (predicate === 'effect_failed') {
-        return { ok: false, detail: String(args.reason ?? '') }
-      }
-    }
-    if (!announced) {
-      log(`◌ Waiting locally for the terminal action receipt (${invocation}); no model turn is being consumed.`)
-      announced = true
-    }
-    await new Promise((r) => setTimeout(r, 1000))
-  }
-  return undefined
-}
-
-const revisionNow = async (ctx) => String((await board({ kind: 'GetHealth' }, ctx))?.revision ?? '')
-
-// ① 自动放电：板算 digest，客户端只记「这个版本我放过了」。
-//    at-most-once per spec 版本——改了 spec 就自动重放电，策略杠杆留在模型手里。
-//    放电**不是工具**，模型不用（也不该）知道怎么触发它；它只会在 [结果] 里看到接地或缺口。
-//    守卫状态(dischargedDigest/lastLeaves)**入槽**(2026-08-07): 它是"这块板的这个 spec 版本我放过了"
-//    的记账,跨客户共享一份等于把 A 的放电记录拿去挡 B 的叶子(永远等不到求证)。
-async function dischargePass(ctx) {
-  if ((process.env.RULITH_AUTO_DISCHARGE ?? '') === 'off') return ''
-  const { roots } = await boardRoots(ctx)
-  if (roots.length === 0) { ctx.lastLeaves = []; return '' }
-  const notes = []
-  const seen = []
-  for (const root of roots) {
-    const c = await board({ kind: 'GetCompletion', root }, ctx)
-    if (c.accepted !== true) continue
-    const leaves = c.payload?.leaves ?? []
-    seen.push(...leaves)
-    // 守卫键**带板**: 一块 durable Agent Board 上运行多个 Case Context,节点名跨 Case 天然重名
-    // (每件活都有自己的 L1)。**分辨靠 digest 不靠名字**: 同名同 digest = 真的放过了,
-    // 同名新 digest = 另一件活,照放。板那一段则把 --serve 的不同会话槽隔开
-    // ——少了它,两个客户的同名叶子会互相挡住,**永远等不到求证,certified 永远不来**。
-    const key = (l) => `${ctx.board}::${l.node}`
-    const fresh = leaves.filter((l) => l.met !== true && ctx.dischargedDigest.get(key(l)) !== l.digest)
-    if (fresh.length === 0) continue
-    for (const l of fresh) ctx.dischargedDigest.set(key(l), l.digest)
-    const r = await board({ kind: 'RunDischarge', root, leaves: fresh.map((l) => String(l.node)) }, ctx)
-    if (r.accepted !== true) {
-      // 放电拒**不静默**：没装验收桥是最常见的一种,教学原话直接回模型与人(报错=接口)
-      notes.push(`[Verification rejected] ${String(r.teaching ?? r.errorCode ?? '').slice(0, 180)}`)
+  let discharged = false
+  for (;;) {
+    if (certifiedOf(current)) break
+    if (inFlightOf(current).length > 0) {
+      if (Date.now() >= until) break
+      if (!announced) { log('◌ Waiting locally for receipts; no model turn is being consumed.'); announced = true }
+      waited = true
+      await new Promise((ready) => setTimeout(ready, SETTLE_POLL_MS))
+      current = (await hostView(ctx)) ?? current
       continue
     }
-    const gaps = r.payload?.gaps ?? []
-    // 在途与缺口分栏(同上): work-ordered 是"派出去了,等回话",说成缺口会让模型以为卡住了。
-    const ordered = gaps.filter((g) => /work-ordered|退避窗|backoff window/.test(String(g.reason ?? '')))
-    const real = gaps.filter((g) => !/work-ordered/.test(String(g.reason ?? '')))
-    notes.push(`[Verification] ${fresh.length} ${fresh.length === 1 ? 'leaf' : 'leaves'}${real.length ? `; gaps: ${real.map((g) => `${g.node}(${String(g.reason ?? '').slice(0, 80)})`).join(' · ')}` : ''}${ordered.length ? `; evidence pending (the runtime will wait): ${ordered.map((g) => g.node).join(' · ')}` : ''}${real.length === 0 && ordered.length === 0 ? '; all closed' : ''}`)
+    if (discharged) break
+    discharged = true
+    const note = await runDischarge(ctx, current)
+    // Nothing was armed (discharge disabled, or no acceptance root yet), so re-reading
+    // the view would spend a round trip to learn what this loop already knows.
+    if (note === '') break
+    notes.push(note)
+    waited = true
+    current = (await hostView(ctx)) ?? current
   }
-  ctx.lastLeaves = seen
-  // **人也要看得见**(2026-08-06 真机第一次跑就是这个坑): 器官只喂模型不喂人,等于没跑——
-  // 出了岔子没人知道该看哪。终端是这个形态的唯一界面,它必须显示循环在做什么。
-  for (const n of notes) log(n)
-  if (notes.length) emitOn(ctx, 'discharge', { notes })
-  return notes.length ? '\n' + notes.join('\n') : ''
-}
-
-// ② 板裁决的完成态：多根取合取（全部 certified 才算 certified），floor 取最弱的一档。
-//    `allDone` 是**另一根轴**,不能与 certified 混用: certified 说的是「够不够硬」,
-//    state 说的是「还有没有活」。真机上见过 certified=true 而 state=actuating(手领了活没回执)——
-//    只看 certified 就结案,等于把"还在办"记成"办完了"(2026-08-07 review 的假绿正是这个形状)。
-// Core TIER_ORDER reversed: weakest -> strongest, because completionAll keeps
-// the weakest floor by choosing the lower index. Keep every real Core tier and
-// never invent a compatibility tier the authority cannot return.
-const FLOOR_ORDER = ['asserted', 'perceived', 'uncertain', 'inductive', 'approximate', 'attested', 'verified']
-async function completionAll(ctx) {
-  const { roots } = await boardRoots(ctx)
-  if (roots.length === 0) return { certified: false, floor: '—', state: 'empty', allDone: false, breached: false, conflicts: [], roots: [] }
-  let certified = true; let floor = 'verified'; let breached = false; let allDone = true; const conflicts = []; const states = []
-  for (const root of roots) {
-    const c = await board({ kind: 'GetCompletion', root }, ctx)
-    if (c.accepted !== true) { certified = false; allDone = false; continue }
-    const p = c.payload ?? {}
-    if (p.certified !== true) certified = false
-    if (String(p.state ?? '') !== 'done') allDone = false
-    const f = String(p.floor ?? 'asserted')
-    const rank = FLOOR_ORDER.indexOf(f)
-    if (rank < 0) { certified = false; floor = 'asserted' }
-    else if (rank < FLOOR_ORDER.indexOf(floor)) floor = f
-    if (p.breached === true) breached = true
-    for (const x of p.conflicts ?? []) conflicts.push(x)
-    states.push(`${root}=${String(p.state ?? '')}`)
+  if (announced) log(`◌ Settlement complete (certified=${certifiedOf(current)} · ${String(current?.state ?? '')}). The next model turn receives the landed result.`)
+  if (current !== undefined) {
+    emitOn(ctx, 'board', {
+      caseId: ctx.case?.id, certified: certifiedOf(current), floor: String(current.floor ?? '—'),
+      state: String(current.state ?? ''),
+    })
   }
-  return { certified, floor, state: states.join(' '), allDone, breached, conflicts, roots }
+  return { view: current, notes, waited }
 }
 
-/**
- * **段尾收工的唯一可交付判据**——`CloseCase` 只有这一个执行点。
- *
- * 从前收工有两条路,其中一条是**无条件**关账: 段一停轮就把那件事关掉,而 CloseCase 缺省按
- * `completed` 关账 ⇒ 没办完的活被记成办结(2026-08-17 orders-bt 真机)。
- * 收成一条路 + 三重判据(`roots>0 && certified && allDone`),就没有"哪一条路松一点"这回事了。
- *
- * 收工前**重读一次板的裁决**: 段内最后一轮之后板还可能变(放电回执/影子异议落板),
- * 拿轮内的旧读去决定终态,就是拿过期判词收工。
- */
-async function deliverableNow(ctx) {
-  let final = await completionAll(ctx)
-  // **在途要等一等再判**(2026-08-18 冷通枪逮到的真缺陷): 求证工单派出去要几秒到几十秒才回,
-  // 而模型往往在派完的那一轮就 DONE。只判一次 ⇒ 板此刻还没 certified ⇒ 案卷永久留「在办」,
-  // 而十几秒后板自己就判可交付了——**"办完了却不结案"的全部成因就是这个时序**。
-  // 只在**还有活着的求证在途**时等(不是无脑 sleep): 最多 DELIVERABLE_WAIT_MS,每 3s 重判一次。
-  const deadline = Date.now() + Math.max(0, DELIVERABLE_WAIT_MS)
-  let pushed = false
-  let lastWaitLine = ''
-  // 循环条件**不能只看 certified**(2026-08-18 第四发): 失败形状恰恰是「已 certified 但义务未清」
-  // ——那时循环不进,直接判 deliverable,结案被板拒(还有 N 项未结),案卷白白留「在办」。
-  // 判据 = 未达可交付 **或** 还有未结义务,两者都清才收工。
-  while (final.roots.length > 0 && Date.now() < deadline) {
-    const notYet = final.certified !== true || final.allDone !== true
-    // **先补一次放电再等**(2026-08-18 冷通枪第二发逮到): 模型往往在第一批求证刚回一条时就 DONE,
-    // 剩下的叶子**连工单都还没派**——只等在途等不来它们。放电是幂等的(按 spec 版本 at-most-once),
-    // 收工前补跑一次不会重复烧后端,却能把"还没派单的叶子"一次性推出去。
-    const { roots, facts } = await boardRoots(ctx)
-    if (roots.length === 0) break
-    const openNow = openObligations(facts)
-    if (!notYet && openNow.length === 0) break // 达标且义务清空——收工
-    if (!pushed && notYet) { pushed = true; await dischargePass(ctx); final = await completionAll(ctx); continue }
-    const g = await board({ kind: 'QueryBoard', include: ['gaps'] }, ctx)
-    // `leaf_gap(...:work-ordered)` 是派单视图，不是租约台账。旧 gap 可能晚于
-    // 对应的 discharge_done；直接拿它判在途会让混合核验白等满一个结算窗。
-    const inflight = hasLiveDischargeWork(facts)
-      && (g.accepted === true ? (g.payload?.gaps ?? []) : []).some((x) => /work-ordered/.test(String(x.args?.reason ?? '')))
-    // **动作在途也要等**(2026-08-18 冷通枪第三发): 板判 1/1 叶接地 certified,结案却被拒——
-    // 「本案还有 5 项未结」= 已派发未回执的动作(等执行器/等清关)。求证与动作是两条在途线,
-    // 只等一条,另一条就成了"办完了却不结案"的新成因。义务清没清是**宿主看得见的机械事实**,
-    // 不该靠模型自觉等——所以判据放在这里,不放在提示词里。
-    const open = openNow
-    if (!inflight && open.length === 0 && !notYet) break
-    if (!inflight && open.length === 0) {
-      // **认输前先代跑一次复活重探**(与段内落定等待同一条判据,2026-08-18 第五发):
-      // 求证失败后的补单只在下一次 RunDischarge 时发生——收工闸里没有下一个模型轮了,
-      // 宿主不代跑,失败的求证就永远等不来第二枪,案卷白白留「在办」。补不出新在途才认输。
-      await dischargePass(ctx)
-      const g3 = await board({ kind: 'QueryBoard', include: ['gaps'] }, ctx)
-      const rearmed = (g3.accepted === true ? (g3.payload?.gaps ?? []) : []).some((x) => /work-ordered/.test(String(x.args?.reason ?? '')))
-      if (!rearmed) break // 没在途也没义务,再等也不会变
-    }
-    // **同一句话只说一次**(2026-08-18 真机: 3 秒一轮打了十三行一模一样的等待行,把中栏刷成噪音)。
-    // 内容变了(等的东西不一样了)才再说——**重复不是信息**,而屏幕上的位置是有限的。
-    const waitLine = `◌ ${[inflight ? 'verification in flight' : '', open.length ? `unreceipted actions ${open.join('/')}` : ''].filter(Boolean).join(' · ')}; waiting before deciding deliverability (up to ${Math.round(DELIVERABLE_WAIT_MS / 1000)}s)`
-    if (waitLine !== lastWaitLine) { log(waitLine); lastWaitLine = waitLine }
-    await new Promise((r) => setTimeout(r, 3000))
-    final = await completionAll(ctx)
-  }
-  const deliverable = final.roots.length > 0 && final.certified === true && final.allDone === true
-  const why = final.roots.length === 0
-    ? 'The board has no task tree, so this segment has no deliverable.'
-    : `The board has not established deliverability (certified=${final.certified} · floor=${final.floor} · ${final.state}).`
-  return { final, deliverable, why }
-}
-
-/** Close gate for the conversation-first tool surface. finish_case is the
- * model's explicit decision to attempt closure; deterministic discharge,
- * receipt waiting, and retry windows are host mechanics and consume no model
- * turn. The host still closes only after the Board certifies the Case. */
-async function conversationalDeliverability(ctx) {
-  await dischargePass(ctx)
-  const settled = await deliverableNow(ctx)
-  const final = settled.final
-  emitOn(ctx, 'board', {
-    caseId: ctx.case?.id, certified: final.certified, floor: final.floor,
-    state: final.state, breached: final.breached,
-  })
-  const { facts } = await boardRoots(ctx)
-  const obligations = openObligations(facts)
-  const deliverable = settled.deliverable
-    && obligations.length === 0
-  const why = final.roots.length === 0
-    ? 'The Board has no task tree.'
-    : final.certified !== true || final.allDone !== true
-      ? settled.why
-      : `The Case still has unreceipted obligations: ${obligations.join(', ')}.`
-  return { deliverable, why }
-}
-
-/** 未结义务(已派发未回执的动作 + 待清关的审查)。**唯一判据**: 脉冲与收工闸共用这一份。 */
-
-function openObligations(facts) {
-  const fs = facts ?? []
-  const arg = (f, k) => String(f.atom?.args?.[k] ?? '')
-  // **有结论 = 成败两档**(核心 69-seal-gate 门牌同句): 回执的意思是"这件事有了结论",
-  // 失败也是结论。原先只数 effect_confirmed ⇒ 失败的调用永远算未结。
-  //
-  // ⚠️ **键按 invocation,不按工具名**(2026-08-20 修): 同一只手可以有多次在飞的调用。
-  // 上一轮改名时这一集**只改了查的那侧、没改建的那侧**(建集用 `action`,查用 `invocation`)
-  // ——`action` 这个键在板上已经不存在了 ⇒ 集合全是空串 ⇒ **永远匹配不上** ⇒
-  // 每一次调用都被算作未结,收工闸白等到超时。与核心那四处写点是同一个病:
-  // **改名漏一侧不报错,只让某个判据恒假。**
-  const settled = new Set(
-    fs.filter((f) => f.atom?.predicate === 'effect_confirmed' || f.atom?.predicate === 'effect_failed')
-      .map((f) => arg(f, 'invocation')),
-  )
-  const acts = [...new Set(fs.filter((f) => f.atom?.predicate === 'dispatched' && !settled.has(arg(f, 'invocation'))).map((f) => arg(f, 'tool')))]
-  // **字段名逐个照板上的真形写**(2026-08-18 真机: 读错字段 ⇒ 清关后义务永远消不掉,
-  // 收工闸白等到超时)。宪法闸族的实参 2026-08-20 由旧名 action-sig 整族改名为 `tool`。
-  const sig = (f) => arg(f, 'tool')
-  const cleared = new Set(fs.filter((f) => f.atom?.predicate === 'norm_cleared').map((f) => `${sig(f)}@${arg(f, 'norm')}`))
-  const revs = [...new Set(fs.filter((f) => f.atom?.predicate === 'norm_review' && !cleared.has(`${sig(f)}@${arg(f, 'norm')}`)).map((f) => `${sig(f)}@${arg(f, 'norm')}`))]
-  // **拦在宪法闸前的动作也是未结义务**(2026-08-18 用户裁「宪法闸 review 拦截审核应该是同一拍动作」):
-  // dispatch_blocked 是 host 记账 EDB,清关落地即 retract——在板上活着就意味着审查席/人签正在替它
-  // 干活。真机形状: 求证先转绿(certified=true)而 deduct/notify 还压在闸下,模型被叫醒只能回
-  // 「等 norm 审核」白烧两轮——义务清没清与叶子绿没绿是两根轴,这里是缺的那半边判据。
-  const blocked = [...new Set(fs.filter((f) => f.atom?.predicate === 'dispatch_blocked' && !revs.includes(`${sig(f)}@${arg(f, 'norm')}`)).map((f) => `${sig(f)}⛔${arg(f, 'norm')}`))]
-  // **意图是义务的先声**(2026-08-18 首探二发逮住): ApplyBatch 返回后,①级语义闸(嵌入)与
-  // 派发是**异步**的——有一个好几秒的窗口,板上还没有 dispatched/dispatch_blocked,
-  // 光数它们的闸在窗口里读 0,注定红的首探照旧出手。意图与批同步落板,没有这个窗口:
-  // 还有 tool_invoked 没走到 effect_confirmed/effect_failed,就视作"有人马上要干活"。
-  // (键从工具名换成 invocation: 同一只手可以有多次在飞的调用,核心 2026-08-20 工具面收敛。)
-  // 永不落地的意图(缺工具/缺实参)会把这条挂到超时——那正是 nextStepLine 缺实参分支
-  // 与收工闸时限在管的事,不归这里兜。
-  const intents = [...new Set(fs.filter((f) => !f.derived && f.atom?.predicate === 'tool_invoked' && !settled.has(arg(f, 'invocation'))).map((f) => arg(f, 'tool')))].filter((a) => !acts.includes(a))
-  return [...acts, ...revs, ...blocked, ...intents]
-}
-
-/** 求证是否真的还在途。`leaf_gap(...:work-ordered)` 是派单视图，可能在终态回执后残留；
- * 等待只认权威工单台账的差集：discharge_work - discharge_done。 */
-function hasLiveDischargeWork(facts = []) {
-  const arg = (f, key) => String(f?.atom?.args?.[key] ?? '')
-  const done = new Set(facts
-    .filter((f) => f?.atom?.predicate === 'discharge_done')
-    .map((f) => arg(f, 'work'))
-    .filter(Boolean))
-  return facts.some((f) => {
-    if (f?.atom?.predicate !== 'discharge_work') return false
-    const work = arg(f, 'work')
-    return work !== '' && !done.has(work)
-  })
-}
-
-/** A work-ordered gap is only an in-flight display hint while the authoritative
- * discharge ledger still contains unfinished work. QueryBoard may retain the
- * dispatch-era gap after the terminal receipt, so the gap alone is not a
- * lifecycle authority. */
-function visibleInFlightGaps(gaps = [], facts = []) {
-  return hasLiveDischargeWork(facts) ? gaps : []
-}
-
-/** 板报缺口的**唯一读取点**（全板视图与每轮指引共用一份判据）。
- *  **在途不是缺口**（2026-08-18 冷通枪逮到）：`work-ordered` = 求证工单已派给真探、正在等回话，
- *  是**正常在途态**。把它摆进"还差什么（优先处理）"那一栏，模型会合理地判断"卡住了"并停轮
- *  ——真机上它 15 秒就收工，活干完了却不结案。在途单独一栏说清"等着就行"。 */
-async function boardGaps(ctx) {
-  const g = await board({ kind: 'QueryBoard', include: ['gaps'] }, ctx)
-  const all = g.accepted === true ? (g.payload?.gaps ?? []) : []
-  const isFlight = (x) => /work-ordered/.test(String(x.args?.reason ?? ''))
-  const candidates = all.filter(isFlight)
-  if (candidates.length === 0) return { gaps: all, inFlight: [] }
-  const p = await board({ kind: 'GetProjection', format: 'json' }, ctx)
-  // If the ledger cannot be read, keep the conservative waiting hint. Hiding
-  // real in-flight verification would be more damaging than a stale hint.
-  const inFlight = p.accepted === true
-    ? visibleInFlightGaps(candidates, p.payload?.context?.facts ?? [])
-    : candidates
-  return { gaps: all.filter((x) => !isFlight(x)), inFlight }
-}
-
-
-
-
-
-
-// ── 模型客户端（你的 key，直连你的模型服务；rulith 看不到这一段） ──────────
-// 两种线型按 URL 形状识别: /chat/completions 结尾 = OpenAI 风格(deepseek/qwen 等),否则 Anthropic。
-// 主人格与影子人格各一套配置(影子缺省沿用主配置——同一个模型换个立场,也已经值回票价;
-// 独立小模型审大模型是升级形态,RULITH_SHADOW_* 配上即生效)。
-/** 收工前等在途求证的上限(0=不等,老行为)。真探跑几秒到几十秒,而模型常在派完那轮就 DONE。 */
-/** 在途就地结算的上限(0=关,老行为=每轮问一次模型)。派出去的求证/查询要几秒到几十秒才回,
- *  而模型在这段时间里除了「我等等」什么也说不出——**那几轮是纯烧**。宿主替它等,不花钱。 */
-const SETTLE_WAIT_MS = envNumber('RULITH_SETTLE_WAIT_MS', 60_000, { min: 0, max: 3_600_000 })
-const DELIVERABLE_WAIT_MS = envNumber('RULITH_DELIVERABLE_WAIT_MS', 45_000, { min: 0, max: 3_600_000 })
+// ── Model client (your key, straight to your model service; Rulith never sees it) ──
+//
+// Native tool use is the model surface. The four schemas the authority advertises are
+// the templates, so this runtime never writes a second grammar for the model to get
+// subtly wrong — the last one was a fenced-JSON dialect whose templates the client's own
+// parser could not read back, and four real runs dispatched nothing at all.
+//
+// Two provider shapes are spoken directly: Anthropic Messages (`tools` with
+// `input_schema`, `tool_use` blocks, `tool_result` replies) and OpenAI Chat Completions
+// (`tools` with `function.parameters`, `tool_calls`, role `tool` replies). An endpoint
+// that rejects `tools` outright gets the emulated transport: the same schemas rendered
+// into the system prompt, one JSON object read back as one call. That is a transport,
+// not a second surface — the names, the schemas and the refusals are identical.
 const MAIN_CFG = { url: MODEL_URL, key: MODEL_KEY, model: MODEL }
 const SHADOW_CFG = {
   url: process.env.RULITH_SHADOW_URL ?? MODEL_URL,
   key: process.env.RULITH_SHADOW_KEY ?? MODEL_KEY,
   model: process.env.RULITH_SHADOW_MODEL ?? MODEL,
 }
-async function ask(messages, system, cfg = MAIN_CFG) {
-  const openaiStyle = /\/chat\/completions\/?$/.test(cfg.url)
-  const baseHeaders = { 'content-type': 'application/json' }
-  let r
-  try {
-    r = await fetch(cfg.url, {
-      method: 'POST',
-      headers: openaiStyle
-        ? (cfg.key === '' ? baseHeaders : { ...baseHeaders, authorization: `Bearer ${cfg.key}` })
-        : (cfg.key === '' ? baseHeaders : { ...baseHeaders, 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' }),
-      body: openaiStyle
-        ? JSON.stringify({
-            model: cfg.model, max_tokens: 6000,
-            // 混合思考模型(DeepSeek v4-pro 等)不关思考会把 token 烧在 reasoning 上,content 回空
-            // ——真机 12 轮全空说才找到的。RULITH_MODEL_THINKING=enabled 可打开。
-            ...(process.env.RULITH_MODEL_THINKING === 'enabled' ? { thinking: { type: 'enabled' } } : {}),
-            messages: [{ role: 'system', content: system }, ...messages],
-          })
-        : JSON.stringify({ model: cfg.model, max_tokens: 6000, system, messages }),
-    })
-  } catch (e) {
-    // 用户面工具不该抛原始堆栈: 说清连的是谁、怎么改(2026-08-01 自跑时踩到)
-    failTask(`Cannot reach model service ${cfg.url}: ${e?.cause?.code ?? e?.message ?? e}.
-   Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
+const openaiStyle = (cfg) => /\/chat\/completions\/?$/.test(cfg.url)
+/** Emulation is sticky once chosen: a mixed transcript is a malformed one. */
+let emulatedTools = (process.env.RULITH_MODEL_TOOLS ?? '') === 'emulated'
+let emulatedSeq = 0
+
+// The transcript is kept in one neutral shape and rendered per provider at send time.
+// Holding provider-shaped messages instead would make the fallback below unusable: the
+// turns already recorded in one dialect cannot be replayed in another.
+const userEntry = (text) => ({ role: 'user', text: String(text) })
+const assistantEntry = (text, toolCalls = []) => ({ role: 'assistant', text: String(text ?? ''), toolCalls })
+const resultsEntry = (results) => ({ role: 'tool_results', results })
+
+function renderMessages(entries, style) {
+  const out = []
+  for (const entry of entries) {
+    if (entry.role === 'user') {
+      out.push(style === 'anthropic' ? { role: 'user', content: [{ type: 'text', text: entry.text }] } : { role: 'user', content: entry.text })
+      continue
+    }
+    if (entry.role === 'assistant') {
+      const calls = Array.isArray(entry.toolCalls) ? entry.toolCalls : []
+      if (style === 'anthropic') {
+        const content = []
+        if (entry.text !== '') content.push({ type: 'text', text: entry.text })
+        for (const call of calls) content.push({ type: 'tool_use', id: call.id, name: call.name, input: call.input ?? {} })
+        out.push({ role: 'assistant', content: content.length > 0 ? content : [{ type: 'text', text: '(no content)' }] })
+        continue
+      }
+      if (style === 'openai') {
+        out.push({
+          role: 'assistant',
+          // `null` content is only legal beside tool_calls. A turn with neither is a
+          // model that answered nothing, and the endpoint refuses the whole request.
+          content: entry.text !== '' ? entry.text : calls.length === 0 ? '(no content)' : null,
+          ...(calls.length === 0 ? {} : { tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) } })) }),
+        })
+        continue
+      }
+      const spoken = calls.map((call) => JSON.stringify({ tool: call.name, input: call.input ?? {} })).join('\n')
+      out.push({ role: 'assistant', content: [entry.text, spoken].filter((part) => part !== '').join('\n') || '(no content)' })
+      continue
+    }
+    const results = Array.isArray(entry.results) ? entry.results : []
+    if (style === 'anthropic') {
+      out.push({ role: 'user', content: results.map((result) => ({ type: 'tool_result', tool_use_id: result.id, content: result.text })) })
+      continue
+    }
+    if (style === 'openai') {
+      for (const result of results) out.push({ role: 'tool', tool_call_id: result.id, content: result.text })
+      continue
+    }
+    out.push({ role: 'user', content: results.map((result) => `[${result.name} result]\n${result.text}`).join('\n\n') })
   }
-  const j = await r.json().catch(() => ({}))
-  if (!r.ok) failTask(`Model service error (${r.status}): ${JSON.stringify(j).slice(0, 300)}`)
-  if (openaiStyle) return String(j.choices?.[0]?.message?.content ?? '')
-  return (j.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n')
+  return out
 }
 
-const EXECUTION_GUIDE = `The generic loop has six steps: read the goal and board projection; select one currently available action from the actions section; submit it; wait for its terminal receipt; read the board again; finish only when the board reports certified=true and no obligations remain.
-
-1. Conclusions must be derived by the board. Submit only materials, task structure, or actions already declared by the board.
-   The Worker writes structured tool-result facts automatically. Refer to those nodes and facts; do not copy them with assert_fact.
-2. The actions section is authoritative. Use only actions marked as available, with names and parameter shapes from tool_def/action_def.
-3. Submit at most one top-level command per turn. For a multi-step workflow, wait for the previous terminal receipt and the resulting closure before choosing the next command.
-4. The host initiates verification automatically. Do not rewrite acceptance leaves while verification is pending, and do not treat an action receipt as final acceptance.
-5. The board decides completion. Never assert acceptance_met or test_result yourself, and never use DONE to impersonate certification.
-6. A rejection includes actionable teaching. Follow it; do not route around it.
-
-In each turn, give a short explanation and exactly one JSON code block of one of these forms:
-
-- Board operations: an array whose items contain op. One batch may contain the facts needed to establish a task tree.
-- Top-level command: one object containing kind. Do not return an array of top-level commands or mix it with board operations.
-
-Generic material template (replace every <...> placeholder with real content from the board or installed packs):
-\`\`\`json
-[{"op":"assert_fact","id":"<fact-id>","predicate":"<predicate-from-a-pack>","args":{"<argument-name>":"<real-value>"}}]
-\`\`\`
-
-Generic task-tree template:
-\`\`\`json
-[
-  {"op":"assert_fact","id":"<goal-fact-id>","predicate":"goal_node","args":{"node":"<goal-node>"}},
-  {"op":"assert_fact","id":"<acceptance-fact-id>","predicate":"acceptance","args":{"node":"<goal-node>","test":"<acceptance-name-from-the-task-or-pack>"}}
-]
-\`\`\`
-Attach acceptance to leaves. Split independent obligations into separate leaves and connect them to their parent with subgoal_of. A leaf normally has one acceptance; multiple acceptance facts on one leaf are only for alternative verification paths.
-
-Board-local action template (the actions section shows PRE/EFFECT and no parameter table, so omit args):
-\`\`\`json
-{"kind":"ApplyAction","action":"<board-local-action>"}
-\`\`\`
-
-External effect Action template (select a target node already on the board; the host binds business arguments from uniquely matching trusted facts):
-\`\`\`json
-{"kind":"ApplyAction","action":"<external-action>","target":"<leaf-owned-by-the-action>"}
-\`\`\`
-Read-only Source acquisition Actions may explicitly accept Case clue bindings declared in their parameter table. Those values seed a query and never become facts merely because they were supplied:
-\`\`\`json
-{"kind":"ApplyAction","action":"<source-access-action>","args":{"<declared-slot>":"<clue-from-user-task>"}}
-\`\`\`
-Every argument must be declared, present when required, and match its declared string/number/boolean type; the authority rejects the call before creating an invocation otherwise. Never use clue bindings to invoke a write/run Action unless its installed declaration explicitly says inputPolicy=clue; otherwise wait for Source-backed board facts.
-
-The other bootstrap exception is an action whose description begins with [intake]. It atomically claims external work and returns its task structure. When no target leaf exists, invoke it once without target:
-\`\`\`json
-{"kind":"ApplyAction","action":"<[intake]-action>"}
-\`\`\`
-Do not create a temporary task tree before intake. After its terminal receipt, read the board again and bind every later external action to a real returned leaf. Without the [intake] marker, never guess that an action may run without a target.
-For ordinary effect Actions, do not supply business identifiers, amounts, addresses, or other arguments from conversation; they must come from board-grounded bindings. Continue only after a terminal receipt with done=true; done=false means accepted for processing, not succeeded.
-
-Reply with VIEW: alone to refresh the bounded Case View. Reply with DONE: only when the Case View is complete. Reply with STOP: when material, domain capability, or a human decision is genuinely missing.`
-
-const SYSTEM = `You are a domain-agnostic Rulith execution agent. The current board and its installed packs are the only source of domain semantics: vocabulary, rules, actions, parameter shapes, and acceptance names. Concrete goals and instance values come from the user task, board facts, and trusted tool results. Placeholders in this prompt are not domain facts.
-
-Do not invent predicates, actions, or acceptance names. Do not add temporary axioms, define actions, or register packs. If a required domain capability is missing, reply STOP: and identify the missing capability; board administrators manage packs.
-
-${EXECUTION_GUIDE}`
-
-const SYSTEM_EXPLORATION = `You are a Rulith exploration agent working inside one isolated Case Context. The installed Agent configuration remains authoritative, but this Case Type explicitly permits provisional, Case-local vocabulary, rules, Actions, Goals, and acceptance dependencies so an uncovered task can be solved and later distilled.
-
-Use namespaced provisional predicates under scratch.<domain>.<name>. You may add safe axioms and board-local Actions only inside this Case. They disappear when the Case closes and never modify an installed Capability or BoardShared law. Installed external Tools may still be invoked through ApplyAction; a provisional Action never grants itself external execution authority.
-
-OpenCase has injected the trusted system fact case_context(case_id, root, case_type) and the platform-owned bridge from rulith.exploration.completed(case_id) to this Case's declared acceptance leaves. Build one ordinary task tree with acceptance tests; do not create pack_acceptance, pack_bridge_evidence, pack_loaded, or pack_rule bookkeeping. A completed exploration must derive rulith.exploration.completed(case_id) through a Case-local rule that binds case_id from case_context and consumes at least one task-specific positive evidence premise. Never assert the completion predicate and never derive it from case_context alone. Record the final evidence-backed finding before requesting DONE so the Terminal Receipt retains the effective path. A fully exploratory path may close, but it is not Publisher-billable and cannot become a Capability until replay validates it.
-
-${EXECUTION_GUIDE}`
-
-const OPTIONAL_RULITH_BASE_GUIDE = `You are a normal conversational Agent. Answer greetings, questions, and discussion directly. Rulith is an optional governed-work tool, not the container for every message. Use it only when the current work benefits from persistent Case state, rules, evidence, external Actions, verification, or an auditable conclusion. The choice to use it is yours unless the user explicitly requires or forbids it.
-
-An ordinary reply immediately returns control to the user. It may include JSON examples in explanatory prose without executing them. A response that consists only of a raw Board command is treated as a mistaken tool attempt, refused locally, and corrected to the Rulith envelope; quote such an object with prose when the user is asking about syntax. An ordinary reply creates no Case and performs no Board operation. If a Rulith Case is already active, it leaves that Case open exactly as it is; you may ask for clarification between Case steps.
-
-To take one Rulith step, the entire response must be exactly one JSON code block containing an explicit Rulith tool envelope, with no prose or other code blocks. The host-selected Case Type is authoritative; start_case therefore has no caseType argument:
-
-${'```json'}
-{"tool":"rulith","action":"start_case"}
-${'```'}
-
-${'```json'}
-{"tool":"rulith","action":"finish_case","disposition":"completed"}
-${'```'}
-
-The host owns credentials, Case identity, revision, and lifecycle enforcement. finish_case is a request: completed closes only after the Board reports a certified, fully settled result. To stop unsuccessful work explicitly, use disposition cancelled, failed, or abandoned and include a non-empty reason. Never emit raw OpenCase, CloseCase, PauseCase, ResumeCase, Worker receipts, clearance, or governance commands.
-
-With an active Case, apply one Board batch through this explicit envelope. Use only predicates and shapes from the Case View, installed capability, or exploration rules:
-${'```json'}
-{"tool":"rulith","action":"apply_batch","operations":[{"op":"assert_fact","id":"<fact-id>","predicate":"<available-predicate>","args":{"<argument>":"<value>"}}]}
-${'```'}
-
-Request one available Action. The host constructs the protocol command and keeps Case identity, revision, discharge, and receipts out of the model surface:
-${'```json'}
-{"tool":"rulith","action":"request_action","name":"<available-action>","target":"<board-node>"}
-${'```'}`
-
-const OPTIONAL_RULITH_COMMON_SAFETY = 'Never assert acceptance_met, test_result, certification, or rulith.exploration.completed.'
-const OPTIONAL_RULITH_EXPLORATION_GUIDE = `For a real exploration Case, the terminal predicate must be derived from case_context plus positive task evidence supplied by an authenticated Source or Tool. If no such evidence route exists, explain the gap or pause; do not manufacture proof. A provisional completion rule has this complete atom shape:
-${'```json'}
-{"tool":"rulith","action":"apply_batch","operations":[{"op":"add_axiom","id":"AX_EXPLORATION_COMPLETE","when":[{"predicate":"case_context","args":{"case_id":"?case","root":"?root","case_type":"exploration"}},{"predicate":"<positive-evidence-predicate-from-a-Source-or-Tool>","args":{"<key>":"?value"}}],"then":[{"predicate":"rulith.exploration.completed","args":{"case_id":"?case"}}]}]}
-${'```'}`
-
-const OPTIONAL_RULITH_TAIL = 'After every tool result, decide afresh whether another Rulith step is useful or whether to reply to the user. The host never continues merely because a Case is not certified.'
-const OPTIONAL_RULITH_GUIDE = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_COMMON_SAFETY}\n\n${OPTIONAL_RULITH_EXPLORATION_GUIDE}\n\n${OPTIONAL_RULITH_TAIL}`
-const OPTIONAL_RULITH_GUIDE_UNSCOPED = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_COMMON_SAFETY}\n\nOpen a Case before asking for Case-specific vocabulary or provisional exploration tools.\n\n${OPTIONAL_RULITH_TAIL}`
-const OPTIONAL_RULITH_GUIDE_LOCKED = `${OPTIONAL_RULITH_BASE_GUIDE}\n\n${OPTIONAL_RULITH_COMMON_SAFETY}\n\nBoard legislation is locked. Do not propose or submit add_axiom, provisional rules, or provisional Actions; use only installed Capability vocabulary and available Actions.\n\n${OPTIONAL_RULITH_TAIL}`
-
-/** 模型这一轮提交了什么: `{ops:[…]}`=一批板内操作 · `{cmd:{kind,…}}`=一条顶层命令 · null=没提交。
+/**
+ * Fold adjacent same-role messages into one.
  *
- *  **顶层命令这一支是 2026-08-21 真机演练撞出来补的(P0)**: 此前这里是
- *  `Array.isArray(v) ? v : null` —— 提示词第 9 条教的「让执行器干活 = 发一条独立命令
- *  `{"kind":"ApplyAction",…}`」是个**对象**，于是**被静默丢掉**，调用方按"模型这轮什么都没提交"
- *  处理，还回一句「没读到 JSON 操作块」。**教学教了一条客户端运不了的路，而且丢得无声无息**：
- *  模型照着模板发、看见什么也没发生、于是开始猜别的写法——四发实跑 `dispatched` 全是 0，
- *  根子就在这一行。纪律 4 的最坏形态不是没有模板，是模板抄了不管用。 */
-const parseRulithEnvelope = (raw) => {
-  let candidate
-  try { candidate = JSON.parse(raw.trim()) } catch { return null }
-  return candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
-    && candidate.tool === 'rulith' && typeof candidate.action === 'string' ? candidate : null
+ * The Anthropic wire expects alternating turns, and the loop legitimately produces two
+ * user messages in a row — the tool results, then what the host settled while the model
+ * was not being asked. Merging here means the loop never has to think about it, and no
+ * future caller can reintroduce the malformed shape by pushing one more message.
+ */
+function mergeAdjacent(messages) {
+  const out = []
+  for (const message of messages) {
+    const previous = out[out.length - 1]
+    if (previous === undefined || previous.role !== message.role || previous.tool_calls !== undefined) { out.push(message); continue }
+    if (Array.isArray(previous.content) && Array.isArray(message.content)) previous.content = [...previous.content, ...message.content]
+    else if (typeof previous.content === 'string' && typeof message.content === 'string') previous.content = `${previous.content}\n\n${message.content}`
+    else out.push(message)
+  }
+  return out
 }
-const containsNonExclusiveRulithEnvelope = (text) => {
-  if (/^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.test(text)) return false
-  return [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].some((block) => parseRulithEnvelope(block[1]) !== null)
+
+/** The emulated transport's only addition: the same schemas, described instead of sent. */
+const emulatedToolGuide = (tools) => [
+  'This model endpoint cannot receive tool definitions, so the same tools are described here.',
+  'To call one, reply with exactly one JSON object and nothing else: {"tool":"<name>","input":{...}}',
+  'To answer instead, reply with ordinary text and no JSON object.',
+  '',
+  ...tools.map((tool) => `${tool.name}: ${tool.description}\ninput schema: ${JSON.stringify(tool.schema)}`),
+].join('\n')
+
+/** One JSON object is one call; anything else is an ordinary answer. */
+function parseEmulated(text) {
+  const trimmed = String(text ?? '').trim()
+  const fenced = /^```(?:json)?\s*([\s\S]*?)```$/.exec(trimmed)
+  const candidate = fenced === null ? trimmed : fenced[1].trim()
+  if (!candidate.startsWith('{')) return { text: trimmed, toolCalls: [] }
+  let value
+  try { value = JSON.parse(candidate) } catch { return { text: trimmed, toolCalls: [] } }
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || typeof value.tool !== 'string') {
+    return { text: trimmed, toolCalls: [] }
+  }
+  const input = value.input !== null && typeof value.input === 'object' && !Array.isArray(value.input) ? value.input : {}
+  return { text: '', toolCalls: [{ id: `emulated_${++emulatedSeq}`, name: value.tool, input }] }
 }
-const containsExclusiveRawBoardCommand = (text) => {
-  const exact = /^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.exec(text)
-  const raw = exact?.[1] ?? text.trim()
+
+/** Tool arguments that are not a JSON object are refused locally rather than guessed at. */
+function parseToolArguments(raw) {
+  if (raw === undefined || raw === null) return {}
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw
+  // Several OpenAI-compatible endpoints send `""` for a tool with no arguments. That is
+  // an empty object, not a malformed call; refusing it would refuse every no-arg verb.
+  if (typeof raw === 'string' && raw.trim() === '') return {}
   try {
-    const candidate = JSON.parse(raw)
-    return candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
-      && MODEL_COMMAND_KINDS.has(String(candidate.kind ?? ''))
-  } catch { return false }
+    const value = JSON.parse(String(raw))
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined
+  } catch { return undefined }
 }
-const extractSubmission = (text, { requireToolEnvelope = false } = {}) => {
-  if (requireToolEnvelope) {
-    const exact = /^\s*```(?:json)?\s*([\s\S]*?)```\s*$/.exec(text)
-    if (exact === null) return null
-    const candidate = parseRulithEnvelope(exact[1])
-    return candidate === null ? null : { tool: candidate }
+
+/**
+ * One model turn.
+ *
+ * Returns `{ text, toolCalls }`: prose the user should see, and the calls the model
+ * decided to make. Which of the three transports carried it is not visible above this
+ * line, and must not be — the loop reasons about tool calls, never about wire shapes.
+ */
+async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
+  const wire = openaiStyle(cfg) ? 'openai' : 'anthropic'
+  const style = emulatedTools ? 'emulated' : wire
+  const declared = !emulatedTools && tools.length > 0
+  const systemText = emulatedTools && tools.length > 0 ? `${system}\n\n${emulatedToolGuide(tools)}` : system
+  const baseHeaders = { 'content-type': 'application/json' }
+  const headers = wire === 'openai'
+    ? (cfg.key === '' ? baseHeaders : { ...baseHeaders, authorization: `Bearer ${cfg.key}` })
+    : (cfg.key === '' ? baseHeaders : { ...baseHeaders, 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' })
+  const body = wire === 'openai'
+    ? {
+        model: cfg.model, max_tokens: 6000,
+        // Hybrid reasoning models burn the budget on reasoning and answer with empty
+        // content unless thinking is turned off; twelve empty rounds is how that shows up.
+        ...(process.env.RULITH_MODEL_THINKING === 'enabled' ? { thinking: { type: 'enabled' } } : {}),
+        messages: [{ role: 'system', content: systemText }, ...renderMessages(entries, style)],
+        ...(declared ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.schema } })) } : {}),
+      }
+    : {
+        model: cfg.model, max_tokens: 6000, system: systemText, messages: mergeAdjacent(renderMessages(entries, style)),
+        ...(declared ? { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.schema })) } : {}),
+      }
+  let response
+  try {
+    response = await fetch(cfg.url, { method: 'POST', headers, body: JSON.stringify(body) })
+  } catch (error) {
+    // A user-facing tool does not print a raw stack: say who was called and how to change it.
+    failTask(`Cannot reach model service ${cfg.url}: ${error?.cause?.code ?? error?.message ?? error}.
+   Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
+    return { text: '', toolCalls: [] }
   }
-  const blocks = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
-  if (blocks.length === 0) return null
-  let v
-  try { v = JSON.parse(blocks[0][1].trim()) } catch { return null }
-  if (v !== null && typeof v === 'object' && !Array.isArray(v) && v.tool === 'rulith' && typeof v.action === 'string') return { tool: v }
-  if (Array.isArray(v)) {
-    // 顶层命令数组仍要识别出来，交给循环作 fail-visible 单发拒绝；若误归成 ops，
-    // 模型只会收到一段无关的 ApplyBatch 形状错误。产品面缺省每轮只执行一个外向动作。
-    if (v.length > 0 && v.every((x) => x !== null && typeof x === 'object' && typeof x.kind === 'string')) return { cmds: v }
-    return { ops: v }
+  const raw = await response.text().catch(() => '')
+  let payload
+  try { payload = JSON.parse(raw) } catch { payload = {} }
+  if (!response.ok) {
+    if (response.status === 400 && declared && /tool/i.test(raw)) {
+      // The endpoint refuses tool definitions. Describe the identical schemas in the
+      // prompt instead of dropping the tools: a model with no tools is not a fallback,
+      // it is an agent that can no longer reach the Board.
+      emulatedTools = true
+      log('The model endpoint refused a request carrying tool definitions. The same four tools are now described in the prompt; their names and schemas are unchanged.')
+      return await ask(entries, system, { tools, cfg })
+    }
+    failTask(`Model service error (${response.status}): ${raw.replace(/\s+/g, ' ').slice(0, 300)}`)
+    return { text: '', toolCalls: [] }
   }
-  // 顶层命令: 认 `kind`(协议面的动词键)。板寻址与 requestId 由客户端补——那是它的活,不是模型的。
-  if (v !== null && typeof v === 'object' && typeof v.kind === 'string') return { cmds: [v] }
-  return null
+  if (emulatedTools) {
+    const spoken = wire === 'openai'
+      ? String(payload.choices?.[0]?.message?.content ?? '')
+      : (Array.isArray(payload.content) ? payload.content : []).filter((block) => block?.type === 'text').map((block) => String(block.text ?? '')).join('\n')
+    return parseEmulated(spoken)
+  }
+  if (wire === 'openai') {
+    const message = payload.choices?.[0]?.message ?? {}
+    return {
+      text: String(message.content ?? ''),
+      toolCalls: (Array.isArray(message.tool_calls) ? message.tool_calls : []).map((call, index) => ({
+        id: String(call.id ?? `call_${index}`),
+        name: String(call.function?.name ?? ''),
+        input: parseToolArguments(call.function?.arguments),
+      })),
+    }
+  }
+  const blocks = Array.isArray(payload.content) ? payload.content : []
+  return {
+    text: blocks.filter((block) => block?.type === 'text').map((block) => String(block.text ?? '')).join('\n'),
+    toolCalls: blocks.filter((block) => block?.type === 'tool_use').map((block, index) => ({
+      id: String(block.id ?? `call_${index}`),
+      name: String(block.name ?? ''),
+      input: parseToolArguments(block.input),
+    })),
+  }
+}
+
+/**
+ * One system prompt.
+ *
+ * It carries no JSON. A hand-written template beside an authoritative schema is a second
+ * grammar, and the two drift — the schemas the authority advertises are the templates.
+ * What is left is what a schema cannot say: who the model is, what the Board does with a
+ * proposal, which shapes a step of reasoning may take, and which claims are never the
+ * model's to make.
+ */
+const SYSTEM_PROMPT = `You are an agent working with a Rulith Board. The Board derives, checks and certifies; you propose. Your tools are the only things you can say to it, and their schemas are the templates.
+
+Inside ApplyBatch a step of reasoning takes one of five shapes. assert_fact states a material fact and names the source it came from. add_axiom offers a rule the Board may derive with. declare_hypothesis puts a claim under test, and the Board reports its status. record_result records a conclusion together with the evidence it rests on. record_conflict records two things that cannot both hold. Explanation, argument and narration stay in your reply to the user; they are not Board material.
+
+Never assert acceptance_met, test_result, certification or rulith.exploration.completed. Whether the work is accepted is the Board's decision, not yours to state.
+
+Every tool result carries the current Case View. Read it before choosing the next step.`
+
+const EXPLORATION_LINE = 'This Case Type is exploration: add_axiom and define_action are permitted inside this Case, are Case-local, and disappear when the Case closes.'
+const LOCKED_LINE = 'Legislation is locked on this Board: do not use add_axiom or define_action. Use the installed vocabulary and the Actions the Case View lists.'
+
+/** The base prompt plus at most one conditional line. Before a Case exists neither
+ *  applies: an unscoped turn is not shown a provisional-law handle it cannot use. */
+const systemFor = (ctx) => {
+  if (ctx.case === undefined) return SYSTEM_PROMPT
+  if (ctx.lawLocked) return `${SYSTEM_PROMPT}\n\n${LOCKED_LINE}`
+  if (String(ctx.case.caseType ?? '') === 'exploration') return `${SYSTEM_PROMPT}\n\n${EXPLORATION_LINE}`
+  return SYSTEM_PROMPT
 }
 
 // ── 主循环：提议 → 裁决 → 教学回流 ──────────────────────────────────
@@ -1290,6 +1045,10 @@ try {
     console.error(`\n✗ ${error.message}\n`)
     process.exitCode = 3
     identityCredentialRejected = true
+  } else if (error instanceof McpSurfaceError) {
+    // An endpoint that cannot serve this client is not a credential problem. Reporting
+    // it as one sends the reader to rotate a token that was never the cause.
+    die(error.message)
   } else {
     const legacy = legacyAgentIdHint(TOKEN)
     if (legacy === undefined) die(`Cloud could not resolve this opaque Agent MCP token: ${error?.message ?? error}`)
@@ -1304,30 +1063,18 @@ const consoleUrlOf = (name) => `https://console.rulith.ai/agents/${encodeURIComp
 const consoleUrl = consoleUrlOf(agentId)
 /** 停轮未结时终端上的那一句(三张脸共用一份措辞——同一件事三种说法比不说更糟)。 */
 const pendingLine = (id) => (id === null || id === undefined ? '' : ` · Case remains open: pending_case_id=${id}. Resume with --case ${id}, or resolve it in Console.`)
-
-// ── 锁态探测(2026-08-01 立法权锁,「看不见」优先于「拒得住」): 锁定板的系统提示
-//    **根本不含**立规则/定义动作的模板——不给把手,模型就不会伸手去摸、也不会烧轮数撞拒绝。 ──
-const SYSTEM_LOCKED = `You are a domain-agnostic Rulith execution agent. Legislative authority is locked on this board. The current board and its installed packs are the only source of domain semantics: vocabulary, rules, actions, parameter shapes, and acceptance names. Concrete goals and instance values come from the user task, board facts, and trusted tool results. Placeholders in this prompt are not domain facts.
-
-Do not invent predicates, actions, or acceptance names. Do not attempt add_axiom, define_action, RegisterPack, or unlock the board. If a required domain capability is missing, reply STOP: and identify it.
-
-${EXECUTION_GUIDE}`
-
 // A slot owns only local conversation and scheduler state. All slots address
 // the same persistent Agent Board; each queued task receives an independent
 // Case Context before any task-scoped operation is sent.
 const makeSlot = (key) => ({
   key,                              // sessionKey; '' is the local/default conversation
   board: agentId,                   // public Agent identity; Gateway resolves its Board
-  case: undefined,                  // the currently active Case Context, if any
+  case: undefined,                  // the currently selected Case Context, if any
   detachedCase: undefined,          // bounded recovery hint after local transcript reclamation
-  messages: [],                     // 转录(**只在本机**,不上板)
+  messages: [],                     // 转录(**只在本机**,不上板);中性形状,发送时才按线型渲染
   segmentTrail: [],                 // 段留痕(压缩后唯一留下来的东西)
-  dischargedDigest: new Map(),      // 放电守卫: `板::节点` → 放过的 spec 版本
-  lastLeaves: [],                   // 脉冲用
   lawProbed: false,                 // board governance is stable across Case Contexts
   lawLocked: false,
-  system: SYSTEM,     // 该槽此刻念的系统提示(锁态探到就换成 SYSTEM_LOCKED 那版)
   queue: [],                        // 本槽待办(同槽 FIFO)
   busy: false,                      // 本槽是否有段在跑
   taskId: undefined,                // 在办任务号(事件标注用)
@@ -1342,10 +1089,9 @@ const defaultSlot = makeSlot('')
 async function probeLawLock(ctx) {
   if (ctx.lawProbed) return
   ctx.lawProbed = true
-  const mf = await board({ kind: 'GetBoardManifest' }, ctx)
-  ctx.lawLocked = mf.accepted === true && mf.payload?.lawLocked === true
+  const manifest = await board({ kind: 'GetBoardManifest' }, ctx)
+  ctx.lawLocked = manifest.accepted === true && manifest.payload?.lawLocked === true
   if (ctx.lawLocked) {
-    ctx.system = SYSTEM_LOCKED
     log(`Board legislation is locked. Rules come from packages installed by the board owner; this Agent executes under them.${ctx.key === '' ? '' : ` (session ${ctx.key})`}`)
   }
 }
@@ -1369,19 +1115,21 @@ function compactTranscript(ctx) {
   const messages = ctx.messages
   if (messages.length <= KEEP_MESSAGES) return
   let drop = messages.length - KEEP_MESSAGES
+  // The cut must land on a user turn. A tool result that outlives its own tool call is a
+  // malformed conversation on both provider shapes, and the endpoint answers 400.
   while (drop < messages.length && messages[drop]?.role !== 'user') drop += 1
   if (drop >= messages.length || drop <= 0) return // 切不出干净的口就不切(宁可长,不可发坏形状)
   const cut = messages.splice(0, drop)
-  const trail = ctx.segmentTrail.length ? ctx.segmentTrail.map((t, i) => `${i + 1}. ${t}`).join('\n') : '(none)'
+  const trail = ctx.segmentTrail.length ? ctx.segmentTrail.map((entry, index) => `${index + 1}. ${entry}`).join('\n') : '(none)'
   // 留痕**并进**第一条 user,不新增消息——不动角色结构,任何线型都不会因此变形
   messages[0] = {
     ...messages[0],
-    content: `[Transcript compacted] ${cut.length} earlier message(s) were removed. The Case View remains authoritative; reply VIEW: to refresh it.
+    text: `[Transcript compacted] ${cut.length} earlier message(s) were removed. The Case View in the next tool result remains authoritative.
 Earlier segments:
 ${trail}
 
 ───
-${messages[0].content}`,
+${messages[0].text}`,
   }
   log(`Transcript compacted: dropped ${cut.length}, kept ${messages.length} message(s) and ${ctx.segmentTrail.length} segment marker(s).`)
   emitOn(ctx, 'compact', { dropped: cut.length, kept: messages.length, segments: ctx.segmentTrail.length })
@@ -1393,575 +1141,313 @@ ${messages[0].content}`,
  *  他说的话属于他自己那条对话,不属于某位远程客户的会话槽。把它散给所有槽=把本机操作者的
  *  插话注进别人的案子;随便挑一个槽=更糟(不确定注给了谁)。所以判据是"槽是不是缺省槽"。 */
 let pollInterject = null
+// ── One loop, two policies ──────────────────────────────────────────────────
+//
+// `return` is a conversation: the model may take tool steps, and the moment it answers
+// with text and no tool call, control goes back to the user. `continue` is the autopilot
+// (`--task`): the same loop, the same four tools, the same refusals. What differs is only
+// what the host does when the model falls silent while a Case is open and uncertified.
+//
+// These were two loops with two grammars. A defect fixed in one survived, silently, in
+// the other — and neither could be exercised by the other's tests.
 
-const transportAmbiguous = (value) => value?.errorCode === 'upstream_unavailable' || value?.reason === 'transport_ambiguous'
-const transportRetryTeaching = (value) => `No authoritative Board receipt was returned. Retry the exact same Rulith step unchanged so it keeps the same request identity; do not alter the body or infer that it failed. ${String(value?.teaching ?? '').slice(0, 320)}`
-const boundedToolResult = (value) => {
-  if (transportAmbiguous(value)) return transportRetryTeaching(value)
-  if (value?.accepted !== true) return `The Board refused this Rulith step: ${String(value?.teaching ?? value?.errorCode ?? 'No teaching was returned.').slice(0, 1200)}`
-  const payload = value?.payload ?? {}
-  return JSON.stringify({
-    accepted: true,
-    ...(typeof payload.done === 'boolean' ? { done: payload.done } : {}),
-    ...(typeof payload.ok === 'boolean' ? { ok: payload.ok } : {}),
-    added: Array.isArray(value?.delta?.added) ? value.delta.added.length : 0,
-    warnings: Array.isArray(payload.warnings) ? payload.warnings.slice(0, 8) : [],
-  })
-}
+/** Dispositions that say the work did not succeed. In autopilot they end the run. */
+const VOID_DISPOSITIONS = new Set(['cancelled', 'failed', 'abandoned', 'superseded'])
 
-function emitConversationVerdict(ctx, result, cmd) {
-  const payload = result?.payload ?? {}
-  const invocation = payload.invocation ?? payload.invocationId ?? ''
-  emitOn(ctx, 'verdict', result?.accepted === true
-    ? {
-        accepted: true, cmd, done: payload.done,
-        ...(typeof payload.ok === 'boolean' ? { ok: payload.ok } : {}),
-        added: (result.delta?.added ?? []).length, revision: result.revision ?? '',
-        ...(invocation === '' ? {} : { invocation }),
-      }
-    : { accepted: false, cmd, teaching: transportAmbiguous(result) ? transportRetryTeaching(result) : String(result?.teaching ?? result?.errorCode ?? 'Board rejected the Rulith step.') })
-  if (result?.accepted === true) {
-    const status = payload.done === true ? (payload.ok === false ? 'completed with failure' : 'completed') : 'accepted'
-    log(`Board: ${cmd} ${status}${invocation === '' ? '' : ` · ${invocation}`}.`)
-  } else if (transportAmbiguous(result)) log(`Board outcome unknown for ${cmd}: retry the unchanged step; no authoritative receipt returned.`)
-  else log(`Board rejected ${cmd}: ${String(result?.teaching ?? result?.errorCode ?? '').slice(0, 240)}`)
-}
+/** Every local refusal wears the same envelope the Board's own refusals wear, so the
+ *  model never has to tell "the host would not carry this" from "the Board said no" by
+ *  the shape of the answer — the errorCode says which. */
+const refusal = (errorCode, teaching) => JSON.stringify({ accepted: false, errorCode, teaching })
 
-async function conversationalSystem(ctx, requestedCaseType, sourceGuide = '') {
-  const guide = ctx.case === undefined
-    ? OPTIONAL_RULITH_GUIDE_UNSCOPED
-    : ctx.lawLocked
-      ? OPTIONAL_RULITH_GUIDE_LOCKED
-      : ctx.case.caseType === 'exploration' ? OPTIONAL_RULITH_GUIDE : OPTIONAL_RULITH_GUIDE_UNSCOPED
-  const selection = `\n\nIf you choose start_case, the host will open the configured Case Type ${JSON.stringify(requestedCaseType)}. You may decide whether Rulith is useful, but you may not replace this governance selection.`
-  const recovery = ctx.detachedCase === undefined ? ''
-    : `\n\nRulith Case ${JSON.stringify(ctx.detachedCase.caseId)} remains on the Board after its old local transcript was reclaimed. It is not selected and may now be running or paused. Tell the user that continuing it requires choosing that Case in Runs or supplying its caseId to the client; do not emit a lifecycle command.`
-  if (ctx.case === undefined) return `${guide}${selection}${recovery}`
-  const active = `\n\nAn active Rulith Case is selected: ${ctx.case.id} (Case Type ${ctx.case.caseType}). Use only one explicit Rulith step at a time; a normal reply leaves this Case open. The host owns and refreshes the Case revision.`
-  const lock = ctx.lawLocked
-    ? '\nBoard legislation is locked. Do not propose provisional rules or Actions; use only installed capability vocabulary and available Actions.'
-    : ctx.case.caseType === 'exploration'
-      ? '\nThis is an exploration Case. Provisional scratch.* vocabulary and Case-local axioms are permitted, but asserted material is not attested evidence and cannot by itself certify completion.'
-      : '\nThis is a contracted Case. Do not invent predicates, acceptance names, rules, or Actions; the installed Capability is authoritative.'
-  return `${guide}${selection}${active}${lock}${sourceGuide}`
+/**
+ * A tool this runtime will not carry.
+ *
+ * The four verbs are the whole allow-list. A refusal that travels has already spent the
+ * Agent's credential on it, and Cloud authorization is the second line, not the first:
+ * the runtime must not offer to speak governance, lifecycle selection or Worker receipts
+ * on a model's behalf at all. The model's turn is untrusted input — a task description,
+ * a fetched document or a tool result can all reach it.
+ */
+const unknownToolTeaching = (name) => `${name === '' ? '(missing tool name)' : name} is not a tool this Agent Runtime`
+  + ` carries, so it was refused locally and never reached the authority. This Agent may call: ${MODEL_VERBS.join(', ')}.`
+  + ' Case selection, verification, work receipts, clearance, and package or Board governance belong to the host and to Console.'
+
+function emitVerdict(ctx, name, answer) {
+  const result = answer.result ?? {}
+  const payload = result.receipt ?? result.payload ?? {}
+  const invocation = String(payload.invocation ?? payload.invocationId ?? result.invocation ?? '')
+  if (result.accepted === true) {
+    emitOn(ctx, 'verdict', {
+      accepted: true, cmd: name,
+      ...(typeof payload.done === 'boolean' ? { done: payload.done } : {}),
+      ...(typeof payload.ok === 'boolean' ? { ok: payload.ok } : {}),
+      ...(invocation === '' ? {} : { invocation }),
+    })
+    const state = payload.done === true ? (payload.ok === false ? 'completed with failure' : 'completed') : 'accepted'
+    log(`Board: ${name} ${state}${invocation === '' ? '' : ` · ${invocation}`}.`)
+    return
+  }
+  const teaching = transportAmbiguous(result) ? transportRetryTeaching(result) : String(result.teaching ?? result.errorCode ?? 'Board rejected the step.')
+  emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, ...(transportAmbiguous(result) ? { transportAmbiguous: true } : {}) })
+  if (transportAmbiguous(result)) log(`Board outcome unknown for ${name}: retry the unchanged step; no authoritative receipt was returned.`)
+  else log(`Board rejected ${name}: ${teaching.slice(0, 240)}`)
 }
 
 /**
- * One ordinary conversational turn with optional, model-selected Rulith tool steps.
+ * Execute one model-chosen tool call.
  *
- * The continuation condition is not "the Case is unfinished". The host calls the model
- * again only after the model explicitly emitted a Rulith tool/Board submission and needs
- * the resulting receipt. A plain assistant reply returns control to the user immediately,
- * whether or not a Case is active. Rulith state guides the next decision; it does not own
- * the conversation scheduler.
+ * Everything the host owns is attached here and nowhere else: the Case envelope, the
+ * request identity, and the governance selection that decides which contract a new Case
+ * runs under. The tool result text handed back is the authority's own JSON, unedited —
+ * it already carries the bounded Case View, and a client that summarised it would be
+ * teaching the model a picture of the Board rather than the Board.
  */
-async function runConversationTurn(ctx, userText, requestedCaseType = selectedCaseType, businessKey = selectedBusinessKey, requestedCaseId = '') {
+async function executeToolCall(ctx, call, options) {
+  const name = String(call.name ?? '')
+  if (!MODEL_VERBS.includes(name)) {
+    const teaching = unknownToolTeaching(name)
+    log(`Refused locally: ${teaching.slice(0, 200)}`)
+    emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, refusedLocally: true })
+    return { text: refusal('tool_not_carried', teaching), accepted: false }
+  }
+  if (call.input === undefined) {
+    const teaching = `${name} arguments were not a JSON object, so nothing was sent. Send arguments matching the tool schema.`
+    emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, refusedLocally: true })
+    return { text: refusal('bad_tool_arguments', teaching), accepted: false }
+  }
+  let input = { ...call.input }
+  if (name === 'OpenCase') {
+    if (ctx.case !== undefined) {
+      const teaching = `Case "${ctx.case.id}" is already selected for this conversation. Advance or close it before opening another.`
+      emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, refusedLocally: true })
+      return { text: refusal('case_already_selected', teaching), accepted: false }
+    }
+    // Governance selection is the operator's, not the model's: when a Case Type is pinned
+    // on the command line or in the environment, that is the contract the Case opens
+    // under. With nothing pinned the model may choose from its Agent's catalogue and the
+    // host only supplies the default.
+    const asked = typeof input.caseType === 'string' && input.caseType.trim() !== '' ? input.caseType.trim() : ''
+    const caseType = options.caseTypePinned || asked === '' ? options.caseType : asked
+    input = {
+      ...input,
+      caseType,
+      ...(options.businessKey === undefined ? {} : { businessKey: options.businessKey }),
+      caseId: typeof input.caseId === 'string' && input.caseId.trim() !== '' ? input.caseId.trim() : options.caseId,
+    }
+  } else if (ctx.case === undefined) {
+    const teaching = `${name} needs a selected Case, and none is open. Call OpenCase first; nothing was forwarded.`
+    emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, refusedLocally: true })
+    return { text: refusal('case_context_required', teaching), accepted: false }
+  }
+  const before = ctx.case?.id
+  const answer = await callTool(name, input, ctx)
+  emitVerdict(ctx, name, answer)
+  // Local reads acceptance state from `board` events. The view arrives with every tool
+  // result now, so this fires in conversation as well as autopilot — the panel used to go
+  // blank in conversation mode because only the autopilot path ever published one.
+  if (answer.view !== undefined) {
+    emitOn(ctx, 'board', {
+      caseId: ctx.case?.id ?? before, certified: certifiedOf(answer.view),
+      floor: String(answer.view.floor ?? '—'), state: String(answer.view.state ?? ''),
+    })
+  }
+  const accepted = answer.result?.accepted === true
+  if (name === 'OpenCase' && accepted && ctx.case !== undefined) {
+    log(`\nCase Context opened: "${ctx.case.id}" · Case Type "${ctx.case.caseType}" on Agent Board "${ctx.board}".`)
+    emitOn(ctx, 'case-open', { board: ctx.board, caseId: ctx.case.id, caseType: ctx.case.caseType, ok: true })
+    ctx.detachedCase = undefined
+    await probeLawLock(ctx)
+  }
+  return {
+    text: answer.text,
+    accepted,
+    view: answer.view,
+    closed: before !== undefined && ctx.case === undefined,
+    disposition: String(input.disposition ?? ''),
+  }
+}
+
+/**
+ * One turn of work: a user message, or one autopilot task.
+ *
+ * `policy: 'return'` hands control back as soon as the model answers with text.
+ * `policy: 'continue'` keeps going while the Board still has something to say — but the
+ * continuation condition is never "the model did not say DONE". It is the Board's own
+ * view: certified, or an explicit close, or the round budget.
+ *
+ * Returns `{ note, caseId, activeCaseId, pendingCaseId, opened }`. `opened` is the
+ * machine-readable half of `note`: callers used to have to read prose to tell "the Case
+ * ran and did not certify" from "no Case ever existed", and the one-shot CLI did not
+ * read it at all — it exited 0 for a task that never started.
+ */
+async function runCaseTurn(ctx, userText, {
+  policy = 'return',
+  caseType = selectedCaseType,
+  caseTypePinnedForTurn = caseTypePinned,
+  businessKey = selectedBusinessKey,
+  requestedCaseId = '',
+} = {}) {
   compactTranscript(ctx)
   const messages = ctx.messages
-  let opened = false
-  let caseId = ctx.case?.id ?? null
-  let detachedPendingCaseId = ctx.detachedCase?.caseId ?? null
-  let startId = ctx.taskId || nextCaseId()
-  let sourceGuideForTurn
-  const configuredResume = resumeCase
-  resumeCase = ''
-  const explicitResume = requestedCaseId || configuredResume
+  let opened = ctx.case !== undefined
+  let note = ''
+  let outcome = 'pending'
+  let nudged = false
   let selectionNotice = ''
+  let lastCaseId = ctx.case?.id ?? null
+  const detachedPendingCaseId = ctx.detachedCase?.caseId ?? null
+  const configuredResume = resumeCase
+  resumeCase = '' // Resume applies to the first segment only.
+  const explicitResume = requestedCaseId || configuredResume
+  const mintedCaseId = ctx.taskId || nextCaseId()
 
+  // Selecting or resuming a Case is a host feature, reached through `--case` and the
+  // Local UI. The model has no pause/resume verb: which Case this conversation is on is
+  // not a decision a model turn may make on the operator's behalf.
   if (explicitResume !== '') {
     if (ctx.case !== undefined) {
-      if (ctx.case.id === explicitResume) caseId = explicitResume
-      else selectionNotice = `Rulith Case ${JSON.stringify(explicitResume)} was not selected because this conversation already owns active Case ${JSON.stringify(ctx.case.id)}. Pause or finish the active Case before selecting another.`
+      if (ctx.case.id !== explicitResume) {
+        selectionNotice = `Rulith Case ${JSON.stringify(explicitResume)} was not selected because this conversation already owns active Case ${JSON.stringify(ctx.case.id)}. Finish the active Case before selecting another.`
+      }
     } else {
       await probeLawLock(ctx)
       const row = await selectExistingCase(ctx, explicitResume)
-      if (row !== undefined && bindCaseRow(ctx, explicitResume, String(row.caseType ?? requestedCaseType), row) !== undefined) {
+      if (row !== undefined && bindCaseRow(ctx, explicitResume, String(row.caseType ?? caseType), row) !== undefined) {
         opened = true
-        caseId = explicitResume
+        lastCaseId = explicitResume
         ctx.detachedCase = undefined
-        detachedPendingCaseId = null
-      } else selectionNotice = `The requested existing Rulith Case ${JSON.stringify(explicitResume)} could not be selected. Answer the user normally; do not claim that Case is active.`
+      } else {
+        selectionNotice = `The requested existing Rulith Case ${JSON.stringify(explicitResume)} could not be selected. Answer the user normally; do not claim that Case is active.`
+      }
     }
   }
 
-  const resumeNotice = selectionNotice === '' ? '' : `\n\n${selectionNotice}`
-  const initialView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true, conversational: true })}`
-  messages.push({ role: 'user', content: `User message: ${userText}${resumeNotice}${initialView}` })
+  const openingView = ctx.case === undefined ? undefined : await hostView(ctx)
+  messages.push(userEntry([
+    `${policy === 'continue' ? 'Task' : 'User message'}: ${userText}`,
+    selectionNotice === '' ? '' : `\n\n${selectionNotice}`,
+    openingView === undefined ? '' : `\n\nCase View:\n${viewText(openingView)}`,
+  ].join('')))
 
-  for (let turn = 1; turn <= MAX_ROUNDS; turn++) {
-    emitOn(ctx, 'round', { n: turn, conversational: true })
-    if (ctx.case !== undefined && sourceGuideForTurn === undefined) sourceGuideForTurn = await sourceAccessGuide(ctx)
-    const reply = await ask(messages, await conversationalSystem(ctx, requestedCaseType, sourceGuideForTurn ?? ''))
-    const sub = extractSubmission(reply, { requireToolEnvelope: true })
-    const say = (sub === null ? reply : reply.replace(/```[\s\S]*?```/g, '')).trim()
-    if (say) log(`\n${say.slice(0, 1200)}`)
-    messages.push({ role: 'assistant', content: reply })
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    emitOn(ctx, 'round', { n: round, ...(policy === 'return' ? { conversational: true } : {}) })
+    // 轮号也上终端: 从前它只进事件流,于是任何按 stdout 数轮数的量具恒读 0。
+    if (policy === 'continue') log(`— Round ${round} —`)
+    // 插话不打断: 本机操作者在段跑着时说的话当轮就进对话。只有缺省槽有这条线——
+    // stdin 属于那一个本机操作者,不属于某位远程客户的会话槽。
+    const interject = policy === 'continue' && ctx === defaultSlot ? pollInterject?.() : undefined
+    if (interject) {
+      log(`\n[User interjection] ${interject}`)
+      emitOn(ctx, 'user', { text: interject, interject: true })
+      messages.push(userEntry(`[User] ${interject}`))
+    }
+
+    const reply = await ask(messages, systemFor(ctx), { tools: modelTools })
+    const say = String(reply.text ?? '').trim()
+    if (say !== '') log(`\n${say.slice(0, 1200)}`)
+    messages.push(assistantEntry(reply.text, reply.toolCalls))
     emitOn(ctx, 'propose', {
       say,
-      ...(sub?.tool ? { tool: { action: sub.tool.action } } : {}),
+      ...(reply.toolCalls.length === 0 ? {} : {
+        cmd: reply.toolCalls.map((call) => String(call.name ?? '')).join('+'),
+        tool: { action: String(reply.toolCalls[0].name ?? '') },
+      }),
     })
 
-    // No tool call is a complete conversational answer. An active Case is deliberately
-    // left untouched; the next user message may continue it, ask a question, or ignore it.
-    if (sub === null) {
-      if (ctx.case !== undefined && containsExclusiveRawBoardCommand(reply)) {
-        const correction = 'The raw Board command was not executed. In conversation mode, request the available Action with exactly one Rulith envelope: {"tool":"rulith","action":"request_action","name":"<available-action>","target":"<board-node>"}. Case identity, revision, and protocol commands belong to the host.'
-        emitOn(ctx, 'verdict', { accepted: false, cmd: 'raw-board-command', teaching: correction, refusedLocally: true })
-        log(`Raw Board command not executed: ${correction}`)
-        messages.push({ role: 'user', content: `[Rulith tool result]\n${correction}` })
+    if (reply.toolCalls.length === 0) {
+      // A plain answer is a complete conversational turn. An open Case is deliberately
+      // left exactly as it is; the next user message may continue it, ask about it, or
+      // ignore it. The host never continues merely because a Case is not certified.
+      if (policy === 'return') {
+        outcome = 'conversation'
+        note = ctx.case === undefined
+          ? 'Response delivered without opening a Rulith Case.'
+          : `Response delivered; Rulith Case "${ctx.case.id}" remains open.`
+        break
+      }
+      if (ctx.case === undefined) { outcome = 'no-case'; note = 'Response only; no Case was opened on the Board.'; break }
+      const settled = await settle(ctx, undefined)
+      if (certifiedOf(settled.view)) {
+        outcome = 'certified'
+        note = `Board certified the case as deliverable (floor=${String(settled.view?.floor ?? '—')}).`
+        break
+      }
+      if (nudged) {
+        note = `The model stopped, but the board did not certify the case (floor=${String(settled.view?.floor ?? '—')} · ${String(settled.view?.state ?? '')}).`
+        break
+      }
+      // One nudge, once — never an unbounded retry. The judgement is the Board's, not a
+      // guess about the prose: it is the view that says the work is not finished.
+      nudged = true
+      messages.push(userEntry(`The Case is open and the Board has not certified it. Current Case View:\n${viewText(settled.view)}\n\nTake the next step, or close the Case with a disposition that says why it cannot be finished.`))
+      continue
+    }
+
+    const results = []
+    let lastView
+    let closedDisposition
+    for (let index = 0; index < reply.toolCalls.length; index++) {
+      const call = reply.toolCalls[index]
+      if (index > 0) {
+        // One step per turn. An accepted step changes the closure and therefore the set of
+        // steps available next, so a second call in the same turn was chosen against a
+        // Board state that no longer exists. Every tool_use still receives a tool_result:
+        // an unanswered one is a malformed conversation on the Anthropic wire.
+        results.push({
+          id: call.id,
+          name: String(call.name ?? ''),
+          text: refusal('one_step_per_turn', 'Only the first tool call in a turn is executed; this one was not sent. An accepted step changes the Board closure and the set of steps available next. Read the Case View in the first result, then reissue this step.'),
+        })
         continue
       }
-      if (containsNonExclusiveRulithEnvelope(reply)) {
-        const correction = 'The Rulith tool-shaped JSON was not executed because a tool call must be the entire response: exactly one JSON code block with no prose or other blocks. Reply normally without a Rulith envelope, or retry the intended tool call in that exact exclusive form.'
-        emitOn(ctx, 'verdict', { accepted: false, cmd: 'rulith-envelope', teaching: correction, refusedLocally: true })
-        log(`Rulith tool call not executed: ${correction}`)
-        messages.push({ role: 'user', content: `[Rulith tool result]\n${correction}` })
-        continue
-      }
-      const note = ctx.case === undefined
-        ? 'Response delivered without opening a Rulith Case.'
-        : `Response delivered; Rulith Case "${ctx.case.id}" remains open.`
-      ctx.segmentTrail.push(`[conversation${ctx.case ? ` · case ${ctx.case.id} open` : ''}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
-      if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40)
-      return { note, caseId: ctx.case?.id ?? caseId, activeCaseId: ctx.case?.id ?? null, pendingCaseId: detachedPendingCaseId, opened }
+      const executed = await executeToolCall(ctx, call, { caseType, caseTypePinned: caseTypePinnedForTurn, businessKey, caseId: mintedCaseId })
+      results.push({ id: call.id, name: String(call.name ?? ''), text: executed.text })
+      if (ctx.case !== undefined) { opened = true; lastCaseId = ctx.case.id }
+      if (executed.view !== undefined) lastView = executed.view
+      if (executed.closed) closedDisposition = executed.disposition === '' ? 'completed' : executed.disposition
     }
+    messages.push(resultsEntry(results))
 
-    let feedback = ''
-    if (sub.tool !== undefined) {
-      const tool = sub.tool
-      const action = String(tool.action)
-      if (action === 'start_case') {
-        if (ctx.case !== undefined) {
-          feedback = `Rulith Case "${ctx.case.id}" is already active. Advance or finish it before starting another Case.`
-        } else {
-          const caseType = requestedCaseType
-          await probeLawLock(ctx)
-          const openedCase = await ensureCaseContext(ctx, startId, caseType, businessKey)
-          if (openedCase === undefined) {
-            feedback = `The requested Rulith Case "${startId}" could not be opened. No Case-scoped work was attempted.`
-          } else {
-            ctx.detachedCase = undefined
-            opened = true
-            caseId = startId
-            startId = nextCaseId()
-            emitOn(ctx, 'case-open', { board: ctx.board, caseId, caseType, ok: true })
-            feedback = `Rulith Case "${caseId}" is active under the host-selected Case Type ${JSON.stringify(caseType)}.`
-          }
-        }
-      } else if (action === 'finish_case') {
-        if (ctx.case === undefined) feedback = 'No Rulith Case is active.'
-        else {
-          const disposition = typeof tool.disposition === 'string' ? tool.disposition : 'completed'
-          const reason = typeof tool.reason === 'string' ? tool.reason.trim() : ''
-          if (!['completed', 'cancelled', 'failed', 'abandoned'].includes(disposition)) {
-            feedback = 'finish_case disposition must be completed, cancelled, failed, or abandoned.'
-          } else if (disposition !== 'completed' && reason === '') {
-            feedback = `finish_case with disposition ${disposition} requires a non-empty reason.`
-          } else {
-            const activeId = ctx.case.id
-            if (disposition === 'completed') {
-              const { deliverable, why } = await conversationalDeliverability(ctx)
-              if (!deliverable) feedback = `The Board did not permit completed closure: ${why}. The Case remains open.`
-              else if (withShadow && !(await shadowReview(ctx, userText))) feedback = 'Shadow review raised a finding. The Case remains open.'
-              else if (await archiveCaseContext(ctx, disposition)) feedback = `Rulith Case "${activeId}" closed as completed.`
-              else feedback = `Rulith Case "${activeId}" could not be closed and remains open.`
-            } else if (await archiveCaseContext(ctx, disposition, reason)) {
-              feedback = `Rulith Case "${activeId}" closed as ${disposition}.`
-            } else feedback = `Rulith Case "${activeId}" could not be closed and remains open.`
-          }
-        }
-      } else if (action === 'apply_batch') {
-        if (ctx.case === undefined) feedback = 'No Rulith Case is active. Use start_case first; nothing was forwarded.'
-        else if (!Array.isArray(tool.operations)) feedback = 'apply_batch requires an operations array; nothing was forwarded.'
-        else {
-          const result = await board({ kind: 'ApplyBatch', operations: tool.operations }, ctx)
-          emitConversationVerdict(ctx, result, 'ApplyBatch')
-          feedback = boundedToolResult(result)
-        }
-      } else if (action === 'request_action') {
-        if (ctx.case === undefined) feedback = 'No Rulith Case is active. Use start_case first; nothing was forwarded.'
-        else if (typeof tool.name !== 'string' || tool.name.trim() === '') feedback = 'request_action requires the exact name of an available Action.'
-        else {
-          const command = { kind: 'ApplyAction', action: tool.name.trim(),
-            ...(typeof tool.target === 'string' && tool.target !== '' ? { target: tool.target } : {}),
-            ...(tool.args !== undefined ? { args: tool.args } : {}) }
-          const result = await board(command, ctx)
-          emitConversationVerdict(ctx, result, 'ApplyAction')
-          feedback = boundedToolResult(result)
-        }
-      } else {
-        feedback = `Unknown Rulith tool action ${JSON.stringify(action)}. Use start_case, apply_batch, request_action, or finish_case.`
-      }
-    }
-
-    const caseView = ctx.case === undefined ? '' : `\n\nCurrent Rulith Case View:\n${await projectionText(ctx, { emitState: true, conversational: true })}`
-    messages.push({ role: 'user', content: `[Rulith tool result]\n${feedback}${caseView}\n\nDecide whether another Rulith step is useful or reply normally to the user.` })
-  }
-
-  const note = `Returned control after the ${MAX_ROUNDS}-tool-turn safety limit; no further step was forced.`
-  return { note, caseId: ctx.case?.id ?? caseId, activeCaseId: ctx.case?.id ?? null, pendingCaseId: detachedPendingCaseId, opened }
-}
-
-/** Explicit one-shot/autopilot compatibility path: drive one Case to DONE/STOP/round limit.
- *
- *  **一轮的拍序是命门**（viz 逐义）：提议 → 裁决 → 影子审 → 放电 → 读完成态 → 回喂。
- *  影子必须排在放电**之前**：它的缺陷主张要与主人格的叶子挤进同一次放电才接得了地，
- *  confirmed_defect 也才来得及在 certify 之前挡门。影子放最后＝永远慢一拍＝无牙。
- *
- *  Returns `{ note, caseId, pendingCaseId }`: `note` is the Board verdict or stop reason,
- *  `caseId` is the Case handled by this segment, and `pendingCaseId` is present only
- *  when that Case Context remains open. Together they distinguish a completed segment
- *  from a paused Case without inferring lifecycle state from prose. */
-async function runAutopilotCase(ctx, userText, caseType = selectedCaseType, businessKey = selectedBusinessKey) {
-  const messages = ctx.messages
-  compactTranscript(ctx) // 段起始先收窗——切口落在段边界最干净,不会切断本段的推理链
-  const useResume = resumeCase
-  resumeCase = '' // Resume applies to the first segment only.
-  const caseId = useResume || ctx.taskId || nextCaseId()
-  ctx.case = undefined
-  await probeLawLock(ctx)
-  const baseSystem = ctx.lawLocked ? SYSTEM_LOCKED : caseType === 'exploration' ? SYSTEM_EXPLORATION : SYSTEM
-  ctx.system = caseType === 'exploration' ? `${baseSystem}${await sourceAccessGuide(ctx)}` : baseSystem
-  const opened = await ensureCaseContext(ctx, caseId, caseType, businessKey)
-  if (opened === undefined) {
-    const note = `Could not open Case Context "${caseId}" on Agent Board "${ctx.board}"; this task did not start.`
-    log(`\n✗ ${note}`)
-    emitOn(ctx, 'case-open', { board: ctx.board, caseId, ok: false })
-    ctx.segmentTrail.push(`[case ${caseId} · open] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
-    // `opened:false` is the machine-readable half of that sentence. Callers used to have
-    // to read the prose to tell "the Case ran and did not certify" from "no Case ever
-    // existed", and the one-shot CLI did not read it at all: it exited 0 for a task that
-    // never started, so a scripted pipeline continued as though the work had been done.
-    return { note, caseId, pendingCaseId: caseId, opened: false }
-  }
-  log(`\nCase Context opened: "${caseId}" · Case Type "${caseType}" on Agent Board "${ctx.board}".`)
-  emitOn(ctx, 'case-open', { board: ctx.board, caseId, caseType, ok: true })
-  const proj = await projectionText(ctx)
-  messages.push({ role: 'user', content: `${CHAT ? 'User message' : 'Task'}: ${userText}
-
-Current Case View:
-${proj}` })
-  let done = false
-  let note = 'in progress'
-  let nudged = false // 「说了要提交却没提交」的纠偏机会,每段只给一次
-  let lastRevision = await revisionNow(ctx)
-  // 已完成的旧根不能替新一段收工。只有本段实际见过「未完成」之后再转为可交付，
-  // 才能由板直接结束循环；Work/case 形态通常开场就是未完成，这一格防老单板误收新任务。
-  const startCompletion = await completionAll(ctx)
-  let sawUndeliverable = !(startCompletion.certified === true && startCompletion.allDone === true)
-  for (let round = 1; round <= MAX_ROUNDS && !done; round++) {
-    emitOn(ctx, 'round', { n: round })
-    // 轮号**也上终端**(2026-08-18): 从前它只进事件流,于是任何按 stdout 数轮数的量具
-    // (冷通枪就是一个)恒读 0 ——**读数一直在骗人**,而"0 轮通过"看着还挺好。
-    log(`— Round ${round} —`)
-    // 插话不打断(viz pollUserMsg 同律): 人在本段跑着的时候又说了话,当轮就进对话,不必等段跑完。
-    // **只有缺省槽有这条线**: 本机操作者的话属于他自己那条对话,不属于某位远程客户的会话槽。
-    const interject = ctx === defaultSlot ? pollInterject?.() : undefined
-    if (interject) {
-      log(`
-[User interjection] ${interject}`)
-      emitOn(ctx, 'user', { text: interject, interject: true })
-      messages.push({ role: 'user', content: `[User] ${interject}` })
-    }
-    const reply = await ask(messages, ctx.system)
-    const say = reply.replace(/```[\s\S]*?```/g, '').trim()
-    if (say) log(`
-${say.slice(0, 1200)}`)
-    messages.push({ role: 'assistant', content: reply })
-    const stopping = /^\s*DONE:/m.test(reply) || /^\s*STOP:/m.test(reply)
-    // VIEW: = refresh the bounded Case View. It never opens an unbounded Board dump.
-    // (DONE:/STOP: 同族),不引第二套工具语法——JSON 数组仍然只表示"提交这批操作"。
-    const wantsBoard = !stopping && /^\s*VIEW:/m.test(reply)
-    const sub = stopping ? null : extractSubmission(reply)
-    const ops = sub?.ops ?? null
-    const cmds = sub?.cmds ?? null
-    emitOn(ctx, 'propose', { say, ...(ops ? { ops } : {}), ...(cmds ? {
-      cmd: cmds.map((c) => c.kind).join('+'),
-      // 站中栏折叠框用的全文(与 ops 同待遇——签了什么必须看得见,args 截断防巨块)
-      cmds: cmds.map((c) => ({ kind: c.kind, ...(typeof c.action === 'string' ? { action: c.action } : {}),
-        ...(typeof c.target === 'string' ? { target: c.target } : {}),
-        ...(c.args !== undefined ? { args: String(typeof c.args === 'string' ? c.args : JSON.stringify(c.args)).slice(0, 200) } : {}) })),
-    } : {}) })
-
-    let feedback = ''
-    if (wantsBoard) {
-      feedback = `Current Case View:\n${await projectionText(ctx)}`
-      log('(The model refreshed the bounded Case View.)')
-    } else if (stopping) {
-      // done/stop = **请求**不是结论(viz 同律: 模型只请求,板裁决)。本轮照常走完放电与裁决,
-      // 收尾那句话报板的判词——本文件第一条纪律就是「结论不是模型写的」。
-      done = true
-    } else if (cmds !== null) {
-      // **每轮一个顶层命令**：动作结果会改变闭包与下一步可做集合，所以多步必须在每次
-      // 终态回执之后重新读板。命令数组整批拒绝、零副作用；事务性多步由领域包封成一个原子动作。
-      // 同步回执(2026-08-21 修)照旧: 板在 act_wait_ms 内等到受信回执会把 done/ok/result
-      // 合进 payload——答案已经在手,客户端不许扔了再叫模型去等。
-      if (cmds.length !== 1) {
-        feedback = `Only one top-level command is allowed per turn; ${cmds.length} were received and none were executed. Split the sequence across turns, waiting for each terminal receipt and rereading the board before choosing the next command.`
-        log(`Board rejected the command batch: ${feedback}`)
-        emitOn(ctx, 'verdict', { accepted: false, cmd: 'command-batch', teaching: feedback })
-      } else {
-        const lines = []
-        let succeeded = 0
-        for (let ci = 0; ci < cmds.length; ci++) {
-          const c = cmds[ci]
-          // Refuse before the wire, not after. A rejection that travels has already
-          // spent the Agent's credential on it, and a Cloud that ever grew a permissive
-          // default would make this runtime the thing that forwarded it.
-          const refusal = modelCommandRefusal(c.kind)
-          if (refusal !== undefined) {
-            log(`Refused locally: ${refusal.slice(0, 200)}`)
-            emitOn(ctx, 'verdict', { accepted: false, cmd: String(c.kind ?? ''), teaching: refusal, refusedLocally: true })
-            lines.push(refusal)
-            break
-          }
-          const r = await board(c, ctx)
-          const head = `${c.kind}${typeof c.action === 'string' ? ` ${c.action}` : ''}`
-          if (r.accepted === true) {
-            const p = r.payload ?? {}
-            const inv = p.invocation ?? p.invocationId ?? ''
-            const tag = inv !== '' ? ` · ${inv}` : ''
-            if (p.done === true) {
-              const detail = String(p.ok === true ? (p.result ?? '') : (p.reason ?? '')).slice(0, 400)
-              log(`Board: ${head} ${p.ok === true ? 'completed' : 'failed'}${tag}${detail !== '' ? ` — ${detail.slice(0, 160)}` : ''}`)
-              emitOn(ctx, 'verdict', { accepted: true, cmd: c.kind, done: true, ok: p.ok === true, added: (r.delta?.added ?? []).length, revision: r.revision ?? '', ...(inv !== '' ? { invocation: inv } : {}) })
-              lines.push(p.ok === true
-                ? `${head} completed${tag}. Worker receipt: ${detail}`
-                : `${head} failed${tag}. Worker receipt: ${detail}. This is an execution failure, not a command-shape error. A retry must be a new invocation.`)
-              if (p.ok === true) succeeded += 1
-              else {
-                if (ci < cmds.length - 1) {
-                  const stopped = `Action sequence stopped: ${succeeded}/${cmds.length} completed. The previous action failed; ${cmds.length - 1 - ci} action(s) were not executed.`
-                  log(`Board: ${stopped}`)
-                  emitOn(ctx, 'sequence-stopped', { total: cmds.length, succeeded, reason: 'effect_failed', remaining: cmds.length - 1 - ci })
-                  lines.push(`${stopped} Dependent actions cannot be issued blindly.`)
-                }
-                break
-              }
-            } else {
-              log(`Board: ${head} accepted${tag}; terminal receipt pending.`)
-              const terminal = await waitForTerminalActionReceipt(ctx, String(inv))
-              if (terminal !== undefined) {
-                const detail = terminal.detail.slice(0, 400)
-                log(`Board: ${head} ${terminal.ok ? 'completed' : 'failed'}${tag}${detail !== '' ? ` — ${detail.slice(0, 160)}` : ''}`)
-                emitOn(ctx, 'verdict', { accepted: true, cmd: c.kind, done: true, ok: terminal.ok, added: (r.delta?.added ?? []).length, revision: r.revision ?? '', ...(inv !== '' ? { invocation: inv } : {}) })
-                lines.push(terminal.ok
-                  ? `${head} completed${tag}. Worker receipt: ${detail}`
-                  : `${head} failed${tag}. Worker receipt: ${detail}. This is an execution failure, not a command-shape error. A retry must be a new invocation.`)
-                if (terminal.ok) succeeded += 1
-                else break
-                continue
-              }
-              emitOn(ctx, 'verdict', { accepted: true, cmd: c.kind, done: false, added: (r.delta?.added ?? []).length, revision: r.revision ?? '', ...(inv !== '' ? { invocation: inv } : {}) })
-              lines.push(`${head} was accepted${tag}, but no terminal receipt landed within the local settlement window. It may be awaiting clearance or Worker pickup. Do not treat it as complete.`)
-              if (ci < cmds.length - 1) {
-                const stopped = `Action sequence stopped: ${succeeded}/${cmds.length} completed. The previous action has no terminal receipt; ${cmds.length - 1 - ci} action(s) were not executed.`
-                log(`Board: ${stopped}`)
-                emitOn(ctx, 'sequence-stopped', { total: cmds.length, succeeded, reason: 'receipt_pending', remaining: cmds.length - 1 - ci })
-                lines.push(`${stopped} The synchronous barrier cannot be bypassed.`)
-              }
-              break
-            }
-          } else {
-            const t = transportAmbiguous(r) ? transportRetryTeaching(r) : String(r.teaching ?? r.errorCode ?? '')
-            log(transportAmbiguous(r) ? `Board outcome unknown for ${head}: retry unchanged.` : `Board rejected ${head}: ${t.slice(0, 160)}`)
-            emitOn(ctx, 'verdict', { accepted: false, cmd: c.kind, teaching: t, ...(transportAmbiguous(r) ? { transportAmbiguous: true } : {}) })
-            lines.push(transportAmbiguous(r) ? t : `${head} was rejected: ${t}`)
-            if (ci < cmds.length - 1) {
-              lines.push(`${cmds.length - 1 - ci} remaining action(s) were not executed because the sequence stops at the first rejection.`)
-            }
-            break
-          }
-        }
-        feedback = lines.join('\n')
-      }
-    } else if (ops === null) {
-      // 对话形态: 纯回答是合法的一段(段收在这里;板上有没有活由板自己的结案闸判,不由客户端猜)。
-      // **但"板上还有活"时的零提交不是纯回话**(2026-08-21 实跑撞出): 模型写完一整段计划、
-      // 一个字没发——段当场收工,那一轮的活全丢,案卷空着留在「在办」。
-      // 判据**问板不猜话**: 首版拿正则测「是不是冒号结尾」,那测的是散文的标点,
-      // 同一个故障换成句号收尾就一次都不纠偏——**修的是那一次的样本不是那一类**;
-      // 而且它违反的正是它上一行自己的注释「板上有没有活由板自己判,不由客户端猜」。
-      // 一次纠偏,只一次(不许变成无限重试)。
-      const boardHasWork = CHAT && !nudged && (await boardGaps(ctx)).gaps.length > 0
-      if (boardHasWork) {
-        nudged = true
-        feedback = 'Your previous reply described a submission but included no JSON block. Submit board operations as a JSON array, or one top-level command such as ApplyAction as an object with kind. If nothing remains, reply DONE: or STOP:.'
-      } else if (CHAT) { note = 'response only (no board operation)'; done = true }
-      else feedback = 'No JSON submission was found. Return a JSON array for board operations, one object with kind for a top-level command such as ApplyAction, or finish with DONE: or STOP:.'
-    } else {
-      const r = await board({ kind: 'ApplyBatch', operations: ops }, ctx)
-      if (r.accepted === true) {
-        const added = (r.delta?.added ?? []).length
-        log(`Board accepted ${ops.length} operation(s) · ${added} item(s) added · revision ${r.revision ?? ''}`)
-        emitOn(ctx, 'verdict', { accepted: true, added, revision: r.revision ?? '' })
-        // **只回增量,不回灌全板**(viz 逐义,2026-08-06 搬)。此前每轮都把整块板塞回转录:
-        // 一块小探针板的投影已经 2-3.3 KB(大半是词表),真板远不止——12 轮就是十几份全板副本,
-        // 而板每轮只多几条。要看全板,模型自己发 BOARD: 要(下面那件工具),那是**它的**决定。
-        const warn = (r.payload?.warnings ?? []).join('\n')
-        feedback = `Board accepted the batch (revision ${r.revision ?? ''}, ${added} item(s) added).${warn ? `\n${warn}` : ''}`
-      } else {
-        // **报错是接口**：原样回喂，不改写——板的教学比我们的转述准
-        const teaching = String(r.teaching ?? r.errorCode ?? '')
-        if (transportAmbiguous(r)) {
-          feedback = transportRetryTeaching(r)
-          log('Board outcome unknown for ApplyBatch: retry the unchanged batch; no authoritative receipt returned.')
-          emitOn(ctx, 'verdict', { accepted: false, teaching: feedback, transportAmbiguous: true })
-        } else {
-          log(`Board rejected the batch: ${teaching.slice(0, 300)}`)
-          emitOn(ctx, 'verdict', { accepted: false, teaching })
-          feedback = `The board rejected this batch:\n${teaching}\n\nCorrect the request using that guidance and submit again.`
-        }
-      }
-    }
-
-    // ③ 影子先审（板变过才审——没动过的板没有新东西可挑）
-    const revAfterTool = await revisionNow(ctx)
-    if (withShadow && revAfterTool !== lastRevision) await shadowReview(ctx, userText, { inline: true })
-    // ① 再放电（影子的缺陷主张与主叶同一次接地）——**义务未清不放首枪**(2026-08-18 用户
-    //    「经常出这个回执失败」): 树一落板就派求证,而动作还没执行,首探必红、复活律再绿——
-    //    一条注定要红的探针不该在那个时刻出手。义务清空的那一刻,落定等待的空闲分支会补跑
-    //    (同一拍内,晚几秒不晚一轮)。
-    //    ⚠ 上一版"义务未清就扣住放电"翻过车(冷通枪 3/3→1/3: 回执永不归的动作把求证卡死):
-    //    区别在这次是**拍内推迟不是硬闸**——settle 超时照常叫醒模型走轮,deliverableNow
-    //    收工前仍无条件补跑一次,回执永不归时求证依然有出手机会,卡不死。
-    {
-      const { facts: fNow } = await boardRoots(ctx)
-      if (openObligations(fNow).length === 0) feedback += await dischargePass(ctx)
-    }
-    // ② **在途就地结算,不烧模型轮**(用户裁 2026-08-18:「云上闭包如果包含放电,等放电结果
-    //    返回后再返回结果给智能体,这样省很大空循环」)。
-    //
-    //    真机形状: 派出求证/查询之后,板一时没有新东西可说,模型于是一轮一轮地回
-    //    「求证在途,我等等」——**每一轮都是一次完整的模型调用(整块板重发)**,三五轮就是纯烧。
-    //    宿主原地等一分钱不花,所以等待归宿主,模型只在**状态真的变了**之后才被叫醒。
-    //
-    //    **不放进云上写命令**(用户原话是那个位置,这里是它的等价省法): 协议面的写 op 一旦
-    //    阻塞在外部工人身上,没连工人就挂住;而且那是所有客户端共用的裁决面,语义会变得
-    //    不确定、金样也钉不住。**贵的是模型那一轮,不是 HTTP 那一跳。**
-    //
-    //    只在「模型此刻确实无事可做」时等: 有缺口 ⇒ 那是模型的活,立刻叫醒它。
-    let c = await completionAll(ctx)
-    let { facts } = await boardRoots(ctx)
-    let { gaps: gapsNow, inFlight: flightNow } = await boardGaps(ctx)
-    if (!hasLiveDischargeWork(facts)) flightNow = []
-    let settledBoard = ''
-    if (SETTLE_WAIT_MS > 0 && c.roots.length > 0) {
-      const until = Date.now() + SETTLE_WAIT_MS
-      let said = false
-      // 未回执动作(含 q_pending/q_snapshot 这类查询)与求证在途是同一件事: 都在等别人回话。
-      //
-      // **等这一轮派出去的全部尘埃落定,再一次性回给模型**(用户裁 2026-08-18)。
-      //
-      // 两版教训都在这一行里: ① 上一版把任何缺口都当成"模型有活干"就不等 —— 而求证在途期间
-      // 板上**必然**挂着 `undone_leaf`(它是"还没验完"的同义词),于是宿主放弃等待,模型白烧
-      // 三轮「BOARD: 等结果」。② 只放行"能动手的缺口"仍留了口子: 四条求证里第一条先失败就
-      // 提前叫醒模型,它拿到的是**半份结果**,剩下的落地后还得再叫一轮 —— **半份结果比晚一点
-      // 更贵**,模型会照着半份去改一片正在被验的叶子。
-      // 所以判据只剩一句: **还有人在替它干活就等**(上限 SETTLE_WAIT_MS,工人离线不会挂死)。
-      //
-      // ③ **复活重探由宿主代跑**(2026-08-18 真机第五发: 求证 r1..r5 五次重试恰好烧掉第 7..12 轮,
-      //    每轮全文是「BOARD: 等求证结果。」): 放电引擎裁 1a 说"补单只在下一次 RunDischarge 时
-      //    发生,不自旋"——而那个"下一次"从前只挂在模型轮上,于是**每次重试都要一整个模型调用来
-      //    点火**。等待期间在途一空但板未 certified,宿主自己补跑一次放电: 补出新在途就接着等,
-      //    补不出(重试上限已尽/真没路)才叫醒模型。重试上限仍归放电引擎(3 次+受信效果后重置),
-      //    这里只是把点火的手从模型换成宿主——**贵的是模型那一轮,不是 RunDischarge 那一跳**。
-      while (Date.now() < until) {
-        if (flightNow.length === 0 && openObligations(facts).length === 0) {
-          if (c.certified === true || c.roots.length === 0) break
-          const armed = await dischargePass(ctx)
-          ;({ facts } = await boardRoots(ctx))
-          ;({ gaps: gapsNow, inFlight: flightNow } = await boardGaps(ctx))
-          if (!hasLiveDischargeWork(facts)) flightNow = []
-          if (flightNow.length === 0 && openObligations(facts).length === 0) {
-            // **重探退避窗内宿主替模型把窗睡掉**(2026-08-23 与板侧退避同批): 板明说
-            // "过 Ns 再来",此刻叫醒模型它也无事可做——那正是"每次重试烧一整轮"的老坑。
-            // 窗过再补一发放电;真没路(缺口不带窗)才叫模型。
-            const bo = gapsNow
-              .map((g) => String(g.reason ?? '').match(/退避窗\(还剩约 (\d+)s\)|backoff window \(about (\d+)s/))
-              .find(Boolean)
-            if (bo && Date.now() < until) {
-              const waitS = Math.min(Number(bo[1] ?? bo[2] ?? 5) + 1, Math.max(1, Math.ceil((until - Date.now()) / 1000)))
-              if (!said) { log('◌ Waiting locally for verification and receipts; no model turn is being consumed.'); said = true }
-              await new Promise((r) => setTimeout(r, waitS * 1000))
-              continue
-            }
-            break // 补不出新在途且无退避窗=没人可替它干活了,该模型上
-          }
-          feedback += armed
-          continue
-        }
-        if (!said) { log('◌ Waiting locally for verification and receipts; no model turn is being consumed.'); said = true }
-        await new Promise((r) => setTimeout(r, 2000))
-        c = await completionAll(ctx)
-        ;({ facts } = await boardRoots(ctx))
-        ;({ gaps: gapsNow, inFlight: flightNow } = await boardGaps(ctx))
-        if (!hasLiveDischargeWork(facts)) flightNow = []
-        // **收口判据=三合一**(2026-08-18 两发对撞后的终形): ① 只看 certified 提前 break
-        // ——求证先转绿而动作还压在闸下,模型被提前叫醒白烧两轮(「同一拍」裁决);
-        // ② 干脆不 break——板在 certified 后还挂着一条陈旧 work-ordered 缺口行,
-        // busy 循环靠它恒判"在途",每轮把 60s 窗等满(427 真机: 两个整窗+多烧一轮)。
-        // 所以: certified 且没活了且**义务清了**才 break——同一拍不破,陈旧行不拖窗。
-        if (c.certified === true && c.allDone === true && openObligations(facts).length === 0) break
-      }
-      if (said) {
-        log(`◌ Settlement complete (certified=${c.certified} · ${c.state}). The next model turn receives the landed result.`)
-        // **等完就把板面一起端上去**(2026-08-18 用户看站输出第三发): 真机里模型在结算之后
-        // 连回两轮 `BOARD:` —— 每一轮都是一次完整的模型调用而产出为零,**而那是我们自己教的**
-        // (「回一行 BOARD: 看着就行」)。宿主既然已经替它等了,落定的板面就该直接给它:
-        // 它要的东西我们手上就有,让它花一轮来要,等于把省下的空转又还回去。
-        settledBoard = await projectionText(ctx)
-      }
-    }
-    // 完成态**上终端**给人看(不是喂模型的教学: 模型看板自己的投影与回执)
-    if (c.roots.length > 0) log(`[Completion] certified=${c.certified} floor=${c.floor} ${c.state}`)
-    emitOn(ctx, 'board', { certified: c.certified, floor: c.floor, state: c.state, breached: c.breached })
-
-    if (!(c.certified === true && c.allDone === true)) sawUndeliverable = true
-    // 完成是板的裁决，不需要模型再说一遍 DONE。动作/清关/求证全清后由宿主直接收工，
-    // 省掉真机里那轮 `BOARD: 等待…` 和紧随其后的 `DONE:` 两次完整模型调用。
-    if (!done && sawUndeliverable && c.certified === true && c.allDone === true && openObligations(facts).length === 0) {
-      done = true
-      log('The board marked the case deliverable and all obligations are clear. The host is completing without another model turn.')
-      emitOn(ctx, 'auto-complete', { certified: true, floor: c.floor, state: c.state })
-    }
-
-    if (done) {
-      note = c.certified
-        ? `Board certified the case as deliverable (floor=${c.floor}).`
-        : c.roots.length === 0 ? 'Response only; no task tree exists on the board.' : `The model stopped, but the board did not certify the case (floor=${c.floor} · ${c.state}).`
+    if (policy !== 'continue') continue
+    if (closedDisposition !== undefined) {
+      outcome = VOID_DISPOSITIONS.has(closedDisposition) ? 'void' : 'completed'
+      note = VOID_DISPOSITIONS.has(closedDisposition)
+        ? `The Case was closed as ${closedDisposition}.`
+        : 'The Board accepted closure and the Case is completed.'
       break
     }
-
-    // 轮的上限只剩 MAX_ROUNDS 一个(2026-08-18 拆补丁: 早停判据被"等在途不算空转"改过一轮又一轮,
-    // 那是客户端在猜"模型是不是卡住了"——板不会卡住,它每轮都如实说自己的状态;烧不烧得起是预算问题,
-    // 归 MAX_ROUNDS 一条线管,不需要第二个会猜错的判据)。
-    lastRevision = await revisionNow(ctx)
-    // 结算过就把落定的板面一起端上（省掉模型那一轮 `BOARD:` 的要价）。
-    messages.push({ role: 'user', content: `[Result] ${feedback}\n[Completion] certified=${c.certified} floor=${c.floor} ${c.state}`
-      + (settledBoard !== '' ? `\n\nCurrent Case View after settlement:\n${settledBoard}` : '')
-      + `\n\nContinue, or finish with DONE:.` })
+    if (ctx.case === undefined) continue
+    const settled = await settle(ctx, lastView)
+    if (settled.waited || settled.notes.length > 0) {
+      messages.push(userEntry([
+        settled.notes.join('\n'),
+        settled.notes.length === 0 ? '' : '\n\n',
+        `Case View after settlement:\n${viewText(settled.view)}`,
+      ].join('')))
+    }
+    if (certifiedOf(settled.view)) log(`[Completion] certified=true floor=${String(settled.view?.floor ?? '—')} ${String(settled.view?.state ?? '')}`)
   }
-  if (note === 'in progress') { note = `Stopped at the ${MAX_ROUNDS}-round limit.`; log(`
-⚠ ${note} Increase RULITH_MAX_ROUNDS only after reviewing why the workflow did not converge.`) }
-  // 影子人格(--shadow): 段尾对抗审阅——同一智能体的内外人格,板侧防篡改机制(CD 钉等)天然在。
-  // **抗议的牙齿 = 拦下本段的收尾动作**,也就是拦下 `CloseCase`。
-  // 影子有异议的活不算收尾: 案卷留「在办」,板上留着,人与主人格都看得见。
-  const shadowClear = !withShadow || await shadowReview(ctx, userText)
-  let pendingCaseId = caseId
-  if (!shadowClear) {
-    log('Shadow review raised a finding. The Case Context remains open and the shadow_finding is on the Board.')
-  } else {
-    const { deliverable, why } = await deliverableNow(ctx)
-    if (deliverable && await archiveCaseContext(ctx, 'completed')) pendingCaseId = null
-    else {
-      log(`\nCase "${caseId}" remains open: ${why}.\n   Stopping is not completion. Resume with --case ${caseId}, or close it explicitly through the Case lifecycle API.`)
-      emitOn(ctx, 'case-pending', { board: ctx.board, caseId, reason: why, note })
+
+  if (note === '') note = `Stopped at the ${MAX_ROUNDS}-round limit.`
+  if (policy === 'continue') {
+    // 影子人格(--shadow): 段尾对抗审阅——同一智能体的内外人格。它只能落异议事实,
+    // 牙齿在板上(confirmed_defect 挡 certify),不在这个进程的流程分支里。
+    if (withShadow && ctx.case !== undefined) await shadowReview(ctx, userText)
+    if (note === `Stopped at the ${MAX_ROUNDS}-round limit.`) {
+      log(`\n⚠ ${note} Increase RULITH_MAX_ROUNDS only after reviewing why the workflow did not converge.`)
     }
   }
-  ctx.segmentTrail.push(`[case ${caseId}${pendingCaseId === null ? '' : ' · open'}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
-  if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40) // 留痕本身也要有上界
-  return { note, caseId, pendingCaseId, opened: true }
+  const activeCaseId = ctx.case?.id ?? null
+  const pendingCaseId = policy === 'continue' ? activeCaseId : detachedPendingCaseId
+  if (policy === 'continue' && activeCaseId !== null) {
+    log(outcome === 'certified'
+      ? `\nCase "${activeCaseId}" is certified and still open, because closing it is the model's step and it did not take one.\n   Resume with --case ${activeCaseId}, or close it in Console.`
+      : `\nCase "${activeCaseId}" remains open: ${note}\n   Stopping is not completion. Resume with --case ${activeCaseId}, or close it explicitly in Console.`)
+    emitOn(ctx, 'case-pending', { board: ctx.board, caseId: activeCaseId, reason: note, note })
+  }
+  ctx.segmentTrail.push(`[${policy === 'continue' ? 'case' : 'conversation'}${activeCaseId === null ? '' : ` · case ${activeCaseId} open`}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
+  if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40)
+  return { note, outcome, caseId: activeCaseId ?? lastCaseId, activeCaseId, pendingCaseId, opened }
 }
 
 /** 影子审阅: 对抗立场读板与本段经过,专挑真缺陷。发现→落板 shadow_finding + 返回 false(拦结案)。
@@ -1972,30 +1458,30 @@ ${say.slice(0, 1200)}`)
  *      影子的缺陷主张与主人格的叶子一起接地，confirmed_defect 赶得上在 certify 之前挡门。
  *    - 段尾【关门审计】——最后一道,牙齿是拦下本段的 `CloseCase`:有异议的活不算收尾,板上留着。
  *  只有段尾那次的返回值被用来拦结案;inline 那次不拦(它靠板机制生效,不靠流程分支)。 */
-async function shadowReview(ctx, userText, opts = {}) {
-  const proj = await projectionText(ctx)
+async function shadowReview(ctx, userText) {
+  const view = await hostView(ctx)
   const verdict = await ask(
-    [{ role: 'user', content: `Completed segment: ${userText}\n\nCurrent Case View:\n${proj}` }],
+    [userEntry(`Completed segment: ${userText}\n\nCurrent Case View:\n${viewText(view)}`)],
     `You are the Agent's adversarial shadow reviewer. Assume the primary Agent may be wrong and identify only concrete defects:
 - Is every conclusion actually supported? Are values abnormal, sources doubtful, or expected materials missing?
 - Did claims that require verification go through a trusted computation or source, or were they merely stated?
 - Is unfinished work being presented as complete?
 Do not invent criticism. If no issue is substantiated, reply with exactly PASS.
 Otherwise return at most three lines, each formatted FINDING: <one precise issue with a node or value>.`,
-    SHADOW_CFG,
+    { cfg: SHADOW_CFG },
   )
-  const findings = verdict.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('FINDING:')).slice(0, 3)
-  const tag = opts.inline ? '◆ Shadow review (inline)' : '◆ Shadow review (final)'
-  if (findings.length === 0) { log(`${tag}: PASS`); emitOn(ctx, 'shadow', { pass: true, inline: opts.inline === true }); return true }
-  for (const f of findings) log(`${tag}: ${f.slice(0, 200)}`)
-  emitOn(ctx, 'shadow', { pass: false, findings, inline: opts.inline === true })
-  // 异议落板(asserted 档如实——影子的话也是话,不是证据;它的作用是可见与拦结案)
-  const ops = findings.map((f, i) => ({
-    op: 'assert_fact', id: `SF_${Date.now().toString(36)}_${i}`,
-    predicate: 'shadow_finding', args: { text: f.slice(9, 240).trim() },
+  const findings = String(verdict.text ?? '').split('\n').map((line) => line.trim()).filter((line) => line.startsWith('FINDING:')).slice(0, 3)
+  if (findings.length === 0) { log('◆ Shadow review: PASS'); emitOn(ctx, 'shadow', { pass: true }); return true }
+  for (const finding of findings) log(`◆ Shadow review: ${finding.slice(0, 200)}`)
+  emitOn(ctx, 'shadow', { pass: false, findings })
+  // 异议落板(asserted 档如实——影子的话也是话,不是证据)。**牙齿在板上**:
+  // confirmed_defect 在 certify 之前挡门,不靠这个进程的流程分支。
+  const operations = findings.map((finding, index) => ({
+    op: 'assert_fact', id: `SF_${Date.now().toString(36)}_${index}`,
+    predicate: 'shadow_finding', args: { text: finding.slice(9, 240).trim() },
   }))
-  const r = await board({ kind: 'ApplyBatch', operations: ops }, ctx)
-  if (r.accepted !== true) log(`◆ Board rejected the shadow finding: ${String(r.teaching ?? '').slice(0, 120)}`)
+  const answer = await callTool('ApplyBatch', { operations }, ctx)
+  if (answer.result?.accepted !== true) log(`◆ Board rejected the shadow finding: ${String(answer.result?.teaching ?? '').slice(0, 120)}`)
   return false
 }
 
@@ -2168,12 +1654,16 @@ if (SERVE) {
         let requestedCaseId = ''
         let requestedCaseIdValue
         let caseType = selectedCaseType
+        // A caller that names a Case Type has made the governance selection for this task,
+        // exactly as `--case-type` does for the process. The model may not move off it.
+        let caseTypeGiven = caseTypePinned
         let businessKey = selectedBusinessKey
         try {
           const b = JSON.parse(raw || '{}')
           text = String(b.text ?? '').trim()
           sessionKey = String(b.sessionKey ?? '').trim()
           requestedCaseIdValue = b.caseId
+          caseTypeGiven = caseTypeGiven || (typeof b.caseType === 'string' && b.caseType.trim() !== '')
           caseType = String(b.caseType ?? selectedCaseType).trim()
           businessKey = b.businessKey ?? selectedBusinessKey
         } catch { return deny('Body is not valid JSON. Expected {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional","caseId":"optional-existing-case"}.') }
@@ -2196,7 +1686,7 @@ if (SERVE) {
         if (requestedCaseId.length > 256) return deny('caseId exceeds 256 characters. Use the exact Case ID returned by /runs or shown in Console.', 400)
         const slot = slotFor(sessionKey)
         if (slot === undefined) return deny(`Conversation capacity is full (${SERVE_SLOTS_MAX} slots), and every slot is busy. Retry later or continue an existing sessionKey.`, 429)
-        const item = { id: nextCaseId(), text, caseType, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey }
+        const item = { id: nextCaseId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey }
         slot.queue.push(item)
         slot.lastUsed = item.at
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0)
@@ -2233,7 +1723,7 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
   Contracted Case Types also send businessKey with the exact Case Contract argument names.
   Continue a conversation by echoing the sessionKey returned by the first request: -d '{"text":"…","sessionKey":"conversation-1"}'
   Select an existing running or paused Case without advancing it: add "caseId":"<id>" from /runs or Console.
-  Messages are ordinary conversation. The Agent opens or advances a Rulith Case only when it chooses the optional Rulith tool.
+  Messages are ordinary conversation. The Agent opens or advances a Rulith Case only when it calls one of the four Board tools.
   Inspect: curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
   The key is randomized on every start. Loopback alone is not an authorization boundary.`)
   emit('start', { agentId, url: URL_BASE, task: '(task endpoint)', projection: '', concurrency: SERVE_CONCURRENCY })
@@ -2257,7 +1747,13 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
     let activeCaseId = null
     let actualCaseId = null
     try {
-      const seg = await runConversationTurn(slot, item.text, item.caseType, item.businessKey, item.caseId)
+      const seg = await runCaseTurn(slot, item.text, {
+        policy: 'return',
+        caseType: item.caseType,
+        caseTypePinnedForTurn: item.caseTypePinned === true || caseTypePinned,
+        businessKey: item.businessKey,
+        requestedCaseId: item.caseId,
+      })
       note = seg.note
       pendingCaseId = seg.pendingCaseId
       activeCaseId = seg.activeCaseId
@@ -2335,11 +1831,14 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
   log(`Task: ${TASK}
 `)
   emit('start', { agentId, url: URL_BASE, task: TASK, projection: '' })
-  const { note, caseId, pendingCaseId, opened } = await runAutopilotCase(defaultSlot, TASK)
+  const { note, outcome, caseId, pendingCaseId, opened } = await runCaseTurn(defaultSlot, TASK, { policy: 'continue' })
+  // The run's own verdict, on the terminal. It used to travel only in the `end` event, so
+  // the one interface this form actually has never said how the run ended.
+  log(`\n· ${note}`)
   // A closed or rejected Case has no active execution envelope. Do not fall back
   // to an unscoped Agent Board read: the Console case record is the authority.
   const after = pendingCaseId !== null && defaultSlot.case?.id === pendingCaseId
-    ? await projectionText(defaultSlot)
+    ? viewText(await hostView(defaultSlot))
     : ''
   const seen = consoleUrl
   log('\n──────── Final authoritative board state ────────')
@@ -2349,7 +1848,10 @@ Task endpoint ready (serial within a session · ${SERVE_CONCURRENCY} concurrent 
 Verify the task tree, work items, and conclusions in Console: ${seen}
 `)
   emit('end', {
-    ok: pendingCaseId === null && note.startsWith('Board certified the case as deliverable'),
+    // The success bit is read from the loop's own outcome, not from the prose it printed.
+    // A note is for a person; a caller that greps it is one rewording away from silence.
+    ok: outcome === 'completed',
+    outcome,
     note,
     caseId,
     board: defaultSlot.board,
@@ -2428,7 +1930,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     queuedAtSegmentStart = inbox.length // 水位线: 此刻排着的都是「下一段」,之后到的才是插话
     let segment
     try {
-      segment = await runConversationTurn(defaultSlot, line)
+      segment = await runCaseTurn(defaultSlot, line, { policy: 'return' })
     } catch (error) {
       if (!(error instanceof AgentCredentialRejectedError)) throw error
       console.error(`\n✗ ${error.message}\n`)
