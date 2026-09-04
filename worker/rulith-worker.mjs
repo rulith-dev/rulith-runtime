@@ -29,7 +29,8 @@
  *       "acme.report@1": { "adapter": "run", "sourceTypes": ["file"], "entry": "adapters/report.mjs",
  *         "env": { "pass": ["ACME_REGION"] },
  *         "kind": "run", "params": { "region": "string" },
- *         "returns": { "report_id": "string", "line_count": "number" } },
+ *         "returns": [{ "predicate": "acme.report.published",
+ *                       "args": { "report_id": "$report_id", "line_count": "$line_count" } }] },
  *       "acme.verify_cert@1": { "adapter": "http", "sourceTypes": ["http"], "entry": "/verify",
  *         "handles": { "verification": ["cert"] } }
  *     }
@@ -40,8 +41,10 @@
  * sourceTypes, kind, params, returns}`, same Connection lock. `kind` is read / write /
  * run and may be left out — it is then derived from the adapter. `params` names the
  * arguments an invocation may carry (string / number / boolean / json, `?` = optional);
- * `returns` names the scalar columns each result row carries, which a governed Action's
- * result mapping references as `$column`. An entry naming a handler that ships here (a
+ * `returns` maps each result row to the facts it may land as — `[{predicate, args:
+ * {fact_arg: "$column"}}]`, the one shape a Capability Action's `returns` uses and the
+ * Board's tool-pack parser reads, so a host installs the advertisement verbatim as a
+ * direct Action. An entry naming a handler that ships here (a
  * workspace operation, MCP discovery) states none of the three: that contract is fixed,
  * and a restatement is refused rather than ignored. This Worker advertises everything it
  * has and authorizes nothing: a Tool receives work only while its Connection lock holds.
@@ -176,21 +179,61 @@ const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp',
  * zone, reported as whatever the enclosing catch happens to say (see KNOWN_IMPLS).
  */
 const PARAM_TYPES = Object.freeze(['string', 'number', 'boolean', 'json'])
-/** Result columns stay scalar: `resultFactsFromRows` maps only scalars into fact args. */
-const RETURN_TYPES = Object.freeze(['string', 'number', 'boolean'])
 
-function assertTypeTable(table, label, types, noun) {
-  if (!table || typeof table !== 'object' || Array.isArray(table)) throw new Error(`${label} must be an object of ${noun} name to type`)
-  const allowed = new Set(types.flatMap((type) => [type, `${type}?`]))
+export function assertParamTable(table, label) {
+  if (!table || typeof table !== 'object' || Array.isArray(table)) throw new Error(`${label} must be an object of parameter name to type`)
+  const allowed = new Set(PARAM_TYPES.flatMap((type) => [type, `${type}?`]))
   for (const [name, type] of Object.entries(table)) {
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(name) || typeof type !== 'string' || !allowed.has(type)) {
-      throw new Error(`${label}.${name || '(empty)'} must name a lower-case ${noun} and one of ${types.join(' / ')} (a trailing ? marks it optional)`)
+      throw new Error(`${label}.${name || '(empty)'} must name a lower-case parameter and one of ${PARAM_TYPES.join(' / ')} (a trailing ? marks it optional)`)
     }
   }
   return table
 }
-export function assertParamTable(table, label) { return assertTypeTable(table, label, PARAM_TYPES, 'parameter') }
-export function assertReturnTable(table, label) { return assertTypeTable(table, label, RETURN_TYPES, 'column') }
+
+/**
+ * `returns` is the result-fact mapping: `[{predicate, args: {fact_arg: "$column"}}]`. One
+ * shape for a built-in's fixed contract, a Tool-Manifest entry, and a Capability Action's
+ * mapping — it is what the Board's tool-pack parser reads and what the cloud forwards
+ * verbatim when it synthesizes a direct Action. A Worker that advertised columns and
+ * types instead would be stating a contract no host can install: the cloud's Poll
+ * refuses it, and every Worker carrying the built-in workspace Tools would be turned
+ * away on its first poll while every test here stayed green.
+ *
+ * The row shape has one checker, `assertReturnRow`, used both when a declaration is
+ * read and when rows are mapped; a declaration additionally requires a dotted
+ * lower-case predicate, which is the cloud's rule for an advertised Tool.
+ */
+const RETURN_PREDICATE = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/
+function assertReturnRow(row, at) {
+  if (!row || typeof row !== 'object' || Array.isArray(row) || typeof row.predicate !== 'string' || row.predicate === '') {
+    throw new Error(`${at} must be a result-fact row of {predicate, args}`)
+  }
+  if (!row.args || typeof row.args !== 'object' || Array.isArray(row.args) || Object.keys(row.args).length === 0) {
+    throw new Error(`${at}.args must map at least one fact argument to a $column reference`)
+  }
+  for (const [name, source] of Object.entries(row.args)) {
+    if (typeof source !== 'string' || !/^\$[A-Za-z0-9_]+$/.test(source)) {
+      throw new Error(`${at}.args.${name || '(empty)'} must reference a result column as $column`)
+    }
+  }
+  return row
+}
+export function assertReturnRows(rows, label) {
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 32) {
+    throw new Error(`${label} must be a non-empty array of result-fact rows such as [{"predicate":"acme.report.published","args":{"report_id":"$report_id"}}]`)
+  }
+  for (const [index, row] of rows.entries()) {
+    assertReturnRow(row, `${label}[${index}]`)
+    if (!RETURN_PREDICATE.test(row.predicate)) {
+      throw new Error(`${label}[${index}].predicate must be a dotted lower-case predicate name such as acme.report.published`)
+    }
+    for (const name of Object.keys(row.args)) {
+      if (!/^[a-z][a-z0-9_]{0,63}$/.test(name)) throw new Error(`${label}[${index}].args.${name} must name a lower-case fact argument`)
+    }
+  }
+  return rows
+}
 
 const WORKSPACE_READ_TOOLS = Object.freeze({
   'rulith.workspace.list@1': 'list',
@@ -219,34 +262,48 @@ const SOURCE_READ_TOOLS = Object.freeze({
  *
  * `params` is the parameter table in the same language `validateInvocationArgs` speaks
  * (`string` / `number` / `boolean` / `json`, `?` suffix = optional). `returns` is the
- * column contract: the scalar columns each result row carries, which is what a board
- * `returns` mapping references as `$column` (see resultFactsFromRows). It is a column
- * table, not that mapping — the predicates belong to the pack, never to the Worker.
+ * result-fact mapping the cloud installs verbatim as the direct Action's `returns`. The
+ * predicates a built-in lands as live under `rulith.worker.*` and are this Worker's to
+ * name: a direct Action has no pack to name them. Every mapping carries `source`, the
+ * Source the row came from, because one Connection may carry several Sources of one
+ * type and a path alone does not say which. A column the handler may leave out (`size`
+ * of a directory entry) is not mapped: `resultFactsFromRows` refuses a missing column
+ * rather than landing a hole as a fact. A Capability Action may map the same rows onto
+ * its own predicates; this is the default, not a ceiling.
+ *
+ * `rulith.workspace.read_text@1` and `rulith.workspace.write_text@1` are pinned by the
+ * shared conformance fixture `tests/conformance/fixtures/worker-tools-direct.json` in
+ * the core repository: the cloud proves its synthesis matches it (RT-WTOOLS-7) and, at
+ * the vendor seam, that this advertisement does too (RT-WTOOLS-8).
  *
  * Keyed by adapter entry, not by Tool id: a manifest entry that names the same
  * workspace operation runs the same handler and therefore has the same contract.
  */
 const WORKSPACE_TOOL_CONTRACTS = Object.freeze({
   list: { kind: 'read', params: { path: 'string?' },
-    returns: { source: 'string', path: 'string', entry_type: 'string', size: 'number?' } },
+    returns: [{ predicate: 'rulith.worker.dir_entry', args: { source: '$source', path: '$path', entry_type: '$entry_type' } }] },
   count: { kind: 'read', params: { path: 'string?', recursive: 'boolean' },
-    returns: { source: 'string', path: 'string', recursive: 'boolean', file_count: 'number', directory_count: 'number', digest: 'string' } },
+    returns: [{ predicate: 'rulith.worker.file_count', args: {
+      source: '$source', path: '$path', recursive: '$recursive', file_count: '$file_count', directory_count: '$directory_count', digest: '$digest',
+    } }] },
   search: { kind: 'read', params: { query: 'string', path: 'string?' },
-    returns: { source: 'string', path: 'string', line: 'number', column: 'number', text: 'string' } },
+    returns: [{ predicate: 'rulith.worker.text_match', args: { source: '$source', path: '$path', line: '$line', column: '$column', text: '$text' } }] },
   read_text: { kind: 'read', params: { path: 'string' },
-    returns: { source: 'string', path: 'string', text: 'string', digest: 'string' } },
+    returns: [{ predicate: 'rulith.worker.text_file', args: { source: '$source', path: '$path', text: '$text', digest: '$digest' } }] },
   read_json: { kind: 'read', params: { path: 'string' },
-    returns: { source: 'string', path: 'string', json: 'string', digest: 'string' } },
+    returns: [{ predicate: 'rulith.worker.json_file', args: { source: '$source', path: '$path', json: '$json', digest: '$digest' } }] },
   hash: { kind: 'read', params: { path: 'string' },
-    returns: { source: 'string', path: 'string', sha256: 'string', size: 'number' } },
+    returns: [{ predicate: 'rulith.worker.file_hash', args: { source: '$source', path: '$path', sha256: '$sha256', size: '$size' } }] },
   write_text: { kind: 'write', params: { path: 'string', text: 'string' },
-    returns: { source: 'string', path: 'string', bytes: 'number' } },
+    returns: [{ predicate: 'rulith.worker.file_written', args: { source: '$source', path: '$path', digest: '$digest' } }] },
   write_json: { kind: 'write', params: { path: 'string', value: 'json' },
-    returns: { source: 'string', path: 'string', bytes: 'number' } },
+    returns: [{ predicate: 'rulith.worker.file_written', args: { source: '$source', path: '$path', digest: '$digest' } }] },
 })
 const SOURCE_TOOL_CONTRACTS = Object.freeze({
   discover: { kind: 'read', params: {},
-    returns: { source: 'string', tool_name: 'string', description: 'string', input_schema_json: 'string' } },
+    returns: [{ predicate: 'rulith.worker.mcp_tool', args: {
+      source: '$source', tool_name: '$tool_name', description: '$description', input_schema_json: '$input_schema_json',
+    } }] },
 })
 
 /** The fixed contract of a Tool whose handler ships with this Worker, if it has one. */
@@ -300,7 +357,7 @@ export function workerToolDescriptor(id, definition) {
     // an operator's to restate. `workerToolsOf` refuses the restatement outright, so
     // this order only matters for a definition assembled in code.
     params: { ...(contract?.params ?? definition.params ?? {}) },
-    returns: { ...(contract?.returns ?? definition.returns ?? {}) },
+    returns: (contract?.returns ?? definition.returns ?? []).map((row) => ({ predicate: row.predicate, args: { ...row.args } })),
   }
 }
 
@@ -965,7 +1022,12 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
     // Row-shaped like every other workspace operation, and for the same reason: a Tool
     // whose declared columns cannot reach `resultFactsFromRows` states a contract the
     // board can never use. The `result` text is the same JSON object it always was.
-    const written = { source: t.source, path: relative(root, target).replace(/\\/g, '/'), bytes: Buffer.byteLength(text, 'utf8') }
+    // `digest` is the hash of the text that landed, computed exactly as `read_text` computes
+    // its own, so a read-back can be checked against the receipt on the Board.
+    const written = {
+      source: t.source, path: relative(root, target).replace(/\\/g, '/'),
+      bytes: Buffer.byteLength(text, 'utf8'), digest: createHash('sha256').update(text).digest('hex'),
+    }
     return { result: JSON.stringify({ path: written.path, bytes: written.bytes }), rows: [written] }
   }
   throw new Error(`Unsupported workspace operation "${operation}"`)
@@ -1139,18 +1201,12 @@ export function resultFactsFromRows(t, rows) {
   const returns = t?.returns
   if (returns === undefined) return []
   if (!Array.isArray(returns)) throw new Error('returns must be an array')
+  for (const [mi, mapping] of returns.entries()) assertReturnRow(mapping, `returns[${mi}]`)
   const facts = []
   for (const [ri, row] of rows.entries()) {
-    for (const [mi, mapping] of returns.entries()) {
-      if (!mapping || typeof mapping !== 'object' || typeof mapping.predicate !== 'string'
-          || !mapping.args || typeof mapping.args !== 'object' || Array.isArray(mapping.args)) {
-        throw new Error(`returns[${mi}] has an invalid shape`)
-      }
+    for (const mapping of returns) {
       const args = {}
       for (const [name, source] of Object.entries(mapping.args)) {
-        if (typeof source !== 'string' || !source.startsWith('$') || source.length < 2) {
-          throw new Error(`returns[${mi}].args.${name} must be a $column reference`)
-        }
         const column = source.slice(1)
         const value = row?.[column]
         if (value === undefined || value === null || !['string', 'number', 'boolean'].includes(typeof value)) {
@@ -1943,7 +1999,7 @@ export function workerToolsOf(raw) {
       assertParamTable(value.params, `Worker Tool ${id}.params`)
       refuseSqlParameter(adapter, value.params)
     }
-    if (value.returns !== undefined) assertReturnTable(value.returns, `Worker Tool ${id}.returns`)
+    if (value.returns !== undefined) assertReturnRows(value.returns, `Worker Tool ${id}.returns`)
     if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {
       throw new Error(`Worker Tool ${id}.fence must be an object`)
     }

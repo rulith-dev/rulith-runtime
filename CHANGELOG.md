@@ -39,9 +39,13 @@ dialect will not work against this runtime.
 - Worker Tools have one standing (board-spec TOOL-08). A built-in and a Tool-Manifest
   entry are advertised in the same descriptor — `id`, `digest`, `sourceTypes`, `kind`,
   `params`, `returns` — on the startup banner and in the poll body alike, so a host can
-  synthesize a governed Action for either. The built-in workspace and MCP-discovery Tools
-  now state the parameter tables and result columns their handlers have always had; their
-  digests cover the definition those are derived from, so no Connection pin moves.
+  synthesize a governed Action for either. `returns` is the result-fact mapping — the
+  same `[{predicate, args: {fact_arg: "$column"}}]` a Capability Action uses and the Board
+  installs — never a column table. The built-in workspace and MCP-discovery Tools state
+  the parameter tables their handlers have always had and map their rows onto
+  `rulith.worker.*` facts, each carrying `source` so rows from two Sources of one type on
+  one Connection stay apart; their digests cover the definition those are derived from,
+  so no Connection pin moves.
 - The Worker no longer filters its own advertisement. A Tool absent from the id list
   Cloud returned beside the Source definitions used to be dropped silently, making the
   Worker a second and unlogged authorization point; authorization is the Connection lock
@@ -54,8 +58,10 @@ dialect will not work against this runtime.
 - `json` joins `string` / `number` / `boolean` as a declarable parameter type, so
   `rulith.workspace.write_json@1` can state the `value` argument it has always taken;
   database templates still refuse it. Both workspace write Tools now return a result row
-  (`source`, `path`, `bytes`) like every other workspace Tool, so a governed Action can
-  map a write receipt into facts; the receipt text is unchanged.
+  (`source`, `path`, `bytes`, `digest`) like every other workspace Tool, so a write receipt
+  reaches the Board as `rulith.worker.file_written`; `digest` is the hash of what landed,
+  computed as `read_text` computes its own, so a read-back can be checked against the
+  receipt. The receipt text is unchanged.
 
 ## 0.6.11 - 2026-09-04
 

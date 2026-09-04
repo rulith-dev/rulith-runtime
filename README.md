@@ -237,7 +237,7 @@ with an allowed root directory. A Worker's first poll pins implementation digest
 cannot authorize Tools merely by presenting them.
 
 The Worker polls outbound and presents each Tool's id, digest, accepted Source types,
-kind, parameters, and returned columns. Rulith checks that every presented Tool is locked
+kind, parameters, and result-fact mapping. Rulith checks that every presented Tool is locked
 on the Agent-owned Connection, pins the implementation set, and dispatches an Action only
 when its Tool accepts the Cloud-injected Source type. The
 Worker resolves the Adapter locally, executes it, and reports a receipt before polling
@@ -256,7 +256,7 @@ example:
       "sourceTypes": ["db"],
       "entry": "SELECT order_id, status FROM orders WHERE order_id={order_id}",
       "params": { "order_id": "number" },
-      "returns": { "order_id": "number", "status": "string" }
+      "returns": [{ "predicate": "acme.orders.record", "args": { "order_id": "$order_id", "status": "$status" } }]
     },
     "acme.erp.lookup@1": {
       "adapter": "mcp",
@@ -267,8 +267,10 @@ example:
 }
 ```
 
-A governed Action may declare the typed `order_id` slot and result mapping itself; a Tool
-that states its own `params` and `returns` is one a host can build that Action from. The Worker
+A governed Action may declare the typed `order_id` slot and its own result mapping; a Tool
+that states `params` and `returns` — the same `[{predicate, args}]` mapping an Action uses,
+with each fact argument read from a `$column` of the result row — is one a host can build a
+direct Action from without a Capability having declared it. The Worker
 compiles database placeholders to driver parameters, never SQL interpolation. MCP
 discovery is read-only; it does not grant a generic call surface. Each remote MCP Tool
 must still be approved as its own versioned local Tool and governed Action.

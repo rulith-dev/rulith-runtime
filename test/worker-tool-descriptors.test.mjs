@@ -18,7 +18,8 @@
  * advertisement claims, rather than reading both from the same table.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -35,7 +36,8 @@ const DECLARED = {
   format: 'rulith-worker-tools/1',
   tools: {
     'acme.catalog.get@1': { adapter: 'http', sourceTypes: ['http'], entry: '/items/{item_id}',
-      fence: { method: 'GET' }, params: { item_id: 'string' }, returns: { item_id: 'string', in_stock: 'boolean' } },
+      fence: { method: 'GET' }, params: { item_id: 'string' },
+      returns: [{ predicate: 'acme.catalog.stock', args: { item_id: '$item_id', in_stock: '$in_stock' } }] },
     'acme.webhook.post@1': { adapter: 'http', sourceTypes: ['http'], entry: '/events', fence: { method: 'POST' } },
     'acme.endpoint.unstated@1': { adapter: 'http', sourceTypes: ['http'], entry: '/thing' },
     'acme.orders.lookup@1': { adapter: 'db-query', sourceTypes: ['db'], entry: 'SELECT status FROM orders WHERE id={order_id}' },
@@ -65,14 +67,27 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
     assert.match(descriptor.digest, /^[a-f0-9]{64}$/)
     assert.ok(Array.isArray(descriptor.sourceTypes) && descriptor.sourceTypes.length > 0)
     assert.ok(['read', 'write', 'run'].includes(descriptor.kind), `${descriptor.id} advertises kind ${descriptor.kind}`)
-    for (const table of ['params', 'returns']) {
-      const value = descriptor[table]
-      assert.ok(value && typeof value === 'object' && !Array.isArray(value), `${descriptor.id}.${table} is not a table`)
-      for (const [name, type] of Object.entries(value)) {
+    const params = descriptor.params
+    assert.ok(params && typeof params === 'object' && !Array.isArray(params), `${descriptor.id}.params is not a table`)
+    for (const [name, type] of Object.entries(params)) {
+      assert.match(name, /^[a-z][a-z0-9_]{0,63}$/)
+      assert.ok(['string', 'number', 'boolean', 'json'].includes(type.replace(/\?$/, '')), `${descriptor.id}.params.${name} is declared ${type}`)
+    }
+    // `returns` is the result-fact mapping the cloud installs verbatim — never a column
+    // table, which the cloud's Poll refuses and the Board's tool-pack parser cannot read.
+    assert.ok(Array.isArray(descriptor.returns), `${descriptor.id}.returns is not a result-fact mapping`)
+    for (const row of descriptor.returns) {
+      assert.match(row.predicate, /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/, `${descriptor.id} lands rows as ${row.predicate}`)
+      assert.ok(Object.keys(row.args).length > 0, `${descriptor.id}.returns maps no column`)
+      for (const [name, column] of Object.entries(row.args)) {
         assert.match(name, /^[a-z][a-z0-9_]{0,63}$/)
-        const allowed = table === 'params' ? ['string', 'number', 'boolean', 'json'] : ['string', 'number', 'boolean']
-        assert.ok(allowed.includes(type.replace(/\?$/, '')), `${descriptor.id}.${table}.${name} is declared ${type}`)
+        assert.match(column, /^\$[a-z][a-z0-9_]{0,63}$/, `${descriptor.id}.returns reads ${name} from ${column}`)
       }
+    }
+    if (descriptor.id.startsWith('rulith.')) {
+      assert.ok(descriptor.returns.length > 0, `${descriptor.id} is a shipped Tool and must say what its rows land as`)
+      assert.ok(descriptor.returns.every((row) => row.predicate.startsWith('rulith.worker.') && row.args.source === '$source'),
+        `${descriptor.id} must land rulith.worker.* facts that carry the Source they came from`)
     }
   }
 
@@ -81,9 +96,9 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   const declared = advertised.find((row) => row.id === 'acme.catalog.get@1')
   assert.deepEqual(Object.keys(builtin).sort(), Object.keys(declared).sort())
   assert.deepEqual(builtin.params, { path: 'string', text: 'string' })
-  assert.deepEqual(builtin.returns, { source: 'string', path: 'string', bytes: 'number' })
+  assert.deepEqual(builtin.returns, [{ predicate: 'rulith.worker.file_written', args: { source: '$source', path: '$path', digest: '$digest' } }])
   assert.deepEqual(declared.params, { item_id: 'string' })
-  assert.deepEqual(declared.returns, { item_id: 'string', in_stock: 'boolean' })
+  assert.deepEqual(declared.returns, [{ predicate: 'acme.catalog.stock', args: { item_id: '$item_id', in_stock: '$in_stock' } }])
 
   // The same fixed contract reaches a manifest entry that names a shipped handler:
   // it runs the same code, so it cannot advertise a different contract.
@@ -158,9 +173,15 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   } }), /cannot be redeclared/)
   assert.throws(declare({ params: { 'Item Id': 'string' } }), /params\.Item Id/)
   assert.throws(declare({ params: { item_id: 'date' } }), /params\.item_id/)
-  assert.throws(declare({ returns: { rows: 'json' } }), /returns\.rows/)
-  assert.throws(declare({ returns: ['item_id'] }), /returns must be an object/)
-  assert.doesNotThrow(declare({ kind: 'read', params: { item_id: 'string' }, returns: { in_stock: 'boolean' } }))
+  // `returns` is the result-fact mapping, never a column table: a table would advertise a
+  // contract the cloud's Poll refuses and the Board's tool-pack parser cannot install.
+  assert.throws(declare({ returns: { in_stock: 'boolean' } }), /returns must be a non-empty array of result-fact rows/)
+  assert.throws(declare({ returns: [] }), /returns must be a non-empty array of result-fact rows/)
+  assert.throws(declare({ returns: ['in_stock'] }), /returns\[0\] must be a result-fact row/)
+  assert.throws(declare({ returns: [{ predicate: 'Stock', args: { in_stock: '$in_stock' } }] }), /returns\[0\]\.predicate must be a dotted lower-case predicate/)
+  assert.throws(declare({ returns: [{ predicate: 'acme.stock', args: {} }] }), /returns\[0\]\.args must map at least one/)
+  assert.throws(declare({ returns: [{ predicate: 'acme.stock', args: { in_stock: 'in_stock' } }] }), /returns\[0\]\.args\.in_stock must reference a result column/)
+  assert.doesNotThrow(declare({ kind: 'read', params: { item_id: 'string' }, returns: [{ predicate: 'acme.stock', args: { in_stock: '$in_stock' } }] }))
 })
 
 // ── RT-WK-TOOLS-2 ────────────────────────────────────────────────────────────
@@ -212,10 +233,9 @@ test('RT-WK-TOOLS-3: the built-in write Tools accept and produce exactly what th
       const local = toolFromSpec(JSON.stringify({
         name: id, kind: descriptor.kind, impl: 'worker-tool', source: 'workspace', exec: id,
         params: descriptor.params,
-        // Every advertised column, mapped through the result membrane. A column the
-        // handler does not produce fails here rather than reading as an empty fact.
-        returns: [{ predicate: 'acme.workspace.written',
-          args: Object.fromEntries(Object.keys(descriptor.returns).map((column) => [column, `$${column}`])) }],
+        // The advertised mapping is the mapping: a `$column` the handler does not produce
+        // fails inside `resultFactsFromRows` rather than reading as an empty fact.
+        returns: descriptor.returns,
       }), JSON.stringify(args), tools, descriptor.digest, sources)
       return { descriptor, executed: await execute(id, args, { [id]: local }, sources) }
     }
@@ -227,17 +247,12 @@ test('RT-WK-TOOLS-3: the built-in write Tools accept and produce exactly what th
       const { descriptor, executed } = await run(id, args)
       assert.equal(descriptor.kind, 'write')
 
-      // What it produces: the advertised columns, with the advertised types.
-      assert.equal(executed.facts.length, 1, `${id} produced no result row`)
-      const produced = executed.facts[0].args
-      assert.deepEqual(Object.keys(produced).sort(), Object.keys(descriptor.returns).sort(),
-        `${id} produces columns its advertisement does not name`)
-      for (const [column, type] of Object.entries(descriptor.returns)) {
-        assert.equal(typeof produced[column], type.replace(/\?$/, ''), `${id}.${column} is not the advertised type`)
-      }
-      assert.equal(produced.source, 'workspace')
-      assert.equal(produced.path, args.path)
-      assert.equal(produced.bytes, expectedBytes)
+      // What it produces: the receipt its advertisement promises, landed from the row the
+      // handler wrote. `digest` is the hash of the bytes now on disk — the hash `read_text`
+      // reports for the same file — so a read-back is checkable against this receipt.
+      assert.deepEqual(executed.facts, [{ predicate: 'rulith.worker.file_written', args: {
+        source: 'workspace', path: args.path, digest: createHash('sha256').update(readFileSync(join(root, args.path))).digest('hex'),
+      } }], `${id} did not land the receipt its advertisement promises`)
       assert.deepEqual(JSON.parse(String(executed.result)), { path: args.path, bytes: expectedBytes })
       assert.equal(readFileSync(join(root, args.path), 'utf8').length, expectedBytes)
     }
@@ -267,6 +282,55 @@ test('RT-WK-TOOLS-3: the built-in write Tools accept and produce exactly what th
   } finally {
     if (previous === undefined) delete process.env.RULITH_WORKSPACE_TOOLS
     else process.env.RULITH_WORKSPACE_TOOLS = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// ── RT-WK-TOOLS-4 ────────────────────────────────────────────────────────────
+
+test('RT-WK-TOOLS-4: every built-in read Tool lands the facts its advertisement maps, from a real workspace', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-tool-descriptor-read-'))
+  try {
+    mkdirSync(join(root, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'docs', 'a.txt'), 'alpha\nbeta gamma\n')
+    writeFileSync(join(root, 'docs', 'b.json'), '{"ok":true}\n')
+    const tools = builtinWorkspaceTools('read')
+    const sources = { workspace: { access: root, type: 'file' } }
+
+    /** Drive one read Tool exactly as a direct Action does: the advertisement is the whole spec. */
+    const land = async (id, args) => {
+      const descriptor = workerToolDescriptor(id, tools[id])
+      const local = toolFromSpec(JSON.stringify({
+        name: id, kind: descriptor.kind, impl: 'worker-tool', source: 'workspace', exec: id,
+        params: descriptor.params, returns: descriptor.returns,
+      }), JSON.stringify(args), tools, descriptor.digest, sources)
+      const executed = await execute(id, args, { [id]: local }, sources)
+      assert.ok(executed.facts.length > 0, `${id} landed no fact from a workspace that has rows for it`)
+      for (const fact of executed.facts) {
+        assert.equal(fact.predicate, descriptor.returns[0].predicate)
+        assert.deepEqual(Object.keys(fact.args).sort(), Object.keys(descriptor.returns[0].args).sort(),
+          `${id} landed a fact whose arguments are not the advertised ones`)
+        assert.equal(fact.args.source, 'workspace', `${id} must land the Source the row came from`)
+      }
+      return executed.facts
+    }
+
+    const listed = await land('rulith.workspace.list@1', { path: 'docs' })
+    assert.deepEqual(listed.map((fact) => [fact.args.path, fact.args.entry_type]).sort(), [['docs/a.txt', 'file'], ['docs/b.json', 'file']])
+    const [counted] = await land('rulith.workspace.count@1', { path: 'docs', recursive: false })
+    assert.deepEqual([counted.args.file_count, counted.args.directory_count, counted.args.recursive], [2, 0, false])
+    const found = await land('rulith.workspace.search@1', { query: 'gamma', path: 'docs' })
+    assert.deepEqual(found.map((fact) => [fact.args.path, fact.args.line, fact.args.column, fact.args.text]), [['docs/a.txt', 2, 6, 'beta gamma']])
+    const [text] = await land('rulith.workspace.read_text@1', { path: 'docs/a.txt' })
+    assert.equal(text.args.text, 'alpha\nbeta gamma\n')
+    const [json] = await land('rulith.workspace.read_json@1', { path: 'docs/b.json' })
+    assert.equal(json.args.json, '{"ok":true}')
+    const [hashed] = await land('rulith.workspace.hash@1', { path: 'docs/a.txt' })
+    assert.equal(hashed.args.sha256, createHash('sha256').update('alpha\nbeta gamma\n').digest('hex'))
+    assert.equal(hashed.args.size, 17)
+    // A read-back is checkable against a write receipt: both hash the same bytes the same way.
+    assert.equal(text.args.digest, hashed.args.sha256)
+  } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
