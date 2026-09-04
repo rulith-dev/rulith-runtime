@@ -48,7 +48,8 @@ dialect will not work against this runtime.
   ±9007199254740991, or a non-finite number, is refused locally with a teaching before
   anything is sent. The look is on the text — the Chat Completions `arguments` string, the
   Messages response body, the emulated reply — because `JSON.parse` has already rounded
-  such a literal by the time a value exists.
+  such a literal by the time a value exists. A literal that underflows to zero (`1e-400`)
+  is refused the same way.
 - Worker Tools have one standing (board-spec TOOL-08). A built-in and a Tool-Manifest
   entry are advertised in the same descriptor — `id`, `digest`, `sourceTypes`, `kind`,
   `params`, `returns` — on the startup banner and in the poll body alike, so a host can

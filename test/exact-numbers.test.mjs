@@ -59,6 +59,13 @@ test('RT-AG-EXACT-3: the emulated transport refuses the literal in the model\'s 
   assert.match(result.stdout, /outside the exact number domain/)
 })
 
+test('RT-AG-EXACT-5: a literal that underflows to zero is refused the same way', async () => {
+  const result = await run({ provider: 'openai', model: script(callTool('ApplyAction', {}, { rawArguments: rawArgs('1e-400') })) })
+  assert.ok(!result.verbs.includes('ApplyAction'), `the underflowing call reached the gateway: ${result.verbs.join(', ')}`)
+  assert.match(result.stdout, /outside the exact number domain/)
+  assert.match(result.stdout, /1e-400/)
+})
+
 test('RT-AG-EXACT-4: the largest exact integer passes through unchanged (calibration)', async () => {
   const result = await run({ provider: 'openai', model: script(callTool('ApplyAction', {}, { rawArguments: rawArgs(EXACT_MAX) })) })
   assert.ok(result.verbs.includes('ApplyAction'), `the exact call never reached the gateway: ${result.verbs.join(', ')}\n${result.stdout}\n${result.stderr}`)

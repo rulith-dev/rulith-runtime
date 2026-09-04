@@ -932,6 +932,10 @@ export function inexactNumberLiteral(text) {
       } else {
         const value = Number(literal)
         if (!Number.isFinite(value) || (Number.isInteger(value) && Math.abs(value) > 9007199254740991)) return literal
+        // Underflow is the same disease in the other direction: `1e-400` parses to 0, a
+        // value the model never wrote. A mantissa with a non-zero digit that lands on zero
+        // is refused too.
+        if (value === 0 && /[1-9]/.test(literal.split(/[eE]/)[0])) return literal
       }
       continue
     }
