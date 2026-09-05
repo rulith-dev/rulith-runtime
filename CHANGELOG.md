@@ -8,6 +8,12 @@ All notable changes to the local runtime are documented here.
 change to the model surface: an integration that scripted the previous fenced-JSON
 dialect will not work against this runtime.
 
+- Local separates Case lifecycle, acceptance and observation freshness. These fields
+  come from one bounded authority response, not conversation completion events. A
+  detached conversation keeps its last observed Case state; transport ambiguity and
+  missing fields are shown explicitly. Refused openings cannot select a new Case.
+- An MCP result reporting a lost upstream response preserves the original request
+  identity on an identical retry, just like an HTTP transport failure.
 - The model now speaks four protocol verbs as ordinary MCP tools — `OpenCase`,
   `ApplyBatch`, `ApplyAction`, `CloseCase` — and nothing else. The Runtime reads
   `tools/list` at startup and offers exactly those four; a tool call by any other name is

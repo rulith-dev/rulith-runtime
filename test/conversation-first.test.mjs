@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import test from 'node:test'
+import { projectCaseState } from '../local/local-ui.mjs'
 
 import {
   MODEL_VERBS, HOP_FAILURE, advertisedTools, callTool, declaredToolsOf, defaultGateway, emptyView, runAgent, systemTextOf,
@@ -445,17 +446,19 @@ test('RULITH_MODEL_TOOLS=emulated selects the fallback transport without a faile
     'no request failed, so nothing should be reported as a fallback')
 })
 
-test('a transport failure keeps the same requestId and is reported as an unknown outcome', async () => {
+for (const failure of [HOP_FAILURE, { accepted: false, errorCode: 'upstream_unavailable', teaching: 'The Board response was lost.' }]) {
+test(`a ${failure === HOP_FAILURE ? 'transport' : 'gateway upstream'} failure keeps the same requestId and is reported as an unknown outcome`, async () => {
   let attempts = 0
   const batch = { operations: [{ op: 'assert_fact', id: 'F_AMBIG', predicate: 'scratch.demo.value', args: { value: 'one' } }] }
   const run = await runAgent({
     argv: [],
     env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Record this despite a transient network failure.'],
+    captureLocalEvents: true,
     tool: (name) => {
       if (name !== 'ApplyBatch') return undefined
       attempts += 1
-      return attempts === 1 ? HOP_FAILURE : undefined
+      return attempts === 1 ? failure : undefined
     },
     model: (round) => {
       if (round === 1) return callTool('OpenCase', {})
@@ -475,7 +478,10 @@ test('a transport failure keeps the same requestId and is reported as an unknown
   assert.doesNotMatch(feedback, /The Board refused|Correct the request/,
     'transport uncertainty was misreported as a semantic refusal that invites a new body')
   assert.match(run.stdout, /Board outcome unknown for ApplyBatch/)
+  assert.ok(run.localEvents.some((event) => event.type === 'case-state' && event.caseStatus === 'unavailable'),
+    'after an ambiguous mutation, the inspector must not continue presenting an earlier observation as confirmed')
 })
+}
 
 test('an empty arguments string is an empty object, not a malformed call', async () => {
   // Several OpenAI-compatible endpoints send `""` for a tool that takes no arguments.
@@ -534,9 +540,46 @@ test('tool arguments that are not a JSON object are refused locally', async () =
 
 // ── Host features the model has no verb for ──────────────────────────────────
 
+test('host discharge preserves request identity when the Gateway loses the response', async () => {
+  let attempts = 0
+  const run = await runAgent({
+    argv: ['Handle the governed work.'], env: {RULITH_AUTO_DISCHARGE:'',RULITH_MAX_ROUNDS:'4'}, captureLocalEvents: true,
+    gateway: defaultGateway({certifyAfterBatch:false}),
+    protocol: (args) => {
+      if (args.operation?.kind === 'RunDischarge' && ++attempts === 1) return {
+        accepted:false,errorCode:'upstream_unavailable',reason:'transport_ambiguous',teaching:'Response lost.',
+      }
+    },
+    model: round => round === 1 ? callTool('OpenCase',{}) : round === 2 ? callTool('ApplyBatch',{operations:[]}) : 'Stopping here.',
+  })
+  assert.notEqual(run.code,'timeout',`${run.stdout}\n${run.stderr}`)
+  const discharges=run.boardCalls.filter(call=>call.operation?.kind==='RunDischarge')
+  assert.ok(discharges.length>=2,'exercise both the ambiguous call and retry')
+  assert.equal(discharges[0].requestId,discharges[1].requestId)
+  assert.ok(run.localEvents.some(event=>event.type==='case-state'&&event.contact==='unknown'))
+})
+
+for (const [code, status] of [['case_closed','closed'], ['case_paused','paused'], ['unknown_case','unavailable']]) {
+  test(`a host discharge refusal ${code} updates the Local observation before detaching`, async () => {
+    const run = await runAgent({
+      argv: ['Handle the governed work.'], env: {RULITH_AUTO_DISCHARGE:''}, captureLocalEvents: true,
+      protocol: (args) => {
+        if (args.operation?.kind === 'RunDischarge') return {accepted:false,errorCode:code,teaching:code}
+        if (args.operation?.kind === 'GetBoardManifest') return {accepted:true,payload:{status:'open',cases:[]}}
+      },
+      model: round => round === 1 ? callTool('OpenCase',{}) : 'Stopping here.',
+    })
+    assert.notEqual(run.code,'timeout',`${run.stdout}\n${run.stderr}`)
+    assert.ok(run.kinds.includes('RunDischarge'),'the real host path must be exercised')
+    const observed=run.localEvents.filter(event=>event.type==='case-state').at(-1)
+    assert.equal(observed?.caseStatus,status,JSON.stringify(run.localEvents))
+  })
+}
+
 test('--case selects an already-running Case and still delivers the user message', async () => {
   const run = await runAgent({
     argv: ['--case', 'case-running', '--case-type', 'exploration'],
+    captureLocalEvents: true,
     chatLines: ['Continue our discussion without changing the Board.'],
     gateway: defaultGateway({
       cases: [{
@@ -552,6 +595,7 @@ test('--case selects an already-running Case and still delivers the user message
   assert.equal(run.kinds.includes('ResumeCase'), false, 'a running Case does not need a lifecycle transition')
   assert.equal(run.verbs.includes('OpenCase'), false, 'an existing Case must not be opened again')
   assert.match(JSON.stringify(run.modelRequests[0]), /Case View/)
+  assert.ok(run.localEvents.some(event => event.type === 'case-state' && event.caseId === 'case-running' && event.caseStatus === 'running'))
 })
 
 test('--case resumes a paused Case, which the model has no verb to do', async () => {
@@ -628,6 +672,7 @@ test('--serve records a recoverable Case id before reclaiming an abandoned conve
   const port = await freePort()
   const run = await runAgent({
     argv: ['--serve'],
+    captureLocalEvents: true,
     env: { RULITH_SERVE_PORT: String(port), RULITH_SERVE_KEY: 'slot-capacity-test', RULITH_SERVE_SLOTS_MAX: '1' },
     serveTasks: [
       { text: 'Open a governed Case.', sessionKey: 'client-a' },
@@ -644,6 +689,12 @@ test('--serve records a recoverable Case id before reclaiming an abandoned conve
   const detached = (run.serveSnapshot?.runs ?? []).find((record) => record.sessionKey === 'client-a' && record.pendingCaseId)
   assert.ok(detached, `the reclaimed Case was not exposed for explicit recovery: ${JSON.stringify(run.serveSnapshot)}`)
   assert.match(detached.note, /remains unchanged on the Board/)
+  const localEvents = run.localEvents.filter(event => (event.session || event.sessionKey) === 'client-a').map(event => ({...event, src: 'agent'}))
+  assert.ok(localEvents.some(event => event.type === 'case-state'), 'the --serve publisher feeds the real Local inspector')
+  assert.equal(localEvents.some(event => event.type === 'case-pending'), false, 'normal Local --serve is not the one-shot pending path')
+  const displayed = projectCaseState(localEvents)
+  assert.equal(displayed.lifecycle, 'running')
+  assert.equal(displayed.observation, 'Detached · last observed')
 })
 
 test('an explicit caseId cannot silently replace another active Case in the same session', async () => {
@@ -690,6 +741,43 @@ test('conversation mode emits Board verdict and completion events for Local obse
     `Local received no Case lifecycle event: ${JSON.stringify(run.localEvents)}`)
   assert.ok(run.localEvents.some((event) => event.type === 'board' && event.floor === 'attested'),
     `Local received no acceptance state, so its Case panel stays blank: ${JSON.stringify(run.localEvents)}`)
+  const observations = run.localEvents.filter((event) => event.type === 'case-state')
+  assert.ok(observations.length > 0, 'the actual Agent publisher must emit lifecycle observations')
+  assert.ok(observations.every((event) => !Object.hasOwn(event, 'revision')), 'Local observations do not carry protocol cursors')
+  for (let index = 1; index < observations.length; index += 1) {
+    const value = ({caseId, caseStatus, certified, floor, contact}) => ({caseId, caseStatus, certified, floor, contact})
+    assert.notDeepEqual(value(observations[index]), value(observations[index - 1]), 'unchanged observations are not repeated per tool call')
+  }
+})
+
+test('rejected OpenCase metadata never creates a conversation Case binding', async () => {
+  const run = await runAgent({
+    argv: [], chatLines: ['Try to open a Case.'], captureLocalEvents: true,
+    tool: (name) => name === 'OpenCase' ? {
+      accepted: false, errorCode: 'refused', teaching: 'Opening was refused.',
+      case: {id: 'not-opened', status: 'running', revision: 'c1'},
+    } : undefined,
+    model: (round) => round === 1 ? callTool('OpenCase', {}) : 'Opening was refused.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.localEvents.some((event) => event.type === 'case-state'), false)
+  assert.equal(run.localEvents.some((event) => event.activeCaseId === 'not-opened'), false)
+})
+
+test('missing lifecycle status is unavailable and never invented as running', async () => {
+  const run = await runAgent({
+    argv: [], chatLines: ['Open a Case.'], captureLocalEvents: true,
+    tool: (name, args, board) => {
+      const result = board.tool(name, args)
+      if (result.case) delete result.case.status
+      return result
+    },
+    model: (round) => round === 1 ? callTool('OpenCase', {}) : 'The lifecycle status was not returned.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const observations = run.localEvents.filter((event) => event.type === 'case-state')
+  assert.equal(observations.length, 1)
+  assert.equal(observations[0].caseStatus, 'unavailable')
 })
 
 test('conversation trail remains bounded when transcript compaction runs repeatedly', async () => {

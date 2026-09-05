@@ -402,7 +402,8 @@ function emit(type, data) {
     const line = `data: ${JSON.stringify(ev)}\n\n`
     for (const res of clients) { try { res.write(line) } catch { clients.delete(res) } }
   }
-  traceForward(ev)
+  // Lifecycle observations serve the local inspector, not a second cloud state feed.
+  if (type !== 'case-state') traceForward(ev)
 }
 
 // ── 事件上云（实时交互，2026-08-18）: 控制台智能体页「实时交互」面板的喂料 ──
@@ -511,14 +512,19 @@ async function board(operation, ctx, staleRetries = 5) {
   // Release the id only once the Board has actually answered. While the answer is
   // unknown the submission is still in flight, and the next unchanged attempt must
   // present the same identity.
+  if (transportAmbiguous(r)) authoritative = false
   if (authoritative) requestIds.delete(idKey)
-  if (bound !== undefined && STALE_CASE.has(String(r?.errorCode ?? ''))) {
+  if (!authoritative && ctx.case !== undefined) observeCase(ctx, ctx.case.id, 'unavailable', undefined, 'unknown')
+  if (authoritative && bound !== undefined && STALE_CASE.has(String(r?.errorCode ?? ''))) {
+    const observedStatus = r.errorCode === 'case_closed' ? 'closed' : r.errorCode === 'case_paused' ? 'paused' : 'unavailable'
+    observeCase(ctx, bound.id, observedStatus)
     ctx.case = undefined
     if (staleRetries > 0) {
       const manifest = await board({ kind: 'GetBoardManifest' }, ctx, 0)
       const current = (manifest.payload?.cases ?? []).find((candidate) => candidate?.id === bound.id && candidate?.status === 'running')
       if (current !== undefined && current.root === bound.root && current.caseType === bound.caseType && typeof current.revision === 'string' && current.revision !== '') {
         ctx.case = { ...bound, revision: current.revision }
+        observeCase(ctx, bound.id, current.status)
         return await board(operation, ctx, staleRetries - 1)
       }
     }
@@ -593,6 +599,7 @@ function bindCaseRow(ctx, caseId, caseType, row) {
   }
   ctx.case = { id: caseId, root: caseId, revision: String(row.revision), caseType,
     capabilityReleaseDigest: String(row.capabilityReleaseDigest), caseContractDigest: String(row.caseContractDigest) }
+  observeCase(ctx, caseId, row.status)
   return ctx.case
 }
 
@@ -614,20 +621,30 @@ const viewText = (view) => (view === undefined ? '(no Case View was returned)' :
 const SETTLE_WAIT_MS = envNumber('RULITH_SETTLE_WAIT_MS', 60_000, { min: 0, max: 3_600_000 })
 const SETTLE_POLL_MS = 1000
 
-/**
- * Track the Case the authority says this client is on.
- *
- * Revision, epoch and digest never reach the model: the host reads them back from
- * `result.case` and presents them on the next call. A Case the authority reports as
- * closed clears the binding here rather than in each caller, so no later step can
- * address an archived Case and no caller has to remember to forget it.
- */
+/** One bounded local snapshot, without protocol cursors or inferred lifecycle changes. */
+function observeCase(ctx, caseId, caseStatus, view, contact = 'observed') {
+  const observation = { caseId, caseStatus,
+    ...(typeof view?.certified === 'boolean' ? { certified: view.certified } : {}),
+    ...(typeof view?.floor === 'string' ? { floor: view.floor } : {}),
+    ...(contact === 'unknown' ? { contact } : {}) }
+  const identity = JSON.stringify(observation)
+  if (ctx.lastCaseObservation === identity) return
+  ctx.lastCaseObservation = identity
+  emitOn(ctx, 'case-state', observation)
+}
+
+/** Track the authority's Case pointer and wire revision; a closed Case clears it. */
 function trackCase(ctx, result) {
   const bound = result?.case
   if (bound === null || typeof bound !== 'object') return
   const id = String(bound.id ?? '')
   if (id === '') return
-  const status = String(bound.status ?? 'running')
+  // A refused opening can describe a Case without selecting it. A refusal for the
+  // already selected Case may still carry its authoritative state (e.g. stale).
+  if (result.accepted !== true && ctx.case?.id !== id) return
+  const status = ['open', 'running', 'paused', 'closed', 'archived'].includes(bound.status)
+    ? bound.status : 'unavailable'
+  observeCase(ctx, id, status, result?.view)
   if (status === 'closed' || status === 'archived') {
     if (ctx.case !== undefined) {
       const disposition = String(result?.receipt?.disposition ?? bound.disposition ?? 'closed')
@@ -641,7 +658,6 @@ function trackCase(ctx, result) {
     id,
     root: String(bound.root ?? ctx.case?.root ?? id),
     revision: String(bound.revision ?? ctx.case?.revision ?? ''),
-    status,
     caseType: String(bound.caseType ?? ctx.case?.caseType ?? selectedCaseType),
   }
 }
@@ -691,10 +707,14 @@ async function callTool(name, input, ctx) {
   }
   // Release the identity only once the Board has actually answered. While the answer is
   // unknown the submission is still in flight and the next attempt must present the same id.
+  // The Gateway can return an MCP result with this code after losing the Core
+  // response. A successful HTTP/MCP hop is not itself a Board receipt.
+  if (transportAmbiguous(result)) authoritative = false
   if (authoritative) requestIds.delete(idKey)
   if (!authoritative) text = JSON.stringify({ ...result, teaching: transportRetryTeaching(result) })
   const previous = bound?.revision
-  trackCase(ctx, result)
+  if (authoritative) trackCase(ctx, result)
+  else if (ctx.case !== undefined) observeCase(ctx, ctx.case.id, 'unavailable', undefined, 'unknown')
   // A stale revision is not retried here. The Case moved under the model — a Worker
   // receipt landed, a discharge ran, another session wrote — and the step it just chose was
   // formed against a view that no longer holds. Replaying that step against the new

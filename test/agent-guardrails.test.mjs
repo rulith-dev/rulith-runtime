@@ -336,4 +336,5 @@ test('trace is still sent when the endpoint answers, and the run still exits pro
   const types = traced.flatMap((call) => (call.events ?? []).map((event) => String(event.type ?? '')))
   assert.ok(types.includes('end'),
     `the final batch was dropped rather than flushed; types seen: ${JSON.stringify(types)}`)
+  assert.equal(types.includes('case-state'), false, 'local lifecycle snapshots do not create a parallel cloud trace feed')
 })
