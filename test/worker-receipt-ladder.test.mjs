@@ -18,9 +18,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  CLAIMED, DONE, HOLD, REPORTED, RESET,
-  actionRow, caseRevisionGate, driveWorker,
+  DONE, HOLD, RESET,
+  actionRow, driveWorker, leasingGateway, toolDigest,
 } from './support/worker-harness.mjs'
+
+/** The declared-environment Tool, defined once so its pin and its installation agree. */
+const ALLOW_TOOL = {
+  'acme.allow@1': {
+    adapter: 'run', sourceTypes: ['file'], entry: 'env-allow-probe.mjs',
+    env: { pass: ['ACME_REGION', 'P2_EFFECT_LOG'] },
+  },
+}
 
 test('RT-WK-RECEIPT-1: a connection reset on the receipt is retried byte-identically until it commits', async () => {
   let polls = 0
@@ -29,13 +37,13 @@ test('RT-WK-RECEIPT-1: a connection reset on the receipt is retried byte-identic
     timeoutMs: 25_000,
     reply: (operation, seen) => {
       if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
-      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12', caseRevision: CLAIMED } }
+      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
       if (operation.kind !== 'ReportWork') throw new Error(`unexpected operation ${String(operation.kind)}`)
       const attempt = seen.filter((entry) => entry.operation.kind === 'ReportWork').length
       // The socket dies before any response: the Worker sees a thrown fetch, not a body.
       if (attempt === 1) return RESET
-      return caseRevisionGate(CLAIMED, () => {
-        committed ??= { accepted: true, revision: 'b13', caseRevision: REPORTED }
+      return (() => {
+        committed ??= { accepted: true, revision: 'b13' }
         return { body: committed }
       })(operation)
     },
@@ -67,7 +75,7 @@ test('RT-WK-RECEIPT-2: repeated resets exhaust the ladder and say plainly that t
     timeoutMs: 40_000,
     reply: (operation) => {
       if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
-      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12', caseRevision: CLAIMED } }
+      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
       if (operation.kind === 'ReportWork') return RESET
       throw new Error(`unexpected operation ${String(operation.kind)}`)
     },
@@ -89,7 +97,7 @@ test('RT-WK-RECEIPT-3: a Board verdict is still final and is not retried (calibr
   const run = await driveWorker({
     reply: (operation) => {
       if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
-      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12', caseRevision: CLAIMED } }
+      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
       if (operation.kind === 'ReportWork') return { body: { accepted: false, revision: 'b13', errorCode: 'already_reported', teaching: 'this invocation already has a receipt' } }
       throw new Error(`unexpected operation ${String(operation.kind)}`)
     },
@@ -118,7 +126,7 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
       "import { appendFileSync } from 'node:fs'\n"
       + "appendFileSync(process.env.P2_EFFECT_LOG, 'probe\\n')\n"
       + "const want = ['RULITH_CONNECTION_KEY','RULITH_TOKEN','RULITH_MODEL_KEY','ANTHROPIC_API_KEY',"
-      + "'RULITH_DB_URL','RULITH_SERVE_KEY','RULITH_CASE_ID','RULITH_SOURCE_ACCESS','PATH']\n"
+      + "'RULITH_DB_URL','RULITH_SERVE_KEY','RULITH_INVOCATION_ID','RULITH_SOURCE_ACCESS','PATH']\n"
       + "const seen = Object.fromEntries(Object.entries(process.env)"
       + ".map(([name, value]) => [name.toUpperCase(), value]).filter(([name]) => want.includes(name)))\n"
       + "process.stdout.write(JSON.stringify({ rows: [], seen }))\n",
@@ -138,13 +146,14 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
       if (operation.kind === 'Poll') {
         return ++polls === 1
           ? { body: { accepted: true, payload: { work: [actionRow({
-              work: 'inv_probe', tool: 'acme.probe@1',
-              toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.probe@1', source: 'orders', kind: 'act', params: {} }),
+              work: 'inv_probe', tool: 'acme.probe', toolContractId: 'acme.probe@1',
+              toolDigest: toolDigest({ adapter: 'run', sourceTypes: ['file'], entry: 'env-probe.mjs' }),
+              toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.probe@1', kind: 'act', params: {}, sourceTypes: ['file'] }),
             })] } } }
           : HOLD
       }
-      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12', caseRevision: CLAIMED } }
-      if (operation.kind === 'ReportWork') return caseRevisionGate(CLAIMED, () => ({ body: { accepted: true, revision: 'b13', caseRevision: REPORTED } }))(operation)
+      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
+      if (operation.kind === 'ReportWork') return { body: { accepted: true, revision: 'b13' } }
       throw new Error(`unexpected operation ${String(operation.kind)}`)
     },
     done: (seen, output) => DONE.action.test(output),
@@ -161,7 +170,7 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
   // Calibration: the probe really can read its environment, and the things an Adapter
   // legitimately needs are still handed to it.
   assert.equal(typeof seen.PATH, 'string', 'stripping must not empty the environment')
-  assert.equal(seen.RULITH_CASE_ID, 'CASE_p2', 'the trusted Case id is still supplied explicitly')
+  assert.equal(seen.RULITH_INVOCATION_ID, 'inv_probe', 'the trusted invocation identity is still supplied explicitly')
   assert.equal(typeof seen.RULITH_SOURCE_ACCESS, 'string', 'the Source access root is still supplied explicitly')
 })
 
@@ -174,7 +183,7 @@ test('RT-WK-RECEIPT-5: a run Tool that declares env.pass receives only what it d
     'env-allow-probe.mjs':
       "import { appendFileSync } from 'node:fs'\n"
       + "appendFileSync(process.env.P2_EFFECT_LOG, 'allow\\n')\n"
-      + "const names = ['ACME_REGION','ACME_UNLISTED','RULITH_TOKEN','RULITH_CONNECTION_KEY','PATH','RULITH_CASE_ID','RULITH_SOURCE_ACCESS']\n"
+      + "const names = ['ACME_REGION','ACME_UNLISTED','RULITH_TOKEN','RULITH_CONNECTION_KEY','PATH','RULITH_INVOCATION_ID','RULITH_SOURCE_ACCESS']\n"
       + "const seen = Object.fromEntries(names.filter((n) => process.env[n] !== undefined).map((n) => [n, process.env[n]]))\n"
       + "process.stdout.write(JSON.stringify({ rows: [], seen }))\n",
   }
@@ -182,10 +191,7 @@ test('RT-WK-RECEIPT-5: a run Tool that declares env.pass receives only what it d
   const run = await driveWorker({
     extraAdapters: probe,
     extraTools: {
-      'acme.allow@1': {
-        adapter: 'run', sourceTypes: ['file'], entry: 'env-allow-probe.mjs',
-        env: { pass: ['ACME_REGION', 'P2_EFFECT_LOG'] },
-      },
+      ...ALLOW_TOOL,
     },
     env: {
       ACME_REGION: 'eu-west-1',
@@ -196,13 +202,14 @@ test('RT-WK-RECEIPT-5: a run Tool that declares env.pass receives only what it d
       if (operation.kind === 'Poll') {
         return ++polls === 1
           ? { body: { accepted: true, payload: { work: [actionRow({
-              work: 'inv_allow', tool: 'acme.allow@1',
-              toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.allow@1', source: 'orders', kind: 'act', params: {} }),
+              work: 'inv_allow', tool: 'acme.allow', toolContractId: 'acme.allow@1',
+              toolDigest: toolDigest(ALLOW_TOOL['acme.allow@1']),
+              toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.allow@1', kind: 'act', params: {}, sourceTypes: ['file'] }),
             })] } } }
           : HOLD
       }
-      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12', caseRevision: CLAIMED } }
-      if (operation.kind === 'ReportWork') return caseRevisionGate(CLAIMED, () => ({ body: { accepted: true, revision: 'b13', caseRevision: REPORTED } }))(operation)
+      if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
+      if (operation.kind === 'ReportWork') return { body: { accepted: true, revision: 'b13' } }
       throw new Error(`unexpected operation ${String(operation.kind)}`)
     },
     done: (seen, output) => DONE.action.test(output),
@@ -223,6 +230,6 @@ test('RT-WK-RECEIPT-5: a run Tool that declares env.pass receives only what it d
   assert.equal(seen.RULITH_CONNECTION_KEY, undefined)
   // Basics and the explicit hand-off survive, or the Tool could not run at all.
   assert.equal(typeof seen.PATH, 'string', 'the allow-list must keep the basics an Adapter needs to start')
-  assert.equal(seen.RULITH_CASE_ID, 'CASE_p2')
+  assert.equal(seen.RULITH_INVOCATION_ID, 'inv_allow')
   assert.equal(typeof seen.RULITH_SOURCE_ACCESS, 'string')
 })

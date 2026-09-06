@@ -8,8 +8,11 @@
     "protocol/mcp-contract.json": {
       "sha256": "7089207f72253ebffb39c43312c9b1a3b53b435272337a040e8d79d18c605205"
     },
+    "protocol/worker-contract.json": {
+      "sha256": "f7150d753f1f96ead14fbad3d4dc7b714f9addc1bc55f144335569542240abea"
+    },
     "worker/rulith-worker.mjs": {
-      "sha256": "73aaccd30e803e214f736f4dccb062f7fb82bef7e594dbfa66f088a8fec3cb33"
+      "sha256": "a4ff499caf8dffafb6587221b8146835bfc29c775daf156265ec380fdcf5bb14"
     },
     "local/rulith-local.mjs": {
       "sha256": "20a216177c28697b9eb5dc7a1c3938190262dff562d9a8e444fc0c5ef4667e52"
@@ -45,7 +48,7 @@
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "6abefcf6e14ebf6d1f5d09ac4fc0eb000dd6a6b185a36389e50d08340a070685"
+      "sha256": "359cf3f069587e467dad2abe73b33f3a325e5bbbcde4b20163c17e0b005dfbe5"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

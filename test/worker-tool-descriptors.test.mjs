@@ -175,13 +175,30 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   assert.throws(declare({ params: { item_id: 'date' } }), /params\.item_id/)
   // `returns` is the result-fact mapping, never a column table: a table would advertise a
   // contract the cloud's Poll refuses and the Board's tool-pack parser cannot install.
-  assert.throws(declare({ returns: { in_stock: 'boolean' } }), /returns must be a non-empty array of result-fact rows/)
-  assert.throws(declare({ returns: [] }), /returns must be a non-empty array of result-fact rows/)
+  assert.throws(declare({ returns: { in_stock: 'boolean' } }), /returns must be an array of at most 32 result-fact rows/)
   assert.throws(declare({ returns: ['in_stock'] }), /returns\[0\] must be a result-fact row/)
   assert.throws(declare({ returns: [{ predicate: 'Stock', args: { in_stock: '$in_stock' } }] }), /returns\[0\]\.predicate must be a dotted lower-case predicate/)
-  assert.throws(declare({ returns: [{ predicate: 'acme.stock', args: {} }] }), /returns\[0\]\.args must map at least one/)
   assert.throws(declare({ returns: [{ predicate: 'acme.stock', args: { in_stock: 'in_stock' } }] }), /returns\[0\]\.args\.in_stock must reference a result column/)
   assert.doesNotThrow(declare({ kind: 'read', params: { item_id: 'string' }, returns: [{ predicate: 'acme.stock', args: { in_stock: '$in_stock' } }] }))
+
+  // Empty is a declaration, not an omission, and this machine may not refuse one. Each of
+  // these was refused here until the contract wrote the rule down, and each refusal was a
+  // local availability condition standing in for a transport rule: a Tool that attests
+  // nothing, a row that lands a bare proposition, and a Tool that reads through no Source
+  // are all legal reports. The last one is the operator-Manifest gate specifically — an
+  // operator with a Source-free Tool had nothing truthful to write in `sourceTypes`.
+  assert.doesNotThrow(declare({ returns: [] }))
+  assert.doesNotThrow(declare({ returns: [{ predicate: 'acme.reachable', args: {} }] }))
+  const sourceFree = workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.calculate@1': { adapter: 'run', sourceTypes: [], entry: 'adapters/calc.mjs', kind: 'run', params: { value: 'number' }, returns: [] },
+  } })
+  assert.deepEqual(workerToolDescriptor('acme.calculate@1', sourceFree['acme.calculate@1']), {
+    id: 'acme.calculate@1', digest: sourceFree['acme.calculate@1'].digest,
+    sourceTypes: [], kind: 'run', params: { value: 'number' }, returns: [],
+  }, 'a Source-free Tool must advertise an empty sourceTypes rather than borrow a type it does not read')
+  // And the accredited seven are still the only ones nameable.
+  assert.throws(declare({ sourceTypes: ['filesystem'] }), /accredited Source types/)
+  assert.throws(declare({ sourceTypes: 'file' }), /accredited Source types/)
 })
 
 // ── RT-WK-TOOLS-2 ────────────────────────────────────────────────────────────
@@ -231,12 +248,12 @@ test('RT-WK-TOOLS-3: the built-in write Tools accept and produce exactly what th
     const run = async (id, args) => {
       const descriptor = workerToolDescriptor(id, tools[id])
       const local = toolFromSpec(JSON.stringify({
-        name: id, kind: descriptor.kind, impl: 'worker-tool', source: 'workspace', exec: id,
+        name: id, kind: descriptor.kind, impl: 'worker-tool', sourceTypes: ['file'], exec: id,
         params: descriptor.params,
         // The advertised mapping is the mapping: a `$column` the handler does not produce
         // fails inside `resultFactsFromRows` rather than reading as an empty fact.
         returns: descriptor.returns,
-      }), JSON.stringify(args), tools, descriptor.digest, sources)
+      }), JSON.stringify({ ...args, source: 'workspace' }), tools, descriptor.digest, sources, 'workspace')
       return { descriptor, executed: await execute(id, args, { [id]: local }, sources) }
     }
 
@@ -301,9 +318,9 @@ test('RT-WK-TOOLS-4: every built-in read Tool lands the facts its advertisement 
     const land = async (id, args) => {
       const descriptor = workerToolDescriptor(id, tools[id])
       const local = toolFromSpec(JSON.stringify({
-        name: id, kind: descriptor.kind, impl: 'worker-tool', source: 'workspace', exec: id,
+        name: id, kind: descriptor.kind, impl: 'worker-tool', sourceTypes: ['file'], exec: id,
         params: descriptor.params, returns: descriptor.returns,
-      }), JSON.stringify(args), tools, descriptor.digest, sources)
+      }), JSON.stringify({ ...args, source: 'workspace' }), tools, descriptor.digest, sources, 'workspace')
       const executed = await execute(id, args, { [id]: local }, sources)
       assert.ok(executed.facts.length > 0, `${id} landed no fact from a workspace that has rows for it`)
       for (const fact of executed.facts) {

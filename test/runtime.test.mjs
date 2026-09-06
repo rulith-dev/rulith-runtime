@@ -550,8 +550,8 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
       const params = Object.fromEntries(Object.entries(args).map(([name, value]) => [name, typeof value]))
       const local = toolFromSpec(JSON.stringify({
         name: id, kind: id.includes('write_') ? 'write' : 'read', impl: 'worker-tool',
-        source: 'workspace', exec: id, params,
-      }), JSON.stringify(args), tools, tools[id].digest, sources)
+        sourceTypes: ['file'], exec: id, params,
+      }), JSON.stringify({ ...args, source: 'workspace' }), tools, tools[id].digest, sources, 'workspace')
       return execute(id, args, { [id]: local }, sources)
     }
 
@@ -570,19 +570,19 @@ test('built-in workspace Tools stay inside their Source root and return bounded 
     })
     assert.match(count.rows[0].digest, /^[a-f0-9]{64}$/)
     const countTool = toolFromSpec(JSON.stringify({
-      name: 'count_source', kind: 'read', impl: 'worker-tool', source: 'workspace', exec: 'rulith.workspace.count@1',
+      name: 'count_source', kind: 'read', impl: 'worker-tool', sourceTypes: ['file'], exec: 'rulith.workspace.count@1',
       params: { path: 'string', recursive: 'boolean' },
       returns: [{ predicate: 'acme.files.directory_count', args: { source: '$source', path: '$path', file_count: '$file_count', digest: '$digest' } }],
-    }), JSON.stringify({ path: '.', recursive: false }), tools, tools['rulith.workspace.count@1'].digest, sources)
+    }), JSON.stringify({ path: '.', recursive: false, source: 'workspace' }), tools, tools['rulith.workspace.count@1'].digest, sources, 'workspace')
     for (const [args, expected] of [
       [{ path: '.', recursive: false, surprise: true }, /undeclared parameter/i],
       [{ path: '.' }, /missing required parameter/i],
       [{ path: '.', recursive: 'false' }, /recursive must be boolean/i],
     ]) {
       assert.throws(() => toolFromSpec(JSON.stringify({
-        name: 'count_source', kind: 'read', impl: 'worker-tool', source: 'workspace', exec: 'rulith.workspace.count@1',
+        name: 'count_source', kind: 'read', impl: 'worker-tool', sourceTypes: ['file'], exec: 'rulith.workspace.count@1',
         params: { path: 'string', recursive: 'boolean' },
-      }), JSON.stringify(args), tools, tools['rulith.workspace.count@1'].digest, sources), expected)
+      }), JSON.stringify({ ...args, source: 'workspace' }), tools, tools['rulith.workspace.count@1'].digest, sources, 'workspace'), expected)
     }
     const counted = await execute('count_source', { path: '.', recursive: false }, { count_source: countTool }, sources)
     assert.deepEqual(counted.facts, [{ predicate: 'acme.files.directory_count', args: {
@@ -618,8 +618,8 @@ test('RT-WORKSPACE-SECRET-1: a workspace Source cannot contain the Local runtime
     const id = 'rulith.workspace.read_text@1'
     const sources = { workspace: { access: root, type: 'file' } }
     const local = toolFromSpec(JSON.stringify({
-      name: id, kind: 'read', impl: 'worker-tool', source: 'workspace', exec: id, params: { path: 'string' },
-    }), JSON.stringify({ path: 'notes.txt' }), tools, tools[id].digest, sources)
+      name: id, kind: 'read', impl: 'worker-tool', sourceTypes: ['file'], exec: id, params: { path: 'string' },
+    }), JSON.stringify({ path: 'notes.txt', source: 'workspace' }), tools, tools[id].digest, sources, 'workspace')
     await assert.rejects(
       execute(id, { path: 'notes.txt' }, { [id]: local }, sources),
       /runtime credential or manifest file/i,
@@ -639,8 +639,8 @@ test('RT-WORKSPACE-CODE-1: read-write workspace access cannot cover Worker execu
     const id = 'rulith.workspace.read_text@1'
     const sources = { workspace: { access: ROOT, type: 'file' } }
     const local = toolFromSpec(JSON.stringify({
-      name: id, kind: 'read', impl: 'worker-tool', source: 'workspace', exec: id, params: { path: 'string' },
-    }), JSON.stringify({ path: 'package.json' }), tools, tools[id].digest, sources)
+      name: id, kind: 'read', impl: 'worker-tool', sourceTypes: ['file'], exec: id, params: { path: 'string' },
+    }), JSON.stringify({ path: 'package.json', source: 'workspace' }), tools, tools[id].digest, sources, 'workspace')
     await assert.rejects(
       execute(id, { path: 'package.json' }, { [id]: local }, sources),
       /Worker implementation/i,
@@ -692,11 +692,11 @@ test('MCP discovery returns bounded governed rows without authorizing a generic 
     const id = 'rulith.mcp.discover@1'
     const sources = { erp: { type: 'mcp', url: `http://127.0.0.1:${server.address().port}` } }
     const local = toolFromSpec(JSON.stringify({
-      name: 'discover_erp', kind: 'read', impl: 'worker-tool', source: 'erp', exec: id, params: {},
+      name: 'discover_erp', kind: 'read', impl: 'worker-tool', sourceTypes: ['mcp'], exec: id, params: {},
       returns: [{ predicate: 'rulith.source.mcp_tool', args: {
         source: '$source', tool_name: '$tool_name', description: '$description', input_schema_json: '$input_schema_json',
       } }],
-    }), '{}', tools, tools[id].digest, sources)
+    }), JSON.stringify({ source: 'erp' }), tools, tools[id].digest, sources, 'erp')
     const out = await execute('discover_erp', {}, { discover_erp: local }, sources)
     assert.equal(requests[0].method, 'tools/list')
     assert.deepEqual(out.facts, [{ predicate: 'rulith.source.mcp_tool', args: {
@@ -822,7 +822,7 @@ test('worker rejects bad credentials before claiming to be online and exits clea
   assert.doesNotMatch(stderr, /edge preserves|Assertion failed|UV_HANDLE_CLOSING/)
 })
 
-test('worker surfaces non-authenticated Poll refusal instead of printing an idle heartbeat', async () => {
+test('worker surfaces a non-authenticated poll refusal instead of printing an idle heartbeat', async () => {
   const server = createServer((request, response) => {
     response.writeHead(request.method === 'GET' ? 200 : 403, { 'content-type': 'application/json' })
     response.end(JSON.stringify(request.method === 'GET'

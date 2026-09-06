@@ -11,6 +11,10 @@ const files = [
   // download that fetched the agent without it would install bytes nobody could reconcile
   // against the commit they were projected from.
   'protocol/mcp-contract.json',
+  // The vendored private Worker hop. The Worker's projection is generated from it, so a
+  // download that fetched the worker without it would install bytes nobody could reconcile
+  // against the commit they were projected from.
+  'protocol/worker-contract.json',
   'worker/rulith-worker.mjs',
   'local/rulith-local.mjs',
   'local/local-ui.mjs',

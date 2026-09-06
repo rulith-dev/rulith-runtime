@@ -18,12 +18,29 @@ import test from 'node:test'
 
 import {
   adapterEnv, adapterToolFromSpec, databaseDriver, execute, invocationArgs,
-  refuseSqlParameter, toolFromSpec, workerToolsOf,
+  refuseReservedParameter, refuseSqlParameter, toolFromSpec, workerToolsOf,
 } from '../worker/rulith-worker.mjs'
 
 // ── A. SQL text comes from the Tool, never from an argument ──────────────────
 
-/** Record what actually reached the driver instead of guessing from an error string. */
+/**
+ * The DSN of the Source these arms select, and an ambient one that must never be used.
+ *
+ * They are deliberately different strings. Every arm below that reaches the driver asserts
+ * which of the two arrived: a Tool runs against the Source the invocation selected, and the
+ * host's own environment is not a Source.
+ */
+const ORDERS_DSN = 'postgres://selected-source/orders'
+const AMBIENT_DSN = 'postgres://ambient-host/ambient-db'
+const DB_SOURCES = { orders: { type: 'db', dsn: ORDERS_DSN } }
+
+/**
+ * Record what actually reached the driver instead of guessing from an error string.
+ *
+ * The ambient `RULITH_DB_URL` is set on purpose and stays set: these arms are about what
+ * happens on a host that *has* a database configured in its environment, which is the
+ * deployment shape where borrowing one is possible at all.
+ */
 function withRecordedDatabase(run) {
   const original = databaseDriver.run
   const statements = []
@@ -31,13 +48,18 @@ function withRecordedDatabase(run) {
     statements.push({ dsn, sql, values })
     return { rows: [], rowCount: 0, command: 'SELECT' }
   }
-  const previousDsn = process.env.RULITH_DB_URL
-  process.env.RULITH_DB_URL = 'postgres://test-host/test-db'
+  const previous = { db: process.env.RULITH_DB_URL, demo: process.env.DEMO_DB_URL }
+  process.env.RULITH_DB_URL = AMBIENT_DSN
+  process.env.DEMO_DB_URL = AMBIENT_DSN
+  const restore = (name, value) => {
+    if (value === undefined) delete process.env[name]
+    else process.env[name] = value
+  }
   return (async () => {
     try { return await run(statements) } finally {
       databaseDriver.run = original
-      if (previousDsn === undefined) delete process.env.RULITH_DB_URL
-      else process.env.RULITH_DB_URL = previousDsn
+      restore('RULITH_DB_URL', previous.db)
+      restore('DEMO_DB_URL', previous.demo)
     }
   })()
 }
@@ -48,10 +70,81 @@ const lookupTool = () => adapterToolFromSpec(JSON.stringify({
   params: { order_id: 'number' },
 }), JSON.stringify({ order_id: 702 }))
 
+// ── A0. A database Tool runs against the Source it was given, or not at all ──
+
+/** Compile through the real dispatch path, exactly as a work row would. */
+const dispatchDbTool = ({ ref, adapter, entry, params = {}, args, sourceRecordId, sourceTypes }) => toolFromSpec(
+  JSON.stringify({ name: ref, kind: 'read', impl: 'worker-tool', sourceTypes, exec: ref, params }),
+  JSON.stringify(args),
+  { [ref]: { adapter, sourceTypes, entry, digest: undefined } },
+  undefined,
+  DB_SOURCES,
+  sourceRecordId,
+)
+
+for (const [label, adapter, entry] of [
+  ['db-query', 'db-query', 'SELECT status FROM orders WHERE id={order_id}'],
+  ['db-exec-fenced', 'db-exec-fenced', 'UPDATE orders SET status={status} WHERE id={order_id}'],
+]) {
+  test(`RT-WK-DBSRC-1 a Source-free ${label} never reaches a driver, and is refused before the claim`, async () => {
+    // A Tool declaring `sourceTypes: []` says it reads through no Source. A database Adapter
+    // needs a located one, and the host's environment is not it: borrowing `RULITH_DB_URL`
+    // would let a Tool that declared no Source read and write the host's database, and land
+    // its `returns` facts on the Board under `sourceRecordId: ""`.
+    //
+    // The refusal has to happen while compiling the dispatch, which is before the claim.
+    // Discovering it afterwards would mean a dispatch recorded on the Board for an execution
+    // that was never possible.
+    await withRecordedDatabase(async (statements) => {
+      assert.throws(() => dispatchDbTool({
+        ref: 'acme.free@1', adapter, entry, sourceTypes: [],
+        params: adapter === 'db-query' ? { order_id: 'number' } : { status: 'string', order_id: 'number' },
+        args: adapter === 'db-query' ? { order_id: 7 } : { status: 'shipped', order_id: 7 },
+        sourceRecordId: '',
+      }), /needs a located Source/, `${label} compiled a Source-free dispatch`)
+      assert.deepEqual(statements, [], `${label} reached the driver without a Source`)
+    })
+  })
+}
+
+test('RT-WK-DBSRC-2 a Source-bound database Tool runs against the DSN of the Source it selected', async () => {
+  // The other half, so the fix above cannot be "refuse everything". The selected Source's
+  // local secret DSN is what arrives at the driver — not the ambient one, which is set for
+  // the whole of this arm and differs from it by construction.
+  await withRecordedDatabase(async (statements) => {
+    const tool = dispatchDbTool({
+      ref: 'acme.lookup@1', adapter: 'db-query', entry: 'SELECT status FROM orders WHERE id={order_id}',
+      params: { order_id: 'number' }, args: { order_id: 702, source: 'orders' },
+      sourceRecordId: 'orders', sourceTypes: ['db'],
+    })
+    await execute('acme.lookup@1', { order_id: 702 }, { 'acme.lookup@1': tool }, DB_SOURCES)
+    assert.equal(statements.length, 1, 'the Source-bound Tool did not reach the driver')
+    assert.equal(statements[0].dsn, ORDERS_DSN, 'the Tool ran against a DSN the invocation did not select')
+    assert.notEqual(statements[0].dsn, AMBIENT_DSN)
+    assert.equal(statements[0].sql, 'SELECT status FROM orders WHERE id=$1')
+    assert.deepEqual(statements[0].values, [702])
+  })
+})
+
+test('RT-WK-DBSRC-3 a database Tool whose Source carries no DSN is refused, not defaulted', async () => {
+  // A Source that exists and is of the right type but has no DSN configured locally. The
+  // ambient value is present and must not stand in for it: the refusal names the Source.
+  await withRecordedDatabase(async (statements) => {
+    const tool = adapterToolFromSpec(JSON.stringify({
+      name: 'orders.lookup', impl: 'db-query', source: 'orders',
+      exec: 'SELECT 1', params: {},
+    }), '{}')
+    await assert.rejects(
+      execute('orders_lookup', {}, { orders_lookup: tool }, { orders: { type: 'db' } }),
+      /Source "orders" is configured with no DSN/)
+    assert.deepEqual(statements, [], 'a Source with no DSN fell back to the host environment')
+  })
+})
+
 test('a db-query invocation cannot replace the compiled template with its own SQL', async () => {
   await withRecordedDatabase(async (statements) => {
     const tool = lookupTool()
-    await execute('orders_lookup', { sql: 'UPDATE users SET is_admin=true' }, { orders_lookup: tool })
+    await execute('orders_lookup', { sql: 'UPDATE users SET is_admin=true' }, { orders_lookup: tool }, DB_SOURCES)
     assert.equal(statements.length, 1, 'exactly one statement must reach the driver')
     assert.equal(statements[0].sql, 'SELECT id, status FROM orders WHERE id=$1',
       `the argument named sql replaced the Tool's template: ${statements[0].sql}`)
@@ -71,7 +164,7 @@ test('a db-exec-fenced invocation cannot smuggle a destructive statement through
       exec: 'UPDATE orders SET status={status} WHERE id={order_id}',
       params: { status: 'string', order_id: 'number' },
     }), JSON.stringify({ status: 'shipped', order_id: 702 }))
-    await execute('orders_mark', { sql: 'DROP TABLE users' }, { orders_mark: tool })
+    await execute('orders_mark', { sql: 'DROP TABLE users' }, { orders_mark: tool }, DB_SOURCES)
     assert.equal(statements.length, 1)
     assert.equal(statements[0].sql, 'UPDATE orders SET status=$1 WHERE id=$2')
     assert.deepEqual(statements[0].values, ['shipped', 702])
@@ -116,13 +209,33 @@ test('a database Tool that declares a sql parameter is refused at declaration ti
   assert.doesNotThrow(() => refuseSqlParameter('db-query', { order_id: 'number' }))
 })
 
+test('a Tool that declares a parameter named source is refused, where the operator can see it', () => {
+  // `source` is the invocation's Source selector: the Gateway's selector reads `args.source`,
+  // and this Worker strips it before checking the declared table. A Tool declaring it would
+  // publish a slot that can never be filled — a caller who supplies it is told the argument
+  // is *missing*, pointing at one the invocation plainly sent.
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.thing@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/thing.mjs', params: { source: 'string' } },
+  } }), /declares parameter "source": that name is the invocation's Source selector/)
+  // Refused at dispatch too, not only at declaration.
+  const tools = { 'acme.thing@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/thing.mjs', digest: undefined } }
+  assert.throws(() => toolFromSpec(JSON.stringify({
+    name: 'acme.thing@1', kind: 'read', impl: 'worker-tool', sourceTypes: ['file'],
+    exec: 'acme.thing@1', params: { source: 'string' },
+  }), JSON.stringify({ source: 'docs' }), tools, undefined, { docs: { type: 'file', access: '.' } }, 'docs'),
+  /that name is the invocation's Source selector/)
+  // Neighbouring names are ordinary. The rule is about one reserved word, not a namespace.
+  assert.doesNotThrow(() => refuseReservedParameter({ source_id: 'string', sources: 'json' }))
+  assert.doesNotThrow(() => refuseReservedParameter({}))
+})
+
 test('toolFromSpec refuses a sql parameter before validating the invocation', () => {
   const tools = { 'acme.query@1': { adapter: 'db-query', sourceTypes: ['db'], entry: 'SELECT 1', digest: undefined } }
   const sources = { orders: { type: 'db', dsn: 'postgres://x/y' } }
   assert.throws(() => toolFromSpec(JSON.stringify({
-    name: 'acme.query@1', kind: 'read', impl: 'worker-tool', source: 'orders',
+    name: 'acme.query@1', kind: 'read', impl: 'worker-tool', sourceTypes: ['db'],
     exec: 'acme.query@1', params: { sql: 'string' },
-  }), JSON.stringify({ sql: 'SELECT 1' }), tools, undefined, sources), /SQL text is never an Action argument/)
+  }), JSON.stringify({ sql: 'SELECT 1', source: 'orders' }), tools, undefined, sources, 'orders'), /SQL text is never an Action argument/)
 })
 
 // ── B. A work item's payload is not an argument channel ──────────────────────
@@ -214,7 +327,7 @@ test('an ordinary MCP response still passes through unchanged (calibration)', as
 test('adapterEnv removes the runtime credentials and keeps the ordinary environment', () => {
   const stripped = adapterEnv({
     PATH: '/usr/bin', HOME: '/home/operator', TEMP: '/tmp', LANG: 'en_US.UTF-8', HTTPS_PROXY: 'http://proxy:8080',
-    RULITH_CASE_ID: 'CASE_1', RULITH_SOURCE_ACCESS: '/srv/data', RULITH_WORKER_ROOT: '/srv/worker',
+    RULITH_INVOCATION_ID: 'inv_1', RULITH_SOURCE_ACCESS: '/srv/data', RULITH_WORKER_ROOT: '/srv/worker',
     RULITH_CONNECTION_KEY: 'connection-secret',
     RULITH_TOKEN: 'agent-secret',
     RULITH_MODEL_KEY: 'model-secret',
@@ -252,7 +365,7 @@ test('the credential fence matches the name however Windows spells it', () => {
     Rulith_Connection_Key: 'connection-secret',
     rulith_token: 'agent-secret',
     RULITH_DB_URL: 'postgres://user:dbpassword@db/orders',
-    Rulith_Case_Id: 'CASE_STALE',
+    Rulith_Invocation_Id: 'inv_stale',
     rulith_source_access: '/stale/source',
     Rulith_Source_Type: 'stale-type',
     openai_api_key: 'openai-secret',
@@ -323,7 +436,7 @@ test('a run Tool that declares env.pass receives the basics plus those names and
   assert.equal(stripped.HTTPS_PROXY, undefined)
   // The listed name is matched case-insensitively too, for the same Windows reason.
   assert.equal(adapterEnv({ Acme_Region: 'eu-west-1', OTHER: 'x' }, ['ACME_REGION']).Acme_Region, 'eu-west-1')
-  assert.deepEqual(adapterEnv({ Rulith_Case_Id: 'CASE_STALE', ACME_REGION: 'eu-west-1' }, ['RULITH_CASE_ID', 'ACME_REGION']), { ACME_REGION: 'eu-west-1' },
+  assert.deepEqual(adapterEnv({ Rulith_Invocation_Id: 'inv_stale', ACME_REGION: 'eu-west-1' }, ['RULITH_INVOCATION_ID', 'ACME_REGION']), { ACME_REGION: 'eu-west-1' },
     'trusted Case/Source context must be supplied by the current work item, never env.pass')
   // An empty list is a real setting, not a missing one: basics only.
   assert.deepEqual(Object.keys(adapterEnv({ PATH: '/usr/bin', ACME_REGION: 'eu-west-1' }, [])), ['PATH'])
@@ -339,8 +452,8 @@ test('a declared env.pass reaches the compiled run Tool from the local manifest 
   })
   const sources = { docs: { type: 'file', access: '.' } }
   const compiled = (ref) => toolFromSpec(JSON.stringify({
-    name: ref, kind: 'act', impl: 'worker-tool', source: 'docs', exec: ref, params: {},
-  }), '{}', tools, undefined, sources)
+    name: ref, kind: 'act', impl: 'worker-tool', sourceTypes: ['file'], exec: ref, params: {},
+  }), JSON.stringify({ source: 'docs' }), tools, undefined, sources, 'docs')
 
   assert.deepEqual(compiled('acme.report@1').envPass, ['ACME_REGION'])
   assert.equal('envPass' in compiled('acme.plain@1'), false,
@@ -352,9 +465,9 @@ test('a declared env.pass reaches the compiled run Tool from the local manifest 
   // The board cannot supply one. `toolFromSpec` reads it off the installed definition;
   // an `env` in the work item's own spec is not consulted.
   const smuggled = toolFromSpec(JSON.stringify({
-    name: 'acme.plain@1', kind: 'act', impl: 'worker-tool', source: 'docs', exec: 'acme.plain@1',
+    name: 'acme.plain@1', kind: 'act', impl: 'worker-tool', sourceTypes: ['file'], exec: 'acme.plain@1',
     params: {}, env: { pass: ['RULITH_CONNECTION_KEY'] },
-  }), '{}', tools, undefined, sources)
+  }), JSON.stringify({ source: 'docs' }), tools, undefined, sources, 'docs')
   assert.equal('envPass' in smuggled, false, 'a work item supplied its own Adapter environment allow-list')
 })
 

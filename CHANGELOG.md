@@ -203,17 +203,152 @@ dialect will not work against this runtime.
   Messages response body, the emulated reply — because `JSON.parse` has already rounded
   such a literal by the time a value exists. A literal that underflows to zero (`1e-400`)
   is refused the same way.
-- **The Worker cannot yet run against a cut-over Core, and is deliberately unchanged.** It
-  still scopes `ClaimWork`/`ReportWork` with `caseId` + `caseRevision`. Core retires the Case
-  envelope and `caseRevision` by name, and has published no replacement shape for Worker
-  commands — those are to be governed by invocation, lease and Connection identity — so
-  guessing the field names here would be inventing a contract. Against a cut-over Core every
-  Poll row therefore lacks `caseRevision` and the Worker refuses **all** work. That refusal
-  happens *before* it claims and before an adapter touches the outside world, which is the
-  one thing that must hold while the shape is unknown: the alternative ordering leaves the
-  world changed, the receipt refused, and the invocation never dispatched again. Covered by
-  `test/worker-retired-wire.test.mjs`. The Agent side of the cutover does not depend on this;
-  the Worker transport adaptation is a separate, coordinated change.
+- **The Worker hop is the v2 one**, vendored from the contract repository's own commit as
+  `protocol/worker-contract.json` and compiled into the Worker the way the Agent compiles
+  its surface. `caseId` and `caseRevision` are gone from poll, claim and report — Case
+  identity is the Gateway's authenticated envelope against Core, and which Cases an
+  execution advances is the shared graph's answer — and a work item that still names one is
+  refused before the executor runs. What identifies a hop instead is the instance and the
+  fencing generation it holds, in the two protected headers and in the operation.
+- **A Worker instance is random per process.** `RULITH_WORKER_ID` is gone: a configured
+  label was shared by two processes started from one copied Connection secret, and was
+  inherited by a restart from the instance it replaced — both of them the identity a fence
+  exists to retire.
+- **`Poll` is the whole inbox surface**, and the only verb that takes the line. It states
+  the instance, the Tool Manifest and — only under a held lease — that lease's generation;
+  the acquiring poll of a fresh process states none, because it has never been given one,
+  and a resend of that startup request keeps the same instance identity so a lost answer
+  costs no generation. A refused poll drops the lease and the next poll acquires again:
+  admission is decided against the lease the Gateway holds, so restating a refused
+  generation would be refused for the same reason forever. Core's internal `ListWork` has
+  no Worker-facing alias.
+- **The Tool Manifest rides on every poll**, so a reconnecting Worker re-states what it has
+  with no separate registration call to fall out of step with. Three local gates that
+  refused legal declarations are gone: an empty `sourceTypes` declares a Source-free Tool,
+  an empty `returns` declares a Tool that deliberately attests nothing, and a `returns` row
+  with no arguments lands a bare proposition. Each had been refused here as though the field
+  were missing, which is a downstream availability condition borrowed to reject a report —
+  an operator with a Source-free Tool had nothing truthful to write. A Source-free Tool is
+  advertised and, until a work-item shape that omits the Source exists, refused at dispatch
+  under its own name rather than by standing the Connection in for the Source.
+- **The host's environment is no longer a database Source.** `handDbQuery` / `handDbExec`
+  fell back to `RULITH_DB_URL` / `DEMO_DB_URL` when the selected Source carried no DSN — and
+  a Source-free dispatch resolves no Source at all, so the fallback fired every time. A Tool
+  declaring `sourceTypes: []` could read and write the host's database and land its `returns`
+  facts under `sourceRecordId: ""`; `db-exec-fenced` committed constructive statements
+  (destructive ones were still held by the classifier, a different fence, unchanged). The
+  fallback is removed rather than special-cased: a database Tool runs against the DSN of the
+  Source the invocation selected, and no DSN for that Source is a refusal that names it. A
+  Source-free dispatch into a *locating* Adapter is refused while the Tool is compiled, which
+  is before the claim, so no dispatch is recorded for an execution that was never possible.
+  The two variables keep their place in the Adapter environment deny-list; nothing may read
+  them, which is a separate protection.
+- The database Adapters now take the Source table the caller passed, like every other
+  Adapter. They read the module global instead, so a caller who supplied one was ignored and
+  the host environment answered in its place.
+- `source` is a **reserved argument name**. It is the invocation's Source selector, stripped
+  before the declared parameter table is checked, so a Tool declaring it published a slot
+  that could never be filled — a caller who supplied it was told the argument was missing,
+  pointing at one the invocation plainly sent. Refused at declaration and at dispatch, the
+  same way a database Tool's `sql` slot is.
+- Case identity is refused for **all four work types** at the one door they arrive through.
+  It was checked in two arms, and in one of those it sat behind an early return, so a
+  verification row nothing handled was dropped in silence while still carrying the field.
+- A review is not started without a lease, and the lease is read **before** the re-review
+  interval is recorded. A batch arriving in the tick where the lease had just gone used to
+  spend the interval without reviewing anything, delaying clearance by up to twenty seconds.
+- The contract projection **fails loud** on a definition it cannot carry whole: a conditional
+  or a constraint it does not read would otherwise be dropped in silence, leaving the Worker
+  under-enforcing while `npm run check` stayed green. The grant's `const` fields are compared
+  per field name, like the action row's, rather than every one of them against the version.
+- **The dispatched action row is checked against the contract's closed shape**, before the
+  claim: every mandatory field present and of the stated kind, and nothing else carried at
+  all. The row's `connectionId` is compared against the Connection this process authenticated
+  as rather than merely ignored — a row must not be able to tell a Worker whose line it is on
+  — and `toolDigest` is mandatory, so "no pin stated" can never read as "pin matches".
+- **One name per thing on the action row.** `work` is the invocation and `tool` is the
+  Action; the request vector is built from those alone. The old `invocationId ?? work`
+  fallback meant a row could digest one way here and another way at the signer, so
+  `invocationId`, `actionId` and a structured `grant` beside the signed token are now refused
+  as shadow spellings — before the claim, because a claim is a dispatch recorded on the Board.
+- A grant is matched against the **Adapter pin of the local Tool that would run**. A real
+  process ran an Adapter once under a grant whose `adapterDigest` was all zeroes, because the
+  row's own `toolDigest` matched the local install and nothing compared the licence's copy:
+  two different claims by two different parties, and only one of them was being checked.
+- **Source-first selection.** A Tool declaration states which Source *types* it accepts; the
+  invocation names the instance in its own `source` argument. The static `toolSpec.source` a
+  package pinned into its own declaration is retired and read under no name — it made the
+  governed Source record a decoration. The named Source must be the record the row was
+  dispatched against and an authorized Source of an accepted type on this Connection, and the
+  three ways that can fail are refused under three names (`source_free_has_source`,
+  `source_selection_required`, `source_type_mismatch`) rather than one. An empty `sourceTypes`
+  is a Source-free declaration: nothing is resolved and no credential, root or endpoint is
+  manufactured; a `run` Adapter may still execute as pure local compute under the Tool
+  authorization it already holds, while an Adapter that needs a DSN or an endpoint still
+  cannot. The selector is read out of `args` and stripped from what the Adapter sees; the
+  served string the grant's digest covers is never rewritten. A Source-free dispatch is
+  refused for carrying **any** `source` argument, including `""` and `null` — presence is the
+  rule, not truthiness — and a `toolSpec` that states no `sourceTypes` at all is a malformed
+  dispatch rather than a Source-free one: the local definition is no longer consulted, because
+  what this machine has installed is not what the authority declared. An empty `args` string
+  is likewise malformed; an absent argument set is served as `"{}"`, so the empty case already
+  has a value and this Worker does not supply the one the authority failed to send.
+- **One unusable row no longer swallows the batch.** A refusal thrown while handling one item
+  used to escape the whole loop into the poll catch: every other item was dropped and a
+  work-item defect was printed as `Polling failed (…)`, on a row the endpoint re-sends every
+  round. Each item is now isolated; a rejected Connection credential is the one fault that
+  still ends the process.
+- **The execution grant is verified on the path it actually arrives on.** The Gateway sends
+  `executionGrant` as a signed token; this Worker used to check a structured mirror no
+  Gateway has ever sent, and its first line passed when that mirror was absent — so the
+  instance, generation and request-digest comparisons were unreachable in production while
+  the tests around them were green. The token is now decoded and its HMAC checked in constant
+  time with the Connection key already held, the payload is held to the contract's own
+  `ExecutionGrant` shape with an exact key set, and every field is compared against what this
+  Worker knows independently. Unreadable or unmatched means not claimed and not executed;
+  there is no optional shadow and no default-allow.
+- **A lost lease stops the batch and keeps the receipt honest.** The batch was handed over
+  under one lease, so each following item is checked against the line as it is *now*: after a
+  loss the leftovers are left unclaimed and said out loud, rather than a claim going out with
+  no generation on it. The work that did run reports under the generation it was dispatched
+  under, captured at the claim — a receipt that dropped it was this Worker awarding itself a
+  permission it no longer had, and the Gateway cannot judge a field that was not sent. Long
+  verification, material and review calls hold the same three things: a lease to work under,
+  that lease renewed while they run, and the captured identity on their report. A rejected
+  credential during a background renewal is caught rather than surfacing as an unhandled
+  rejection mid-execution, and stopping renewals waits for one already in flight.
+- The Tool id pattern, pin form, effect classes, parameter types, accredited Source types
+  and the Manifest ceiling are now **read out of the contract** into the Worker's generated
+  projection instead of being retyped in the source. A hand-written copy of an enum is a
+  second source of truth, and the one that goes stale is the local copy.
+- **The vendored bundle is closed and its pins are recomputed.** The carried file set must be
+  exactly the three files this Runtime reads — an extra key used to be carried, published and
+  hashed into the artifact manifest with nothing checking its digest or its provenance — and
+  every `gitBlobOid` is recomputed from the bytes beside it rather than read back. When the
+  contract repository is on this machine the ids are compared against the commit itself; a
+  repository that is present and cannot resolve that commit is a **failure**, deliberately not
+  collapsed into the ordinary "no repository here" case, because treating the two alike is how
+  a pin to a commit that does not exist passes as verified.
+- **No lease, no work.** A confirmed active `Lease` is what admits claiming, executing and
+  changing what a Worker advertises; the Worker judges it against the contract's own
+  definition, including the two conditions the shape cannot state (a real window, and a
+  heartbeat strictly shorter than it) and calendar values that only look canonical.
+  `RenewLease` keeps one long execution's lease alive and never acquires one; a refused or
+  unreachable renewal stops this instance taking further work rather than assuming it still
+  holds anything. `ReleaseLease` on shutdown says this instance is finished — never that an
+  invocation already dispatched did not happen — and an unknown answer stays unknown.
+- Execution digests are computed by the contract's own `rulith-execution-canonical-json/1`
+  and checked against its committed vectors: key order by UTF-16 code unit at every level
+  (never a collator), omitted result/reason/facts/artifacts resolved before digesting, and
+  `args`, `target` and `toolSpec` left as the exact strings Core served. A Source-free
+  execution digests `sourceRecordId: ""` — an empty value, never the Connection standing in
+  for a Source. A `v2` grant naming another instance, an older generation or another request
+  is refused before the hand moves.
+- Artifact production stays **off**: the strict reference and permission boundaries are
+  implemented and tested, and no object bytes leave this machine. Only an explicit granted
+  Source permission would admit them; `denied` and `absent` — including the Source-free case
+  — are refused under their own names, and an over-limit or unknown result is neither a
+  success nor something to retry.
 - Nothing here reads an unpublished authority field as a control input. The `lawLocked`
   prompt line, `receipt.disposition`, `receipt.invocation` and `payload.done`/`ok` are gone:
   none of them is in Core's published result envelope or Board View, so each was permanently

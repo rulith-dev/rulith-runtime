@@ -118,7 +118,18 @@ metadata namespace, the client capability this host declares and the recovery st
 come from the same bundle. `npm run check` regenerates the projection and fails on drift,
 so the Runtime cannot quietly speak a surface the contract does not name — and there is no
 hand-written list to fall back to if the bundle is missing: that is an error, not a
-default.
+default. The private Worker hop is vendored the same way, as `protocol/worker-contract.json`.
+
+Each bundle records the commit it came from, and every file in it records the Git blob object
+id of the bytes it carries. `npm run check` recomputes those ids from the carried bytes, and —
+when the contract repository is on this machine — compares them against that commit. Finding
+the repository is a guess by default (`../rulith`, and only if it looks like the contract
+repository), so **`RULITH_CONTRACT_REPO`** overrides it: point it at the checkout that really
+is the contract repository, or at a path that is not a repository at all to skip the
+comparison and rely on the recomputed ids alone. A repository that is present and cannot
+resolve the pinned commit is a hard failure rather than a skip — "I could not ask" and "I
+asked and the answer was no" are different, and treating them alike is how a pin to a commit
+that does not exist would pass as verified.
 
 | Tool | What the model is asking for |
 | --- | --- |
@@ -354,16 +365,120 @@ node worker/rulith-worker.mjs
 ```
 
 Each work item names a governed file Source bound to this Agent Connection and configured
-with an allowed root directory. A Worker's first poll pins implementation digests; it
-cannot authorize Tools merely by presenting them.
+with an allowed root directory. Presenting a Tool never authorizes it: a Tool is usable only
+while it is locked on this Connection in Console.
 
-The Worker polls outbound and presents each Tool's id, digest, accepted Source types,
-kind, parameters, and result-fact mapping. Rulith checks that every presented Tool is locked
-on the Agent-owned Connection, pins the implementation set, and dispatches an Action only
-when its Tool accepts the Cloud-injected Source type. The
-Worker resolves the Adapter locally, executes it, and reports a receipt before polling
-again. A model request cannot grant itself a Tool, Source, credential, Adapter, or
+The Worker polls outbound, resolves the Adapter locally, executes it, and reports a receipt
+before polling again. Rulith checks that every Tool it uses is locked on the Agent-owned
+Connection, and dispatches an Action only when its Tool accepts the Cloud-injected Source
+type. A model request cannot grant itself a Tool, Source, credential, Adapter, or
 verification authority.
+
+### The Worker hop: an instance, a generation, a lease
+
+A Worker process has a **random instance identity** minted at startup — never a configured
+label, because a label is shared by two processes started from one copied Connection secret
+and is inherited by a restart from the instance it replaced, which is exactly the identity a
+fence exists to retire.
+
+Nothing happens without a **confirmed active lease**. Without one this Worker claims no
+work, executes no Tool and changes nothing about what it advertises; with one, every hop
+states the instance and the fencing generation it holds, in the two protected headers and in
+the operation. A long execution keeps its lease alive with `RenewLease`, which renews only
+the lease already held and never acquires one — a refused or unreachable renewal stops this
+instance taking further work rather than assuming it still holds anything. Shutdown releases
+the lease, which says this instance is finished and never that an invocation already
+dispatched did not happen.
+
+A dispatched action row is checked against the contract's own **closed shape** before anything
+is claimed: every mandatory field present, each of the stated kind, and nothing else carried
+at all — a field nobody reads is a field nobody checks. It states each thing **once**: `work`
+is the invocation and `tool` is the Action, and the request vector is built from those and from
+nothing else. A row that also carried `invocationId`, `actionId` or a structured `grant` beside
+the signed token would state one value under two names, and two readers preferring different
+names would digest two different requests while each believed it had read the row. The row's
+`connectionId` travels for comparison and is never adopted — it is checked against the
+Connection this process authenticated as, because a row must not be able to tell a Worker
+whose line it is on — and `toolDigest` is mandatory, so the local pin comparison cannot be
+skipped by omitting it.
+
+**Source-first.** A Tool declaration states which Source *types* it accepts and pins no
+instance — the retired `toolSpec.source` made the governed Source record a decoration, because
+what actually ran was chosen when the package was written rather than when the Action was
+governed. The invocation names the instance it wants in its own `source` argument, and that
+name must be the record the row was dispatched against *and* an authorized Source on this
+Connection, of an accepted type. The three ways that can fail have three names —
+`source_free_has_source`, `source_selection_required`, `source_type_mismatch` — because they
+send an operator to three different places. An empty `sourceTypes` is a Source-free
+declaration: nothing is resolved, no credential, root or endpoint is manufactured, and the
+invocation may not name a Source. Such a Tool runs under the Tool authorization it already
+has — a local computation needs nothing more — and gets no Source, so it also attests no
+Source-backed business facts. An Adapter that needs a *located* Source still cannot run: the
+database, HTTP, MCP and workspace Adapters are each refused a Source-free dispatch while the
+Tool is compiled, which is before anything is claimed. There is no environment default behind
+them — a database Tool runs against the DSN of the Source the invocation selected, held in
+this machine's own secret store, and a connection string sitting in the host's own
+environment is not a Source and is never borrowed as one. `source` is
+therefore a reserved argument name: a Tool that declared it as a parameter would publish a
+slot that can never be filled, so the declaration is refused where the operator can see it.
+The selector is only ever *read* out of the arguments: `args` is one of the strings the
+grant's digest covers, so it is stripped from what the Adapter sees and never rewritten.
+
+Every dispatched action carries a **signed execution grant**, and it is decoded and verified
+before anything is claimed — a claim is a dispatch recorded on the Board, so the licence is
+matched first. The signature is checked with the Connection key this Worker already holds;
+then every field the grant carries is compared against something the Worker knows
+independently: its own instance, the generation of the lease it holds, its Connection, this
+invocation's board / action / Tool contract / Source record, the Adapter pin of the local Tool
+that would run, and the digest of the exact bytes it was served. A valid signature over
+somebody else's document is still somebody else's document. A work item whose grant cannot be
+read or matched is not claimed and not run.
+
+When a lease is lost while work is in flight, two things follow. The rest of the batch is
+**left unclaimed** — it stays dispatchable and comes back to whichever instance holds the line,
+rather than being taken by one that does not. And the work that did run reports under the
+identity it was **dispatched under**, not the live one: a receipt that quietly dropped its
+generation would be this Worker awarding itself a permission it no longer has. Whether a late
+receipt may land is the Gateway's decision, and it cannot decide on a field that was not sent.
+A receipt retry is the same bytes and the same identity; nothing is ever re-executed.
+
+**Poll** is the whole inbox surface and the only verb that takes the line. It states the
+instance, the Tool Manifest, and — only once a lease is held — the generation that lease
+carries; the acquiring poll of a freshly started process states none, because it has never
+been given one. Resending that startup request keeps the same instance identity, so a lost
+answer costs no generation. A refused poll means what this process believes about its own
+lease is no longer true, so it drops the lease and takes the line again the way it did at
+startup; restating a refused generation would be refused for the same reason forever.
+
+The **Tool Manifest travels on every poll**, so a Worker re-states what it has whenever it
+reconnects and there is no separate registration call to get out of step with. Each entry
+states its effect class, its parameter table and its result-fact mapping. Reporting a field
+is not the same as filling it: an empty `sourceTypes` declares a Source-free Tool, an empty
+`returns` declares a Tool that deliberately attests nothing, and a row with no arguments
+lands a bare proposition. None of the three may be refused as if the field were missing —
+whether a Tool additionally qualifies for direct use is a separate judgement downstream, and
+borrowing it here would refuse a legal report on an availability ground.
+
+`caseId` and `caseRevision` are **gone from the hop**. Case identity is the Gateway's
+authenticated envelope against Core, and which Cases an execution advances is the shared
+graph's answer computed from real causal reach; a work item that still names one is refused
+before the executor runs, because the alternative ordering leaves the world changed, the
+receipt refused, and the invocation never dispatched again.
+
+Execution identity is a digest of what was actually requested and reported, computed by the
+contract's own canonicalization and checked against its committed vectors. `args`, `target`
+and `toolSpec` are the exact strings Core served — reserializing them would make the digest
+cover this Worker's rendering rather than the authority's bytes — and a Source-free
+execution digests an empty `sourceRecordId` rather than substituting the Connection's name.
+A grant naming another instance, an older generation or another request is refused before
+the hand moves. `adapterDigest` remains a declaration and configuration identity; it is not
+a verified pin of the code that ran.
+
+Object production is **not wired yet**: the reference and permission boundaries are
+implemented and tested, and no object bytes leave this machine. Only an explicit granted
+off-machine permission from the actual Source record would admit them; a denial and a
+missing permission — including the Source-free case, where there is no Source to have
+granted anything — are each refused under their own name.
 
 Adapters are a fast way to implement Tools; they are not an Agent-facing concept. For
 example:

@@ -18,6 +18,7 @@
     "local/",
     "config/",
     "protocol/mcp-contract.json",
+    "protocol/worker-contract.json",
     "examples/verified-calculation/README.md",
     "examples/verified-calculation/data/input.json",
     "examples/verified-calculation/prepare-local.mjs",
@@ -43,7 +44,7 @@
   },
   "scripts": {
     "start": "node local/rulith-local.mjs start",
-    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-local.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check",
+    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/prepare-runtime.mjs && node --check examples/verified-calculation/prepare-local.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/generate-worker-protocol.mjs --check",
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "verify:manifest": "node scripts/update-artifact-manifest.mjs --check",
     "test": "node --test test/*.test.mjs",
