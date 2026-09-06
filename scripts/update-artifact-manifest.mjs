@@ -7,6 +7,10 @@ import { resolve } from 'node:path'
 const root = resolve(import.meta.dirname, '..')
 const files = [
   'agent/rulith-agent.mjs',
+  // The vendored public MCP contract. The Agent's surface is generated from it, so a
+  // download that fetched the agent without it would install bytes nobody could reconcile
+  // against the commit they were projected from.
+  'protocol/mcp-contract.json',
   'worker/rulith-worker.mjs',
   'local/rulith-local.mjs',
   'local/local-ui.mjs',

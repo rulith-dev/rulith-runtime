@@ -88,7 +88,10 @@ test('Rulith Local validates shared port settings once instead of letting parent
   assert.equal(localInteger('RULITH_SERVE_PORT', '7798', 7799), 7798)
   assert.equal(localInteger('RULITH_SERVE_PORT', undefined, 7799), 7799)
   assert.throws(() => localInteger('RULITH_SERVE_PORT', 'NaN', 7799), /integer between 1 and 65535/)
-  assert.throws(() => localInteger('RULITH_SERVE_CONCURRENCY', '9', 1, { min: 1, max: 8 }), /between 1 and 8/)
+  // A bounded integer setting the supervisor still validates for itself. Cross-conversation
+  // concurrency is gone — one Agent, one connection, one segment — so there is no such
+  // setting to check any more; the port is what both sides must agree on.
+  assert.throws(() => localInteger('RULITH_SERVE_PORT', '70000', 7799), /integer between 1 and 65535/)
 })
 
 test('blank example config values inherit non-empty supervisor environment values', () => {
@@ -123,60 +126,131 @@ test('the npm package installs the Rulith Local command rather than the retired 
 
 test('the first-party Agent uses the same public MCP bearer surface as every other Agent client', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /\/mcp/)
+  assert.match(source, /const MCP_URL = `\$\{URL_BASE\}\/mcp`/)
+  assert.doesNotMatch(source, /\/mcp\/host/,
+    'the host-only MCP surface is retired; first-party and tools-only clients share one path')
   assert.match(source, /authorization:\s*`Bearer \$\{TOKEN\}`/)
-  assert.match(source, /mcpRpc\('tools\/list'\)/)
+  assert.match(source, /mcpRpc\('tools\/list', cursor === undefined \? \{\} : \{ cursor \}, \{ handshake: true \}\)/)
   assert.doesNotMatch(source, /agentToken=/, 'Agent credentials must never enter a URL query string')
   assert.doesNotMatch(source, /\/board\/v1\/command|\/agent\/v1\//,
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('the model surface is the four protocol verbs, and no second grammar survives', () => {
-  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /const MODEL_VERBS = \['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase'\]/)
-  assert.match(source, /const HOST_TOOLS = \['GetCompletion', 'agent_protocol'\]/)
-  // The retired fenced-JSON dialect and its host-invented verbs, by name. A grammar that
-  // is merely unreachable is one edit away from being reachable again.
+test('the model surface is the six tools of the unified list, and no second grammar survives', () => {
+  const whole = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  // The runtime names the retired surfaces once, in the constant it refuses them by. That
+  // single declaration is the allow-list; the scan below runs over everything else, so a
+  // retired name reappearing anywhere it could be *called* still turns this red.
+  assert.match(whole, /const RETIRED_TOOL_NAMES = \['agent_protocol', 'GetCompletion', 'GetBoardManifest', 'RunDischarge', 'GetProjection', 'GetChanges'\]/,
+    'the refusal list for retired host surfaces is gone, so advertising one would no longer be named')
+  const source = whole.split('\n').filter((line) => !line.startsWith('const RETIRED_TOOL_NAMES =')).join('\n')
+  // Membership comes from the vendored projection of `protocol/mcp-surface.json`, with each
+  // tool's dispatch target beside it, and from nowhere else. The retired handwritten
+  // `agentVerb` / `agentRead` membership fields are gone with the host split.
+  assert.match(source, /const RULITH_MCP_SURFACE = Object\.freeze\(\[/)
+  assert.match(source, /const MODEL_TOOLS = RULITH_MCP_SURFACE\.map\(\(entry\) => entry\.name\)/)
+  assert.match(source, /name: 'ReadArtifact', target: 'artifact'/)
+  assert.match(source, /const BOARD_TOOLS = new Set\(RULITH_MCP_SURFACE\.filter\(\(entry\) => entry\.target === 'core'\)/)
+  assert.doesNotMatch(source, /agentVerb|agentRead/)
+  // The retired fenced-JSON dialect, the retired host tool split, and the client-side
+  // orchestration that used to sit behind it — by name. A path that is merely unreachable
+  // is one edit away from being reachable again.
   for (const retired of [
     'EXECUTION_GUIDE', 'OPTIONAL_RULITH', 'SYSTEM_EXPLORATION', 'SYSTEM_LOCKED',
     'parseRulithEnvelope', 'extractSubmission', 'containsNonExclusiveRulithEnvelope',
     'MODEL_COMMAND_KINDS', 'modelCommandRefusal', 'FLOOR_ORDER',
     'start_case', 'apply_batch', 'request_action', 'finish_case', 'read_case', 'pause_case', 'resume_case',
+    'HOST_TOOLS', 'agentProtocol', 'GetCompletion', 'agent_protocol', 'RunDischarge', 'GetBoardManifest',
+    'ResumeCase', 'runDischarge', 'probeLawLock', 'hostView', 'traceForward', 'flushTrace',
+    // The retired host poll loop, by its declaration rather than by the word: the host no
+    // longer polls the Board for progress. Settling an *unresolved call* against the
+    // authority's own recovery record is a different thing and keeps the word.
+    'async function settle\\(', 'SETTLE_POLL_MS',
+    'CASE_CONTEXT_OPERATIONS', 'RULITH_TRACE', 'RULITH_AUTO_DISCHARGE', 'RULITH_SETTLE_WAIT_MS',
+    'certifiedOf', 'expectedRevision:',
+    // The observation layer, by every name it wore. A dependency-level view token, the
+    // ledger behind it and the first-write exception are retired together; keeping any one
+    // of them would be keeping the rule.
+    'OBSERVATION_REFUSALS', 'stale_observation', 'scope_expanded', 'turnObservation', 'bootstrapUsed',
+    'persistSlotRecord', 'restoreSlotRecord',
   ]) {
-    assert.doesNotMatch(source, new RegExp(retired), `${retired} survived the model-surface rewrite`)
+    assert.doesNotMatch(source, new RegExp(retired), `${retired} survived the single-MCP rewrite`)
   }
   assert.doesNotMatch(source, /DONE:|STOP:|VIEW:/, 'a reply protocol is a second grammar')
-  // The floor is a string the authority chose. The local ladder that used to rank it had
-  // to be edited whenever Core added a tier, and an unknown tier read as the weakest.
-  assert.match(source, /const certifiedOf = \(view\) => view\?\.certified === true/)
+  // Lifecycle words are the authority's. The local ladder that used to rank an evidence
+  // floor had to be edited whenever Core added a tier, and an unknown tier read as the
+  // weakest — a silent downgrade in the direction that looks safe.
+  // The authority's closed lifecycle set, exactly. Carrying the words the retired per-Case
+  // model used would let a status Core says it never sends be displayed as if it had.
+  assert.match(source, /const LIFECYCLE = \['running', 'paused', 'closed'\]/)
+  assert.match(source, /const TERMINAL_LIFECYCLE = new Set\(\['closed'\]\)/)
   assert.doesNotMatch(source, /TIER_ORDER|floorRank/)
 })
 
-test('Agent identity comes from the authenticated public MCP surface, never from decoding the bearer secret', () => {
+test('the retired wire fields are stripped from schemas and refused when a model sends them', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  // `viewToken` moved from "host-supplied" to "retired": there is no observation to
+  // present any more, so a model that names one is refused rather than quietly stripped.
+  assert.match(source, /const RETIRED_TOOL_FIELDS = \['case', 'expectedRevision', 'caseRevision', 'expectedBoardSharedEpoch', 'viewToken'\]/)
+  assert.match(source, /const HOST_METADATA_FIELDS = \[[^\]]*'kind'[^\]]*'queryContext'[^\]]*'audienceProfile'[^\]]*'requestedRoots'[^\]]*'requestId'/s)
+  assert.match(source, /const HOST_OWNED_TOOL_FIELDS = \[\.\.\.RETIRED_TOOL_FIELDS, \.\.\.HOST_METADATA_FIELDS\]/)
+  assert.match(source, /refusal\(retired\.length > 0 \? 'retired_wire_field' : 'host_owned_field', teaching\)/)
+  assert.match(source, /retiredFieldTeaching/)
+  assert.match(source, /hostFieldTeaching/)
+})
+
+test('Agent identity comes from the authenticated MCP handshake, never from decoding the bearer secret', () => {
   const agent = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   const local = readFileSync(join(ROOT, 'local', 'rulith-local.mjs'), 'utf8')
-  assert.match(agent, /agentProtocol\('identity'\)/)
-  assert.match(agent, /legacyAgentIdHint/, 'old JWTs may remain a non-authoritative display fallback during migration')
-  assert.doesNotMatch(agent, /agentIdFromToken/)
+  assert.match(agent, /await openSession\(\)/)
+  // One connection for the Agent, not one per conversation: a second authenticated
+  // connection does not isolate two conversations, it takes the Agent away from one of them.
+  assert.match(agent, /const connection = \{/)
+  assert.doesNotMatch(agent, /makeSession\(/, 'a per-conversation session factory survived')
+  assert.doesNotMatch(agent, /SERVE_CONCURRENCY/, 'cross-conversation concurrency survived')
+  assert.match(agent, /meta\?\.agentId === 'string'/)
+  assert.match(agent, /returned no Agent identity in/)
+  assert.doesNotMatch(agent, /legacyAgentIdHint|agentIdFromToken/,
+    'decoding the bearer secret authenticates nothing and must not survive as an identity fallback')
   assert.doesNotMatch(local, /agentIdFromToken|split\('\.'\).*token|base64url/)
 })
 
-test('the Agent completes a minimal run through plain public MCP JSON-RPC with no native Cloud route', async () => {
+test('ordinary startup performs no Board read of any kind', () => {
+  const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
+  // The startup block runs `initialize`, the initialized notification, and `tools/list`.
+  // A bootstrap `QueryBoard` — even a dummy one issued only to learn the Agent id — would
+  // make the Board tool mandatory in everything but name.
+  const startup = /let startupFailed = false\n([\s\S]*?)\nif \(!startupFailed\)/.exec(source)?.[1]
+  assert.ok(startup, 'the startup block could not be found')
+  assert.doesNotMatch(startup, /callTool|QueryBoard|OpenCase/,
+    'startup reached the Board before the model had decided whether Rulith was useful')
+  assert.match(source, /it will not open a Case or read the Board merely to learn who it is/)
+})
+
+test('the Agent completes a minimal run through a real local MCP server, on /mcp and nothing else', async () => {
+  // A hand-written server rather than the shared harness: this arm is about the protocol
+  // the Runtime speaks to an arbitrary MCP endpoint — the lifecycle, the session header,
+  // the metadata channel — not about Board behaviour. If the two ever disagree, the one
+  // that fails first is the one to trust.
   const paths = []
+  const methods = []
   const toolNames = []
-  let caseRevision = 0
+  const sentMeta = []
+  const terminated = []
   let closed = false
-  const view = {
-    goal: 'case-test', state: 'done', certified: true, floor: 'attested',
-    frontier: [], acceptance: [], missingEvidence: [], blocked: [], hypotheses: [], inFlight: [], actions: [],
-  }
+  const sessionId = 'live-session-1'
+  const boardView = (focused) => ({
+    roots: focused ? [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE', status: 'running' }] : [],
+    cases: { directory: [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE', status: focused ? 'running' : 'closed' }], total: 1 },
+    gaps: [], nodes: [], actions: [],
+  })
   const server = createServer(async (req, res) => {
     paths.push(String(req.url ?? ''))
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
     const input = JSON.parse(Buffer.concat(chunks).toString() || '{}')
-    res.setHeader('content-type', 'application/json')
     if (req.url === '/v1/chat/completions') {
+      res.setHeader('content-type', 'application/json')
       // Native tool use, not a fenced dialect: the model names a tool the endpoint
       // advertised, and the runtime carries it as a tools/call.
       const answered = toolNames.includes('CloseCase')
@@ -198,49 +272,72 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
       }))
       return
     }
-    assert.equal(req.url, '/mcp/host', 'the first-party runtime is a host: it connects to the host surface, never to the model surface')
+    assert.equal(req.url, '/mcp', 'first-party and tools-only clients cross one endpoint')
     assert.equal(String(req.headers.authorization), `Bearer rlt_agt_${'a'.repeat(43)}`)
+    if (req.method === 'DELETE') {
+      // The client gives its session back when it is done, so a Gateway can tell a client
+      // that has gone from one that has merely fallen silent.
+      terminated.push(String(req.headers['mcp-session-id'] ?? ''))
+      res.writeHead(204)
+      return void res.end()
+    }
+    methods.push(String(input.method ?? ''))
+    res.setHeader('mcp-session-id', sessionId)
+    if (input.method === 'notifications/initialized') {
+      res.writeHead(202)
+      return void res.end()
+    }
+    res.setHeader('content-type', 'application/json')
+    const reply = (result) => res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result }))
+    if (input.method === 'initialize') {
+      return void reply({
+        protocolVersion: '2025-11-25', capabilities: { tools: {} },
+        serverInfo: { name: 'live-mcp', version: '1' },
+        // A conforming endpoint always publishes the recovery record. `none` is the
+        // authority saying there is nothing outstanding — which is why this run never has
+        // to ping for it.
+        _meta: { 'rulith/v1': { agentId: 'agent-public-1', recovery: { state: 'none' } } },
+      })
+    }
+    if (input.method === 'ping') {
+      return void reply({ _meta: { 'rulith/v1': { recovery: { state: 'none' } } } })
+    }
     if (input.method === 'tools/list') {
-      res.end(JSON.stringify({
-        jsonrpc: '2.0', id: input.id,
-        result: {
-          tools: [
-            { name: 'OpenCase', inputSchema: { type: 'object', properties: { caseType: { type: 'string' }, caseId: { type: 'string' }, case: { type: 'object' } } } },
-            { name: 'ApplyBatch', inputSchema: { type: 'object', properties: { operations: { type: 'array' }, case: { type: 'object' } } } },
-            { name: 'ApplyAction', inputSchema: { type: 'object', properties: { action: { type: 'string' }, case: { type: 'object' } } } },
-            { name: 'CloseCase', inputSchema: { type: 'object', properties: { disposition: { type: 'string' }, case: { type: 'object' } } } },
-            { name: 'GetCompletion', inputSchema: { type: 'object' } },
-            { name: 'agent_protocol', inputSchema: { type: 'object' } },
-          ],
-        },
-      }))
-      return
+      assert.equal(String(req.headers['mcp-session-id']), sessionId, 'the session header was not carried after initialize')
+      return void reply({
+        tools: [
+          { name: 'OpenCase', inputSchema: { type: 'object', properties: { caseType: { type: 'string' }, caseId: { type: 'string' }, case: { type: 'object' } } } },
+          { name: 'ApplyBatch', inputSchema: { type: 'object', properties: { operations: { type: 'array' }, case: { type: 'object' } } } },
+          { name: 'ApplyAction', inputSchema: { type: 'object', properties: { action: { type: 'string' }, case: { type: 'object' } } } },
+          { name: 'CloseCase', inputSchema: { type: 'object', properties: { disposition: { type: 'string' }, case: { type: 'object' } } } },
+          { name: 'QueryBoard', inputSchema: { type: 'object', properties: { include: { type: 'array' } } } },
+          { name: 'ReadArtifact', inputSchema: { type: 'object', required: ['ref'], properties: { ref: { type: 'string' }, offset: { type: 'integer' }, maxBytes: { type: 'integer' } } } },
+        ],
+        _meta: { 'rulith/v1': { agentId: 'agent-public-1' } },
+      })
     }
     assert.equal(input.method, 'tools/call')
     const name = String(input.params?.name ?? '')
-    const args = input.params?.arguments ?? {}
-    let result
-    if (name === 'agent_protocol') {
-      if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
-      else if (args.mode === 'trace') result = { ok: true, took: (args.events ?? []).length }
-      else if (args.operation?.kind === 'GetBoardManifest') result = { accepted: true, revision: 'r1', payload: { status: 'open', cases: [] } }
-      else result = { accepted: true, revision: 'r3', payload: {} }
-    } else {
-      toolNames.push(name)
-      // Every Board tool answers one JSON text carrying the bounded Case View.
-      if (name === 'CloseCase') closed = true
-      caseRevision += 1
-      result = {
-        accepted: true,
-        case: { id: 'case-test', revision: `c${caseRevision}`, status: closed ? 'closed' : 'running', caseType: 'exploration', root: 'case-test' },
-        view,
-        ...(closed ? { receipt: { disposition: 'completed' } } : {}),
-      }
+    toolNames.push(name)
+    sentMeta.push(input.params?._meta?.['rulith/v1'])
+    if (name === 'CloseCase') closed = true
+    const core = {
+      accepted: true, revision: `r${toolNames.length}`, payload: boardView(!closed),
+      ...(closed ? { receipt: { disposition: 'completed' } } : {}),
     }
-    res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
+    reply({
+      content: [{ type: 'text', text: JSON.stringify(core) }],
+      _meta: { 'rulith/v1': {
+        agentId: 'agent-public-1',
+        boardRevision: `r${toolNames.length}`,
+        focusedRoots: closed ? [] : [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE' }],
+        ...(closed ? { affectedCases: ['CASE_LIVE'] } : {}),
+      } },
+    })
   })
   let port
   await new Promise((resolveReady) => server.listen(0, '127.0.0.1', () => { port = server.address().port; resolveReady() }))
+  const store = mkdtempSync(join(tmpdir(), 'rulith-live-mcp-'))
   const child = spawn(process.execPath, ['agent/rulith-agent.mjs', 'test'], {
     cwd: ROOT,
     env: {
@@ -249,8 +346,8 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
       RULITH_TOKEN: `rlt_agt_${'a'.repeat(43)}`,
       RULITH_MODEL_URL: `http://127.0.0.1:${port}`,
       RULITH_MODEL: 'test-model', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '',
-      RULITH_TRACE: 'off', RULITH_AUTO_DISCHARGE: 'off', RULITH_MAX_ROUNDS: '4',
-      RULITH_SETTLE_WAIT_MS: '0', RULITH_CASE_TYPE: '', RULITH_MODEL_TOOLS: '',
+      RULITH_MAX_ROUNDS: '4', RULITH_CASE_TYPE: '', RULITH_MODEL_TOOLS: '',
+      RULITH_SESSION_FILE: join(store, 'sessions.json'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -264,11 +361,22 @@ test('the Agent completes a minimal run through plain public MCP JSON-RPC with n
   ])
   clearTimeout(timeout)
   await new Promise((resolveClose) => server.close(resolveClose))
+  rmSync(store, { recursive: true, force: true })
   assert.equal(status, 0, `${stdout}\n${stderr}`)
+  assert.deepEqual(methods.slice(0, 3), ['initialize', 'notifications/initialized', 'tools/list'],
+    `the MCP lifecycle was not performed: ${methods.join(', ')}`)
   assert.deepEqual(toolNames, ['OpenCase', 'CloseCase'], `the model surface did not reach the Board as tools/call: ${toolNames.join(', ')}`)
-  assert.ok(paths.includes('/mcp/host'))
+  // Identity came from the handshake. Nothing of this client's own travelled beside the
+  // arguments: the protected query context is the Gateway's to inject and the session is a
+  // transport header, so a conforming client attaches no metadata at all.
+  assert.match(stdout, /Agent "agent-public-1"/)
+  assert.deepEqual(sentMeta, [undefined, undefined],
+    `the client attached metadata of its own: ${JSON.stringify(sentMeta)}`)
+  assert.match(stdout, /Closed Case "CASE_LIVE" with disposition "completed"/)
+  assert.ok(paths.includes('/mcp'))
   assert.ok(paths.includes('/v1/chat/completions'))
-  assert.ok(paths.every((path) => path === '/mcp/host' || path === '/v1/chat/completions'), `unexpected privileged path: ${paths.join(', ')}`)
+  assert.ok(paths.every((path) => path === '/mcp' || path === '/v1/chat/completions'), `unexpected privileged path: ${paths.join(', ')}`)
+  assert.deepEqual(terminated, [sessionId], 'the run ended without giving its session back')
 })
 
 test('rulith --help is side-effect free and does not create a credential file', () => {
@@ -752,39 +860,46 @@ test('the local Agent does not assemble, fingerprint, or install governance reci
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.doesNotMatch(source, /fingerprintRecipePacks|recipeDigestOver|--recipe/)
   // Governance is not refused by prose any more: RegisterPack is simply not a tool this
-  // client carries, and the four it does carry are the whole allow-list.
+  // client carries, and the five it does carry are the whole allow-list.
   assert.match(source, /is not a tool this Agent Runtime`\s*\n\s*\+ ` carries/)
   assert.match(source, /package or Board governance belong to the host and to Console/)
 })
 
-test('the local Agent sends business values while Cloud injects commercial pins and exposes one bounded Case View', () => {
+test('the local Agent sends business values while Cloud mints identity and returns one Board View', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   assert.match(source, /--business-key <json>/)
   assert.match(source, /options\.businessKey === undefined \? \{\} : \{ businessKey: options\.businessKey \}/)
-  // The bounded view is the Cloud's, carried on every tool result. The client no longer
-  // budgets a projection of its own, so there is no second, quieter view to drift.
-  assert.match(source, /const viewOf = \(result\) =>/)
-  assert.match(source, /callTool\('GetCompletion'/)
-  assert.doesNotMatch(source, /RULITH_ATTENTION_FACTS|GetProjection/)
-  // Admission fields are Cloud's to mint and must never reach the model surface.
-  assert.match(source, /const HOST_OWNED_TOOL_FIELDS = \['case', 'requestId', 'expectedRevision', 'expectedBoardSharedEpoch'\]/)
+  // The bounded view is the authority's, carried on every tool result. The client no
+  // longer budgets a projection of its own, so there is no second, quieter view to drift.
+  assert.match(source, /const boardViewOf = \(result\) =>/)
+  assert.doesNotMatch(source, /RULITH_ATTENTION_FACTS/)
+  // GetProjection appears once, inside the list of retired surfaces this client refuses.
+  assert.equal((source.match(/GetProjection/g) ?? []).length, 1)
+  assert.match(source, /const RETIRED_TOOL_NAMES = \[/)
+  // Core mints the Case id and its stable acceptance root; the host must not.
+  assert.doesNotMatch(source, /nextCaseId|CASE_PREFIX/,
+    'Case-id minting belongs to Core, and a locally minted id would name a Case the authority did not')
+  assert.match(source, /const nextTaskId = \(\) =>/)
 })
 
-test('one system prompt carries the five reasoning shapes and exactly two conditional lines', () => {
+test('one system prompt carries the five reasoning shapes and one conditional line', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   const prompt = /const SYSTEM_PROMPT = `([\s\S]*?)`\n/.exec(source)?.[1]
   assert.ok(prompt, 'the system prompt could not be found')
   const words = prompt.split(/\s+/).filter(Boolean).length
-  assert.ok(words > 100 && words < 220, `the prompt is ${words} words; it is meant to be about 150`)
+  assert.ok(words > 100 && words < 300, `the prompt is ${words} words; it is meant to be about 200`)
   for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'retract_node', 'revise_fact']) {
     assert.ok(prompt.includes(shape), `the prompt does not name the ${shape} shape`)
   }
   assert.match(prompt, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
   // No JSON templates: the advertised tool schemas are the templates.
   assert.doesNotMatch(prompt, /"kind":|\{"op"|```/)
-  // Exactly two conditional lines, and each says only what it must.
+  // One conditional line, driven by a fact this host knows: the Case Type it itself sent.
   assert.match(source, /const EXPLORATION_LINE = 'This Case Type is exploration: add_axiom and define_action are permitted inside this Case/)
-  assert.match(source, /const LOCKED_LINE = 'Legislation is locked on this Board: do not use add_axiom or define_action/)
+  // The second line was keyed on a Board View field Core never published, so against the
+  // real authority it could never fire. A prompt rule from a guessed field is worse than
+  // the plain refusal it was trying to pre-empt.
+  assert.doesNotMatch(source, /LOCKED_LINE|Legislation is locked/)
   assert.match(source, /const systemFor = \(ctx\) => \{/)
 })
 
@@ -792,28 +907,33 @@ test('the Action parameter contract is the advertised schema, not a hand-written
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   // The typed slot contract used to be restated in prose beside the authority's schema.
   // Two statements of one rule drift; the schema the endpoint advertises is now the only one.
-  assert.match(source, /schema: withoutHostFields\(tool\.inputSchema \?\? tool\.input_schema/)
+  assert.match(source, /projectToolSchema\(name, tool\.inputSchema \?\? tool\.input_schema\)/)
+  // The projection is envelope-scoped, and it refuses rather than rewriting a business
+  // requirement the server actually declared.
+  assert.match(source, /prefer visibly rejecting|cannot be satisfied by any call this client would carry/)
   assert.match(source, /their schemas are the templates/)
   assert.doesNotMatch(source, /Every argument must be declared, present when required/)
 })
 
-test('available Actions reach the model through the Case View, not a prompt-side catalogue', () => {
+test('available Actions reach the model through the Board View, not a prompt-side catalogue', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  // The Case View carries name / state / PRE / EFFECT / parameters for every Action
-  // (board-protocol-spec §6.0b), so the Source and frontier catalogues that used to be
-  // pasted into the system prompt were a second, staler copy of the Board.
+  // The Board View carries the actions the authority computed for the operation, so the
+  // Source and frontier catalogues that used to be pasted into the system prompt were a
+  // second, staler copy of the Board.
   assert.doesNotMatch(source, /sourceAccessGuide|evidenceChaseGuide|source_access|evidence_chase/)
   assert.doesNotMatch(source, /\/agent\/v1\/evidence-chase/)
-  assert.match(source, /Every tool result carries the current Case View/)
+  assert.match(source, /Every Board tool result carries the Board View the authority computed for that step/)
+  // And reading a *current* view is the model's own tool, not a host poll loop.
+  assert.match(source, /call QueryBoard when you need a current view/)
 })
 
 test('agent lifecycle events shown to users use the English product vocabulary', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /\[Verification\]/)
-  assert.match(source, /Closed Case "\$\{id\}" with disposition/)
+  assert.match(source, /Closed Case "\$\{caseId\}" with disposition/)
   assert.match(source, /emitOn\(ctx, 'case-closed'/)
-  assert.match(source, /Board certified the case as deliverable/)
-  assert.match(source, /\[Completion\] certified=/)
+  assert.match(source, /Case Context in focus/)
+  assert.match(source, /still running on the Board/)
+  assert.match(source, /Board View last observed/)
   assert.doesNotMatch(source, /notes\.push\(`\[放电/)
   assert.doesNotMatch(source, /log\(`◎ 案卷/)
 })
@@ -848,8 +968,14 @@ test('Rulith Local presents a conversation-first Agent workbench with optional R
   assert.match(localPage, /state\.session=''/,
     'New conversation must explicitly leave the prior local transcript slot')
   assert.match(localPage, /receipt committed/)
-  assert.match(localPage, /Authoritative receipt/)
-  assert.match(localPage, /e\.invocation/)
+  // The Worker panel used to promote an Agent verdict carrying `e.invocation` as an
+  // "authoritative receipt". That field is not in Core's published Agent Profile result, so
+  // it was always absent and the panel simply read empty. It now states the gap instead:
+  // a blank invites no investigation, a stated gap does.
+  assert.match(localPage, /worker-activity-unavailable/)
+  assert.match(localPage, /Invocation reporting unavailable/)
+  assert.doesNotMatch(localPage, /e\.invocation/,
+    'the Worker panel is reading a result field the authority never published')
   assert.match(localPage, /Rulith MCP/)
   assert.match(localPage, /'not local'/)
   assert.match(localPage, /role="dialog"/)

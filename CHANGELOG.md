@@ -14,11 +14,37 @@ dialect will not work against this runtime.
   missing fields are shown explicitly. Refused openings cannot select a new Case.
 - An MCP result reporting a lost upstream response preserves the original request
   identity on an identical retry, just like an HTTP transport failure.
-- The model now speaks four protocol verbs as ordinary MCP tools — `OpenCase`,
-  `ApplyBatch`, `ApplyAction`, `CloseCase` — and nothing else. The Runtime reads
-  `tools/list` at startup and offers exactly those four; a tool call by any other name is
-  refused locally and never reaches Cloud. Case identity, revision, request identity,
-  epoch and digest are removed from the advertised schemas and filled by the host.
+- The model now speaks six tools as ordinary MCP tools — `OpenCase`, `ApplyBatch`,
+  `ApplyAction`, `CloseCase`, `QueryBoard`, and the artifact read `ReadArtifact` — and
+  nothing else. Membership, dispatch targets, the protocol version, the metadata namespace,
+  the declared client capability and the recovery states are all **generated from
+  `protocol/mcp-contract.json`**: the contract bundle exported from a named commit of the
+  contract repository and verified against its Git objects before vendoring. The Agent
+  ships as one file, so the projection is compiled in rather than read from a sibling at
+  startup, and `npm run check` regenerates it and fails on drift. A missing bundle is an
+  error; there is no hand-written membership to fall back to. The retired handwritten
+  `agentVerb` / `agentRead` membership fields are gone. The Runtime performs
+  the MCP handshake, reads `tools/list`, and offers exactly those six; a tool call by any
+  other name is refused locally and never reaches Cloud. `ReadArtifact` is served by the
+  Gateway's result data plane rather than by a Board operation: it returns a bounded
+  fragment, a media type, a continuation position and an end/truncated state, and it
+  creates no Case, writes nothing and changes no focus.
+- The protocol baseline is **MCP 2025-11-25**, and it is a contract rather than a
+  greeting: an endpoint that negotiates another version is refused at the handshake,
+  before any business runs. The client declares what it actually implements in
+  `initialize.capabilities.experimental["rulith/v1"] = {serialRecovery: 1}` — a
+  compatibility declaration, not an authorization.
+- Streamable HTTP responses are **resumable**. Each SSE event's `id:` is kept as a cursor,
+  and a stream that breaks before the answer is reopened with `Last-Event-ID` so the
+  original answer comes back; the request is never re-issued, because re-issuing would turn
+  one command into two. A stream that cannot be replayed leaves the outcome unknown, which
+  is what it is — never an empty answer.
+- `HTTP 409` with JSON-RPC `-32000` and `data.reason = "connection_replaced"` is read as
+  what it is: another authenticated client is now this Agent's one effective client. The
+  Runtime stops with its own exit status and does not reconnect. A 409 for any other reason
+  is not read as a takeover, and `HTTP 404` — the transport session is gone — is answered by
+  initializing a new session, which says nothing about whether the call made under the old
+  one executed.
 - The fenced-JSON grammar is gone: no `{"tool":"rulith",…}` envelope, no first-block-wins
   parsing, no `DONE:` / `STOP:` / `VIEW:` reply protocol, no `start_case` / `apply_batch` /
   `request_action` / `finish_case` / `read_case` / `pause_case` / `resume_case`. Pause and
@@ -29,10 +55,12 @@ dialect will not work against this runtime.
   that rejects tool definitions gets the same schemas described in the prompt and answers
   with one JSON object; `RULITH_MODEL_TOOLS=emulated` selects that transport up front.
 - Conversation and `--task` autopilot are one loop with two policies rather than two
-  loops with two grammars. Autopilot nudges once with the current view, arms verification
-  discharge when no obligation is outstanding, waits for receipts by polling the bounded
-  Case View, and stops on certification, on an explicit close, or on the round budget.
-- Every tool result carries the bounded Case View, so the Runtime no longer keeps a
+  loops with two grammars. Autopilot nudges once with the lifecycle the Board reported,
+  and stops when no focused root is still running, on an explicit close, or on the round
+  budget. Deterministic discharge, bounded waiting and closure mechanics belong to Cloud
+  and the Board; the Runtime runs no second wait or discharge state machine, so
+  `RULITH_AUTO_DISCHARGE` and `RULITH_SETTLE_WAIT_MS` are gone.
+- Every tool result carries the bounded Board View, so the Runtime no longer keeps a
   projection of its own, no longer budgets attention locally (`RULITH_ATTENTION_FACTS` is
   gone), and no longer ranks the grounding floor against a local table of tiers — an
   unknown tier used to read as the weakest, which is a silent downgrade.
@@ -42,20 +70,162 @@ dialect will not work against this runtime.
   prompt-side catalogue that was a second, staler copy of the Board.
 - A one-shot run now prints its own verdict on the terminal, and reports success from the
   loop's outcome rather than from the wording of that sentence.
-- The Agent Runtime connects to the host surface `/mcp/host`. The model surface `/mcp`
-  advertises the four verbs only; `GetCompletion` and `agent_protocol` are host tools and
-  live on the host surface. Same token, same authority — the split decides what a model
-  is offered, not who may act.
-- A `stale_case_revision` refusal is handed back to the model together with the current
-  view; the host no longer reads the new revision out of the refusal and replays the step.
-  Only a transport failure with no authoritative answer is retried, unchanged and with the
-  same request identity.
+- A JSON-RPC answer is checked against the request it answers: `jsonrpc` must be `"2.0"` and
+  the id must match by type as well as value. A response under a different id used to be
+  consumed as the answer to the handshake and the run continued to the model. SSE bodies are
+  read as Streamable HTTP specifies — one event ends at a blank line, its `data:` lines are
+  joined, server-initiated messages ahead of the response are skipped, and the read finishes
+  on the matched event rather than waiting for a close the spec only recommends.
+- The advertised tool membership is a contract. An extra, duplicated, missing or retired name
+  is now a refused protocol mismatch that names both surfaces; it used to be filtered down to
+  the approved list in silence, which is a client deciding for itself what the server meant.
+  The list is read to the end when the endpoint answers `tools/list` in pages, so a paged
+  surface is not judged from its first page.
+- A session id is adopted only from an answer this client could read and correlate, and only
+  during the handshake. A command sent under one authenticated session and answered under
+  another leaves its outcome **unknown** — that is not a metadata refresh, and treating it as
+  one made an unresolved write look settled.
+- A local read limit and a mis-addressed answer are reported as their own kinds of unknown
+  (`response_too_large`, `response_not_correlated`) rather than as "the authority never
+  answered". All three hold the request identity and none of them is a refusal.
+- An unresolved request identity is never evicted to make room. The ledger used to drop its
+  oldest key, and since resolved entries leave immediately the oldest was always something
+  still in flight — a retry then minted a fresh id and a write that may have landed could be
+  applied twice. At the ceiling the runtime now refuses to send. Unresolved identities are
+  persisted (write-then-rename) and **named** at the next startup; nothing is re-dispatched
+  automatically, and with `RULITH_SESSION_FILE=off` the runtime says plainly that an
+  interrupted write must be resolved in Console instead.
+- Host metadata is projected out of advertised schemas at the envelope boundary only. The
+  previous depth-first strip deleted business properties that merely shared a name — a
+  business `sessionId` inside a batch operation, a business `case` inside an Action's
+  arguments — so the model could not send an argument the authority required, while a model
+  that nested the same name one level down was not refused either. A server schema that makes
+  host metadata *required* is now refused rather than quietly rewritten.
+- One endpoint, `/mcp`, for every client. The host-only surface one path deeper is
+  physically gone, and with it the bounded-view host tool and the protocol passthrough
+  that reached the whole Board operation registry under the Agent's own credential. A
+  surface a third-party client cannot reach is a surface nobody audits; first-party and
+  tools-only clients now share one path, one tool list and one set of refusals. The client
+  also no longer uploads a trace to a second cloud channel.
+- Agent identity comes from the authenticated MCP handshake — `_meta["rulith/v1"].agentId`
+  on `initialize` or `tools/list`. It is not decoded out of the bearer secret, and no
+  bootstrap Board query is issued to learn it. Ordinary conversation, including startup
+  and a plain greeting, touches the Board not at all.
+- Host metadata travels only in the MCP `_meta` block under `rulith/v1`: the Agent
+  identity, the observation token, the Board revision, the `{caseId, root}` focus pairs
+  and the complete affected-Case list. It never enters model content or a tool schema. The
+  client echoes back only what the authority returned, and never fetches a token before a
+  write. The retired `case: {id, expectedRevision}`, `caseRevision` and
+  `expectedBoardSharedEpoch` wire is stripped from advertised schemas and refused visibly
+  if a model sends it, rather than executing under a guessed contract.
+- **One authenticated MCP connection for the Agent**, and one serial entry through it.
+  Local conversations, `--case`, the Local UI and the shadow reviewer all share it; a
+  conversation is a transcript and a queue, not a client of its own. Cross-conversation
+  concurrency is gone with the per-conversation sessions that made it look possible —
+  `RULITH_SERVE_CONCURRENCY` no longer exists, and Local no longer advertises a
+  "max concurrent Cases" setting nothing enforced. Two conversations that each opened a
+  session were not isolated: the second took the Agent over and the first's next call came
+  back `connection_replaced`.
+- The transport key is **(Agent, MCP session, JSON-RPC request id)**, and the retired
+  body-keyed table of unresolved submissions is gone with the promise it made. It re-sent a
+  body under an old request id after the session had changed and told the model this reached
+  "the same identity"; under a different session it is a different logical call, so a write
+  that had landed could land again. One record replaces the table — calls are serial, so
+  there is one thing to remember — and it records the session it was sent under, which is
+  what lets this host say the call cannot be re-presented rather than pretending it can.
+  The 256-entry ceiling that could refuse every further call is gone with it.
+- A local unresolved call and an authority reporting nothing outstanding is a **conflict**,
+  not a resolution: an empty recovery record is a statement about the Gateway's records, not
+  about the world. The call is named with its request id for reconciliation in Console, and
+  work stops until then. A missing recovery record is likewise refused rather than read as
+  "nothing outstanding".
+- When the authority answers a request the model made by handing back an *earlier* call's
+  outcome, the **result itself** becomes that statement — `accepted: false`,
+  `requestExecuted: false`, the tool the outcome belongs to, and that outcome kept whole
+  beside it under `earlierResult`. Rewriting only the model-facing text was not enough:
+  `--case` and the shadow reviewer judge by the result, and with the earlier verdict still
+  in it they announced a focus that had not happened and a finding that was never written.
+  A `--case` focus answered with a handoff now claims no focus, re-sends nothing, and hands
+  the outcome to the model; the shadow reviewer reports its finding as not written rather
+  than as rejected. It used to be handed back unlabelled, so an
+  earlier `ApplyAction`'s `accepted: true` read as this `ApplyBatch` succeeding — with no log
+  line, no event and nothing in what the model could see. The rest of that turn's proposals
+  are not carried either. `isError` on the result is now load-bearing: a handoff marker
+  without it is two channels disagreeing, and the outcome is unknown rather than either.
+- The mechanical claim has a transport identity of its own. Deriving it from the request
+  body made it collide with the model's own `QueryBoard` safe default, so the claim inherited
+  the in-flight request id and the handoff never happened.
+- `tools/list` is read to the end when the endpoint pages it, the session is terminated with
+  `DELETE` when this client is done with it, and a resumed stream shares the original call's
+  deadline and backs off between attempts instead of adding windows of its own.
+- A conversation holds a set of acceptance roots with independent lifecycles, not one
+  active Case. Focus pairs come from Core and are never derived locally; Case-id minting
+  moved to Core; Local shows every root with its own status; leaving focus is not a
+  lifecycle transition, and a stopped model turn is not a paused Case.
+- **The observation layer is gone**: no `viewToken`, no observation ledger, no
+  `stale_observation` / `scope_expanded`, no first-write bootstrap exception. A write
+  presents no view and pins no revision, and the authority judges it against the premises,
+  grounding and policy in force when it executes. `viewToken` joins the retired wire
+  fields: a model that names one is refused visibly rather than quietly stripped. Board
+  revision remains an audit string and is never a precondition.
+- **One call at a time, and the authority says when the last one is over.** Several calls
+  proposed in one model turn are executed in order, each completing before the next is
+  sent — not reduced to the first, which looked serial on the wire while quietly declining
+  work the model had proposed. When a call's outcome cannot be determined the queue stops
+  there: from that point nothing is sent for this Agent — no write, no `QueryBoard`, no
+  `ReadArtifact` — and the model is not asked to decide anything.
+- Recovery is read from the authority over the base protocol's own `ping`, whose empty
+  result carries a record under `rulith/v1`: `none` proceeds, `waiting` waits on the
+  authority's own hint, `result_ready` collects the earlier call's outcome with exactly one
+  claim that executes nothing, and `reconciliation_required` stops automatic recovery and
+  points at the operator's reconciliation. A state this Runtime cannot read blocks rather
+  than reading as "nothing outstanding". No model tool was added for any of it, and nothing
+  is polled for when the handshake has already said there is nothing outstanding.
+- A recovered outcome reaches the model as a labelled **host-recovery note in the user
+  channel** — never forged into an assistant tool call the model never made, and never
+  disguised as a message from the user. An authoritative refusal is still never replayed by
+  the host. The request identity is the JSON-RPC id the Gateway maps onto one Core request,
+  and it is held for exactly as long as the outcome is unknown. The model is no longer told
+  that choosing the same step again "reaches that same identity": since the key includes the
+  session and every submission mints a fresh id, that promise was false, and a host may not
+  claim a de-duplication across a model's new intent. What it is told is that the original
+  call is settled at the authority and anything it chooses next is a new command.
+- The durable store (`RULITH_SESSION_FILE`, `off` to keep none) now holds one thing:
+  submissions whose outcome is unknown. The MCP session id is not written there and not
+  restored — the session comes from the `Mcp-Session-Id` response header alone, and a
+  restarted process is a new authenticated client that takes over as one. Focus and the
+  last Board revision are not persisted either.
+- Local shows the unresolved call beside the Cases in focus: its state, which tool it
+  concerns, and what the host is doing about it.
 - Exact-or-fail at the first membrane: a tool call whose arguments carry an integer beyond
   ±9007199254740991, or a non-finite number, is refused locally with a teaching before
   anything is sent. The look is on the text — the Chat Completions `arguments` string, the
   Messages response body, the emulated reply — because `JSON.parse` has already rounded
   such a literal by the time a value exists. A literal that underflows to zero (`1e-400`)
   is refused the same way.
+- **The Worker cannot yet run against a cut-over Core, and is deliberately unchanged.** It
+  still scopes `ClaimWork`/`ReportWork` with `caseId` + `caseRevision`. Core retires the Case
+  envelope and `caseRevision` by name, and has published no replacement shape for Worker
+  commands — those are to be governed by invocation, lease and Connection identity — so
+  guessing the field names here would be inventing a contract. Against a cut-over Core every
+  Poll row therefore lacks `caseRevision` and the Worker refuses **all** work. That refusal
+  happens *before* it claims and before an adapter touches the outside world, which is the
+  one thing that must hold while the shape is unknown: the alternative ordering leaves the
+  world changed, the receipt refused, and the invocation never dispatched again. Covered by
+  `test/worker-retired-wire.test.mjs`. The Agent side of the cutover does not depend on this;
+  the Worker transport adaptation is a separate, coordinated change.
+- Nothing here reads an unpublished authority field as a control input. The `lawLocked`
+  prompt line, `receipt.disposition`, `receipt.invocation` and `payload.done`/`ok` are gone:
+  none of them is in Core's published result envelope or Board View, so each was permanently
+  absent against the real authority while looking like a working feature. A dispatched
+  Action's progress now reports its gap explicitly — the Agent Profile has no field carrying
+  an invocation identity — rather than leaving the Worker panel to read as idle.
+- Truncation is read from the carriers Core actually publishes: per-limb `cases.truncated`
+  and the top-level `truncated`. An earlier draft of this client read an aggregate `loss`
+  object that a Core draft proposed and the published schema does not contain, so against the
+  real authority it saw no truncation at all and presented a partial view as a complete one.
+  A focused root that a bounded answer did not reach keeps its previous status **labelled as
+  not refreshed** instead of being republished as freshly observed.
 - Worker Tools have one standing (board-spec TOOL-08). A built-in and a Tool-Manifest
   entry are advertised in the same descriptor — `id`, `digest`, `sourceTypes`, `kind`,
   `params`, `returns` — on the startup banner and in the poll body alike, so a host can

@@ -104,43 +104,149 @@ Contract; exploration omits them. The Runtime sends values only. Cloud computes
 and pins the business-key, Capability Release, Case Contract, generation, and
 commercial-term digests before the Case opens, so the model never fills them.
 
-### The model surface: four verbs
+### The model surface: six tools on one endpoint
 
-The Agent Runtime is an ordinary MCP client. At startup it reads `tools/list` and offers
-the model exactly the four Board verbs the protocol marks as an Agent's own:
+The Agent Runtime is an ordinary MCP client. It connects to one path — `/mcp` — performs
+the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the six
+tools of the unified MCP surface: five that dispatch to Board operations, and one read of
+already-generated result data.
+
+That membership is not written here. It is compiled from `protocol/mcp-contract.json`, the
+contract bundle exported from a named commit of the contract repository and verified
+against that repository's Git objects before it was vendored. The protocol version, the
+metadata namespace, the client capability this host declares and the recovery states all
+come from the same bundle. `npm run check` regenerates the projection and fails on drift,
+so the Runtime cannot quietly speak a surface the contract does not name — and there is no
+hand-written list to fall back to if the bundle is missing: that is an error, not a
+default.
 
 | Tool | What the model is asking for |
 | --- | --- |
-| `OpenCase` | Open a Case on this Agent Board |
+| `OpenCase` | Create a Case, or bring an existing one into this session's focus |
 | `ApplyBatch` | Apply one atomic batch of working-memory operations |
-| `ApplyAction` | Invoke one Action the Case View lists as available |
-| `CloseCase` | Close the Case with an explicit disposition |
+| `ApplyAction` | Invoke one Action the Board View lists as available |
+| `CloseCase` | Close a Case with an explicit disposition |
+| `QueryBoard` | Read the bounded Board View this Agent's Profile permits |
+| `ReadArtifact` | Read a bounded fragment of an already-generated result object |
 
-There is no second vocabulary and no reply protocol. The tool schemas the Cloud
-advertises are the templates, so nothing in the prompt restates them. Case identity,
-revision, request identity, epochs and digests are removed from those schemas before the
-model sees them: the host fills them from its own Case context on every call. `caseType`
-stays on `OpenCase`, but an operator who pinned one with `--case-type`, `RULITH_CASE_TYPE`
-or a `POST /task` body has made that governance selection, and a model turn cannot move
-the work onto another contract.
+There is no second vocabulary, no reply protocol, and no privileged path a third-party
+client cannot reach. The Agent ships as a single file, so the contract is compiled into it
+rather than read from a sibling at startup: a downloaded `rulith-agent.mjs` needs nothing
+beside it to know its own surface. `ReadArtifact` is the one tool served by the Gateway's
+result data plane rather than by a Board operation: it returns bytes and a continuation position, not a
+Board View, and it creates no Case, writes nothing and changes no focus. The tool schemas
+the Cloud advertises are the templates, so nothing
+in the prompt restates them. `caseType` stays on `OpenCase`, but an operator who pinned
+one with `--case-type`, `RULITH_CASE_TYPE` or a `POST /task` body has made that governance
+selection, and a model turn cannot move the work onto another contract.
 
-Selecting, pausing and resuming a Case are host features, reached through `--case` and
-the Local UI. Verification discharge, receipt waiting, and reading the view are host
-mechanics: they consume no model turn. `CloseCase completed` is only ever sent by the
-model, and the Board runs verification before it closes anything.
+That membership is a contract, not a menu. An endpoint that advertises a sixth tool, a
+duplicate, or one of the retired host surfaces is a **protocol mismatch**: startup refuses
+and names both sides. Silently reinterpreting it into the approved six would be this client
+deciding on its own what the authority had offered. The same applies to the protocol
+version: an endpoint that negotiates anything other than 2025-11-25 is refused at the
+handshake, because the session, streaming, resumption and serial-call rules this client
+depends on are that version's.
 
-Two MCP paths carry this split. `/mcp` is the model surface: a generic MCP client
-connected there shows its model the four verbs and nothing else. `/mcp/host` is the host
-surface: the same four verbs plus `GetCompletion` (the bounded view read) and
-`agent_protocol` (the protocol path for pause, resume, discharge and identity). This
-runtime connects to `/mcp/host`. Both paths take the same Agent token and grant the same
-authority; the split decides what a model is offered, not who may act.
+Answers are checked against the request that asked for them — `jsonrpc: "2.0"` and the same
+JSON-RPC id, compared by type as well as value. Streamable HTTP event streams are read as the
+transport specifies: an event ends at a blank line, its `data:` lines are joined,
+server-initiated messages that arrive ahead of the response are skipped, and the read
+completes on the matched event rather than waiting for a close that the spec only
+recommends. Each event's `id:` is kept as a cursor, so a stream that breaks before the
+answer arrives is **resumed** with `Last-Event-ID` rather than re-decided — reissuing the
+request would turn one command into two. A command sent under one authenticated session and
+answered under another is an **unknown outcome**, not a metadata refresh.
 
-When the Board answers `stale_case_revision`, the runtime does not retry the step. The
-Case moved — a receipt landed, a discharge ran, another session wrote — and the refusal
-already carries the current view, so the model re-reads and decides again. Only a
-transport failure with no authoritative answer is retried, unchanged and with the same
-request identity.
+Two server answers are read as themselves rather than as generic failures. `HTTP 409` with
+JSON-RPC `-32000` and `data.reason = "connection_replaced"` means another authenticated
+client is now this Agent's one effective client: this Runtime stops and does **not**
+reconnect, because two hosts that both reconnect on that signal fight over one Agent.
+`HTTP 404` means the transport session is gone, and the answer is to initialize a new one —
+which says nothing about whether the call made under the old session executed.
+
+Host metadata travels beside the model's content, never inside it, in the MCP `_meta`
+block under `rulith/v1`: the authenticated Agent identity, the Board revision (an audit
+string, never a precondition), the `{caseId, root}` focus pairs, the complete
+`affectedCases`, and the recovery record described below. It travels one way. The protected
+query context — `audienceProfile` and `requestedRoots` — is injected by the Gateway from the
+authenticated principal, and the session id is a response header, so a conforming client
+attaches nothing of its own. A model cannot name any of it: the Core command kind, query
+context, admission block, request identity, and the retired `case` / `expectedRevision` /
+`expectedBoardSharedEpoch` / `viewToken` fields are stripped from every advertised schema and
+refused visibly if a model sends one anyway.
+
+Identity comes from that handshake. Ordinary conversation — including startup and a plain
+greeting — never touches the Board: there is no bootstrap query issued merely to learn
+which Agent this is.
+
+A conversation holds a *set* of acceptance roots with independent lifecycles, not one
+active Case. Bringing an existing Case into focus is a host feature reached through
+`--case` and the Local UI, and it uses the same public `OpenCase({caseId})` the model
+would. Deterministic discharge, bounded waiting and closure mechanics belong to Cloud and
+the Board; this runtime runs no second wait or discharge state machine, and a stopped
+model turn is not a paused Case.
+
+### One connection, one call at a time, one recovery path
+
+The Agent has **one authenticated MCP connection**, and everything goes through it: every
+local conversation, `--case`, the Local UI, and the shadow reviewer. Conversations are
+transcripts, not clients — they keep their own message queues and are served **one segment
+at a time**. A second authenticated connection does not isolate two conversations, it takes
+the Agent over from one of them, so a host that opened a session per conversation was
+replacing itself; genuine parallelism needs another Agent, which means another process with
+another token.
+
+Calls are serial: each completes before the next is sent, including several proposed in one
+model turn — which are executed **in order**, not reduced to the first. The authority judges
+each against the premises, grounding and policy in force when it runs; there is no view
+token, no observation ledger and no first-write exception.
+
+A call is identified by **(Agent, MCP session, JSON-RPC request id)**. All three parts
+matter: under a different session the same body is a *different* logical call, so a call
+whose outcome is unknown is never re-presented after the session that carried it has gone.
+This host holds at most one such call — it is serial, so there is only ever one — and
+remembers it durably until the authority says what became of it.
+
+When a call's outcome cannot be determined, the queue stops there. From that point this
+Agent sends nothing — no write, no `QueryBoard`, no `ReadArtifact` — and asks the model
+nothing, because a model asked to decide during an unresolved call can only propose work
+that cannot be carried. The state comes from the authority, on the base protocol's own
+`ping`, whose empty result carries a recovery record under `rulith/v1`:
+
+| State | What this host does |
+| --- | --- |
+| `none` | Nothing outstanding; work proceeds. Nothing is polled for. |
+| `waiting` | Waits and pings on the authority's own hint. No model turn, no tool call. |
+| `result_ready` | Sends exactly one claim, which executes nothing, and receives the earlier call's outcome as an error tool result. |
+| `reconciliation_required` | Stops automatic recovery and shows the operator where to reconcile the original call. |
+
+A state this Runtime cannot read blocks as well, and so does a *missing* record: `none` is
+the authority saying there is nothing outstanding, and silence is this host having no idea.
+An unrecognised or absent state treated as "nothing outstanding" is the one mistake that
+lets a command run twice.
+
+The other disagreement that stops work is this host holding a call whose outcome it never
+learned while the authority reports nothing outstanding. An empty recovery record is a
+statement about the Gateway's records, not about the world, so neither reading is acted on:
+the call is named, with its request id, for a person to reconcile in Console.
+
+The recovered outcome goes to the model as a **host-recovery note in the user channel**,
+labelled as such. It is not forged into an assistant tool call the model never made, and not
+disguised as a message from the user. The model reads what ran, sees that the collecting
+request executed nothing, and decides again.
+
+The authority may also hand an earlier outcome back in answer to a request the model itself
+made. That request **did not run**, and the result it gets says so: `requestExecuted: false`,
+the name of the call the outcome belongs to, and that outcome kept whole beside it as data.
+An earlier call's `accepted: true` is never allowed to read as this call's acceptance. The
+rest of that turn's proposals are not carried either — they were chosen before the model
+knew any of this — and the model decides again with the outcome in hand.
+
+An authoritative refusal is never replayed by the host: the Board judged the step, and
+resending it with the refusal's own words attached would be this client deciding on the
+model's behalf. Local UI shows the unresolved call, its state and its tool beside the Cases
+in focus.
 
 Inside `ApplyBatch`, a step of reasoning takes one of five shapes:
 
@@ -154,15 +260,17 @@ Inside `ApplyBatch`, a step of reasoning takes one of five shapes:
 
 Explanation and argument stay in the model's reply. They are not Board material.
 
-Every tool result carries one bounded **Case View**: the terminal Goal, state,
-certification, grounding floor, frontier, acceptance, missing evidence, blocking reasons,
-hypotheses with their status, dispatched work awaiting a receipt, and the available
-Actions with their parameters. It is not the complete Board history, and it carries no
-billing or Release-control records. Reading it costs nothing extra — it arrives with the
-answer to the step the model just took.
+Every tool result carries one bounded **Board View**, computed by the Board for the
+operation the model just took and filtered to what the Agent Profile permits: the
+acceptance roots and their status, the open gaps, the nodes, and the available Actions
+with their parameters. It is not the complete Board history, and it carries no receipt,
+permission, program, Connection or commercial records. Reading it costs nothing extra —
+it arrives with the answer to the step. When the model needs a *current* view rather than
+the one it last saw, it calls `QueryBoard`; the host never issues a read of its own, and
+in particular never refreshes an observation immediately before a write.
 
 Anthropic Messages and OpenAI Chat Completions tool use are both spoken natively. An
-endpoint that rejects tool definitions gets the same four schemas described in the system
+endpoint that rejects tool definitions gets the same six schemas described in the system
 prompt and answers with one JSON object; set `RULITH_MODEL_TOOLS=emulated` to select that
 transport up front. It is a transport, not a second surface: the names, the schemas and
 the refusals are identical.
@@ -407,13 +515,15 @@ The model never supplies the trusted input values or the calculated output value
   `SELECT`; every model value is passed through the database driver's parameter array
   rather than interpolated into SQL. Fenced write tools classify and reject unsupported
   or destructive statements unless the declared contract allows them.
-- The model can name exactly four tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
-  `CloseCase`. Anything else is refused locally and never reaches Cloud, so injected text
-  in a task, a document, or a tool result cannot spend the Agent's credential on Case
-  selection, verification, Worker receipts, clearance, or package and Board governance.
-  Cloud authorization is the second line, not the first. The host owns Case identity,
-  revision, request identity, verification settlement, and receipt waiting; none of them
-  appear in the schemas the model is given.
+- The model can name exactly six tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
+  `CloseCase`, `QueryBoard`, `ReadArtifact`. Anything else is refused locally and never
+  reaches Cloud, so injected text in a task, a document, or a tool result cannot spend the
+  Agent's credential on verification, Worker receipts, clearance, or package and Board
+  governance. Cloud authorization is the second line, not the first. The protected query
+  context, the admission block and the request identity are envelope metadata the Gateway
+  and this host own; they never appear in the schemas the model is given, and a model turn
+  that names one is refused before anything is sent. `ReadArtifact` accepts only a
+  reference this service issued — never a URL, a path, or another Agent's identity.
 - The Local UI requires its per-run key on every route, including the page itself.
 - Submitted work is not self-verification. Acceptance remains a board and policy decision.
 

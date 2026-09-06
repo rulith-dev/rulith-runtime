@@ -1,210 +1,300 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Run the real Agent binary against a scripted public-MCP endpoint and a scripted
- * model service.
+ * Run the real Agent binary against a scripted `/mcp` endpoint and a scripted model
+ * service.
  *
- * Everything under test here is a decision the Agent makes about what to put on the
- * wire, so the assertions are on what the endpoint received — not on a return value the
- * Agent computed and could compute correctly while sending something else. The endpoint
- * records every `tools/call` in order, including the ones the Agent decided not to make,
- * by their absence.
+ * Everything under test here is a decision the Agent makes about what to put on the wire,
+ * so the assertions are on what the endpoint received — not on a return value the Agent
+ * computed and could compute correctly while sending something else. The endpoint records
+ * every `initialize` and every `tools/call` in order, with the `_meta["rulith/v1"]` block
+ * each call carried, including the calls the Agent decided not to make, by their absence.
  *
- * The gateway implements the six MCP tools of board-protocol-spec §6.0b: the four model
- * verbs `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase`, plus the two host tools
- * `GetCompletion` and `agent_protocol`. Every one of the five Board tools answers with a
- * single JSON text — `{ accepted, errorCode?, teaching?, case, view, receipt? }` — so a
- * scenario describes Board state, never wire plumbing.
+ * There is exactly one path: `/mcp`. The gateway speaks the MCP 2025-11-25 lifecycle
+ * (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`, plus `ping`
+ * and a resumable GET stream), mints a session id per initialize, and answers the six
+ * tools — `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard` and the
+ * artifact read `ReadArtifact`. Each answers with a single JSON text carrying the result,
+ * and carries host metadata beside it in `_meta`, never inside the text.
+ *
+ * The recovery half of the contract is scriptable because it is where the interesting
+ * defects live: `recovery` drives what `ping` and `initialize` publish, `handoff` makes the
+ * next `tools/call` a delivery of an earlier call's outcome, `replaceAfter` produces the
+ * 409 that means another client took over, and `breakStreamOnCall` cuts a response stream
+ * so the answer has to be recovered with `Last-Event-ID` rather than re-decided.
  */
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { resolve } from 'node:path'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import { loadContractBundle } from '../../scripts/verify-mcp-contract.mjs'
 
 export const ROOT = resolve(import.meta.dirname, '..', '..')
 export const TEST_TOKEN = `rlt_agt_${'a'.repeat(43)}`
-
-/** The four verbs the model may speak, and the two the host uses. */
-export const MODEL_VERBS = ['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase']
-export const HOST_TOOLS = ['GetCompletion', 'agent_protocol']
+export const RULITH_META = 'rulith/v1'
+export const TEST_AGENT_ID = 'agent-public-1'
 
 /**
- * Return this from a scenario's `tool` / `protocol` hook to model an MCP hop that failed
- * rather than a Board that answered. Returning `undefined` means "I have no opinion about
- * this call" and falls through to the default gateway — the distinction matters, because a
- * hook that only scripts one tool would otherwise silently break every other one.
+ * The surface this fixture serves is the **contract's own**, read from the vendored bundle.
+ *
+ * A scripted endpoint that advertised hand-written schemas would let every test pass
+ * against a shape the real authority never sends — which is how a client's projection comes
+ * to be exercised only on inputs nobody will ever give it. The negative fixtures below are
+ * deliberate deviations *from* this, and say so in their own names.
+ *
+ * `BOARD_WRITES` is this fixture's own bookkeeping — which tools change Board state — and is
+ * not a wire field.
+ */
+export const CONTRACT = loadContractBundle(ROOT)
+export const MCP_SURFACE = CONTRACT.tools.map((tool) => ({ name: tool.name, target: tool.target }))
+export const MODEL_TOOLS = MCP_SURFACE.map((entry) => entry.name)
+export const BOARD_WRITES = CONTRACT.tools.filter((tool) => tool.target === 'core' && tool.name !== 'QueryBoard')
+  .map((tool) => tool.name)
+export const MCP_PROTOCOL_VERSION = CONTRACT.protocolVersion
+
+/**
+ * Return this from a scenario's `tool` hook to model an MCP hop that failed rather than a
+ * Board that answered. Returning `undefined` means "I have no opinion about this call" and
+ * falls through to the default gateway — the distinction matters, because a hook that only
+ * scripts one tool would otherwise silently break every other one.
  */
 export const HOP_FAILURE = Symbol('hop-failure')
 
-/** A bounded Case View with every field §6.0b requires it to carry. */
-export const emptyView = (overrides = {}) => ({
-  goal: '', state: 'running', certified: false, floor: 'asserted',
-  frontier: [], acceptance: [], missingEvidence: [], blocked: [],
-  hypotheses: [], inFlight: [], actions: [],
-  ...overrides,
-})
+/**
+ * Answer with an explicit host metadata block instead of the gateway's own.
+ *
+ * The recovery record is filled in when the scenario does not state one: the contract makes
+ * it required of every `rulith/v1` block, so a fixture that omitted it would be modelling a
+ * non-conforming endpoint by accident. A scenario that wants that endpoint says so, by
+ * passing `recovery: undefined` explicitly.
+ */
+export const withMeta = (core, meta) => ({ __core: core, __meta: { recovery: { state: 'none' }, ...meta } })
 
 /**
- * The advertised tool surface.
+ * The advertised tool surface a conforming authority publishes: the contract's own
+ * materialized schemas, served exactly as the bundle carries them.
  *
- * Each schema deliberately carries the host-owned `case` property (and `ApplyBatch`
- * carries `requestId`), because the assertion that matters is that the Agent removes
- * them before the model ever sees them. A gateway that never advertised them would make
- * that guard pass without proving anything.
+ * They are the Gateway's obligation too — `tools[].inputSchema` is delivered from the
+ * verified bundle rather than rebuilt — so serving anything else here would be testing this
+ * client against a surface no deployment produces.
  */
-export const advertisedTools = () => [
-  {
-    name: 'OpenCase',
-    description: 'Open a Case on this Agent Board.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        caseType: { type: 'string' },
-        businessKey: { type: 'object' },
-        caseId: { type: 'string' },
-        case: { type: 'object', properties: { id: { type: 'string' }, expectedRevision: { type: 'string' } } },
+export const advertisedTools = () => CONTRACT.schemas.map(({ name, inputSchema }) => ({
+  name,
+  description: `Rulith ${name}`,
+  inputSchema,
+}))
+
+/**
+ * A synthetic schema whose *business* arguments share names with envelope metadata.
+ *
+ * The contract has no such collision, and the projection rule still has to be right for the
+ * day one appears: host metadata is an envelope concept, so a property of a business object
+ * that happens to be called `sessionId` or `case` is business data and must survive. This
+ * fixture exists to state that rule; it is not a claim about the real contract.
+ */
+export const businessNameCollisionTools = () => advertisedTools().map((tool) => (tool.name !== 'ApplyBatch' ? tool : {
+  ...tool,
+  inputSchema: {
+    type: 'object',
+    required: ['operations'],
+    properties: {
+      operations: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['op', 'id'],
+          properties: {
+            op: { type: 'string' },
+            id: { type: 'string' },
+            predicate: { type: 'string' },
+            args: {
+              type: 'object',
+              required: ['sessionId'],
+              properties: { sessionId: { type: 'string' }, requestId: { type: 'string' }, amount: { type: 'number' } },
+            },
+          },
+        },
       },
     },
   },
-  {
-    name: 'ApplyBatch',
-    description: 'Apply one atomic batch of working-memory operations.',
-    inputSchema: {
-      type: 'object',
-      required: ['operations'],
-      properties: {
-        operations: { type: 'array', items: { type: 'object', properties: { op: { type: 'string' }, id: { type: 'string' }, predicate: { type: 'string' }, args: { type: 'object' } } } },
-        case: { type: 'object', properties: { id: { type: 'string' }, expectedRevision: { type: 'string' } } },
-        requestId: { type: 'string' },
-      },
+}))
+
+/**
+ * A non-conforming authority that offers host-owned and retired names as optional top-level
+ * tool arguments. The client must keep them away from the model and say so, but may still
+ * work: an endpoint offering a field is not the same as a contract requiring one.
+ */
+export const hostFieldTools = () => advertisedTools().map((tool) => (tool.name !== 'ApplyBatch' ? tool : {
+  ...tool,
+  inputSchema: {
+    ...tool.inputSchema,
+    properties: {
+      ...tool.inputSchema.properties,
+      case: { type: 'object', properties: { id: { type: 'string' }, expectedRevision: { type: 'string' } } },
+      viewToken: { type: 'string' },
+      requestId: { type: 'string' },
     },
   },
-  {
-    name: 'ApplyAction',
-    description: 'Invoke one Action the Case View lists as available.',
-    inputSchema: {
-      type: 'object',
-      required: ['action'],
-      properties: {
-        action: { type: 'string' },
-        target: { type: 'string' },
-        args: { type: 'string' },
-        case: { type: 'object', properties: { id: { type: 'string' }, expectedRevision: { type: 'string' } } },
-      },
-    },
+}))
+
+/**
+ * A non-conforming authority that makes host envelope metadata **required**. No call this
+ * client would carry can satisfy it, so the two contracts genuinely disagree.
+ */
+export const requiredHostFieldTools = () => advertisedTools().map((tool) => (tool.name !== 'ApplyBatch' ? tool : {
+  ...tool,
+  inputSchema: {
+    ...tool.inputSchema,
+    required: ['operations', 'viewToken'],
+    properties: { ...tool.inputSchema.properties, viewToken: { type: 'string' } },
   },
-  {
-    name: 'CloseCase',
-    description: 'Ask the Board to close the Case with an explicit disposition.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        disposition: { enum: ['completed', 'cancelled', 'failed', 'abandoned', 'superseded'] },
-        reason: { type: 'string' },
-        case: { type: 'object', properties: { id: { type: 'string' }, expectedRevision: { type: 'string' } } },
-      },
-    },
-  },
-  { name: 'GetCompletion', description: 'Read the bounded Case View.', inputSchema: { type: 'object', properties: { case: { type: 'object' } } } },
-  { name: 'agent_protocol', description: 'Host protocol path.', inputSchema: { type: 'object' } },
-]
+}))
 
 /**
  * A Board that answers every tool this runtime calls, so a scenario only has to describe
  * what it actually cares about.
  *
- * It keeps just enough state to be honest about the things the loop depends on: a Case
- * exists after `OpenCase`, its revision advances on every accepted write, `ApplyBatch`
- * puts derived facts in the view, `ApplyAction` reports pending work and clears it on the
- * next read, and `CloseCase completed` is refused while the view is uncertified.
+ * It keeps just enough state to be honest about what the loop depends on: Core mints Case
+ * ids and acceptance roots, focus is per authenticated session, `ApplyAction` reports
+ * pending work that a later read clears, and `CloseCase completed` is refused while a gap
+ * is still open.
+ *
+ * There is no observation token and no first-write exception. A write presents no view and
+ * pins no revision; the authority judges it against the state in force when it runs.
+ *
+ * @param {object} options
+ * @param {Array}  [options.cases]        Pre-existing Cases: {caseId, root, status, caseType}.
+ * @param {string} [options.caseType]     Default Case Type recorded on creation.
+ * @param {boolean}[options.settleAfterBatch] Whether a batch clears the open gap.
+ * @param {boolean}[options.actionSettles]    Whether the next read clears dispatched work.
+ * @param {object} [options.artifacts]        ref -> {mediaType, text} readable by ReadArtifact.
  */
-export function defaultGateway({ cases = [], caseType = 'exploration', certifyAfterBatch = true, actionSettles = true, lawLocked = false } = {}) {
+export function defaultGateway({
+  cases = [], caseType = 'exploration', settleAfterBatch = true, actionSettles = true,
+  artifacts = {},
+} = {}) {
   const state = {
-    caseId: undefined, revision: 0, closed: false, disposition: undefined,
-    view: emptyView(), cases: [...cases], pending: 0, lawLocked,
+    cases: new Map(cases.map((row) => [String(row.caseId), {
+      caseId: String(row.caseId), root: String(row.root ?? row.caseId),
+      status: String(row.status ?? 'running'), caseType: String(row.caseType ?? caseType),
+    }])),
+    revision: 0, caseSeq: 0, pending: 0, gaps: [],
+    artifacts: new Map(Object.entries(artifacts).map(([ref, value]) => [ref, {
+      mediaType: String(value?.mediaType ?? 'text/plain'), text: String(value?.text ?? ''),
+    }])),
   }
-  const envelope = (accepted, extra = {}) => ({
-    accepted,
-    ...(state.caseId === undefined ? {} : {
-      case: { id: state.caseId, revision: `c${state.revision}`, status: state.closed ? 'closed' : 'running', caseType, root: state.caseId },
-    }),
-    view: state.view,
+  const directory = () => [...state.cases.values()].map((row) => ({ caseId: row.caseId, root: row.root, status: row.status }))
+  const focusRows = (session) => [...session.focus]
+    .map((caseId) => state.cases.get(caseId))
+    .filter(Boolean)
+    .map((row) => ({ caseId: row.caseId, root: row.root, status: row.status }))
+  const view = (session, extra = {}) => ({
+    roots: focusRows(session),
+    cases: { directory: directory(), total: state.cases.size },
+    gaps: state.gaps.slice(),
+    nodes: [],
+    actions: [],
     ...extra,
+  })
+  const accept = (session, extra = {}) => ({
+    accepted: true, revision: `r${++state.revision}`, payload: view(session), ...extra,
+  })
+  const refuse = (session, errorCode, teaching, extra = {}) => ({
+    accepted: false, errorCode, teaching, payload: view(session), ...extra,
   })
   return {
     state,
-    tool(name, args) {
+    /** Host metadata for a result the gateway itself produced. */
+    meta(session, extra = {}) {
+      return {
+        agentId: TEST_AGENT_ID,
+        boardRevision: `r${state.revision}`,
+        focusedRoots: focusRows(session).map((row) => ({ caseId: row.caseId, root: row.root })),
+        ...extra,
+      }
+    },
+    tool(name, args, session) {
       switch (name) {
         case 'OpenCase': {
-          state.caseId = String(args.caseId ?? 'case-default')
-          state.revision = 0
-          state.closed = false
-          state.view = emptyView({ goal: state.caseId })
-          state.cases.push({
-            id: state.caseId, root: state.caseId, status: 'running', caseType: String(args.caseType ?? caseType),
-            revision: 'c0', capabilityReleaseDigest: 'sha256:cap', caseContractDigest: 'sha256:contract',
-          })
-          return envelope(true)
+          const focusForm = typeof args.caseId === 'string' && args.caseId.trim() !== ''
+          const createForm = typeof args.caseType === 'string' || args.businessKey !== undefined
+          if (focusForm && createForm) {
+            return refuse(session, 'bad_command', 'OpenCase takes {caseType, businessKey?} to create, or {caseId} to focus. A mixed form is refused.')
+          }
+          if (focusForm) {
+            const row = state.cases.get(args.caseId.trim())
+            if (row === undefined) return refuse(session, 'unknown_case', `No Case ${args.caseId} exists on this Board.`)
+            if (row.status === 'closed' || row.status === 'archived') {
+              return refuse(session, 'case_closed', `Case ${row.caseId} is ${row.status} and cannot be focused.`)
+            }
+            if (row.status === 'paused') row.status = 'running'
+            session.focus.add(row.caseId)
+            return accept(session)
+          }
+          state.caseSeq += 1
+          const row = {
+            caseId: `CASE_${state.caseSeq}`, root: `ROOT_${state.caseSeq}`, status: 'running',
+            caseType: String(args.caseType ?? caseType),
+          }
+          state.cases.set(row.caseId, row)
+          session.focus.add(row.caseId)
+          state.gaps = ['acceptance']
+          return accept(session)
         }
         case 'ApplyBatch': {
-          state.revision += 1
-          const added = (Array.isArray(args.operations) ? args.operations : [])
-            .map((operation) => `${String(operation.predicate ?? operation.op ?? 'fact')}`)
-          state.view = emptyView({
-            ...state.view,
-            goal: state.caseId ?? '',
-            frontier: [...state.view.frontier, ...added],
-            certified: certifyAfterBatch && state.pending === 0,
-            floor: certifyAfterBatch && state.pending === 0 ? 'attested' : 'asserted',
-            state: certifyAfterBatch && state.pending === 0 ? 'done' : 'running',
-          })
-          return envelope(true)
+          // `case_context_required` is a retired code: under one shared graph a write is
+          // not scoped by focus. What it still needs is somewhere to land — this fixture's
+          // Board has no roots until one is opened.
+          if (session.focus.size === 0) return refuse(session, 'no_acceptance_root', 'This Board has no acceptance root for this write to reach.')
+          if (settleAfterBatch && state.pending === 0) state.gaps = []
+          return accept(session)
         }
         case 'ApplyAction': {
-          state.revision += 1
+          if (session.focus.size === 0) return refuse(session, 'no_acceptance_root', 'This Board has no acceptance root for this Action to advance.')
           state.pending += 1
-          state.view = emptyView({
-            ...state.view,
-            certified: false, floor: 'asserted', state: 'actuating',
-            inFlight: [`inv_${state.pending}`],
-            actions: [{ name: String(args.action ?? ''), state: 'dispatched', pre: [], effect: [], params: {} }],
-          })
-          return envelope(true, { receipt: { invocation: `inv_${state.pending}`, done: false } })
+          state.gaps = [`invocation:inv_${state.pending}`]
+          return accept(session, { receipt: { invocation: `inv_${state.pending}`, done: false } })
         }
         case 'CloseCase': {
           const disposition = String(args.disposition ?? 'completed')
-          if (disposition === 'completed' && state.view.certified !== true) {
-            return envelope(false, {
-              errorCode: 'case_not_certified',
-              teaching: 'The Case is not certified, so it cannot be closed as completed. Close the remaining acceptance obligations first.',
-            })
+          const target = [...session.focus].map((id) => state.cases.get(id)).find((row) =>
+            row !== undefined && (args.root === undefined || row.root === args.root))
+          if (target === undefined) return refuse(session, 'unknown_case', 'No such acceptance root is open for this session.')
+          if (disposition === 'completed' && state.gaps.length > 0) {
+            return refuse(session, 'case_not_certified',
+              'The Case is not certified, so it cannot be closed as completed. Close the remaining acceptance obligations first.')
           }
-          state.revision += 1
-          state.closed = true
-          state.disposition = disposition
-          const answer = envelope(true, { receipt: { disposition, completedAt: '2026-09-04T00:00:00Z' } })
-          state.caseId = undefined
-          return answer
+          target.status = 'closed'
+          session.focus.delete(target.caseId)
+          return accept(session, { receipt: { disposition, completedAt: '2026-09-06T00:00:00Z' } })
         }
-        case 'GetCompletion': {
-          if (state.pending > 0 && actionSettles) {
-            state.pending = 0
-            state.view = emptyView({ ...state.view, inFlight: [], state: 'running' })
+        case 'QueryBoard': {
+          if (state.pending > 0 && actionSettles) { state.pending = 0; state.gaps = [] }
+          return accept(session)
+        }
+        case 'ReadArtifact': {
+          // The data plane answers in its own shape: a bounded window over an object the
+          // service issued a reference for. No `accepted`, because it decides nothing, and
+          // no Board View, because it is not a Board answer.
+          const object = state.artifacts.get(String(args.ref ?? ''))
+          if (object === undefined) {
+            return { errorCode: 'artifact_unavailable', teaching: 'That reference is not readable by this Agent.' }
           }
-          return envelope(true)
+          const bytes = Buffer.from(object.text, 'utf8')
+          const offset = Number.isInteger(args.offset) ? args.offset : 0
+          const maxBytes = Number.isInteger(args.maxBytes) ? Math.max(1, args.maxBytes) : 64
+          const slice = bytes.subarray(offset, offset + maxBytes)
+          const nextOffset = offset + slice.byteLength
+          const complete = nextOffset >= bytes.byteLength
+          return {
+            ref: String(args.ref), mediaType: object.mediaType, encoding: 'utf8',
+            data: slice.toString('utf8'), offset, nextOffset: complete ? null : nextOffset,
+            totalBytes: bytes.byteLength, complete, truncated: !complete,
+          }
         }
         default:
-          return envelope(true)
-      }
-    },
-    protocol(args) {
-      const operation = args.operation ?? {}
-      switch (operation.kind) {
-        case 'GetBoardManifest':
-          return { accepted: true, revision: 'r1', payload: { status: 'open', lawLocked: state.lawLocked, cases: state.cases } }
-        case 'RunDischarge':
-          state.view = emptyView({ ...state.view, certified: true, floor: 'attested', state: 'done' })
-          return { accepted: true, revision: 'r4', payload: { gaps: [] } }
-        default:
-          return { accepted: true, revision: 'r3', payload: {} }
+          return refuse(session, 'unknown_operation', `${name} is not an advertised tool.`)
       }
     },
   }
@@ -267,50 +357,127 @@ function renderModelAnswer(answer, provider) {
  * @param {string[]} [options.argv]     Agent command line after the script path.
  * @param {object}   [options.env]      Extra environment; overrides the fast defaults.
  * @param {object}   [options.gateway]  A `defaultGateway()`-shaped Board.
- * @param {Function} [options.tool]     (name, args, gateway) => result | undefined. Undefined models a failed MCP hop.
- * @param {Function} [options.protocol] (args, gateway) => agent_protocol result.
+ * @param {Function} [options.tool]     (name, args, gateway, session, meta) => result | undefined.
  * @param {Function} [options.model]    (round, body) => string | { text, toolCalls }.
  * @param {'openai'|'anthropic'} [options.provider] Which model wire the endpoint speaks.
  * @param {boolean}  [options.refuseTools] Answer 400 to any request carrying tool definitions.
- * @param {string[]} [options.advertise]  Tool names the endpoint advertises; defaults to all six.
- * @param {boolean}  [options.holdTrace] Accept the trace request and never answer it.
- * @param {boolean}  [options.holdTraceBody] Send trace response headers, then never finish its body.
+ * @param {string[]} [options.advertise]  Tool names the endpoint advertises; defaults to all five.
+ * @param {object[]} [options.extraTools] Additional tool descriptors the endpoint advertises.
+ * @param {object[]} [options.toolSchemas] Replace the advertised descriptors entirely.
+ * @param {string}   [options.duplicateTool] Advertise this approved tool a second time.
+ * @param {'id'|'jsonrpc'|'sse-other'|'sse-preamble'|'sse-open'|'sse-split'} [options.corruptResponse]
+ *   One deliberate wire deviation, for the negative protocol arms.
+ * @param {number}   [options.swapSessionOnCall] Answer this and later tools/call under a different session id.
+ * @param {boolean}  [options.omitAgentId] Authenticate but never return an Agent identity.
+ * @param {boolean}  [options.sseResults]  Answer tools/call as an SSE stream.
+ * @param {boolean}  [options.dropSessionHeader] Never return an MCP session id.
+ * @param {boolean}  [options.rotateSession] Answer a presented session id with a different one.
  * @param {boolean}  [options.oversizeMcpResponse] Return a tools/list body larger than the Agent limit.
- * @param {boolean}  [options.rejectBoardCredential] Reject board calls with HTTP 401.
  * @param {boolean}  [options.rejectAllCredential] Reject the public MCP surface with HTTP 401.
- * @param {number}   [options.rejectBoardAfter] Reject this and later board call with HTTP 401.
- * @param {number}   [options.rejectToolAfter] Reject this and later model-verb tool call with HTTP 401.
- * @param {number}   [options.rejectBoardDelayMs] Delay the credential rejection response.
- * @param {(string|object|function)[]} [options.serveTasks] Submit these task bodies after a --serve endpoint is ready.
- * @param {boolean} [options.waitForServeCompletion] Wait for each accepted task's run record before submitting the next.
+ * @param {number}   [options.rejectToolAfter] Reject this and later model tool call with HTTP 401.
+ * @param {string}   [options.sessionFile] Durable session store path handed to the Agent.
+ * @param {string}   [options.protocolVersion] The version the endpoint negotiates in initialize.
+ * @param {Function|object} [options.recovery] The recovery record `ping`/`initialize` publish;
+ *   a function receives `{pings, toolCalls}` so a scenario can move waiting → result_ready.
+ *   Defaults to `{state:'none'}`, because a conforming Gateway always publishes one — pass
+ *   `null` to model an endpoint that omits it, which a host must refuse to read as "nothing
+ *   outstanding".
+ * @param {object}   [options.handoff]  `{tool, callRef, result, afterCall?}`: the first tools/call
+ *   past `afterCall` (default 0) is answered as an error tool result delivering that earlier call's
+ *   outcome, and executes nothing. `afterCall` is what keeps a scenario's own unresolved call from
+ *   being answered as its own handoff; `withoutIsError` drops the protocol-level marker so the
+ *   two channels disagree.
+ * @param {number}   [options.replaceAfter] Answer this and every later request with HTTP 409
+ *   `connection_replaced`, as the Gateway does once another client has taken over.
+ * @param {object}   [options.conflictBody] Replace the 409 body, for the arms that prove the
+ *   reason string — not the bare -32000 — is what stops a host reconnecting.
+ * @param {number}   [options.expireSessionAfter] Answer exactly this request with HTTP 404, as a
+ *   server whose session has gone does. One request only, so the client can re-initialize.
+ * @param {number}   [options.breakStreamOnCall] Cut the response stream of this tools/call after a
+ *   preamble event, keeping the answer for a `Last-Event-ID` resume.
+ * @param {boolean}  [options.refuseResume] Answer the resuming GET with 405, as a server with no
+ *   replayable stream does.
+ * @param {number}   [options.pageTools] Answer `tools/list` in pages of this size, with the
+ *   `nextCursor` the base protocol defines.
+ * @param {number}   [options.listenPort]  Fixed endpoint port, so two runs share one endpoint identity.
+ * @param {(string|object|function)[]} [options.serveTasks] Submit these task bodies after --serve is ready.
+ * @param {boolean} [options.waitForServeCompletion] Wait for each accepted task's run record.
  * @param {boolean} [options.captureLocalEvents] Capture the Agent's IPC event stream.
  * @param {string[]} [options.chatLines] Send these lines to interactive stdin.
  * @param {number}   [options.timeoutMs]
  */
 export async function runAgent({
-  argv = ['test task'], env = {}, gateway, tool, protocol, model, provider = 'openai',
-  refuseTools = false, advertise, holdTrace = false, holdTraceBody = false, oversizeMcpResponse = false,
-  rejectBoardCredential = false, rejectAllCredential = false, rejectBoardAfter, rejectBoardDelayMs = 0, rejectToolAfter,
+  argv = ['test task'], env = {}, gateway, tool, model, provider = 'openai',
+  refuseTools = false, advertise, extraTools = [], toolSchemas, duplicateTool,
+  omitAgentId = false, sseResults = false, corruptResponse, swapSessionOnCall,
+  dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
+  rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
+  protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, handoff, replaceAfter, conflictBody,
+  expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
   serveTasks = [], waitForServeCompletion = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
 } = {}) {
   const board = gateway ?? defaultGateway()
-  /** Every `tools/call` the Agent made, in order: { name, args }. */
+  /** Every `tools/call` the Agent made, in order: { name, args, meta, id, sessionId }. */
   const toolCalls = []
-  /** `agent_protocol` argument objects, in order. */
-  const calls = []
+  /** Every `initialize` the Agent made: { meta, capabilities, protocolVersion, presentedSession, issuedSession }. */
+  const initializes = []
+  /** Every JSON-RPC method the endpoint saw, in order. */
+  const methods = []
+  const paths = []
+  /** Every request the endpoint saw on `/mcp`: { httpMethod, method, sessionId, lastEventId, status }. */
+  const requests = []
   const modelRequests = []
   const localEvents = []
   const answerModel = model ?? (() => 'Nothing further is needed.')
-  /** Responses accepted and deliberately never sent; destroyed during cleanup. */
-  const held = []
-  let firstTraceAt
-  let boardRequests = 0
+  /** Authenticated MCP sessions this endpoint issued. */
+  const mcpSessions = new Map()
+  /** SSE responses a probe deliberately kept open; destroyed during cleanup. */
+  const heldStreams = []
+  let sessionSeq = 0
+  /** The Agent's one effective client, and the sessions a later one took over from. */
+  let activeSession
+  const replaced = new Set()
+  let pings = 0
+  let handoffsDelivered = 0
+  const storeDir = sessionFile === undefined ? mkdtempSync(join(tmpdir(), 'rulith-session-')) : undefined
+  const store = sessionFile ?? join(storeDir, 'agent-sessions.json')
+
+  const newSession = () => {
+    // A rotating endpoint issues ids that cannot collide with the ones a previous run
+    // stored, so a client that failed to notice the swap would keep using the old record.
+    const session = { id: `${rotateSession ? 'rotated' : 'mcp'}-${++sessionSeq}`, focus: new Set(), events: [], eventSeq: 0 }
+    mcpSessions.set(session.id, session)
+    // One Agent, one effective client. Establishing a connection *takes over* from the one
+    // before it, exactly as the Gateway does — so a host that opens a session per
+    // conversation is not isolating them here either, it is replacing itself, and the arm
+    // that asserts otherwise goes red instead of passing against a permissive fixture.
+    if (activeSession !== undefined && activeSession.id !== session.id) replaced.add(activeSession.id)
+    activeSession = session
+    return session
+  }
+  const sessionOf = (request, input) => {
+    // The header is the only carrier. A client that could name its session in the body
+    // could name somebody else's, so an echoed id is not read here at all.
+    const header = request.headers['mcp-session-id']
+    const named = typeof header === 'string' ? header : ''
+    // A rotating endpoint models the session having expired: the presented session is
+    // authenticated but is no longer the one this Agent will be answered under.
+    if (rotateSession && input?.method === 'initialize') return newSession()
+    if (named !== '' && mcpSessions.has(named)) return mcpSessions.get(named)
+    return newSession()
+  }
+  /** The recovery record this endpoint publishes right now, or nothing. */
+  const recoveryNow = () => {
+    const value = typeof recovery === 'function' ? recovery({ pings, toolCalls: toolCalls.length, handoffsDelivered }) : recovery
+    return value === undefined || value === null ? undefined : { recovery: value }
+  }
 
   const server = createServer(async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
     const input = JSON.parse(Buffer.concat(chunks).toString() || '{}')
     const url = String(request.url ?? '')
+    paths.push(url)
     if (url.startsWith('/v1/chat/completions') || url.startsWith('/v1/messages')) {
       modelRequests.push(input)
       if (refuseTools && input.tools !== undefined) {
@@ -326,60 +493,287 @@ export async function runAgent({
       response.writeHead(200, { 'content-type': 'application/json' })
       return void response.end(serializeModelAnswer(answer, provider))
     }
-    response.setHeader('content-type', 'application/json')
     if (rejectAllCredential) {
       response.writeHead(401, { 'content-type': 'application/json' })
       return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
     }
-    if (input.method === 'tools/list') {
-      if (oversizeMcpResponse) return void response.end(JSON.stringify({ padding: 'x'.repeat(1_048_576) }))
-      const tools = advertisedTools().filter((entry) => advertise === undefined || advertise.includes(entry.name))
-      return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { tools } }))
+    const httpMethod = String(request.method ?? 'POST').toUpperCase()
+    const lastEventId = typeof request.headers['last-event-id'] === 'string' ? request.headers['last-event-id'] : undefined
+    requests.push({
+      httpMethod, method: String(input.method ?? ''), sessionId: request.headers['mcp-session-id'],
+      protocolHeader: request.headers['mcp-protocol-version'], lastEventId,
+    })
+    // Connection control and session lifetime are decided before anything is answered, and
+    // they are two different answers: 409 says another client owns this Agent now, 404 says
+    // this transport session is gone. A host that conflated them would either reconnect
+    // into a fight or refuse to reconnect when it should.
+    // A request under a session another client has taken over: the Gateway's own answer,
+    // produced by the fixture rather than only by a scripted `replaceAfter`.
+    if (replaced.has(String(request.headers['mcp-session-id'] ?? ''))) {
+      response.writeHead(409, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify({
+        jsonrpc: '2.0',
+        id: input.id ?? null,
+        error: {
+          code: -32000,
+          message: 'This Agent connection was replaced by a newer authenticated client.',
+          data: { reason: 'connection_replaced' },
+        },
+      }))
     }
+    if (Number.isInteger(replaceAfter) && requests.length >= replaceAfter) {
+      response.writeHead(409, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify(conflictBody ?? {
+        jsonrpc: '2.0',
+        id: input.id ?? null,
+        error: {
+          code: -32000,
+          message: 'This Agent connection was replaced by a newer authenticated client.',
+          data: { reason: 'connection_replaced' },
+        },
+      }))
+    }
+    if (Number.isInteger(expireSessionAfter) && requests.length === expireSessionAfter) {
+      response.writeHead(404, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify({
+        jsonrpc: '2.0', id: input.id ?? null, error: { code: -32001, message: 'Session not found' },
+      }))
+    }
+    if (httpMethod === 'DELETE') {
+      // Terminating the session is the client's side of not leaving half-open sessions
+      // behind. The fixture records it and forgets the session, as a server does.
+      const ending = String(request.headers['mcp-session-id'] ?? '')
+      mcpSessions.delete(ending)
+      if (activeSession?.id === ending) activeSession = undefined
+      response.writeHead(204)
+      return void response.end()
+    }
+    if (httpMethod === 'GET') {
+      // The resumable stream. A conforming server replays what followed the cursor; one
+      // that has no such stream says 405, and the client must treat that as "not recovered"
+      // rather than as an empty answer.
+      const resuming = mcpSessions.get(String(request.headers['mcp-session-id'] ?? ''))
+      if (refuseResume || resuming === undefined) {
+        response.writeHead(405, { 'content-type': 'application/json' })
+        return void response.end(JSON.stringify({ error: { message: 'this endpoint serves no standalone stream' } }))
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'mcp-session-id': resuming.id })
+      const after = resuming.events.findIndex((event) => event.id === lastEventId)
+      for (const event of resuming.events.slice(after + 1)) {
+        response.write(`id: ${event.id}\nevent: message\ndata: ${JSON.stringify(event.payload)}\n\n`)
+      }
+      response.end()
+      return
+    }
+    methods.push(String(input.method ?? ''))
+    const session = sessionOf(request, input)
+    const swapSession = typeof swapSessionOnCall === 'number' && input.method === 'tools/call'
+      && toolCalls.length + 1 >= swapSessionOnCall
+    const sessionHeaders = dropSessionHeader ? {} : { 'mcp-session-id': swapSession ? `${session.id}-swapped` : session.id }
+    /**
+     * Answer this request — or, when a probe asks for it, answer something else.
+     *
+     * `corrupt` names one deliberate deviation so a negative arm reads as itself:
+     * `id` replies under a different JSON-RPC id, `jsonrpc` sends the wrong protocol tag,
+     * `sse-other` streams a response to a *different* id, `sse-preamble` puts a
+     * server-initiated notification ahead of the real answer (legal, and the client must
+     * skip it), `sse-open` sends the answer and then holds the stream open (also legal —
+     * closing is a SHOULD — so a client that waits for EOF hangs).
+     */
+    const record = (payload) => {
+      const id = `e${++session.eventSeq}`
+      session.events.push({ id, payload })
+      return id
+    }
+    const send = (result, { sse = false, corrupt = corruptResponse } = {}) => {
+      const envelope = {
+        jsonrpc: corrupt === 'jsonrpc' ? '1.0' : '2.0',
+        id: corrupt === 'id' ? 'a-different-request' : input.id,
+        result,
+      }
+      const body = JSON.stringify(envelope)
+      if (breakStreamOnCall !== undefined && input.method === 'tools/call' && toolCalls.length === breakStreamOnCall) {
+        // A stream that dies after a preamble event, with the answer kept for replay. The
+        // client has a cursor and a way back to the same answer; re-deciding instead would
+        // turn one command into two.
+        response.writeHead(200, { 'content-type': 'text/event-stream', ...sessionHeaders })
+        const preamble = { jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'dispatched' } }
+        // Flush the preamble before cutting the socket. Destroying in the same tick can
+        // discard the buffered bytes, and then the client has no cursor — which would make
+        // this fixture test "no event id" rather than "the stream broke after one".
+        response.write(`id: ${record(preamble)}\nevent: message\ndata: ${JSON.stringify(preamble)}\n\n`, () => {
+          setTimeout(() => response.destroy(), 25).unref?.()
+        })
+        record(envelope)
+        return
+      }
+      if (!sse && corrupt !== 'sse-other' && corrupt !== 'sse-preamble' && corrupt !== 'sse-open' && corrupt !== 'sse-split') {
+        response.writeHead(200, { 'content-type': 'application/json', ...sessionHeaders })
+        return void response.end(body)
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream', ...sessionHeaders })
+      if (corrupt === 'sse-other') {
+        response.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 'someone-elses-request', result })}\n\n`)
+        return
+      }
+      if (corrupt === 'sse-preamble') {
+        // A server-initiated notification and a server->client request, both legal before
+        // the response, then the answer. A client that takes the first frame with a
+        // `result` would take the wrong one.
+        response.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/message', params: { level: 'info', data: 'working' } })}\n\n`)
+        response.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 'server-initiated-1', result: { unrelated: true } })}\n\n`)
+        response.end(`event: message\ndata: ${body}\n\n`)
+        return
+      }
+      if (corrupt === 'sse-split') {
+        // One event whose data is split across several `data:` lines, as a pretty-printed
+        // or chunk-split payload legitimately is. Joined by newline, it is the answer.
+        const pretty = JSON.stringify(envelope, null, 2).split('\n').map((line) => `data: ${line}`).join('\n')
+        response.end(`event: message\n${pretty}\n\n`)
+        return
+      }
+      if (corrupt === 'sse-open') {
+        // Answer, then keep the stream open. Closing after the response is a SHOULD, not a
+        // MUST, so this is a conforming server and the client must not wait for EOF.
+        response.write(`event: message\ndata: ${body}\n\n`)
+        heldStreams.push(response)
+        const keepalive = setInterval(() => { try { response.write(': keepalive\n\n') } catch { clearInterval(keepalive) } }, 50)
+        keepalive.unref?.()
+        return
+      }
+      response.end(`id: ${record(envelope)}\nevent: message\ndata: ${body}\n\n`)
+    }
+
+    if (input.method === 'initialize') {
+      initializes.push({
+        meta: input.params?._meta?.[RULITH_META],
+        capabilities: input.params?.capabilities,
+        protocolVersion: input.params?.protocolVersion,
+        presentedSession: request.headers['mcp-session-id'],
+        issuedSession: session.id,
+      })
+      return send({
+        protocolVersion,
+        capabilities: { tools: {} },
+        serverInfo: { name: 'rulith-gateway-test', version: '0' },
+        ...(omitAgentId && recoveryNow() === undefined ? {} : {
+          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), ...recoveryNow() } },
+        }),
+      })
+    }
+    if (input.method === 'ping') {
+      // The empty result plus recovery metadata. It touches no Board state and returns at
+      // once: a host waiting on an unresolved call must be able to ask without spending a
+      // model turn or reading anything it is not entitled to.
+      pings += 1
+      const meta = recoveryNow()
+      return send(meta === undefined ? {} : { _meta: { [RULITH_META]: meta } })
+    }
+    if (input.method === 'notifications/initialized') {
+      response.writeHead(202, sessionHeaders)
+      return void response.end()
+    }
+    if (input.method === 'tools/list') {
+      if (oversizeMcpResponse) {
+        response.writeHead(200, { 'content-type': 'application/json', ...sessionHeaders })
+        return void response.end(JSON.stringify({ padding: 'x'.repeat(1_048_576) }))
+      }
+      const base = (toolSchemas ?? advertisedTools())
+        .filter((entry) => advertise === undefined || advertise.includes(entry.name))
+      const all = [...base, ...extraTools, ...(duplicateTool === undefined ? [] : base.filter((entry) => entry.name === duplicateTool))]
+      // Paged, when a scenario asks for it. The base protocol allows `tools/list` to answer
+      // in pages with a `nextCursor`, and a client that reads only the first page sees a
+      // surface the endpoint never claimed to be complete.
+      if (Number.isInteger(pageTools) && pageTools > 0) {
+        const from = Number.parseInt(String(input.params?.cursor ?? '0'), 10) || 0
+        const page = all.slice(from, from + pageTools)
+        const next = from + pageTools
+        return send({
+          tools: page,
+          ...(next < all.length ? { nextCursor: String(next) } : {}),
+          ...(omitAgentId && recoveryNow() === undefined ? {} : {
+            _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), ...recoveryNow() } },
+          }),
+        })
+      }
+      return send({
+        tools: all,
+        ...(omitAgentId && recoveryNow() === undefined ? {} : {
+          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), ...recoveryNow() } },
+        }),
+      })
+    }
+    if (input.method !== 'tools/call') {
+      response.writeHead(400, { 'content-type': 'application/json', ...sessionHeaders })
+      return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, error: { code: -32601, message: `unknown method ${input.method}` } }))
+    }
+
     const name = String(input.params?.name ?? '')
     const args = input.params?.arguments ?? {}
-    if (name !== 'agent_protocol') {
-      toolCalls.push({ name, args })
-      if (Number.isInteger(rejectToolAfter) && toolCalls.length >= rejectToolAfter) {
-        response.writeHead(401, { 'content-type': 'application/json' })
-        return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
-      }
-      const scripted = tool?.(name, args, board)
-      const result = scripted === undefined ? board.tool(name, args) : scripted
-      if (result === HOP_FAILURE) {
-        response.writeHead(502, { 'content-type': 'text/plain' })
-        return void response.end('upstream unavailable')
-      }
-      return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
-    }
-    if (args.mode === 'board') boardRequests += 1
-    if ((rejectBoardCredential || (Number.isInteger(rejectBoardAfter) && boardRequests >= rejectBoardAfter)) && args.mode === 'board') {
-      if (rejectBoardDelayMs > 0) await new Promise((ready) => setTimeout(ready, rejectBoardDelayMs))
-      response.writeHead(401, { 'content-type': 'application/json' })
+    const meta = input.params?._meta?.[RULITH_META]
+    toolCalls.push({ name, args, meta, id: input.id, sessionId: session.id })
+    if (Number.isInteger(rejectToolAfter) && toolCalls.length >= rejectToolAfter) {
+      response.writeHead(401, { 'content-type': 'application/json', ...sessionHeaders })
       return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
     }
-    calls.push(args)
-    let result
-    if (args.mode === 'identity') result = { ok: true, agentId: 'agent-public-1' }
-    else if (args.mode === 'trace') {
-      firstTraceAt ??= Date.now()
-      if (holdTrace) return void held.push(response)
-      if (holdTraceBody) {
-        response.writeHead(200, { 'content-type': 'application/json' })
-        response.flushHeaders()
-        return void held.push(response)
-      }
-      result = { ok: true, took: (args.events ?? []).length }
-    } else result = protocol?.(args, board) ?? board.protocol(args)
-    if (result === HOP_FAILURE) {
-      response.writeHead(502, { 'content-type': 'text/plain' })
+    // The serial gate, on the server side. While the authority says a call is still
+    // executing, a new `tools/call` does not run: it is refused with the state, exactly as
+    // §5.2 requires. A host that sent one anyway gets an error rather than an execution,
+    // which is what makes "the host must not send it" testable at all.
+    const pendingState = recoveryNow()?.recovery?.state
+    const deliverable = handoff !== undefined && handoffsDelivered === 0 && toolCalls.length > (handoff.afterCall ?? 0)
+    if (pendingState === 'waiting' && !deliverable) {
+      return send({
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify({
+          accepted: false,
+          errorCode: 'call_in_flight',
+          requestExecuted: false,
+          teaching: 'This Agent has a call in flight; nothing further runs until it settles.',
+        }) }],
+        _meta: { [RULITH_META]: { agentId: TEST_AGENT_ID, ...recoveryNow() } },
+      }, { sse: sseResults })
+    }
+    if (deliverable) {
+      // The handoff: this request executes nothing and carries the outcome of the earlier
+      // call instead. It is an ordinary tool result with `isError: true` — the marker that
+      // says which call it belongs to lives in the metadata, and the business projection
+      // lives in the content where every other result's does.
+      //
+      // `withoutIsError` models the server contradicting itself: the marker says the
+      // request did not run, the protocol says it was served. A client may not pick a side.
+      handoffsDelivered += 1
+      return send({
+        ...(handoff.withoutIsError === true ? {} : { isError: true }),
+        content: [{ type: 'text', text: JSON.stringify(handoff.result) }],
+        _meta: {
+          [RULITH_META]: {
+            agentId: TEST_AGENT_ID,
+            handoff: { callRef: handoff.callRef ?? 'call-1', tool: handoff.tool ?? 'ApplyAction', requestExecuted: false },
+            ...recoveryNow(),
+          },
+        },
+      }, { sse: sseResults })
+    }
+    const scripted = tool?.(name, args, board, session, meta)
+    if (scripted === HOP_FAILURE) {
+      response.writeHead(502, { 'content-type': 'text/plain', ...sessionHeaders })
       return void response.end('upstream unavailable')
     }
-    response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }))
+    const explicit = scripted !== null && typeof scripted === 'object' && Object.hasOwn(scripted, '__core')
+    const core = explicit ? scripted.__core : (scripted === undefined ? board.tool(name, args, session, meta) : scripted)
+    const hostMeta = explicit ? scripted.__meta : board.meta(session)
+    const withRecovery = hostMeta === undefined ? recoveryNow() : { ...hostMeta, ...recoveryNow() }
+    return send({
+      content: [{ type: 'text', text: JSON.stringify(core) }],
+      ...(withRecovery === undefined ? {} : { _meta: { [RULITH_META]: withRecovery } }),
+    }, { sse: sseResults })
   })
 
+  // A fixed port lets two runs share one endpoint identity, which is what the durable
+  // session store is keyed on: a session issued by one endpoint is not a session at another.
   let port
-  await new Promise((ready) => server.listen(0, '127.0.0.1', () => { port = server.address().port; ready() }))
+  await new Promise((ready) => server.listen(listenPort, '127.0.0.1', () => { port = server.address().port; ready() }))
 
   const child = spawn(process.execPath, ['agent/rulith-agent.mjs', ...argv], {
     cwd: ROOT,
@@ -391,10 +785,8 @@ export async function runAgent({
       RULITH_MODEL: 'test-model',
       RULITH_MODEL_KEY: '',
       ANTHROPIC_API_KEY: '',
-      RULITH_TRACE: 'off',
-      RULITH_AUTO_DISCHARGE: 'off',
+      RULITH_SESSION_FILE: store,
       RULITH_MAX_ROUNDS: '3',
-      RULITH_SETTLE_WAIT_MS: '0',
       RULITH_CASE_TYPE: '',
       RULITH_MODEL_TOOLS: '',
       RULITH_SERVE: '',
@@ -464,24 +856,22 @@ export async function runAgent({
   ])
   const exitedAt = Date.now()
   clearTimeout(timer)
-  // Held responses first: `server.close` waits for open connections, so a wedged request
-  // the scenario asked for would otherwise wedge the harness's own cleanup.
-  for (const response of held) response.destroy()
+  for (const stream of heldStreams) { try { stream.destroy() } catch { /* already gone */ } }
   const serverClosed = new Promise((closed) => server.close(closed))
   server.closeAllConnections()
   await serverClosed
+  if (storeDir !== undefined) rmSync(storeDir, { recursive: true, force: true })
 
-  const operations = calls.filter((call) => call.mode === 'board').map((call) => call.operation ?? {})
   return {
-    code, stdout, stderr, calls, modelRequests, localEvents, operations, port, exitedAt,
-    serveStatuses, serveResponses, serveSnapshot, board, toolCalls,
-    /** When the endpoint first saw a trace batch, so a test can time the exit from it. */
-    firstTraceAt,
-    boardCalls: calls.filter((call) => call.mode === 'board'),
-    /** Host protocol operation kinds, in order. */
-    kinds: operations.map((operation) => String(operation.kind ?? '')),
+    code, stdout, stderr, modelRequests, localEvents, port, exitedAt,
+    serveStatuses, serveResponses, serveSnapshot, board, toolCalls, initializes, methods, paths, requests,
+    sessionStore: store,
+    /** How many `ping` calls the endpoint answered. */
+    pings,
     /** Model-facing tool names actually called, in order. */
     verbs: toolCalls.map((call) => call.name),
+    /** The `_meta["rulith/v1"]` block each tool call carried, in order. */
+    sentMeta: toolCalls.map((call) => call.meta),
   }
 }
 
@@ -498,3 +888,12 @@ export const declaredToolsOf = (request) => (Array.isArray(request?.tools) ? req
   tool.function === undefined
     ? { name: String(tool.name ?? ''), schema: tool.input_schema ?? {} }
     : { name: String(tool.function.name ?? ''), schema: tool.function.parameters ?? {} }))
+
+/** A loopback port that is free right now, for tests that must pin the endpoint identity. */
+export async function freePort() {
+  const server = createServer()
+  let port
+  await new Promise((ready) => server.listen(0, '127.0.0.1', () => { port = server.address().port; ready() }))
+  await new Promise((ready) => server.close(ready))
+  return port
+}

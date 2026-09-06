@@ -145,7 +145,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
   const clients = new Set()
   let nextSequence = 1
   const components = {
-    agent: { child: null, serveKey: '', servePort: 7799, maxConcurrentCases: 1, agentId: 'unconfigured' },
+    agent: { child: null, serveKey: '', servePort: 7799, agentId: 'unconfigured' },
     worker: { child: null },
   }
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
@@ -161,8 +161,6 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       if (message?.protocol !== 'rulith-local-event') return
       const event = message.event
       if (event === null || typeof event !== 'object' || Array.isArray(event)) return
-      if (src === 'agent' && event.type === 'start' && Number.isInteger(event.concurrency)
-        && event.concurrency >= 1 && event.concurrency <= 8) components.agent.maxConcurrentCases = event.concurrency
       if (src === 'agent' && event.type === 'start' && typeof event.agentId === 'string' && event.agentId.trim() !== '') {
         components.agent.agentId = event.agentId
       }
@@ -202,13 +200,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       env: { ...roleEnv, RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
-    components.agent = { ...components.agent, child, serveKey, servePort,
-      maxConcurrentCases: localInteger(
-        'RULITH_SERVE_CONCURRENCY',
-        roleEnv.RULITH_SERVE_CONCURRENCY,
-        1,
-        { min: 1, max: 8 },
-      ) }
+    components.agent = { ...components.agent, child, serveKey, servePort }
     wireChild('agent', child)
     child.on('exit', (code) => { emit('agent', 'exit', { code }); components.agent.child = null })
     emit('agent', 'spawn', { pid: child.pid })
@@ -279,7 +271,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
         const workerEnv = effectiveChildEnv(process.env, config.worker?.env ?? {})
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
-          agent: running('agent'), worker: running('worker'), maxConcurrentCases: components.agent.maxConcurrentCases,
+          agent: running('agent'), worker: running('worker'),
           runtime: {
             configFile,
             agent: {
@@ -287,7 +279,6 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
               modelService: safeUrl(agentEnv.RULITH_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
               modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? process.env.ANTHROPIC_API_KEY ?? '') !== '',
               thinking: String(agentEnv.RULITH_MODEL_THINKING ?? '') === 'enabled' ? 'extended' : 'standard',
-              concurrency: components.agent.maxConcurrentCases,
             },
             worker: {
               connection: String(workerEnv.RULITH_CONNECTION ?? ''), credentialConfigured: String(workerEnv.RULITH_CONNECTION_KEY ?? '') !== '',

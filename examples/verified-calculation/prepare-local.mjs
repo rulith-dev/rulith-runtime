@@ -34,7 +34,6 @@ const config = {
     args: [],
     env: {
       ...(source.agent?.env ?? {}),
-      RULITH_SERVE_CONCURRENCY: '1',
       RULITH_SERVE_PORT: process.env.RULITH_CALC_SERVE_PORT ?? '7800',
     },
   },

@@ -3,16 +3,19 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "08780a8c1d768a6cf6f8c042e2f51f8f1cc57b3dfe3f94f22ce04154d455c904"
+      "sha256": "eed00c92a0aa8b06396f52a2a4b1414fd5004e7ebcc616def2798c61caf35df2"
+    },
+    "protocol/mcp-contract.json": {
+      "sha256": "7089207f72253ebffb39c43312c9b1a3b53b435272337a040e8d79d18c605205"
     },
     "worker/rulith-worker.mjs": {
       "sha256": "73aaccd30e803e214f736f4dccb062f7fb82bef7e594dbfa66f088a8fec3cb33"
     },
     "local/rulith-local.mjs": {
-      "sha256": "1abc1996541070761d08bf0680a009a30015dc137bc89a61b86f62a5acd4fe76"
+      "sha256": "20a216177c28697b9eb5dc7a1c3938190262dff562d9a8e444fc0c5ef4667e52"
     },
     "local/local-ui.mjs": {
-      "sha256": "742453b9d8f49a4b433205161486b80c46bf38fd216740d6619eda097f5cc7d7"
+      "sha256": "0633e37ee7430a55536704f0e87fe9abaf38ceecf26e0b73bdd4475534fecf2b"
     },
     "config/rulith-sources.example.json": {
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
@@ -33,7 +36,7 @@
       "sha256": "bbf32059e524e278431fcade0ed5112fde4010936ba4d8515b13e44bbf1a864a"
     },
     "examples/verified-calculation/prepare-local.mjs": {
-      "sha256": "2d8a028010342d98b81974cf9259a851180ca3b845c947a783e4ecd9376d8cd1"
+      "sha256": "56e7239da816a324c16a796d4ddef40ad521d4c5f1f99f4c6cd7cb03840a7e51"
     },
     "examples/verified-calculation/read-input.mjs": {
       "sha256": "9b360e7a6dd108657e7b4946d9f63128f02d86e31087fe50b60bcfe0830bcabd"
@@ -42,7 +45,7 @@
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "b7a77ff787d7efe915c5b6e16db43dbecaef11728231438ac1093b4bad3abc62"
+      "sha256": "6abefcf6e14ebf6d1f5d09ac4fc0eb000dd6a6b185a36389e50d08340a070685"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

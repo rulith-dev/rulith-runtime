@@ -18,7 +18,7 @@ import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-import { carriageReturnOffenders, teaching } from '../scripts/check-line-endings.mjs'
+import { carriageReturnOffenders, controlByteOffenders, controlByteTeaching, teaching } from '../scripts/check-line-endings.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
@@ -33,7 +33,7 @@ const ROOT = resolve(import.meta.dirname, '..')
  * the behaviour of the check. The pack step is where the checkout itself is judged, and
  * `npm run check` — which prepack runs — is where that judgement is wired up.
  */
-function packageTree({ crlf, packageCrlf = false, contributionCrlf = false }) {
+function packageTree({ crlf, packageCrlf = false, contributionCrlf = false, nulByte = false }) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-crlf-'))
   const manifest = { schema: 'rulith-local-runtime-artifacts/v1', files: { 'a/one.mjs': { sha256: 'x' }, 'b/two.mjs': { sha256: 'y' } } }
   writeFileSync(join(dir, 'artifact-manifest.json'), JSON.stringify(manifest))
@@ -41,7 +41,12 @@ function packageTree({ crlf, packageCrlf = false, contributionCrlf = false }) {
   writeFileSync(join(dir, 'package.json'), packageCrlf ? pkgLf.replaceAll('\n', '\r\n') : pkgLf)
   writeFileSync(join(dir, 'CONTRIBUTING.md'), contributionCrlf ? 'one\r\ntwo\r\n' : 'one\ntwo\n')
   mkdirSync(join(dir, 'a')); mkdirSync(join(dir, 'b'))
-  writeFileSync(join(dir, 'a', 'one.mjs'), 'const a = 1\nconst b = 2\n')
+  // The fixture writes the byte; it does not contain one. A test file carrying a literal
+  // NUL would be as unsearchable as the file it is guarding, which is the whole distinction
+  // the check exists to enforce.
+  const NUL = String.fromCharCode(0)
+  writeFileSync(join(dir, 'a', 'one.mjs'),
+    nulByte ? `const separator = 'a${NUL}b'\n` : 'const a = 1\nconst b = 2\n')
   writeFileSync(join(dir, 'b', 'two.mjs'), crlf ? 'const c = 3\r\nconst d = 4\r\n' : 'const c = 3\nconst d = 4\n')
   return dir
 }
@@ -72,6 +77,57 @@ test('the line-ending check covers package.json even though it is not a runtime 
 test('the line-ending check expands package files instead of guarding one hard-coded filename', () => {
   const dir = packageTree({ crlf: false, contributionCrlf: true })
   try { assert.deepEqual(carriageReturnOffenders(dir), ['CONTRIBUTING.md']) } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── Bytes that make a published source file stop behaving like text ──────────
+
+test('the source-byte check finds a NUL and says why it matters', () => {
+  // The defect this closes was real and silent: one literal NUL in agent/rulith-agent.mjs
+  // made grep and ripgrep answer "binary file matches" for every search of the one file
+  // this cutover changed most. A reviewer checking that retired names were gone would have
+  // read that silence as a clean result.
+  const dir = packageTree({ crlf: false, nulByte: true })
+  try {
+    const offenders = controlByteOffenders(dir)
+    assert.equal(offenders.length, 1)
+    assert.equal(offenders[0].file, 'a/one.mjs')
+    assert.equal(offenders[0].name, 'NUL')
+    assert.equal(typeof offenders[0].offset, 'number')
+    const message = controlByteTeaching(offenders)
+    assert.match(message, /Refusing to pack/)
+    assert.match(message, /grep and ripgrep treat a file containing NUL\s+as binary/)
+    assert.match(message, /at byte offset/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the source-byte check passes an ordinary tree (calibration)', () => {
+  // Without this arm, a check that reported every file would satisfy the one above. Tabs
+  // and newlines are ordinary source bytes and must not be reported.
+  const dir = packageTree({ crlf: false })
+  try {
+    writeFileSync(join(dir, 'b', 'two.mjs'), ['const c = 3', '\tconst d = 4', ''].join('\n'))
+    assert.deepEqual(controlByteOffenders(dir), [])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('running the check as a command refuses a NUL tree and names the file', () => {
+  const dir = packageTree({ crlf: false, nulByte: true })
+  try {
+    const run = spawnSync(process.execPath, ['scripts/check-line-endings.mjs', dir], { cwd: ROOT, encoding: 'utf8' })
+    assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stderr, /contain control bytes/)
+    assert.match(run.stderr, /a\/one\.mjs: NUL at byte offset/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the shipped runtime sources are searchable with ordinary tools', () => {
+  // The guard on the real tree, not a fixture: every published file must stay text, and
+  // the file this cutover rewrote most must answer a plain search.
+  assert.deepEqual(controlByteOffenders(), [])
+  const agent = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'))
+  assert.equal(agent.includes(0), false, 'agent/rulith-agent.mjs contains a NUL and is invisible to ripgrep')
+  assert.match(agent.toString('utf8'), /RULITH_SESSION_FILE/,
+    'a plain search of the Agent source must find what is in it')
 })
 
 test('the check refuses to pass vacuously when the manifest lists nothing', () => {
