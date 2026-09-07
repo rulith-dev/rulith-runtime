@@ -8,10 +8,10 @@
  * to. A Worker cannot fake an appended line, and it cannot un-write one.
  */
 import { createHmac } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
 import { canonicalJson, executionDigest, toolDigest } from '../../worker/rulith-worker.mjs'
@@ -278,16 +278,78 @@ export function sourceFreeActionRow(overrides = {}) {
   })
 }
 
+/**
+ * The work-item shapes, read out of the vendored contract rather than restated here.
+ *
+ * A default row factory is a claim about what a Gateway sends. Twice now this suite has been
+ * green on a field the wire does not have — `sourceType`, and then `connectionId` on a
+ * verification row — and each time every arm downstream passed for the wrong reason: the code
+ * under test only reached its interesting part because the fixture had handed it something no
+ * deployment could. So the default rows are checked against the committed schema at
+ * construction, and a row that grows a field the contract does not declare fails here rather
+ * than teaching the whole file a fiction.
+ *
+ * This is a floor on the **defaults**. A test that wants a malformed row for a negative arm
+ * builds it explicitly afterwards — `{...verificationRow(), connectionId: 'x'}` — which reads
+ * as the deliberate mutation it is instead of hiding in the shared factory.
+ */
+const WORKER_SCHEMA = JSON.parse(JSON.parse(readFileSync(join(ROOT, 'protocol', 'worker-contract.json'), 'utf8'))
+  .files['docs/specs/schemas/rulith-worker-protocol-v2.schema.json'].content)
+export const workItemShape = (name) => {
+  const shape = WORKER_SCHEMA.$defs[name]
+  if (shape === undefined) throw new Error(`the vendored Worker contract declares no ${name}`)
+  return shape
+}
+/** Keys the contract declares and requires, so a fixture cannot drift in either direction. */
+function conforming(name, row) {
+  const shape = workItemShape(name)
+  const allowed = new Set(Object.keys(shape.properties))
+  const extra = Object.keys(row).filter((key) => !allowed.has(key))
+  if (extra.length > 0) {
+    throw new Error(`${name} fixture carries ${extra.join(', ')}, which the contract does not declare`
+      + ` (additionalProperties: ${shape.additionalProperties}). A Gateway cannot send this row.`)
+  }
+  const missing = (shape.required ?? []).filter((key) => row[key] === undefined)
+  if (missing.length > 0) throw new Error(`${name} fixture states no ${missing.join(', ')}, which the contract requires`)
+  return row
+}
+
+/**
+ * One verification order, exactly as `WorkerVerificationWorkItem` admits it.
+ *
+ * `channel` is the carrying Connection and there is no `connectionId`: the schema declares one
+ * and not the other, and its own note says the channel "is the transport, not the accreditation".
+ * The row states `source` and not its type — the accredited type belongs to the governed Source
+ * record the Worker reads from the Sources it was granted.
+ */
 export function verificationRow(overrides = {}) {
-  return {
+  return conforming('WorkerVerificationWorkItem', {
     workType: 'verification',
     work: 'wo_p2',
-    connectionId: CONNECTION,
+    boardId: BOARD,
+    channel: CONNECTION,
     source: 'orders',
-    sourceType: 'file',
     claim: { predicate: 'output_record', args: { node: 'n1' } },
     ...overrides,
-  }
+  })
+}
+
+/**
+ * One material request, exactly as `WorkerEvidenceWorkItem` admits it.
+ *
+ * It carries no carrier field at all — not `channel`, not `connectionId`. An evidence order
+ * reaches a Worker on that Worker's own authenticated Poll, and the Source it is filed under is
+ * `source`. `tool` and `payload` are the only optional members.
+ */
+export function evidenceRow(overrides = {}) {
+  return conforming('WorkerEvidenceWorkItem', {
+    workType: 'evidence',
+    work: 'ev_p2',
+    material: 'inventory',
+    source: 'orders',
+    tool: 'acme.ship@1',
+    ...overrides,
+  })
 }
 
 /**
@@ -298,15 +360,26 @@ export function verificationRow(overrides = {}) {
  * reaches the Worker as a thrown fetch) or `HOLD`. `done(seen, output)` decides when the
  * scenario has played out; it must also become true on the *broken* path, or a regression
  * would present as a timeout rather than as a failed assertion.
+ *
+ * `extraFiles` writes anything else the scenario needs inside the Worker root — Source data a
+ * real Adapter reads, a fixture it writes back — and `sources(root)` replaces the Source rows
+ * the endpoint publishes, so a scenario can drive a named governed Source of its own rather
+ * than the default `orders`.
  */
 export async function driveWorker({
-  reply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraTools = {}, env = {},
-  leaseGeneration = 7, lease: leaseOverride,
+  reply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {}, extraTools = {}, env = {},
+  leaseGeneration = 7, lease: leaseOverride, sources = (root) => [{ name: 'orders', type: 'file', access: root }],
 }) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-p2-'))
   const effectLog = join(dir, 'effects.log')
-  for (const [name, source] of Object.entries({ ...ADAPTERS, ...extraAdapters })) writeFileSync(join(dir, name), source, 'utf8')
+  // A relative name may nest — a scenario that drives a shipped Tool Manifest writes its
+  // Adapters at the paths that manifest really names, rather than at flattened stand-ins.
+  for (const [name, source] of Object.entries({ ...ADAPTERS, ...extraAdapters, ...extraFiles })) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true })
+    writeFileSync(join(dir, name), source, 'utf8')
+  }
   writeFileSync(join(dir, 'worker-tools.json'), JSON.stringify({ ...TOOLS, tools: { ...TOOLS.tools, ...extraTools } }), 'utf8')
+  const sourceRows = sources(dir)
 
   const seen = []
   const held = []
@@ -363,7 +436,7 @@ export async function driveWorker({
   const server = createServer((request, response) => {
     if ((request.method ?? 'GET') === 'GET') {
       response.writeHead(200, { 'content-type': 'application/json' })
-      return void response.end(JSON.stringify({ sources: [{ name: 'orders', type: 'file', access: dir }] }))
+      return void response.end(JSON.stringify({ sources: sourceRows }))
     }
     let raw = ''
     request.setEncoding('utf8')

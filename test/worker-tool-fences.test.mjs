@@ -324,10 +324,17 @@ test('an ordinary MCP response still passes through unchanged (calibration)', as
 
 // ── H. A run Adapter does not inherit the runtime's credentials ──────────────
 
-test('adapterEnv removes the runtime credentials and keeps the ordinary environment', () => {
+test('adapterEnv removes the whole runtime namespace and keeps the ordinary environment', () => {
+  // `RULITH_WORKER_ROOT` and `RULITH_CALC_INPUT` are the two shapes a name-by-name list could
+  // not have caught: neither is a credential, and neither is a name anybody would have thought
+  // to add beforehand. One is this Worker's own configuration; the other is a path an example
+  // Adapter once read for itself, which let an ambient variable choose what a receipt would
+  // report as governed Source material. The namespace is the rule; the list was the symptom.
   const stripped = adapterEnv({
     PATH: '/usr/bin', HOME: '/home/operator', TEMP: '/tmp', LANG: 'en_US.UTF-8', HTTPS_PROXY: 'http://proxy:8080',
     RULITH_INVOCATION_ID: 'inv_1', RULITH_SOURCE_ACCESS: '/srv/data', RULITH_WORKER_ROOT: '/srv/worker',
+    RULITH_CALC_INPUT: '/etc/somebody-elses/input.json',
+    RULITH_CALC_OUTPUT: '/etc/somebody-elses/output.json',
     RULITH_CONNECTION_KEY: 'connection-secret',
     RULITH_TOKEN: 'agent-secret',
     RULITH_MODEL_KEY: 'model-secret',
@@ -341,14 +348,37 @@ test('adapterEnv removes the runtime credentials and keeps the ordinary environm
     RULITH_FUTURE_KEY: 'not-yet-invented',
     RULITH_SOMETHING_TOKEN: 'also-not-yet-invented',
   })
-  assert.deepEqual(Object.keys(stripped).sort(), [
-    'HOME', 'HTTPS_PROXY', 'LANG', 'PATH', 'RULITH_WORKER_ROOT', 'TEMP',
-  ])
+  assert.deepEqual(Object.keys(stripped).sort(), ['HOME', 'HTTPS_PROXY', 'LANG', 'PATH', 'TEMP'],
+    'nothing in the RULITH_ namespace may be inherited; an Adapter receives only what handRun supplies')
   const serialized = JSON.stringify(stripped)
   for (const secret of ['connection-secret', 'agent-secret', 'model-secret', 'shadow-secret', 'reviewer-secret',
-    'serve-secret', 'local-secret', 'password', 'model-provider-secret', 'not-yet-invented', 'also-not-yet-invented']) {
+    'serve-secret', 'local-secret', 'password', 'model-provider-secret', 'not-yet-invented', 'also-not-yet-invented',
+    'somebody-elses']) {
     assert.doesNotMatch(serialized, new RegExp(secret), `${secret} survived into the Adapter environment`)
   }
+  // Negative calibration: the rule is a namespace, not "anything that looks like ours".
+  assert.equal(adapterEnv({ RULITHESQUE_SETTING: 'kept', ACME_RULITH_TOKENISH: 'kept' }).RULITHESQUE_SETTING, 'kept')
+})
+
+test('the three names an Adapter is handed are addressed as names, not as list positions', () => {
+  // `handRun` addressed them as `ADAPTER_SUPPLIED_CONTEXT[0]`, `[1]`, `[2]`. The coupling to
+  // array order bought nothing — it existed so a test extractor could find the list — and
+  // reordering the entries would have put the Source root into `RULITH_SOURCE_TYPE` with
+  // nothing anywhere to notice. The map is now the declaration and the list is derived from it.
+  const source = readFileSync(new URL('../worker/rulith-worker.mjs', import.meta.url), 'utf8')
+  // Comments stripped first: the declaration's own note quotes the retired positional form to
+  // explain why it is gone, and a scan that counted prose would report the fix as unapplied.
+  const code = source.replace(/\/\*[\s\S]*?\*\//gu, ' ').replace(/(^|[^:])\/\/[^\n]*/gu, '$1')
+  assert.doesNotMatch(code, /ADAPTER_SUPPLIED_CONTEXT\s*\[\s*\d/u,
+    'a supplied context name is still addressed by list position')
+  for (const [role, name] of [['invocationId', 'RULITH_INVOCATION_ID'], ['sourceAccess', 'RULITH_SOURCE_ACCESS'], ['sourceType', 'RULITH_SOURCE_TYPE']]) {
+    assert.match(source, new RegExp(`ADAPTER_CONTEXT\\.${role}\\b`, 'u'), `handRun no longer writes ${name} by its role name`)
+  }
+  // And the derived list is exactly those three, so the extractor and the fence read one source.
+  const declared = source.match(/ADAPTER_CONTEXT\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/u)
+  assert.ok(declared, 'the supplied-context map is no longer declared where its readers look for it')
+  assert.deepEqual([...declared[1].matchAll(/'(RULITH_[A-Z0-9_]+)'/gu)].map((m) => m[1]),
+    ['RULITH_INVOCATION_ID', 'RULITH_SOURCE_ACCESS', 'RULITH_SOURCE_TYPE'])
 })
 
 test('the credential fence matches the name however Windows spells it', () => {
@@ -437,7 +467,14 @@ test('a run Tool that declares env.pass receives the basics plus those names and
   // The listed name is matched case-insensitively too, for the same Windows reason.
   assert.equal(adapterEnv({ Acme_Region: 'eu-west-1', OTHER: 'x' }, ['ACME_REGION']).Acme_Region, 'eu-west-1')
   assert.deepEqual(adapterEnv({ Rulith_Invocation_Id: 'inv_stale', ACME_REGION: 'eu-west-1' }, ['RULITH_INVOCATION_ID', 'ACME_REGION']), { ACME_REGION: 'eu-west-1' },
-    'trusted Case/Source context must be supplied by the current work item, never env.pass')
+    'trusted execution context must be supplied by the current work item, never env.pass')
+  // The retired half of the same rule. Case identity left this hop, so nothing can supply
+  // `RULITH_CASE_ID` — and an ambient copy reaching an Adapter is an operator's string that
+  // could be read as a Case. It is stripped by the deny path and by an allow-list alike.
+  assert.equal(adapterEnv({ RULITH_CASE_ID: 'forged-case-identity', PATH: '/usr/bin' }).RULITH_CASE_ID, undefined,
+    'a retired hop name must not be inherited by an Adapter')
+  assert.equal(adapterEnv({ Rulith_Case_Id: 'forged-case-identity' }, ['RULITH_CASE_ID']).Rulith_Case_Id, undefined,
+    'and env.pass must not be able to hand it back')
   // An empty list is a real setting, not a missing one: basics only.
   assert.deepEqual(Object.keys(adapterEnv({ PATH: '/usr/bin', ACME_REGION: 'eu-west-1' }, [])), ['PATH'])
 })

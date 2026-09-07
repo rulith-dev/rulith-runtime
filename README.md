@@ -547,10 +547,22 @@ the fence holds on Windows, where `Rulith_Token` and `RULITH_TOKEN` are one vari
 `env` on any other Adapter is refused when the manifest is read rather than ignored. The
 field is part of the Tool digest, so adding it changes what the Cloud pin authorizes.
 
-What an Adapter needs is still handed to it explicitly, past either fence:
-`RULITH_CASE_ID` comes from the trusted work item and `RULITH_SOURCE_ACCESS` from the
-local Source vault, never from the ambient environment. The example adapters under
-`examples/verified-calculation/` read exactly those two.
+- **The `RULITH_` namespace, always.** Every ambient variable whose name starts with
+  `RULITH_` is stripped before an Adapter starts — on the deny path and against an
+  `env.pass` allow-list alike — because that namespace is the runtime's to fill, not the
+  environment's. What an Adapter receives from it is exactly what the work item decides:
+  `RULITH_INVOCATION_ID` from the trusted work item, and `RULITH_SOURCE_ACCESS` and
+  `RULITH_SOURCE_TYPE` from the Source this invocation selected. A Source-free execution
+  is given neither of the last two, so an Adapter that needs a location finds nothing
+  rather than something left over. An Adapter is told no Case: one execution may be
+  reached by several Cases, and which ones is the shared graph's answer rather than
+  something this hop could state.
+
+An Adapter's own configuration lives outside that namespace — `ACME_REGION` is what
+`env.pass` is for. The example adapters under `examples/verified-calculation/` read the
+Source root they are handed and nothing else: they have no path override and no default
+directory, so an Adapter granted no Source, or one of the wrong type, refuses instead of
+reading a file of its own choosing.
 
 ## Rulith Local
 

@@ -1,17 +1,36 @@
 #!/usr/bin/env node
 /** Read-only adapter: attest the persisted output as structured rows. */
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
-const SOURCE_ROOT = process.env.RULITH_SOURCE_ACCESS ?? join(HERE, 'data')
-const OUTPUT = process.env.RULITH_CALC_OUTPUT ?? join(SOURCE_ROOT, 'output.json')
+import { isAbsolute, join } from 'node:path'
 
 function fail(message) {
   console.error(`calculation read-back rejected: ${message}`)
   process.exit(2)
 }
+
+/**
+ * The one place this Adapter may read — see `read-input.mjs` for the rule in full.
+ *
+ * An independent read-back that could be pointed at another file by an ambient variable would
+ * attest a match against a file nobody governed, which is the one thing this Adapter exists to
+ * make impossible.
+ */
+function sourceRoot() {
+  const access = String(process.env.RULITH_SOURCE_ACCESS ?? '')
+  const type = String(process.env.RULITH_SOURCE_TYPE ?? '')
+  if (access === '' || !isAbsolute(access)) {
+    fail('no governed file Source was supplied. This Adapter reads only the Source root the Worker'
+      + ' hands it in RULITH_SOURCE_ACCESS, which is an absolute path; it has no default location'
+      + ' and no path override.')
+  }
+  if (type !== 'file') {
+    fail(`the selected Source is of type ${JSON.stringify(type || '(none)')}, and this Adapter reads a file Source.`
+      + ' Bind a file Source to the Connection that carries this Tool.')
+  }
+  return access
+}
+
+const OUTPUT = join(sourceRoot(), 'output.json')
 
 let request
 try { request = JSON.parse(process.argv[2] ?? '') } catch { fail('worker must pass one JSON argument object') }

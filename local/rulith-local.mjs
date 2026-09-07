@@ -138,7 +138,52 @@ const safeUrl = (value) => {
   } catch { return String(value ?? '') }
 }
 
-export function createLocalHost({ configFile, config, roles, port = 7790, key = randomUUID().replace(/-/g, '') }) {
+/**
+ * What "this role started" means, and the event each role already sends to say it.
+ *
+ * A start is confirmed by the role's own readiness event, never by a timer:
+ *
+ *   · `agent` sends `start` once its task endpoint is listening — see `emit('start', …)` in
+ *     `agent/rulith-agent.mjs`, which runs after `serveSrv.listen` resolves.
+ *   · `worker` sends `up` once its Tool Manifest is loaded and it is entering its poll loop —
+ *     see `say(… , 'up', …)` in `worker/rulith-worker.mjs`, after `await SOURCES_READY`.
+ *
+ * **Each role's own answer, not one this host imposes.** The two are deliberately not the same
+ * shape, and pretending they were would misreport one of them. A Worker whose Source fetch
+ * fails says so and comes up anyway, so an offline machine's healthy Worker is confirmed
+ * started. The Agent establishes its authenticated MCP session before it serves and exits when
+ * it cannot, so an unreachable Gateway reaches this host as what it is — a child that exited
+ * during startup — rather than as a rule this host invented about the network.
+ *
+ * Both events already existed and are already forwarded to the Local event stream; this is the
+ * consumer they were missing, not a new child protocol.
+ */
+const ROLE_READY_EVENT = Object.freeze({ agent: 'start', worker: 'up' })
+/**
+ * The ceiling on *not knowing*, not a wait.
+ *
+ * A confirmation ends the moment the readiness event or the child's exit arrives, so a healthy
+ * start answers as fast as the child can report and a broken one as fast as it can die. This
+ * bound is only reached by a program that does neither — an operator-configured `paths.*`
+ * pointing at something that does not speak the readiness event — and that case is answered as
+ * unconfirmed rather than as either success or failure. It is a host parameter rather than a
+ * constant because it states how long "unknown" may last, which a caller that knows what it is
+ * starting may hold an opinion about; the CLI below states none and takes this default.
+ */
+const START_CONFIRM_MS = 15_000
+/**
+ * How long a stop watches for the exit it asked for before saying it has not seen one.
+ *
+ * Short, because it is not a grace period and nothing follows it: a role that has not exited
+ * is reported as still stopping, and no second signal is ever sent. A well-behaved child exits
+ * far inside this, so the ordinary answer is unchanged.
+ */
+const STOP_OBSERVE_MS = 2_000
+
+export function createLocalHost({
+  configFile, config, roles, port = 7790, key = randomUUID().replace(/-/g, ''),
+  startConfirmMs = START_CONFIRM_MS,
+}) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
   const events = []
@@ -156,11 +201,42 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
     const frame = `data: ${JSON.stringify(event)}\n\n`
     for (const client of clients) { try { client.write(frame) } catch { clients.delete(client) } }
   }
+  /**
+   * The children an operator asked to stop, by process identity.
+   *
+   * A stopped child exits, and an exit is otherwise a startup failure. Without this the two
+   * are indistinguishable and the operator who pressed Stop while a start was still being
+   * confirmed was told to "fix the missing local configuration" — advice about a defect that
+   * does not exist, for something they did on purpose. Keyed on the child object rather than
+   * on the role, so it can never be read against the process that replaced it.
+   *
+   * **A request, not an acknowledgement.** `kill()` sends a signal; on POSIX the child decides
+   * what to do with it, and may handle or ignore it. So this records that a stop was *asked
+   * for*, and every place that wants to say something about the process asks the process —
+   * `child.exitCode`/`signalCode`, or the exit event — instead of reading this set as if it
+   * were the answer.
+   */
+  const stopRequested = new WeakSet()
+  /** Has this child actually ended, as the process itself reports it? */
+  const hasExited = (child) => child === null || child === undefined
+    || child.exitCode !== null || child.signalCode !== null
   const wireChild = (src, child) => {
     child.on('message', (message) => {
       if (message?.protocol !== 'rulith-local-event') return
       const event = message.event
       if (event === null || typeof event !== 'object' || Array.isArray(event)) return
+      // Readiness is recorded for **this** child only, and only while nobody has asked it to
+      // stop. Process identity alone was not enough: a POSIX child may handle SIGTERM, and one
+      // that answers the stop signal by reporting readiness would otherwise confirm the very
+      // start the operator had just cancelled. A signal is a request, not an acknowledgement,
+      // so a report that arrives after the request cannot be read as the report the pending
+      // start was waiting for. The event still reaches the Trace stream below, unedited.
+      if (event.type === ROLE_READY_EVENT[src] && components[src].child === child && !stopRequested.has(child)) {
+        components[src].readyAt = Date.now()
+        const settle = components[src].onReady
+        components[src].onReady = undefined
+        settle?.()
+      }
       if (src === 'agent' && event.type === 'start' && typeof event.agentId === 'string' && event.agentId.trim() !== '') {
         components.agent.agentId = event.agentId
       }
@@ -200,7 +276,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       env: { ...roleEnv, RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
-    components.agent = { ...components.agent, child, serveKey, servePort }
+    components.agent = { ...components.agent, child, serveKey, servePort, readyAt: undefined, onReady: undefined }
     wireChild('agent', child)
     child.on('exit', (code) => { emit('agent', 'exit', { code }); components.agent.child = null })
     emit('agent', 'spawn', { pid: child.pid })
@@ -215,7 +291,7 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
       env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
-    components.worker.child = child
+    components.worker = { ...components.worker, child, readyAt: undefined, onReady: undefined }
     wireChild('worker', child)
     child.on('exit', (code) => { emit('worker', 'exit', { code }); components.worker.child = null })
     emit('worker', 'spawn', { pid: child.pid })
@@ -224,9 +300,88 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
   const stop = (role) => {
     const child = components[role]?.child
     if (child === null || child === undefined) return `${role} is not running.`
+    stopRequested.add(child)
     child.kill()
     return null
   }
+  /**
+   * Watch for the exit the stop asked for, and say which of the two actually happened.
+   *
+   * `child.kill()` sends SIGTERM and returns. On POSIX the child chooses what to do with it:
+   * it may handle it, and it may keep running. Answering `stopped` at that moment reported an
+   * intention as an outcome — a child that ignored the signal was still listed as running one
+   * refresh later, with a message saying it had stopped.
+   *
+   * So the exit event this host already receives is what decides, within a short bound. A
+   * well-behaved role exits in milliseconds and still answers `stopped`; one that does not is
+   * answered `stopping`, truthfully. **Nothing is escalated**: no second signal, no SIGKILL, no
+   * supervisor. Whether a process that refuses to leave should be forced is a decision this
+   * host does not make, and reporting it accurately is what lets somebody else make it.
+   */
+  const observeExit = (role) => new Promise((settle) => {
+    const child = components[role]?.child
+    if (hasExited(child)) return void settle('stopped')
+    const finish = (outcome) => { clearTimeout(timer); child.off('exit', onExit); settle(outcome) }
+    const onExit = () => finish('stopped')
+    const timer = setTimeout(() => finish(hasExited(child) ? 'stopped' : 'stopping'), STOP_OBSERVE_MS)
+    child.once('exit', onExit)
+  })
+  /**
+   * Did the role this request just started finish initializing, die trying, or neither?
+   *
+   * This replaces a fixed 350 ms sleep followed by "is it still running". That answered the
+   * wrong question in both directions: on a busy machine a child that exits immediately has
+   * not exited yet at 350 ms, so Local reported `200 {ok:true}` for a role that was already
+   * dying — and a child that takes longer than 350 ms to *succeed* was never confirmed at all,
+   * only assumed. The evidence is the readiness event the role already sends and the child's
+   * own exit; the timer's only remaining job is to bound how long "I do not know" may last.
+   *
+   * Returns `{outcome, exited}` where outcome is `ready` | `exited` | `cancelled` |
+   * `unconfirmed`. `cancelled` is decided by `stopRequested` — an explicit per-child record of
+   * an operator gesture — and never by which listener happened to run first: a Stop that lands
+   * while a start is still being confirmed would otherwise be reported as a startup failure and
+   * blamed on the configuration.
+   *
+   * `exited` is separate from the outcome and is asked of the process, because the two really
+   * are different questions. A stop that has been *requested* does not mean the child has gone:
+   * a POSIX child may handle SIGTERM and stay. The caller needs both to say anything true, and
+   * saying "it is not running" on the strength of the request alone was the untruth this split
+   * removes.
+   *
+   * A late readiness cannot reach `ready` here either. `wireChild` stops recording readiness for
+   * a child once its stop has been requested, so a process that answers the stop signal by
+   * reporting itself ready confirms nothing — the report is still shown in Trace, it simply is
+   * not evidence for a start the operator has already cancelled.
+   *
+   * There is deliberately no "replaced by a newer child" outcome. A start is refused while the
+   * role is running, so a replacement can only follow this child's exit, and this settles on
+   * that exit. An outcome nothing can reach is worse than one that is absent: it reads as a
+   * case that was thought about and is really a case that cannot happen.
+   */
+  const confirmStart = (role) => new Promise((settle) => {
+    const state = components[role]
+    const child = state.child
+    if (child === null || child === undefined) return void settle({ outcome: 'exited', exited: true })
+    let done = false
+    const finish = (outcome) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      child.off('exit', onExit)
+      if (state.onReady === finishReady) state.onReady = undefined
+      settle({ outcome, exited: hasExited(child) })
+    }
+    const finishReady = () => finish(stopRequested.has(child) ? 'cancelled' : 'ready')
+    const ended = () => (stopRequested.has(child) ? 'cancelled' : 'exited')
+    const onExit = () => finish(ended())
+    const timer = setTimeout(() => finish(stopRequested.has(child) ? 'cancelled' : 'unconfirmed'), startConfirmMs)
+    // Both answers may already be in hand: a fast child can report and even exit before this
+    // runs, and neither event will be delivered a second time.
+    if (state.readyAt !== undefined) return void finish(stopRequested.has(child) ? 'cancelled' : 'ready')
+    if (hasExited(child)) return void finish(ended())
+    state.onReady = finishReady
+    child.once('exit', onExit)
+  })
   /**
    * One gate for every route, including `/`.
    *
@@ -296,11 +451,54 @@ export function createLocalHost({ configFile, config, roles, port = 7790, key = 
           : body.operation === 'stop' ? stop(role)
             : body.operation === 'start' ? (role === 'agent' ? startAgent() : role === 'worker' ? startWorker() : 'role must be agent or worker.')
               : 'operation must be start or stop.'
-        if (error === null && body.operation === 'start') {
-          await new Promise((accept) => setTimeout(accept, 350))
-          if (!running(role)) error = `${role === 'agent' ? 'Agent' : 'Worker'} exited during startup. Open Trace for the exact diagnostic and fix the missing local configuration before retrying.`
+        if (error === null && body.operation === 'stop') {
+          // The signal has been sent; whether it was obeyed is the process's answer, not this
+          // host's. `stopped` says an exit was observed. `stopping` says it was not — no second
+          // signal follows, and the role is still listed as running until it really goes.
+          const observed = await observeExit(role)
+          return void json(res, 200, observed === 'stopped'
+            ? { ok: true, state: 'stopped' }
+            : { ok: true, state: 'stopping', teaching:
+                `The stop signal was sent to ${role === 'agent' ? 'the Agent' : 'the Worker'}, and it has not exited yet.`
+                + ' Rulith Local does not force a process to end; it is still listed as running,'
+                + ' and its exit will appear in Trace if it does end.' })
         }
-        return void json(res, error === null ? 200 : 400, error === null ? { ok: true } : { ok: false, teaching: error })
+        if (error === null && body.operation === 'start') {
+          const named = role === 'agent' ? 'Agent' : 'Worker'
+          const { outcome, exited } = await confirmStart(role)
+          if (outcome === 'exited') {
+            error = `${named} exited during startup. Open Trace for the exact diagnostic and fix the missing local configuration before retrying.`
+          } else if (outcome === 'cancelled') {
+            // Said as a cancellation, not a defect: the operator stopped it, and there is
+            // nothing here for them to go and fix. What is *not* claimed is that it has gone —
+            // a stop is a request, and a child that handled the signal and stayed is described
+            // as what it is, including when it answered that signal by reporting itself ready.
+            // "A stop was requested", not "was stopped": the second half of this teaching may go
+            // on to say the process has not exited, and an opening clause that had already
+            // asserted it stopped would contradict it in the same breath.
+            return void json(res, 409, { ok: false, state: 'cancelled', teaching:
+              `A stop was requested for the ${named} before this start finished, so this start is not confirmed. Nothing about it failed.`
+              + (exited
+                ? ' It is not running; start it again when you want it running.'
+                : ' The stop signal was sent and it has not exited yet, so anything it reported'
+                  + ' after that is not a confirmation of this start. Watch Trace for its exit.') })
+          } else if (outcome === 'unconfirmed') {
+            // Neither success nor failure, and said as itself. The process is alive, so calling
+            // this a failure would be wrong; it has not reported that it finished initializing,
+            // so calling it started would be the fake success this gate exists to prevent.
+            return void json(res, 202, { ok: false, state: 'unconfirmed', teaching:
+              `${named} was started and is still running, but it has not reported that it finished initializing.`
+              + ` Rulith Local confirms a start by the role's own readiness event — the Agent reports its task endpoint is listening,`
+              + ' the Worker reports its Tool Manifest is loaded — so a program configured under paths that does not send one cannot'
+              + ' be confirmed here. Open Trace to read what it has printed so far.' })
+          }
+        }
+        // Only a confirmed start reaches here with `error === null`: a stop answered above with
+        // what it observed, and every other start outcome answered with its own state. `ready`
+        // is a statement about a role that reported it finished initializing and was not asked
+        // to stop while doing so.
+        return void json(res, error === null ? 200 : 400,
+          error === null ? { ok: true, state: 'ready' } : { ok: false, teaching: error })
       }
       if (path === '/cases' && req.method === 'POST') {
         if (!running('agent')) return void json(res, 409, { ok: false, teaching: 'This Local runtime is not running the Agent role.' })

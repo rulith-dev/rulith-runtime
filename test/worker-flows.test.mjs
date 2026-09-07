@@ -26,22 +26,10 @@ import test from 'node:test'
 
 import { loadWorkerContract } from '../scripts/verify-worker-contract.mjs'
 import {
-  CONNECTION, DONE, HOLD, actionRow, activeLease, driveWorker, leasingGateway, verificationRow,
+  CONNECTION, DONE, HOLD, actionRow, activeLease, driveWorker, evidenceRow, leasingGateway, verificationRow, workItemShape,
 } from './support/worker-harness.mjs'
 
 const CONTRACT = loadWorkerContract()
-
-/** One material request, as the Gateway projects it. */
-const evidenceRow = (overrides = {}) => ({
-  workType: 'evidence',
-  material: 'inventory',
-  tool: 'acme.ship@1',
-  norm: 'n1',
-  connectionId: CONNECTION,
-  source: 'orders',
-  sourceType: 'file',
-  ...overrides,
-})
 
 /** One clearance file, as the review seat receives it. */
 const reviewRow = (overrides = {}) => ({
@@ -121,6 +109,168 @@ test('RT-WK-FLOW-2 a material request runs its Tool once and reports the facts i
   assert.equal(report.operation.material, 'inventory')
   assert.deepEqual(report.operation.facts, [{ predicate: 'stock_level', args: { sku: 'A-1', qty: 7 } }])
   assert.equal(report.operation.workerGeneration, 7, 'the material report stated no generation')
+  // `ReportWorkEvidence` requires `source`, and it must be the one the order named. Core
+  // refuses a report that omits it rather than choosing from the Connection, so a Worker that
+  // left it out filed nothing at all — and one that chose could file weak material under a
+  // strong Source the same line happens to carry.
+  assert.equal(report.operation.source, 'orders',
+    'the material report must file under the Source the order it collected against named')
+})
+
+test('RT-WK-FLOW-10 the exact row a Gateway sends is claimed and reported, with nothing filled in behind it', async () => {
+  // The row is pinned twice over: against the committed schema's own property list, and
+  // against the key set `gateway.ts` authors field by field. Two arms of this suite were green
+  // for months on rows carrying `sourceType` and then `connectionId` — fields no deployment
+  // sends — and in both cases the code only reached its interesting part because the fixture
+  // had handed it something the wire cannot carry. So the row is stated as the wire states it,
+  // and the arm asserts that it is.
+  const row = verificationRow()
+  const declared = Object.keys(workItemShape('WorkerVerificationWorkItem').properties)
+  assert.deepEqual(Object.keys(row).sort(), ['boardId', 'channel', 'claim', 'source', 'work', 'workType'].sort(),
+    'this is the key set the Gateway authors for a verification order')
+  for (const key of Object.keys(row)) assert.ok(declared.includes(key), `${key} is not declared by the contract`)
+  assert.equal(row.connectionId, undefined, 'a verification order carries no connectionId; the carrier is channel')
+  assert.equal(row.sourceType, undefined, 'a verification order carries no Source type; the type belongs to the Source record')
+
+  let polls = 0
+  const gateway = leasingGateway({ onWork: () => ({ body: { accepted: true, revision: 'b13' } }) })
+  const run = await driveWorker({
+    reply: (operation, seen) => {
+      if (operation.kind === 'Poll') {
+        if (++polls !== 1) return HOLD
+        const admitted = gateway(operation, seen)
+        return { body: { ...admitted.body, payload: { work: [row] } } }
+      }
+      return gateway(operation, seen)
+    },
+    done: (seen, output) => DONE.verification.test(output),
+    timeoutMs: 20_000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.ran('check'), 1, 'the verification Adapter did not run exactly once')
+  const [claimed] = run.of('ClaimWork')
+  assert.ok(claimed, `the order the Gateway really sends was never claimed:\n${run.output}`)
+  assert.equal(claimed.operation.workType, 'verification')
+  assert.equal(claimed.operation.id, row.work)
+  const [report] = run.of('ReportWork')
+  assert.ok(report, `the claimed order was never reported:\n${run.output}`)
+  assert.equal(report.operation.workType, 'verification')
+  assert.equal(report.operation.id, row.work)
+  assert.equal(report.operation.outcome, 'satisfied')
+  assert.equal(report.operation.workerGeneration, 7)
+})
+
+test('RT-WK-FLOW-11 a verification order for another Connection, or naming no carrier, is refused by name', async () => {
+  // `channel` is the carrying Connection and the contract requires it. The check used to read
+  // `w.connectionId`, which the row does not have, so the comparison was `undefined !== <id>`:
+  // always true, and every real order returned there with no claim, no report and no line. A
+  // missing carrier is refused as malformed rather than read as permission — a Worker that
+  // treated absence as "addressed to me" would complete work nobody addressed to it.
+  for (const [what, row, marker] of [
+    ['another Connection', verificationRow({ channel: 'conn-somebody-else' }), /carried by Connection "conn-somebody-else"/],
+    ['no carrier at all', (() => { const { channel: _gone, ...rest } = verificationRow(); return rest })(), /states no carrying Connection/],
+  ]) {
+    let polls = 0
+    const gateway = leasingGateway({ onWork: () => ({ body: { accepted: true, revision: 'b13' } }) })
+    const run = await driveWorker({
+      reply: (operation, seen) => {
+        if (operation.kind === 'Poll') {
+          if (++polls !== 1) return HOLD
+          const admitted = gateway(operation, seen)
+          return { body: { ...admitted.body, payload: { work: [row] } } }
+        }
+        return gateway(operation, seen)
+      },
+      done: (seen, output) => /Skipping verification work/.test(output),
+      timeoutMs: 20_000,
+    })
+    assert.equal(run.timedOut, false, `${what}: ${run.output}`)
+    assert.match(run.output, marker, `${what} was not refused by name: ${run.output}`)
+    assert.equal(run.of('ClaimWork').length, 0, `${what} was claimed`)
+    assert.equal(run.of('ReportWork').length, 0, `${what} was reported`)
+    assert.equal(run.ran('check'), 0, `${what} ran the Adapter`)
+  }
+})
+
+test('RT-WK-FLOW-8 two Sources on one Connection do not borrow each other\'s authority', async () => {
+  // One line, two Sources of different accredited types. The Tool that handles this material
+  // declares `sourceTypes: ["file"]`, so an order naming the `db` Source must not reach it —
+  // and an order naming the `file` Source must, on the same Connection, in the same process.
+  // Before the type came from the Source record the Worker read `w.sourceType` off the row;
+  // with the field gone that read was `undefined`, no Tool ever matched, and both arms below
+  // would have been silently skipped rather than one of them refused.
+  const sources = (root) => [
+    { name: 'orders', type: 'file', access: root },
+    { name: 'ledger-mirror', type: 'db', access: 'postgres://unused/ledger' },
+  ]
+  const drive = async (row, done) => {
+    let polls = 0
+    const gateway = leasingGateway({ onWork: () => ({ body: { accepted: true, revision: 'b13' } }) })
+    return await driveWorker({
+      sources,
+      reply: (operation, seen) => {
+        if (operation.kind === 'Poll') {
+          if (++polls !== 1) return HOLD
+          const admitted = gateway(operation, seen)
+          return { body: { ...admitted.body, payload: { work: [row] } } }
+        }
+        return gateway(operation, seen)
+      },
+      done,
+      timeoutMs: 20_000,
+    })
+  }
+
+  const refused = await drive(evidenceRow({ source: 'ledger-mirror' }),
+    (seen, output) => /Skipping material request/.test(output))
+  assert.equal(refused.timedOut, false, refused.output)
+  assert.equal(refused.ran('fetch'), 0, 'the file Adapter ran for an order naming the db Source')
+  assert.equal(refused.of('ReportWork').length, 0, 'nothing may be filed for an order no Tool handles')
+  assert.match(refused.output, /through a db Source/,
+    `the refusal must name the accredited type it resolved: ${refused.output}`)
+
+  // Calibration on the same two-Source line: the order naming the file Source still runs, and
+  // still files under its own name rather than the other one.
+  const accepted = await drive(evidenceRow({ source: 'orders' }), (seen, output) => DONE.evidence.test(output))
+  assert.equal(accepted.timedOut, false, accepted.output)
+  assert.equal(accepted.ran('fetch'), 1, 'the legitimate order did not run its Adapter')
+  assert.equal(accepted.of('ReportWork')[0]?.operation.source, 'orders')
+})
+
+test('RT-WK-FLOW-9 a Source-less order is left alone rather than claimed under a default', async () => {
+  // A pre-migration record. Core neither lists nor hands it out, and does not settle it either;
+  // if one reaches a Worker anyway, picking a Source from the Connection would decide the tier
+  // the answer lands at. Both work types refuse by name and file nothing.
+  // Both rows are built by deleting `source` from a conforming one, after the factory: the
+  // factory refuses a row the contract does not admit, and a Source-less order is exactly that
+  // — Core neither lists nor hands one out. The arm is about what this Worker does if one
+  // reaches it anyway, so the row is made inadmissible on purpose and visibly.
+  const withoutSource = (row) => { const { source: _dropped, ...rest } = row; return rest }
+  for (const [what, row, marker] of [
+    ['an evidence order', withoutSource(evidenceRow()), /Skipping material request/],
+    ['a verification order', withoutSource(verificationRow()), /Skipping verification work/],
+  ]) {
+    let polls = 0
+    const gateway = leasingGateway({ onWork: () => ({ body: { accepted: true, revision: 'b13' } }) })
+    const run = await driveWorker({
+      reply: (operation, seen) => {
+        if (operation.kind === 'Poll') {
+          if (++polls !== 1) return HOLD
+          const admitted = gateway(operation, seen)
+          return { body: { ...admitted.body, payload: { work: [row] } } }
+        }
+        return gateway(operation, seen)
+      },
+      done: (seen, output) => marker.test(output),
+      timeoutMs: 20_000,
+    })
+    assert.equal(run.timedOut, false, `${what}: ${run.output}`)
+    assert.match(run.output, /names no Source/, `${what} was not refused by name: ${run.output}`)
+    assert.equal(run.of('ClaimWork').length, 0, `${what} was claimed`)
+    assert.equal(run.of('ReportWork').length, 0, `${what} was reported`)
+    assert.equal(run.ran('fetch') + run.ran('check'), 0, `${what} ran an Adapter`)
+    assert.doesNotMatch(run.output, /orders/, `${what} was matched to a Source this Connection happens to carry`)
+  }
 })
 
 test('RT-WK-FLOW-3 a review seat reaches a verdict and reports it, and refuses to guess', async () => {
@@ -167,7 +317,7 @@ test('RT-WK-FLOW-4 one unusable row does not swallow the rest of the batch', asy
         // that it still runs. `orderWork` puts the action first, so the real check is that
         // the verification fault does not stop the *following* evidence row.
         return ++polls === 1
-          ? { body: { accepted: true, payload: { work: [verificationRow({ caseId: 'CASE_1' }), evidenceRow()] } } }
+          ? { body: { accepted: true, payload: { work: [{ ...verificationRow(), caseId: 'CASE_1' }, evidenceRow()] } } }
           : HOLD
       }
       return { body: { accepted: true, revision: 'b13' } }
@@ -184,10 +334,14 @@ test('RT-WK-FLOW-4 one unusable row does not swallow the rest of the batch', asy
   assert.equal(run.of('ReportWork').length, 1)
 })
 
+// The retired hop field is added **after** the factory on purpose. The factory refuses a row
+// the contract does not admit, which is what keeps the ordinary fixtures honest; a negative arm
+// that needs an inadmissible row says so in its own line rather than by widening that floor.
 for (const [label, row, marker] of [
-  ['an evidence row', evidenceRow({ caseId: 'CASE_1' }), /evidence work item inventory/],
+  ['an evidence row', { ...evidenceRow(), caseId: 'CASE_1' }, /evidence work item ev_p2/],
   ['a review row', reviewRow({ caseRevision: 'c4' }), /review work item inv_review/],
-  ['a verification row nothing handles', verificationRow({ caseId: 'CASE_1', claim: { predicate: 'nobody_handles_this' } }), /verification work item wo_p2/],
+  ['a verification row nothing handles',
+    { ...verificationRow({ claim: { predicate: 'nobody_handles_this' } }), caseId: 'CASE_1' }, /verification work item wo_p2/],
 ]) {
   test(`RT-WK-FLOW-6 ${label} still naming a Case is refused, out loud`, async () => {
     // The rule is about the hop, so it is checked where the hop arrives rather than inside

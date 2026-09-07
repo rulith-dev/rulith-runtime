@@ -22,7 +22,7 @@ import { join } from 'node:path'
 
 import {
   WORKER_BUNDLE_PATH, WORKER_CONTRACT_FILES, WorkerContractError,
-  checkProvenance, contractRepoPath, gitBlobOid, loadWorkerContract, readWorkerContract,
+  assertPublishableRepository, checkProvenance, contractRepoPath, gitBlobOid, loadWorkerContract, readWorkerContract,
 } from '../scripts/verify-worker-contract.mjs'
 import { workerProjectionBlock, withWorkerProjection } from '../scripts/generate-worker-protocol.mjs'
 import {
@@ -47,12 +47,88 @@ test('RT-WKC-1 the vendored Worker protocol is pinned to committed bytes', () =>
     assert.match(String(RAW.files[file].gitBlobOid), /^[0-9a-f]{40}$/u,
       `${file} carries no Git blob object id, so the pin cannot be checked against the repository`)
   }
-  // The two vendored contracts are separate artefacts and stay separate.
+  // The two vendored contracts are separate artefacts and stay separate — which is a statement
+  // about **what each one carries**, not about which commit each names.
+  //
+  // This used to be `notEqual(mcp.sourceCommit, CONTRACT.sourceCommit)`, and that was the wrong
+  // reading of the same rule. Both bundles are exported from one repository, so a commit that
+  // genuinely changes both surfaces leaves both correctly pinned to it — and the assertion made
+  // vendoring that commit impossible, which would have been resolved by pinning one of them to
+  // a commit its bytes did not come from. A test that can only be satisfied by a false pin is
+  // worse than no test.
+  //
+  // What must hold is that neither bundle can smuggle the other's bytes. The two overlap by one
+  // file on purpose — the artifact-read schema is part of both surfaces — so the rule is not
+  // "no overlap" but "the overlap is the same file": same Git blob, same content. A disjointness
+  // assertion would have been false about a legitimate sharing, and would have taught the next
+  // person to break the sharing rather than to check it.
   const mcp = JSON.parse(readFileSync(join(ROOT, 'protocol', 'mcp-contract.json'), 'utf8'))
-  assert.notEqual(mcp.sourceCommit, CONTRACT.sourceCommit,
-    'the public MCP surface and the private Worker hop are pinned to the same commit; they are separate contracts')
+  const workerFiles = Object.keys(RAW.files)
+  const mcpFiles = mcp.files ?? {}
+  assert.ok(workerFiles.length > 0 && Object.keys(mcpFiles).length > 0, 'a bundle that carries no files cannot be compared')
+  for (const file of workerFiles.filter((name) => mcpFiles[name] !== undefined)) {
+    assert.equal(RAW.files[file].gitBlobOid, mcpFiles[file].gitBlobOid,
+      `${file} is carried by both bundles as two different Git objects, so one of them is not the committed file`)
+    assert.equal(RAW.files[file].content, mcpFiles[file].content,
+      `${file} is carried by both bundles with different bytes`)
+  }
+  // The one vector that would be smuggling rather than sharing: the public surface projection
+  // is what the Agent's membership is generated from, and a private hop bundle carrying it
+  // could move that membership under a pin nobody reads for it.
   assert.equal(RAW.files['protocol/mcp-surface.json'], undefined,
     'the Worker bundle carries the public MCP surface, so a private change could ride in under it')
+})
+
+test('RT-WKC-1b the two bundles really do share the Artifact schema, so the comparison above is not vacuous', () => {
+  // The loop in RT-WKC-1 runs over the overlap, and an empty overlap would satisfy it without
+  // comparing anything. Every other guard in this file states its extraction floor; this one
+  // names the file it exists for. If the sharing ever ends the arm goes red and somebody
+  // decides deliberately, rather than the check quietly becoming a no-op.
+  const mcp = JSON.parse(readFileSync(join(ROOT, 'protocol', 'mcp-contract.json'), 'utf8'))
+  const shared = Object.keys(RAW.files).filter((name) => (mcp.files ?? {})[name] !== undefined)
+  assert.deepEqual(shared, ['docs/specs/schemas/rulith-artifact-read-v1.schema.json'],
+    'the Artifact read schema is the one file both surfaces carry; the overlap check is about it')
+  // And the digests are spelled differently in the two bundles — bare hex here, `sha256:`-
+  // prefixed there — which is why the comparison is on the Git blob and the content, not on
+  // the `sha256` field. Stated so nobody "simplifies" it into a false negative.
+  assert.match(String(RAW.files[shared[0]].sha256), /^sha256:[0-9a-f]{64}$/u)
+  assert.match(String(mcp.files[shared[0]].sha256), /^[0-9a-f]{64}$/u)
+})
+
+test('RT-WKC-1c a shipped bundle may not state a provenance only one machine can resolve', () => {
+  // `sourceRepository` is generated from the export clone's `remote.origin.url`, so it is not a
+  // hand-vendored value — and it still shipped as `D:/Work/…` when the clone had been made from
+  // another directory on the same disk. The bundle travels in the npm package and the artifact
+  // manifest; a provenance that resolves nowhere else is worse than none, because it reads as
+  // one. The fix is to point the clone at the canonical upstream and re-export, which is why
+  // the refusal says so.
+  assert.equal(assertPublishableRepository(RAW.sourceRepository), RAW.sourceRepository)
+  assert.match(RAW.sourceRepository, /^https:\/\//u,
+    'the shipped bundle must name a repository somebody else can fetch')
+  for (const [label, value, expected] of [
+    ['a Windows path', 'D:/Work/rulith-psc024-core', /a path on one machine/],
+    ['a drive-relative Windows path', 'D:rulith', /a path on one machine/],
+    ['a relative path', '../rulith', /remote URL or scp-style/],
+    ['an unresolvable bare name', 'rulith', /remote URL or scp-style/],
+    ['a Windows path with backslashes', 'D:\\Work\\rulith-psc024-core', /a path on one machine/],
+    ['a UNC share', '\\\\build01\\core', /a path on one machine/],
+    ['an absolute POSIX path', '/home/victor/rulith', /a path on one machine/],
+    ['a file URL', 'file:///D:/Work/rulith', /a path on one machine/],
+    ['a URL carrying credentials', 'https://user:ghp_secret@github.com/nvwaonline/rulith.git', /must not\s+publish/],
+    ['nothing at all', '', /states no sourceRepository/],
+    ['a non-string', 42, /states no sourceRepository/],
+  ]) {
+    assert.throws(() => assertPublishableRepository(value), (error) => {
+      assert.ok(error instanceof WorkerContractError, `${label} refused with the wrong error type: ${error}`)
+      assert.match(error.message, expected, `${label}: ${error.message}`)
+      assert.doesNotMatch(error.message, /ghp_secret/u, 'the refusal quoted the credential it was refusing')
+      return true
+    }, `${label} was accepted as a publishable provenance`)
+  }
+  // And the whole-bundle reader enforces it, not just the helper: a bundle carrying a local
+  // path is refused where `npm run check` reads it.
+  assert.throws(() => readWorkerContract(bundleWith((bundle) => { bundle.sourceRepository = 'D:/Work/rulith-psc024-core' })),
+    /a path on one machine/)
 })
 
 test('RT-WKC-2 the Worker source is the projection of that bundle, and drift is caught', () => {

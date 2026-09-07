@@ -28,7 +28,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  DONE, HOLD, RESET, actionRow, activeLease, driveWorker, slowActionRow, verificationRow,
+  DONE, HOLD, RESET, actionRow, activeLease, driveWorker, evidenceRow, slowActionRow, verificationRow,
 } from './support/worker-harness.mjs'
 
 const SLOW_ADAPTER = {
@@ -180,8 +180,8 @@ test('RT-WK-LOSS-4 a long material fetch does the same, and stops the batch behi
         // Two material requests, because the batch is ordered action → review → verification
         // → evidence: anything of another type would run *before* the fetch, not behind it.
         // Both name the same material, so a guard that failed would fetch twice.
-        const material = { workType: 'evidence', material: 'inventory', tool: 'acme.ship@1', norm: 'n1', connectionId: 'conn-p2', source: 'orders', sourceType: 'file' }
-        return ++polls === 1 ? { body: { accepted: true, payload: { work: [material, { ...material, norm: 'n2' }] } } } : HOLD
+        const material = evidenceRow()
+        return ++polls === 1 ? { body: { accepted: true, payload: { work: [material, { ...material }] } } } : HOLD
       }
       if (operation.kind === 'RenewLease') {
         renewals += 1

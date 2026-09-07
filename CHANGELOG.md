@@ -8,6 +8,33 @@ All notable changes to the local runtime are documented here.
 change to the model surface: an integration that scripted the previous fenced-JSON
 dialect will not work against this runtime.
 
+- **Rulith Local confirms a role start; it no longer times one.** `/control` used to sleep a
+  fixed 350 ms and then ask whether the child was still running. That answered the wrong
+  question in both directions: on a busy machine a child that exits immediately has not exited
+  yet at 350 ms, so the operator was told `200 {ok:true}` about a role that was already dying;
+  and a role that legitimately took longer than 350 ms to finish initializing was never
+  confirmed, only assumed. The evidence is now the readiness event each role already sends —
+  the Agent's `start` once its task endpoint is listening, the Worker's `up` once its Tool
+  Manifest is loaded — raced against the child's own exit. Each role's own answer is taken as
+  it is: a Worker whose Source fetch fails comes up anyway and is confirmed started, while the
+  Agent establishes its MCP session before it serves and an unreachable Gateway therefore
+  arrives as `exited during startup`. A program that neither reports nor exits is answered
+  `202` with `state: "unconfirmed"` rather than as either success or failure, because an
+  operator may point `paths.*` at anything and neither verdict would be true.
+- **A stop is a request, and Rulith Local no longer reports it as an outcome.** `child.kill()`
+  sends a signal; on POSIX the child decides what to do with it and may keep running. Three
+  statements were wrong whenever it did. A stop answered `state: "stopped"` the moment the
+  signal was sent, so a child that ignored it was reported as stopped and still listed as
+  running one refresh later. A child that answered the signal by sending its **readiness**
+  event confirmed the very start the operator had just cancelled — `200 {state:"ready"}` for a
+  process that was going nowhere. And the cancellation teaching said the role "is not running"
+  without having seen it exit. Now the exit this host already receives is what decides: a stop
+  that observes one answers `stopped`, one that does not answers `stopping` and says so;
+  readiness is no longer recorded for a child whose stop has been requested, so a late report
+  confirms nothing; and every teaching distinguishes what was asked from what was observed.
+  **Nothing is escalated** — no second signal, no forced kill, no supervisor. Whether a process
+  that refuses to leave should be forced is a decision this host does not make, and reporting
+  it accurately is what lets somebody else make it.
 - Local separates Case lifecycle, acceptance and observation freshness. These fields
   come from one bounded authority response, not conversation completion events. A
   detached conversation keeps its last observed Case state; transport ambiguity and
@@ -293,6 +320,43 @@ dialect will not work against this runtime.
   what this machine has installed is not what the authority declared. An empty `args` string
   is likewise malformed; an absent argument set is served as `"{}"`, so the empty case already
   has a value and this Worker does not supply the one the authority failed to send.
+- **The shipped Verified Calculation example follows the same rule it demonstrates.** Its
+  three Actions pinned one Source instance in the retired `execution.source`; they now
+  declare `"sourceTypes": ["file"]`, and each invocation names the bound instance in
+  `args.source`. Nothing could be seeded from the old contract — the authority refuses a
+  declaration carrying that field — and nothing could have run from it either: a dispatch
+  built from it states no `sourceTypes`, which this Worker refuses as malformed. The intake
+  Adapter no longer demands `RULITH_CASE_ID`. That name is not part of the Worker hop, so it
+  refused every real invocation; on a machine that happened to carry the variable it did not
+  refuse but rooted governed task structure at an operator's string. The task seed's root
+  now comes from the `batch_id` the input file states, which `data/input.json` therefore
+  carries — an input file from an earlier run is refused by name rather than given an
+  invented root. `examples/verified-calculation/README.md` teaches `ApplyAction` rather
+  than the retired `request_action`, and names the Source in `args` the way the tool
+  schema says. It also states what an isolated Core + Gateway + Worker run showed the flow
+  actually requires: a Source-bound Action carries its Source selector **and** its business
+  values (the board-binding path runs only for an invocation carrying no arguments at all,
+  and each stated value is re-checked against a fact grounded `attested` or stronger), and
+  the task node the Source seeds is attached to the open Case with one ordinary `ApplyBatch`
+  — without it every Action succeeds, the acceptance atom derives, and `CloseCase` still
+  answers `case_not_certified`.
+- **The `RULITH_` namespace belongs to the runtime, and a `run` Adapter receives from it only
+  what the work item decides.** Every ambient `RULITH_*` variable is now stripped before an
+  Adapter starts, on the deny path and against an `env.pass` allow-list alike; `handRun` then
+  supplies `RULITH_INVOCATION_ID`, `RULITH_SOURCE_ACCESS` and `RULITH_SOURCE_TYPE`. This began
+  as a list of three names, which was one entry per known problem and no rule at all — two
+  leaks survived it. A **retired** one: Case identity left the Worker hop, so nothing can
+  supply `RULITH_CASE_ID`, yet an ambient copy still arrived where an operator's string could
+  be read as a Case. And an **invented** one: an Adapter reading `RULITH_CALC_INPUT` for its
+  own path takes a location from whatever set that variable and reports what it finds there as
+  Source material. Neither is a name anyone would have added to a list in advance. Names
+  outside the namespace are untouched.
+- **The example Adapters read and write the granted Source root only.** All three took their
+  paths from `RULITH_CALC_INPUT` / `RULITH_CALC_OUTPUT` and, failing that, from a directory
+  beside the script. Both are gone: the Source root the Worker hands over is the only location
+  they have, and an Adapter granted no Source — or one whose type is not `file` — refuses by
+  name instead of finding a file of its own. A Source-free dispatch can no longer read
+  *something* because a fallback existed.
 - **One unusable row no longer swallows the batch.** A refusal thrown while handling one item
   used to escape the whole loop into the poll catch: every other item was dropped and a
   work-item defect was printed as `Polling failed (…)`, on a row the endpoint re-sends every

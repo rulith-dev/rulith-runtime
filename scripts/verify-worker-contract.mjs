@@ -211,6 +211,49 @@ export function checkProvenance(bundle, { root, path = WORKER_BUNDLE_PATH } = {}
   return { checked: true, repo }
 }
 
+/**
+ * The provenance a shipped bundle states must be one somebody else can resolve.
+ *
+ * `sourceRepository` is written by the sync script from the export clone's `remote.origin.url`,
+ * so it is generated rather than hand-vendored — and that is exactly why it needs checking here.
+ * A clone made from another directory on the same disk records that directory, and the bundle
+ * then travels in the npm package and the artifact manifest declaring a provenance that
+ * resolves on precisely one machine. Nothing downstream can tell the difference between "the
+ * contract came from the project" and "the contract came from `D:/Work/…`" except this.
+ *
+ * Two refusals, and neither is about taste:
+ *
+ *   · **A local path is not a repository anybody can reach.** Windows drive letters, UNC paths,
+ *     absolute POSIX paths and `file:` URLs are all a statement about one filesystem. The fix is
+ *     to point the export clone at the canonical upstream and re-export — not to edit this field.
+ *   · **Credentials are not provenance.** A URL carrying userinfo would publish whatever the
+ *     person exporting had in their remote, in a file that ships.
+ *
+ * The blob-level provenance check is unaffected and still decides correctness: this field says
+ * *where to look*, and `verifyAgainstRepository` says whether what is carried is really there.
+ */
+export function assertPublishableRepository(value, path = WORKER_BUNDLE_PATH) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new WorkerContractError(`${path} states no sourceRepository, so nothing says where these bytes came from.`)
+  }
+  const repository = value.trim()
+  if (/^[A-Za-z]:/u.test(repository) || repository.startsWith('\\\\') || repository.startsWith('/')
+      || /^file:/iu.test(repository)) {
+    throw new WorkerContractError(`${path} states sourceRepository ${JSON.stringify(repository)}, which is a path on one`
+      + ' machine rather than a repository anyone can resolve. This field is generated from the export clone\'s'
+      + ' remote.origin.url: point that clone at the canonical upstream and re-export, rather than editing the bundle.')
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\/[^/@]*@/iu.test(repository)) {
+    throw new WorkerContractError(`${path} states a sourceRepository carrying credentials. A shipped bundle must not`
+      + ' publish whatever the exporting machine had in its remote; use the credential-free canonical URL.')
+  }
+  if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(repository)
+      && !/^(?:[^@/:\s]+@)?[^/:\s]+:[^\s]+$/u.test(repository)) {
+    throw new WorkerContractError(`${path} must identify its sourceRepository by a remote URL or scp-style repository locator.`)
+  }
+  return repository
+}
+
 /** Validate a parsed bundle and return everything the Worker and its tests consume. */
 export function readWorkerContract(bundle, { path = WORKER_BUNDLE_PATH } = {}) {
   if (!isObject(bundle)) throw new WorkerContractError(`${path} is not an object.`)
@@ -221,6 +264,7 @@ export function readWorkerContract(bundle, { path = WORKER_BUNDLE_PATH } = {}) {
     throw new WorkerContractError(`${path} carries sourceCommit ${JSON.stringify(bundle.sourceCommit)},`
       + ' which is not a full 40-character commit id.')
   }
+  assertPublishableRepository(bundle.sourceRepository, path)
   if (!isObject(bundle.files)) throw new WorkerContractError(`${path} carries no files.`)
   // The carried set is closed, not merely covered. A bundle with an extra key used to carry
   // it, publish it and hash it into the artifact manifest with nobody checking its digest or

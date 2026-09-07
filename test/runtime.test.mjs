@@ -479,6 +479,439 @@ test('Rulith Local status is a read-only redacted runtime projection', async () 
   }
 })
 
+// ── Rulith Local confirms a start; it does not time one ──────────────────────
+//
+// `/control {operation:"start"}` used to sleep a fixed 350 ms and then ask whether the child
+// was still running. That answered the wrong question in both directions, and only one of the
+// two was ever noticed: on a busy machine a child that exits immediately has not exited yet at
+// 350 ms, so the operator was told `200 {ok:true}` about a role that was already dying; and a
+// child that legitimately takes longer than 350 ms to finish initializing was never confirmed,
+// only assumed. The four outcomes below are the whole contract, and each has an arm.
+
+/** One Local host driving one scripted role child, torn down with its temp directory. */
+async function localRole({ role = 'agent', source, startConfirmMs }, run) {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-start-'))
+  const child = join(dir, `${role}.mjs`)
+  writeFileSync(child, source, 'utf8')
+  const probe = createServer()
+  let port
+  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(ready) }))
+  const config = defaultLocalConfig()
+  config.paths = { [role]: child }
+  const host = createLocalHost({
+    configFile: join(dir, 'local.json'), config, roles: [role], port, key: 'start-key',
+    ...(startConfirmMs === undefined ? {} : { startConfirmMs }),
+  })
+  const control = async (operation) => {
+    const response = await fetch(`http://127.0.0.1:${port}/control?k=start-key`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role, operation }),
+    })
+    return { status: response.status, body: await response.json() }
+  }
+  const exits = () => host.events().filter((event) => event.src === role && event.type === 'exit').length
+  /** Put the host back to "this role is not running", so a `start` really starts one. */
+  const quiesce = async () => {
+    const before = exits()
+    const stopped = await control('stop')
+    if (stopped.body.ok !== true) return stopped // already gone: the child exited on its own
+    const deadline = Date.now() + 5_000
+    while (exits() === before && Date.now() < deadline) await new Promise((accept) => setTimeout(accept, 25))
+    assert.ok(exits() > before, `${role} did not report the exit its stop caused`)
+    return stopped
+  }
+  try {
+    // `listen` starts the selected roles, which is the product's behaviour and not what these
+    // arms are about: each drives an explicit operator `start` from a stopped state.
+    await host.listen()
+    await run({ host, control, quiesce, port })
+  } finally {
+    await host.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** The readiness event each role really sends, named where the host reads it. */
+const READY_EVENT = { agent: 'start', worker: 'up' }
+
+test('Rulith Local confirms a start by the role readiness event, however long it takes', async () => {
+  // 1.2 s — comfortably past the retired 350 ms guess, so this is the arm the old code could
+  // not answer at all. Each role is driven with the event it actually sends.
+  for (const role of ['agent', 'worker']) {
+    await localRole({
+      role,
+      source: `setTimeout(() => process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'${READY_EVENT[role]}'}}), 1200)\n`
+        + 'setInterval(() => {}, 1000)\n',
+    }, async ({ control, host, quiesce }) => {
+      await quiesce()
+      const started = Date.now()
+      const answer = await control('start')
+      assert.equal(answer.status, 200, `${role}: ${JSON.stringify(answer.body)}`)
+      assert.equal(answer.body.ok, true)
+      assert.equal(answer.body.state, 'ready')
+      assert.ok(Date.now() - started >= 1_000, `${role} was confirmed before its readiness event could have arrived`)
+      assert.ok(host.events().some((event) => event.src === role && event.type === READY_EVENT[role]),
+        `${role} readiness never reached the Local event stream`)
+    })
+  }
+})
+
+test('Rulith Local reports a child that dies after the old fixed wait would have passed it', async () => {
+  // The regression this replaces: alive at 350 ms, dead at 900. The old gate answered
+  // `200 {ok:true}` here, which is the operator being told a role started as it was dying.
+  await localRole({
+    source: 'setTimeout(() => process.exit(4), 900)\nsetInterval(() => {}, 1000)\n',
+  }, async ({ control, quiesce }) => {
+    await quiesce()
+    const answer = await control('start')
+    assert.equal(answer.status, 400, JSON.stringify(answer.body))
+    assert.equal(answer.body.ok, false)
+    assert.match(String(answer.body.teaching), /exited during startup/i)
+  })
+})
+
+test('Rulith Local refuses to call an unconfirmable program started, and does not call it failed either', async () => {
+  // An operator may point `paths.agent` at any program. One that never reports readiness and
+  // never exits cannot be confirmed, and neither verdict would be true: it is answered as
+  // itself. A short bound keeps the arm quick; the production default is the same code path.
+  await localRole({
+    source: 'setInterval(() => {}, 1000)\n',
+    startConfirmMs: 600,
+  }, async ({ control, quiesce }) => {
+    await quiesce()
+    const answer = await control('start')
+    assert.equal(answer.status, 202, JSON.stringify(answer.body))
+    assert.equal(answer.body.ok, false, 'an unconfirmed start must never read as success')
+    assert.equal(answer.body.state, 'unconfirmed')
+    assert.match(String(answer.body.teaching), /has not reported that it finished initializing/i)
+    assert.match(String(answer.body.teaching), /readiness event/i)
+    assert.doesNotMatch(String(answer.body.teaching), /exited during startup/i,
+      'a running program must not be reported as one that died')
+  })
+})
+
+test('Rulith Local runs the whole start / stop / start lifecycle, and readiness is not sticky', async () => {
+  await localRole({
+    source: "process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start'}})\nsetInterval(() => {}, 1000)\n",
+    // Short on purpose: if the second start were confirmed by the *first* child's readiness
+    // rather than the new child's own, this bound would never be reached and the arm would
+    // pass for the wrong reason. It is reached only when nothing confirms the new process.
+    startConfirmMs: 4_000,
+  }, async ({ control, host, quiesce }) => {
+    await quiesce()
+    const readyBefore = () => host.events().filter((event) => event.src === 'agent' && event.type === 'start').length
+    const baseline = readyBefore()
+    assert.equal((await control('start')).status, 200)
+    const exits = () => host.events().filter((event) => event.src === 'agent' && event.type === 'exit').length
+    const exitsBefore = exits()
+    const stopped = await control('stop')
+    assert.equal(stopped.status, 200, JSON.stringify(stopped.body))
+    // `stop` returns once the signal is sent; the exit is the child's own answer to it, and a
+    // restart is only a restart once that has arrived.
+    const deadline = Date.now() + 5_000
+    while (exits() === exitsBefore && Date.now() < deadline) await new Promise((accept) => setTimeout(accept, 25))
+    assert.equal(exits(), exitsBefore + 1, 'a stopped role must report its exit')
+    const again = await control('start')
+    assert.equal(again.status, 200, `a restart must be confirmed by the new child: ${JSON.stringify(again.body)}`)
+    assert.equal(again.body.state, 'ready')
+    assert.equal(readyBefore() - baseline, 2,
+      'each start must be confirmed by its own readiness event')
+  })
+})
+
+test('Rulith Local calls a stop stopped, and reserves ready for a role that reported it', async () => {
+  await localRole({
+    source: "process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start'}})\nsetInterval(() => {}, 1000)\n",
+  }, async ({ control, quiesce }) => {
+    const stopped = await quiesce()
+    assert.equal(stopped.status, 200, JSON.stringify(stopped.body))
+    assert.equal(stopped.body.ok, true)
+    assert.equal(stopped.body.state, 'stopped',
+      'a stop that answers "ready" says the opposite of what happened, and the UI prints it')
+    const started = await control('start')
+    assert.equal(started.status, 200, JSON.stringify(started.body))
+    assert.equal(started.body.state, 'ready')
+  })
+})
+
+test('Rulith Local calls an operator Stop during startup a cancellation, not a configuration defect', async () => {
+  // The child is healthy and simply slow: it would report ready at 3 s. The operator stops it
+  // at 300 ms. Deciding this by which listener ran first would blame their own gesture on a
+  // missing configuration and send them looking for a defect that is not there; the decision
+  // is an explicit per-child record of the Stop.
+  await localRole({
+    source: "setTimeout(() => process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start'}}), 3000)\n"
+      + 'setInterval(() => {}, 1000)\n',
+  }, async ({ control, quiesce }) => {
+    await quiesce()
+    const pending = control('start')
+    await new Promise((accept) => setTimeout(accept, 300))
+    const stopped = await control('stop')
+    assert.equal(stopped.status, 200, JSON.stringify(stopped.body))
+    const answer = await pending
+    assert.equal(answer.status, 409, JSON.stringify(answer.body))
+    assert.equal(answer.body.ok, false)
+    assert.equal(answer.body.state, 'cancelled')
+    // "A stop was requested", not "was stopped": the sentence must not assert an outcome the
+    // rest of the teaching may go on to deny.
+    assert.match(String(answer.body.teaching), /A stop was requested for the Agent before this start finished/i)
+    assert.doesNotMatch(String(answer.body.teaching), /^Agent was stopped/i)
+    assert.doesNotMatch(String(answer.body.teaching), /fix the missing local configuration/i,
+      'a role the operator stopped has nothing for them to go and fix')
+  })
+})
+
+// A sent signal is a request, not an acknowledgement. On POSIX a child may install a SIGTERM
+// handler, answer it however it likes, and keep running — so `kill()` returning is not the
+// process having ended, and anything the process says afterwards is not evidence for the start
+// that was just cancelled. Windows has no equivalent: `child.kill()` there is a terminate the
+// child cannot handle, so the arm that needs a surviving child can only run on POSIX and says
+// so rather than passing quietly.
+const POSIX_ONLY = process.platform === 'win32'
+  ? 'POSIX-only: a Windows child cannot handle SIGTERM, so a child that survives a stop is unreachable here'
+  : false
+
+test('Rulith Local does not let a child that answers the stop signal confirm the start it cancelled',
+  { skip: POSIX_ONLY }, async () => {
+    // The shape of Root's Linux counterexample, driven the same way: the second child installs
+    // a SIGTERM handler that reports **readiness** and stays alive. Before the fix this
+    // answered `stop → 200 {state:"stopped"}` and `start → 200 {state:"ready"}` while the
+    // process was still running: a stop reported as an outcome, and a late report accepted as
+    // confirmation of the very start it had cancelled.
+    const dir = mkdtempSync(join(tmpdir(), 'rulith-local-sigterm-'))
+    const counter = join(dir, 'count').replaceAll('\\', '\\\\')
+    const child = join(dir, 'agent.mjs')
+    writeFileSync(child,
+      "import { readFileSync, writeFileSync } from 'node:fs'\n"
+      + `const path = '${counter}'\n`
+      + "let count = 0; try { count = Number(readFileSync(path, 'utf8')) } catch {}\n"
+      + "writeFileSync(path, String(++count))\n"
+      + "const send = (type) => process.send?.({protocol:'rulith-local-event',event:{type,t:Date.now()}})\n"
+      + "if (count === 1) send('start')\n"
+      + "else { process.on('SIGTERM', () => send('start')); send('armed') }\n"
+      + 'setInterval(() => {}, 1000)\n', 'utf8')
+    const probe = createServer()
+    let port
+    await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(ready) }))
+    const config = defaultLocalConfig()
+    config.paths = { agent: child }
+    const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'sigterm-key', startConfirmMs: 5_000 })
+    const control = async (operation) => {
+      const response = await fetch(`http://127.0.0.1:${port}/control?k=sigterm-key`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'agent', operation }),
+      })
+      return { status: response.status, body: await response.json() }
+    }
+    const until = async (predicate, what) => {
+      const deadline = Date.now() + 10_000
+      while (!predicate() && Date.now() < deadline) await new Promise((accept) => setTimeout(accept, 10))
+      assert.ok(predicate(), `timed out waiting for ${what}`)
+    }
+    try {
+      await host.listen()
+      await until(() => host.events().some((e) => e.src === 'agent' && e.type === 'start'), 'the first child to report ready')
+      await control('stop')
+      await until(() => !host.status().agent, 'the first child to exit')
+
+      const pending = control('start')
+      await until(() => host.events().some((e) => e.type === 'armed'), 'the second child to arm its SIGTERM handler')
+      const stopped = await control('stop')
+      const started = await pending
+
+      // The stop says what it observed, and it observed no exit.
+      assert.equal(stopped.status, 200, JSON.stringify(stopped.body))
+      assert.equal(stopped.body.state, 'stopping',
+        'a signal that was sent is not an exit that was seen')
+      assert.match(String(stopped.body.teaching), /has not exited yet/i)
+
+      // The start is cancelled, never ready — the readiness that arrived was the child's answer
+      // to the stop signal, and it confirms nothing.
+      assert.equal(started.status, 409, JSON.stringify(started.body))
+      assert.equal(started.body.ok, false)
+      assert.equal(started.body.state, 'cancelled')
+      assert.notEqual(started.body.state, 'ready')
+      assert.match(String(started.body.teaching), /has not exited yet/i)
+      assert.doesNotMatch(String(started.body.teaching), /It is not running/i,
+        'the child is still running, and the teaching must not say otherwise')
+      assert.doesNotMatch(String(started.body.teaching), /fix the missing local configuration/i)
+
+      // And the host still lists it as running, which is the truth every message above agrees with.
+      assert.equal(host.status().agent, true)
+      assert.ok(host.events().some((e) => e.src === 'agent' && e.type === 'start' && e.at >= 0),
+        'the readiness event itself is still published to Trace; it is simply not evidence')
+    } finally {
+      // Only this test's own last child, and only if it is still alive. Nothing else is touched,
+      // and no escalation was added to the product to make this unnecessary.
+      const spawned = host.events().filter((e) => e.src === 'agent' && e.type === 'spawn').at(-1)
+      if (host.status().agent && Number.isInteger(spawned?.pid)) {
+        try { process.kill(spawned.pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
+      }
+      await host.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+test('Rulith Local says a role stopped only when it saw it exit, and says so when it did', async () => {
+  // The other half, reachable everywhere: an ordinary child that exits on the signal. `stopped`
+  // is the observation, not the request — and the cancelled teaching for a child that really did
+  // go says it is not running, because this time that is true.
+  await localRole({
+    source: "setTimeout(() => process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start'}}), 3000)\n"
+      + 'setInterval(() => {}, 1000)\n',
+  }, async ({ control, quiesce, host }) => {
+    await quiesce()
+    const pending = control('start')
+    await new Promise((accept) => setTimeout(accept, 300))
+    const stopped = await control('stop')
+    assert.equal(stopped.body.state, 'stopped', 'an ordinary child exits on the signal, and that is what was observed')
+    assert.equal(stopped.body.teaching, undefined, 'an observed exit needs no explanation')
+    const answer = await pending
+    assert.equal(answer.body.state, 'cancelled')
+    assert.match(String(answer.body.teaching), /It is not running/i,
+      'this child really did exit, so the teaching may say so')
+    assert.equal(host.status().agent, false)
+  })
+})
+
+test('Rulith Local confirms each start by its own process, so an earlier role readiness never stands in', async () => {
+  // Readiness must belong to a process, not to a role. The child reports ready the first time
+  // it runs and stays silent afterwards — a real event stream, from two real processes — so a
+  // host that remembered "this role has reported ready" would confirm the second start. It
+  // must not: the second answer is `unconfirmed`, with the first process's readiness still
+  // sitting in the event log where anything counting events would find it.
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-identity-'))
+  const child = join(dir, 'agent.mjs')
+  const marker = join(dir, 'first-run').replaceAll('\\', '\\\\')
+  writeFileSync(child,
+    "import { existsSync, writeFileSync } from 'node:fs'\n"
+    + `const marker = '${marker}'\n`
+    + "if (!existsSync(marker)) {\n"
+    + "  writeFileSync(marker, 'ran')\n"
+    + "  process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start'}})\n"
+    + '}\n'
+    + 'setInterval(() => {}, 1000)\n', 'utf8')
+  const probe = createServer()
+  let port
+  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(ready) }))
+  const config = defaultLocalConfig()
+  config.paths = { agent: child }
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'identity-key', startConfirmMs: 1_500 })
+  const control = async (operation) => {
+    const response = await fetch(`http://127.0.0.1:${port}/control?k=identity-key`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', operation }),
+    })
+    return { status: response.status, body: await response.json() }
+  }
+  try {
+    await host.listen()
+    // The role auto-starts with `listen`, and that first process is the one that reports ready.
+    const deadline = Date.now() + 5_000
+    while (!host.events().some((event) => event.src === 'agent' && event.type === 'start') && Date.now() < deadline) {
+      await new Promise((accept) => setTimeout(accept, 25))
+    }
+    assert.ok(host.events().some((event) => event.src === 'agent' && event.type === 'start'),
+      'the first process never reported ready, so this arm would prove nothing')
+    const exitsBefore = host.events().filter((event) => event.src === 'agent' && event.type === 'exit').length
+    assert.equal((await control('stop')).status, 200)
+    while (host.events().filter((event) => event.src === 'agent' && event.type === 'exit').length === exitsBefore
+      && Date.now() < deadline + 5_000) {
+      await new Promise((accept) => setTimeout(accept, 25))
+    }
+    const second = await control('start')
+    assert.equal(second.status, 202, `the second process reported nothing and must not be confirmed: ${JSON.stringify(second.body)}`)
+    assert.equal(second.body.state, 'unconfirmed')
+    assert.equal(host.events().filter((event) => event.src === 'agent' && event.type === 'start').length, 1,
+      'exactly one readiness event exists, and it belongs to the process that has already exited')
+  } finally {
+    await host.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the shipped Worker really sends the readiness event Rulith Local confirms a start by', async () => {
+  // The three arms above drive scripted children, so they prove the host's half of the
+  // contract and assume the other. This one starts `worker/rulith-worker.mjs` itself, with a
+  // work endpoint that is not listening: the Source fetch fails, the Worker says so and comes
+  // up anyway, and Local confirms the start. If the Worker ever stopped sending `up`, or only
+  // sent it once Cloud answered, this goes red — and an offline machine's healthy Worker would
+  // otherwise be reported as one that never started.
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-real-worker-'))
+  const closed = createServer()
+  let uiPort
+  let deadPort
+  await new Promise((ready) => closed.listen(0, '127.0.0.1', () => { deadPort = closed.address().port; closed.close(ready) }))
+  const probe = createServer()
+  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { uiPort = probe.address().port; probe.close(ready) }))
+  const config = defaultLocalConfig()
+  config.worker.env.RULITH_WORK_URL = `http://127.0.0.1:${deadPort}/work`
+  config.worker.env.RULITH_CONNECTION = 'conn-local-readiness'
+  config.worker.env.RULITH_CONNECTION_KEY = 'key-local-readiness'
+  config.worker.env.RULITH_TOOLS_FILE = join(dir, 'absent-tools.json')
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['worker'], port: uiPort, key: 'real-key' })
+  try {
+    await host.listen()
+    const deadline = Date.now() + 20_000
+    while (!host.events().some((event) => event.src === 'worker' && event.type === 'up') && Date.now() < deadline) {
+      await new Promise((accept) => setTimeout(accept, 25))
+    }
+    const up = host.events().find((event) => event.src === 'worker' && event.type === 'up')
+    assert.ok(up, `the shipped Worker never reported readiness: ${JSON.stringify(host.events().slice(-6))}`)
+    assert.equal(typeof up.workerId, 'string')
+    assert.equal(up.connectionId, 'conn-local-readiness')
+    assert.ok(host.events().some((event) => event.src === 'worker' && event.type === 'log' && /Could not reach Rulith Cloud/i.test(String(event.line ?? ''))),
+      'this arm is only meaningful while the Worker is genuinely offline')
+  } finally {
+    await host.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the shipped Agent refuses to start without its Gateway, and Rulith Local reports that as the failure it is', async () => {
+  // The other half of "each role's own answer". The Agent establishes its authenticated MCP
+  // session before it serves, so an unreachable Gateway is a startup failure of the Agent's own
+  // making — and it must arrive as one. The retired fixed wait answered `200 {ok:true}` here
+  // whenever the failure took longer than 350 ms, which is the exact shape of fake success.
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-real-agent-'))
+  let uiPort
+  let deadPort
+  const closed = createServer()
+  await new Promise((ready) => closed.listen(0, '127.0.0.1', () => { deadPort = closed.address().port; closed.close(ready) }))
+  const probe = createServer()
+  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { uiPort = probe.address().port; probe.close(ready) }))
+  const config = defaultLocalConfig()
+  config.agent.env.RULITH_URL = `http://127.0.0.1:${deadPort}`
+  config.agent.env.RULITH_TOKEN = `rlt_agt_${'a'.repeat(43)}`
+  config.agent.env.RULITH_MODEL_URL = `http://127.0.0.1:${deadPort}/v1`
+  config.agent.env.RULITH_MODEL_KEY = 'unused-offline'
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: uiPort, key: 'real-agent-key' })
+  const control = async (operation) => {
+    const response = await fetch(`http://127.0.0.1:${uiPort}/control?k=real-agent-key`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', operation }),
+    })
+    return { status: response.status, body: await response.json() }
+  }
+  try {
+    await host.listen()
+    const deadline = Date.now() + 20_000
+    while (!host.events().some((event) => event.src === 'agent' && event.type === 'exit') && Date.now() < deadline) {
+      await new Promise((accept) => setTimeout(accept, 25))
+    }
+    const answer = await control('start')
+    assert.equal(answer.status, 400, `an Agent that cannot reach its Gateway must not read as started: ${JSON.stringify(answer.body)}`)
+    assert.equal(answer.body.ok, false)
+    assert.match(String(answer.body.teaching), /exited during startup/i)
+    assert.ok(host.events().some((event) => event.src === 'agent' && event.type === 'log'
+      && /Cannot establish an authenticated MCP session|Cannot reach the public MCP endpoint/i.test(String(event.line ?? ''))),
+    `the Agent's own diagnostic must reach Trace: ${JSON.stringify(host.events().slice(-6))}`)
+  } finally {
+    await host.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('Rulith Local reports an immediate child exit instead of claiming the role restarted', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-exit-'))
   const child = join(dir, 'exit.mjs')
@@ -1078,7 +1511,7 @@ test('verified calculation is one Capability composed of Program and Sources', (
   assert.equal(recipe.collection.caseContracts?.[0]?.terminal?.cardinality, 'once_per_case')
   assert.equal('line' in recipe.packs[1].pack.sources[0], false)
   assert.equal(recipe.packs[0].pack.acceptance.length, 1)
-  assert.match(guide, /one\s+installed Capability, with four inspectable sections/i)
+  assert.match(guide, /one\s+installed Capability with four inspectable sections/i)
   assert.doesNotMatch(guide, /two governed components|install.*Knowledge[\s\S]*install.*source/i,
     'typed protocol components must not leak back into the user installation ritual')
   assert.match(guide, /verified-calc-worker/)
@@ -1087,10 +1520,17 @@ test('verified calculation is one Capability composed of Program and Sources', (
     'source-checkout instructions must resolve Adapter entries from the generated runtime directory')
 })
 
-test('verified calculation intake roots its task tree in the trusted active Case', () => {
+// The behaviour this used to assert is now driven end to end in
+// `official-example.test.mjs`: the real Worker runs the real Adapter and the task root is
+// read off the receipt. What stays here is the one-line shape check that costs nothing —
+// the intake Adapter reads its task structure from Source material and takes no identity
+// from the environment. It used to require `RULITH_CASE_ID`, a name the Worker hop does
+// not set, so it refused every real invocation; where a machine happened to carry that
+// variable it rooted governed task structure at an operator's string instead.
+test('verified calculation intake roots its task tree in trusted Source material', () => {
   const adapter = readFileSync(join(ROOT, 'examples', 'verified-calculation', 'read-input.mjs'), 'utf8')
-  assert.match(adapter, /RULITH_CASE_ID/)
-  assert.doesNotMatch(adapter, /task_root:\s*['"]CALCULATION_CASE['"]/)
+  assert.doesNotMatch(adapter, /process\.env\.RULITH_CASE_ID/)
+  assert.match(adapter, /task_root: `CALC_BATCH_\$\{input\.batch_id\}`/)
 })
 
 test('public runtime contains no private deployment addresses or credential material', () => {
@@ -1117,15 +1557,36 @@ test('public runtime contains no private deployment addresses or credential mate
 // `--case-boards` is a published instruction to fail.
 //
 // The guard therefore checks the two directions that can rot silently:
-//   · every RULITH_* name taught in a committed public file is read by the code;
+//   · every RULITH_* name taught in a committed public file is supported by the code;
 //   · every Agent flag taught in an Agent invocation is accepted by the parser.
 //
 // Extraction failure must be RED, not green: an empty read of either source set
 // would make every taught name look supported. The floors below are the assertion
 // that the extractors still have hold of the sources.
 
-/** Environment variable names the shipped runtime actually reads. */
-function runtimeEnvNamesRead() {
+/**
+ * Environment variable names the shipped runtime supports, in both directions.
+ *
+ * A name it *reads* is the obvious half. The other half is a name it *provides*: the Worker
+ * hands `RULITH_INVOCATION_ID`, `RULITH_SOURCE_ACCESS` and `RULITH_SOURCE_TYPE` to every
+ * `run` Adapter it starts, and Rulith Local hands its children theirs. Those are published
+ * names an Adapter author writes code against, and this runtime never reads them — so a
+ * read-only extractor called the documentation wrong about names the documentation is the
+ * only place to learn. The failure it exists to catch is unchanged: a taught name that
+ * nothing here reads *or* sets is a published instruction to fail.
+ */
+/**
+ * Comments removed, so prose about a name is never mistaken for code that uses it.
+ *
+ * This file's own commentary names retired and hypothetical variables on purpose. A scan that
+ * counted them would report the runtime as supporting whatever its authors had written *about*,
+ * which is the opposite of what this guard is for.
+ */
+function codeOnly(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}
+
+function runtimeEnvNamesSupported() {
   const names = new Set()
   const roots = ['agent', 'worker', 'local', 'examples', 'scripts']
   for (const root of roots) {
@@ -1133,9 +1594,17 @@ function runtimeEnvNamesRead() {
     if (!existsSync(dir)) continue
     for (const file of productionFiles(dir)) {
       if (!file.endsWith('.mjs')) continue
-      const source = readFileSync(file, 'utf8')
+      const source = codeOnly(readFileSync(file, 'utf8'))
       for (const m of source.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1])
       for (const m of source.matchAll(/process\.env\[\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
+      // A name written into a child's environment as an object key — Rulith Local's spawns.
+      for (const m of source.matchAll(/\b(RULITH_[A-Z0-9_]*)\s*:/g)) names.add(m[1])
+      // The three the Worker hands a `run` Adapter. They are one declared map, read as that
+      // map rather than by pattern: `handRun` writes them as computed keys, so no key-shaped
+      // scan can see them, and widening the scan until it could would be the guess this guard
+      // exists to refuse.
+      const supplied = source.match(/ADAPTER_CONTEXT\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/)
+      if (supplied !== null) for (const m of supplied[1].matchAll(/'(RULITH_[A-Z0-9_]+)'/g)) names.add(m[1])
     }
   }
   return names
@@ -1161,9 +1630,20 @@ const PUBLIC_INSTRUCTION_FILES = [
   'config/worker-tools.example.json',
 ]
 
-test('committed public files only teach environment variables the runtime reads', () => {
-  const read = runtimeEnvNamesRead()
-  assert.ok(read.size >= 20, `only extracted ${read.size} environment reads from the runtime — the extractor lost the source`)
+test('committed public files only teach environment variables the runtime supports', () => {
+  const supported = runtimeEnvNamesSupported()
+  assert.ok(supported.size >= 20, `only extracted ${supported.size} environment names from the runtime — the extractor lost the source`)
+  // Positive and negative calibration for the extractor itself. The three the Worker supplies
+  // are found from their one declared list; a name that exists only in prose is not, however
+  // often the prose says it. `RULITH_CASE_ID` is the live example: this repository discusses
+  // it at length precisely because it is retired, and it must not read as supported.
+  for (const supplied of ['RULITH_INVOCATION_ID', 'RULITH_SOURCE_ACCESS', 'RULITH_SOURCE_TYPE']) {
+    assert.ok(supported.has(supplied), `${supplied} is handed to every run Adapter and the extractor lost it`)
+  }
+  for (const discussed of ['RULITH_CASE_ID', 'RULITH_CALC_INPUT', 'RULITH_CALC_OUTPUT']) {
+    assert.equal(supported.has(discussed), false,
+      `${discussed} is retired and appears only in commentary; a comment is not support`)
+  }
 
   const taught = []
   let scanned = 0
@@ -1177,9 +1657,9 @@ test('committed public files only teach environment variables the runtime reads'
   assert.equal(scanned, PUBLIC_INSTRUCTION_FILES.length, 'a listed public file is missing; the scan would silently shrink')
   assert.ok(taught.length >= 15, `only found ${taught.length} taught names — the document scan is not reaching the code fences`)
 
-  const unread = [...new Set(taught.filter((e) => !read.has(e.name)).map((e) => `${e.name} (${e.rel})`))].sort()
+  const unread = [...new Set(taught.filter((e) => !supported.has(e.name)).map((e) => `${e.name} (${e.rel})`))].sort()
   assert.deepEqual(unread, [],
-    'these names are published as instructions but nothing in the runtime reads them.\n  '
+    'these names are published as instructions but nothing in the runtime reads or provides them.\n  '
     + unread.join('\n  ')
     + '\nA reader who copies them gets a process that exits without ever seeing the value it needed.')
 })

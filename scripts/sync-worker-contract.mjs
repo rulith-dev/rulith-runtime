@@ -68,7 +68,7 @@ for (const path of WORKER_CONTRACT_FILES) {
 const bundle = {
   schema: WORKER_BUNDLE_SCHEMA,
   sourceCommit: commit,
-  sourceRepository: git(['config', '--get', 'remote.origin.url']).trim() || 'rulith',
+  sourceRepository: git(['config', '--get', 'remote.origin.url']).trim(),
   files,
 }
 

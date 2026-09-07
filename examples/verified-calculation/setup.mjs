@@ -47,13 +47,13 @@ const MANIFEST_KEYS = new Map([
 // Standalone trust anchor. Keep this deliberately narrow: only the files setup writes.
 // Packaging tests compare both success and tamper arms against these exact pins.
 const EMBEDDED_MANIFEST_FILES = Object.freeze({
-  'examples/verified-calculation/read-input.mjs': { sha256: '9b360e7a6dd108657e7b4946d9f63128f02d86e31087fe50b60bcfe0830bcabd' },
-  'examples/verified-calculation/write-output.mjs': { sha256: '3e937bcf28306b5cc317b65a61310f64cc91134c74b39a6f90cd70ea84e150ca' },
-  'examples/verified-calculation/verify-output.mjs': { sha256: '65ead0238bda0b732dbbe57fa4188304953ed84ca82c66cd1ee7e4fe726653ba' },
+  'examples/verified-calculation/read-input.mjs': { sha256: 'cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6' },
+  'examples/verified-calculation/write-output.mjs': { sha256: '7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703' },
+  'examples/verified-calculation/verify-output.mjs': { sha256: 'c02d9c6e9b63885fae007db399143d7aba551b9f689be5cd1b2941b776cb7026' },
   'examples/verified-calculation/worker-tools.json': { sha256: 'bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c' },
-  'examples/verified-calculation/data/input.json': { sha256: '93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7' },
-  'agent/rulith-agent.mjs': { sha256: 'eed00c92a0aa8b06396f52a2a4b1414fd5004e7ebcc616def2798c61caf35df2' },
-  'worker/rulith-worker.mjs': { sha256: 'a4ff499caf8dffafb6587221b8146835bfc29c775daf156265ec380fdcf5bb14' },
+  'examples/verified-calculation/data/input.json': { sha256: '28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec' },
+  'agent/rulith-agent.mjs': { sha256: '8e9a42e7b4557a8da685a2e178a6ab91f8d30b5b6927f3c2f016ca09dc310a64' },
+  'worker/rulith-worker.mjs': { sha256: '76755aa00c7723b5329e5b9af3313b68670c3097fd61c63dd53fb5e73e776db8' },
 })
 
 // The manifest sits at the package root in both shapes this script ships in: a git

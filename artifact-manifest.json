@@ -3,22 +3,22 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "eed00c92a0aa8b06396f52a2a4b1414fd5004e7ebcc616def2798c61caf35df2"
+      "sha256": "8e9a42e7b4557a8da685a2e178a6ab91f8d30b5b6927f3c2f016ca09dc310a64"
     },
     "protocol/mcp-contract.json": {
-      "sha256": "7089207f72253ebffb39c43312c9b1a3b53b435272337a040e8d79d18c605205"
+      "sha256": "3d932cd16fd84862aab425d3e19f1ec3dfc648e71bee6fbbd60cdbd43b6fc60d"
     },
     "protocol/worker-contract.json": {
-      "sha256": "f7150d753f1f96ead14fbad3d4dc7b714f9addc1bc55f144335569542240abea"
+      "sha256": "eac80f3a5b3dd3b0c5c181a2effb777f65225d4bcc5318fb4436e9ae5c697942"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "a4ff499caf8dffafb6587221b8146835bfc29c775daf156265ec380fdcf5bb14"
+      "sha256": "76755aa00c7723b5329e5b9af3313b68670c3097fd61c63dd53fb5e73e776db8"
     },
     "local/rulith-local.mjs": {
-      "sha256": "20a216177c28697b9eb5dc7a1c3938190262dff562d9a8e444fc0c5ef4667e52"
+      "sha256": "25381ad7cdea7dde5cd787cdae744ba57f70450b02fccd15567b100de840de02"
     },
     "local/local-ui.mjs": {
-      "sha256": "0633e37ee7430a55536704f0e87fe9abaf38ceecf26e0b73bdd4475534fecf2b"
+      "sha256": "00488401fd60f5ae3a35727443d4dd00942a54d2d7e96b04c9806df089b384f7"
     },
     "config/rulith-sources.example.json": {
       "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
@@ -30,10 +30,10 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "24cf8869ddafcc0bbec03212cec421a9d41d3f0384447c16c2da37646be4974a"
+      "sha256": "4e929a6d4f2de98786975c4323efcdd42ef6797e16ab93de43290369210712ca"
     },
     "examples/verified-calculation/data/input.json": {
-      "sha256": "93eeed3052b72d9c56728a62003bb688ade9f6bec24eae69e5087213a7fb5ac7"
+      "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
     },
     "examples/verified-calculation/prepare-runtime.mjs": {
       "sha256": "bbf32059e524e278431fcade0ed5112fde4010936ba4d8515b13e44bbf1a864a"
@@ -42,22 +42,22 @@
       "sha256": "56e7239da816a324c16a796d4ddef40ad521d4c5f1f99f4c6cd7cb03840a7e51"
     },
     "examples/verified-calculation/read-input.mjs": {
-      "sha256": "9b360e7a6dd108657e7b4946d9f63128f02d86e31087fe50b60bcfe0830bcabd"
+      "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/recipe.template.json": {
-      "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
+      "sha256": "165a8d793d36212378797e82d55fe0fd3a2201cca131a3234f1a91d5b5bd878b"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "359cf3f069587e467dad2abe73b33f3a325e5bbbcde4b20163c17e0b005dfbe5"
+      "sha256": "44dc39ee1a4032d949e18045258bb450b024c4449efd326ecd879859be5b6e47"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"
     },
     "examples/verified-calculation/verify-output.mjs": {
-      "sha256": "65ead0238bda0b732dbbe57fa4188304953ed84ca82c66cd1ee7e4fe726653ba"
+      "sha256": "c02d9c6e9b63885fae007db399143d7aba551b9f689be5cd1b2941b776cb7026"
     },
     "examples/verified-calculation/write-output.mjs": {
-      "sha256": "3e937bcf28306b5cc317b65a61310f64cc91134c74b39a6f90cd70ea84e150ca"
+      "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     }
   }
 }

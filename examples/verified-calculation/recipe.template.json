@@ -134,12 +134,12 @@
         "actions": [
           {
             "action": "load_calculation_input",
-            "description": "[intake] Read and validate the configured local input.json, then create the task. Pass no target and no business arguments.",
+            "description": "[intake] Read and validate the configured local input.json, then create the task. Pass no target and no business arguments; name the bound file Source in source. The returned task_seed is rooted at the batch the input file names, not at this Case: attach its node to this Case afterwards with one ApplyBatch assert_fact of subgoal_of(child=<task_seed node>, parent=<this Case root>), or the Case will derive its acceptance and still fail its completion gate.",
             "preconditions": [],
             "effects": [],
             "execution": {
               "tool": "rulith.verified_calculation.read_input@1",
-              "source": "verified-calculation-local",
+              "sourceTypes": ["file"],
               "kind": "read",
               "params": {},
               "returns": [
@@ -162,7 +162,7 @@
           },
           {
             "action": "write_calculation_result",
-            "description": "After intake, calculation_result is derived automatically from trusted input. Do not assert or calculate it yourself; invoke this action directly. Pass no business arguments and add only the target leaf.",
+            "description": "After intake, calculation_result is derived automatically from trusted input. Do not assert or calculate it yourself: read node/job_id/unit_price_cents/quantity/shipping_cents from calculation_input and subtotal_cents/total_cents from calculation_result on the Board View, pass them together with the bound file Source in source, and add the target leaf. Every argument must equal a value a fact grounded attested or stronger already carries, so a number you write yourself is refused before an invocation is minted.",
             "preconditions": [
               {
                 "predicate": "rulith.verified_calculation.calculation_input",
@@ -198,7 +198,7 @@
             ],
             "execution": {
               "tool": "rulith.verified_calculation.write_output@1",
-              "source": "verified-calculation-local",
+              "sourceTypes": ["file"],
               "kind": "write",
               "params": {
                 "node": "string",
@@ -213,7 +213,7 @@
           },
           {
             "action": "verify_calculation_output",
-            "description": "Read the persisted output and attest only an exact match to the board-bound result.",
+            "description": "Read the persisted output and attest only an exact match to the board-bound result. Read node/job_id/subtotal_cents/total_cents/status from output_written on the Board View, pass them together with the bound file Source in source, and add the target leaf.",
             "preconditions": [
               { "predicate": "rulith.verified_calculation.calculation_result", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents" } },
               { "predicate": "rulith.verified_calculation.output_written", "args": { "node": "?node", "job_id": "?job_id", "subtotal_cents": "?subtotal_cents", "total_cents": "?total_cents", "status": "?status" } }
@@ -221,7 +221,7 @@
             "effects": [],
             "execution": {
               "tool": "rulith.verified_calculation.verify_output@1",
-              "source": "verified-calculation-local",
+              "sourceTypes": ["file"],
               "kind": "read",
               "params": {
                 "node": "string",

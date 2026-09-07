@@ -1,17 +1,36 @@
 #!/usr/bin/env node
 /** Bound action adapter: verify the board result, atomically write it, then read it back. */
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
-const SOURCE_ROOT = process.env.RULITH_SOURCE_ACCESS ?? join(HERE, 'data')
-const OUTPUT = process.env.RULITH_CALC_OUTPUT ?? join(SOURCE_ROOT, 'output.json')
+import { dirname, isAbsolute, join } from 'node:path'
 
 function fail(message) {
   console.error(`calculation output rejected: ${message}`)
   process.exit(2)
 }
+
+/**
+ * The one place this Adapter may write — see `read-input.mjs` for the rule in full.
+ *
+ * No override and no default directory. A `RULITH_CALC_OUTPUT` an ambient environment could
+ * set would have let this Adapter write anywhere the Worker user can write, under a receipt
+ * that says the governed Source was written.
+ */
+function sourceRoot() {
+  const access = String(process.env.RULITH_SOURCE_ACCESS ?? '')
+  const type = String(process.env.RULITH_SOURCE_TYPE ?? '')
+  if (access === '' || !isAbsolute(access)) {
+    fail('no governed file Source was supplied. This Adapter writes only inside the Source root the'
+      + ' Worker hands it in RULITH_SOURCE_ACCESS, which is an absolute path; it has no default'
+      + ' location and no path override.')
+  }
+  if (type !== 'file') {
+    fail(`the selected Source is of type ${JSON.stringify(type || '(none)')}, and this Adapter writes a file Source.`
+      + ' Bind a file Source to the Connection that carries this Tool.')
+  }
+  return access
+}
+
+const OUTPUT = join(sourceRoot(), 'output.json')
 
 function safeInteger(value, name, { positive = false } = {}) {
   if (!Number.isSafeInteger(value)) fail(`${name} must be a safe integer`)
