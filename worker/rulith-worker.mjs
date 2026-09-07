@@ -905,9 +905,11 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
     // shared graph's answer, computed from real causal reach, and was never something an
     // Adapter needed — or could be told correctly — from here.
     const source = resolveSourceCreds(t, sources)
-    const access = typeof source.access === 'string'
-      ? (isAbsolute(source.access) ? source.access : resolve(WORKER_ROOT, source.access))
-      : undefined
+    const access = source.sourceType === 'db'
+      ? (typeof source.dsn === 'string' && source.dsn !== '' ? source.dsn : undefined)
+      : typeof source.access === 'string'
+        ? (isAbsolute(source.access) ? source.access : resolve(WORKER_ROOT, source.access))
+        : undefined
     // The three names `ADAPTER_SUPPLIED_CONTEXT` records, and only when this work item really
     // decides them: a Source-free execution supplies no root and no type, so an Adapter that
     // needs one finds nothing rather than something left over from the environment.

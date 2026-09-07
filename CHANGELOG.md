@@ -8,6 +8,10 @@ All notable changes to the local runtime are documented here.
 change to the model surface: an integration that scripted the previous fenced-JSON
 dialect will not work against this runtime.
 
+- A database run Adapter receives its selected Source's local DSN through the existing
+  `RULITH_SOURCE_ACCESS` context. The DSN is no longer rewritten as a filesystem path;
+  Source-free actions receive neither a borrowed DSN nor a Source type.
+
 - Worker action rows now require the actual Source's Artifact permission and the deployment's
   bounded storage policy. Large results are uploaded through the private Worker data path before
   a receipt references them; required business facts retain their original values. Upload failure
