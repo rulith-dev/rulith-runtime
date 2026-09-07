@@ -1,0 +1,54 @@
+{
+  "schema": "rulith-psc-conformance-map/v1",
+  "repository": "runtime",
+  "contractVersion": "0.2.4",
+  "contractReviewedCommit": "8ac3dd7381af8ad2c259e6b8cf96af64373e6cf2",
+  "blockers": {
+    "evidence_review": "Clause-wide Runtime evidence has not been independently reviewed; existing green tests alone do not establish complete coverage.",
+    "release_execution": "Clause-wide tests proving that each release prerequisite is enforced have not been mapped. Release execution and deployment observations must be reported separately from this evidence inventory."
+  },
+  "acceptance": {
+    "ACC-CHAT-01": {
+      "state": "mapped",
+      "targets": [{"file": "test/conversation-first.test.mjs", "locator": "a greeting is answered normally with no Case and no Board call"}]
+    },
+    "ACC-MCP-02": {"state": "blocked", "blocker": "evidence_review"},
+    "ACC-MCP-08": {
+      "state": "mapped",
+      "targets": [
+        {"file": "test/mcp-protocol.test.mjs", "locator": "RT-PROTO-1"},
+        {"file": "test/mcp-protocol.test.mjs", "locator": "RT-PROTO-2"},
+        {"file": "test/conversation-first.test.mjs", "locator": "RT-META-1b"},
+        {"file": "test/conversation-first.test.mjs", "locator": "RT-SESSION-3b"},
+        {"file": "test/mcp-protocol.test.mjs", "locator": "RT-RESUME-1"},
+        {"file": "test/mcp-protocol.test.mjs", "locator": "RT-CONN-3"}
+      ]
+    },
+    "ACC-MCP-11": {
+      "state": "mapped",
+      "targets": [
+        {"file": "test/mcp-protocol.test.mjs", "locator": "RT-CONN-1"},
+        {"file": "test/mcp-protocol.test.mjs", "locator": "RT-CONN-2"},
+        {"file": "test/mcp-protocol.test.mjs", "locator": "RT-CONN-3"}
+      ]
+    },
+    "ACC-UI-01": {"state": "blocked", "blocker": "evidence_review"},
+    "ACC-COG-03": {"state": "blocked", "blocker": "evidence_review"},
+    "ACC-SEC-04": {"state": "blocked", "blocker": "evidence_review"},
+    "ACC-SEC-05": {
+      "state": "mapped",
+      "targets": [
+        {"file": "test/worker-tool-fences.test.mjs", "locator": "a db-query invocation cannot replace the compiled template with its own SQL"},
+        {"file": "test/worker-tool-fences.test.mjs", "locator": "a db-exec-fenced invocation cannot smuggle a destructive statement through an argument"},
+        {"file": "test/worker-tool-fences.test.mjs", "locator": "the SELECT-only and destructive fences still classify the template (calibration)"},
+        {"file": "test/worker-tool-fences.test.mjs", "locator": "a database Tool that declares a sql parameter is refused at declaration time"},
+        {"file": "test/worker-tool-fences.test.mjs", "locator": "a work item payload cannot replace the validated invocation arguments"}
+      ]
+    },
+    "ACC-REL-03": {"state": "blocked", "blocker": "release_execution"},
+    "ACC-LOCAL-01": {"state": "blocked", "blocker": "evidence_review"},
+    "ACC-LOCAL-02": {"state": "blocked", "blocker": "evidence_review"},
+    "ACC-LOCAL-03": {"state": "blocked", "blocker": "evidence_review"},
+    "ACC-TRACE-02": {"state": "blocked", "blocker": "evidence_review"}
+  }
+}
