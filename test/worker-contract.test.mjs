@@ -247,17 +247,11 @@ test('RT-WKC-8 the committed grant matches the request vector it covers', () => 
   }, held), undefined, 'the fixture grant does not match the fixture request vector it names')
 })
 
-test('RT-WKC-9 bytes leave this machine only for an explicit granted permission', () => {
-  // The producer path is not wired yet, and this is what must be true before it is: each
-  // refusal has its own name, and the Source-free case is refused as a missing permission
-  // rather than allowed because there was no Source to ask.
+test('RT-WKC-9 Artifact object upload needs an explicit granted permission', () => {
   for (const row of FIXTURE.sourcePermissions.rows) {
     const decided = uploadDecision(row.decision.permission, row.decision.sourceRecordId)
     assert.deepEqual(decided, row.decision, `${row.id}: this Runtime decides differently from the committed row`)
   }
-  const source = readFileSync(join(ROOT, 'worker', 'rulith-worker.mjs'), 'utf8')
-  assert.doesNotMatch(source, /\/work\/artifact/u,
-    'the Worker uploads object bytes while the Source permission and producer endpoint are still being wired')
 })
 
 test('RT-WKC-10 a Worker may reference an object and may not describe one', () => {
@@ -527,6 +521,7 @@ test('RT-WKC-15 the runtime-owned open scenarios are the ones this suite answers
   // `actionWorkSourceInvariants` through this Runtime's own token reader, request digest and
   // Source resolver, and `worker-action-row.test.mjs` keeps the two real-process arms.
   const answered = {
+    'undeliverable-large-result': 'worker-artifacts.test.mjs: retention failure leaves the real executor effect with no manufactured receipt',
     'source-free-upload': 'RT-WKC-9 here: uploadDecision refuses a Source-free upload by name, before bytes leave',
     'action-work-source-bound': 'RT-WK-LINK-2/3/4/6 (committed sourced link: token, digest, receive path, live run)'
       + ' plus RT-WK-SRC-5 (served bytes not rewritten)',

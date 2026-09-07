@@ -28,7 +28,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
-import { BOARD, CONNECTION, HOLD, ROOT, SIGNED, driveWorker, toolDigest } from './support/worker-harness.mjs'
+import { BOARD, CONNECTION, HOLD, ROOT, SIGNED, driveWorker, toolDigest, artifactWorkFields } from './support/worker-harness.mjs'
 
 const EXAMPLE = join(ROOT, 'examples', 'verified-calculation')
 const RECIPE = JSON.parse(readFileSync(join(EXAMPLE, 'recipe.template.json'), 'utf8'))
@@ -67,6 +67,7 @@ function exampleRow(name, args, overrides = {}) {
     boardId: BOARD,
     toolContractId: execution.tool,
     sourceRecordId: SOURCE,
+    ...artifactWorkFields(SOURCE),
     connectionId: CONNECTION,
     toolDigest: toolDigest(MANIFEST.tools[execution.tool]),
     executionGrant: SIGNED,

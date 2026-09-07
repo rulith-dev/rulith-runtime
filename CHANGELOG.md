@@ -8,6 +8,12 @@ All notable changes to the local runtime are documented here.
 change to the model surface: an integration that scripted the previous fenced-JSON
 dialect will not work against this runtime.
 
+- Worker action rows now require the actual Source's Artifact permission and the deployment's
+  bounded storage policy. Large results are uploaded through the private Worker data path before
+  a receipt references them; required business facts retain their original values. Upload failure
+  and output capture overflow leave the invocation unresolved for fenced manual reconciliation.
+  The former silent 4,000-character result truncation is removed. Gateway adoption is required.
+
 - **Rulith Local confirms a role start; it no longer times one.** `/control` used to sleep a
   fixed 350 ms and then ask whether the child was still running. That answered the wrong
   question in both directions: on a busy machine a child that exits immediately has not exited

@@ -79,6 +79,9 @@ const ACTION_ROW_SHAPE = Object.freeze({
 ${Object.entries(contract.actionRowShape).map(([name, kind]) => `  ${name}: '${kind}',`).join('\n')}
 })
 const ACTION_ROW_CONST = Object.freeze(${JSON.stringify(contract.actionRowConst)})
+const SOURCE_UPLOAD_FIELDS = Object.freeze(${JSON.stringify(contract.sourceUploadFields)})
+const ARTIFACT_POLICY_FIELDS = Object.freeze(${JSON.stringify(contract.artifactPolicyFields)})
+const ARTIFACT_REF_PATTERN = ${new RegExp(contract.artifactRefPattern).toString()}
 ${END}`
 }
 

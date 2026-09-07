@@ -127,6 +127,8 @@ function closedShapeKinds(definition, label, path) {
     }
     const ref = typeof rule?.$ref === 'string' ? rule.$ref.split('/').pop() : undefined
     const kind = rule?.const !== undefined ? 'const'
+      : rule?.$ref === 'rulith-artifact-read-v1.schema.json#/$defs/SourceUploadPermission' ? 'sourceUpload'
+      : rule?.$ref === 'rulith-artifact-read-v1.schema.json#/$defs/ArtifactPolicy' ? 'artifactPolicy'
       : ref === 'WorkerId' ? 'workerId'
         : ref === 'Generation' ? 'generation'
           : ref === 'Digest' ? 'digest'
@@ -405,6 +407,33 @@ export function readWorkerContract(bundle, { path = WORKER_BUNDLE_PATH } = {}) {
   advertisement.actionRowShape = closedShapeKinds(defs.WorkerActionWorkItem, 'action work item', path)
   advertisement.actionRowConst = Object.fromEntries(Object.entries(defs.WorkerActionWorkItem.properties)
     .filter(([, rule]) => rule?.const !== undefined).map(([name, rule]) => [name, rule.const]))
+  const artifactDefs = parsed.get(ARTIFACT_SCHEMA_FILE)?.$defs
+  // These two flat objects need only scalar fields and a nullable refusal. Reject new constraints
+  // at adoption rather than projecting an unchecked keyword into the standalone Worker.
+  const objectFields = (definition, label) => {
+    const allowed = new Set(['type', 'required', 'properties', 'additionalProperties', 'description'])
+    if (definition?.type !== 'object' || definition.additionalProperties !== false || !Array.isArray(definition.required)
+      || Object.keys(definition).some(key => !allowed.has(key))) throw new WorkerContractError(`${path}: unsupported ${label} object shape`)
+    const fields = {}
+    for (const [name, field] of Object.entries(definition.properties ?? {})) {
+      const rules = field.anyOf ?? [field]
+      if (field.anyOf && Object.keys(field).some(key => !['anyOf', 'description'].includes(key))) throw new WorkerContractError(`${path}: unread ${label}.${name} constraint`)
+      const scalarKeys = new Set(['type', 'enum', 'minLength', 'minimum', 'maximum', 'description'])
+      for (const rule of rules) {
+        if (Object.keys(rule).some(key => !scalarKeys.has(key))
+          || (rule.enum === undefined && !['string', 'integer', 'boolean', 'null'].includes(rule.type))) {
+          throw new WorkerContractError(`${path}: unread ${label}.${name} scalar constraint`)
+        }
+      }
+      fields[name] = { required: definition.required.includes(name), rules: rules.map(({ description: _description, ...rule }) => rule) }
+    }
+    if (definition.required.some(name => fields[name] === undefined)) throw new WorkerContractError(`${path}: missing ${label} required property`)
+    return fields
+  }
+  advertisement.sourceUploadFields = objectFields(artifactDefs?.SourceUploadPermission, 'SourceUploadPermission')
+  advertisement.artifactPolicyFields = objectFields(artifactDefs?.ArtifactPolicy, 'ArtifactPolicy')
+  advertisement.artifactRefPattern = artifactDefs?.ArtifactRef?.pattern
+  if (typeof advertisement.artifactRefPattern !== 'string') throw new WorkerContractError(`${path}: ArtifactRef has no pattern`)
   advertisement.digestPattern = defs.Digest?.pattern
   advertisement.generationMaximum = defs.Generation?.maximum
   advertisement.headerGenerationPattern = defs.WorkerHeaderValues?.properties?.workerGeneration?.pattern

@@ -17,6 +17,12 @@ import { spawn } from 'node:child_process'
 import { canonicalJson, executionDigest, toolDigest } from '../../worker/rulith-worker.mjs'
 
 export const ROOT = resolve(import.meta.dirname, '..', '..')
+const contractBundle = JSON.parse(readFileSync(join(ROOT, 'protocol/worker-contract.json'), 'utf8'))
+const contractFixture = JSON.parse(contractBundle.files['tests/conformance/fixtures/worker-protocol-v2.json'].content)
+export function artifactWorkFields(sourceRecordId) {
+  const permission = contractFixture.sourcePermissions.rows.find(row => row.id === (sourceRecordId === '' ? 'source-free-result' : 'granted-off-machine')).decision
+  return { sourceUpload: { ...permission, sourceRecordId }, artifactPolicy: { ...contractFixture.artifactPolicies.rows[0].policy } }
+}
 
 /** Do not answer this request at all. Used to park the Worker on an idle long poll so it
  *  stops hammering the model Board once the scenario under test has played out. */
@@ -248,6 +254,7 @@ export function actionRow(overrides = {}) {
     args: '{"source":"orders"}',
     target: '',
     toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.ship@1', kind: 'act', params: {}, sourceTypes: ['file'] }),
+    ...artifactWorkFields(overrides.sourceRecordId ?? 'orders'),
     ...overrides,
   }
 }
@@ -367,7 +374,7 @@ export function evidenceRow(overrides = {}) {
  * than the default `orders`.
  */
 export async function driveWorker({
-  reply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {}, extraTools = {}, env = {},
+  reply, artifactReply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {}, extraTools = {}, env = {},
   leaseGeneration = 7, lease: leaseOverride, sources = (root) => [{ name: 'orders', type: 'file', access: root }],
 }) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-p2-'))
@@ -445,6 +452,15 @@ export async function driveWorker({
       if ((request.url ?? '').startsWith('/chat')) {
         response.writeHead(200, { 'content-type': 'application/json' })
         return void response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(reviewer ?? {}) } }] }))
+      }
+      if (request.url === '/work/artifact') {
+        const payload = JSON.parse(raw)
+        const entry = { raw, artifact: payload, operation: { kind: 'ArtifactUpload' }, headers: { ...request.headers } }
+        seen.push(entry)
+        const out = artifactReply?.(payload, entry) ?? { status: 503, body: { errorCode: 'artifact_unavailable' } }
+        entry.reply = out
+        response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
+        return void response.end(JSON.stringify(out.body))
       }
       const operation = JSON.parse(raw).operation
       // The headers are kept beside the body because the Gateway authenticates the header
