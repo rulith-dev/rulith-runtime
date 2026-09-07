@@ -74,7 +74,7 @@ const MCP_URL = `${URL_BASE}/mcp`
 // and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = '33e61758617ec796668aaa7b03356fea01177850'
+const RULITH_CONTRACT_SOURCE_COMMIT = '62705412870c662c277e55626f3d3d5ea88c0a3c'
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v1'
