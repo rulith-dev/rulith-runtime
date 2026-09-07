@@ -3,10 +3,10 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "eed00c92a0aa8b06396f52a2a4b1414fd5004e7ebcc616def2798c61caf35df2"
+      "sha256": "272c98381e284ebf77ffc056369ec8420073e6e5c038c09774d121688ee9e4d0"
     },
     "protocol/mcp-contract.json": {
-      "sha256": "7089207f72253ebffb39c43312c9b1a3b53b435272337a040e8d79d18c605205"
+      "sha256": "721dd9924bf78fc0c528bbeaa5d899ee1b70b229f7fae8e401e42e2f47a1cb8d"
     },
     "protocol/worker-contract.json": {
       "sha256": "f7150d753f1f96ead14fbad3d4dc7b714f9addc1bc55f144335569542240abea"
@@ -48,7 +48,7 @@
       "sha256": "36bbb5f8a9cbf824dbbc8c4172ce75ed42d4d7f01f460549f2a80f3f91b763cb"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "359cf3f069587e467dad2abe73b33f3a325e5bbbcde4b20163c17e0b005dfbe5"
+      "sha256": "be2497eef3a5010102fcbfc6836b597d46a40c8df59b86f7dd861c0277b71ffe"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"
