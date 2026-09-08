@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
@@ -25,10 +25,16 @@ const LEGACY_RESPONSE_PATTERNS = [
   '/提示:|锚建议/',
 ]
 
-function productionFiles(dir) {
+function productionFiles(dir, root = ROOT) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name)
-    if (entry.isDirectory()) return productionFiles(path)
+    if (entry.isDirectory()) {
+      // These generated example directories are excluded by .gitignore and
+      // package.json. Keep scanning all other source, including new Adapters.
+      if (/^examples[/\\]/.test(relative(root, path))
+        && ['runtime', '.runtime-test'].includes(entry.name)) return []
+      return productionFiles(path, root)
+    }
     return /\.(?:mjs|json)$/.test(entry.name) ? [path] : []
   })
 }
@@ -1586,29 +1592,53 @@ function codeOnly(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 }
 
-function runtimeEnvNamesSupported() {
+function runtimeEnvNamesSupported(root = ROOT) {
   const names = new Set()
-  const roots = ['agent', 'worker', 'local', 'examples', 'scripts']
-  for (const root of roots) {
-    const dir = join(ROOT, root)
-    if (!existsSync(dir)) continue
-    for (const file of productionFiles(dir)) {
-      if (!file.endsWith('.mjs')) continue
-      const source = codeOnly(readFileSync(file, 'utf8'))
-      for (const m of source.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1])
-      for (const m of source.matchAll(/process\.env\[\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
-      // A name written into a child's environment as an object key — Rulith Local's spawns.
-      for (const m of source.matchAll(/\b(RULITH_[A-Z0-9_]*)\s*:/g)) names.add(m[1])
-      // The three the Worker hands a `run` Adapter. They are one declared map, read as that
-      // map rather than by pattern: `handRun` writes them as computed keys, so no key-shaped
-      // scan can see them, and widening the scan until it could would be the guess this guard
-      // exists to refuse.
-      const supplied = source.match(/ADAPTER_CONTEXT\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/)
-      if (supplied !== null) for (const m of supplied[1].matchAll(/'(RULITH_[A-Z0-9_]+)'/g)) names.add(m[1])
-    }
+  const files = ['agent', 'worker', 'local', 'examples', 'scripts'].flatMap((name) => {
+    const dir = join(root, name)
+    return existsSync(dir) ? productionFiles(dir, root) : []
+  })
+  for (const file of files) {
+    if (!file.endsWith('.mjs')) continue
+    const source = codeOnly(readFileSync(file, 'utf8'))
+    for (const m of source.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1])
+    for (const m of source.matchAll(/process\.env\[\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
+    // A name written into a child's environment as an object key — Rulith Local's spawns.
+    for (const m of source.matchAll(/\b(RULITH_[A-Z0-9_]*)\s*:/g)) names.add(m[1])
+    // The context the Worker hands a `run` Adapter is one declared map. `handRun`
+    // writes computed keys, so a key-shaped scan alone cannot see these names.
+    const supplied = source.match(/ADAPTER_CONTEXT\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/)
+    if (supplied !== null) for (const m of supplied[1].matchAll(/'(RULITH_[A-Z0-9_]+)'/g)) names.add(m[1])
   }
   return names
 }
+
+test('runtime source guards exclude generated examples and retain all other source', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-source-scan-'))
+  try {
+    const example = join(root, 'examples', 'verified-calculation')
+    mkdirSync(join(example, 'runtime'), { recursive: true })
+    mkdirSync(join(example, '.runtime-test'))
+    const shipped = 'examples/verified-calculation/read-input.mjs'
+    writeFileSync(join(root, shipped), 'const input = process.env.RULITH_SOURCE_ACCESS\n')
+    const retired = 'const env = { RULITH_CALC_INPUT: "old-input", RULITH_CALC_OUTPUT: "old-output" }\n'
+    writeFileSync(join(example, 'runtime', 'e2e-credential-bridge.mjs'), retired)
+    writeFileSync(join(example, '.runtime-test', 'old-adapter.mjs'), retired)
+
+    assert.deepEqual(productionFiles(join(root, 'examples'), root), [join(root, shipped)])
+    assert.deepEqual([...runtimeEnvNamesSupported(root)], ['RULITH_SOURCE_ACCESS'])
+
+    writeFileSync(join(example, 'new-adapter.mjs'), retired)
+    assert.equal(runtimeEnvNamesSupported(root).has('RULITH_CALC_INPUT'), true,
+      'new example source must be scanned even before it is listed for packaging')
+    mkdirSync(join(root, 'scripts', 'runtime'), { recursive: true })
+    writeFileSync(join(root, 'scripts', 'runtime', 'verify.mjs'), 'const repo = process.env.RULITH_CONTRACT_REPO\n')
+    assert.equal(runtimeEnvNamesSupported(root).has('RULITH_CONTRACT_REPO'), true,
+      'the generated-directory exclusion is limited to examples; scripts stay recursive')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 /** Command-line flags the Agent's argument parser accepts; everything else exits 1. */
 function agentFlagsAccepted() {
