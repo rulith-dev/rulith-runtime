@@ -518,7 +518,7 @@ export function createLocalHost({
     } catch (error) { json(res, 400, { ok: false, teaching: String(error?.message ?? error) }) }
   })
   return {
-    key, port, mode: modeOf(selectedRoles), roles: selectedRoles,
+    key, get port() { return server.address()?.port ?? port }, mode: modeOf(selectedRoles), roles: selectedRoles,
     status: () => ({ mode: modeOf(selectedRoles), roles: selectedRoles, agent: running('agent'), worker: running('worker') }),
     events: () => events.map((event) => ({ ...event })),
     listen: () => new Promise((accept, reject) => {

@@ -454,14 +454,11 @@ test('Rulith Local status is a read-only redacted runtime projection', async () 
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-status-'))
   const child = join(dir, 'role.mjs')
   writeFileSync(child, "process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start',agentId:'agent-public-1',concurrency:1}});setInterval(()=>{},1000)\n")
-  const probe = createServer()
-  let port
-  await new Promise((resolveReady) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(resolveReady) }))
   const config = defaultLocalConfig()
   config.paths = { agent: child }
   config.agent.env.RULITH_TOKEN = `rlt_agt_${'a'.repeat(43)}`
   config.agent.env.RULITH_MODEL_KEY = 'model-secret-value'
-  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'status-key' })
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'status-key' })
   try {
     await host.listen()
     const deadline = Date.now() + 5_000
@@ -471,7 +468,7 @@ test('Rulith Local status is a read-only redacted runtime projection', async () 
     }
     assert.ok(host.events().some((event) => event.src === 'agent' && event.type === 'start' && event.agentId === 'agent-public-1'),
       'the child never published its Agent identity')
-    const response = await fetch(`http://127.0.0.1:${port}/status?k=status-key`)
+    const response = await fetch(`http://127.0.0.1:${host.port}/status?k=status-key`)
     const text = await response.text()
     assert.equal(response.status, 200)
     assert.doesNotMatch(text, /agent-secret-value|model-secret-value/)
@@ -499,17 +496,14 @@ async function localRole({ role = 'agent', source, startConfirmMs }, run) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-start-'))
   const child = join(dir, `${role}.mjs`)
   writeFileSync(child, source, 'utf8')
-  const probe = createServer()
-  let port
-  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(ready) }))
   const config = defaultLocalConfig()
   config.paths = { [role]: child }
   const host = createLocalHost({
-    configFile: join(dir, 'local.json'), config, roles: [role], port, key: 'start-key',
+    configFile: join(dir, 'local.json'), config, roles: [role], port: 0, key: 'start-key',
     ...(startConfirmMs === undefined ? {} : { startConfirmMs }),
   })
   const control = async (operation) => {
-    const response = await fetch(`http://127.0.0.1:${port}/control?k=start-key`, {
+    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=start-key`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ role, operation }),
     })
@@ -530,7 +524,7 @@ async function localRole({ role = 'agent', source, startConfirmMs }, run) {
     // `listen` starts the selected roles, which is the product's behaviour and not what these
     // arms are about: each drives an explicit operator `start` from a stopped state.
     await host.listen()
-    await run({ host, control, quiesce, port })
+    await run({ host, control, quiesce, port: host.port })
   } finally {
     await host.close()
     rmSync(dir, { recursive: true, force: true })
@@ -696,14 +690,11 @@ test('Rulith Local does not let a child that answers the stop signal confirm the
       + "if (count === 1) send('start')\n"
       + "else { process.on('SIGTERM', () => send('start')); send('armed') }\n"
       + 'setInterval(() => {}, 1000)\n', 'utf8')
-    const probe = createServer()
-    let port
-    await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(ready) }))
     const config = defaultLocalConfig()
     config.paths = { agent: child }
-    const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'sigterm-key', startConfirmMs: 5_000 })
+    const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'sigterm-key', startConfirmMs: 5_000 })
     const control = async (operation) => {
-      const response = await fetch(`http://127.0.0.1:${port}/control?k=sigterm-key`, {
+      const response = await fetch(`http://127.0.0.1:${host.port}/control?k=sigterm-key`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ role: 'agent', operation }),
       })
@@ -797,14 +788,11 @@ test('Rulith Local confirms each start by its own process, so an earlier role re
     + "  process.send?.({protocol:'rulith-local-event',event:{t:Date.now(),type:'start'}})\n"
     + '}\n'
     + 'setInterval(() => {}, 1000)\n', 'utf8')
-  const probe = createServer()
-  let port
-  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(ready) }))
   const config = defaultLocalConfig()
   config.paths = { agent: child }
-  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'identity-key', startConfirmMs: 1_500 })
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'identity-key', startConfirmMs: 1_500 })
   const control = async (operation) => {
-    const response = await fetch(`http://127.0.0.1:${port}/control?k=identity-key`, {
+    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=identity-key`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'agent', operation }),
     })
@@ -839,23 +827,20 @@ test('Rulith Local confirms each start by its own process, so an earlier role re
 test('the shipped Worker really sends the readiness event Rulith Local confirms a start by', async () => {
   // The three arms above drive scripted children, so they prove the host's half of the
   // contract and assume the other. This one starts `worker/rulith-worker.mjs` itself, with a
-  // work endpoint that is not listening: the Source fetch fails, the Worker says so and comes
+  // work endpoint that drops every connection: the Source fetch fails, the Worker says so and comes
   // up anyway, and Local confirms the start. If the Worker ever stopped sending `up`, or only
   // sent it once Cloud answered, this goes red — and an offline machine's healthy Worker would
   // otherwise be reported as one that never started.
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-real-worker-'))
-  const closed = createServer()
-  let uiPort
-  let deadPort
-  await new Promise((ready) => closed.listen(0, '127.0.0.1', () => { deadPort = closed.address().port; closed.close(ready) }))
-  const probe = createServer()
-  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { uiPort = probe.address().port; probe.close(ready) }))
+  const unavailable = createServer()
+  unavailable.on('connection', (socket) => socket.destroy())
+  await new Promise((ready) => unavailable.listen(0, '127.0.0.1', ready))
   const config = defaultLocalConfig()
-  config.worker.env.RULITH_WORK_URL = `http://127.0.0.1:${deadPort}/work`
+  config.worker.env.RULITH_WORK_URL = `http://127.0.0.1:${unavailable.address().port}/work`
   config.worker.env.RULITH_CONNECTION = 'conn-local-readiness'
   config.worker.env.RULITH_CONNECTION_KEY = 'key-local-readiness'
   config.worker.env.RULITH_TOOLS_FILE = join(dir, 'absent-tools.json')
-  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['worker'], port: uiPort, key: 'real-key' })
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['worker'], port: 0, key: 'real-key' })
   try {
     await host.listen()
     const deadline = Date.now() + 20_000
@@ -867,9 +852,10 @@ test('the shipped Worker really sends the readiness event Rulith Local confirms 
     assert.equal(typeof up.workerId, 'string')
     assert.equal(up.connectionId, 'conn-local-readiness')
     assert.ok(host.events().some((event) => event.src === 'worker' && event.type === 'log' && /Could not reach Rulith Cloud/i.test(String(event.line ?? ''))),
-      'this arm is only meaningful while the Worker is genuinely offline')
+      'this arm is only meaningful while the Worker cannot reach a working Gateway')
   } finally {
     await host.close()
+    await new Promise((ready) => unavailable.close(ready))
     rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -880,20 +866,17 @@ test('the shipped Agent refuses to start without its Gateway, and Rulith Local r
   // making — and it must arrive as one. The retired fixed wait answered `200 {ok:true}` here
   // whenever the failure took longer than 350 ms, which is the exact shape of fake success.
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-real-agent-'))
-  let uiPort
-  let deadPort
-  const closed = createServer()
-  await new Promise((ready) => closed.listen(0, '127.0.0.1', () => { deadPort = closed.address().port; closed.close(ready) }))
-  const probe = createServer()
-  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { uiPort = probe.address().port; probe.close(ready) }))
+  const unavailable = createServer()
+  unavailable.on('connection', (socket) => socket.destroy())
+  await new Promise((ready) => unavailable.listen(0, '127.0.0.1', ready))
   const config = defaultLocalConfig()
-  config.agent.env.RULITH_URL = `http://127.0.0.1:${deadPort}`
+  config.agent.env.RULITH_URL = `http://127.0.0.1:${unavailable.address().port}`
   config.agent.env.RULITH_TOKEN = `rlt_agt_${'a'.repeat(43)}`
-  config.agent.env.RULITH_MODEL_URL = `http://127.0.0.1:${deadPort}/v1`
+  config.agent.env.RULITH_MODEL_URL = `http://127.0.0.1:${unavailable.address().port}/v1`
   config.agent.env.RULITH_MODEL_KEY = 'unused-offline'
-  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: uiPort, key: 'real-agent-key' })
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'real-agent-key' })
   const control = async (operation) => {
-    const response = await fetch(`http://127.0.0.1:${uiPort}/control?k=real-agent-key`, {
+    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=real-agent-key`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'agent', operation }),
     })
@@ -914,6 +897,7 @@ test('the shipped Agent refuses to start without its Gateway, and Rulith Local r
     `the Agent's own diagnostic must reach Trace: ${JSON.stringify(host.events().slice(-6))}`)
   } finally {
     await host.close()
+    await new Promise((ready) => unavailable.close(ready))
     rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -922,12 +906,9 @@ test('Rulith Local reports an immediate child exit instead of claiming the role 
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-exit-'))
   const child = join(dir, 'exit.mjs')
   writeFileSync(child, 'process.exit(3)\n')
-  const probe = createServer()
-  let port
-  await new Promise((resolveReady) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(resolveReady) }))
   const config = defaultLocalConfig()
   config.paths = { agent: child }
-  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: 'exit-key' })
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'exit-key' })
   try {
     await host.listen()
     const deadline = Date.now() + 5_000
@@ -936,7 +917,7 @@ test('Rulith Local reports an immediate child exit instead of claiming the role 
     }
     assert.ok(host.events().some((event) => event.src === 'agent' && event.type === 'exit'),
       'the immediate child exit never reached the Local host')
-    const response = await fetch(`http://127.0.0.1:${port}/control?k=exit-key`, {
+    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=exit-key`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'agent', operation: 'start' }),
     })

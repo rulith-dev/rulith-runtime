@@ -12,10 +12,11 @@
  * assertion that "GET / is refused" would also pass against a host that refused
  * everything, and an assertion that the page has no key would pass against a page that
  * had been emptied.
+ * The host fixture also checks that simultaneous listeners retain distinct ports,
+ * so parallel release checks can exercise these HTTP gates without port handoffs.
  */
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { createServer } from 'node:http'
 import { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,22 +30,33 @@ const KEY = 'local-gate-key'
 /** Start the real host on a free loopback port with no child roles to spawn. */
 async function withHost(run) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-gate-'))
-  const probe = createServer()
-  let port
-  await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { port = probe.address().port; probe.close(ready) }))
   const config = defaultLocalConfig()
   // Point both roles at a path that does not exist: the host reports the missing
   // runtime as an event and starts no child, which is all these arms need.
   config.paths = { agent: join(dir, 'absent-agent.mjs'), worker: join(dir, 'absent-worker.mjs') }
-  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port, key: KEY })
+  const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: KEY })
   try {
     await host.listen()
-    await run({ port, host })
+    await run({ port: host.port, host })
   } finally {
     await host.close()
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+test('Local hosts retain distinct system-assigned ports while both are listening', async () => {
+  await withHost(async ({ port: first }) => {
+    await withHost(async ({ port: second }) => {
+      assert.ok(first > 0 && second > 0)
+      assert.notEqual(first, second)
+      for (const port of [first, second]) {
+        const response = await fetch(`http://127.0.0.1:${port}/status?k=${KEY}`)
+        assert.equal(response.status, 200)
+        assert.equal((await response.json()).ok, true)
+      }
+    })
+  })
+})
 
 /** Raw request so a hostile `Host` header can be sent; fetch forbids overriding it. */
 function rawGet(port, path, headers = {}) {
