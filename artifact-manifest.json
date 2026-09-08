@@ -12,7 +12,7 @@
       "sha256": "bf239d11e6c7379e0be03fac3ef85d881e683de8e4f39e9e0fc5f27b852f8ae1"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "c7fd239062132fa25d3bc21e0ed9b0974d4791b7dac14d264f74fa7504e5f24d"
+      "sha256": "96e1093b49edf330d4b3a07ff796a1ec026c00a9f4c547417ba01a636f30cf52"
     },
     "local/rulith-local.mjs": {
       "sha256": "25381ad7cdea7dde5cd787cdae744ba57f70450b02fccd15567b100de840de02"
@@ -48,7 +48,7 @@
       "sha256": "165a8d793d36212378797e82d55fe0fd3a2201cca131a3234f1a91d5b5bd878b"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "03ec31ea46b5ea5a3e402b0610c26b9e782ea03438b5c5f6262ce8478b26654b"
+      "sha256": "f4c095a76e2f1c19cca833556c815a4ae842a518fe689db09e31ff3661bda778"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

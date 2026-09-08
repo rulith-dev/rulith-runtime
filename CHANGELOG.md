@@ -8,6 +8,12 @@ All notable changes to the local runtime are documented here.
 change to the model surface: an integration that scripted the previous fenced-JSON
 dialect will not work against this runtime.
 
+- Local action Adapters receive `RULITH_EXECUTION_KEY`: `rulith-execution/1:` followed by
+  SHA-256 of the UTF-8 JSON array `[boardId, invocationId]` from the authenticated work item.
+  It is stable across retries and Worker replacement, and separates Board-local invocation
+  names in shared business storage. The raw invocation ID remains available; neither identity
+  grants permission or selects a Case. No model tool or Worker wire field is added.
+
 - A database run Adapter receives its selected Source's local DSN through the existing
   `RULITH_SOURCE_ACCESS` context. The DSN is no longer rewritten as a filesystem path;
   Source-free actions receive neither a borrowed DSN nor a Source type.

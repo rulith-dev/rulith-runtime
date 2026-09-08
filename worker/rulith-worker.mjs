@@ -772,7 +772,7 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT) {
  * printing `process.env`, and nothing in the fence above says otherwise.
  *
  * The Adapter contract is the other direction: what an Adapter needs is handed to it
- * explicitly (`RULITH_INVOCATION_ID`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`), and a
+ * explicitly (invocation/execution identity and selected Source access/type), and a
  * Source credential belongs in the local secret store, not in the ambient environment.
  * Everything else — PATH, HOME, TEMP, locale, proxy settings — passes through, because
  * an Adapter is an ordinary local program.
@@ -827,8 +827,8 @@ const ADAPTER_ENV_DENY_PATTERNS = [
  * Worker deliberately hands over.**
  *
  * Every ambient `RULITH_*` name is stripped — on the deny path and against an `env.pass`
- * allow-list alike — and `handRun` then supplies the three the work item actually decides:
- * `RULITH_INVOCATION_ID`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`.
+ * allow-list alike — and `handRun` then supplies only the context the work item decides:
+ * `RULITH_INVOCATION_ID`, `RULITH_EXECUTION_KEY`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`.
  *
  * This started as a list of three names, which was one name per known problem and no rule at
  * all. Two kinds of leak survived it. A **retired** one: Case identity left this hop
@@ -843,7 +843,7 @@ const ADAPTER_ENV_DENY_PATTERNS = [
  */
 const RUNTIME_ENV_NAMESPACE = /^RULITH_/
 /**
- * The three, by name rather than by position.
+ * Supplied context, addressed by name rather than position.
  *
  * `handRun` used to write `[ADAPTER_SUPPLIED_CONTEXT[0]]`, `[1]`, `[2]`, which coupled meaning to
  * array order for no reason except that a test extractor read the list: reordering the entries
@@ -852,6 +852,7 @@ const RUNTIME_ENV_NAMESPACE = /^RULITH_/
  */
 const ADAPTER_CONTEXT = Object.freeze({
   invocationId: 'RULITH_INVOCATION_ID',
+  executionKey: 'RULITH_EXECUTION_KEY',
   sourceAccess: 'RULITH_SOURCE_ACCESS',
   sourceType: 'RULITH_SOURCE_TYPE',
 })
@@ -910,12 +911,19 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       : typeof source.access === 'string'
         ? (isAbsolute(source.access) ? source.access : resolve(WORKER_ROOT, source.access))
         : undefined
-    // The three names `ADAPTER_SUPPLIED_CONTEXT` records, and only when this work item really
+    // The names `ADAPTER_SUPPLIED_CONTEXT` records, and only when this work item really
     // decides them: a Source-free execution supplies no root and no type, so an Adapter that
     // needs one finds nothing rather than something left over from the environment.
+    // An invocation is only Board-local. Include its authenticated Board in an opaque stable
+    // business idempotency key; never use Agent/model arguments or a Worker lease generation.
+    const executionKey = typeof context.boardId === 'string' && context.boardId !== ''
+      && typeof context.invocationId === 'string' && context.invocationId !== ''
+      ? `rulith-execution/1:${createHash('sha256').update(JSON.stringify([context.boardId, context.invocationId])).digest('hex')}`
+      : undefined
     const env = {
       ...adapterEnv(process.env, t.envPass),
       ...(context.invocationId ? { [ADAPTER_CONTEXT.invocationId]: String(context.invocationId) } : {}),
+      ...(executionKey ? { [ADAPTER_CONTEXT.executionKey]: executionKey } : {}),
       ...(access ? { [ADAPTER_CONTEXT.sourceAccess]: access } : {}),
       ...(source.sourceType ? { [ADAPTER_CONTEXT.sourceType]: String(source.sourceType) } : {}),
     }
@@ -2740,7 +2748,7 @@ async function handleAction(w) {
   let undeliverable
   try {
     const executed = await execute(action, invocationArgs(resolved, w), { [action]: resolved }, SOURCE_CONTEXT,
-      { invocationId: invocation, resultBytes: w.artifactPolicy.objectBytes })
+      { boardId: requestVector.boardId, invocationId: invocation, resultBytes: w.artifactPolicy.objectBytes })
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []

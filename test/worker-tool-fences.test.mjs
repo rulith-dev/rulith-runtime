@@ -360,7 +360,7 @@ test('adapterEnv removes the whole runtime namespace and keeps the ordinary envi
   assert.equal(adapterEnv({ RULITHESQUE_SETTING: 'kept', ACME_RULITH_TOKENISH: 'kept' }).RULITHESQUE_SETTING, 'kept')
 })
 
-test('the three names an Adapter is handed are addressed as names, not as list positions', () => {
+test('the context names an Adapter is handed are addressed as names, not as list positions', () => {
   // `handRun` addressed them as `ADAPTER_SUPPLIED_CONTEXT[0]`, `[1]`, `[2]`. The coupling to
   // array order bought nothing — it existed so a test extractor could find the list — and
   // reordering the entries would have put the Source root into `RULITH_SOURCE_TYPE` with
@@ -374,11 +374,11 @@ test('the three names an Adapter is handed are addressed as names, not as list p
   for (const [role, name] of [['invocationId', 'RULITH_INVOCATION_ID'], ['sourceAccess', 'RULITH_SOURCE_ACCESS'], ['sourceType', 'RULITH_SOURCE_TYPE']]) {
     assert.match(source, new RegExp(`ADAPTER_CONTEXT\\.${role}\\b`, 'u'), `handRun no longer writes ${name} by its role name`)
   }
-  // And the derived list is exactly those three, so the extractor and the fence read one source.
+  // The derived list and the environment writer describe the same supplied context.
   const declared = source.match(/ADAPTER_CONTEXT\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/u)
   assert.ok(declared, 'the supplied-context map is no longer declared where its readers look for it')
   assert.deepEqual([...declared[1].matchAll(/'(RULITH_[A-Z0-9_]+)'/gu)].map((m) => m[1]),
-    ['RULITH_INVOCATION_ID', 'RULITH_SOURCE_ACCESS', 'RULITH_SOURCE_TYPE'])
+    ['RULITH_INVOCATION_ID', 'RULITH_EXECUTION_KEY', 'RULITH_SOURCE_ACCESS', 'RULITH_SOURCE_TYPE'])
 })
 
 test('the credential fence matches the name however Windows spells it', () => {

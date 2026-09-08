@@ -126,7 +126,7 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
       "import { appendFileSync } from 'node:fs'\n"
       + "appendFileSync(process.env.P2_EFFECT_LOG, 'probe\\n')\n"
       + "const want = ['RULITH_CONNECTION_KEY','RULITH_TOKEN','RULITH_MODEL_KEY','ANTHROPIC_API_KEY',"
-      + "'RULITH_DB_URL','RULITH_SERVE_KEY','RULITH_INVOCATION_ID','RULITH_SOURCE_ACCESS','PATH']\n"
+      + "'RULITH_DB_URL','RULITH_SERVE_KEY','RULITH_INVOCATION_ID','RULITH_EXECUTION_KEY','RULITH_SOURCE_ACCESS','PATH']\n"
       + "const seen = Object.fromEntries(Object.entries(process.env)"
       + ".map(([name, value]) => [name.toUpperCase(), value]).filter(([name]) => want.includes(name)))\n"
       + "process.stdout.write(JSON.stringify({ rows: [], seen }))\n",
@@ -171,6 +171,7 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
   // legitimately needs are still handed to it.
   assert.equal(typeof seen.PATH, 'string', 'stripping must not empty the environment')
   assert.equal(seen.RULITH_INVOCATION_ID, 'inv_probe', 'the trusted invocation identity is still supplied explicitly')
+  assert.match(seen.RULITH_EXECUTION_KEY, /^rulith-execution\/1:[0-9a-f]{64}$/, 'the real work handler must supply the Board-scoped execution key')
   assert.equal(typeof seen.RULITH_SOURCE_ACCESS, 'string', 'the Source access root is still supplied explicitly')
 })
 

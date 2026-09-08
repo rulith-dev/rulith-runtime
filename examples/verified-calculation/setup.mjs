@@ -53,7 +53,7 @@ const EMBEDDED_MANIFEST_FILES = Object.freeze({
   'examples/verified-calculation/worker-tools.json': { sha256: 'bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c' },
   'examples/verified-calculation/data/input.json': { sha256: '28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec' },
   'agent/rulith-agent.mjs': { sha256: '592584a4d3baba9b21065064241ccb5fc10b9e2d91f2e47c2ac34a355deec127' },
-  'worker/rulith-worker.mjs': { sha256: 'c7fd239062132fa25d3bc21e0ed9b0974d4791b7dac14d264f74fa7504e5f24d' },
+  'worker/rulith-worker.mjs': { sha256: '96e1093b49edf330d4b3a07ff796a1ec026c00a9f4c547417ba01a636f30cf52' },
 })
 
 // The manifest sits at the package root in both shapes this script ships in: a git
