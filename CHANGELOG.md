@@ -2,6 +2,16 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.7.3 - 2026-09-14
+
+- Implement outbound MCP initialization and session reuse with the pinned official SDK,
+  local stdio processes, Streamable HTTP JSON/SSE, paginated discovery and structured results.
+- Keep process configuration and credentials in the local Source vault. Apply bounded
+  time/bytes across each operation and refuse protocol-header overrides and redirects.
+- Preserve unknown executions when MCP replies are lost or cannot supply required facts;
+  never automatically resend an external call. Close managed MCP processes on Local stop.
+- Verify interoperability against independent SDK servers and the actual Java/Local chain.
+
 ## 0.7.2 - 2026-09-14
 
 - Renew the current Worker lease while an idle long Poll waits. Poll admission reuses

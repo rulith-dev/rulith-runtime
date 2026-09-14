@@ -518,6 +518,73 @@ compiles database placeholders to driver parameters, never SQL interpolation. MC
 discovery is read-only; it does not grant a generic call surface. Each remote MCP Tool
 must still be approved as its own versioned local Tool and governed Action.
 
+### Connect a local MCP server
+
+Rulith Local's Worker is an outbound MCP client. It supports local **stdio** processes
+and **Streamable HTTP** endpoints, including initialization, session headers, JSON/SSE
+responses, and paginated Tool discovery. The Agent still calls Rulith's single `/mcp`.
+Install the complete npm package so the pinned MCP SDK and Worker module are present;
+copying only `rulith-worker.mjs` is insufficient.
+
+1. Install and configure the chosen MCP server on the Worker machine. For stdio,
+   its executable, arguments, working directory and credentials belong in the local
+   Source vault, not in a Capability or model argument. The complete shapes are in
+   [the Source vault example](config/rulith-sources.example.json). Keep `type: "mcp"`
+   in the local entry even when the Cloud binding will be completed after startup.
+2. In Console, establish a Source with that same name and the predicates it may
+   attest. Declare its access modes and versioned Tool references. A stdio Source's
+   public access address can be a non-secret locator such as `stdio:local-mail`;
+   its actual process configuration stays local. HTTP uses its non-secret endpoint.
+3. Declare the named remote Tool in the Worker manifest, start `rulith start --role worker`,
+   then bind and lock the Source and its required advertised Tools in Console.
+   If Local also supplies the model, use `--role agent+worker` instead.
+4. Use the existing `rulith.mcp.discover@1` through a governed read Action to inspect
+   remote names and schemas. Discovery reads up to 200 Tools across pages and reports
+   truncation. It does not install or authorize what it discovers. Tool parameters
+   and result mappings must be declared using the current Worker contract.
+
+For a remote Tool named `mail.read` that accepts `message_id` and returns
+`structuredContent: {"rows":[{"message_id":"m-1","subject":"Hello"}]}`:
+
+```json
+{
+  "format": "rulith-worker-tools/1",
+  "tools": {
+    "acme.mail.read@1": {
+      "adapter": "mcp",
+      "sourceTypes": ["mcp"],
+      "entry": "mail.read",
+      "kind": "read",
+      "params": { "message_id": "string" },
+      "returns": [{ "predicate": "acme.mail.message", "args": {
+        "message_id": "$message_id", "subject": "$subject"
+      } }]
+    }
+  }
+}
+```
+
+The adapter prefers `structuredContent`; text-only results remain supported. Declared
+fact mappings require the existing `{rows:[...]}` shape. A returned `isError: true`
+is a tool failure. Lost responses, exceeded result budgets, and unreadable required
+fact output after dispatch preserve an unknown outcome; the Worker does not retry
+the external action or manufacture a failed execution receipt.
+
+One session is reused per Source until its configuration changes, the transport fails,
+or the Worker stops. Local's normal stop closes owned MCP child processes first. A
+stdio server runs with the local user's OS permissions, just like a run adapter; it
+is not a sandbox. It inherits basic process environment plus explicitly configured
+Source variables, not the Worker's Rulith credentials. No sampling, elicitation or
+filesystem-root capability is granted to the remote server. Time and response-byte
+limits can be tightened in the Source vault or Tool fence; the smaller limit applies
+to the whole operation, including initialization and discovery pages.
+
+Protocol interoperability tests use the official SDK server (`npm test`), including
+stateful JSON/SSE HTTP and real stdio processes. A separate Java integration fixture
+verifies Local → Worker → MCP → Source-backed shared Board facts. These establish
+transport and evidence integration; a provider-specific mailbox still needs its own
+authorization, Tool mapping and business acceptance test.
+
 ### What a `run` Adapter's process environment contains
 
 A `run` Adapter is an ordinary local program started with the Worker user's rights.

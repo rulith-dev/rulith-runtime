@@ -16,6 +16,7 @@ const files = [
   // against the commit they were projected from.
   'protocol/worker-contract.json',
   'worker/rulith-worker.mjs',
+  'worker/mcp-client.mjs',
   'local/rulith-local.mjs',
   'local/local-ui.mjs',
   'config/rulith-sources.example.json',

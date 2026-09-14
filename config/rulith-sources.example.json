@@ -1,5 +1,21 @@
 {
   "reports": {
     "root": "C:/absolute/path/to/reports"
+  },
+  "local-mail": {
+    "type": "mcp",
+    "transport": "stdio",
+    "command": "node",
+    "args": ["C:/absolute/path/to/mail-mcp/server.mjs"],
+    "cwd": "C:/absolute/path/to/mail-mcp",
+    "env": { "MAIL_API_TOKEN": "replace-with-a-source-specific-token" },
+    "timeoutMs": 30000,
+    "maxResponseBytes": 1048576
+  },
+  "local-erp": {
+    "type": "mcp",
+    "transport": "streamable-http",
+    "url": "http://127.0.0.1:3001/mcp",
+    "token": "replace-with-a-source-specific-token"
   }
 }

@@ -15,6 +15,10 @@ import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
 import test from 'node:test'
+import { afterEach } from 'node:test'
+import { closeMcpClients } from '../worker/mcp-client.mjs'
+import { mcpHttpHandler } from './support/mcp-http-fixture.mjs'
+afterEach(closeMcpClients)
 
 import {
   adapterEnv, adapterToolFromSpec, databaseDriver, execute, invocationArgs,
@@ -261,11 +265,11 @@ test('a work item payload cannot replace the validated invocation arguments', ()
 // ── H. Outbound MCP calls are bounded ────────────────────────────────────────
 
 test('an oversized MCP response is refused rather than buffered', async () => {
-  const server = createServer((request, response) => {
+  const server = createServer(mcpHttpHandler((request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' })
     // Two MiB of text content, over the 1 MiB cap.
-    response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'x'.repeat(2 * 1024 * 1024) }] } }))
-  })
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: 'x'.repeat(2 * 1024 * 1024) }] } }))
+  }))
   await new Promise((ready) => server.listen(0, '127.0.0.1', ready))
   try {
     const sources = { erp: { type: 'mcp', url: `http://127.0.0.1:${server.address().port}` } }
@@ -304,10 +308,10 @@ test('an MCP endpoint that never answers is abandoned instead of stalling the po
 })
 
 test('an ordinary MCP response still passes through unchanged (calibration)', async () => {
-  const server = createServer((request, response) => {
+  const server = createServer(mcpHttpHandler((request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"rows":[{"exists":true}]}' }] } }))
-  })
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: '{"rows":[{"exists":true}]}' }] } }))
+  }))
   await new Promise((ready) => server.listen(0, '127.0.0.1', ready))
   try {
     const sources = { erp: { type: 'mcp', url: `http://127.0.0.1:${server.address().port}` } }

@@ -77,6 +77,7 @@ import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { invokeMcp, closeMcpClients, McpExecutionUnknownError } from './mcp-client.mjs'
 
 /** 直接跑=干活;被 import=只把纯函数交出去(测试用)。
  *  没有这道闸,判词解析这类"模型说了算"的地方就永远只能靠读源码断言——
@@ -211,7 +212,11 @@ function resolveSourceCreds(route, vault) {
   if (merged.access === undefined && typeof src.access === 'string') merged.access = src.access
   if (merged.sourceType === undefined && typeof src.type === 'string') merged.sourceType = src.type
   if (src.headers && typeof src.headers === 'object') merged.headers = { ...(src.headers), ...(merged.headers ?? {}) }
-  if (typeof src.token === 'string' && merged.headers?.authorization === undefined) merged.headers = { ...(merged.headers ?? {}), authorization: `Bearer ${src.token}` }
+  if (typeof src.token === 'string' && !Object.keys(merged.headers ?? {}).some(name => name.toLowerCase() === 'authorization')) merged.headers = { ...(merged.headers ?? {}), authorization: `Bearer ${src.token}` }
+  // 本地 MCP 进程及凭据不是云端 Tool Spec，也不读取模型实参。
+  for (const name of ['transport', 'command', 'args', 'cwd', 'env', 'timeoutMs', 'maxResponseBytes']) {
+    if (merged[name] === undefined && src[name] !== undefined) merged[name] = src[name]
+  }
   return merged
 }
 /** 审查员(清关工人的"判卷"那一席): OpenAI 兼容 chat 端点。不配=这台不是清关工人,review 案卷不领。 */
@@ -1602,6 +1607,7 @@ function protectedWorkerExecutables(tools = TOOLS) {
   if (!workspaceWriteEnabled(tools)) return []
   return [
     fileURLToPath(import.meta.url),
+    fileURLToPath(new URL('./mcp-client.mjs', import.meta.url)),
     ...Object.values(tools)
       .filter((tool) => tool?.adapter === 'run' && typeof tool.entry === 'string')
       .map((tool) => resolve(WORKER_ROOT, tool.entry)),
@@ -1947,47 +1953,26 @@ function databaseDsn(t, sources) {
   return { dsn }
 }
 
-/** 出向 MCP 调用的缺省围栏。两者都可被**宿主自己的**配置收紧(工具表 fence / 来源库条目),
- *  绝不由工单或模型实参放宽——放宽的那一侧正是要防的那一侧。 */
-const MCP_TIMEOUT_MS = 30_000
-const MCP_MAX_RESPONSE_BYTES = 1_048_576
-
 /** 具名工具 mcp(SRC-35,出向载体): JSON-RPC tools/call 打第三方 MCP 服务。
  *  端点与凭据从密文库按来源名取(工具声明写 source);remoteTool 缺省=工具名。
  *  返回物是材料不是指令——它经板围栏进案卷,不直接进模型上下文。 */
 async function handMcp(t, args, sources = SOURCE_CONTEXT) {
   const r = resolveSourceCreds(t, sources)
-  if (!r.url) return 'error: MCP tools require a source endpoint. Declare "source": "<source-name>" and configure {"url": "...", "token"?: "..."} under that source in the local secret store.'
   const discovering = t.operation === 'discover'
-  const body = discovering
-    ? { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }
-    : { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: t.remoteTool ?? t.name, arguments: args ?? {} } }
-  // 出向调用要有**时限与体积上限**,与 handHttp 同律(2026-09-02 补齐): 没有这两道闸,
-  // 一个不回话的第三方端点能把这条单线程轮询挂住不放,一个巨大的回包能把宿主内存吃光——
-  // 两种形状都不是"工具失败",而是**worker 整体停摆**,板上什么都不会红。
-  // 时限只从宿主自己的配置取(工具表/来源库),工单与模型实参碰不到它。
-  const timeoutMs = Math.max(100, Math.min(Number(r.timeoutMs ?? MCP_TIMEOUT_MS), 300_000))
-  const res = await fetch(r.url, {
-    method: 'POST', signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(r.headers ?? {}) },
-    body: JSON.stringify(body),
-  })
-  const text = await readHttpBody(res, Number(r.maxResponseBytes ?? MCP_MAX_RESPONSE_BYTES))
-  if (!res.ok) return `error: MCP HTTP ${res.status}: ${text.slice(0, 160)}`
-  let j
-  try { j = JSON.parse(text) } catch { return `error: MCP endpoint returned non-JSON content: ${text.slice(0, 120)}` }
-  if (j.error) return `error: MCP ${j.error.code ?? ''}: ${String(j.error.message ?? '').slice(0, 160)}`
+  const result = await invokeMcp({ sourceName: t.source, source: { ...r,
+      timeoutMs: sources?.[t.source]?.timeoutMs, maxResponseBytes: sources?.[t.source]?.maxResponseBytes },
+    discovering, tool: t.remoteTool ?? t.name, args: args ?? {}, environment: adapterEnv(process.env, []), fence: t })
   if (discovering) {
-    const tools = Array.isArray(j.result?.tools) ? j.result.tools.slice(0, 200) : []
+    const tools = result.tools
     const rows = tools.flatMap((tool) => typeof tool?.name === 'string' && tool.name !== '' ? [{
       source: t.source,
       tool_name: tool.name,
       description: typeof tool.description === 'string' ? tool.description.slice(0, 1000) : '',
       input_schema_json: JSON.stringify(tool.inputSchema ?? {}),
     }] : [])
-    return { result: JSON.stringify({ tools: rows, truncated: Array.isArray(j.result?.tools) && j.result.tools.length > rows.length }), rows }
+    return { result: JSON.stringify({ tools: rows, truncated: result.truncated || tools.length > rows.length }), rows }
   }
-  const content = (j.result && j.result.content) || []
+  const content = result.content ?? []
   // **MCP 有两条失败通道,这里原来只认一条**(2026-08-22,RT-WK-HONEST-5)。
   // `j.error` 是 JSON-RPC 传输层的失败;而工具自己办砸了走的是 `result.isError:true`
   // ——正文照样在 content 里,读起来跟成功一模一样。原实现把它原样透传 ⇒ `execute` 不抛
@@ -1997,11 +1982,14 @@ async function handMcp(t, args, sources = SOURCE_CONTEXT) {
   // 「三写一行库没动、回执 ok=true」,今天是「ERP 连不上、回执 ok=true」。
   // 判据不许再猜正文长什么样(`out.startsWith('error:')` 猜的是措辞,而措辞是远端的事)——
   // 读**协议自己给的那个结构位**。
-  if (j.result && j.result.isError === true) {
+  if (result.isError === true) {
     const why = content.map((c) => (c && c.type === 'text' ? c.text : JSON.stringify(c))).join('\n')
-    return `error: MCP tool reported failure: ${String(why).slice(0, 300)}`
+    throw new Error(`MCP tool reported failure: ${String(why).slice(0, 300)}`)
   }
+  // 机器结构是工具明确返回的数据，不以可读摘要替代，更不从摘要中猜业务事实。
+  if (result.structuredContent !== undefined) return JSON.stringify(result.structuredContent)
   const out = content.map((c) => (c && c.type === 'text' ? c.text : JSON.stringify(c))).join('\n')
+  if (out.startsWith('error:')) return { result: out }
   return String(out)
 }
 
@@ -2122,25 +2110,30 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   // inside only the run arm made workspace/db/http/mcp rows visible in logs but
   // absent from the Board — the worst kind of false success for Source access.
   if (Array.isArray(t.returns) && t.returns.length > 0) {
-    let text
-    let rows
-    if (out && typeof out === 'object' && !Array.isArray(out) && Array.isArray(out.rows)) {
-      text = String(out.result ?? JSON.stringify({ rows: out.rows }))
-      rows = out.rows
-    } else {
-      text = String(out)
-      const payload = text.replace(/^HTTP [0-9]+:\s*/, '')
-      let envelope
-      try { envelope = JSON.parse(payload) } catch { throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}') }
-      if (!envelope || typeof envelope !== 'object' || !Array.isArray(envelope.rows)) {
+    try {
+      let text
+      let rows
+      if (out && typeof out === 'object' && !Array.isArray(out) && Array.isArray(out.rows)) {
+        text = String(out.result ?? JSON.stringify({ rows: out.rows }))
+        rows = out.rows
+      } else {
+        text = out && typeof out === 'object' ? String(out.result ?? '') : String(out)
+        const payload = text.replace(/^HTTP [0-9]+:\s*/, '')
+        let envelope
+        try { envelope = JSON.parse(payload) } catch { throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}') }
+        if (!envelope || typeof envelope !== 'object' || !Array.isArray(envelope.rows)) {
+          throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}')
+        }
+        rows = envelope.rows
+      }
+      if (!Array.isArray(rows)) {
         throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}')
       }
-      rows = envelope.rows
+      return { result: text, facts: resultFactsFromRows(t, rows) }
+    } catch (error) {
+      if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
+      throw error
     }
-    if (!Array.isArray(rows)) {
-      throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}')
-    }
-    return { result: text, facts: resultFactsFromRows(t, rows) }
   }
   return out
 }
@@ -2756,7 +2749,7 @@ async function handleAction(w) {
       result = String(executed ?? '')
     }
   } catch (e) {
-    if (e instanceof ResultDeliveryError) undeliverable = e.message
+    if (e instanceof ResultDeliveryError || e instanceof McpExecutionUnknownError) undeliverable = e.message
     else { ok = false; reason = String(e.message) }
   } finally {
     // The rendezvous matters: reading the lease below while a renewal is still in flight
@@ -3364,6 +3357,19 @@ let quietPolls = 0
 /** Said once when the lease goes, and once again when it comes back. */
 let leaseAnnounced = false
 if (IS_MAIN) {
+  let stoppingLocal = false
+  const stopLocal = async () => {
+    if (stoppingLocal) return
+    stoppingLocal = true
+    running = false
+    await closeMcpClients()
+    await releaseLease().catch(() => false)
+    process.exit(0)
+  }
+  process.on('message', message => {
+    if (message?.protocol === 'rulith-local-control' && message.operation === 'stop') void stopLocal()
+  })
+  process.on('SIGTERM', () => { void stopLocal() })
   process.on('SIGINT', () => {
     running = false
     console.log('\nWorker stopping; releasing the lease.')
@@ -3394,7 +3400,7 @@ if (IS_MAIN) {
     say(`rulith-worker ${WORKER_VERSION} online · connection ${CONNECTION_ID} · instance ${WORKER_ID}`
       + ` · hop ${RULITH_WORKER_CONTRACT_SOURCE_COMMIT.slice(0, 12)} · ${seats.join(' · ')}`, 'up',
       { connectionId: CONNECTION_ID, workerId: WORKER_ID, version: WORKER_VERSION, tools: advertised.length,
-        workerContract: RULITH_WORKER_CONTRACT_SOURCE_COMMIT,
+        workerContract: RULITH_WORKER_CONTRACT_SOURCE_COMMIT, managedStop: true,
         reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
   }
   while (running) {
@@ -3540,4 +3546,5 @@ if (IS_MAIN) {
   // finished rather than that it has gone quiet. An unknown answer is kept as unknown — it
   // never becomes a claim that an already dispatched invocation did not happen.
   await releaseLease().catch(() => false)
+  await closeMcpClients()
 }

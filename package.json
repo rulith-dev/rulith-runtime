@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "type": "module",
   "description": "Rulith Local: a conversation-first Agent workbench with optional governed Cases",
   "bin": {
@@ -55,5 +55,8 @@
   },
   "devDependencies": {
     "ajv": "8.20.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
   }
 }

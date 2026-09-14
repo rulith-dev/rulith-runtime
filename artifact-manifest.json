@@ -12,16 +12,19 @@
       "sha256": "bf239d11e6c7379e0be03fac3ef85d881e683de8e4f39e9e0fc5f27b852f8ae1"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "6a51090f8b55eec611133146df9bfc1605775a0d0650080f18991fa6cff4d5e1"
+      "sha256": "bd028f9f867f46a7eaeae2bd2bb838877dbf11d540f3f2ae381a9d81dd31b424"
+    },
+    "worker/mcp-client.mjs": {
+      "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "local/rulith-local.mjs": {
-      "sha256": "c0773424c7b20ab5b2a82db7674ef08b251424d6bc0654f8435d107d0a54c334"
+      "sha256": "5d2a578b7e9fe051f3f5bdfbfc3398ddc78092f1401b212c3114364d31fe3859"
     },
     "local/local-ui.mjs": {
       "sha256": "00488401fd60f5ae3a35727443d4dd00942a54d2d7e96b04c9806df089b384f7"
     },
     "config/rulith-sources.example.json": {
-      "sha256": "3267eeec028bf91d1e32ec684c4b10d210880eacc5c29e6763db2aa0c310aa53"
+      "sha256": "38dd6cb5e0e28e7e5a3b167f59ba5bb2c9263b20123eda28150071c1934f112f"
     },
     "config/rulith-local.example.json": {
       "sha256": "419c0332e4b781c31a383268ad434d51d964155dd2200cd2eca02fea167bb465"
@@ -30,7 +33,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "96e42699f6494ca592f05b14c992d8c6b2cd2d11cf4b32d600e4b3af9e0a94d1"
+      "sha256": "f2bfb8735f8dfb5c9c60657a2349dbb6a82faeb57dd6dd0089ec479c3b175f1a"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -39,7 +42,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "e5c9cbd94b90c08da0b805262f2cf9a26801aa22c2f499525c1d211293a5d230"
+      "sha256": "95a9e6177cc8f8c13642eca06624b0135dbc3c69bfbaad6947c752f8a7e823f9"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

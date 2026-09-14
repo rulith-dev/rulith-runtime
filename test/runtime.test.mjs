@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.7.2')
+  assert.equal(pkg.version, '0.7.3')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -1093,19 +1093,18 @@ test('database Tool templates compile to driver parameters and never interpolate
 })
 
 test('MCP discovery returns bounded governed rows without authorizing a generic remote call', async () => {
+  const { mcpHttpHandler } = await import('./support/mcp-http-fixture.mjs')
+  const { closeMcpClients } = await import('../worker/mcp-client.mjs')
   const requests = []
-  const server = createServer(async (req, res) => {
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    const request = JSON.parse(Buffer.concat(chunks).toString())
+  const server = createServer(mcpHttpHandler(async (request, res) => {
     requests.push(request)
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(request.method === 'tools/list'
-      ? { jsonrpc: '2.0', id: 1, result: { tools: [{
+      ? { jsonrpc: '2.0', id: request.id, result: { tools: [{
           name: 'orders.lookup', description: 'Look up one order', inputSchema: { type: 'object', properties: { order_id: { type: 'string' } } },
         }] } }
-      : { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"rows":[{"exists":true}]}' }] } }))
-  })
+      : { jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: '{"rows":[{"exists":true}]}' }] } }))
+  }))
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   try {
     const tools = builtinSourceTools()
@@ -1131,6 +1130,7 @@ test('MCP discovery returns bounded governed rows without authorizing a generic 
     assert.equal(requests[1].params.name, 'orders.lookup',
       'the local manifest entry fixes the remote Tool; an Action name cannot choose an arbitrary MCP Tool')
   } finally {
+    await closeMcpClients()
     await new Promise((resolve) => server.close(resolve))
     server.closeAllConnections()
   }

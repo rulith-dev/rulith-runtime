@@ -233,6 +233,7 @@ export function createLocalHost({
       // start was waiting for. The event still reaches the Trace stream below, unedited.
       if (event.type === ROLE_READY_EVENT[src] && components[src].child === child && !stopRequested.has(child)) {
         components[src].readyAt = Date.now()
+        components[src].managedStop = event.managedStop === true
         const settle = components[src].onReady
         components[src].onReady = undefined
         settle?.()
@@ -291,7 +292,7 @@ export function createLocalHost({
       env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
-    components.worker = { ...components.worker, child, readyAt: undefined, onReady: undefined }
+    components.worker = { ...components.worker, child, readyAt: undefined, onReady: undefined, managedStop: false }
     wireChild('worker', child)
     child.on('exit', (code) => { emit('worker', 'exit', { code }); components.worker.child = null })
     emit('worker', 'spawn', { pid: child.pid })
@@ -301,7 +302,11 @@ export function createLocalHost({
     const child = components[role]?.child
     if (child === null || child === undefined) return `${role} is not running.`
     stopRequested.add(child)
-    child.kill()
+    // Windows 的 kill 会直接结束 Worker，来不及关闭它启动的 stdio MCP 子进程。
+    // 只给明确广告了托管停止能力的当前子进程发 IPC；仍以 exit 事件确认停止。
+    if (components[role].managedStop && child.connected) {
+      child.send({ protocol: 'rulith-local-control', operation: 'stop' }, error => { if (error) child.kill() })
+    } else child.kill()
     return null
   }
   /**
