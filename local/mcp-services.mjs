@@ -151,6 +151,7 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
     get busy() { return busy }, overview,
     projectWorkerInputs: project,
     search: (query, cursor) => registry.search(query, cursor),
+    downloads: packageName => registry.downloads(packageName),
     detail: (name, version) => registry.detail(name, version),
     close: async () => { closed = true; installChild?.kill(); await closeMcpClients(); await pending.catch(() => {}); probes.clear(); preparations.clear() },
     prepareRegistry: body => exclusive(async () => {

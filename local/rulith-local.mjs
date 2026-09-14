@@ -442,9 +442,10 @@ export function createLocalHost({
       }
       if (path === '/worker-tools/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...toolManagement.overview() })
       if (path === '/mcp-services/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...mcpServices.overview() })
-      if (req.method === 'GET' && ['/mcp-services/search', '/mcp-services/detail'].includes(path)) {
+      if (req.method === 'GET' && ['/mcp-services/search', '/mcp-services/detail', '/mcp-services/downloads'].includes(path)) {
         const params = new URL(req.url, 'http://localhost').searchParams
         const result = path.endsWith('/search') ? await mcpServices.search(params.get('q') ?? '', params.get('cursor') ?? '')
+          : path.endsWith('/downloads') ? await mcpServices.downloads(params.get('package'))
           : await mcpServices.detail(params.get('name'), params.get('version') ?? 'latest')
         return void json(res, 200, { ok: true, ...result })
       }

@@ -3,17 +3,19 @@ import { createHash } from 'node:crypto'
 
 export const REGISTRY_URL = 'https://registry.modelcontextprotocol.io'
 const NPM_URL = 'https://registry.npmjs.org'
+const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const text = (value, limit = 1000) => typeof value === 'string' ? value.slice(0, limit) : ''
 const link = value => { try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined } catch { return undefined } }
 const official = row => row?._meta?.['io.modelcontextprotocol.registry/official'] ?? {}
+const timestamp = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null
 
 /** Public metadata only: bounded reads, no Local credentials, no redirects to another registry. */
-export async function registryJson(url, fetcher = fetch) {
+export async function registryJson(url, fetcher = fetch, timeoutMs = 25_000) {
   let status
   try {
-    const response = await fetcher(url, { signal: AbortSignal.timeout(25_000), redirect: 'error', headers: { accept: 'application/json' } })
+    const response = await fetcher(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error', headers: { accept: 'application/json' } })
     status = response.status
     if (!response.ok) throw new Error('HTTP ' + response.status)
     const chunks = []; let length = 0
@@ -34,8 +36,15 @@ function identity(name, version) {
 function summary(row) {
   const server = row?.server ?? {}
   identity(server.name, server.version)
+  const options = optionsOf(server), supported = options.filter(option => !option.unsupported)
+  const npm = supported.find(option => option.npmPackage)
   return { name: server.name, version: server.version, title: text(server.title || server.name, 150), description: text(server.description),
     repository: link(server.repository?.url), website: link(server.websiteUrl), status: official(row).status ?? 'unknown',
+    publishedAt: timestamp(official(row).publishedAt), updatedAt: timestamp(official(row).updatedAt),
+    setup: { supported: official(row).status === 'active' && supported.length > 0,
+      local: supported.some(option => !option.remote), remote: supported.some(option => option.remote),
+      reason: supported.length ? '' : options[0]?.unsupported || 'No installation option is declared.' },
+    downloadPackage: npm?.npmPackage ?? null,
     formats: [...new Set([...(server.packages ?? []).map(p => p.registryType), ...(server.remotes ?? []).map(p => p.type)])] }
 }
 
@@ -130,23 +139,24 @@ function optionsOf(server) {
       if (!remote) {
         if ((value.registryBaseUrl && value.registryBaseUrl.replace(/\/$/, '') !== NPM_URL) || (value.runtimeHint && value.runtimeHint !== 'npx')
           || (value.runtimeArguments ?? []).some(arg => arg.type !== 'positional' || !['-y', '--yes'].includes(arg.value)) || value.fileSha256) throw new Error('Custom runtimes, registries or file checksums require manual installation.')
-        if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(value.identifier ?? '')
+        if (!NPM_PACKAGE.test(value.identifier ?? '')
           || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value.version ?? '')) throw new Error('Installation requires an exact npm package name and version.')
       }
       template = configurationTemplate(value, remote)
     } catch (error) { unsupported = error.message }
     return { id, label: remote ? value.type + ' · ' + text(value.url, 250) : value.registryType + ' · ' + value.identifier + '@' + value.version,
-      unsupported, fields: template?.fields ?? [], descriptor: value, remote, template }
+      unsupported, fields: template?.fields ?? [], descriptor: value, remote, template,
+      npmPackage: !remote && value.registryType === 'npm' && NPM_PACKAGE.test(value.identifier ?? '') ? value.identifier : null }
   })
 }
 
 export function createMcpRegistry({ fetcher = fetch, now = Date.now } = {}) {
   const cache = new Map(), inflight = new Map()
-  const get = async (url, fresh = false) => {
+  const get = async (url, fresh = false, timeoutMs = 25_000) => {
     const cached = cache.get(url)
     if (!fresh && cached && now() - cached.at < 300_000) return cached.value
     if (inflight.has(url)) return inflight.get(url)
-    const request = registryJson(url, fetcher).then(value => {
+    const request = registryJson(url, fetcher, timeoutMs).then(value => {
       if (cache.size >= 64) cache.delete(cache.keys().next().value)
       cache.set(url, { at: now(), value }); return value
     }).finally(() => inflight.delete(url))
@@ -159,6 +169,19 @@ export function createMcpRegistry({ fetcher = fetch, now = Date.now } = {}) {
     return row
   }
   return {
+    async downloads(packageName) {
+      if (typeof packageName !== 'string' || packageName.length > 214 || !NPM_PACKAGE.test(packageName)) throw new Error('Choose a valid npm package name.')
+      const source = 'https://api.npmjs.org/downloads/point/last-month/' + encodeURIComponent(packageName)
+      try {
+        const value = await get(source, false, 5000)
+        const day = input => typeof input === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input) && Number.isFinite(Date.parse(input)) && new Date(input).toISOString().slice(0, 10) === input
+        if (value.package !== packageName || !Number.isSafeInteger(value.downloads) || value.downloads < 0
+          || !day(value.start) || !day(value.end) || value.start > value.end) throw new Error('Invalid download statistics.')
+        // npm 只提供包级下载次数；不汇总成服务用户数，也不作为安装或授权判据。
+        return { package: packageName, status: 'available', downloads: value.downloads, start: value.start, end: value.end,
+          fetchedAt: new Date(cache.get(source).at).toISOString(), source }
+      } catch { return { package: packageName, status: 'unavailable', downloads: null, source } }
+    },
     async search(query = '', cursor = '') {
       if (typeof query !== 'string' || query.length > 150 || typeof cursor !== 'string' || cursor.length > 1000) throw new Error('Search or cursor is too long.')
       const url = new URL(REGISTRY_URL + '/v0.1/servers')

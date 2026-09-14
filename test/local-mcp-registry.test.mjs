@@ -40,6 +40,60 @@ test('directory search is paginated, bounded and cached; details never run a pac
   await assert.rejects(registry.search('a'.repeat(151)), /too long/)
 })
 
+test('directory setup hints use the installation parser and report Registry dates without inventing freshness', async () => {
+  const value = row()
+  Object.assign(value._meta['io.modelcontextprotocol.registry/official'], { publishedAt: '2026-08-01T00:00:00Z', updatedAt: '2026-09-12T10:00:00Z' })
+  const result = (await fixture(value).registry.search()).servers[0]
+  assert.equal(result.updatedAt, '2026-09-12T10:00:00.000Z')
+  assert.equal(result.setup.supported, true)
+  assert.equal(result.setup.local, true)
+  assert.equal(result.downloadPackage, '@example/notes')
+  for (const status of ['deprecated', 'deleted', 'unknown']) assert.equal((await fixture(row({}, status)).registry.search()).servers[0].setup.supported, false)
+  const manual = row({ packages: [{ ...value.server.packages[0], runtimeHint: 'custom-launcher' }] })
+  const unsupported = (await fixture(manual).registry.search()).servers[0]
+  assert.equal(unsupported.setup.supported, false)
+  assert.match(unsupported.setup.reason, /Custom runtimes/)
+  assert.equal(unsupported.updatedAt, null)
+  const remote = (await fixture(row({ packages: [], remotes: [{ type: 'streamable-http', url: 'https://example.test/mcp' }] })).registry.search()).servers[0]
+  assert.equal(remote.setup.remote, true)
+  assert.equal(remote.downloadPackage, null)
+})
+
+test('npm metrics retain the package, exact period and fetch time; concurrent reads share a bounded cache', async () => {
+  let clock = Date.parse('2026-09-14T00:00:00Z'), calls = 0
+  const registry = createMcpRegistry({ now: () => clock, fetcher: async (url, options) => {
+    calls++
+    assert.equal(url, 'https://api.npmjs.org/downloads/point/last-month/%40example%2Fnotes')
+    assert.equal(options.redirect, 'error')
+    assert.equal(options.headers.authorization, undefined)
+    return new Response(JSON.stringify({ package: '@example/notes', downloads: 0, start: '2026-08-13', end: '2026-09-11' }))
+  } })
+  const [first, second] = await Promise.all([registry.downloads('@example/notes'), registry.downloads('@example/notes')])
+  assert.deepEqual(first, second)
+  assert.equal(first.downloads, 0, 'an observed zero is distinct from missing data')
+  assert.equal(first.start, '2026-08-13')
+  assert.equal(first.fetchedAt, '2026-09-14T00:00:00.000Z')
+  clock += 1000; assert.deepEqual(await registry.downloads('@example/notes'), first)
+  assert.equal(calls, 1)
+  clock += 300_000; assert.notEqual((await registry.downloads('@example/notes')).fetchedAt, first.fetchedAt)
+  assert.equal(calls, 2)
+  await assert.rejects(registry.downloads('https://private.example/key'), /package name/)
+  assert.equal(calls, 2, 'untrusted package text cannot select another request destination')
+})
+
+test('missing, mismatched or invalid npm metrics remain unavailable, never fabricated as zero', async () => {
+  const valid = { package: 'example', downloads: 3, start: '2026-08-01', end: '2026-08-30' }
+  for (const data of [null, { ...valid, package: 'other' }, { ...valid, downloads: -1 }, { ...valid, downloads: 1.5 },
+    { ...valid, start: '2026-02-30' }, { ...valid, start: '2026-09-01' }]) {
+    const registry = createMcpRegistry({ fetcher: async () => new Response(JSON.stringify(data)) })
+    assert.equal((await registry.downloads('example')).status, 'unavailable')
+    assert.equal((await registry.downloads('example')).downloads, null)
+  }
+  const down = createMcpRegistry({ fetcher: async () => new Response('private error', { status: 503 }) })
+  assert.deepEqual(await down.downloads('example'), { package: 'example', status: 'unavailable', downloads: null,
+    source: 'https://api.npmjs.org/downloads/point/last-month/example' })
+})
+
 test('prepare rechecks status and reviewed metadata, and checks npm ownership without trusting browser package fields', async () => {
   const { registry, data, calls } = fixture()
   const detail = await registry.detail(serverName, '1.2.3')
