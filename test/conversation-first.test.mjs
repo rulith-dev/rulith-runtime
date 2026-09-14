@@ -1044,8 +1044,9 @@ test('RT-GUESS-1 no prompt line is driven by a field the authority never publish
     'the unscoped first turn exposed a provisional-law permission before any Case existed')
   assert.doesNotMatch(`${beforeOpen}\n${afterOpen}`, /Legislation is locked/,
     'an unpublished Board View field is driving a prompt line again')
-  // The one surviving conditional comes from a fact this host knows: the Case Type it sent.
-  assert.match(afterOpen, /add_axiom and define_action are permitted inside this Case/)
+  // A known Case Type still does not let the host decide the current writing permission.
+  assert.match(afterOpen, /Case Type alone grants no rule-writing permission/)
+  assert.doesNotMatch(afterOpen, /are permitted inside this Case|are Case-local/)
   assert.deepEqual(run.verbs, ['OpenCase'], 'the Board was probed for governance state')
   const source = readFileSync(new URL('../agent/rulith-agent.mjs', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /ctx\.lawLocked|LOCKED_LINE/, 'the guessed lock state survived in the runtime')
@@ -1079,7 +1080,7 @@ test('RT-GUESS-2 an accepted Action reports the invocation gap instead of a fals
   assert.doesNotMatch(run.stdout, /completed with failure|ApplyAction completed/)
 })
 
-test('an exploration Case says so in one line, and only after the Case exists', async () => {
+test('opening exploration does not invent a permission grant or Case-local lifetime', async () => {
   const run = await runAgent({
     argv: ['--case-type', 'exploration'],
     chatLines: ['Explore this.'],
@@ -1088,7 +1089,8 @@ test('an exploration Case says so in one line, and only after the Case exists', 
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.doesNotMatch(systemTextOf(run.modelRequests[0]), /permitted inside this Case/)
-  assert.match(systemTextOf(run.modelRequests[1]), /add_axiom and define_action are permitted inside this Case/)
+  assert.equal(systemTextOf(run.modelRequests[1]), systemTextOf(run.modelRequests[0]))
+  assert.doesNotMatch(systemTextOf(run.modelRequests[1]), /are permitted inside this Case|disappear when the Case closes/)
 })
 
 // ── Transport ────────────────────────────────────────────────────────────────

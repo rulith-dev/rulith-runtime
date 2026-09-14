@@ -22,6 +22,13 @@ hidden order-processing policy or other business workflow.
 
 ## Requirements
 
+Task and conversation results include `closedCases` when the Runtime observed accepted
+Case closures in that turn. Each entry identifies the Case, its root and disposition;
+the CLI and Local result note list them together. A final cancellation does not hide an
+earlier completed Case. Mixed dispositions are not reported as all successful, and
+refused calls or roots merely leaving focus are not counted as completed work. The
+summary describes observed outcomes, not a second verification decision.
+
 - Node.js 20 or newer
 - A Rulith Cloud account and Agent token
 - A model endpoint compatible with Anthropic Messages or OpenAI Chat Completions

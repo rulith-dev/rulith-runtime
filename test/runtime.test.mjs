@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.7.0')
+  assert.equal(pkg.version, '0.7.1')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -1302,25 +1302,24 @@ test('the local Agent sends business values while Cloud mints identity and retur
   assert.match(source, /const nextTaskId = \(\) =>/)
 })
 
-test('one system prompt carries the five reasoning shapes and one conditional line', () => {
+test('one system prompt explains reasoning without granting Case-specific authority', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   const prompt = /const SYSTEM_PROMPT = `([\s\S]*?)`\n/.exec(source)?.[1]
   assert.ok(prompt, 'the system prompt could not be found')
   const words = prompt.split(/\s+/).filter(Boolean).length
   assert.ok(words > 100 && words < 300, `the prompt is ${words} words; it is meant to be about 200`)
-  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'retract_node', 'revise_fact']) {
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'declare_goal', 'record_result', 'retract_node', 'revise_fact']) {
     assert.ok(prompt.includes(shape), `the prompt does not name the ${shape} shape`)
   }
   assert.match(prompt, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
   // No JSON templates: the advertised tool schemas are the templates.
   assert.doesNotMatch(prompt, /"kind":|\{"op"|```/)
-  // One conditional line, driven by a fact this host knows: the Case Type it itself sent.
-  assert.match(source, /const EXPLORATION_LINE = 'This Case Type is exploration: add_axiom and define_action are permitted inside this Case/)
+  assert.doesNotMatch(source, /EXPLORATION_LINE|are Case-local, and disappear/)
   // The second line was keyed on a Board View field Core never published, so against the
   // real authority it could never fire. A prompt rule from a guessed field is worse than
   // the plain refusal it was trying to pre-empt.
   assert.doesNotMatch(source, /LOCKED_LINE|Legislation is locked/)
-  assert.match(source, /const systemFor = \(ctx\) => \{/)
+  assert.match(prompt, /Case Type alone grants no rule-writing permission/)
 })
 
 test('the Action parameter contract is the advertised schema, not a hand-written copy of it', () => {

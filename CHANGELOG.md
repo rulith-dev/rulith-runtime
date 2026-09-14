@@ -2,9 +2,19 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.7.1 - 2026-09-14
+
+- Read Java Gateway Board Views without losing other focused Cases.
+- Preserve each accepted Case closure in CLI, conversation and Local task summaries;
+  a final cancellation no longer hides an earlier completion. Mixed outcomes remain explicit.
+- Remove obsolete exploration-only rule permission and lifetime claims from the model prompt.
+- Report a Case closed on the final conversational round without a false round-limit warning.
+
+This version is being prepared; source changes are not an npm publication.
+
 ## 0.7.0 - 2026-09-04
 
-**Unreleased.** Not published to npm, and no `v0.7.0` tag exists yet. This is a breaking
+Published to npm with immutable tag `v0.7.0`. This is a breaking
 change to the model surface: an integration that scripted the previous fenced-JSON
 dialect will not work against this runtime.
 

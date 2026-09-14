@@ -1163,7 +1163,9 @@ function releaseUnresolved() {
 // tier, and an unknown tier read as the weakest — a silent downgrade in the direction
 // that looks safe.
 const boardViewOf = (result) => {
-  const payload = result?.payload
+  // Gateway 的模型投影把 Board View 放在 view；旧 Core 直回形状放在 payload。
+  // 有明确 view 时只读取它，不能把缺失状态猜成案件已结束。
+  const payload = result && Object.hasOwn(result, 'view') ? result.view : result?.payload
   if (payload !== null && typeof payload === 'object' && !Array.isArray(payload)) return payload
   return undefined
 }
@@ -2147,34 +2149,13 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
  */
 const SYSTEM_PROMPT = `You are an agent working with a Rulith Board. The Board derives, checks and certifies; you propose. Your tools are the only things you can say to it, and their schemas are the templates.
 
-Inside ApplyBatch a step of reasoning takes one of five shapes. assert_fact states a material fact and names the source it came from. add_axiom offers a rule the Board may derive with. declare_hypothesis puts a claim under test, and the Board reports its status. record_result records a conclusion together with the evidence it rests on. retract_node or revise_fact withdraws or corrects an assertion of your own that turned out wrong. Explanation, argument and narration stay in your reply to the user; they are not Board material.
+Inside ApplyBatch, assert_fact proposes a material fact without granting it Source trust. add_axiom offers a rule; declare_hypothesis puts a claim under test. declare_goal states the desired outcome; follow the installed capability's task structure and use returned node IDs when linking it. record_result records a conclusion with its evidence. retract_node or revise_fact corrects an assertion of your own. Explanation and narration stay in your reply to the user. Case Type alone grants no rule-writing permission, and closing one Case does not erase shared Board knowledge.
 
 Never assert acceptance_met, test_result, certification or rulith.exploration.completed. Whether the work is accepted is the Board's decision, not yours to state.
 
 Every Board tool result carries the Board View the authority computed for that step. Read it before choosing the next step, and call QueryBoard when you need a current view rather than the one you last saw. When a result gives you an Artifact reference instead of the data itself, read it with ReadArtifact in the pieces you need; that reads already-generated data and changes nothing on the Board.
 
 Calls are executed one at a time and each completes before the next is sent. If a call's outcome cannot be determined, the host waits for the authority and hands you the outcome when it has it; do not re-issue the step to find out, and do not treat "no answer yet" as failure or as success.`
-
-const EXPLORATION_LINE = 'This Case Type is exploration: add_axiom and define_action are permitted inside this Case, are Case-local, and disappear when the Case closes.'
-
-/**
- * The base prompt plus at most one conditional line.
- *
- * The condition is a fact this host knows: the Case Type it itself sent on an accepted
- * creation. It is not read out of the Board View, and the Board is never queried for it.
- *
- * There used to be a second line here, telling the model that Board legislation was locked.
- * Its condition came from a `lawLocked` field that Core's published Board View does not
- * contain — so against the real authority it was permanently false, and the line was a
- * guess dressed as a rule. Whether `add_axiom` is permitted is the Board's judgement and
- * the Board refuses it plainly; a prompt line that claims to know first, from a field
- * nobody promised, is worse than the refusal it was trying to save.
- */
-const systemFor = (ctx) => {
-  if (board.roots.length === 0) return SYSTEM_PROMPT
-  if (board.roots.some((row) => String(row.caseType ?? '') === 'exploration')) return `${SYSTEM_PROMPT}\n\n${EXPLORATION_LINE}`
-  return SYSTEM_PROMPT
-}
 
 // ── Main loop: propose → adjudicate → teach back ─────────────────────────────
 const log = (s) => console.log(s)
@@ -2503,7 +2484,8 @@ async function executeToolCall(ctx, call, options) {
       }
     }
   }
-  const before = new Set(board.roots.map((row) => row.caseId))
+  const beforeRoots = board.roots.map((row) => ({ ...row }))
+  const before = new Set(beforeRoots.map((row) => row.caseId))
   const answer = await callTool(ctx, name, input)
   // A refusal the host already announced is not announced again as though the Board had spoken.
   if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer)
@@ -2518,6 +2500,13 @@ async function executeToolCall(ctx, call, options) {
     }
   }
   const closed = [...before].filter((caseId) => !board.roots.some((row) => row.caseId === caseId))
+  // Only the accepted CloseCase target has a terminal outcome here. A root leaving
+  // focus is not by itself closure, and a handoff is not this request executing.
+  const closedCases = name === 'CloseCase' && accepted && answer.authoritative === true && answer.handoff === undefined
+    ? beforeRoots.filter((row) => closed.includes(row.caseId)
+      && (row.root === input.root || (input.root === undefined && beforeRoots.length === 1)))
+      .map((row) => ({ caseId: row.caseId, root: row.root, disposition: String(input.disposition ?? 'completed') }))
+    : []
   return {
     text: answer.text,
     accepted,
@@ -2530,8 +2519,7 @@ async function executeToolCall(ctx, call, options) {
     // would execute proposals made against a Board the model has just been told it was
     // wrong about — and would do it without the model having seen the outcome.
     handedOver: answer.handoff !== undefined,
-    closed: name === 'CloseCase' && accepted && closed.length > 0,
-    disposition: String(input.disposition ?? ''),
+    closedCases,
   }
 }
 
@@ -2583,7 +2571,7 @@ async function focusExistingCase(ctx, caseId) {
  * continuation condition is never "the model did not say DONE". It is the authority's own
  * lifecycle: a focused root that is still running, an explicit close, or the round budget.
  *
- * Returns `{ note, outcome, caseId, activeCaseId, activeCaseIds, pendingCaseId, opened }`.
+ * Returns the turn status, focused Case IDs and its accepted `closedCases` outcomes.
  * `opened` is the machine-readable half of `note`: callers used to have to read prose to
  * tell "the Case ran and did not finish" from "no Case ever existed", and the one-shot CLI
  * did not read it at all — it exited 0 for a task that never started.
@@ -2603,6 +2591,7 @@ async function runCaseTurn(ctx, userText, {
   let nudged = false
   let selectionNotice = ''
   let lastCaseId = board.roots[0]?.caseId ?? null
+  const closedCases = []
   const detachedPendingCaseId = ctx.detachedCase?.caseId ?? null
   const configuredResume = resumeCase
   resumeCase = '' // Resume applies to the first segment only.
@@ -2698,7 +2687,7 @@ async function runCaseTurn(ctx, userText, {
     // Anything recovered since the last round is put in front of the model before it is
     // asked again — it is the outcome of a step this conversation already proposed.
     for (const note of carried.splice(0)) messages.push(userEntry(note))
-    const reply = await ask(messages, systemFor(ctx), { tools: modelTools })
+    const reply = await ask(messages, SYSTEM_PROMPT, { tools: modelTools })
     const say = String(reply.text ?? '').trim()
     if (say !== '') log(`\n${say.slice(0, 1200)}`)
     messages.push(assistantEntry(reply.text, reply.toolCalls))
@@ -2753,7 +2742,6 @@ async function runCaseTurn(ctx, userText, {
     // ends unresolved. From that point nothing may be sent for this Agent at all, so the
     // remaining calls are answered as not executed and the recovery gate takes over.
     const results = []
-    let closedDisposition
     // A tool result may itself have announced that something is outstanding — a Worker
     // receipt that arrived between calls, a takeover. Sending the next queued call anyway
     // would be this host ignoring an answer it has already read.
@@ -2777,7 +2765,10 @@ async function runCaseTurn(ctx, userText, {
       const executed = await executeToolCall(ctx, call, { caseType, caseTypePinned: caseTypePinnedForTurn, businessKey })
       results.push({ id: call.id, name: String(call.name ?? ''), text: executed.text })
       if (board.roots.length > 0) { opened = true; lastCaseId = board.roots[0].caseId }
-      if (executed.closed) closedDisposition = executed.disposition === '' ? 'completed' : executed.disposition
+      for (const closed of executed.closedCases ?? []) {
+        if (!closedCases.some((prior) => prior.root === closed.root)) closedCases.push(closed)
+        lastCaseId = closed.caseId
+      }
       if (executed.unresolved || executed.handedOver
         || (connection.recovery !== undefined && connection.recovery.state !== 'none')) suspended = true
     }
@@ -2802,17 +2793,23 @@ async function runCaseTurn(ctx, userText, {
       if (settled.note !== undefined) carried.push(settled.note)
     }
 
-    if (policy !== 'continue') continue
-    if (closedDisposition !== undefined && liveRootsOf(ctx).length === 0) {
-      outcome = VOID_DISPOSITIONS.has(closedDisposition) ? 'void' : 'completed'
-      note = VOID_DISPOSITIONS.has(closedDisposition)
-        ? `The Case was closed as ${closedDisposition}.`
-        : 'The Board accepted closure and the Case is completed.'
+    if (policy !== 'continue' && round < MAX_ROUNDS) continue
+    if (closedCases.length > 0 && liveRootsOf(ctx).length === 0) {
+      outcome = closedCases.some((row) => VOID_DISPOSITIONS.has(row.disposition)) ? 'void' : 'completed'
+      note = closedCases.length === 1
+        ? outcome === 'void'
+          ? `The Case was closed as ${closedCases[0].disposition}.`
+          : 'The Board accepted closure and the Case is completed.'
+        : outcome === 'completed' ? 'All Cases closed this turn completed.' : 'Not all Cases closed this turn completed.'
       break
     }
   }
 
   if (note === '') note = `Stopped at the ${MAX_ROUNDS}-round limit.`
+  if (closedCases.length > 0) {
+    if (outcome === 'conversation' && board.roots.length === 0) note = 'Response delivered.'
+    note += ` Case outcomes this turn: ${closedCases.map((row) => `${row.caseId} (${row.root})=${row.disposition}`).join(' · ')}.`
+  }
   if (policy === 'continue') {
     // The shadow persona (`--shadow`): an adversarial review at the end of a segment. It
     // may only assert dissenting facts; its teeth are on the Board (a confirmed defect
@@ -2837,7 +2834,7 @@ async function runCaseTurn(ctx, userText, {
   }
   ctx.segmentTrail.push(`[${policy === 'continue' ? 'case' : 'conversation'}${activeCaseId === null ? '' : ` · case ${activeCaseId} in focus`}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
   if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40)
-  return { note, outcome, caseId: activeCaseId ?? lastCaseId, activeCaseId, activeCaseIds, pendingCaseId, opened }
+  return { note, outcome, caseId: activeCaseId ?? lastCaseId, activeCaseId, activeCaseIds, pendingCaseId, opened, closedCases }
 }
 
 /** Shadow review: an adversarial reading of the last observed Board View and this
@@ -3141,6 +3138,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     let activeCaseId = null
     let activeCaseIds = []
     let actualCaseId = null
+    let closedCases = []
     try {
       const seg = await runCaseTurn(slot, item.text, {
         policy: 'return',
@@ -3154,6 +3152,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       activeCaseId = seg.activeCaseId
       activeCaseIds = seg.activeCaseIds
       actualCaseId = seg.caseId
+      closedCases = seg.closedCases ?? []
     } catch (e) {
       const credentialRejected = e instanceof AgentCredentialRejectedError
       const connectionReplaced = e instanceof McpConnectionReplacedError
@@ -3192,6 +3191,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       ...(actualCaseId === null ? {} : { caseId: actualCaseId }),
       ...(activeCaseId === null ? {} : { activeCaseId }),
       ...(activeCaseIds.length === 0 ? {} : { activeCaseIds }),
+      ...(closedCases.length === 0 ? {} : { closedCases }),
       ...(slot.key === '' ? {} : { sessionKey: slot.key }),
       // pendingCaseId is reserved for a detached/paused Case. A healthy Case selected by
       // this conversation is activeCaseId; callers must not escalate ordinary dialogue.
@@ -3238,7 +3238,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
   log(`Task: ${TASK}
 `)
   emit('start', { agentId, url: URL_BASE, task: TASK })
-  const { note, outcome, caseId, activeCaseIds, pendingCaseId, opened } = await runCaseTurn(defaultSlot, TASK, { policy: 'continue' })
+  const { note, outcome, caseId, activeCaseIds, pendingCaseId, opened, closedCases = [] } = await runCaseTurn(defaultSlot, TASK, { policy: 'continue' })
   // The run's own verdict, on the terminal. It used to travel only in the `end` event, so
   // the one interface this form actually has never said how the run ended.
   log(`\n· ${note}`)
@@ -3257,6 +3257,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     note,
     caseId,
     ...(activeCaseIds.length === 0 ? {} : { activeCaseIds }),
+    ...(closedCases.length === 0 ? {} : { closedCases }),
     board: agentId,
     console: seen,
     ...(pendingCaseId === null ? {} : { pendingCaseId }),
@@ -3350,10 +3351,11 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
       process.exitCode = 3
       break
     }
-    const { note, caseId, activeCaseId, activeCaseIds, pendingCaseId } = segment
+    const { note, caseId, activeCaseId, activeCaseIds, pendingCaseId, closedCases = [] } = segment
     emit('segment-end', { note, board: agentId, caseId,
       ...(activeCaseId === null ? {} : { activeCaseId }),
       ...(activeCaseIds.length === 0 ? {} : { activeCaseIds }),
+      ...(closedCases.length === 0 ? {} : { closedCases }),
       ...(pendingCaseId === null ? {} : { pendingCaseId }) })
     log(`
 · ${note}${activeCaseId === null ? '' : ` · Active Rulith Case: ${activeCaseId}.`}${pendingLine(pendingCaseId)}${caseId === null ? '' : ` · Verify in Console: ${consoleUrl}`}
