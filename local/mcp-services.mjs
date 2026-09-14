@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, statSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, statSync, realpathSync, openSync, readSync, closeSync } from 'node:fs'
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { invokeMcp, closeMcpClients } from '../worker/mcp-client.mjs'
 import { adapterEnv, workerToolsOf } from '../worker/rulith-worker.mjs'
+import { createMcpRegistry } from './mcp-registry.mjs'
 
 export const MCP_CATALOG = Object.freeze([Object.freeze({
   id: 'filesystem', title: 'Filesystem', package: '@modelcontextprotocol/server-filesystem', version: '2026.8.31',
@@ -43,10 +44,25 @@ export function parametersOf(schema) {
   }))
 }
 
-/** 安装只接受内置目录中的固定 npm 身份，零 shell，不读取用户 npm 凭据，不执行生命周期脚本。 */
+/** 安装只接受服务端解析的固定 npm 身份，零 shell，不读取用户 npm 凭据，不执行生命周期脚本。 */
 async function installPackage(entry, root, trackChild) {
   const destination = join(root, 'packages', entry.id + '-' + entry.version)
-  if (existsSync(join(destination, 'node_modules', entry.package, entry.entry))) return destination
+  const verify = directory => {
+    const packageRoot = join(directory, 'node_modules', entry.package), executable = join(packageRoot, entry.entry)
+    const lock = read(join(directory, 'package-lock.json'), {})
+    if (lock.packages?.['node_modules/' + entry.package]?.integrity !== entry.integrity) throw new Error('Installed package does not match the catalog integrity.')
+    const metadata = read(join(packageRoot, 'package.json'), {})
+    if (metadata.name !== entry.package || metadata.version !== entry.version || (entry.serverName && metadata.mcpName !== entry.serverName)) throw new Error('Installed package identity differs from reviewed metadata.')
+    if (!existsSync(executable) || !statSync(executable).isFile()) throw new Error('Installed package has no expected entry point.')
+    const rel = relative(realpathSync(packageRoot), realpathSync(executable))
+    if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('Package executable escapes its installation directory.')
+    if (!/\.(mjs|cjs|js)$/i.test(executable)) {
+      const header = Buffer.alloc(256), fd = openSync(executable, 'r')
+      try { readSync(fd, header, 0, header.length, 0) } finally { closeSync(fd) }
+      if (!/^#![^\n]*\bnode\b/.test(header.toString('utf8'))) throw new Error('Only Node.js package executables support automatic setup.')
+    }
+  }
+  if (existsSync(destination)) { verify(destination); return destination }
   const npmCli = [join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'),
     resolve(dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js')].find(existsSync)
   if (!npmCli) throw new Error('npm is not installed beside Node.js. Install Node.js with npm, then retry.')
@@ -66,9 +82,7 @@ async function installPackage(entry, root, trackChild) {
       child.once('error', error => { clearTimeout(timer); trackChild(null); reject(error) })
       child.once('exit', code => { clearTimeout(timer); trackChild(null); code === 0 ? accept() : reject(new Error('npm installation failed or timed out. Check registry connectivity and retry.')) })
     })
-    const lock = read(join(stage, 'package-lock.json'), {})
-    if (lock.packages?.['node_modules/' + entry.package]?.integrity !== entry.integrity) throw new Error('Installed package does not match the catalog integrity.')
-    if (!existsSync(join(stage, 'node_modules', entry.package, entry.entry))) throw new Error('Installed package has no expected entry point.')
+    verify(stage)
     renameSync(stage, destination)
     return destination
   } finally {
@@ -77,20 +91,24 @@ async function installPackage(entry, root, trackChild) {
   }
 }
 
-export function createMcpServices(configFile) {
+export function createMcpServices(configFile, { registry = createMcpRegistry() } = {}) {
   const root = join(dirname(resolve(configFile)), 'mcp')
   const stateFile = join(root, 'services.json')
   const toolsFile = join(root, 'worker-tools.json'), vaultFile = join(root, 'worker-secrets.json')
   let busy = false, closed = false, installChild = null, pending = Promise.resolve()
   const probes = new Map()
+  const preparations = new Map()
   const state = () => {
     const value = read(stateFile, { format: 'rulith-local-mcp/1', services: {} })
     if (value.format !== 'rulith-local-mcp/1' || !record(value.services)) throw new Error('Invalid Local MCP configuration.')
     return value
   }
-  const publicService = row => ({ name: row.name, mode: row.mode, directory: row.directory,
-    source: { ...row.source, env: undefined, headers: undefined, token: undefined },
-    secretConfigured: Object.keys(row.source.env ?? {}).length > 0 || !!row.source.headers?.authorization,
+  const publicService = row => ({ name: row.name, mode: row.mode, directory: row.directory, registry: row.registry,
+    // Registry arguments may contain secrets too. The browser can rediscover a saved service
+    // without receiving its launch configuration; reconfiguration requires explicit fresh inputs.
+    source: row.mode === 'registry' ? { type: 'mcp', transport: row.source.transport, url: row.source.url }
+      : { ...row.source, env: undefined, headers: undefined, token: undefined },
+    secretConfigured: Object.keys(row.source.env ?? {}).length > 0 || Object.keys(row.source.headers ?? {}).length > 0 || row.mode === 'registry',
     tools: row.tools, discovered: row.discovered, definition: row.definition })
   const overview = () => ({ catalog: MCP_CATALOG.map(entry => ({ ...entry, installed: existsSync(join(root, 'packages', entry.id + '-' + entry.version, 'node_modules', entry.package, entry.entry)) })),
     services: Object.values(state().services).map(publicService), busy })
@@ -107,7 +125,24 @@ export function createMcpServices(configFile) {
   }
   return {
     get busy() { return busy }, overview,
-    close: async () => { closed = true; installChild?.kill(); await closeMcpClients(); await pending.catch(() => {}); probes.clear() },
+    search: (query, cursor) => registry.search(query, cursor),
+    detail: (name, version) => registry.detail(name, version),
+    close: async () => { closed = true; installChild?.kill(); await closeMcpClients(); await pending.catch(() => {}); probes.clear(); preparations.clear() },
+    prepareRegistry: body => exclusive(async () => {
+      const prepared = await registry.prepare(body)
+      if (closed) throw new Error('Local is closing.')
+      let source = prepared.source
+      if (prepared.entry) {
+        const directory = await installPackage(prepared.entry, root, child => { installChild = child })
+        source = { type: 'mcp', transport: 'stdio', command: process.execPath,
+          args: [join(directory, 'node_modules', prepared.entry.package, prepared.entry.entry), ...prepared.configuration.args], env: prepared.configuration.env }
+      }
+      if (closed) throw new Error('Local is closing.')
+      const preparationId = randomUUID()
+      preparations.clear()
+      preparations.set(preparationId, { source, registry: prepared.provenance, expires: Date.now() + 600_000 })
+      return { preparationId, registry: prepared.provenance, transport: source.transport }
+    }),
     install: id => exclusive(async () => {
       const entry = MCP_CATALOG.find(row => row.id === id)
       if (!entry) throw new Error('Choose an MCP server from the local catalog.')
@@ -117,8 +152,18 @@ export function createMcpServices(configFile) {
     probe: body => exclusive(async () => {
       const name = sourceName(body.name), current = state(), old = current.services[name]
       const mode = body.mode
-      let source, directory
-      if (mode === 'filesystem') {
+      let source, directory, provenance
+      if (mode === 'registry') {
+        const prepared = body.preparationId ? preparations.get(body.preparationId) : undefined
+        if (prepared && prepared.expires >= Date.now()) { source = prepared.source; provenance = prepared.registry }
+        else if (!body.preparationId && old?.mode === 'registry') { source = old.source; provenance = old.registry }
+        else throw new Error('Directory configuration expired. Review and configure the service again.')
+        if (source.transport === 'stdio' && !source.cwd) {
+          const workingDirectory = join(root, 'workspaces', name)
+          mkdirSync(workingDirectory, { recursive: true, mode: 0o700 })
+          source = { ...source, cwd: workingDirectory }
+        }
+      } else if (mode === 'filesystem') {
         const entry = MCP_CATALOG[0]
         const script = join(root, 'packages', entry.id + '-' + entry.version, 'node_modules', entry.package, entry.entry)
         if (!existsSync(script)) throw new Error('Install Filesystem from the catalog first.')
@@ -162,7 +207,7 @@ export function createMcpServices(configFile) {
       })
       probes.clear()
       const probeId = randomUUID()
-      probes.set(probeId, { name, mode, directory, source, tools, base: hash(current), expires: Date.now() + 600_000 })
+      probes.set(probeId, { name, mode, directory, source, registry: provenance, tools, base: hash(current), expires: Date.now() + 600_000 })
       return { probeId, tools, truncated: discovered.truncated }
     }),
     apply: body => exclusive(async () => {
@@ -182,9 +227,9 @@ export function createMcpServices(configFile) {
       }
       workerToolsOf({ format: 'rulith-worker-tools/1', tools })
       const definition = { name: draft.name, type: 'mcp', words: [], accessModes }
-      current.services[draft.name] = { name: draft.name, mode: draft.mode, directory: draft.directory, source: draft.source,
+      current.services[draft.name] = { name: draft.name, mode: draft.mode, directory: draft.directory, source: draft.source, registry: draft.registry,
         tools, discovered: draft.tools.filter(tool => seen.has(tool.name)), definition }
-      save(current); probes.clear()
+      save(current); probes.clear(); preparations.clear()
       return { service: publicService(current.services[draft.name]), teaching: 'Saved locally. Start Worker, import the Source definition in Console, then bind and enable its tools for the Agent.' }
     }),
     remove: name => exclusive(async () => {

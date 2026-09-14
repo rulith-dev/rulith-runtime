@@ -425,6 +425,12 @@ export function createLocalHost({
         return void res.end(mcpServicesPage)
       }
       if (path === '/mcp-services/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...mcpServices.overview() })
+      if (req.method === 'GET' && ['/mcp-services/search', '/mcp-services/detail'].includes(path)) {
+        const params = new URL(req.url, 'http://localhost').searchParams
+        const result = path.endsWith('/search') ? await mcpServices.search(params.get('q') ?? '', params.get('cursor') ?? '')
+          : await mcpServices.detail(params.get('name'), params.get('version') ?? 'latest')
+        return void json(res, 200, { ok: true, ...result })
+      }
       if (path.startsWith('/mcp-services/') && req.method === 'POST') {
         // Installing executables requires the page's key header and its exact origin, not any loopback origin.
         if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
@@ -434,6 +440,7 @@ export function createLocalHost({
         const body = await readJson(req)
         if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Runtime started while reading the request. Stop it before configuring MCP.' })
         const result = path === '/mcp-services/install' ? await mcpServices.install(body.catalogId)
+          : path === '/mcp-services/prepare' ? await mcpServices.prepareRegistry(body)
           : path === '/mcp-services/probe' ? await mcpServices.probe(body)
             : path === '/mcp-services/apply' ? await mcpServices.apply(body)
               : path === '/mcp-services/remove' ? await mcpServices.remove(body.name) : undefined

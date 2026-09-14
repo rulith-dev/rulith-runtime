@@ -20,6 +20,8 @@ const files = [
   'local/rulith-local.mjs',
   'local/local-ui.mjs',
   'local/mcp-services.mjs',
+  'local/mcp-registry.mjs',
+  'local/mcp-registry-ui.mjs',
   'local/mcp-services-ui.mjs',
   'docs/local-mcp-setup.md',
   'config/rulith-sources.example.json',
