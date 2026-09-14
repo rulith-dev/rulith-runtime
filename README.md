@@ -621,7 +621,7 @@ only then accepts the result.
 
 ```powershell
 cd examples/verified-calculation
-node prepare-runtime.mjs
+node setup.mjs ./rulith-demo
 ```
 
 Follow the generated paths and the instructions in

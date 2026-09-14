@@ -22,6 +22,13 @@ live customer data or reusable credentials.
 
 ## Network boundary
 
+Rulith Local is installed as a complete npm package. Its `artifact-manifest.json` records
+the runtime bytes, and packaging tests compare those hashes with the actual tarball.
+The example setup verifies its bundled input and Adapter files; the standalone setup
+downloads only those example assets from an immutable tag. It does not install a second
+copy of the Agent or Worker. A generated demo configuration is kept outside the Source
+data directory and excluded by the generated `.gitignore`.
+
 Agent Runtime and Worker use outbound connections. The Local UI listens on loopback
 only and requires a random per-run key. Do not publish that port
 through a reverse proxy or bind them to a public interface.

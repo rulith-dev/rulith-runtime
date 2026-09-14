@@ -14,13 +14,51 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { carriageReturnOffenders, controlByteOffenders, controlByteTeaching, teaching } from '../scripts/check-line-endings.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
+
+test('the packed npm artifact prepares the demo offline and refuses a missing bundled asset', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-npm-demo-'))
+  try {
+    const npm = process.env.npm_execpath ?? join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')
+    const pack = spawnSync(process.execPath, [npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', dir], { cwd: ROOT, encoding: 'utf8', windowsHide: true })
+    assert.equal(pack.status, 0, pack.stderr)
+    const filename = JSON.parse(pack.stdout)[0].filename
+    const extracted = spawnSync('tar', ['-xf', join(dir, filename), '-C', dir], { encoding: 'utf8', windowsHide: true })
+    assert.equal(extracted.status, 0, extracted.stderr)
+    const unpacked = join(dir, 'package')
+    const manifest = JSON.parse(readFileSync(join(unpacked, 'artifact-manifest.json'), 'utf8'))
+    for (const [file, entry] of Object.entries(manifest.files)) {
+      assert.equal(createHash('sha256').update(readFileSync(join(unpacked, file))).digest('hex'), entry.sha256, `packed bytes: ${file}`)
+    }
+    const target = join(dir, 'workspace')
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'RULITH_DOWNLOAD_ORIGIN'))
+    const prepared = spawnSync(process.execPath, [join(unpacked, 'examples/verified-calculation/setup.mjs'), target], { env: environment, encoding: 'utf8', windowsHide: true })
+    assert.equal(prepared.status, 0, prepared.stderr)
+    assert.match(prepared.stdout, /Verified 5 bundled files/)
+    assert.equal(existsSync(join(target, 'runtime/input.json')), true)
+    const config = JSON.parse(readFileSync(join(target, 'rulith-local.json'), 'utf8'))
+    assert.equal(config.worker.env.RULITH_WORKER_ROOT, target)
+    assert.equal(existsSync(join(config.worker.env.RULITH_WORKER_ROOT, 'adapters/verified-calculation/read-input.mjs')), true)
+    assert.equal(spawnSync('git', ['init', '-q', dir], { windowsHide: true }).status, 0)
+    assert.equal(spawnSync('git', ['-C', dir, 'check-ignore', '--no-index', join(target, 'rulith-local.json')], { windowsHide: true }).status, 0,
+      'the generated credential file must be ignored even in an unrelated repository')
+    rmSync(join(unpacked, 'examples/verified-calculation/read-input.mjs'))
+    const refusedTarget = join(dir, 'refused')
+    const refused = spawnSync(process.execPath, [join(unpacked, 'examples/verified-calculation/setup.mjs'), refusedTarget], { env: environment, encoding: 'utf8', windowsHide: true })
+    assert.equal(refused.status, 2)
+    assert.match(refused.stderr, /Cannot read bundled asset/)
+    assert.equal(existsSync(refusedTarget), false)
+  } finally {
+    assert.equal(dirname(dir), tmpdir())
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 // ── The manifest and the bytes that ship ─────────────────────────────────────
 
@@ -184,8 +222,6 @@ const SERVED = new Map([
   ['examples/verified-calculation/verify-output.mjs', 'examples/verified-calculation/verify-output.mjs'],
   ['examples/verified-calculation/worker-tools.json', 'examples/verified-calculation/worker-tools.json'],
   ['examples/verified-calculation/data/input.json', 'examples/verified-calculation/data/input.json'],
-  ['agent/rulith-agent.mjs', 'agent/rulith-agent.mjs'],
-  ['worker/rulith-worker.mjs', 'worker/rulith-worker.mjs'],
 ])
 
 /** Run a child to completion without blocking this process: the download origin below
@@ -241,21 +277,20 @@ async function withOrigin({ tamper, orphan = false }, run) {
 test('setup.mjs writes the workspace when every download matches the manifest (calibration)', async () => {
   await withOrigin({}, ({ result, target }) => {
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
-    assert.match(result.stdout, /Verified 7 downloads against artifact-manifest\.json/)
-    assert.equal(existsSync(join(target, 'rulith-agent.mjs')), true)
-    assert.equal(existsSync(join(target, 'rulith-worker.mjs')), true)
+    assert.match(result.stdout, /Verified 5 downloads against artifact-manifest\.json/)
+    assert.equal(existsSync(join(target, 'rulith-agent.mjs')), false)
+    assert.equal(existsSync(join(target, 'rulith-worker.mjs')), false)
     assert.equal(existsSync(join(target, 'worker-tools.json')), true)
     assert.equal(existsSync(join(target, 'adapters', 'verified-calculation', 'read-input.mjs')), true)
     // The bytes written are the bytes checked.
     const manifest = JSON.parse(readFileSync(join(ROOT, 'artifact-manifest.json'), 'utf8'))
-    const written = readFileSync(join(target, 'rulith-worker.mjs'), 'utf8').replace(/\r\n/g, '\n')
-    assert.equal(createHash('sha256').update(written, 'utf8').digest('hex'), manifest.files['worker/rulith-worker.mjs'].sha256)
+    const written = readFileSync(join(target, 'adapters', 'verified-calculation', 'read-input.mjs'), 'utf8').replace(/\r\n/g, '\n')
+    assert.equal(createHash('sha256').update(written, 'utf8').digest('hex'), manifest.files['examples/verified-calculation/read-input.mjs'].sha256)
   })
 })
 
-// Both runtime files matter, and so does an example Adapter: a tampered `read-input.mjs`
-// runs as a `run` Adapter on the Worker machine with the Source root in its environment.
-for (const target of ['worker/rulith-worker.mjs', 'agent/rulith-agent.mjs', 'examples/verified-calculation/read-input.mjs']) {
+// Every downloaded Adapter and manifest is executable input and must be integrity checked.
+for (const target of ['examples/verified-calculation/worker-tools.json', 'examples/verified-calculation/verify-output.mjs', 'examples/verified-calculation/read-input.mjs']) {
   test(`setup.mjs refuses tampered ${target} and writes nothing`, async () => {
     await withOrigin({ tamper: target }, ({ result, target: dir }) => {
       assert.equal(result.status, 2, `tampered bytes were accepted:\n${result.stdout}\n${result.stderr}`)
@@ -272,16 +307,22 @@ for (const target of ['worker/rulith-worker.mjs', 'agent/rulith-agent.mjs', 'exa
 test('the standalone Console setup uses embedded release pins when no package manifest is beside it', async () => {
   await withOrigin({ orphan: true }, ({ result, target, requested }) => {
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
-    assert.equal(existsSync(join(target, 'rulith-agent.mjs')), true)
-    assert.ok(requested.includes('agent/rulith-agent.mjs'))
-    assert.ok(requested.includes('worker/rulith-worker.mjs'))
+    assert.equal(existsSync(join(target, 'rulith-agent.mjs')), false)
+    assert.equal(requested.some(path => /^(agent|worker)\//.test(path)), false)
+    const config=JSON.parse(readFileSync(join(target,'rulith-local.json'),'utf8'))
+    assert.deepEqual(config.roles,['agent','worker'])
+    assert.equal(config.agent.env.RULITH_TOKEN,'')
+    assert.equal(config.worker.env.RULITH_CONNECTION_KEY,'')
+    assert.equal(config.worker.env.RULITH_WORKER_ROOT,target)
+    assert.equal(config.worker.env.RULITH_TOOLS_FILE,join(target,'worker-tools.json'))
+    assert.match(readFileSync(join(target, '.gitignore'), 'utf8'), /^\/rulith-local\.json$/m)
   })
 })
 
-test('the standalone Console setup rejects tampered runtime bytes using its embedded pins', async () => {
-  await withOrigin({ orphan: true, tamper: 'agent/rulith-agent.mjs' }, ({ result, target }) => {
+test('the standalone Console setup rejects tampered Adapter bytes using its embedded pins', async () => {
+  await withOrigin({ orphan: true, tamper: 'examples/verified-calculation/read-input.mjs' }, ({ result, target }) => {
     assert.equal(result.status, 2, `tampered standalone bytes were accepted:\n${result.stdout}\n${result.stderr}`)
-    assert.match(result.stderr, /Refusing agent\/rulith-agent\.mjs/)
+    assert.match(result.stderr, /Refusing examples\/verified-calculation\/read-input\.mjs/)
     assert.match(result.stderr, /does not match artifact-manifest\.json/)
     assert.equal(existsSync(target) && readdirSync(target).length > 0, false)
   })
@@ -307,8 +348,12 @@ test('the release version, immutable download tag, changelog, and embedded pins 
   assert.match(changelog, new RegExp(`^## ${pkg.version.replaceAll('.', '\\.')} - \\d{4}-\\d{2}-\\d{2}$`, 'm'),
     'the current package version has no dated changelog entry')
 
+  const guide = readFileSync(join(ROOT, 'examples/verified-calculation/README.md'), 'utf8')
+  const installs = [...guide.matchAll(/rulith@(\d+\.\d+\.\d+)/g)]
+  assert.ok(installs.length > 0)
+  assert.ok(installs.every(match => match[1] === pkg.version), 'the guide must install the version that supplies its setup')
   const pins = [...setup.matchAll(/^\s*'([^']+)': \{ sha256: '([0-9a-f]{64})' \},?$/gm)]
-  assert.equal(pins.length, 7, 'the standalone downloader must pin exactly its seven downloaded files')
+  assert.equal(pins.length, 5, 'the setup pins its five data and Adapter files; Runtime comes from npm')
   for (const [, file, hash] of pins) {
     assert.equal(manifest.files?.[file]?.sha256, hash, `${file} embedded pin differs from artifact-manifest.json`)
   }

@@ -157,6 +157,7 @@ test('RT-WK-FLOW-10 the exact row a Gateway sends is claimed and reported, with 
   assert.equal(report.operation.workType, 'verification')
   assert.equal(report.operation.id, row.work)
   assert.equal(report.operation.outcome, 'satisfied')
+  assert.equal(Object.hasOwn(report.operation, 'ok'), false, 'Worker v2 verification reports use the outcome enum only')
   assert.equal(report.operation.workerGeneration, 7)
 })
 

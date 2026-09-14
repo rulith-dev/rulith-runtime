@@ -30,6 +30,9 @@ runtimeTest = runtimeTest.replace(/assert\.equal\(pkg\.version, '\d+\.\d+\.\d+'\
   `assert.equal(pkg.version, '${version}')`)
 write(runtimeTestFile, runtimeTest)
 
+const guideFile = 'examples/verified-calculation/README.md'
+write(guideFile, read(guideFile).replace(/rulith@\d+\.\d+\.\d+/g, `rulith@${version}`))
+
 const setupFile = 'examples/verified-calculation/setup.mjs'
 let setup = read(setupFile)
 setup = setup.replace(/v\d+\.\d+\.\d+/g, `v${version}`)
@@ -39,8 +42,6 @@ const pinned = [
   'examples/verified-calculation/verify-output.mjs',
   'examples/verified-calculation/worker-tools.json',
   'examples/verified-calculation/data/input.json',
-  'agent/rulith-agent.mjs',
-  'worker/rulith-worker.mjs',
 ]
 for (const file of pinned) {
   const pattern = new RegExp(`('${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'\\s*:\\s*\\{\\s*sha256:\\s*')[0-9a-f]{64}('\\s*\\})`)

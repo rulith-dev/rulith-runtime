@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
  * Download the public Tool manifest and Adapters, then prepare a local verified
- * JSON calculation workspace. Agent capabilities are installed in Console;
- * credentials are never requested or written here.
+ * JSON calculation workspace and an empty Local configuration. Agent capabilities
+ * are installed in Console; credentials are never requested or copied here.
  *
  * Every downloaded file is checked before anything is written. An installed package or
  * checkout supplies `artifact-manifest.json`; the standalone Console download carries
- * the same seven immutable v0.7.1 pins inside this script. Runtime bytes come from the
- * immutable Git tag by default, not from Console's retired per-file download routes.
+ * the same immutable release pins inside this script. Installed npm packages use
+ * their bundled files; the standalone Console script downloads the same assets.
+ * Rulith Local itself always comes from npm, with its complete module layout.
  */
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
@@ -24,24 +25,6 @@ const FILES = new Map([
   ['examples/verified-calculation/verify-output.mjs', 'adapters/verified-calculation/verify-output.mjs'],
   ['examples/verified-calculation/worker-tools.json', 'worker-tools.json'],
   ['examples/verified-calculation/data/input.json', 'runtime/input.json'],
-  ['agent/rulith-agent.mjs', 'rulith-agent.mjs'],
-  ['worker/rulith-worker.mjs', 'rulith-worker.mjs'],
-])
-
-/**
- * Download path -> the key that names it in `artifact-manifest.json`.
- *
- * A download with no entry here is refused rather than trusted: an unlisted file is
- * one nobody can check, and "we could not verify it" must not be the quiet path.
- */
-const MANIFEST_KEYS = new Map([
-  ['examples/verified-calculation/read-input.mjs', 'examples/verified-calculation/read-input.mjs'],
-  ['examples/verified-calculation/write-output.mjs', 'examples/verified-calculation/write-output.mjs'],
-  ['examples/verified-calculation/verify-output.mjs', 'examples/verified-calculation/verify-output.mjs'],
-  ['examples/verified-calculation/worker-tools.json', 'examples/verified-calculation/worker-tools.json'],
-  ['examples/verified-calculation/data/input.json', 'examples/verified-calculation/data/input.json'],
-  ['agent/rulith-agent.mjs', 'agent/rulith-agent.mjs'],
-  ['worker/rulith-worker.mjs', 'worker/rulith-worker.mjs'],
 ])
 
 // Standalone trust anchor. Keep this deliberately narrow: only the files setup writes.
@@ -52,8 +35,6 @@ const EMBEDDED_MANIFEST_FILES = Object.freeze({
   'examples/verified-calculation/verify-output.mjs': { sha256: 'c02d9c6e9b63885fae007db399143d7aba551b9f689be5cd1b2941b776cb7026' },
   'examples/verified-calculation/worker-tools.json': { sha256: 'bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c' },
   'examples/verified-calculation/data/input.json': { sha256: '28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec' },
-  'agent/rulith-agent.mjs': { sha256: '5244bfa15b1a133f74babab4b6da69c62f4d20820f27a4e66816afc2833fc463' },
-  'worker/rulith-worker.mjs': { sha256: '96e1093b49edf330d4b3a07ff796a1ec026c00a9f4c547417ba01a636f30cf52' },
 })
 
 // The manifest sits at the package root in both shapes this script ships in: a git
@@ -84,8 +65,7 @@ const canonicalSha256 = (bytes) =>
   createHash('sha256').update(bytes.toString('utf8').replace(/\r\n/g, '\n'), 'utf8').digest('hex')
 
 function verify(manifestFiles, file, bytes) {
-  const key = MANIFEST_KEYS.get(file)
-  const expected = key === undefined ? undefined : manifestFiles[key]?.sha256
+  const expected = manifestFiles[file]?.sha256
   if (typeof expected !== 'string' || expected === '') {
     throw new Refusal(`Refusing ${file}: artifact-manifest.json has no hash for it, so nothing can attest to what was downloaded.`)
   }
@@ -93,7 +73,7 @@ function verify(manifestFiles, file, bytes) {
   if (actual !== expected) {
     throw new Refusal(`Refusing ${file}: it does not match artifact-manifest.json.
   expected sha256 ${expected}
-  received sha256 ${actual}  (${bytes.length} bytes from ${ORIGIN})
+  received sha256 ${actual}  (${bytes.length} bytes in the supplied asset)
 Nothing was written. Either RULITH_DOWNLOAD_ORIGIN is serving a different release than this
 package expects — upgrade or pin one of them — or the download was modified in transit.`)
   }
@@ -107,11 +87,19 @@ async function main() {
 
   // Download and verify everything before creating the directory: a refusal must leave
   // no half-prepared workspace that a later run would decline to overwrite.
+  const bundled = process.env.RULITH_DOWNLOAD_ORIGIN === undefined && existsSync(MANIFEST_PATH)
   const downloads = new Map()
   for (const file of FILES.keys()) {
-    const response = await fetch(`${ORIGIN}/${file}`)
-    if (!response.ok) throw new Refusal(`download failed (${response.status}): ${ORIGIN}/${file}`)
-    const bytes = Buffer.from(await response.arrayBuffer())
+    let bytes
+    if (bundled) {
+      try { bytes = readFileSync(resolve(import.meta.dirname, '..', '..', file)) }
+      catch { throw new Refusal(`Cannot read bundled asset ${file}. Reinstall the complete rulith npm package. Nothing was written.`) }
+    }
+    else {
+      const response = await fetch(`${ORIGIN}/${file}`, { signal: AbortSignal.timeout(20_000) })
+      if (!response.ok) throw new Refusal(`download failed (${response.status}): ${ORIGIN}/${file}`)
+      bytes = Buffer.from(await response.arrayBuffer())
+    }
     verify(manifestFiles, file, bytes)
     downloads.set(file, bytes)
   }
@@ -123,10 +111,27 @@ async function main() {
     writeFileSync(path, contents)
   }
 
-  console.log(`Verified ${downloads.size} downloads against artifact-manifest.json`)
+  // The governed file Source is target/runtime. Config and Adapter code are outside
+  // that data directory, so granting access to the demo input does not expose keys.
+  writeFileSync(resolve(target, '.gitignore'), '/rulith-local.json\n/runtime/\n')
+  const configPath = resolve(target, 'rulith-local.json')
+  writeFileSync(configPath, JSON.stringify({
+    roles: ['agent', 'worker'],
+    agent: { env: {
+      RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '',
+      RULITH_MODEL_URL: 'http://127.0.0.1:1234', RULITH_MODEL: '<model-id>', RULITH_MODEL_KEY: '',
+    } },
+    worker: { env: {
+      RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '',
+      RULITH_WORKER_ROOT: target, RULITH_TOOLS_FILE: resolve(target, 'worker-tools.json'),
+    } },
+  }, null, 2) + '\n', { mode: 0o600 })
+
+  console.log(`Verified ${downloads.size} ${bundled ? 'bundled files' : 'downloads'} against artifact-manifest.json`)
   console.log(`Prepared ${target}`)
-  console.log('The Capability comes from Console. worker-tools.json is the local Adapter Manifest that binds its versioned Tool ids to implementations; credentials stay local.')
-  console.log('Next: set your Agent token, model credentials, Connection key, and run the two commands from the Rulith 5-minute quickstart.')
+  console.log(`Edit ${configPath}: enter your Agent token, model settings, and Worker Connection credentials.`)
+  console.log(`Source location for Console: ${resolve(target, 'runtime')}`)
+  console.log('The Capability comes from Console; run the installed npm Rulith Local with this configuration. See the 5-minute quickstart.')
 }
 
 // The status is set rather than forced. `process.exit()` tears the loop down while the

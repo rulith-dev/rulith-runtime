@@ -32,7 +32,7 @@ function productionFiles(dir, root = ROOT) {
       // These generated example directories are excluded by .gitignore and
       // package.json. Keep scanning all other source, including new Adapters.
       if (/^examples[/\\]/.test(relative(root, path))
-        && ['runtime', '.runtime-test'].includes(entry.name)) return []
+        && ['runtime', '.runtime-test', 'rulith-demo'].includes(entry.name)) return []
       return productionFiles(path, root)
     }
     return /\.(?:mjs|json)$/.test(entry.name) ? [path] : []
@@ -1446,7 +1446,7 @@ test('Rulith Local keeps the center stream independently scrollable above the fi
 
 test('production-facing runtime text is English-only', () => {
   const files = PRODUCTION_DIRS.flatMap((dir) => productionFiles(join(ROOT, dir)))
-  assert.ok(files.length >= 15)
+  for (const dir of PRODUCTION_DIRS) assert.ok(files.some(file => relative(ROOT, file).replaceAll('\\', '/').startsWith(dir + '/')), `${dir} was not scanned`)
   for (const file of files) {
     const text = executableText(readFileSync(file, 'utf8'))
     const match = text.match(/[\u3400-\u9fff]/)
@@ -1461,18 +1461,18 @@ test('verified calculation prepares a local Tool Manifest and adapters; governed
   const dir = mkdtempSync(join(tmpdir(), 'rulith-runtime-'))
   const example = join(ROOT, 'examples', 'verified-calculation')
   try {
-    const run = spawnSync(process.execPath, ['prepare-runtime.mjs'], {
+    const run = spawnSync(process.execPath, ['setup.mjs', join(dir, 'workspace')], {
       cwd: example,
-      env: { ...process.env, RULITH_CALC_RUNTIME: dir },
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'RULITH_DOWNLOAD_ORIGIN')),
       encoding: 'utf8',
     })
     assert.equal(run.status, 0, run.stderr || run.stdout)
-    assert.equal(existsSync(join(dir, 'worker-tools.json')), true,
+    assert.equal(existsSync(join(dir, 'workspace', 'worker-tools.json')), true,
       'local Adapter bindings must be explicit in the Worker Tool Manifest')
-    assert.equal(existsSync(join(dir, 'input.json')), true)
-    assert.equal(existsSync(join(dir, 'adapters', 'verified-calculation', 'read-input.mjs')), true)
-    assert.equal(existsSync(join(dir, 'recipe.json')), false, 'managed capability packages must not be rendered into the client workspace')
-    assert.equal(existsSync(join(dir, 'recipe.template.json')), false,
+    assert.equal(existsSync(join(dir, 'workspace', 'runtime', 'input.json')), true)
+    assert.equal(existsSync(join(dir, 'workspace', 'adapters', 'verified-calculation', 'read-input.mjs')), true)
+    assert.equal(existsSync(join(dir, 'workspace', 'recipe.json')), false, 'managed capability packages must not be rendered into the client workspace')
+    assert.equal(existsSync(join(dir, 'workspace', 'recipe.template.json')), false,
       'the public market source must not be downloaded as a client-owned recipe')
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -1480,30 +1480,21 @@ test('verified calculation prepares a local Tool Manifest and adapters; governed
 })
 
 test('verified calculation is one Capability composed of Program and Sources', () => {
-  const recipe = JSON.parse(readFileSync(join(ROOT, 'examples', 'verified-calculation', 'recipe.template.json'), 'utf8'))
-  const guide = readFileSync(join(ROOT, 'examples', 'verified-calculation', 'README.md'), 'utf8')
-  assert.deepEqual(recipe.packs.map((entry) => entry.packType), ['program', 'sources'])
-  assert.deepEqual(recipe.packs.map((entry) => entry.title ?? entry.pack.title ?? entry.pack.meta?.title), [
-    'Verified Calculation — Program',
-    'Verified Calculation — Local source',
-  ])
-  assert.equal(recipe.collection.id, 'verified_calculation')
-  assert.equal(recipe.collection.version, '1.0.0')
-  assert.deepEqual(recipe.packs[0].pack.pins, ['rulith.verified_calculation.calculation_result', 'rulith.verified_calculation.calculation_completed'],
-    'the public recipe must pin the Case result and acceptance root used by the hosted Capability')
-  assert.equal(recipe.collection.caseContracts?.[0]?.format, 'rulith-case-contract/1')
-  assert.equal(recipe.collection.caseContracts?.[0]?.caseType, 'verified_calculation')
-  assert.equal(recipe.collection.caseContracts?.[0]?.acceptance?.predicate, 'rulith.verified_calculation.calculation_completed')
-  assert.equal(recipe.collection.caseContracts?.[0]?.terminal?.cardinality, 'once_per_case')
-  assert.equal('line' in recipe.packs[1].pack.sources[0], false)
-  assert.equal(recipe.packs[0].pack.acceptance.length, 1)
+  const recipe = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/verified-calculation-recipe.json'), 'utf8'))
+  const guide = readFileSync(join(ROOT, 'examples/verified-calculation/README.md'), 'utf8')
+  assert.equal(recipe.capability.id, 'verified_calculation')
+  assert.equal(recipe.capability.version, '1.0.2')
+  assert.equal(recipe.capability.caseContracts[0].acceptance.predicate, 'rulith.verified_calculation.calculation_completed')
+  assert.deepEqual(recipe.sources.sources[0].accessModes, [])
+  assert.ok(!recipe.sources.sources[0].words.includes('task_seed'))
+  assert.equal(recipe.program.acceptance.length, 1)
   assert.match(guide, /one\s+installed Capability with four inspectable sections/i)
   assert.doesNotMatch(guide, /two governed components|install.*Knowledge[\s\S]*install.*source/i,
     'typed protocol components must not leak back into the user installation ritual')
   assert.match(guide, /verified-calc-worker/)
   assert.doesNotMatch(guide, /verified-calculation-worker/)
-  assert.match(guide, /RULITH_WORKER_ROOT=<this-directory>\/runtime/,
-    'source-checkout instructions must resolve Adapter entries from the generated runtime directory')
+  assert.match(guide, /generated absolute `RULITH_WORKER_ROOT` and `RULITH_TOOLS_FILE`/,
+    'the guide must keep the setup-generated Adapter and manifest paths')
 })
 
 // The behaviour this used to assert is now driven end to end in

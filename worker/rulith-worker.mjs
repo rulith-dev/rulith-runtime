@@ -605,7 +605,7 @@ if (IS_MAIN) {
     // 逼它先造一张空工具表是把"持工具"当成了 worker 的本质,而本质是"按配置上岗"。
     // (真机实跑当场撞到: 清关工人起不来,报的还是"读不了工具表"这种指错方向的错。)
     if (!REVIEWER_ONLY) {
-      console.error(`Cannot read Worker Tool Manifest ${TOOLS_FILE}: ${e.message}\n  Shape: {"format":"rulith-worker-tools/1","tools":{"vendor.tool@1":{"adapter":"run","source":"local","entry":"adapters/tool.mjs"}}}\n  A review-only Worker needs no Tool Manifest when RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are set.`)
+      console.error(`Cannot read Worker Tool Manifest ${TOOLS_FILE}: ${e.message}\n  Shape: {"format":"rulith-worker-tools/1","tools":{"vendor.tool@1":{"adapter":"run","sourceTypes":["file"],"entry":"adapters/tool.mjs"}}}\n  A review-only Worker needs no Tool Manifest when RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are set.`)
       process.exit(2)
     }
     TOOLS = {}
@@ -2333,7 +2333,7 @@ async function handleClaimWork(w) {
   // 办不成也要如实回报**为什么**——缘由留在板上,否则没人知道它卡在哪(2026-08-01 真机: 回执被拒,工单死循环)
   if (!ok && !backReason) { try { backReason = JSON.parse(evidence.replace(/^HTTP \d+: /, '')).reason } catch { backReason = evidence } }
   const rep = await work({
-    kind: 'ReportWork', workType: 'verification', id: w.work, ok, outcome,
+    kind: 'ReportWork', workType: 'verification', id: w.work, outcome,
     tier: weakerTier(t.tier ?? 'attested', backTier),
     ...(Array.isArray(backFacts) && backFacts.length ? { facts: backFacts } : {}),
     ...(!ok && backReason ? { reason: String(backReason).slice(0, 240) } : {}),

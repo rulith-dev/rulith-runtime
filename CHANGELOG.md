@@ -12,7 +12,18 @@ All notable changes to the local runtime are documented here.
 - Present concrete schema field shapes to Chat Completions model services, preserving
   the original MCP constraints, recursive references and exact-number guards.
 
-This version is being prepared; source changes are not an npm publication.
+- Align Verified Calculation onboarding with platform Capability 1.0.2 and declared Board
+  bindings. Remove the obsolete client-owned recipe; published releases remain immutable.
+- Send Worker v2 verification reports using outcome alone, without the retired ok field.
+- Use the existing `setup.mjs` as the single example preparation entry. It verifies and copies
+  bundled assets when run from npm, or downloads only the five example assets when standalone.
+  Agent, Worker and Local continue to run from the complete npm package.
+- Prepare one empty, private Local configuration beside the example data directory, with
+  absolute Worker and manifest paths. Existing files and credentials are never overwritten.
+- Retire the separate `prepare-runtime.mjs` and `prepare-local.mjs` helpers. The guide now
+  starts the Worker before Source binding, then restarts it with the Agent to run the Case.
+- Correct the Worker manifest error example to use `sourceTypes`.
+- Restrict the example Source to its three Capability Actions; generic file browsing is not enabled.
 
 ## 0.7.0 - 2026-09-04
 

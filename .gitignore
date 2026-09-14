@@ -3,6 +3,7 @@ node_modules/
 *.tgz
 examples/**/runtime/
 examples/**/.runtime-test/
+examples/**/rulith-demo/
 rulith-station.json
 rulith-tools.json
 rulith-sources.json

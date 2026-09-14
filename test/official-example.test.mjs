@@ -2,7 +2,7 @@
 /**
  * The shipped Verified Calculation example, driven through the real Worker and its real Adapters.
  *
- * Everything here reads the committed example bytes — `recipe.template.json` for the Action
+ * Everything here reads the committed example bytes — the vendored current platform recipe fixture for the Action
  * contracts, `worker-tools.json` for the local Tool Manifest, `data/input.json` for the Source
  * material — and hands them to the Worker binary the way a Gateway dispatch does. Nothing is
  * restated: a row's `toolSpec` carries the `sourceTypes`, `params` and `returns` the recipe
@@ -31,13 +31,14 @@ import { basename, join } from 'node:path'
 import { BOARD, CONNECTION, HOLD, ROOT, SIGNED, driveWorker, toolDigest, artifactWorkFields } from './support/worker-harness.mjs'
 
 const EXAMPLE = join(ROOT, 'examples', 'verified-calculation')
-const RECIPE = JSON.parse(readFileSync(join(EXAMPLE, 'recipe.template.json'), 'utf8'))
+const RECIPE = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/verified-calculation-recipe.json'), 'utf8'))
 const MANIFEST = JSON.parse(readFileSync(join(EXAMPLE, 'worker-tools.json'), 'utf8'))
 const INPUT_BYTES = readFileSync(join(EXAMPLE, 'data', 'input.json'), 'utf8')
 const JOB = JSON.parse(INPUT_BYTES)
 
-const PROGRAM = RECIPE.packs.find((entry) => entry.packType === 'program').pack
-const SOURCES = RECIPE.packs.find((entry) => entry.packType === 'sources').pack
+const PROGRAM = RECIPE.program
+const SOURCES = RECIPE.sources
+const PREDICATES = Object.fromEntries(PROGRAM.vocabulary.defines.map(row => [row.as, row.id]))
 /** The governed Source the deployment binds; the recipe names its type, never this instance. */
 const SOURCE = SOURCES.sources[0].name
 const ACTIONS = Object.fromEntries(PROGRAM.actions.map((action) => [action.action, action]))
@@ -59,7 +60,8 @@ const ADAPTERS = Object.fromEntries(Object.values(MANIFEST.tools)
  * from it, and the refusal is the finding.
  */
 function exampleRow(name, args, overrides = {}) {
-  const { execution } = ACTIONS[name]
+  const action = ACTIONS[name]
+  const execution = { ...action.execution, returns: action.execution.returns?.map(row => ({ ...row, predicate: PREDICATES[row.predicate] ?? row.predicate })) }
   return {
     workType: 'action',
     work: `inv_${name}`,
@@ -234,12 +236,8 @@ test('RT-EXAMPLE-3 intake produces its task structure from Source material, not 
   const [receipt] = receipts
   assert.equal(receipt.ok, true, `${receipt.reason ?? ''}\n${output}`)
 
-  const seed = factNamed(receipt, 'task_seed')
-  assert.ok(seed, `intake must still seed the task tree: ${JSON.stringify(factsOf(receipt))}`)
-  assert.equal(seed.args.node, NODE)
-  assert.equal(seed.args.test, JOB.job_id)
-  assert.equal(seed.args.root, `CALC_BATCH_${JOB.batch_id}`,
-    'the task root must be derived from the trusted Source material')
+  assert.equal(factNamed(receipt, 'task_seed'), undefined, 'Source intake cannot manufacture Agent task structure')
+  assert.deepEqual(factsOf(receipt).map(row => row.predicate), ['rulith.verified_calculation.calculation_input'])
   for (const fact of factsOf(receipt)) {
     for (const value of Object.values(fact.args)) {
       assert.notEqual(value, 'forged-case-identity',
@@ -336,7 +334,7 @@ test('RT-EXAMPLE-8 the Adapters read and write the granted Source root only, wha
     assert.equal(input?.args.job_id, JOB.job_id, 'the intake Adapter read a file the environment chose')
     assert.equal(input?.args.unit_price_cents, JOB.unit_price_cents)
     assert.notEqual(input?.args.job_id, 'bait-999')
-    assert.equal(factNamed(receipts[0], 'task_seed')?.args.root, `CALC_BATCH_${JOB.batch_id}`)
+    assert.equal(factNamed(receipts[0], 'task_seed'), undefined)
 
     // Write: nothing outside the Source root came into existence, and the bait was not edited.
     assert.equal(existsSync(baitOutput), false, 'the writer created a file outside the granted Source root')
@@ -403,7 +401,7 @@ test('RT-EXAMPLE-10 the identifiers this example puts on the shared graph cannot
   // the Case Contract keys on `job_id`, so the leaf's acceptance test must be that same value
   // rather than a second identifier that only happens to travel beside it.
   assert.match(adapter, /acceptance_test: input\.job_id/)
-  assert.deepEqual(RECIPE.collection.caseContracts[0].businessKey.arguments, ['job_id'])
+  assert.deepEqual(RECIPE.capability.caseContracts[0].businessKey.arguments, ['job_id'])
 })
 
 test('RT-EXAMPLE-6 an invocation that names no Source, or another one, never reaches the Adapter', async () => {
@@ -416,6 +414,18 @@ test('RT-EXAMPLE-6 an invocation that names no Source, or another one, never rea
   assert.match(output, /One execution may not run against two Sources/, output)
   assert.equal((output.match(/Claimed load_calculation_input/g) ?? []).length, 1,
     'nothing may be claimed for a dispatch the Worker refuses')
+})
+
+// The public quickstart now uses the real Local composer. Native tool argument correctness
+// is exercised by the live Core/Gateway/Runtime acceptance instead of hand-copied tool JSON.
+test('RT-EXAMPLE-11 the guide starts a configured Case through Local without scripted model tool calls', () => {
+  const guide = readFileSync(join(EXAMPLE, 'README.md'), 'utf8')
+  const contract = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/verified-calculation-recipe.json'), 'utf8')).capability.caseContracts[0]
+  assert.ok(guide.includes(contract.caseType))
+  for (const argument of contract.businessKey.arguments) assert.ok(guide.includes(argument))
+  assert.match(guide, /rulith start --role agent\+worker/)
+  assert.match(guide, /Local composer/)
+  assert.match(guide, /Protocol troubleshooting \(optional\)/)
 })
 
 /**
@@ -458,8 +468,8 @@ test('RT-EXAMPLE-7 every tool call the guide prints matches the vendored tool co
   for (const action of ['write_calculation_result', 'verify_calculation_output']) {
     const call = printedFor(action)
     assert.ok(call, `the guide no longer shows ${action}`)
-    const declared = Object.keys(ACTIONS[action].execution.params ?? {})
+    const declared = Object.keys(ACTIONS[action].execution.params ?? {}).filter(name => !Object.hasOwn(ACTIONS[action].bindings ?? {}, name))
     assert.deepEqual(Object.keys(call.args).sort(), ['source', ...declared].sort(),
-      `${action} must be printed with its Source selector and every declared parameter: a Source-bound Action cannot use the board-binding path, because that path runs only for an invocation carrying no arguments at all`)
+      `${action} must expose only caller parameters; declared Board bindings remain internal`)
   }
 })
