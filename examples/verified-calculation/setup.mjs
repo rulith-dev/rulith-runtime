@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { resolve } from 'node:path'
 
 const ORIGIN = process.env.RULITH_DOWNLOAD_ORIGIN
-  ?? 'https://raw.githubusercontent.com/rulith-dev/rulith-runtime/v0.7.1'
+  ?? 'https://raw.githubusercontent.com/rulith-dev/rulith-runtime/v0.7.2'
 const target = resolve(process.argv[2] ?? 'rulith-verified-calculation')
 
 /** Download path under the origin -> where it lands in the prepared workspace. */

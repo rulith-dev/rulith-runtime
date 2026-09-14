@@ -2,6 +2,14 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.7.2 - 2026-09-14
+
+- Renew the current Worker lease while an idle long Poll waits. Poll admission reuses
+  the existing lease; it does not extend its expiry. Quiet model thinking must not
+  leave the Worker without a lease just as verification work arrives.
+- Refuse a late Poll answer after a concurrent renewal lost the lease. No work is
+  claimed from that answer, and existing unknown executions remain unresolved.
+
 ## 0.7.1 - 2026-09-14
 
 - Read Java Gateway Board Views without losing other focused Cases.

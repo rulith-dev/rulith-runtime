@@ -3405,10 +3405,20 @@ if (IS_MAIN) {
       // states none: it has never been given one, and a process that cannot poll without a
       // generation could never obtain the lease that would tell it one. Nothing else rides
       // along; the shape admits no work-type selector and no Case.
-      const r = await work({
-        kind: POLL_KIND,
-        tools: workerToolManifest(TOOLS),
-      })
+      // A quiet inbox can hold its HTTP response across several heartbeat periods.
+      // Poll only reuses a lease; it does not renew it. Keep the existing holder alive
+      // while waiting, without claiming or executing a second piece of work.
+      const beforePoll = lease
+      const stopPollRenewal = keepLeaseAlive()
+      let r
+      try {
+        r = await work({ kind: POLL_KIND, tools: workerToolManifest(TOOLS) })
+      } finally {
+        await stopPollRenewal()
+      }
+      if (beforePoll !== undefined && lease === undefined) {
+        throw new Error('The lease was lost while Poll was waiting; its late answer cannot restore authority.')
+      }
       // Every poll answer restates the lease. Without a confirmed active one this instance
       // does nothing: it does not claim, it does not execute, and it does not change what
       // its Tools advertise. A quiet endpoint is not a lease, and neither is the one this

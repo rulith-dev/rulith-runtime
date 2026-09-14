@@ -479,8 +479,12 @@ export async function driveWorker({
         response.writeHead(out.status ?? 500, { 'content-type': 'text/plain' })
         return void response.end(out.text)
       }
-      response.writeHead(200, { 'content-type': 'application/json' })
-      response.end(JSON.stringify(out.body))
+      const send = () => {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify(out.body))
+      }
+      if (out.delayMs) setTimeout(send, out.delayMs)
+      else send()
     })
   })
   await new Promise((ready) => server.listen(0, '127.0.0.1', ready))

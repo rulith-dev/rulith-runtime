@@ -43,6 +43,46 @@ const slowRow = () => slowActionRow()
 /** A lease whose heartbeat falls due while the slow adapter is still running. */
 const shortLease = (operation) => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 })
 
+test('an idle long Poll renews its existing generation before its lease expires', async () => {
+  let polls = 0, renewals = 0
+  const run = await driveWorker({
+    lease: shortLease,
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [] } } } : HOLD
+      if (operation.kind === 'RenewLease') {
+        renewals++
+        return { body: { accepted: true, lease: shortLease(operation) } }
+      }
+      return { body: { accepted: true } }
+    },
+    done: () => renewals >= 3,
+    timeoutMs: 7000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(polls, 2, 'renewals must happen while the same Poll is waiting')
+  assert.ok(run.of('RenewLease').every(row => row.operation.workerGeneration === 7))
+  assert.equal(run.of('ClaimWork').length, 0)
+})
+
+test('a late Poll response cannot restore a lease refused by a concurrent renewal', async () => {
+  let polls = 0, refused = false
+  const run = await driveWorker({
+    lease: shortLease,
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1
+        ? { body: { accepted: true, payload: { work: [] } } }
+        : { delayMs: 1800, body: { accepted: true, payload: { work: [verificationRow()] } } }
+      if (operation.kind === 'RenewLease') { refused = true; return { body: { accepted: false, errorCode: 'worker_lease_lost' } } }
+      return { body: { accepted: true } }
+    },
+    done: (seen, output) => /lost while Poll was waiting/.test(output) || seen.some(row => row.operation.kind === 'ClaimWork'),
+    timeoutMs: 7000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(refused, true)
+  assert.equal(run.of('ClaimWork').length, 0, 'a late inbox answer must not resurrect execution authority')
+})
+
 /** The identity one hop stated, in both places it has to state it. */
 const identityOf = (entry) => ({
   body: entry.operation.workerGeneration,
