@@ -9,6 +9,8 @@ All notable changes to the local runtime are documented here.
   a final cancellation no longer hides an earlier completion. Mixed outcomes remain explicit.
 - Remove obsolete exploration-only rule permission and lifetime claims from the model prompt.
 - Report a Case closed on the final conversational round without a false round-limit warning.
+- Present concrete schema field shapes to Chat Completions model services, preserving
+  the original MCP constraints, recursive references and exact-number guards.
 
 This version is being prepared; source changes are not an npm publication.
 

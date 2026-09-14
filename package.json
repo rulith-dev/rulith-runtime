@@ -55,5 +55,8 @@
   },
   "optionalDependencies": {
     "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0"
   }
 }

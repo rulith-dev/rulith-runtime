@@ -10,6 +10,7 @@
  * and `--task` autopilot keeps going while a focused Case is still running on the Board.
  */
 import assert from 'node:assert/strict'
+import Ajv from 'ajv'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -1132,6 +1133,32 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
   const first = run.modelRequests[0]
   assert.ok(Array.isArray(first.tools) && first.tools.every((tool) => tool.type === 'function' && tool.function.parameters !== undefined),
     `OpenAI tools must be function definitions with parameters: ${JSON.stringify(first.tools)}`)
+  const opening = first.tools.find(tool => tool.function.name === 'OpenCase').function.parameters
+  assert.deepEqual(Object.keys(opening.properties ?? {}).sort(), ['businessKey', 'caseId', 'caseType'],
+    'object-only model interfaces need the top-level field catalogue for both OpenCase alternatives')
+  const sourceOpening = advertisedTools().find(tool => tool.name === 'OpenCase').inputSchema
+  assert.deepEqual(opening.oneOf, sourceOpening.oneOf, 'the creation/resume alternatives must retain their exact validation constraints')
+  assert.equal(sourceOpening.properties, undefined, 'the source fixture must actually use the composite form')
+  const query = first.tools.find(tool => tool.function.name === 'QueryBoard').function.parameters
+  assert.equal(query.properties.selector.properties.roots.type, 'array')
+  assert.equal(query.properties.selector.properties.roots.items.type, 'string')
+  assert.equal(query.properties.selector.properties.roots.minItems, 1)
+  assert.equal(query.properties.selector.properties.roots.maxItems, 1000)
+  assert.equal(query.properties.selector.properties.roots.items.minLength, 1)
+  const batch = first.tools.find(tool => tool.function.name === 'ApplyBatch').function.parameters
+  assert.equal(batch.properties.operations.items.type, 'object')
+  assert.ok(batch.properties.operations.items.properties.op.enum.includes('assert_fact'))
+  const validator = new Ajv({ strict: false })
+  const samples = {
+    OpenCase: [{ caseType: 'verified_calculation', businessKey: { job_id: 'calc-001' } }, { caseId: 'case-1' }, {}, { caseType: 'verified_calculation', caseId: 'case-1' }],
+    QueryBoard: [{}, { include: ['nodes'], selector: { roots: ['root-1'] } }, { include: ['nodes'] }, { include: ['nodes'], selector: { roots: [] } }, { include: ['nodes'], selector: { roots: [{}] } }],
+    ApplyBatch: [{ operations: [{ op: 'assert_fact', predicate: 'subgoal_of', args: { child: 'CALC_calc-001', parent: 'root-1' } }] }, { operations: [{}] }, { operations: [{ op: 'unknown' }] }],
+  }
+  for (const [name, values] of Object.entries(samples)) {
+    const original = validator.compile(advertisedTools().find(tool => tool.name === name).inputSchema)
+    const adapted = validator.compile(first.tools.find(tool => tool.function.name === name).function.parameters)
+    for (const value of values) assert.equal(adapted(value), original(value), `${name} changed accepted inputs: ${JSON.stringify(value)}`)
+  }
   assert.equal(first.messages[0].role, 'system')
   const second = run.modelRequests[1]
   const assistant = second.messages.find((message) => message.role === 'assistant' && message.tool_calls)
@@ -1139,6 +1166,35 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
   const toolMessage = second.messages.find((message) => message.role === 'tool')
   assert.equal(toolMessage.tool_call_id, assistant.tool_calls[0].id)
   assert.match(String(toolMessage.content), /"accepted":true/)
+})
+
+test('provider schema shaping preserves recursive refs and unsatisfiable constant alternatives', async () => {
+  const original = { type: 'object', properties: {
+    chain: { $ref: '#/$defs/Node' },
+    choice: { anyOf: [{ const: 'a', type: 'number' }, { const: 'b', type: 'string' }] },
+  }, $defs: { Node: { type: 'object', properties: { next: { $ref: '#/$defs/Node' } } } } }
+  const toolSchemas = advertisedTools().map(tool => tool.name === 'QueryBoard' ? { ...tool, inputSchema: original } : tool)
+  const run = await runAgent({ argv: [], provider: 'openai', toolSchemas, chatLines: ['Hello'], model: () => 'Hello' })
+  assert.equal(run.code, 0, run.stderr)
+  const shaped = run.modelRequests[0].tools.find(tool => tool.function.name === 'QueryBoard').function.parameters
+  const ajv = new Ajv({ strict: false })
+  const before = ajv.compile(original), after = ajv.compile(shaped)
+  for (const value of [{ chain: { next: { next: {} } }, choice: 'b' }, { chain: { next: 1 } }, { choice: 'a' }]) {
+    assert.equal(after(value), before(value), JSON.stringify(value))
+  }
+  assert.equal(after({ choice: 'a' }), false)
+})
+
+test('a Case closed in the last conversational round is reported as completed', async () => {
+  const run = await runAgent({ argv: [], env: { RULITH_MAX_ROUNDS: '3' }, captureLocalEvents: true,
+    gateway: defaultGateway({ settleAfterBatch: true }), chatLines: ['Finish the Case.'],
+    model: round => round === 1 ? callTool('OpenCase', {}) : round === 2
+      ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', predicate: 'ready', args: {} }] })
+      : callTool('CloseCase', { root: 'ROOT_1', disposition: 'completed' }),
+  })
+  assert.equal(run.code, 0, run.stderr)
+  assert.match(run.stdout, /The Board accepted closure and the Case is completed/)
+  assert.doesNotMatch(run.stdout, /Stopped at the 3-round limit/)
 })
 
 test('an endpoint that rejects tool definitions gets the same tools described in the prompt', async () => {

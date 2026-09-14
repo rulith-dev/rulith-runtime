@@ -2053,6 +2053,82 @@ function parseToolArguments(raw) {
  * decided to make. Which of the three transports carried it is not visible above this
  * line, and must not be — the loop reasons about tool calls, never about wire shapes.
  */
+/** Model formatters need concrete field shapes instead of local refs and simple allOf
+ * intersections. Expand only local, non-recursive refs and merge compatible constraints.
+ * Keep alternatives and any intersection that cannot be merged without changing meaning.
+ * The MCP contract and the arguments sent back to it are never modified. */
+function openAIParameters(schema) {
+  const definitions = schema?.$defs ?? {}
+  const annotations = new Set(['description', 'title', '$comment', 'default', 'examples', '$schema', '$defs'])
+  const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+  function intersect(left, right) {
+    if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return undefined
+    // Combining closed property tables can otherwise admit fields one branch forbids.
+    for (const [closed, other] of [[left, right], [right, left]]) {
+      if (closed.additionalProperties === false && other.properties
+        && Object.keys(other.properties).some(key => !Object.hasOwn(closed.properties ?? {}, key))) return undefined
+    }
+    const out = { ...left }
+    for (const [key, value] of Object.entries(right)) {
+      if (!Object.hasOwn(out, key)) Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true })
+      else if (equal(out[key], value) || annotations.has(key)) continue
+      else if (key === 'required') out[key] = [...new Set([...out[key], ...value])]
+      else if (key === 'items') { const merged = intersect(out[key], value); if (!merged) return undefined; out[key] = merged }
+      else if (key === 'properties') {
+        const fields = { ...out[key] }
+        for (const [name, shape] of Object.entries(value)) {
+          const merged = Object.hasOwn(fields, name) ? intersect(fields[name], shape) : shape
+          if (merged === undefined) return undefined
+          Object.defineProperty(fields, name, { value: merged, enumerable: true, writable: true, configurable: true })
+        }
+        out[key] = fields
+      } else return undefined
+    }
+    return out
+  }
+  function expose(node, seen = new Set()) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return node
+    let out = { ...node }
+    if (typeof node.$ref === 'string' && node.$ref.startsWith('#/$defs/') && !seen.has(node.$ref)
+      && Object.keys(node).every(key => key === '$ref' || annotations.has(key))) {
+      const key = node.$ref.slice('#/$defs/'.length)
+      const target = Object.hasOwn(definitions, key) ? definitions[key] : undefined
+      if (target) {
+        seen = new Set([...seen, node.$ref])
+        const expanded = expose(target, seen)
+        if (!Object.hasOwn(expanded, '$ref')) { out = { ...expanded, ...out }; delete out.$ref }
+      }
+    }
+    if (out.properties) out.properties = Object.fromEntries(Object.entries(out.properties).map(([key, value]) => [key, expose(value, seen)]))
+    if (out.items) out.items = expose(out.items, seen)
+    for (const key of ['allOf', 'oneOf', 'anyOf']) if (Array.isArray(out[key])) out[key] = out[key].map(value => expose(value, seen))
+    if (Array.isArray(out.allOf)) {
+      const { allOf, ...base } = out
+      let merged = base
+      for (const part of allOf) { merged = intersect(merged, part); if (!merged) break }
+      if (merged) out = merged
+    }
+    const alternatives = out.oneOf ?? out.anyOf ?? []
+    if (out.type === undefined && Object.hasOwn(out, 'const')) out.type = out.const === null ? 'null' : Array.isArray(out.const) ? 'array' : typeof out.const
+    if (out.type === undefined && alternatives[0]?.type && alternatives.every(part => equal(part.type, alternatives[0].type))) out.type = alternatives[0].type
+    if (out.type === 'object' && out.properties === undefined && alternatives.length
+      && alternatives.every(part => part.type === 'object' && part.properties && part.additionalProperties === false)) {
+      const fields = new Map()
+      for (const part of alternatives) for (const [name, value] of Object.entries(part.properties)) {
+        const choices = fields.get(name) ?? []
+        if (!choices.some(prior => equal(prior, value))) choices.push(value)
+        fields.set(name, choices)
+      }
+      out.properties = Object.fromEntries([...fields].map(([name, choices]) => [name, expose(choices.length === 1 ? choices[0] : { anyOf: choices }, seen)]))
+    }
+    if (out.enum === undefined && out.anyOf?.length && out.anyOf.every(part => Object.hasOwn(part, 'const') && (part.const === null || ['string', 'number', 'boolean'].includes(typeof part.const)) && Object.keys(part).every(key => ['const', 'type'].includes(key)) && (part.type === undefined || part.type === (part.const === null ? 'null' : typeof part.const)))) {
+      out.enum = [...new Set(out.anyOf.map(part => part.const))]; delete out.anyOf
+    }
+    return out
+  }
+  return expose(schema)
+}
+
 async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
   const wire = openaiStyle(cfg) ? 'openai' : 'anthropic'
   const style = emulatedTools ? 'emulated' : wire
@@ -2069,7 +2145,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
         // content unless thinking is turned off; twelve empty rounds is how that shows up.
         ...(process.env.RULITH_MODEL_THINKING === 'enabled' ? { thinking: { type: 'enabled' } } : {}),
         messages: [{ role: 'system', content: systemText }, ...renderMessages(entries, style)],
-        ...(declared ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.schema } })) } : {}),
+        ...(declared ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: openAIParameters(tool.schema) } })) } : {}),
       }
     : {
         model: cfg.model, max_tokens: 6000, system: systemText, messages: mergeAdjacent(renderMessages(entries, style)),
