@@ -520,6 +520,8 @@ must still be approved as its own versioned local Tool and governed Action.
 
 ### Connect a local MCP server
 
+The Local web page now has **MCP services · install and configure**. It can install the fixed Filesystem catalog entry, connect an existing stdio/HTTP service, discover and select tools, and export a credential-free Source definition for Console authorization. See [Local MCP setup](docs/local-mcp-setup.md). This batch is pending publication and requires the matching Gateway update.
+
 Rulith Local's Worker is an outbound MCP client. It supports local **stdio** processes
 and **Streamable HTTP** endpoints, including initialization, session headers, JSON/SSE
 responses, and paginated Tool discovery. The Agent still calls Rulith's single `/mcp`.

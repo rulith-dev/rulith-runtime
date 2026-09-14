@@ -1590,10 +1590,12 @@ function pathInside(root, target) {
 }
 
 function protectedRuntimeFiles() {
+  const localConfig = resolve(process.env.RULITH_LOCAL_CONFIG ?? resolve(homedir(), '.rulith', 'local.json'))
   return [
     resolve(TOOLS_FILE),
     resolve(SECRETS_FILE),
-    resolve(process.env.RULITH_LOCAL_CONFIG ?? resolve(homedir(), '.rulith', 'local.json')),
+    localConfig,
+    resolve(dirname(localConfig), 'mcp/services.json'),
   ].filter((path) => existsSync(path))
 }
 

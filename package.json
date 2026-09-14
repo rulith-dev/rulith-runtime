@@ -19,6 +19,7 @@
     "config/",
     "protocol/mcp-contract.json",
     "protocol/worker-contract.json",
+    "docs/local-mcp-setup.md",
     "examples/verified-calculation/README.md",
     "examples/verified-calculation/data/input.json",
     "examples/verified-calculation/read-input.mjs",

@@ -118,7 +118,7 @@ export function projectRecovery(events) {
 }
 
 export const localPage = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Rulith Local</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Rulith Local</title>
 <style>
 :root{color-scheme:dark;--bg:#0d0f12;--sidebar:#111317;--panel:#15181d;--panel2:#1b1f25;--line:#292e36;--fg:#eef1f4;--muted:#969da8;--faint:#686f7a;--accent:#48d7c2;--blue:#8eb6ff;--green:#4fd19b;--amber:#e5ad55;--red:#ef7d7d;--radius:12px}
 *{box-sizing:border-box}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;overflow:hidden}
@@ -162,5 +162,6 @@ $('runtimeopen').onclick=openRuntime;$('mobileruntime').onclick=openRuntime;$('m
    (No backticks in here: this whole script lives inside a template literal.) */
 var CONTROL_SAID={ready:'started and reported ready.',stopped:'stopped.',stopping:'was sent the stop signal and has not exited yet.'}
 document.querySelectorAll('[data-control]').forEach((button)=>button.onclick=async()=>{button.disabled=true;$('runtimemsg').textContent=button.dataset.operation==='start'?'Starting '+button.dataset.control+'; waiting for it to report ready…':'Stopping '+button.dataset.control+'…';const result=await fetch('/control?k='+encodeURIComponent(K),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({role:button.dataset.control,operation:button.dataset.operation})}).then((x)=>x.json()).catch(()=>null);$('runtimemsg').textContent=result?.ok?button.dataset.control+' '+(CONTROL_SAID[result.state]||(button.dataset.operation+'ed.')):(result?.teaching||'Runtime control failed.');button.disabled=false;setTimeout(refresh,300)})
+const mcpLink=document.createElement('a');mcpLink.textContent='MCP services · install and configure';mcpLink.href='/mcp-services?k='+encodeURIComponent(K);mcpLink.className='settingsopen';mcpLink.style.cssText='display:block;color:var(--accent);margin-top:8px;text-decoration:none';$('runtimeopen').after(mcpLink);const mobileMcpLink=mcpLink.cloneNode(true);$('runtimemsg').before(mobileMcpLink)
 refresh();setInterval(refresh,2500)
 </script></body></html>`

@@ -13,6 +13,8 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { localPage } from './local-ui.mjs'
+import { createMcpServices } from './mcp-services.mjs'
+import { mcpServicesPage } from './mcp-services-ui.mjs'
 
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -193,6 +195,7 @@ export function createLocalHost({
     agent: { child: null, serveKey: '', servePort: 7799, agentId: 'unconfigured' },
     worker: { child: null },
   }
+  const mcpServices = createMcpServices(configFile)
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
   const emit = (src, type, data = {}) => {
     const event = { sequence: nextSequence++, t: Date.now(), src, type, ...data }
@@ -287,12 +290,14 @@ export function createLocalHost({
     if (running('worker')) return 'Worker is already running.'
     const path = config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')
     if (!existsSync(path)) return `Worker runtime not found at ${path}. Set paths.worker in the Rulith Local configuration.`
-    const roleEnv = effectiveChildEnv(process.env, config.worker?.env ?? {})
+    let roleEnv
+    try { roleEnv = mcpServices.workerEnvironment(effectiveChildEnv(process.env, config.worker?.env ?? {}), dirname(path)) }
+    catch (error) { return error.message }
     const child = spawn(process.execPath, [path], {
       env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
-    components.worker = { ...components.worker, child, readyAt: undefined, onReady: undefined, managedStop: false }
+    components.worker = { ...components.worker, child, roleEnv, readyAt: undefined, onReady: undefined, managedStop: false }
     wireChild('worker', child)
     child.on('exit', (code) => { emit('worker', 'exit', { code }); components.worker.child = null })
     emit('worker', 'spawn', { pid: child.pid })
@@ -415,6 +420,25 @@ export function createLocalHost({
     try {
       const denied = gate(req)
       if (denied !== null) return void json(res, denied.status, { ok: false, teaching: denied.teaching })
+      if (path === '/mcp-services' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+        return void res.end(mcpServicesPage)
+      }
+      if (path === '/mcp-services/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...mcpServices.overview() })
+      if (path.startsWith('/mcp-services/') && req.method === 'POST') {
+        // Installing executables requires the page's key header and its exact origin, not any loopback origin.
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
+          return void json(res, 403, { ok: false, teaching: 'MCP configuration requires the Local page key and the same origin.' })
+        }
+        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Stop Agent and Worker in Runtime controls before changing MCP services.' })
+        const body = await readJson(req)
+        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Runtime started while reading the request. Stop it before configuring MCP.' })
+        const result = path === '/mcp-services/install' ? await mcpServices.install(body.catalogId)
+          : path === '/mcp-services/probe' ? await mcpServices.probe(body)
+            : path === '/mcp-services/apply' ? await mcpServices.apply(body)
+              : path === '/mcp-services/remove' ? await mcpServices.remove(body.name) : undefined
+        if (result) return void json(res, 200, { ok: true, ...result })
+      }
       if (path === '/' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
         // The page carries no embedded secret. It reads the key from its own URL, so a
@@ -428,7 +452,7 @@ export function createLocalHost({
       }
       if (path === '/status' && req.method === 'GET') {
         const agentEnv = effectiveChildEnv(process.env, config.agent?.env ?? {})
-        const workerEnv = effectiveChildEnv(process.env, config.worker?.env ?? {})
+        const workerEnv = components.worker.roleEnv ?? effectiveChildEnv(process.env, config.worker?.env ?? {})
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
           agent: running('agent'), worker: running('worker'),
@@ -443,7 +467,7 @@ export function createLocalHost({
             worker: {
               connection: String(workerEnv.RULITH_CONNECTION ?? ''), credentialConfigured: String(workerEnv.RULITH_CONNECTION_KEY ?? '') !== '',
               workspaceTools: String(workerEnv.RULITH_WORKSPACE_TOOLS ?? 'read'),
-              toolsFile: String(workerEnv.RULITH_TOOLS_FILE ?? ''), sourcesFile: String(workerEnv.RULITH_SOURCES_FILE ?? ''),
+              toolsFile: String(workerEnv.RULITH_TOOLS_FILE ?? ''), sourcesFile: String(workerEnv.RULITH_SECRETS_FILE ?? ''),
             },
           },
         })
@@ -451,6 +475,7 @@ export function createLocalHost({
       if (path === '/control' && req.method === 'POST') {
         const body = await readJson(req)
         const role = String(body.role ?? '')
+        if (body.operation === 'start' && mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for MCP configuration to finish before starting Runtime.' })
         let error = !selectedRoles.includes(role)
           ? `${role} is not enabled in mode ${modeOf(selectedRoles)}.`
           : body.operation === 'stop' ? stop(role)
@@ -541,6 +566,7 @@ export function createLocalHost({
       })
     }),
     close: async () => {
+      await mcpServices.close()
       const exits = []
       for (const role of ['agent', 'worker']) if (running(role)) {
         const child = components[role].child
