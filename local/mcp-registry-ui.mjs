@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Embedded by the Local page; all directory text is rendered through textContent. */
-export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBlocked }) {
+export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBlocked, sourceName, autoLoad = true }) {
   let query = '', cursor = '', selected = null, searching = false
   const prepare = $('registry-prepare')
   const updateButtons = () => {
@@ -18,7 +18,7 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
     $('registry-limits').textContent = option?.unsupported || (option?.remote
       ? 'Static header credentials are supported. Services requiring an interactive OAuth sign-in need manual setup.'
       : 'Installs this exact version locally with npm lifecycle scripts disabled. Discovery will start its program on your computer.')
-    prepare.textContent = option?.remote ? 'Use this endpoint configuration' : 'Install this version and configure'
+    prepare.textContent = option?.remote ? 'Connect and discover tools' : 'Install and discover tools'
     if (!option || option.unsupported) { updateButtons(); return }
     for (const field of option.fields) {
       const label = node('label', field.label + (field.required ? ' *' : ' (optional)'))
@@ -84,13 +84,14 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
     event.preventDefault()
     action('Preparing the reviewed directory configuration…', async () => {
       const values = Object.fromEntries([...$('registry-inputs').querySelectorAll('[data-registry-field]')].map(input => [input.dataset.registryField, input.dataset.repeated === 'true' ? JSON.parse(input.value || '[]') : input.value]))
+      const name = sourceName?.()
       const result = await api('/mcp-services/prepare', { serverName: selected.name, version: selected.version,
         reviewToken: selected.reviewToken, optionId: $('registry-option').value, values })
       $('registry-inputs').replaceChildren()
       $('registry-detail').hidden = true
-      onPrepared(result)
+      await onPrepared(result, name)
     }).finally(updateButtons)
   }
-  search()
-  return { updateButtons, detail }
+  if (autoLoad) search()
+  return { updateButtons, detail, search }
 }

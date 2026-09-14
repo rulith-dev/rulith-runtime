@@ -520,7 +520,7 @@ must still be approved as its own versioned local Tool and governed Action.
 
 ### Connect a local MCP server
 
-The Local web page has **MCP services · install and configure**. Search the official MCP Registry, review a server's publisher/version and configure a supported npm or Streamable HTTP option. A Filesystem quickstart preset and manual stdio/HTTP setup are also available. Discover and select tools, then export a credential-free Source definition for Console authorization. See [Local MCP setup](docs/local-mcp-setup.md) for supported formats and boundaries. This batch is pending publication and requires the matching Gateway update.
+The Local web page has **Worker tools · manage**, a single inventory for built-ins, manifest tools and selected MCP tools. Inspect contracts, edit native tool definitions or manage MCP services; built-in workspace availability uses its existing mode setting. Under **Add tools**, search the official MCP Registry, connect an existing service, declare a tool, or use a template such as Filesystem. MCP setup discovers and selects tools, then exports a credential-free Source definition for Console authorization. See [Local Worker tool management](docs/local-mcp-setup.md) for supported formats and boundaries. This batch is pending publication and requires the matching Gateway update.
 
 Rulith Local's Worker is an outbound MCP client. It supports local **stdio** processes
 and **Streamable HTTP** endpoints, including initialization, session headers, JSON/SSE

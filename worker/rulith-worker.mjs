@@ -520,6 +520,14 @@ export function builtinSourceTools() {
   return Object.fromEntries(Object.entries(SOURCE_READ_TOOLS).map(([id, definition]) =>
     [id, { ...definition, ...SOURCE_TOOL_CONTRACTS[definition.entry], digest: toolDigest(definition) }]))
 }
+/** Local 管理页与 Worker 启动共用一份组成规则，避免页面漏列内置工具或接受启动必拒的配置。 */
+export function configuredWorkerTools(manifest, workspaceMode = 'read') {
+  const tools = workerToolsOf(manifest)
+  const builtins = { ...(workspaceMode === 'off' ? {} : builtinWorkspaceTools(workspaceMode)), ...builtinSourceTools() }
+  const collisions = Object.keys(builtins).filter(id => Object.hasOwn(tools, id))
+  if (collisions.length) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
+  return { ...tools, ...builtins }
+}
 /** 锚建议(批C): 把每条取材路线的目标指纹打出来,治理者照抄进控制台的「锚」栏——
  *  钉了锚之后,证词与注册目标对不上会被网关当场拒(漂移可检)。 */
 function printAnchorHints(tools) {
@@ -545,22 +553,12 @@ if (IS_MAIN) {
     // Missing manifest is a valid review-only or idle Worker shape. It must
     // remain visibly different from a malformed manifest: the former carries
     // no Tools and cannot claim action work; the latter is a deployment error.
-    if (!existsSync(TOOLS_FILE)) TOOLS = {}
-    else {
-      TOOLS = workerToolsOf(JSON.parse(readFileSync(TOOLS_FILE, 'utf8')))
-    }
     const workspaceMode = String(process.env.RULITH_WORKSPACE_TOOLS ?? 'read').trim()
+    TOOLS = configuredWorkerTools(existsSync(TOOLS_FILE) ? JSON.parse(readFileSync(TOOLS_FILE, 'utf8'))
+      : { format: 'rulith-worker-tools/1', tools: {} }, workspaceMode)
     if (workspaceMode !== 'off') {
-      const builtins = builtinWorkspaceTools(workspaceMode)
-      const collisions = Object.keys(builtins).filter((id) => TOOLS[id] !== undefined)
-      if (collisions.length > 0) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
-      TOOLS = { ...TOOLS, ...builtins }
       console.log(`· Built-in workspace Tools enabled (${workspaceMode}). A governed Source is injected with each work item; a Tool is usable only while it is locked on this Connection in Console.`)
     }
-    const sourceBuiltins = builtinSourceTools()
-    const sourceCollisions = Object.keys(sourceBuiltins).filter((id) => TOOLS[id] !== undefined)
-    if (sourceCollisions.length > 0) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${sourceCollisions.join(', ')}`)
-    TOOLS = { ...TOOLS, ...sourceBuiltins }
     if (Object.keys(TOOLS).length === 0) console.log('· No Worker Tools installed. This Worker will not claim action work.')
     printAnchorHints(TOOLS)
     try {

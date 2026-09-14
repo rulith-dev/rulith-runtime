@@ -8,13 +8,14 @@
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { localPage } from './local-ui.mjs'
 import { createMcpServices } from './mcp-services.mjs'
-import { mcpServicesPage } from './mcp-services-ui.mjs'
+import { workerToolsPage } from './worker-tools-ui.mjs'
+import { createWorkerToolManagement } from './worker-tool-management.mjs'
 
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -112,7 +113,9 @@ function loadConfig(configFile) {
 
 function saveConfig(configFile, config) {
   mkdirSync(dirname(resolve(configFile)), { recursive: true, mode: 0o700 })
-  writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 })
+  const temporary = configFile + '.' + randomUUID() + '.tmp'
+  try { writeFileSync(temporary, JSON.stringify(config, null, 2), { mode: 0o600, flag: 'wx' }); renameSync(temporary, configFile) }
+  finally { rmSync(temporary, { force: true }) }
 }
 
 const readJson = (req) => new Promise((accept, reject) => {
@@ -195,7 +198,16 @@ export function createLocalHost({
     agent: { child: null, serveKey: '', servePort: 7799, agentId: 'unconfigured' },
     worker: { child: null },
   }
-  const mcpServices = createMcpServices(configFile)
+  const workerContext = () => ({ environment: effectiveChildEnv(process.env, config.worker?.env ?? {}),
+    directory: dirname(config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')) })
+  const mcpServices = createMcpServices(configFile, { workerContext })
+  const toolManagement = createWorkerToolManagement({ mcpServices, workerContext, setWorkspaceMode: mode => {
+    // 只更新既有部署字段，保留文件中的其他配置；不在此编辑 Agent/模型凭据。
+    const next = existsSync(configFile) ? JSON.parse(readFileSync(configFile, 'utf8')) : structuredClone(config)
+    next.worker = { ...next.worker, env: { ...next.worker?.env, RULITH_WORKSPACE_TOOLS: mode } }
+    saveConfig(configFile, next)
+    config.worker = { ...config.worker, env: { ...config.worker?.env, RULITH_WORKSPACE_TOOLS: mode } }
+  } })
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
   const emit = (src, type, data = {}) => {
     const event = { sequence: nextSequence++, t: Date.now(), src, type, ...data }
@@ -421,9 +433,14 @@ export function createLocalHost({
       const denied = gate(req)
       if (denied !== null) return void json(res, denied.status, { ok: false, teaching: denied.teaching })
       if (path === '/mcp-services' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-        return void res.end(mcpServicesPage)
+        res.writeHead(302, { location: '/worker-tools?k=' + encodeURIComponent(key), 'cache-control': 'no-store' })
+        return void res.end()
       }
+      if (path === '/worker-tools' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+        return void res.end(workerToolsPage)
+      }
+      if (path === '/worker-tools/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...toolManagement.overview() })
       if (path === '/mcp-services/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...mcpServices.overview() })
       if (req.method === 'GET' && ['/mcp-services/search', '/mcp-services/detail'].includes(path)) {
         const params = new URL(req.url, 'http://localhost').searchParams
@@ -431,15 +448,19 @@ export function createLocalHost({
           : await mcpServices.detail(params.get('name'), params.get('version') ?? 'latest')
         return void json(res, 200, { ok: true, ...result })
       }
-      if (path.startsWith('/mcp-services/') && req.method === 'POST') {
+      if ((path.startsWith('/mcp-services/') || path.startsWith('/worker-tools/')) && req.method === 'POST') {
         // Installing executables requires the page's key header and its exact origin, not any loopback origin.
         if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
-          return void json(res, 403, { ok: false, teaching: 'MCP configuration requires the Local page key and the same origin.' })
+          return void json(res, 403, { ok: false, teaching: 'Worker tool configuration requires the Local page key and the same origin.' })
         }
-        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Stop Agent and Worker in Runtime controls before changing MCP services.' })
+        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Stop Agent and Worker in Runtime controls before changing Worker tools.' })
         const body = await readJson(req)
-        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Runtime started while reading the request. Stop it before configuring MCP.' })
-        const result = path === '/mcp-services/install' ? await mcpServices.install(body.catalogId)
+        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Runtime started while reading the request. Stop it before configuring Worker tools.' })
+        if (mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for the current tool configuration operation to finish.' })
+        const result = path === '/worker-tools/save' ? toolManagement.save(body)
+          : path === '/worker-tools/remove' ? toolManagement.remove(body)
+          : path === '/worker-tools/workspace' ? toolManagement.workspace(body)
+          : path === '/mcp-services/install' ? await mcpServices.install(body.catalogId)
           : path === '/mcp-services/prepare' ? await mcpServices.prepareRegistry(body)
           : path === '/mcp-services/probe' ? await mcpServices.probe(body)
             : path === '/mcp-services/apply' ? await mcpServices.apply(body)

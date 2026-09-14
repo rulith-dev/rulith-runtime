@@ -1,10 +1,20 @@
-# Local MCP setup
+# Local Worker tool management
 
-Open the URL printed by `rulith start`, then **MCP services · install and configure**.
+Open the URL printed by `rulith start`, then **Worker tools · manage**.
 Stop Agent and Worker using Runtime controls before changing executable configuration.
 
-1. Search the official **MCP Registry** by server name, browse results and open **Details and setup**. Review the publisher, version, repository and installation option. Complete the declared arguments or credential fields, then install/configure that option. The Filesystem quickstart preset and manual stdio / HTTP configuration remain available.
-2. Discover tools, inspect their input schema, and explicitly select each tool's read/write/run classification. Discovery never calls a tool.
+**My tools** lists the complete configured Worker inventory: built-in workspace and Source tools, original manifest tools, and selected MCP tools. Search by Tool ID, adapter or service, filter by configuration origin, and inspect each contract. Disabled workspace built-ins remain visible. This inventory uses the same composition and validation as Worker startup. It describes local configuration; actual advertisement, Connection locks and Agent permissions are shown in Console.
+
+- **Built-ins:** use the existing workspace Off / Read only / Read and write setting. Built-in contracts and the Source discovery tool remain fixed.
+- **Manifest tools:** add, edit or remove HTTP, database query/write, local script, workspace and declared MCP definitions using the existing Worker JSON format. The page edits the configured original manifest, validates it with Worker, preserves other entries, and refuses stale edits or conflicting identities. Existing IDs cannot be renamed in place.
+- **MCP tools:** configure and select tools through the owning service. Removing a service removes its local configuration; it does not revoke Cloud permissions or remove historical receipts.
+
+Database credentials, HTTP secrets and Source roots continue to use the existing Source vault file, whose location the page displays. They are not copied into tool contracts. This page does not add a separate Source credential store or a new Cloud authorization mechanism.
+
+## Add an MCP service
+
+1. Under **Add tools → MCP directory**, search the official **MCP Registry** by server name and open **Details and setup**. Review the publisher, version, repository and installation option. Choose a local Source ID, complete the declared arguments or credential fields, then install/connect and discover in one step. **Connect MCP** accepts existing stdio executables or HTTP endpoints. **Templates → Filesystem** configures the fixed reference server with one allowed directory; it is part of this common flow.
+2. Inspect discovered input schemas and explicitly select each tool's read/write/run classification. Rediscovery retains selections only when the input schema is unchanged; changed schemas require review. Discovery never calls a tool.
 3. Save the selected tools. Start Worker so its advertisement includes them.
 4. Download the Source definition. In the Agent's Console **Configuration → Sources**, import and review it.
 5. Under **Runtime**, bind that Source to the correct Connection and the location displayed by Local; enable and lock its required tools.
@@ -12,9 +22,9 @@ Stop Agent and Worker using Runtime controls before changing executable configur
 
 Local stores one atomic configuration in `mcp/services.json` beside `local.json`. Executables and npm cache live under that same `mcp` directory. Worker startup merges the existing manifest and vault into generated local files; duplicate Source names or Tool IDs are refused. The original input files are not edited. Removing a service removes its local saved configuration and stopped projections; Cloud grants and existing receipts remain governed in Console.
 
-Tokens and environment values are not returned by the Local status API or included in the Source download. Put credentials in the dedicated token/environment fields. Filesystem installation uses an exact package version and integrity, disables npm lifecycle scripts, and does not install globally or auto-upgrade. Custom stdio executables must already be installed. HTTP endpoints with credentials in their URL are refused.
+Tokens and environment values are not returned by the Local status API or included in the Source download. Put credentials in the dedicated token/environment fields. Blank fields preserve stdio credentials only for an unchanged executable, arguments and working directory; a changed target requires fresh values or explicit clearing. HTTP credentials remain bound to their endpoint. Existing Source IDs are read-only when editing. Filesystem installation uses an exact package version and integrity, disables npm lifecycle scripts, and does not install globally or auto-upgrade. Custom stdio executables must already be installed. HTTP endpoints with credentials in their URL are refused.
 
-Directory search uses the public [MCP Registry API](https://modelcontextprotocol.io/registry/registry-aggregators), with pagination, five-minute bounded in-memory caching and no background polling. Search matches server names, not a locally invented list of recommended services. The registry includes both open-source and hosted services; a listing is not a code security review, a license grant, or Agent authorization. Network failure is shown explicitly; saved services and manual configuration remain available.
+Directory search loads when its tab opens, using the public [MCP Registry API](https://modelcontextprotocol.io/registry/registry-aggregators), with pagination, five-minute bounded in-memory caching and no background polling. Opening My tools does not query the directory. Search matches server names, not a locally invented list of recommended services. The registry includes both open-source and hosted services; a listing is not a code security review, a license grant, or Agent authorization. Network failure is shown explicitly; saved services and manual configuration remain available.
 
 Automatic directory setup supports npm packages exposing one Node.js executable over stdio, and fixed HTTPS Streamable HTTP endpoints with declared static headers. It rereads the selected version's metadata before preparing it, rejects inactive/changed records, checks the npm package's `mcpName`, exact version and SHA-512 integrity, and disables lifecycle scripts. It does not run arbitrary runtime commands from directory metadata. PyPI, OCI, NuGet, Cargo, MCPB, custom runners, ambiguous executables, URL templates and interactive OAuth setup require manual installation/configuration; the details page explains unsupported templates. Installation can still fail if a third-party package needs disabled lifecycle scripts or has an incomplete declaration.
 

@@ -4,7 +4,7 @@ import { dirname, join, resolve, isAbsolute, relative } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { invokeMcp, closeMcpClients } from '../worker/mcp-client.mjs'
-import { adapterEnv, workerToolsOf } from '../worker/rulith-worker.mjs'
+import { adapterEnv, workerToolsOf, configuredWorkerTools } from '../worker/rulith-worker.mjs'
 import { createMcpRegistry } from './mcp-registry.mjs'
 
 export const MCP_CATALOG = Object.freeze([Object.freeze({
@@ -91,7 +91,7 @@ async function installPackage(entry, root, trackChild) {
   }
 }
 
-export function createMcpServices(configFile, { registry = createMcpRegistry() } = {}) {
+export function createMcpServices(configFile, { registry = createMcpRegistry(), workerContext } = {}) {
   const root = join(dirname(resolve(configFile)), 'mcp')
   const stateFile = join(root, 'services.json')
   const toolsFile = join(root, 'worker-tools.json'), vaultFile = join(root, 'worker-secrets.json')
@@ -108,7 +108,7 @@ export function createMcpServices(configFile, { registry = createMcpRegistry() }
     // without receiving its launch configuration; reconfiguration requires explicit fresh inputs.
     source: row.mode === 'registry' ? { type: 'mcp', transport: row.source.transport, url: row.source.url }
       : { ...row.source, env: undefined, headers: undefined, token: undefined },
-    secretConfigured: Object.keys(row.source.env ?? {}).length > 0 || Object.keys(row.source.headers ?? {}).length > 0 || row.mode === 'registry',
+    secretConfigured: Object.keys(row.source.env ?? {}).length > 0 || Object.keys(row.source.headers ?? {}).length > 0,
     tools: row.tools, discovered: row.discovered, definition: row.definition })
   const overview = () => ({ catalog: MCP_CATALOG.map(entry => ({ ...entry, installed: existsSync(join(root, 'packages', entry.id + '-' + entry.version, 'node_modules', entry.package, entry.entry)) })),
     services: Object.values(state().services).map(publicService), busy })
@@ -119,12 +119,37 @@ export function createMcpServices(configFile, { registry = createMcpRegistry() }
     return pending
   }
   const save = next => {
+    if (workerContext) {
+      const { environment, directory } = workerContext()
+      configuredWorkerTools(project(environment, directory, next).manifest, String(environment.RULITH_WORKSPACE_TOOLS ?? 'read').trim())
+    }
     // These are stopped-Worker projections. A fresh start rebuilds both from the one committed state.
     for (const file of [toolsFile, vaultFile]) rmSync(file, { force: true })
     write(stateFile, next)
   }
+  /** 只读投影也供工具管理页使用；读取清单不能落盘或修复配置。 */
+  const project = (environment, workerDirectory, saved = state()) => {
+    const originalTools = resolve(workerDirectory, environment.RULITH_TOOLS_FILE || './worker-tools.json')
+    const originalVault = resolve(workerDirectory, environment.RULITH_SECRETS_FILE || './worker-secrets.json')
+    if ([toolsFile, vaultFile].includes(originalTools) || [toolsFile, vaultFile].includes(originalVault)) throw new Error('Do not configure generated MCP projections as input files.')
+    const originalManifest = read(originalTools, { format: 'rulith-worker-tools/1', tools: {} })
+    const manifest = structuredClone(originalManifest), vault = read(originalVault, {})
+    workerToolsOf(manifest)
+    if (!record(vault)) throw new Error('Worker Source vault must be an object.')
+    for (const row of Object.values(saved.services)) {
+      if (Object.hasOwn(vault, row.name)) throw new Error('MCP Source conflicts with the existing vault: ' + row.name)
+      vault[row.name] = row.source
+      for (const [id, tool] of Object.entries(row.tools)) {
+        if (Object.hasOwn(manifest.tools, id)) throw new Error('MCP Tool conflicts with the existing manifest: ' + id)
+        manifest.tools[id] = tool
+      }
+    }
+    workerToolsOf(manifest)
+    return { manifest, originalManifest, vault, originalTools, originalVault }
+  }
   return {
     get busy() { return busy }, overview,
+    projectWorkerInputs: project,
     search: (query, cursor) => registry.search(query, cursor),
     detail: (name, version) => registry.detail(name, version),
     close: async () => { closed = true; installChild?.kill(); await closeMcpClients(); await pending.catch(() => {}); probes.clear(); preparations.clear() },
@@ -151,6 +176,8 @@ export function createMcpServices(configFile, { registry = createMcpRegistry() }
     }),
     probe: body => exclusive(async () => {
       const name = sourceName(body.name), current = state(), old = current.services[name]
+      if (body.isNew === true && old) throw new Error('This Source ID already exists. Edit that service or choose a new ID.')
+      if (body.originalName !== undefined && (body.originalName !== name || !old)) throw new Error('An existing Source identity cannot be renamed. Add a separate service instead.')
       const mode = body.mode
       let source, directory, provenance
       if (mode === 'registry') {
@@ -180,7 +207,12 @@ export function createMcpServices(configFile, { registry = createMcpRegistry() }
       } else if (mode === 'stdio') {
         if (typeof body.command !== 'string' || !body.command.trim() || !Array.isArray(body.args) || body.args.some(value => typeof value !== 'string')) throw new Error('Specify an executable and a JSON array of arguments.')
         if (body.cwd && (!isAbsolute(body.cwd) || !statSync(body.cwd).isDirectory())) throw new Error('Working directory must be an existing absolute directory.')
-        const env = body.clearSecrets ? {} : body.env ?? (old?.mode === mode ? old.source.env : {}) ?? {}
+        const sameTarget = old?.mode === mode && old.source.command === body.command.trim()
+          && hash(old.source.args ?? []) === hash(body.args) && (old.source.cwd ?? '') === (body.cwd ?? '')
+        if (!sameTarget && !body.clearSecrets && body.env === undefined && Object.keys(old?.source.env ?? {}).length) {
+          throw new Error('The stdio launch target changed. Enter credentials for this target or explicitly clear the saved credentials.')
+        }
+        const env = body.clearSecrets ? {} : body.env ?? (sameTarget ? old.source.env : {}) ?? {}
         source = { type: 'mcp', transport: 'stdio', command: body.command.trim(), args: body.args, ...(body.cwd ? { cwd: body.cwd } : {}), env: stringMap(env, 'Environment') }
       } else if (mode === 'streamable-http') {
         const url = new URL(body.url)
@@ -208,7 +240,12 @@ export function createMcpServices(configFile, { registry = createMcpRegistry() }
       probes.clear()
       const probeId = randomUUID()
       probes.set(probeId, { name, mode, directory, source, registry: provenance, tools, base: hash(current), expires: Date.now() + 600_000 })
-      return { probeId, tools, truncated: discovered.truncated }
+      const selected = Object.values(old?.tools ?? {}).flatMap(tool => {
+        const previous = old.discovered?.find(item => item.name === tool.entry), current = tools.find(item => item.name === tool.entry)
+        return current && !current.unsupported && previous && hash(previous.inputSchema) === hash(current.inputSchema)
+          ? [{ name: tool.entry, kind: tool.kind }] : []
+      })
+      return { probeId, tools, selected, truncated: discovered.truncated }
     }),
     apply: body => exclusive(async () => {
       const draft = probes.get(body.probeId), current = state()
@@ -243,21 +280,7 @@ export function createMcpServices(configFile, { registry = createMcpRegistry() }
       if (busy) throw new Error('Wait for MCP configuration to finish before starting Worker.')
       const services = Object.values(state().services)
       if (!services.length) return environment
-      const originalTools = resolve(workerDirectory, environment.RULITH_TOOLS_FILE || './worker-tools.json')
-      const originalVault = resolve(workerDirectory, environment.RULITH_SECRETS_FILE || './worker-secrets.json')
-      if ([toolsFile, vaultFile].includes(originalTools) || [toolsFile, vaultFile].includes(originalVault)) throw new Error('Do not configure generated MCP projections as input files.')
-      const manifest = read(originalTools, { format: 'rulith-worker-tools/1', tools: {} }), vault = read(originalVault, {})
-      workerToolsOf(manifest)
-      if (!record(vault)) throw new Error('Worker Source vault must be an object.')
-      for (const row of services) {
-        if (Object.hasOwn(vault, row.name)) throw new Error('MCP Source conflicts with the existing vault: ' + row.name)
-        vault[row.name] = row.source
-        for (const [id, tool] of Object.entries(row.tools)) {
-          if (Object.hasOwn(manifest.tools, id)) throw new Error('MCP Tool conflicts with the existing manifest: ' + id)
-          manifest.tools[id] = tool
-        }
-      }
-      workerToolsOf(manifest)
+      const { manifest, vault } = project(environment, workerDirectory)
       write(toolsFile, manifest); write(vaultFile, vault)
       return { ...environment, RULITH_TOOLS_FILE: toolsFile, RULITH_SECRETS_FILE: vaultFile }
     },
