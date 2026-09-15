@@ -2,6 +2,21 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.7.4 - 2026-09-15
+
+- Manage every Worker tool from one Local page: built-ins, manifest definitions and
+  selected MCP tools, with validation and stale-edit protection.
+- Search the official MCP Registry, inspect supported setup, and install pinned npm
+  services or connect supported HTTP services. Filesystem uses the same configuration flow.
+- Show package download periods, installation requirements and Registry update dates;
+  filtering and sorting apply only to loaded results, with unavailable metrics explicit.
+- Keep MCP configuration and credentials local. Operators review tool classification
+  and authorize the downloaded Source definition in the matching Cloud Console.
+- Require the Gateway/Console generic MCP Source support introduced in `87058e6`.
+  Raw MCP output remains material; installation does not certify facts or authorize writes.
+- Include the outbound MCP transport work prepared under the existing 0.7.3 source tag;
+  that tag is preserved and does not identify this release's expanded Local interface.
+
 ## 0.7.3 - 2026-09-14
 
 - Implement outbound MCP initialization and session reuse with the pinned official SDK,

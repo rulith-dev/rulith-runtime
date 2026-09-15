@@ -38,4 +38,4 @@ The first importer supports named inputs representable by the existing Worker sc
 
 Plain MCP results are material. The generated definitions use `returns: []` and do not invent domain predicates or certified business facts. Write/run actions retain the existing grounding and constitutional checks; installing a write tool does not authorize arbitrary writes. A capability can separately declare the result mappings and premises needed for its business workflow.
 
-Runtime and Gateway changes in this batch are not published yet. An older Gateway may refuse the imported generic MCP Source definition.
+This workflow is included in Runtime 0.7.4 and requires the matching Gateway/Console generic MCP Source support introduced in Java commit `87058e6`. An older Gateway may refuse the imported definition; updating Local alone does not add the Cloud authorization interface. Existing Source credentials and grants are not changed by installing this Runtime.
