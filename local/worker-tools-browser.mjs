@@ -87,6 +87,7 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
       identity.append(node('b', tool.id), node('div', tool.service ? 'MCP service: ' + tool.service : tool.origin === 'builtin' ? 'Built into Worker' : 'Tool manifest'))
       contract.append(node('summary', 'View contract'), node('pre', JSON.stringify({ digest: tool.digest, sourceTypes: tool.sourceTypes, params: tool.params, returns: tool.returns }, null, 2)))
       identity.append(contract)
+      if (tool.automaticActionProblem) { const warning = node('p', tool.automaticActionProblem); warning.setAttribute('role', 'alert'); identity.append(warning) }
       const controls = node('td'), edit = node('button', tool.origin === 'manifest' ? 'Edit definition' : tool.origin === 'mcp' ? 'Configure service' : 'Built-in settings')
       edit.onclick = () => {
         if (tool.origin === 'manifest') editTool(tool)
@@ -154,8 +155,11 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
       description.append(node('b', tool.name), node('p', tool.description))
       const schema = node('details'); schema.append(node('summary', 'Input schema'), node('pre', JSON.stringify(tool.inputSchema, null, 2))); description.append(schema)
       if (tool.unsupported) description.append(node('p', tool.unsupported))
+      if (tool.groundedWriteProblem) description.append(node('p', tool.groundedWriteProblem))
+      else if (Object.values(tool.params || {}).includes('json?')) description.append(node('p', 'For grounded write/run Actions, optional JSON inputs must be omitted or supplied as trusted scalar values. Objects, arrays and null cannot be grounded.'))
       const kind = node('select'); kind.setAttribute('aria-label', 'Operation for ' + tool.name)
-      for (const value of ['', 'read', 'write', 'run']) { const option = node('option', value || 'Choose…'); option.value = value; kind.append(option) }
+      for (const value of ['', 'read', 'write', 'run']) { const option = node('option', value || 'Choose…'); option.value = value;
+        option.disabled = !!tool.groundedWriteProblem && ['write', 'run'].includes(value); kind.append(option) }
       kind.value = selection?.kind || ''; kind.disabled = !!tool.unsupported
       const last = node('td'); last.append(kind); row.dataset.tool = tool.name; row.append(first, description, last); $('tools').append(row)
     }

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { configuredWorkerTools, workerToolDescriptor, builtinWorkspaceTools, builtinSourceTools } from '../worker/rulith-worker.mjs'
+import { automaticActionProblem } from './mcp-services.mjs'
 
 const revisionOf = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const atomicJson = (file, value) => {
@@ -49,7 +50,7 @@ export function createWorkerToolManagement({ mcpServices, workerContext, setWork
       // 关闭的内置工具仍可找到，但必须明确它们不会出现在本次配置的 Worker 广告中。
       for (const [id, definition] of Object.entries(builtins)) if (!Object.hasOwn(state.tools, id)) rows.push({
         ...workerToolDescriptor(id, definition), adapter: definition.adapter, origin: 'builtin', configured: false })
-      return { tools: rows, revision: state.revision, workspaceMode: state.workspaceMode,
+      return { tools: rows.map(tool => ({ ...tool, automaticActionProblem: automaticActionProblem(tool.kind, tool.params) })), revision: state.revision, workspaceMode: state.workspaceMode,
         manifestFile: state.originalTools, vaultFile: state.originalVault,
         sources: Object.entries(state.vault).map(([name, source]) => ({ name, type: typeof source?.type === 'string' ? source.type : 'configured locally' })),
         services: state.services, presets: mcpServices.overview().catalog }

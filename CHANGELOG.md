@@ -2,6 +2,15 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Refuse required JSON inputs before saving automatically generated grounded MCP
+  write/run Actions; explain the affected parameter and preserve JSON reads and
+  optional scalar inputs. Show the same limitation for built-in and manifest tools.
+- Disable unsupported write/run choices during discovery without reclassifying
+  tools or changing capability-authored contracts. Requires the matching Gateway
+  authorization correction; existing installed releases are unchanged.
+
 ## 0.7.4 - 2026-09-15
 
 - Manage every Worker tool from one Local page: built-ins, manifest definitions and

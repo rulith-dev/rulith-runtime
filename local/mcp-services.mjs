@@ -44,6 +44,15 @@ export function parametersOf(schema) {
   }))
 }
 
+/** 只约束自动生成的 Worker 动作；不改变能力包自己声明的 JSON 合同或 Kernel 接地语义。 */
+export function automaticActionProblem(kind, params = {}) {
+  if (Object.hasOwn(params, 'source')) return 'Parameter source is reserved for the structural Source selector. Rename the business parameter in the adapter.'
+  const requiredJson = Object.entries(params).filter(([, type]) => type === 'json').map(([name]) => name)
+  if (['write', 'run'].includes(kind) && requiredJson.length) return 'Required JSON parameter(s): ' + requiredJson.join(', ')
+    + '. Automatic grounded write/run Actions cannot authorize these inputs: objects, arrays and null have no grounding rule. Use scalar inputs with explicit validation. JSON reads remain supported; do not classify a write as a read.'
+  return undefined
+}
+
 /** 安装只接受服务端解析的固定 npm 身份，零 shell，不读取用户 npm 凭据，不执行生命周期脚本。 */
 async function installPackage(entry, root, trackChild) {
   const destination = join(root, 'packages', entry.id + '-' + entry.version)
@@ -236,7 +245,8 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
         names.add(tool.name)
         let params, unsupported
         try { params = parametersOf(tool.inputSchema) } catch (error) { unsupported = error.message }
-        return { name: tool.name, description: String(tool.description ?? '').slice(0, 1000), inputSchema: tool.inputSchema, params, unsupported }
+        return { name: tool.name, description: String(tool.description ?? '').slice(0, 1000), inputSchema: tool.inputSchema, params, unsupported,
+          groundedWriteProblem: params ? automaticActionProblem('write', params) : undefined }
       })
       probes.clear()
       const probeId = randomUUID()
@@ -256,6 +266,8 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
       for (const selection of body.tools) {
         const tool = draft.tools.find(row => row.name === selection.name)
         if (!tool || tool.unsupported || seen.has(tool.name) || !['read', 'write', 'run'].includes(selection.kind)) throw new Error('Select supported tools once, each with an explicit read/write/run classification.')
+        const problem = automaticActionProblem(selection.kind, tool.params)
+        if (problem) throw new Error(tool.name + ': ' + problem)
         seen.add(tool.name)
         const fingerprint = hash({ source: draft.name, name: tool.name, schema: tool.inputSchema, kind: selection.kind }).slice(0, 12)
         const id = 'local.mcp.' + draft.name.replaceAll('_', '-') + '.' + fingerprint + '@1'

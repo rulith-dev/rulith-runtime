@@ -14,7 +14,8 @@ export function localMcpServer() {
   }
   server.setRequestHandler(ListToolsRequestSchema, async ({ params }) => ({
     tools: [{ name: params?.cursor ? 'mail.draft' : 'mail.read', description: 'Isolated mailbox tool',
-      inputSchema: { type: 'object', properties: { message_id: { type: 'string' } }, required: ['message_id'] } }],
+      inputSchema: process.env.MCP_FIXTURE_SCHEMA ? JSON.parse(process.env.MCP_FIXTURE_SCHEMA)
+        : { type: 'object', properties: { message_id: { type: 'string' } }, required: ['message_id'] } }],
     ...(params?.cursor ? {} : { nextCursor: 'second-page' }),
   }))
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {

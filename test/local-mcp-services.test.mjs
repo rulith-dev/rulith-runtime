@@ -72,6 +72,32 @@ test('unsupported parameter shapes stay explicit rather than silently losing req
     { type: 'object', properties: {}, additionalProperties: true }, { type: 'object', oneOf: [] }]) assert.throws(() => parametersOf(schema))
 })
 
+test('structured write/run authorization is refused before saving while JSON reads and optional inputs remain supported', async t => {
+  const dir = workspace(t), manager = createMcpServices(join(dir, 'local.json'))
+  t.after(() => manager.close())
+  for (const type of ['object', 'array']) {
+    const inputSchema = { type: 'object', properties: { value: { type } }, required: ['value'] }
+    const config = configuration(dir, { env: { MCP_FIXTURE_SCHEMA: JSON.stringify(inputSchema), MCP_FIXTURE_LOG: join(dir, 'calls.jsonl') } })
+    const probe = await manager.probe(config)
+    assert.match(probe.tools[0].groundedWriteProblem, /Required JSON parameter\(s\): value/)
+    const before = JSON.stringify(manager.overview())
+    for (const kind of ['write', 'run']) {
+      await assert.rejects(manager.apply({ probeId: probe.probeId, tools: [{ name: 'mail.read', kind: 'read' }, { name: 'mail.draft', kind }] }), /Required JSON parameter\(s\): value/)
+      assert.equal(JSON.stringify(manager.overview()), before, 'a failed batch must not partially save its read tool')
+    }
+    const result = await manager.apply({ probeId: probe.probeId, tools: [{ name: 'mail.read', kind: 'read' }] })
+    assert.equal(result.service.definition.accessModes[0].params.value, 'json')
+    await manager.remove('mail')
+    delete inputSchema.required
+    const optional = await manager.probe({ ...config, env: { ...config.env, MCP_FIXTURE_SCHEMA: JSON.stringify(inputSchema) } })
+    assert.equal(optional.tools[0].groundedWriteProblem, undefined)
+    const saved = await manager.apply({ probeId: optional.probeId, tools: [{ name: 'mail.draft', kind: 'write' }] })
+    assert.equal(saved.service.definition.accessModes[0].params.value, 'json?')
+    await manager.remove('mail')
+  }
+  assert.equal(existsSync(join(dir, 'calls.jsonl')), false, 'authorization must not call any MCP business tool')
+})
+
 test('Filesystem cannot grant access to Local credentials or a nested Runtime executable directory', async t => {
   const dir = workspace(t), manager = createMcpServices(join(dir, 'local.json'))
   const entryDirectory = join(dir, 'mcp/packages/filesystem-2026.8.31/node_modules/@modelcontextprotocol/server-filesystem/dist')

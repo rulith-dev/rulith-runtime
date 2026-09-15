@@ -24,7 +24,7 @@
       "sha256": "34e9e8115046221f4b42b3921412f62b46b8dc9fda0b48d3f5cb8cb76b7610c0"
     },
     "local/mcp-services.mjs": {
-      "sha256": "8667bccb60b01dba3645acd4b1d36801e0183cf8cf2a53f461021cf0178a5028"
+      "sha256": "0d2258eb33c234b5532a60e3427119690a89978180703c5660aac032d22644a8"
     },
     "local/mcp-registry.mjs": {
       "sha256": "78f8e16578d1c91be45d19b96ce1124c61b03ae657eb01538056638425f95e2c"
@@ -36,13 +36,13 @@
       "sha256": "1f7197caf2d763afa347982e6efb091706577409bb919de2a728a62b2167cb7f"
     },
     "local/worker-tools-browser.mjs": {
-      "sha256": "a26b579c5df5d273e977aa12daa3c0c613f41dea9354ee6e850da1ae33aacad6"
+      "sha256": "2d839f0dbff2a325c37a67849f2dc3e6e8619d9c44a5e99c67a8e5f9ba6d3bd8"
     },
     "local/worker-tool-management.mjs": {
-      "sha256": "39a79ed910acb6e87d7d161a38d21931f782c99ebde6df49a0691817bf232fef"
+      "sha256": "34538489f104b61769efb536cbb4b03f41a554fcb6ec08e12d71028fd8210194"
     },
     "docs/local-mcp-setup.md": {
-      "sha256": "e5c21b1814d71e5fcd661370b34bb6d79d83dac7be6c64de88deeefb7e3e0f43"
+      "sha256": "0133f2e8113de8c253a96d15c3412c61667e644409f56daf13a7829b95cb42d6"
     },
     "config/rulith-sources.example.json": {
       "sha256": "38dd6cb5e0e28e7e5a3b167f59ba5bb2c9263b20123eda28150071c1934f112f"

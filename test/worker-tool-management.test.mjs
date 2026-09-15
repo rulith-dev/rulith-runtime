@@ -65,6 +65,10 @@ test('workspace mode changes the same tool composition used at real Worker start
   manager.workspace({ mode: 'read-write', revision: manager.overview().revision })
   const tools = configuredWorkerTools(JSON.parse(readFileSync(file)), environment.RULITH_WORKSPACE_TOOLS)
   assert.equal(tools['rulith.workspace.write_text@1'].kind, 'write')
+  const inventory = manager.overview().tools
+  assert.match(inventory.find(tool => tool.id === 'rulith.workspace.write_json@1').automaticActionProblem, /Required JSON parameter\(s\): value/)
+  assert.equal(inventory.find(tool => tool.id === 'rulith.workspace.write_text@1').automaticActionProblem, undefined)
+  assert.equal(tools['rulith.workspace.write_json@1'].params.value, 'json', 'the local tool contract remains available to explicitly authored capabilities')
   assert.throws(() => manager.remove({ id: 'rulith.mcp.discover@1', revision: manager.overview().revision }), /Only manifest/)
 })
 
