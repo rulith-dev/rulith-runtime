@@ -4,6 +4,10 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Preserve OpenAI-compatible provider reasoning continuation across tool calls and
+  subsequent turns. Honor explicit thinking disablement; malformed conversation errors
+  no longer silently switch the Agent into emulated tools. DeepSeek Flash uses this path.
+
 - Refuse required JSON inputs before saving automatically generated grounded MCP
   write/run Actions; explain the affected parameter and preserve JSON reads and
   optional scalar inputs. Show the same limitation for built-in and manifest tools.

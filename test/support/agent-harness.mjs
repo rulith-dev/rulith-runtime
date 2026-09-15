@@ -341,6 +341,7 @@ function renderModelAnswer(answer, provider) {
     choices: [{
       message: {
         content: text === '' ? null : text,
+        ...(Object.hasOwn(value, 'reasoningContent') ? { reasoning_content: value.reasoningContent } : {}),
         ...(calls.length === 0 ? {} : {
           tool_calls: calls.map((call) => ({
             id: call.id, type: 'function',

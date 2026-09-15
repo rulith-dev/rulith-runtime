@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "5244bfa15b1a133f74babab4b6da69c62f4d20820f27a4e66816afc2833fc463"
+      "sha256": "86b413cde0a8cabb3e1b11360954f3b7ec0a1a98c8b0bdfe3316c1b3c8fd4014"
     },
     "protocol/mcp-contract.json": {
       "sha256": "3b1b751bda705aba47e97b4ce8ea528e1a7d7a750b9db2c4ef9071c6a1e94249"

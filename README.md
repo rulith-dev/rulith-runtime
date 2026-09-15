@@ -53,6 +53,14 @@ For an OpenAI-compatible local model service, set `RULITH_MODEL_URL` to its serv
 root such as `http://127.0.0.1:1234`; the Agent derives `/v1/chat/completions`.
 A model key is optional only for a loopback endpoint; remote providers still require one.
 
+DeepSeek Flash uses the same OpenAI-compatible path: set `RULITH_MODEL_URL` to
+`https://api.deepseek.com/chat/completions`, `RULITH_MODEL` to `deepseek-flash`, and
+`RULITH_MODEL_KEY` to your local provider credential. `RULITH_MODEL_THINKING=disabled`
+explicitly disables thinking; `enabled` enables it, while omission leaves the provider
+default unchanged. Provider reasoning continuation is retained in the local conversation
+for subsequent native tool calls; it is not displayed as an answer or submitted as Board
+evidence. See the [DeepSeek thinking/tool contract](https://api-docs.deepseek.com/guides/thinking_mode/).
+
 For a persistent command, install globally into a user-writable npm prefix:
 
 ```bash

@@ -1897,7 +1897,8 @@ let emulatedSeq = 0
 // Holding provider-shaped messages instead would make the fallback below unusable: the
 // turns already recorded in one dialect cannot be replayed in another.
 const userEntry = (text) => ({ role: 'user', text: String(text) })
-const assistantEntry = (text, toolCalls = []) => ({ role: 'assistant', text: String(text ?? ''), toolCalls })
+const assistantEntry = (text, toolCalls = [], reasoningContent) => ({ role: 'assistant', text: String(text ?? ''), toolCalls,
+  ...(typeof reasoningContent === 'string' ? { reasoningContent } : {}) })
 const resultsEntry = (results) => ({ role: 'tool_results', results })
 
 function renderMessages(entries, style) {
@@ -1922,6 +1923,8 @@ function renderMessages(entries, style) {
           // `null` content is only legal beside tool_calls. A turn with neither is a
           // model that answered nothing, and the endpoint refuses the whole request.
           content: entry.text !== '' ? entry.text : calls.length === 0 ? '(no content)' : null,
+          // Provider continuation metadata stays in the local transcript; never publish it as prose or Board evidence.
+          ...(typeof entry.reasoningContent === 'string' ? { reasoning_content: entry.reasoningContent } : {}),
           ...(calls.length === 0 ? {} : { tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) } })) }),
         })
         continue
@@ -2141,9 +2144,8 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
   const body = wire === 'openai'
     ? {
         model: cfg.model, max_tokens: 6000,
-        // Hybrid reasoning models burn the budget on reasoning and answer with empty
-        // content unless thinking is turned off; twelve empty rounds is how that shows up.
-        ...(process.env.RULITH_MODEL_THINKING === 'enabled' ? { thinking: { type: 'enabled' } } : {}),
+        // Omission uses the provider default. An explicit disable must reach providers that default to thinking.
+        ...(['enabled', 'disabled'].includes(process.env.RULITH_MODEL_THINKING) ? { thinking: { type: process.env.RULITH_MODEL_THINKING } } : {}),
         messages: [{ role: 'system', content: systemText }, ...renderMessages(entries, style)],
         ...(declared ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: openAIParameters(tool.schema) } })) } : {}),
       }
@@ -2164,7 +2166,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
   let payload
   try { payload = JSON.parse(raw) } catch { payload = {} }
   if (!response.ok) {
-    if (response.status === 400 && declared && /tool/i.test(raw)) {
+    if (response.status === 400 && declared && /(?:does not support|unsupported|unrecognized|unknown)\s+(?:the\s+)?tools?\b|\btools?\b.{0,60}(?:not supported|unsupported)/i.test(raw)) {
       // The endpoint refuses tool definitions. Describe the identical schemas in the
       // prompt instead of dropping the tools: a model with no tools is not a fallback,
       // it is an agent that can no longer reach the Board.
@@ -2185,6 +2187,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
     const message = payload.choices?.[0]?.message ?? {}
     return {
       text: String(message.content ?? ''),
+      ...(typeof message.reasoning_content === 'string' ? { reasoningContent: message.reasoning_content } : {}),
       toolCalls: (Array.isArray(message.tool_calls) ? message.tool_calls : []).map((call, index) => {
         // Chat Completions carries the arguments as JSON *text*, so the exactness look
         // is on that text; a literal beyond the exact domain is refused before parsing.
@@ -2766,7 +2769,7 @@ async function runCaseTurn(ctx, userText, {
     const reply = await ask(messages, SYSTEM_PROMPT, { tools: modelTools })
     const say = String(reply.text ?? '').trim()
     if (say !== '') log(`\n${say.slice(0, 1200)}`)
-    messages.push(assistantEntry(reply.text, reply.toolCalls))
+    messages.push(assistantEntry(reply.text, reply.toolCalls, reply.reasoningContent))
     emitOn(ctx, 'propose', {
       say,
       ...(reply.toolCalls.length === 0 ? {} : {
