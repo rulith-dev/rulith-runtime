@@ -3,7 +3,10 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "86b413cde0a8cabb3e1b11360954f3b7ec0a1a98c8b0bdfe3316c1b3c8fd4014"
+      "sha256": "d401cd6c70a3d6c2cfeef28502e58578510e3c83c29f6dda8e36c3de93fd6674"
+    },
+    "agent/local-trace.mjs": {
+      "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
     },
     "protocol/mcp-contract.json": {
       "sha256": "3b1b751bda705aba47e97b4ce8ea528e1a7d7a750b9db2c4ef9071c6a1e94249"
@@ -12,16 +15,25 @@
       "sha256": "bf239d11e6c7379e0be03fac3ef85d881e683de8e4f39e9e0fc5f27b852f8ae1"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "75f09dcb58f1d057bba9e72fac8ef08b81c321db06999b3589d815e0d4132c78"
+      "sha256": "f8707221b8cd42a5d55c87ac13cb3821674df9d0f8642117f1a12da4d6e872ff"
     },
     "worker/mcp-client.mjs": {
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "local/rulith-local.mjs": {
-      "sha256": "06b91bc4d9c8e0fe8dc9cd4d107107316ecf8eb72dfd880541bf7b6b05befc27"
+      "sha256": "deb9bde1a3922707031f30702e526390dd5b410bb34d1856407969ee48d85cfa"
     },
     "local/local-ui.mjs": {
-      "sha256": "34e9e8115046221f4b42b3921412f62b46b8dc9fda0b48d3f5cb8cb76b7610c0"
+      "sha256": "001dbc273e46ecd17da20cb1adc43ec53b0b81d909dfe457189462438e161ec3"
+    },
+    "local/markdown.mjs": {
+      "sha256": "dda52e94ccf9957fdb12538d0a29b7e2261826df4c55164de5a89c10a3f62b23"
+    },
+    "local/setup-service.mjs": {
+      "sha256": "1e439b015ad4a3ec43a7a140e0712a6bcd95cf4d0c424578ee5c565104093e30"
+    },
+    "local/setup-ui.mjs": {
+      "sha256": "e44eab9a5a80ce206ba2b8390b0d9e7c814059c30111a4d0ab99324cfec5d1f8"
     },
     "local/mcp-services.mjs": {
       "sha256": "0d2258eb33c234b5532a60e3427119690a89978180703c5660aac032d22644a8"
@@ -33,7 +45,7 @@
       "sha256": "fe247a86e3abab4e31f02579d14f1129594154b25f36ad8c6197ca83262893fe"
     },
     "local/worker-tools-ui.mjs": {
-      "sha256": "1f7197caf2d763afa347982e6efb091706577409bb919de2a728a62b2167cb7f"
+      "sha256": "296c92eb58ee3bc58b12dd4cab29becb1aa5e3050350cc842f39065924fca412"
     },
     "local/worker-tools-browser.mjs": {
       "sha256": "2d839f0dbff2a325c37a67849f2dc3e6e8619d9c44a5e99c67a8e5f9ba6d3bd8"
@@ -43,6 +55,9 @@
     },
     "docs/local-mcp-setup.md": {
       "sha256": "0133f2e8113de8c253a96d15c3412c61667e644409f56daf13a7829b95cb42d6"
+    },
+    "docs/local-setup.md": {
+      "sha256": "5b404c15ec3bc8c606d6651303323b87b89209a699c5cf8130f55205427b37c0"
     },
     "config/rulith-sources.example.json": {
       "sha256": "38dd6cb5e0e28e7e5a3b167f59ba5bb2c9263b20123eda28150071c1934f112f"

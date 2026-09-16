@@ -199,6 +199,7 @@ const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToP
 export const WORKER_VERSION = '2026-09-01'
 const SECRETS_FILE = process.env.RULITH_SECRETS_FILE ?? './worker-secrets.json'
 let SOURCE_CONTEXT = {}
+let LOCAL_SOURCE_CONTEXT = {}
 // 首张工单也必须拿到完整执行契约。来源地址同步失败可以降级到本机密文库，
 // 但不能一边同步一边先 Poll——否则同一配置会因网络时序偶发地报“缺端点”。
 let SOURCES_READY = Promise.resolve()
@@ -219,6 +220,43 @@ function resolveSourceCreds(route, vault) {
   }
   return merged
 }
+/** Refresh only the non-secret Source metadata when a newly bound Source is first dispatched.
+ * The original vault remains local; a refresh never merges a stale cloud snapshot into a new one. */
+async function refreshSourceDefinitions() {
+  return fetch(`${WORK_URL}/sources`, {
+      headers: { 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY },
+      signal: AbortSignal.timeout(10_000),
+    })
+      .then(async (r) => {
+        if (r.ok) return r.json()
+        if (r.status === 401) throw new CredentialRejectedError()
+        console.error(`· Could not load source definitions from Rulith Cloud (HTTP ${r.status}). Local secrets remain available, but cloud source endpoints were not loaded.`)
+        return undefined
+      }).then((j) => {
+        // `j.toolIds` is read no more (board-spec TOOL-08). It used to become a local
+        // advertisement filter; the Connection lock in Console is the only authority,
+        // and a Worker that also decided made the two disagree invisibly.
+        if (!j || !Array.isArray(j.sources)) return
+        const next = { ...LOCAL_SOURCE_CONTEXT }
+        let n = 0
+        for (const s of j.sources) {
+          if (!s || typeof s.name !== 'string' || s.name === '') continue
+          const local = LOCAL_SOURCE_CONTEXT[s.name] ?? {}
+          const remote = typeof s.access === 'string' && s.access !== ''
+            ? { type: s.type, access: s.access, url: s.access, dsn: s.access }
+            : { type: s.type }
+          next[s.name] = { ...remote, ...local,
+            ...(remote.headers || local.headers ? { headers: { ...(remote.headers ?? {}), ...(local.headers ?? {}) } } : {}) }
+          n++
+        }
+        SOURCE_CONTEXT = next
+        if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`)
+      }).catch((e) => {
+        if (e instanceof CredentialRejectedError) throw e
+        console.error(`· Could not reach Rulith Cloud for source definitions (${e.message}). Continuing with local secrets.`)
+      })
+}
+
 /** 审查员(清关工人的"判卷"那一席): OpenAI 兼容 chat 端点。不配=这台不是清关工人,review 案卷不领。 */
 const REVIEWER_URL = process.env.RULITH_REVIEWER_URL
 const REVIEWER_MODEL = process.env.RULITH_REVIEWER_MODEL
@@ -562,7 +600,8 @@ if (IS_MAIN) {
     if (Object.keys(TOOLS).length === 0) console.log('· No Worker Tools installed. This Worker will not claim action work.')
     printAnchorHints(TOOLS)
     try {
-      SOURCE_CONTEXT = JSON.parse(readFileSync(SECRETS_FILE, 'utf8'))
+      LOCAL_SOURCE_CONTEXT = JSON.parse(readFileSync(SECRETS_FILE, 'utf8'))
+      SOURCE_CONTEXT = { ...LOCAL_SOURCE_CONTEXT }
       console.log(`· Local secret store loaded for ${Object.keys(SOURCE_CONTEXT).length} Source(s). Credentials remain local.`)
     } catch { /* 没有密文库=直写模式照旧,不是错 */ }
     // 地址下发(选项C): 云上数据源的访问定义自动拉取——**非密半边**,密码永不下发(SRC-40)。
@@ -573,36 +612,7 @@ if (IS_MAIN) {
     // 审计另指出一条具体成因: HK 边缘的 `path /observe /work` 是**精确匹配**,
     // `/work/sources` 落进兜底那一支而那一支剥掉通道头 ⇒ 401。真相如何要靠这条日志说话。
     // 「拉不到不是错」仍然成立——**不是错不等于不用说**。
-    SOURCES_READY = fetch(`${WORK_URL}/sources`, {
-      headers: { 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY },
-      signal: AbortSignal.timeout(10_000),
-    })
-      .then(async (r) => {
-        if (r.ok) return r.json()
-        if (r.status === 401) throw new CredentialRejectedError()
-        console.error(`· Could not load source definitions from Rulith Cloud (HTTP ${r.status}). Local secrets remain available, but cloud source endpoints were not loaded.`)
-        return undefined
-      }).then((j) => {
-        // `j.toolIds` is read no more (board-spec TOOL-08). It used to become a local
-        // advertisement filter; the Connection lock in Console is the only authority,
-        // and a Worker that also decided made the two disagree invisibly.
-        if (!j || !Array.isArray(j.sources)) return
-        let n = 0
-        for (const s of j.sources) {
-          if (!s || typeof s.name !== 'string' || s.name === '') continue
-          const local = SOURCE_CONTEXT[s.name] ?? {}
-          const remote = typeof s.access === 'string' && s.access !== ''
-            ? { type: s.type, access: s.access, url: s.access, dsn: s.access }
-            : { type: s.type }
-          SOURCE_CONTEXT[s.name] = { ...remote, ...local,
-            ...(remote.headers || local.headers ? { headers: { ...(remote.headers ?? {}), ...(local.headers ?? {}) } } : {}) }
-          n++
-        }
-        if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`)
-      }).catch((e) => {
-        if (e instanceof CredentialRejectedError) throw e
-        console.error(`· Could not reach Rulith Cloud for source definitions (${e.message}). Continuing with local secrets.`)
-      })
+    SOURCES_READY = refreshSourceDefinitions()
   } catch (e) {
     // **纯清关工人不持任何工具**——判卷那一席只读案卷、只回判词,一只手都不需要。
     // 逼它先造一张空工具表是把"持工具"当成了 worker 的本质,而本质是"按配置上岗"。
@@ -3452,6 +3462,10 @@ if (IS_MAIN) {
       // 顺风窗恒落空,一个动作烧两轮模型调用。序=动作>清关>求证>取材——
       // 动作改世界且有人在等回执;求证失败自会按板侧退避窗重来,晚几秒无损。
       const items = orderWork(r.payload?.work ?? [])
+      // Console may bind a Source after this Worker first advertises its tools. Fetch that
+      // authorized Source before resolving/claiming its first job; never guess a type or path.
+      if (items.some(item => typeof item.sourceRecordId === 'string' && item.sourceRecordId !== ''
+        && !Object.hasOwn(SOURCE_CONTEXT, item.sourceRecordId))) await refreshSourceDefinitions()
       for (const [index, w] of items.entries()) {
         // The batch is not a promise. It was handed over under one lease, and the lease can
         // go while the first item is still running — so every following item is checked

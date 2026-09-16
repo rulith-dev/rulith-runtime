@@ -1,5 +1,7 @@
 # Rulith Local Runtime
 
+For guided setup with a local model or an existing MCP client, run `rulith setup`. See [cross-end setup](docs/local-setup.md).
+
 This repository contains **Rulith Local**, the local half of Rulith. One runtime
 can start in Agent, Worker, or Agent+Worker mode and always exposes the same
 loopback Local UI.

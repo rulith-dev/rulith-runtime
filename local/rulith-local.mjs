@@ -16,6 +16,8 @@ import { localPage } from './local-ui.mjs'
 import { createMcpServices } from './mcp-services.mjs'
 import { workerToolsPage } from './worker-tools-ui.mjs'
 import { createWorkerToolManagement } from './worker-tool-management.mjs'
+import { createSetupService } from './setup-service.mjs'
+import { setupPage } from './setup-ui.mjs'
 
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -48,7 +50,7 @@ export function modeOf(roles) {
 
 export function rolesFromArgs(args, fallback) {
   const input = [...args]
-  if (input[0] === 'start') input.shift()
+  if (input[0] === 'start' || input[0] === 'setup') input.shift()
   if (input.includes('--help') || input.includes('-h')) return null
   let chosen
   for (let i = 0; i < input.length; i++) {
@@ -187,7 +189,7 @@ const STOP_OBSERVE_MS = 2_000
 
 export function createLocalHost({
   configFile, config, roles, port = 7790, key = randomUUID().replace(/-/g, ''),
-  startConfirmMs = START_CONFIRM_MS,
+  startConfirmMs = START_CONFIRM_MS, autoStart = true,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -209,6 +211,17 @@ export function createLocalHost({
     config.worker = { ...config.worker, env: { ...config.worker?.env, RULITH_WORKSPACE_TOOLS: mode } }
   } })
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
+  const setup = createSetupService({ configFile, getConfig: () => config,
+    effectiveEnv: () => effectiveChildEnv(process.env, config.worker?.env ?? {}),
+    agentCredentialConfigured: () => !!effectiveChildEnv(process.env, config.agent?.env ?? {}).RULITH_TOKEN,
+    stopped: () => !running('agent') && !running('worker'), agentStopped: () => !running('agent'), mcpServices, toolManagement,
+    saveConfig: next => {
+      const normalized = normalizeLocalConfig(next)
+      saveConfig(configFile, normalized)
+      config = normalized
+      selectedRoles.splice(0, selectedRoles.length, ...rolesOf(config.roles))
+    },
+  })
   const emit = (src, type, data = {}) => {
     const event = { sequence: nextSequence++, t: Date.now(), src, type, ...data }
     events.push(event)
@@ -432,6 +445,22 @@ export function createLocalHost({
     try {
       const denied = gate(req)
       if (denied !== null) return void json(res, denied.status, { ok: false, teaching: denied.teaching })
+      if (path === '/setup' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+        return void res.end(setupPage)
+      }
+      if (path === '/setup/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...setup.overview() })
+      if (path === '/setup/context' && req.method === 'GET') return void json(res, 200, { ok: true, ...await setup.context() })
+      if (path.startsWith('/setup/') && req.method === 'POST') {
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Setup requires the Local page key and the same origin.' })
+        const body = await readJson(req)
+        if (mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for tool configuration to finish.' })
+        const operation = { '/setup/pair/start': setup.start, '/setup/pair/poll': setup.poll,
+          '/setup/model': setup.model, '/setup/example': setup.example, '/setup/resources': setup.resources }[path]
+        if (!operation) return void json(res, 404, { ok: false, teaching: 'Setup step not found.' })
+        res.setHeader('cache-control', 'no-store')
+        return void json(res, 200, { ok: true, ...await operation(body) })
+      }
       if (path === '/mcp-services' && req.method === 'GET') {
         res.writeHead(302, { location: '/worker-tools?k=' + encodeURIComponent(key), 'cache-control': 'no-store' })
         return void res.end()
@@ -457,7 +486,7 @@ export function createLocalHost({
         if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Stop Agent and Worker in Runtime controls before changing Worker tools.' })
         const body = await readJson(req)
         if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Runtime started while reading the request. Stop it before configuring Worker tools.' })
-        if (mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for the current tool configuration operation to finish.' })
+        if (mcpServices.busy || setup.busy) return void json(res, 409, { ok: false, teaching: 'Wait for the current tool configuration operation to finish.' })
         const result = path === '/worker-tools/save' ? toolManagement.save(body)
           : path === '/worker-tools/remove' ? toolManagement.remove(body)
           : path === '/worker-tools/workspace' ? toolManagement.workspace(body)
@@ -504,7 +533,7 @@ export function createLocalHost({
       if (path === '/control' && req.method === 'POST') {
         const body = await readJson(req)
         const role = String(body.role ?? '')
-        if (body.operation === 'start' && mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for MCP configuration to finish before starting Runtime.' })
+        if (body.operation === 'start' && (mcpServices.busy || setup.busy)) return void json(res, 409, { ok: false, teaching: 'Wait for configuration to finish before starting Runtime.' })
         let error = !selectedRoles.includes(role)
           ? `${role} is not enabled in mode ${modeOf(selectedRoles)}.`
           : body.operation === 'stop' ? stop(role)
@@ -577,13 +606,13 @@ export function createLocalHost({
     } catch (error) { json(res, 400, { ok: false, teaching: String(error?.message ?? error) }) }
   })
   return {
-    key, get port() { return server.address()?.port ?? port }, mode: modeOf(selectedRoles), roles: selectedRoles,
+    key, get port() { return server.address()?.port ?? port }, get mode() { return modeOf(selectedRoles) }, roles: selectedRoles,
     status: () => ({ mode: modeOf(selectedRoles), roles: selectedRoles, agent: running('agent'), worker: running('worker') }),
     events: () => events.map((event) => ({ ...event })),
     listen: () => new Promise((accept, reject) => {
       server.once('error', reject)
       server.listen(port, '127.0.0.1', () => {
-        for (const role of selectedRoles) {
+        for (const role of autoStart ? selectedRoles : []) {
           const error = role === 'agent' ? startAgent() : startWorker()
           if (error !== null) {
             emit('local', 'error', { role, note: error })
@@ -606,6 +635,8 @@ export function createLocalHost({
         stop(role)
       }
       await Promise.all(exits)
+      for (const client of clients) client.end()
+      clients.clear()
       await new Promise((accept) => server.close(accept))
     },
   }
@@ -615,17 +646,19 @@ if (IS_MAIN) {
   const port = localInteger('RULITH_LOCAL_PORT', process.env.RULITH_LOCAL_PORT, 7790)
   const key = (process.env.RULITH_LOCAL_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
   if (process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')) {
-    console.log('Rulith Local\n\nUsage:\n  rulith start [--role agent|worker|agent+worker]\n\nThe configured roles are used when --role is omitted. Configuration defaults to ~/.rulith/local.json.')
+    console.log('Rulith Local\n\nUsage:\n  rulith setup\n  rulith start [--role agent|worker|agent+worker]\n\nThe configured roles are used when --role is omitted. Configuration defaults to ~/.rulith/local.json.')
     process.exit(0)
   }
   const configFile = process.env.RULITH_LOCAL_CONFIG ?? defaultConfigPath()
   const config = loadConfig(configFile)
   let roles
   try { roles = rolesFromArgs(process.argv.slice(2), config.roles) } catch (error) { console.error(error.message); process.exit(1) }
-  const host = createLocalHost({ configFile, config, roles, port, key })
+  const setupMode = process.argv[2] === 'setup'
+  const host = createLocalHost({ configFile, config, roles, port, key, autoStart: !setupMode })
   await host.listen()
   console.log(`Rulith Local · mode ${host.mode}`)
-  console.log(`Local UI: http://127.0.0.1:${host.port}/?k=${host.key}`)
+  if (setupMode) console.log(`Local UI: http://127.0.0.1:${host.port}/setup?k=${host.key}`)
+  else console.log(`Local UI: http://127.0.0.1:${host.port}/?k=${host.key}`)
   console.log(`Configuration: ${resolve(configFile)} · secret values never leave this host.`)
   process.on('SIGINT', async () => { await host.close(); process.exit(0) })
 }

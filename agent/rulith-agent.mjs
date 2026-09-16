@@ -25,6 +25,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { localToolSnapshot } from './local-trace.mjs'
 
 /**
  * Numeric knobs fall back to their default, loudly, instead of becoming NaN.
@@ -96,7 +97,8 @@ const RULITH_MCP_SURFACE = Object.freeze([
 ])
 // ── END GENERATED CONTRACT PROJECTION ───────────────────────────────────────
 const TOKEN = process.env.RULITH_TOKEN ?? ''
-const MODEL_KEY = process.env.ANTHROPIC_API_KEY ?? process.env.RULITH_MODEL_KEY ?? ''
+// The explicit Runtime provider key wins over the legacy Anthropic environment fallback.
+const MODEL_KEY = process.env.RULITH_MODEL_KEY || process.env.ANTHROPIC_API_KEY || ''
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
 const MODEL_URL_INPUT = process.env.RULITH_MODEL_URL ?? 'https://api.anthropic.com/v1/messages'
 const MAX_ROUNDS = envNumber('RULITH_MAX_ROUNDS', 12, { min: 1, max: 1000 })
@@ -2430,7 +2432,7 @@ const hostFieldTeaching = (name, fields) => `${name} carried the host-owned fiel
  *
  * The Worker-activity gap this leaves is deliberate and visible: see `workerActivityGap`.
  */
-function emitVerdict(ctx, name, answer) {
+function emitVerdict(ctx, name, answer, callId) {
   const result = answer.result ?? {}
   if (answer.handoff !== undefined) {
     // The model asked for one thing and the authority answered with another call's outcome.
@@ -2462,7 +2464,7 @@ function emitVerdict(ctx, name, answer) {
     return
   }
   if (result.accepted === true) {
-    emitOn(ctx, 'verdict', { accepted: true, cmd: name })
+    emitOn(ctx, 'verdict', { accepted: true, cmd: name, ...(callId ? { callId } : {}) })
     log(`Board: ${name} accepted.`)
     if (name === 'ApplyAction') workerActivityGap(ctx)
     return
@@ -2470,7 +2472,7 @@ function emitVerdict(ctx, name, answer) {
   const code = String(result.errorCode ?? '')
   const teaching = transportAmbiguous(result) ? transportUnknownTeaching(result) : String(result.teaching ?? (code === '' ? 'The step was rejected.' : code))
   emitOn(ctx, 'verdict', {
-    accepted: false, cmd: name, teaching,
+    accepted: false, cmd: name, teaching, ...(callId ? { callId } : {}),
     ...(transportAmbiguous(result) ? { transportAmbiguous: true } : {}),
   })
   if (transportAmbiguous(result)) {
@@ -2565,9 +2567,15 @@ async function executeToolCall(ctx, call, options) {
   }
   const beforeRoots = board.roots.map((row) => ({ ...row }))
   const before = new Set(beforeRoots.map((row) => row.caseId))
+  const localCallId = randomUUID()
+  emitOn(ctx, 'tool-call', { callId: localCallId, cmd: name, input: localToolSnapshot(input) })
   const answer = await callTool(ctx, name, input)
+  emitOn(ctx, 'tool-result', { callId: localCallId, cmd: name,
+    accepted: answer.result?.accepted, authoritative: answer.authoritative === true,
+    refusedLocally: answer.refusedLocally === true, handedOver: answer.handoff !== undefined,
+    output: localToolSnapshot(answer.result ?? { teaching: answer.text ?? 'No result was returned.' }) })
   // A refusal the host already announced is not announced again as though the Board had spoken.
-  if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer)
+  if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer, localCallId)
   const accepted = answer.result?.accepted === true
   if (name === 'OpenCase' && accepted) {
     for (const row of board.roots) {
@@ -2770,13 +2778,7 @@ async function runCaseTurn(ctx, userText, {
     const say = String(reply.text ?? '').trim()
     if (say !== '') log(`\n${say.slice(0, 1200)}`)
     messages.push(assistantEntry(reply.text, reply.toolCalls, reply.reasoningContent))
-    emitOn(ctx, 'propose', {
-      say,
-      ...(reply.toolCalls.length === 0 ? {} : {
-        cmd: reply.toolCalls.map((call) => String(call.name ?? '')).join('+'),
-        tool: { action: String(reply.toolCalls[0].name ?? '') },
-      }),
-    })
+    if (say) emitOn(ctx, 'propose', { say })
 
     if (reply.toolCalls.length === 0) {
       // A plain answer is a complete conversational turn. Focused Cases are deliberately
