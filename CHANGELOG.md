@@ -2,6 +2,13 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Clarify that an announced action must include its actual tool call and that
+  tool results should lead to an answer, a concrete blocker, or a necessary question.
+  Answer greetings and general questions directly; preserve the existing multi-turn
+  transcript, serial tool loop, and unresolved-call recovery behavior.
+
 ## 0.7.5 - 2026-09-16
 
 - Add `rulith setup`: pair Local with a Console-approved Agent using a short-lived
