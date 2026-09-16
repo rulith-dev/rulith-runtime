@@ -2,7 +2,17 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.7.5 - 2026-09-16
+
+- Add `rulith setup`: pair Local with a Console-approved Agent using a short-lived
+  code, then review resource and tool authorization separately in Console.
+  Support both a locally configured model and an existing MCP client.
+- Render conversation Markdown and show expandable actual tool arguments and
+  results, with explicit unknown outcomes, handoffs and bounded previews.
+- Refresh authorized Source metadata before claiming work for a newly bound
+  Source, so Worker can start before resource authorization completes.
+- Require the matching Gateway/Console cross-end setup release (`3826121`).
+  Preserve existing Local identities and require explicit Agent token replacement.
 
 - Preserve OpenAI-compatible provider reasoning continuation across tool calls and
   subsequent turns. Honor explicit thinking disablement; malformed conversation errors
