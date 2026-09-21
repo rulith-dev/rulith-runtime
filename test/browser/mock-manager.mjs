@@ -59,7 +59,7 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   /** The account and Console this device is signed in to; the directory joins on both. */
   const CONSOLE = 'https://console.example', ACCOUNT = 'acct-1'
   /** Flipped by a test: what the conversation host answers when a message is sent. */
-  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
+  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
 
   // Configured Agents, as the manager reports them once pairing has completed: the directory
   // joins a profile to an Agent by account, Console origin and Agent id together.
@@ -124,6 +124,13 @@ export async function startMockWorkbench({ instances, agents, events = [], model
     if (path === '/manager/state') return void json(res, 200, state())
     const body = req.method === 'POST' ? await readBody(req) : {}
     const row = find(String(body.instanceId ?? ''))
+    if (path === '/manager/device/refresh') {
+      control.refreshRequests.push(body)
+      const before = new Set(device.agents.map((agent) => agent.id))
+      const next = Array.isArray(control.refreshAgents) ? control.refreshAgents : device.agents
+      device.agents = next.map((agent) => ({ ...agent }))
+      return void json(res, 200, { ...state(), addedAgents: device.agents.filter((agent) => !before.has(agent.id)), removedAgents: [] })
+    }
     if (path === '/manager/model/default' || path === '/manager/instances/model') {
       control.modelRequests.push({ path, ...body })
       if (control.modelRefusal) return void json(res, 409, { ...state(), ok: false, teaching: control.modelRefusal })
@@ -163,7 +170,15 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       return void json(res, 200, { ok: true, entry: { packId: 'local_policy' }, packId: 'local_policy', caseId: body.caseId })
     }
     if (path === '/manager/instances/pair') {
+      control.pairRequests.push(body)
       if (!row) return void json(res, 400, { ok: false, teaching: 'No such Agent.', ...state() })
+      if (control.pairCredentialRefusal && !body.replaceAgentToken) {
+        row.pendingAgentId = String(body.agentId ?? '')
+        row.pendingAgentName = (device.agents.find((a) => a.id === body.agentId) || {}).name ?? ''
+        row.pendingOrigin = device.origin; row.pendingAccountId = device.account.id
+        row.pendingError = { code: 'runtime_credential_exists', teaching: control.pairCredentialRefusal }
+        return void json(res, 409, { ok: false, teaching: control.pairCredentialRefusal, ...state() })
+      }
       if (control.pairPending) {
         row.pendingAgentId = String(body.agentId ?? '')
         row.pendingAgentName = (device.agents.find((a) => a.id === body.agentId) || {}).name ?? ''
@@ -173,8 +188,19 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       if (control.pairRefusal) return void json(res, 400, { ok: false, teaching: control.pairRefusal, ...state() })
       row.paired = true; row.agentId = String(body.agentId ?? ''); row.agentName = (device.agents.find((a) => a.id === body.agentId) || {}).name ?? ''
       row.origin = device.origin; row.accountId = device.account.id
-      row.pendingAgentId = ''; row.pendingAgentName = ''; row.pendingOrigin = ''; row.pendingAccountId = ''
+      row.pendingAgentId = ''; row.pendingAgentName = ''; row.pendingOrigin = ''; row.pendingAccountId = ''; row.pendingError = null
       return void json(res, 200, { ok: true, replaceAgentToken: body.replaceAgentToken === true, ...state() })
+    }
+    if (path === '/manager/instances/pair/cancel') {
+      control.pairCancels.push(body)
+      if (control.pairCancelUnknown) return void json(res, 409, { ok: false, teaching: 'The original connection attempt could not be confirmed as cancelled.', ...state() })
+      if (!row) return void json(res, 400, { ok: false, teaching: 'No such Agent.', ...state() })
+      row.pendingAgentId = ''; row.pendingAgentName = ''; row.pendingOrigin = ''; row.pendingAccountId = ''; row.pendingError = null
+      if (control.pairCancelAccountChange) {
+        device.account = { id: 'acct-changed', name: 'Changed Account' }
+        device.agents = []
+      }
+      return void json(res, 200, state())
     }
     if (path === '/manager/instances/create') {
       const created = instanceOf({ id: 'inst-' + (rows.length + 1), name: String(body.name ?? ''),

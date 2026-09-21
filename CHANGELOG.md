@@ -2,6 +2,17 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.4 - 2026-09-22
+
+- Show an existing Agent key as an actionable connection conflict, including after reopening
+  the workbench. Explicit replacement first confirms cancellation of the unapproved attempt;
+  an unknown or already approved attempt cannot silently replace another credential.
+- Make **Check again** resume interrupted device approval and collect issued credentials.
+  Preserve the proof and selected Agent; restart an expired, unapproved request only after
+  confirmed cancellation. Open the Agent's workspace once connected.
+- Keep pending connections out of the chat frame, and prevent late state responses from
+  overwriting the enabled-Agent directory returned by **Refresh enabled Agents**.
+
 ## 0.8.3 - 2026-09-22
 
 - Add the local Document assistant workflow with the ordinary `official_authoring@2.0.0`

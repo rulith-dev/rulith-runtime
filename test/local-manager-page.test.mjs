@@ -611,6 +611,90 @@ test('a pairing that is not confirmed keeps its own proof, and is never assumed 
   assert.ok(page.$('agents').innerHTML.includes('Finishing setup'))
 })
 
+test('a late state read cannot replace the Agent directory returned by Refresh', async () => {
+  let delayed = false, release
+  const before = stateOf({ stateRevision: 1, device: linkedDevice() })
+  const after = stateOf({ stateRevision: 3, device: linkedDevice([{ id: 'agent-alpha', name: 'Alpha' }, { id: 'agent-new', name: 'New Agent' }]) })
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/device/refresh') return { body: { ...after, addedAgents: [{ id: 'agent-new', name: 'New Agent' }] } }
+    if (delayed) return new Promise(resolve => { release = () => resolve({ body: { ...before, stateRevision: 2 } }) })
+    return { body: before }
+  } })
+  delayed = true
+  const oldRead = page.api('/manager/state')
+  await settle()
+  await page.$('refresh-account').onclick()
+  assert.equal(page.state().device.agents.length, 2)
+  release(); await oldRead
+  assert.equal(page.state().device.agents.length, 2, 'older response must not undo a successful refresh')
+  assert.match(page.$('agents').innerHTML, /New Agent/)
+})
+
+test('a fixed-key server restart accepts its new revision and rejects the old in-flight snapshot', async () => {
+  let oldRead, delay = false, restarted = false
+  const before = stateOf({ stateServerId: 'old', stateRevision: 100, device: linkedDevice() })
+  const after = stateOf({ stateServerId: 'new', stateRevision: 1, device: linkedDevice([{ id: 'agent-new', name: 'New Agent' }]) })
+  const page = await runPageScript(managerPage, { respond: async () => {
+    if (restarted) return { body: after }
+    if (delay) return new Promise(resolve => { oldRead = () => resolve({ body: { ...before, stateRevision: 101 } }) })
+    return { body: before }
+  } })
+  delay = true
+  const stale = page.api('/manager/state'); await settle()
+  restarted = true
+  await page.api('/manager/state')
+  assert.equal(page.state().device.agents[0].id, 'agent-new')
+  oldRead(); await stale
+  assert.equal(page.state().device.agents[0].id, 'agent-new', 'an old process cannot replace a restarted process snapshot')
+})
+
+test('reopening a pending replacement discloses the previously approved key replacement', async () => {
+  const row = instanceOf({ pendingAgentId: 'agent-alpha', pendingAgentName: 'Alpha', pendingOrigin: ORIGIN,
+    pendingAccountId: ACCOUNT, pendingReplace: true, pendingError: { code: '', teaching: 'Network unavailable' } })
+  const page = await openPage(stateOf({ device: linkedDevice(), instances: [row] }))
+  await page.choose('agent-alpha')
+  assert.equal(page.$('pair-replacement-pending').hidden, false)
+  assert.match(page.$('pair-poll').textContent, /Continue key replacement/)
+  assert.match(page.$('agents').innerHTML, /Key replacement pending/)
+})
+
+for (const cancellation of ['confirmed', 'unconfirmed', 'account-changed']) {
+  test('key replacement requires explicit choice and confirmed cancellation: ' + cancellation, async () => {
+    const row = instanceOf({ pendingAgentId: 'agent-alpha', pendingAgentName: 'Alpha', pendingOrigin: ORIGIN, pendingAccountId: ACCOUNT,
+      pendingError: { code: 'runtime_credential_exists', teaching: 'Agent already has an active credential' } })
+    let device = linkedDevice()
+    const page = await runPageScript(managerPage, { respond: async (path, request) => {
+      const body = () => stateOf({ device, instances: [row] })
+      if (path === '/manager/instances/pair/cancel') {
+        if (cancellation === 'unconfirmed') return { status: 400, body: { ...body(), ok: false, teaching: 'Cancellation not confirmed' } }
+        Object.assign(row, { pendingAgentId: '', pendingError: null })
+        if (cancellation === 'account-changed') device = { ...device, account: { id: 'another-account' } }
+        return { body: body() }
+      }
+      if (path === '/manager/instances/pair') {
+        assert.equal(request.body.replaceAgentToken, true)
+        Object.assign(row, { paired: true, agentId: 'agent-alpha', origin: ORIGIN, accountId: ACCOUNT })
+        return { body: body() }
+      }
+      if (path === '/manager/instances/open') return { body: { ...body(), url: 'http://127.0.0.1:9001/?k=fixture', hostPort: 9001 } }
+      return { body: body() }
+    } })
+    await page.choose('agent-alpha')
+    assert.equal(page.$('pair-conflict').hidden, false)
+    assert.equal(page.$('pair-poll').hidden, false, 'the existing key may have been retired outside this workbench')
+    assert.match(page.$('agents').innerHTML, /Action needed/)
+    assert.equal(page.$('pair-replace').disabled, true)
+    await page.$('pair-replace').onclick()
+    assert.equal(page.calls.some(c => c.path === '/manager/instances/pair/cancel'), false)
+    page.$('pair-replace-confirm').checked = true; page.$('pair-replace-confirm').onchange()
+    assert.equal(page.$('pair-replace').disabled, false)
+    await page.$('pair-replace').onclick()
+    assert.equal(page.calls.filter(c => c.path === '/manager/instances/pair').length, cancellation === 'confirmed' ? 1 : 0)
+    if (cancellation === 'confirmed') assert.equal(page.$('dlg-attach').hidden, true)
+    else assert.equal(page.$('dlg-attach').hidden, false)
+  })
+}
+
 test('a failed or repeated first use finishes the same profile instead of leaving spares behind', async () => {
   const rows = []
   let pairFails = true

@@ -442,6 +442,67 @@ test('a reservation outlives the process that made it, and only its Agent may be
   })
 })
 
+for (const lostApprovalReceipt of [false, true]) {
+test('an issued credential can be collected after disable and refresh, without allowing execution (lost receipt: ' + lostApprovalReceipt + ')', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const row = await manager.instances.create({ name: 'Disabled during delivery', mode: 'local_agent' })
+    if (lostApprovalReceipt) gateway.dropResponseAfterEffect('/local-devices/pair')
+    else gateway.failNext('/local-setup/poll')
+    await assert.rejects(manager.instances.pair(row.id, { agentId: 'agent-alpha' }))
+    assert.equal([...gateway.pairings.values()][0].state, 'approved')
+    gateway.disableAgent('agent-alpha')
+    await manager.instances.refreshDevice()
+    assert.ok(!manager.device.peek().agents.some(agent => agent.id === 'agent-alpha'))
+    assert.equal((await manager.instances.pairPoll(row.id)).agentId, 'agent-alpha')
+    assert.equal(manager.registry.instance(row.id).pairing, undefined)
+    assert.equal(gateway.agentTokens.size, 1)
+    await assert.rejects(manager.instances.start(row.id), /not authorized|no longer enabled|not enabled|does not authorize/i)
+  })
+})
+}
+
+for (const failedPath of ['/local-setup/start', '/local-devices/pair']) {
+test('Check again retries ' + failedPath + ' using the original request and proof', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const row = await manager.instances.create({ name: 'Retry approval', mode: 'local_agent' })
+    gateway.failNext(failedPath)
+    await assert.rejects(manager.instances.pair(row.id, { agentId: 'agent-alpha' }))
+    const original = gateway.requests.find(r => r.path === '/local-setup/start').body
+    const finished = await manager.instances.pairPoll(row.id)
+    assert.equal(finished.agentId, 'agent-alpha')
+    assert.equal(gateway.pairings.size, 1)
+    const approvals = gateway.requests.filter(r => r.path === '/local-devices/pair')
+    assert.equal(approvals.length, failedPath === '/local-devices/pair' ? 2 : 1)
+    assert.equal(approvals.at(-1).body.pairingId, original.requestId)
+    assert.equal(sha256Hex(approvals.at(-1).body.deviceSecret), original.deviceDigest)
+    assert.equal(manager.instances.overview()[0].pendingError, null)
+  })
+})
+}
+
+test('an existing Agent key is visible and never replaced by Check again', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const prior = { jti: 'existing', agentId: 'agent-alpha', revoked: false }
+    gateway.agentTokens.set('rlt_agt_existing', prior)
+    const row = await manager.instances.create({ name: 'Existing key', mode: 'local_agent' })
+    await assert.rejects(manager.instances.pair(row.id, { agentId: 'agent-alpha' }), { errorCode: 'runtime_credential_exists' })
+    assert.equal(manager.instances.overview()[0].pendingError.code, 'runtime_credential_exists')
+    await assert.rejects(manager.instances.pairPoll(row.id), { errorCode: 'runtime_credential_exists' })
+    assert.equal(gateway.agentTokens.size, 1)
+    assert.equal(prior.superseded, undefined)
+    const original = [...gateway.pairings.keys()][0]
+    await manager.instances.cancelPairing(row.id)
+    gateway.failNext('/local-devices/pair')
+    await assert.rejects(manager.instances.pair(row.id, { agentId: 'agent-alpha', replaceAgentToken: true }))
+    assert.equal(manager.instances.overview()[0].pendingReplace, true, 'a replacement retry is visibly different from ordinary connection')
+    assert.equal(prior.superseded, undefined)
+    await manager.instances.pairPoll(row.id)
+    assert.equal(gateway.pairings.get(original).state, 'cancelled')
+    assert.equal(prior.superseded, true)
+    assert.equal(manager.instances.overview()[0].paired, true)
+  })
+})
+
 test('a failed attachment keeps its reservation, and cancelling it asks the account service', async (t) => {
   await withManager(t, async ({ manager, gateway }) => {
     const instance = await manager.instances.create({ name: 'Denied', mode: 'local_agent' })

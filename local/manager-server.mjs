@@ -124,7 +124,11 @@ export function createManagerServer({
   const sameOrigin = (req) => req.headers['x-rulith-manager'] === key
     && (req.headers.origin === undefined || req.headers.origin === 'http://' + req.headers.host)
 
+  let stateRevision = 0
+  const stateServerId = randomUUID()
   const state = () => ({
+    stateServerId,
+    stateRevision: ++stateRevision,
     root: registry.root,
     device: device.status(),
     modelDefaults: instances.modelDefaults(),
@@ -273,7 +277,7 @@ export function createManagerServer({
       // whether a refused step changed anything. Reachable only after the gate above.
       let snapshot = {}
       try { snapshot = state() } catch { snapshot = {} }
-      json(res, 400, { ok: false, teaching: String(error?.message ?? error), ...snapshot })
+      json(res, 400, { ...snapshot, ok: false, errorCode: error?.errorCode, teaching: String(error?.message ?? error) })
     }
   })
 

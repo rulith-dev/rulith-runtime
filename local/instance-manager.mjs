@@ -620,7 +620,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     const approved = await device.pair({ pairingId, deviceSecret, agentId: reservation.agentId, replaceAgentToken: reservation.replaceAgentToken === true })
     const agentId = text(approved?.agentId).trim() || reservation.agentId
     if (agentId !== reservation.agentId) throw new Error('The account service approved a different Agent than this instance reserved.')
-    await registry.patchInstance(id, (row) => ({ pairing: { ...row.pairing, pairingId, approvedAt: new Date().toISOString() } }))
+    await registry.patchInstance(id, (row) => ({ pairing: { ...row.pairing, lastError: undefined, pairingId, approvedAt: new Date().toISOString() } }))
     await device.recordPairing(id, { pairingId, agentId, origin: base, accountId: text(grant.account?.id) })
     return { agentId }
   }
@@ -852,6 +852,12 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     return results
   }
 
+  const rememberPairingError = (id, error) => registry.patchInstance(id, (row) => row.pairing ? {
+    pairing: { ...row.pairing, lastError: {
+      code: text(error?.errorCode).slice(0, 100), teaching: String(error?.message ?? error).slice(0, 2000),
+    } },
+  } : {})
+
   const manager = {
     hosts,
     instancesRoot,
@@ -889,6 +895,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         // Everything a card needs to explain why a button is unavailable, computed from the
         // device grant rather than from what the page last saw.
         pendingAgentId: row.pairing?.agentId ?? '', pendingAgentName: row.pairing?.agentName ?? '',
+        pendingError: row.pairing?.lastError ?? null,
+        pendingReplace: row.pairing?.replaceAgentToken === true,
         pendingOrigin: row.pairing?.origin ?? '', pendingAccountId: row.pairing?.accountId ?? '',
         setupTarget: row.setupTarget ?? null,
         model: { ...model, workerRestartRequired: live?.host.workerModelRestartRequired === true,
@@ -1293,7 +1301,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         if (registry.instance(id)?.pairing?.approvedAt !== undefined) return await manager.__pairPoll(id)
         const { host } = await ensureHostLocked(id)
         const started = await localCall(host, '/setup/pair/start', { consoleUrl: grant.origin, name: row.name, clientMode })
-        if (started.status !== 200 || started.body.ok === false) throw new Error(text(started.body.teaching) || 'This instance could not start a pairing.')
+        if (started.status !== 200 || started.body.ok === false) throw Object.assign(new Error(text(started.body.teaching) || 'This instance could not start a pairing.'), { errorCode: started.body.errorCode })
         return await manager.__pairPoll(id)
       } catch (error) {
         // Nothing is released here, deliberately.
@@ -1308,8 +1316,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         //
         // So a failed attempt keeps its reservation and its proof. Giving it up is an explicit
         // act that asks the authority (`cancelPairing`), and retrying is the same request.
-        throw new Error(String(error?.message ?? error)
-          + ` The attachment of ${known.name} to ${row.name} is still reserved: retry it, or cancel it, from the manager.`)
+        await rememberPairingError(id, error).catch(() => undefined)
+        throw Object.assign(new Error(String(error?.message ?? error)
+          + ` The attachment of ${known.name} to ${row.name} is still reserved: retry it, or cancel it, from the manager.`), { errorCode: error?.errorCode })
       }
     })),
 
@@ -1376,7 +1385,12 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
      * delivery therefore changes nothing about what this instance will accept: the reservation
      * outlived the process that made it.
      */
-    pairPoll: (id) => admit(() => lifecycle(id, () => manager.__pairPoll(id))),
+    pairPoll: (id) => admit(() => lifecycle(id, async () => {
+      try { return await manager.__pairPoll(id) } catch (error) {
+        await rememberPairingError(id, error).catch(() => undefined)
+        throw error
+      }
+    })),
 
     __pairPoll: async (id) => {
       const row = record(id)
@@ -1387,11 +1401,29 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         throw new Error(`Instance ${row.name} reserved an Agent under a different account or Console address than the one signed in now. Attach it again.`)
       }
       const { host } = await ensureHostLocked(id)
-      const polled = await localCall(host, '/setup/pair/poll', {})
-      if (polled.status !== 200 || polled.body.ok === false) throw new Error(text(polled.body.teaching) || 'The pairing result could not be confirmed.')
+      let polled = await localCall(host, '/setup/pair/poll', {})
+      // Collect first: an approval may have succeeded even if its receipt was lost, and its
+      // delivery can still be available after the local code deadline. Only an unapproved
+      // reply (or an unknown original start) retries start with the retained proof. The setup
+      // service itself requires confirmed cancellation before replacing any expired request.
+      const waiting = polled.status === 200 && ['waiting', 'pending', 'not_started', 'expired'].includes(polled.body.state)
+      if (!reservation.approvedAt && (waiting || ['local_setup_unknown', 'local_setup_expired'].includes(polled.body.errorCode))) {
+        const started = await localCall(host, '/setup/pair/start', {
+          consoleUrl: reservation.origin, name: row.name,
+          clientMode: reservation.clientMode ?? (row.mode === 'existing_client' ? 'existing_agent' : 'local_agent'),
+        })
+        if (started.status !== 200 || started.body.ok === false) throw Object.assign(
+          new Error(text(started.body.teaching) || 'This instance could not finish connecting.'), { errorCode: started.body.errorCode })
+        polled = await localCall(host, '/setup/pair/poll', {})
+      }
+      if (polled.status !== 200 || polled.body.ok === false) throw Object.assign(new Error(text(polled.body.teaching) || 'The pairing result could not be confirmed.'), { errorCode: polled.body.errorCode })
       const saved = readJson(host.configFile + '.setup.json', {})
       const delivered = text(saved.agentId)
-      if (delivered === '') return { instanceId: id, state: text(polled.body.state) || 'pending', agentId: '' }
+      if (delivered === '') {
+        await registry.patchInstance(id, entry => entry.pairing
+          ? { pairing: { ...entry.pairing, lastError: undefined } } : {}).catch(() => undefined)
+        return { instanceId: id, state: text(polled.body.state) || 'pending', agentId: '' }
+      }
       if (delivered !== reservation.agentId) {
         throw new Error(`Instance ${row.name} was delivered Agent ${delivered}, which is not the ${reservation.agentId} it reserved. No identity was recorded.`)
       }

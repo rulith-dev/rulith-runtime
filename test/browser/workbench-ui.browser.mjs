@@ -833,6 +833,50 @@ arm('an unconfirmed attachment is finished where its proof lives, and opens noth
     assert.ok((await page.innerHTML('#agents')).includes('Finishing setup'), 'the list says what state it is in')
   }, { agents: [{ id: 'agent-alpha', name: 'Alpha' }, { id: 'agent-beta', name: 'Beta' }, { id: 'agent-gamma', name: 'Gamma' }] })
 
+arm('an existing runtime key requires an explicit confirmed replacement before the first workspace opens',
+  { width: 1440, height: 960 }, async ({ page, fixture }) => {
+    fixture.control.pairCredentialRefusal = 'This Agent already has a runtime credential on this computer.'
+    await page.click('button[data-agent="agent-gamma"]')
+    await page.waitForSelector('#dlg-setup:not([hidden])')
+    await page.click('#setup-start')
+    await page.waitForSelector('#dlg-attach:not([hidden])', { timeout: 20000 })
+    await page.locator('#pair-conflict').waitFor({ state: 'visible' })
+    assert.equal(await page.isDisabled('#pair-replace'), true, 'a visible warning is not replacement consent')
+    assert.equal(fixture.control.pairRequests.length, 1)
+
+    // An unconfirmed cancellation cannot be used to launch a replacement request.
+    await page.check('#pair-replace-confirm')
+    fixture.control.pairCancelUnknown = true
+    await page.click('#pair-replace')
+    await page.getByText('could not be confirmed as cancelled', { exact: false }).waitFor()
+    assert.equal(fixture.control.pairRequests.length, 1, 'unknown cancellation leaves the original key untouched')
+    assert.equal(await page.locator('#attach-pending').isVisible(), true)
+
+    fixture.control.pairCancelUnknown = false
+    await page.click('#pair-replace')
+    await page.waitForFunction(() => document.getElementById('dlg-attach').hidden === true, null, { timeout: 20000 })
+    await workspaceShown(page)
+    assert.deepEqual(fixture.control.pairRequests.map((request) => request.replaceAgentToken), [false, true])
+    assert.equal(fixture.control.pairRequests[1].agentId, 'agent-gamma')
+    assert.ok((await page.innerHTML('#agents')).includes('Alpha'), 'other configured Agents remain visible')
+    assert.ok((await page.innerHTML('#agents')).includes('Gamma'), 'the replaced Agent is selected as a usable workspace')
+  }, { agents: [{ id: 'agent-alpha', name: 'Alpha' }, { id: 'agent-beta', name: 'Beta' }, { id: 'agent-gamma', name: 'Gamma' }] })
+
+arm('the linked account directory adds a newly enabled Agent on refresh without signing out',
+  { width: 1440, height: 960 }, async ({ page, fixture }) => {
+    assert.equal(await page.locator('[data-agent="agent-gamma"]').count(), 0)
+    fixture.control.refreshAgents = [...fixture.device.agents, { id: 'agent-gamma', name: 'Gamma' }]
+    await page.waitForTimeout(3200)
+    assert.equal(await page.locator('[data-agent="agent-gamma"]').count(), 0, 'ordinary state polls do not silently replace the enabled-Agent directory')
+    await page.click('#account-open')
+    await page.waitForSelector('#dlg-account:not([hidden])')
+    await page.click('#refresh-account')
+    await page.locator('[data-agent="agent-gamma"]').waitFor({ state: 'visible', timeout: 7000 })
+    assert.deepEqual(fixture.control.refreshRequests, [{}])
+    assert.equal(await page.locator('#account-line').textContent(), 'Test Account')
+    assert.match(await page.locator('#account-dot').getAttribute('class'), /\bon\b/)
+  })
+
 arm('a local profile the directory does not claim stays in the account settings, not in the list',
   { width: 1440, height: 960 }, async ({ page }) => {
     const markup = await page.innerHTML('#agents')

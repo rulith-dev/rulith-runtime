@@ -425,7 +425,7 @@ test('retrying an attachment after its code expires does not throw away the proo
   })
 })
 
-test('a stale pairing whose cancellation is confirmed is replaced, and only then', async (t) => {
+test('Check again restarts an expired unapproved pairing only after confirmed cancellation', async (t) => {
   await withManager(t, async ({ manager, gateway }) => {
     const instance = await manager.instances.create({ name: 'Stale code', mode: 'local_agent' })
     gateway.failNext('/local-devices/pair')
@@ -436,8 +436,9 @@ test('a stale pairing whose cancellation is confirmed is replaced, and only then
     const expired = JSON.parse(readFileSync(setupFile, 'utf8'))
     expired.expiresAt = new Date(Date.now() - 1000).toISOString()
     writeFileSync(setupFile, JSON.stringify(expired, null, 2))
+    gateway.pairings.get(firstPairing).expiresAt = expired.expiresAt
 
-    const retried = await manager.instances.pair(instance.id, { agentId: 'agent-alpha' })
+    const retried = await manager.instances.pairPoll(instance.id)
     assert.equal(retried.agentId, 'agent-alpha')
     // The old one was cancelled at the authority before a new proof existed.
     assert.equal(gateway.pairings.get(firstPairing).state, 'cancelled')

@@ -155,7 +155,7 @@ export function createDevicesGateway({
       }
       const issued = [...agentTokens.values()].find((row) => row.agentId === agentId && !row.revoked)
       if (issued !== undefined && body.replaceAgentToken !== true) {
-        refuse(409, 'This Agent already has a token. Replacing it must be explicit.', 'agent_token_exists')
+        refuse(409, 'This Agent already has a token. Replacing it must be explicit.', 'runtime_credential_exists')
       }
       if (issued !== undefined) issued.superseded = true
       // Ordinary issuance, on the ordinary pairing path. The device grant decided *that* this
@@ -242,9 +242,10 @@ export function createDevicesGateway({
     'POST /local-setup/poll': (body) => {
       onlyFields(body, ['pairingId', 'deviceSecret'])
       const row = pairings.get(String(body.pairingId ?? ''))
-      if (row === undefined) refuse(404, 'No such pairing request.')
+      if (row === undefined) refuse(404, 'No such pairing request.', 'local_setup_unknown')
       if (sha256(String(body.deviceSecret ?? '')) !== row.deviceDigest) refuse(403, 'The pairing proof does not match this request.')
       if (row.state === 'cancelled') refuse(409, 'This pairing was cancelled.', 'local_setup_cancelled')
+      if (row.state !== 'approved' && Date.parse(row.expiresAt) <= Date.now()) refuse(409, 'This pairing expired.', 'local_setup_expired')
       if (row.state !== 'approved') return { state: row.state }
       const claimed = mispair ?? row.agentId
       mispair = undefined

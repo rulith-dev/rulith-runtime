@@ -304,7 +304,14 @@ export const managerPage = String.raw`<!doctype html>
     </div>
     <div id="attach-pending" hidden>
       <p><span class="pill wait" id="pair-agent"></span></p>
-      <p class="muted">The connection was begun and not confirmed. Checking again finishes the same attempt rather than starting a second one.</p>
+      <p class="muted" id="pair-progress">The connection has not finished. Check again to resume setup.</p>
+      <p id="pair-error" class="notice error" role="alert" hidden></p>
+      <p id="pair-replacement-pending" class="notice" hidden>You approved replacing this Agent’s previous key. Continuing retries that replacement; clients using the old key will lose access when it completes.</p>
+      <div id="pair-conflict" hidden>
+        <p>This Agent already has an active key. Replacing it connects this computer and invalidates the previous key, including clients still using it.</p>
+        <label class="checkline"><input type="checkbox" id="pair-replace-confirm">Replace this Agent’s existing key</label>
+        <button class="btn" id="pair-replace">Replace key and connect</button>
+      </div>
       <div class="actions"><button class="btn" id="pair-poll">Check again</button><button id="pair-cancel">Cancel</button></div>
     </div>
   </div>
@@ -393,7 +400,8 @@ const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 /* One manager key, read from this page's own address. The page ships with no secret, and the
    per-Agent loopback keys it never sees: opening an Agent asks the manager for that Agent's
    address and loads it. Nothing is written to storage and no address is logged. */
-let state={instances:[],device:{state:'none'},legacyInstall:null},selected='',notes=[],drawer='',pollTimer,signInPollError='',polling=null;
+let state={instances:[],device:{state:'none'},legacyInstall:null},selected='',notes=[],drawer='',pollTimer,signInPollError='',polling=null,pendingReplaceFor='',lastStateRevision=0,lastStateServerId='',requestSequence=0,lastStateRequest=0;
+const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendingAccountId,row.pendingAgentId]):'';
 /* What this page currently knows about the manager itself. While the connection is lost, the state
    on screen is the last one that arrived and nothing may be changed from it: a control acting
    on a picture that may be minutes old is worse than a control that says why it is waiting. */
@@ -413,6 +421,7 @@ const running=row=>row.agent===true||row.worker===true;
    screen is a memory. Only the second kind becomes the connection state. */
 const lost=message=>{const error=Object.assign(Error(message),{offline:true});unreachableNow(error);return error;};
 async function api(path,body,signal){
+  const requestOrder=++requestSequence;
   let r;
   try{
     r=await fetch(path,{method:body===undefined?'GET':'POST',cache:'no-store',signal,
@@ -420,7 +429,17 @@ async function api(path,body,signal){
   }catch(e){if(signal?.aborted)throw Error('Sign-in took too long. You can retry, or reopen the sign-in page when its link appears.');throw lost('Rulith on this computer did not answer.');}
   const v=await r.json().catch(()=>({}));
   if(r.status===401||r.status===403)throw lost(v.teaching||'This page is no longer authorized for the manager. Open the address it printed at startup.');
-  if(v&&Array.isArray(v.instances))render(v);
+  if(v&&Array.isArray(v.instances)){
+    const changedServer=v.stateServerId&&v.stateServerId!==lastStateServerId;
+    // A fixed manager key can survive a process restart. A new server resets the counter,
+    // but an old request completing after that restart cannot switch the page back again.
+    if((!changedServer||requestOrder>=lastStateRequest)
+      &&(changedServer||!Number.isSafeInteger(v.stateRevision)||v.stateRevision>=lastStateRevision)){
+      if(changedServer){lastStateServerId=v.stateServerId;lastStateRevision=0;}
+      if(Number.isSafeInteger(v.stateRevision))lastStateRevision=v.stateRevision;
+      lastStateRequest=Math.max(lastStateRequest,requestOrder);render(v);
+    }
+  }
   reachable();
   if(!r.ok||v.ok===false)throw Error(v.teaching||'This step could not be confirmed.');
   return v;
@@ -473,6 +492,8 @@ function controlSpec(){
     'import':['add',state.legacyInstall!=null],
     'pair':['attach:'+selected,Boolean(row)&&linked&&!row.paired&&!row.pendingAgentId&&agents.length>0&&[...$('agent-select').options].some(option=>!option.disabled&&option.value===$('agent-select').value)],
     'pair-poll':['attach:'+selected,Boolean(row&&row.pendingAgentId)],
+    'pair-replace':['attach:'+selected,Boolean(linked&&row?.pendingAgentId&&row.pendingError?.code==='runtime_credential_exists'
+      &&$('pair-replace-confirm').checked&&pendingReplaceFor===pendingTarget(row))],
     'pair-cancel':['attach:'+selected,Boolean(row&&row.pendingAgentId)],
     'agent-toggle':['role:'+selected+':agent',Boolean(row)&&hasRole(row,'agent')&&!row.orphaned&&(row.agent===true||!row.blocked)],
     'agent-readiness-action':['role:'+selected+':agent',Boolean(row)&&row.mode==='local_agent'&&!row.agent&&!row.orphaned&&!row.blocked],
@@ -679,7 +700,7 @@ function renderAgents(){
     const attaching=Boolean(row&&row.pendingAgentId===agent.id);
     return '<button type="button" class="agentrow" data-agent="'+esc(agent.id)+'" aria-current="false">'
       +'<b>'+esc(agent.name)+'</b><small><span class="dot '+(attaching?'wait':'')+'"></span><span class="word">'
-      +(attaching?'Finishing setup':'Not set up on this computer')+'</span></small></button>';
+      +(attaching?(row.pendingReplace?'Key replacement pending':row.pendingError?'Action needed':'Finishing setup'):'Not set up on this computer')+'</span></small></button>';
   }).join('');
   $('agents-empty').hidden=entries.length>0;
   $('agents-empty').textContent=linked
@@ -836,6 +857,12 @@ function renderAttach(){
   $('attach-blocked').textContent=reason;
   $('attach-form').hidden=!row||Boolean(row.pendingAgentId)||reason!=='';
   $('attach-pending').hidden=!row||!row.pendingAgentId;
+  const conflict=Boolean(row?.pendingAgentId&&row.pendingError?.code==='runtime_credential_exists');
+  $('pair-error').hidden=!row?.pendingError;$('pair-error').textContent=row?.pendingError?.teaching||'';
+  $('pair-conflict').hidden=!conflict;$('pair-progress').hidden=conflict||Boolean(row?.pendingReplace);
+  $('pair-replacement-pending').hidden=!row?.pendingReplace;
+  $('pair-poll').hidden=false;$('pair-poll').textContent=row?.pendingReplace?'Continue key replacement':'Check again';
+  if(!conflict||pendingReplaceFor!==pendingTarget(row)){$('pair-replace-confirm').checked=false;pendingReplaceFor='';}
   // The Agent's own name when the reservation carries one; its identifier is a fallback, not
   // the thing a person recognises.
   if(row&&row.pendingAgentId)$('pair-agent').textContent='Connecting to '+(row.pendingAgentName||row.pendingAgentId);
@@ -954,6 +981,8 @@ function renderStage(){
   else if(!row&&entries.length===0){title='No enabled Agents yet';
     copy='Agents are created and enabled in Console. Refresh this account when one is ready.';label='Account';mode='account';}
   else if(!row){title='Choose an Agent';copy='Your Agents are listed beside this conversation.';label='Show Agents';mode='rail';}
+  else if(row.pendingAgentId){title='Finish connecting '+(row.pendingAgentName||row.name);
+    copy=row.pendingError?.teaching||'This Agent is not connected on this computer yet.';label='Review connection';mode='attach';}
   else if(frame&&frame.failed){title=row.name;copy=frame.failed;label='Try again';mode='retry';}
   else if(frame&&frame.loaded){note.hidden=true;action.hidden=true;showFrames();return;}
   else if(frame&&frame.slow){title='Workspace not ready';copy='The workspace has not confirmed it is ready. It may be unavailable or failed to initialise. Try again.';label='Try again';mode='retry';}
@@ -969,7 +998,7 @@ function renderStage(){
   action.dataset.mode=mode;
   showFrames();
 }
-function showFrames(){for(const entry of frames)entry[1].el.hidden=entry[0]!==selected;}
+function showFrames(){for(const entry of frames)entry[1].el.hidden=entry[0]!==selected||Boolean(sel()?.pendingAgentId);}
 /* A frame is kept for the life of its host, so A → B → A returns to a live conversation.
    It is discarded only when what it points at is gone: the Agent was removed, its host was
    closed, or the host came back at a different address with a different key. */
@@ -1114,6 +1143,7 @@ function openDialog(id,focusId){
   const first=focusId?$(focusId):null;if(first&&first.focus)first.focus();
 }
 function closeDialog(id){
+  if(id==='dlg-attach'){$('pair-replace-confirm').checked=false;pendingReplaceFor='';}
   const at=dialogs.map(d=>d.id).indexOf(id);if(at<0)return;
   const entry=dialogs.splice(at,1)[0];$(id).hidden=true;
   if(id==='dlg-model'){$('model-key').value='';modelTarget=null;modelOriginal=null;}
@@ -1186,6 +1216,7 @@ $('stage-action').onclick=()=>{
   const mode=$('stage-action').dataset.mode,id=selected;
   if(mode==='account')return void $('account-open').onclick();
   if(mode==='rail'){drawer='rail';applyShell();return;}
+  if(mode==='attach'&&id){openDialog('dlg-attach','attach-close');return;}
   if(mode==='retry'&&id)return void ensureFrame(id,true);
   if(mode==='open'&&id)ensureFrame(id);
 };
@@ -1253,7 +1284,13 @@ $('setup-start').onclick=()=>{
       setupProfiles.set(setupIdentity(agent),id);
     }
     if(!setupAuthorized(agent))throw Error('The account changed or this Agent is no longer enabled. The unconnected profile remains in this computer settings.');
-    await api('/manager/instances/pair',{instanceId:id,agentId:agent.id,replaceAgentToken:false});
+    try{await api('/manager/instances/pair',{instanceId:id,agentId:agent.id,replaceAgentToken:false});}
+    catch(error){
+      if(rowOf(id)?.pendingAgentId&&setupFor===agent&&!$('dlg-setup').hidden){
+        selected=id;closeDialog('dlg-setup');render();openDialog('dlg-attach','attach-close');say('attach-notice',error.message,true);
+      }
+      throw error;
+    }
     if(!rowOf(id))throw Error('That profile is no longer on this computer.');
     if(setupFor!==agent||$('dlg-setup').hidden)return;
     selected=id;render();
@@ -1283,7 +1320,27 @@ $('pair').onclick=()=>{const id=selected,agentId=$('agent-select').value;
   run('attach:'+id,'attach-notice',()=>api('/manager/instances/pair',
     {instanceId:id,agentId:agentId,replaceAgentToken:replace})
     .then(()=>{$('replace').checked=false;replaceFor='';}));};
-$('pair-poll').onclick=()=>{const id=selected;run('attach:'+id,'attach-notice',()=>api('/manager/instances/pair/poll',{instanceId:id}));};
+async function showConnected(id){
+  if(selected===id&&rowOf(id)?.paired){closeDialog('dlg-attach');await ensureFrame(id);}
+}
+$('pair-poll').onclick=()=>{const id=selected;return run('attach:'+id,'attach-notice',async()=>{
+  await api('/manager/instances/pair/poll',{instanceId:id});await showConnected(id);
+});};
+$('pair-replace-confirm').onchange=()=>{pendingReplaceFor=$('pair-replace-confirm').checked?pendingTarget(sel()):'';applyControls();};
+$('pair-replace').onclick=()=>{
+  if($('pair-replace').disabled)return;
+  const row=sel(),id=selected,agentId=row.pendingAgentId,origin=row.pendingOrigin,accountId=row.pendingAccountId;
+  return run('attach:'+id,'attach-notice',async()=>{
+    // A confirmed cancellation is the only way to release the old non-replacement request.
+    // If it was already approved, no replacement starts and its original delivery survives.
+    await api('/manager/instances/pair/cancel',{instanceId:id});
+    const device=state.device||{};
+    if(device.state!=='linked'||device.origin!==origin||device.account?.id!==accountId
+      ||!(device.agents||[]).some(a=>a.id===agentId))throw Error('The account or Agent changed. Choose the Agent again.');
+    await api('/manager/instances/pair',{instanceId:id,agentId,replaceAgentToken:true});
+    await showConnected(id);
+  });
+};
 $('pair-cancel').onclick=()=>{const id=selected;run('attach:'+id,'attach-notice',()=>api('/manager/instances/pair/cancel',{instanceId:id})
   .then(()=>say('attach-notice','The connection attempt was cancelled.')));};
 $('model-copy').onclick=()=>{const id=selected;run('model:'+id,'details-notice',()=>api('/manager/instances/model/copy',{instanceId:id,fromInstanceId:$('model-from').value})
