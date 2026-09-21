@@ -59,6 +59,26 @@ async function signIn(gateway, call, agentIds = ['agent-alpha', 'agent-beta']) {
   return approved.deviceId
 }
 
+test('an approved login with a failed acknowledgement can reset only through confirmed sign-out', async (t) => {
+  await withManager(t, async ({ gateway, call }) => {
+    const start = await call('/manager/device/start', { consoleUrl: gateway.origin, name: 'Reset computer' })
+    const grant = gateway.approve(start.body.device.code, ['agent-alpha'])
+    gateway.failNext('/local-devices/ack')
+    const interrupted = await call('/manager/device/poll', {})
+    assert.equal(interrupted.body.device.state, 'approved')
+    const refused = await call('/manager/device/forget', {})
+    assert.equal(refused.status, 400, 'delivered credentials must not be silently discarded')
+    gateway.failNext('/local-devices/revoke')
+    const retry = await call('/manager/device/signout', {})
+    assert.equal(retry.body.state, 'incomplete')
+    assert.equal(retry.body.device.state, 'approved', 'a failed revoke preserves the credential for retry')
+    const reset = await call('/manager/device/signout', {})
+    assert.equal(reset.body.state, 'signed_out')
+    assert.equal(reset.body.device.state, 'none')
+    assert.equal(gateway.revocationRecord(grant.deviceId).state, 'revoked')
+  })
+})
+
 for (const failure of ['before request', 'after request']) test('unfinished sign-in retries its original proof ' + failure, async (t) => {
   await withManager(t, async ({ gateway, call }) => {
     if (failure === 'before request') gateway.failNext('/local-devices/start')

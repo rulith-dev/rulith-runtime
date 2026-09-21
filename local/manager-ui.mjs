@@ -125,14 +125,13 @@ body{overflow:hidden}
 .modal-wide .modal-card{width:min(680px,96vw)}
 .modal-head{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;gap:12px;padding:16px 18px;background:var(--panel);border-bottom:1px solid var(--line)}
 .modal-head b{font-size:var(--fs-1)}
-.modal-head .subline{white-space:normal}
+.modal-head .subline{display:block;white-space:normal}
 .modal-close{margin-left:auto;flex:none;width:32px;height:32px;padding:0}
 .modal-body{padding:18px}
 .modal-body>h3{margin-top:22px}
 .modal-body>h3:first-child{margin-top:0}
 .dlgnotice{margin:0 0 14px}
 .dlgnotice:empty{display:none}
-.code{font:30px/1.2 var(--mono);letter-spacing:6px;margin:10px 0;overflow-wrap:anywhere}
 .notes{color:var(--dim);font-size:var(--fs-4);margin:12px 0 0;padding-left:18px}
 .notes:empty{display:none}
 .inlinefield{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
@@ -172,7 +171,6 @@ body{overflow:hidden}
 @media(max-width:480px){.centerhead button{white-space:nowrap}}
 @media(prefers-reduced-motion:reduce){.rail{transition:none}}
 @media(max-width:560px){
-  .code{font-size:22px;letter-spacing:3px}
   .modal{padding:0}
   .modal-card{width:100vw;max-height:100vh;border-radius:0;border:0}
 }
@@ -224,21 +222,19 @@ export const managerPage = String.raw`<!doctype html>
 <div class="scrim" id="scrim" hidden></div>
 
 <div class="modal" id="dlg-account" role="dialog" aria-modal="true" aria-labelledby="account-title" hidden><div class="modal-card">
-  <div class="modal-head"><div><b id="account-title">Account</b><span class="subline">Your browser authorizes this computer and the Agents it may run.</span></div><button class="modal-close" id="account-close" aria-label="Close account">×</button></div>
+  <div class="modal-head"><div><b id="account-title">Account</b></div><button class="modal-close" id="account-close" aria-label="Close account">×</button></div>
   <div class="modal-body">
     <div id="account-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
     <div id="signed-out">
       <p>Sign in with your browser to choose which Agents this computer may run.</p>
       <p id="signin-recovery" class="notice" role="status" hidden></p>
-      <label>Console address<input id="console-url" type="url" value="https://console.rulith.ai" autocomplete="url"></label>
-      <label>This computer's name<input id="device-name" maxlength="120" placeholder="Work laptop"></label>
-      <div class="actions"><button class="btn" id="sign-in">Sign in with browser</button></div>
+      <div class="actions"><button class="btn" id="sign-in">Sign in</button></div>
     </div>
     <div id="pending" hidden>
-      <p>Open Console, sign in, and approve this computer together with the Agents it may run.</p>
-      <div class="code" id="device-code"></div>
-      <small id="code-expiry"></small>
-      <div class="actions"><a id="console-link" class="btn" target="_blank" rel="noopener noreferrer">Open Console</a><button id="check-approval">Check approval</button></div>
+      <p>Complete sign-in in your browser. Your Agents will appear here automatically.</p>
+      <p id="signin-reopen-hint" class="muted">If the page did not open, use the link below.</p>
+      <a id="console-link" target="_blank" rel="noopener noreferrer">Reopen sign-in page</a>
+      <p id="signin-poll-error" class="notice error" role="alert" hidden></p>
     </div>
     <div id="linked" hidden>
       <div class="row" style="justify-content:space-between"><h3 id="account-name"></h3><span class="pill" id="device-tag"></span></div>
@@ -248,10 +244,17 @@ export const managerPage = String.raw`<!doctype html>
     </div>
     <div id="unusable" hidden>
       <p id="unusable-teaching"></p>
-      <div class="actions"><button class="btn" id="start-over">Clear it and sign in again</button></div>
+    </div>
+    <div id="signin-reset" hidden>
+      <p id="signin-reset-copy" class="muted"></p>
+      <button class="btn" id="start-over">Reset sign-in</button>
     </div>
     <p id="console-home-line" hidden>New Agents are created in Console: <a id="console-home" target="_blank" rel="noopener noreferrer">open your account</a>.</p>
     <details id="local-settings"><summary>Advanced local settings</summary>
+    <div id="signin-settings">
+      <label>Console address<input id="console-url" type="url" value="https://console.rulith.ai" autocomplete="url"></label>
+      <label>This computer's name<input id="device-name" maxlength="120" placeholder="This computer"></label>
+    </div>
     <h3>Local profiles</h3>
     <p class="muted">Profiles on this computer that are not one of the Agents above: not connected yet, imported, or connected under another account or Console. They are kept so nothing is lost, and they are never offered as an Agent this account authorizes.</p>
     <div id="profiles"></div>
@@ -342,7 +345,7 @@ const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 /* One manager key, read from this page's own address. The page ships with no secret, and the
    per-Agent loopback keys it never sees: opening an Agent asks the manager for that Agent's
    address and loads it. Nothing is written to storage and no address is logged. */
-let state={instances:[],device:{state:'none'},legacyInstall:null},selected='',notes=[],drawer='',pollTimer;
+let state={instances:[],device:{state:'none'},legacyInstall:null},selected='',notes=[],drawer='',pollTimer,signInPollError='',polling=null;
 /* What this page currently knows about the manager itself. While the connection is lost, the state
    on screen is the last one that arrived and nothing may be changed from it: a control acting
    on a picture that may be minutes old is worse than a control that says why it is waiting. */
@@ -361,12 +364,12 @@ const running=row=>row.agent===true||row.worker===true;
    answer at all — or an answer that no longer accepts this page's key — means everything on
    screen is a memory. Only the second kind becomes the connection state. */
 const lost=message=>{const error=Object.assign(Error(message),{offline:true});unreachableNow(error);return error;};
-async function api(path,body){
+async function api(path,body,signal){
   let r;
   try{
-    r=await fetch(path,{method:body===undefined?'GET':'POST',cache:'no-store',
+    r=await fetch(path,{method:body===undefined?'GET':'POST',cache:'no-store',signal,
       headers:{'x-rulith-manager':key,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
-  }catch(e){throw lost('Rulith on this computer did not answer.');}
+  }catch(e){if(signal?.aborted)throw Error('Sign-in took too long. You can retry, or reopen the sign-in page when its link appears.');throw lost('Rulith on this computer did not answer.');}
   const v=await r.json().catch(()=>({}));
   if(r.status===401||r.status===403)throw lost(v.teaching||'This page is no longer authorized for the manager. Open the address it printed at startup.');
   if(v&&Array.isArray(v.instances))render(v);
@@ -411,10 +414,9 @@ function controlSpec(){
   const live=row?running(row):false,agents=device.agents||[];
   return {
     'sign-in':['account',!linked&&!pending&&!broken],
-    'check-approval':['account',pending],
     'refresh-account':['account',linked],
     'sign-out':['account',linked],
-    'start-over':['account',broken],
+    'start-over':['account',broken||(pending&&Boolean(signInPollError))],
     'setup-start':['setup:'+(setupFor?setupFor.id:''),
       setupAuthorized(setupFor)],
     // Once the profile exists its mode is a fact about files on disk, not a choice any more.
@@ -574,24 +576,29 @@ function renderAccount(){
   const pending=(device.state==='pending'&&!incomplete)||device.state==='approved';
   const broken=['revoked','expired','unusable','unreadable'].includes(device.state);
   $('signed-out').hidden=linked||pending||broken;$('pending').hidden=!pending;$('linked').hidden=!linked;$('unusable').hidden=!broken;
-  const who=linked?(device.account&&device.account.name||'Signed in'):broken?'Authorization unusable':pending?'Waiting for approval':incomplete?'Sign-in incomplete':'Not signed in';
+  const who=linked?(device.account&&device.account.name||'Signed in'):broken?'Authorization unusable':pending?'Signing in…':incomplete?'Sign-in incomplete':'Sign in';
   $('account-line').textContent=who;
   $('account-dot').className='dot '+(linked?'on':broken?'bad':pending?'wait':'');
   // The avatar is the account's initial once there is an account, and a placeholder before
   // there is one; the second line says which computer this is, or what is waiting to happen.
   $('account-initial').textContent=linked?(who.trim().charAt(0).toUpperCase()||'?'):pending?'…':broken?'!':'·';
   $('account-sub').textContent=linked?(device.deviceName||'This computer')
-    :broken?'Clear it and sign in again':pending?'Approve it in Console':incomplete?'Check the address and retry':'Sign in with your browser';
+    :broken?'Reset sign-in':pending?'Continue in your browser':incomplete?'Retry sign-in':'Connect your account';
   $('signin-recovery').hidden=!incomplete;
-  $('signin-recovery').textContent=incomplete?(device.teaching||'Sign-in did not finish. No approval code was received. Check the Console address and retry.'):'';
-  $('sign-in').textContent=incomplete?'Retry sign-in':'Sign in with browser';
+  $('signin-recovery').textContent=incomplete?(device.teaching||'Sign-in did not finish. Check the Console address and retry.'):'';
+  if($('signin-poll-error').textContent!==signInPollError)$('signin-poll-error').textContent=signInPollError;
+  $('signin-poll-error').hidden=!signInPollError;
+  $('signin-reset').hidden=!(broken||(pending&&Boolean(signInPollError)));
+  $('signin-reset-copy').textContent=device.state==='pending'?'Resetting clears this sign-in request.':device.state==='approved'?'Resetting stops local Agents and revokes this computer\'s authorization before clearing it.':'Resetting stops local Agents and clears this computer\'s stored authorization.';
+  $('sign-in').textContent=incomplete?'Retry sign-in':'Sign in';
+  $('signin-settings').hidden=linked||pending||broken;
   const attempt=JSON.stringify([device.origin,device.deviceName]);
   if(incomplete&&attempt!==lastSignInAttempt){
     $('console-url').value=device.origin||'';$('device-name').value=device.deviceName||'';lastSignInAttempt=attempt;
   }
-  $('device-code').textContent=device.code||'';
-  $('code-expiry').textContent=device.codeExpiresAt?'Expires '+new Date(device.codeExpiresAt).toLocaleTimeString():'';
   if(device.consoleUrl)$('console-link').href=device.consoleUrl;else $('console-link').removeAttribute('href');
+  $('console-link').hidden=!device.consoleUrl;
+  $('signin-reopen-hint').hidden=!device.consoleUrl;
   $('account-name').textContent=device.account?device.account.name:'';
   $('device-tag').textContent=device.deviceName?('This computer: '+device.deviceName):'';
   $('agent-summary').textContent=(device.agents||[]).length
@@ -612,7 +619,7 @@ function profileReason(row){
 }
 function renderProfiles(){
   const legacy=state.legacyInstall,rows=looseProfiles();
-  $('local-settings').hidden=rows.length===0&&legacy==null;
+  $('local-settings').hidden=rows.length===0&&legacy==null&&$('signin-settings').hidden;
   $('import-block').hidden=legacy==null;
   if(legacy)$('import-path').innerHTML='Found <code>'+esc(legacy.configFile)+'</code>'+(legacy.imported?' · already imported once':'');
   $('import-notes').innerHTML=notes.map(n=>'<li>'+esc(n)+'</li>').join('');
@@ -780,7 +787,9 @@ function pruneFrames(){
   }
 }
 function render(next){
+  const signedIn=next?.device?.state==='linked'&&['pending','approved'].includes(state.device?.state);
   if(next!==undefined)state={instances:next.instances||[],device:next.device||{state:'none'},legacyInstall:next.legacyInstall==null?null:next.legacyInstall};
+  if(signedIn){signInPollError='';say('account-notice','');closeDialog('dlg-account');say('notice','Signed in as '+(state.device.account?.name||'your account')+'.');}
   if(selected&&!rowOf(selected))selected='';
   pruneFrames();renderAgents();renderCenter();renderWorker();renderStage();
   renderAccount();renderProfiles();renderSetup();renderAttach();renderDetails();applyControls();
@@ -951,7 +960,7 @@ document.addEventListener('keydown',event=>{
   if(dialogs.length)closeDialog(dialogs[dialogs.length-1].id);
   else if(drawer)closeDrawers();
 });
-$('account-open').onclick=()=>{if(!$('console-url').value&&(state.device||{}).consoleUrl)$('console-url').value=state.device.consoleUrl;openDialog('dlg-account','account-close');};
+$('account-open').onclick=()=>openDialog('dlg-account','account-close');
 $('details-open').onclick=()=>openDialog('dlg-details','details-close');
 $('attach-open').onclick=()=>openDialog('dlg-attach','attach-close');
 $('rail-open').onclick=()=>{drawer=drawer==='rail'?'':'rail';applyShell();};
@@ -964,10 +973,34 @@ $('stage-action').onclick=()=>{
   if(mode==='open'&&id)ensureFrame(id);
 };
 
-$('sign-in').onclick=()=>run('account','account-notice',()=>api('/manager/device/start',{consoleUrl:$('console-url').value,name:$('device-name').value}).then(schedule));
-$('check-approval').onclick=()=>run('account','account-notice',()=>api('/manager/device/poll',{}));
+/* Reserve the browser tab inside the click, before the network round trip consumes the
+   user gesture. It cannot reach this local page; a blocked or closed tab leaves a normal
+   link to the same authorization attempt. Merely loading the workbench never opens it. */
+function signIn(){
+  if(busy.has('account')){say('account-notice','Sign-in is already starting.');return Promise.resolve();}
+  if($('sign-in').disabled)return Promise.resolve();
+  signInPollError='';
+  let tab=null;
+  try{tab=window.open('about:blank','_blank');if(tab)tab.opener=null;}catch(e){if(tab)tab.close();tab=null;}
+  const request={consoleUrl:$('console-url').value,name:$('device-name').value};
+  return run('account','account-notice',async()=>{
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),30000);
+    try{
+      const reply=await api('/manager/device/start',request,controller.signal);
+      const url=reply.device?.consoleUrl;
+      if(!url)throw Error('The sign-in page is not available yet. Please retry.');
+      let target;try{target=new URL(url);}catch(e){throw Error('The sign-in page address is invalid.');}
+      if(target.protocol!=='https:'&&!(target.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(target.hostname)))throw Error('The sign-in page address is invalid.');
+      if(tab&&!tab.closed){
+        try{tab.location.replace(url);}catch(e){tab.close();say('account-notice','Open the sign-in page using the link below.');}
+      }else say('account-notice','Open the sign-in page using the link below.');
+      schedule();
+    }catch(e){if(tab&&!tab.closed)tab.close();throw e;}finally{clearTimeout(timeout);}
+  });
+}
+$('sign-in').onclick=signIn;
 $('refresh-account').onclick=()=>run('account','account-notice',()=>api('/manager/device/refresh',{}));
-$('start-over').onclick=()=>run('account','account-notice',()=>api('/manager/device/forget',{}).then(v=>{
+$('start-over').onclick=()=>run('account','account-notice',()=>api(state.device?.state==='approved'?'/manager/device/signout':'/manager/device/forget',{}).then(v=>{
   say('account-notice',v.state==='incomplete'?(v.teaching||'Some Agents are still running.')
     :v.revoke==='unconfirmed'?(v.teaching||'Cleared on this computer; the revocation was not confirmed.')
       :'This authorization was cleared. Sign in again to choose Agents.',v.state==='incomplete'||v.revoke==='unconfirmed');}));
@@ -1049,17 +1082,25 @@ $('open-setup').onclick=()=>openSettings(selected,'/setup','details-notice');
    checkbox, an open dialog, a disclosure, the selection, or the frame that is showing. It
    stands aside while an action is in flight so a stale answer cannot overwrite a fresh one. */
 function poll(){
+  if(polling)return polling;
   const device=state.device||{};
   const canCheck=(device.state==='pending'&&device.code&&device.consoleUrl)||device.state==='approved';
   const step=canCheck?api('/manager/device/poll',{}):api('/manager/state');
-  // A refusal is the manager talking and is left to whatever asked for it; only silence, or
-  // an answer that no longer accepts this page, becomes the connection state, and api()
-  // is where that difference is decided.
-  return step.catch(()=>{});
+  // Sign-in has no manual poll button: refusals need their own visible teaching and reset
+  // path. Keep retrying the same request; a transient failure can still recover by itself.
+  polling=step.then(()=>{if(canCheck&&signInPollError){signInPollError='';render();}}).catch(error=>{
+    if(canCheck){signInPollError=error.message;render();}
+  }).finally(()=>{polling=null;});
+  return polling;
 }
 function schedule(){clearTimeout(pollTimer);pollTimer=setTimeout(()=>{
   if(busy.size===0&&!document.hidden)poll().then(schedule,schedule);
   else schedule();},3000);}
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&busy.size===0&&['pending','approved'].includes(state.device?.state)){
+    clearTimeout(pollTimer);poll().then(schedule,schedule);
+  }
+});
 applyShell();
 run('boot','notice',()=>api('/manager/state')).then(schedule);
 </script></body></html>`

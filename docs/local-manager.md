@@ -24,10 +24,11 @@ neutral gray style as Console.
 
 ## Sign in and connect
 
-1. Open **Account**, enter the Console address and this computer's name, then choose
-   **Sign in with browser**.
-2. In Console, sign in and approve the displayed device code and the exact Agents
-   this computer may use. No cloud account cookie reaches the local runtime.
+1. Open the account menu at the bottom left and choose **Sign in**. Rulith opens the browser sign-in page.
+   A different Console address and computer name are optional settings under **Advanced local settings**.
+2. Sign in and approve the exact Agents this computer may use. The link carries
+   the authorization request; no code needs to be copied or typed. Return to Rulith:
+   your Agents appear automatically. No cloud account cookie reaches the local runtime.
 3. Choose an authorized Agent from the list. On first use, choose whether Rulith runs
    it here with an LLM or provides only a Worker for an existing MCP client.
 4. Confirm setup for that Agent. Replacing an existing Agent token requires explicit
@@ -49,10 +50,17 @@ installing capabilities, governing resource access, publishing and billing remai
 
 ## Interrupted connection attempts
 
-If no approval code arrives, Account shows **Retry sign-in** with the Console address
-and computer name still editable. Retrying the same request retains its original
+If sign-in cannot start, Account shows **Retry sign-in**. The Console address
+and computer name remain editable under **Advanced local settings**. Retrying the same request retains its original
 proof. A Console without device sign-in support needs a compatible Gateway or the
-correct Console address. Approval checks begin only after a code has been received.
+correct Console address. Approval is checked automatically after the request is ready.
+If the browser blocks or closes the sign-in tab, use **Reopen sign-in page** to return
+to the same request. There is no manual approval-check step.
+Returning to the workbench checks approval immediately. If automatic checks fail,
+the account menu shows the actual error and **Reset sign-in**. A request that has not
+delivered credentials is cleared locally. An approved sign-in with credentials
+uses sign-out: stop local Agents, confirm revocation, then clear. Incomplete stopping or
+revocation is reported without pretending that sign-out succeeded.
 Older installation imports are under **Advanced local settings**, separate from sign-in.
 
 The intended account, Console and Agent are recorded when first-use setup creates a
@@ -126,3 +134,10 @@ protected-path checks prevent accidental exposure of the manager's private files
 they are not an OS sandbox for arbitrary executables. Device login does not grant
 tools, install capabilities, change billing, delegate work between Agents, or give
 one Worker access to another Agent's queue.
+
+## Browser verification
+
+Run `node --test test/browser/workbench-ui.browser.mjs` for browser behavior, separately
+from `npm test`. For installations outside the development workspace, set
+`RULITH_PLAYWRIGHT_MODULE` to the Playwright entry file and `RULITH_CHROMIUM_EXECUTABLE`
+to a Chromium executable. The runner reports a skip if its browser dependencies are absent.

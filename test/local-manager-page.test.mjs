@@ -259,7 +259,7 @@ test('failed sign-in keeps the address editable and exposes retry instead of an 
   assert.equal(page.$('pending').hidden, true)
   assert.equal(page.$('sign-in').disabled, false)
   assert.equal(page.$('sign-in').textContent, 'Retry sign-in')
-  assert.equal(page.$('check-approval').disabled, true)
+  assert.equal(page.$('check-approval'), undefined)
   assert.equal(page.$('console-url').value, ORIGIN)
   assert.equal(page.$('device-name').value, 'My laptop')
   assert.match(page.$('signin-recovery').textContent, /did not finish/)
@@ -273,7 +273,7 @@ test('failed sign-in keeps the address editable and exposes retry instead of an 
   page.render(stateOf({ device: { ...device, code: 'ABCD2345', consoleUrl: ORIGIN + '/console/#/devices?code=ABCD2345', teaching: '' } }))
   assert.equal(page.$('pending').hidden, false)
   assert.equal(page.$('signed-out').hidden, true)
-  assert.equal(page.$('check-approval').disabled, false)
+  assert.equal(page.$('console-link').hidden, false)
 })
 
 test('a signed-in account shows its own name, its Agents, and an unfinished sign-out', async () => {
@@ -973,7 +973,7 @@ test('signing in sends what the operator typed, and nothing else', async () => {
   const page = await runPageScript(managerPage, {
     respond: async (path, request) => {
       requests.push({ path, body: request.body })
-      return { body: path.endsWith('/device/start') ? stateOf({ device: deviceOf({ state: 'pending', code: 'ABCD2345' }) }) : stateOf() }
+      return { body: path.endsWith('/device/start') ? stateOf({ device: deviceOf({ state: 'pending', code: 'ABCD2345', consoleUrl: ORIGIN + '/console/#/devices?code=ABCD2345' }) }) : stateOf() }
     },
   })
   page.$('console-url').value = 'https://console.example'
@@ -981,9 +981,115 @@ test('signing in sends what the operator typed, and nothing else', async () => {
   await page.$('sign-in').onclick(); await settle()
   const start = requests.find((row) => row.path === '/manager/device/start')
   assert.deepEqual(start.body, { consoleUrl: 'https://console.example', name: 'Work laptop' })
-  assert.equal(page.$('device-code').textContent, 'ABCD2345', 'the answer is rendered from the state the server returned')
+  assert.equal(page.$('device-code'), undefined, 'the authorization code is carried by the link, not shown as a task for the user')
+  assert.equal(page.opened[0].url, ORIGIN + '/console/#/devices?code=ABCD2345')
+  assert.equal(page.opened[0].opener, null, 'the page script severs its opener reference; browser behavior is checked separately')
   assert.equal(page.calls.every((row) => row.headers['x-rulith-manager'] === 'page-test-key'), true,
     'every request carries the key from this page\'s address')
+})
+
+test('sign-in reserves one tab before the network request and prevents duplicate starts', async () => {
+  let finish
+  const waiting = new Promise(resolve => { finish = resolve })
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (!path.endsWith('/device/start')) return { body: stateOf() }
+    await waiting
+    return { body: stateOf({ device: deviceOf({ state: 'pending', code: 'ABCD2345', consoleUrl: ORIGIN + '/console/#/devices?code=ABCD2345' }) }) }
+  } })
+  assert.equal(page.opened.length, 0, 'loading the page does not sign in')
+  const first = page.$('sign-in').onclick()
+  assert.equal(page.opened.length, 1, 'the tab is opened in the click, before an await')
+  assert.equal(page.calls.filter(c => c.path.endsWith('/device/start')).length, 0)
+  await page.$('sign-in').onclick()
+  assert.equal(page.opened.length, 1)
+  finish(); await first
+  assert.equal(page.calls.filter(c => c.path.endsWith('/device/start')).length, 1)
+})
+
+test('a blocked sign-in tab keeps a usable link and approval completes through automatic polling', async () => {
+  let device = deviceOf()
+  const page = await runPageScript(managerPage, { openWindow: () => null, respond: async path => {
+    if (path.endsWith('/device/start')) device = deviceOf({ state: 'pending', code: 'ABCD2345', consoleUrl: ORIGIN + '/console/#/devices?code=ABCD2345' })
+    if (path.endsWith('/device/poll')) device = linkedDevice()
+    return { body: stateOf({ device }) }
+  } })
+  page.$('account-open').onclick()
+  await page.$('sign-in').onclick()
+  assert.equal(page.$('console-link').href, ORIGIN + '/console/#/devices?code=ABCD2345')
+  assert.match(page.$('account-notice').textContent, /link below/)
+  page.timers.at(-1).callback(); await settle()
+  assert.equal(page.$('dlg-account').hidden, true)
+  assert.equal(page.$('account-line').textContent, 'Test Account')
+  assert.match(page.$('agents').innerHTML, /Alpha/)
+  assert.equal(page.calls.filter(c => c.path.endsWith('/device/start')).length, 1)
+})
+
+test('a failed sign-in request closes its blank tab and remains retryable', async () => {
+  const page = await runPageScript(managerPage, { respond: async path => path.endsWith('/device/start')
+    ? { status: 400, body: { ...stateOf(), ok: false, teaching: 'Console did not answer.' } }
+    : { body: stateOf() } })
+  await page.$('sign-in').onclick()
+  assert.equal(page.opened[0].closed, true)
+  assert.equal(page.$('sign-in').disabled, false)
+  assert.match(page.$('account-notice').textContent, /Console did not answer/)
+})
+
+test('a clean installation can reach sign-in settings without a legacy profile', async () => {
+  const page = await openPage(stateOf())
+  page.$('account-open').onclick()
+  assert.equal(page.$('local-settings').hidden, false)
+  assert.equal(page.$('signin-settings').hidden, false)
+  assert.equal(page.opened.length, 0, 'the account menu allows configuration before sign-in')
+})
+
+test('a stalled sign-in times out, closes the reserved tab and allows retry', async () => {
+  const page = await runPageScript(managerPage, { respond: async (path, request) => {
+    if (path.endsWith('/device/start')) await new Promise((resolve, reject) => request.signal.addEventListener('abort', () => reject(Error('aborted'))))
+    return { body: stateOf() }
+  } })
+  const started = page.$('sign-in').onclick()
+  await settle()
+  page.timers.find(t => t.ms === 30000).callback()
+  await started
+  assert.equal(page.opened[0].closed, true)
+  assert.equal(page.$('sign-in').disabled, false)
+  assert.match(page.$('account-notice').textContent, /took too long/)
+})
+
+test('automatic approval failures are visible and can be reset, including the approved state', async () => {
+  for (const state of ['pending', 'approved']) {
+    let device = deviceOf({ state, code: state === 'pending' ? 'ABCD2345' : '', consoleUrl: state === 'pending' ? ORIGIN + '/console/#/devices?code=ABCD2345' : '' })
+    const page = await runPageScript(managerPage, { respond: async path => {
+      if (path.endsWith('/device/poll')) return { status: 400, body: { ...stateOf({ device }), ok: false, teaching: 'The device token could not be opened.' } }
+      if (path.endsWith('/device/forget')) {
+        if (device.state === 'approved') return { status: 400, body: { ...stateOf({ device }), ok: false, teaching: 'Use Sign out and stop this device.' } }
+        device = deviceOf()
+      }
+      if (path.endsWith('/device/signout')) device = deviceOf()
+      return { body: stateOf({ device }) }
+    } })
+    page.timers.find(t => t.ms === 3000).callback(); await settle()
+    assert.match(page.$('signin-poll-error').textContent, /could not be opened/)
+    assert.equal(page.$('signin-reset').hidden, false)
+    assert.equal(page.$('start-over').disabled, false)
+    await page.$('start-over').onclick()
+    assert.equal(page.$('signed-out').hidden, false)
+    assert.equal(page.$('sign-in').disabled, false)
+    assert.equal(page.calls.filter(c => c.path.endsWith(state === 'approved' ? '/device/signout' : '/device/forget')).length, 1)
+    assert.equal(page.calls.filter(c => c.path.endsWith(state === 'approved' ? '/device/forget' : '/device/signout')).length, 0)
+  }
+})
+
+test('returning to the visible workbench immediately collects approval', async () => {
+  let device = deviceOf({ state: 'approved' })
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path.endsWith('/device/poll')) device = linkedDevice()
+    return { body: stateOf({ device }) }
+  } })
+  for (const listener of page.document.listeners.visibilitychange) listener()
+  await settle()
+  assert.equal(page.$('account-line').textContent, 'Test Account')
+  assert.match(page.$('notice').textContent, /Signed in as Test Account/)
 })
 
 test('a refused operation shows its teaching and leaves the operator where they can retry', async () => {

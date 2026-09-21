@@ -23,10 +23,11 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { startMockWorkbench } from './mock-manager.mjs'
 
-const PLAYWRIGHT = 'D:/Work/rulith-java/console-web/node_modules/playwright/index.js'
+const PLAYWRIGHT = process.env.RULITH_PLAYWRIGHT_MODULE || 'D:/Work/rulith-java/console-web/node_modules/playwright/index.js'
 
 /** A Chromium from the shared cache; the installed package may expect a newer build than is there. */
 function chromiumExecutable() {
+  if (process.env.RULITH_CHROMIUM_EXECUTABLE) return process.env.RULITH_CHROMIUM_EXECUTABLE
   const root = join(process.env.LOCALAPPDATA ?? '', 'ms-playwright')
   if (!existsSync(root)) return ''
   const candidates = []
@@ -635,15 +636,87 @@ arm('an incomplete device sign-in survives reload with an editable address and a
     await page.locator('#account-open').click()
     await page.locator('#sign-in').waitFor({ state: 'visible' })
     assert.equal(await page.locator('#sign-in').innerText(), 'Retry sign-in')
-    assert.equal(await page.locator('#check-approval').isVisible(), false)
+    assert.equal(await page.locator('#check-approval').count(), 0)
     assert.equal(await page.locator('#console-link').getAttribute('href'), null)
     assert.equal(await page.locator('#console-url').inputValue(), 'http://127.0.0.1:45678')
     assert.equal(await page.locator('#device-name').inputValue(), 'Retry laptop')
     const writes = writesTo(page)
+    await page.locator('#local-settings > summary').click()
     await page.locator('#console-url').fill('http://127.0.0.1:62017')
     await page.locator('#sign-in').click()
     assert.deepEqual(writes.find(row => row.path === '/manager/device/start')?.body,
       { consoleUrl: 'http://127.0.0.1:62017', name: 'Retry laptop' })
+  })
+
+for (const viewport of [{ width: 1440, height: 960 }, { width: 415, height: 800 }]) {
+  arm('browser sign-in opens directly and returns the approved Agents at ' + viewport.width + 'px', viewport,
+    async ({ page, context, fixture }) => {
+      const linked = structuredClone(fixture.device)
+      fixture.rows.splice(0)
+      Object.assign(fixture.device, { state: 'none', code: '', consoleUrl: '' })
+      await page.reload()
+      if (viewport.width < 980) await page.click('#rail-open')
+      await page.click('#account-open')
+      assert.equal(await page.locator('#device-code').count(), 0)
+      assert.equal(await page.locator('#check-approval').count(), 0)
+      assert.equal(await page.locator('#console-url').isVisible(), false)
+      assert.equal(await page.locator('#local-settings').isVisible(), true)
+      await page.click('#local-settings > summary')
+      assert.equal(await page.locator('#console-url').isVisible(), true, 'a clean installation can configure another Console')
+      await page.click('#local-settings > summary')
+      const url = 'https://console.example/console/#/devices?code=ABCD2345'
+      let referrer = 'not checked', starts = 0
+      await context.route('https://console.example/**', async route => {
+        referrer = route.request().headers().referer || ''
+        await route.fulfill({ contentType: 'text/html', body: '<h1>Sign in to Rulith</h1>' })
+      })
+      await page.route('**/manager/device/start', async route => {
+        starts++
+        Object.assign(fixture.device, { state: 'pending', code: 'ABCD2345', consoleUrl: url })
+        await route.fulfill({ json: { ok: true, instances: fixture.rows, device: fixture.device } })
+      })
+      const opened = page.waitForEvent('popup')
+      await page.click('#sign-in')
+      const popup = await opened
+      await popup.waitForURL(url)
+      assert.equal(await popup.evaluate(() => window.opener), null)
+      assert.equal(referrer, '', 'the local browser key must not reach Console in a Referer')
+      assert.equal(starts, 1)
+      assert.equal(await page.locator('#pending').isVisible(), true)
+      assert.equal(await page.locator('#console-link').getAttribute('href'), url)
+      Object.assign(fixture.device, linked)
+      await popup.close()
+      await page.bringToFront()
+      await page.locator('#dlg-account').waitFor({ state: 'hidden', timeout: 15000 })
+      assert.equal(await page.locator('#account-line').innerText(), 'Test Account')
+      assert.equal(await page.locator('button[data-agent="agent-alpha"]').count(), 1)
+      assert.equal(starts, 1, 'automatic approval checks must not create a second login')
+    })
+}
+
+arm('blocked sign-in tabs have a working ordinary link and do not lose the request',
+  { width: 1440, height: 960 }, async ({ page, context, fixture }) => {
+    Object.assign(fixture.device, { state: 'none', code: '', consoleUrl: '' })
+    await page.reload()
+    await page.click('#account-open')
+    await page.evaluate(() => { window.open = () => null })
+    const url = 'https://console.example/console/#/devices?code=ABCD2345'
+    let starts = 0
+    await context.route('https://console.example/**', route => route.fulfill({ contentType: 'text/html', body: '<h1>Sign in</h1>' }))
+    await page.route('**/manager/device/start', async route => {
+      starts++
+      Object.assign(fixture.device, { state: 'pending', code: 'ABCD2345', consoleUrl: url })
+      await route.fulfill({ json: { ok: true, instances: fixture.rows, device: fixture.device } })
+    })
+    await page.click('#sign-in')
+    await page.locator('#pending').waitFor({ state: 'visible' })
+    assert.match(await page.locator('#account-notice').innerText(), /link below/)
+    const opened = page.waitForEvent('popup')
+    await page.click('#console-link')
+    const popup = await opened
+    await popup.waitForURL(url)
+    assert.equal(await popup.evaluate(() => window.opener), null)
+    assert.equal(starts, 1)
   })
 
 arm('a running Agent can chat while its optional Worker is stopped',

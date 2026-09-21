@@ -96,7 +96,7 @@ function element(id, doc) {
  * @param {(path: string, init: object) => Promise<object>} options.respond
  *   Answers the page's `fetch`; receives the path and the request it made.
  */
-export async function runPageScript(html, { search = '?k=page-test-key', respond } = {}) {
+export async function runPageScript(html, { search = '?k=page-test-key', respond, openWindow } = {}) {
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1]
   if (script === undefined) throw new Error('The page has no script to run.')
   /** Every request the page made: { path, method, body }. */
@@ -131,7 +131,7 @@ export async function runPageScript(html, { search = '?k=page-test-key', respond
   const fetchImpl = async (path, init = {}) => {
     const body = init.body === undefined ? undefined : JSON.parse(init.body)
     calls.push({ path, method: init.method ?? 'GET', body, headers: init.headers ?? {} })
-    const answer = await respond(path, { method: init.method ?? 'GET', body })
+    const answer = await respond(path, { method: init.method ?? 'GET', body, signal: init.signal })
     return {
       ok: answer.status === undefined || answer.status < 400,
       status: answer.status ?? 200,
@@ -147,7 +147,12 @@ export async function runPageScript(html, { search = '?k=page-test-key', respond
   const windowStub = {
     addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler) },
     listeners: {},
-    open: (url, target) => opened.push({ url, target }),
+    open: (url, target) => {
+      const tab = { url, target, closed: false, opener: {},
+        location: { replace(value) { tab.url = value } }, close() { tab.closed = true } }
+      opened.push(tab)
+      return openWindow ? openWindow(tab) : tab
+    },
     matchMedia: () => ({
       get matches() { return media.narrow },
       addEventListener: (type, handler) => media.listeners.push(handler),
