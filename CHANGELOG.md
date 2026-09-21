@@ -2,6 +2,19 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.1 - 2026-09-21
+
+- Simplify browser sign-in: Rulith opens the authorization request directly and
+  collects approved credentials automatically, including while the workbench is
+  in the background. Operators can reopen the same request when a browser tab is
+  blocked or closed; approval codes no longer need to be copied or checked manually.
+- Preserve safe recovery when sign-in or acknowledgement fails. Surface the actual
+  polling error, retain an unfinished request for retry, and require confirmed
+  sign-out before clearing delivered credentials.
+- This browser flow requires the matching Gateway deployment's standalone
+  **Sign in to Rulith** page. Account login still does not start an Agent or
+  authorize a tool.
+
 ## 0.8.0 - 2026-09-21
 
 - Add chat attachments and a file picker backed by immutable, per-profile Worker
