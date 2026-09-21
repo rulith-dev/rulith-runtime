@@ -53,13 +53,13 @@ const instanceOf = (overrides = {}) => ({
  *   provable. Empty by default, so an arm that is not about the transcript sees an empty
  *   conversation. The stream semantics are the host's own: replay, then stay open.
  */
-export async function startMockWorkbench({ instances, agents, events = [] } = {}) {
+export async function startMockWorkbench({ instances, agents, events = [], modelDefaults = null } = {}) {
   const MANAGER_KEY = 'manager-browser-key-0001'
   const HOST_KEY = 'host-browser-key-0001'
   /** The account and Console this device is signed in to; the directory joins on both. */
   const CONSOLE = 'https://console.example', ACCOUNT = 'acct-1'
   /** Flipped by a test: what the conversation host answers when a message is sent. */
-  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
+  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', modelRefusal: '', modelRequests: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
 
   // Configured Agents, as the manager reports them once pairing has completed: the directory
   // joins a profile to an Agent by account, Console origin and Agent id together.
@@ -112,7 +112,7 @@ export async function startMockWorkbench({ instances, agents, events = [] } = {}
   const hostUrl = (id, page) => 'http://127.0.0.1:' + hosts.get(id).port + page + '?k=' + HOST_KEY
     + '&manager=' + encodeURIComponent('http://127.0.0.1:' + managerPort + '/?k=' + MANAGER_KEY)
 
-  const state = () => ({ ok: true, root: 'D:/manager', device, instances: rows, legacyInstall: null })
+  const state = () => ({ ok: true, root: 'D:/manager', device, instances: rows, modelDefaults, legacyInstall: null })
   const find = (id) => rows.find((entry) => entry.id === id)
 
   const manager = http.createServer(async (req, res) => {
@@ -124,6 +124,23 @@ export async function startMockWorkbench({ instances, agents, events = [] } = {}
     if (path === '/manager/state') return void json(res, 200, state())
     const body = req.method === 'POST' ? await readBody(req) : {}
     const row = find(String(body.instanceId ?? ''))
+    if (path === '/manager/model/default' || path === '/manager/instances/model') {
+      control.modelRequests.push({ path, ...body })
+      if (control.modelRefusal) return void json(res, 409, { ...state(), ok: false, teaching: control.modelRefusal })
+      if (body.expectedOrigin !== device.origin || body.expectedAccountId !== device.account.id)
+        return void json(res, 409, { ...state(), ok: false, teaching: 'Account changed.' })
+      if (path === '/manager/model/default') {
+        modelDefaults = { available: true, origin: device.origin, accountId: device.account.id,
+          url: body.url, name: body.name, thinking: body.thinking, keyConfigured: Boolean(body.key), configured: true }
+        for (const entry of rows) if (entry.model?.source === 'default')
+          entry.model = { ...modelDefaults, source: 'default', ready: true, reason: '' }
+      } else {
+        row.model = body.source === 'default' ? { ...modelDefaults, source: 'default', ready: true, reason: '' }
+          : { source: 'custom', configured: true, ready: true, url: body.url, name: body.name,
+            thinking: body.thinking, keyConfigured: Boolean(body.key), reason: '' }
+      }
+      return void json(res, 200, state())
+    }
     if (path === '/manager/instances/open') {
       if (control.openRefusal) return void json(res, 409, { ...state(), ok: false, teaching: control.openRefusal })
       if (!row) return void json(res, 400, { ok: false, teaching: 'No such Agent.', ...state() })

@@ -820,3 +820,47 @@ arm('a local profile the directory does not claim stays in the account settings,
       runningAgentId: '', pendingAgentId: '', blocked: '', orphaned: null, legacyImport: null, hostPort: 0, servePort: 0,
       signedOutAt: '', createdAt: '', importedFrom: '' },
   ] })
+
+const modelFixture = { modelDefaults: { available: true, origin: 'https://console.example', accountId: 'acct-1',
+  configured: false, url: '', name: '', thinking: 'standard', keyConfigured: false },
+  instances: [{ id: 'inst-1', name: 'Research', mode: 'local_agent', directory: 'D:/instances/inst-1',
+    origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent-alpha', agentName: 'Alpha', paired: true,
+    agent: false, worker: false,
+    model: { source: 'default', configured: false, ready: false, url: '', name: '', keyConfigured: false } }] }
+
+arm('missing model leads directly to default setup, then the explicit start action',
+  { width: 1440, height: 960 }, async ({ page, fixture }) => {
+    await page.click('[data-instance="inst-1"]')
+    await page.locator('#agent-readiness-action').click()
+    await page.locator('#dlg-model:not([hidden])').waitFor()
+    assert.equal(await page.locator('#model-source').inputValue(), 'default')
+    await page.fill('#model-url', 'https://model.example/v1')
+    await page.fill('#model-name', 'chosen-model')
+    await page.fill('#model-key', 'fixture-only-key')
+    await page.click('#model-save-start')
+    await page.locator('#dlg-model').waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'Stop Agent', exact: true }).waitFor()
+    assert.equal(fixture.rows[0].agent, true)
+    assert.equal(fixture.rows[0].worker, false, 'model setup cannot start an unrelated role')
+    assert.equal(fixture.control.modelRequests.length, 2)
+    assert.equal(fixture.control.modelRequests[0].expectedAccountId, 'acct-1')
+    assert.equal(fixture.control.modelRequests[1].instanceId, 'inst-1')
+    assert.equal(await page.locator('#model-key').inputValue(), '')
+  }, modelFixture)
+
+arm('model editor remains usable on a narrow screen and an error retains the typed configuration',
+  { width: 390, height: 844 }, async ({ page, fixture }) => {
+    await page.click('#rail-open')
+    await page.click('#account-open')
+    await page.click('#default-model-open')
+    await page.fill('#model-url', 'https://model.example/v1')
+    await page.fill('#model-name', 'typed-model')
+    fixture.control.modelRefusal = 'The configuration was not saved. Try again.'
+    await page.click('#model-save')
+    await page.locator('#model-notice').filter({ hasText: 'not saved' }).waitFor()
+    assert.equal(await page.inputValue('#model-name'), 'typed-model')
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+    await page.keyboard.press('Escape')
+    assert.equal(await page.locator('#dlg-account').isVisible(), true)
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'default-model-open')
+  }, modelFixture)

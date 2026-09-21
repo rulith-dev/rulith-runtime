@@ -231,12 +231,17 @@ export function createLocalHost({
   configFile, config, roles, port = 7790, key = randomUUID().replace(/-/g, ''),
   startConfirmMs = START_CONFIRM_MS, autoStart = true,
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
-  materialRoot,
+  materialRoot, onModelConfigured, modelOverlay,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
+  // An account default is runtime-only. It must never become part of `config`: Setup actions
+  // clone and save that object, and doing so would turn an inherited provider key into a
+  // durable per-instance credential.
+  let activeModelOverlay = modelOverlay === undefined ? undefined : { ...modelOverlay }
   /** What a child inherits before this instance's own configuration is applied. */
   const baseEnv = () => (isolateEnvironment ? isolatedEnvironmentBase(process.env) : process.env)
+  const agentEnvironment = () => effectiveChildEnv(baseEnv(), { ...config.agent?.env, ...(activeModelOverlay ?? {}) })
   /**
    * The owner's veto on the two things that change what this host is running under.
    *
@@ -306,7 +311,7 @@ export function createLocalHost({
    * configuration file this host rewrites.
    */
   const materialIdentityNow = () => {
-    const agentEnv = effectiveChildEnv(baseEnv(), config.agent?.env ?? {})
+    const agentEnv = agentEnvironment()
     const workerEnv = effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
     return materialIdentity({
       configFile: resolve(configFile),
@@ -393,9 +398,10 @@ export function createLocalHost({
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
   const setup = createSetupService({ configFile, getConfig: () => config,
     effectiveEnv: () => effectiveChildEnv(baseEnv(), config.worker?.env ?? {}),
-    agentCredentialConfigured: () => !!effectiveChildEnv(baseEnv(), config.agent?.env ?? {}).RULITH_TOKEN,
+    agentCredentialConfigured: () => !!agentEnvironment().RULITH_TOKEN,
     stopped: () => !running('agent') && !running('worker'), agentStopped: () => !running('agent'), mcpServices, toolManagement,
     approvePairing: setupApprover,
+    onModelConfigured: async () => { activeModelOverlay = undefined; return await onModelConfigured?.() },
     saveConfig: next => {
       const normalized = normalizeLocalConfig(next)
       saveConfig(configFile, normalized)
@@ -475,7 +481,7 @@ export function createLocalHost({
     const path = config.paths?.agent ? resolve(configDir, config.paths.agent) : resolve(HERE, '../agent/rulith-agent.mjs')
     if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.agent in the Rulith configuration.`
     const serveKey = randomUUID().replace(/-/g, '')
-    const roleEnv = effectiveChildEnv(baseEnv(), config.agent?.env ?? {})
+    const roleEnv = agentEnvironment()
     const servePort = localInteger(
       'RULITH_SERVE_PORT',
       roleEnv.RULITH_SERVE_PORT,
@@ -523,11 +529,13 @@ export function createLocalHost({
     // Agent credential nor anything it could reconstruct one from: the two bindings travel as
     // sha256 fingerprints, which it compares and never inverts. The same values the Worker
     // Tools page composed its list from — one function, so the two cannot disagree.
+    const materialEnv = materialChildEnv()
     const child = spawn(process.execPath, [path], {
-      env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc', ...materialChildEnv() },
+      env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc', ...materialEnv },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
-    components.worker = { ...components.worker, child, roleEnv, readyAt: undefined, onReady: undefined, managedStop: false }
+    components.worker = { ...components.worker, child, roleEnv, materialDestination: materialEnv.RULITH_MATERIALS_MODEL_DESTINATION,
+      readyAt: undefined, onReady: undefined, managedStop: false }
     wireChild('worker', child)
     child.on('exit', (code) => { emit('worker', 'exit', { code }); components.worker.child = null; announceChildren() })
     emit('worker', 'spawn', { pid: child.pid })
@@ -793,7 +801,7 @@ export function createLocalHost({
         clients.add(res); req.on('close', () => clients.delete(res)); return
       }
       if (path === '/status' && req.method === 'GET') {
-        const agentEnv = effectiveChildEnv(baseEnv(), config.agent?.env ?? {})
+        const agentEnv = agentEnvironment()
         const workerEnv = components.worker.roleEnv ?? effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
@@ -933,6 +941,22 @@ export function createLocalHost({
     // claim about which Agent a running process is — exactly the claim that must come from
     // the process.
     get agentId() { return components.agent.agentId },
+    // Material-read tools retain the destination their Worker started with. Report a
+    // needed restart instead of moving an operator attachment's disclosure permission.
+    get workerModelRestartRequired() {
+      if (!running('worker')) return false
+      try { return components.worker.materialDestination !== materialIdentityNow().modelDestination }
+      catch { return false }
+    },
+    /** Manager-only in-memory model replacement for an inherited account default.
+     * It intentionally does not write local.json: an inherited key must not become a
+     * per-instance credential just because this host happened to be open. */
+    setAgentModel: ({ url = '', name = '', key: modelKey = '', thinking = 'standard' } = {}) => {
+      if (running('agent')) throw new Error('Stop Agent before changing its model.')
+      activeModelOverlay = {
+        RULITH_MODEL_URL: String(url), RULITH_MODEL: String(name), RULITH_MODEL_KEY: String(modelKey),
+        RULITH_MODEL_THINKING: thinking === 'enabled' ? 'enabled' : '' }
+    },
     /**
      * The operating-system processes this host currently owns.
      *

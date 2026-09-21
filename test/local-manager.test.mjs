@@ -68,7 +68,10 @@ async function addInstance(manager, name, { agentId, exit = false, mode = 'local
   await manager.instances.closeHost(created.id)
   const config = loadInstanceConfig(created.directory)
   config.paths = { agent: ECHO, worker: ECHO }
-  config.agent.env = { ...config.agent.env, RULITH_TEST_IDENTITY: agentId ?? name, ...(exit ? { RULITH_TEST_EXIT: '1' } : {}) }
+  // Existing profiles remain custom. Give the executable fixture a local model endpoint so
+  // these lifecycle arms exercise their purpose rather than failing the model readiness gate.
+  config.agent.env = { ...config.agent.env, RULITH_MODEL_URL: 'http://127.0.0.1:11434/v1', RULITH_MODEL: 'fixture-model',
+    RULITH_TEST_IDENTITY: agentId ?? name, ...(exit ? { RULITH_TEST_EXIT: '1' } : {}) }
   config.worker.env = { ...config.worker.env, RULITH_TEST_IDENTITY: agentId ?? name }
   saveInstanceConfig(created.directory, config)
   return created
@@ -873,6 +876,13 @@ test('nothing tears down a host while a child is still finishing, and nothing ca
     const deadline = Date.now() + 15_000
     while (processAlive(workerPid) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 100))
     assert.equal(processAlive(workerPid), false)
+    // The OS can report process death before Node delivers ChildProcess's exit event.
+    // Wait for the host's independently observed exit too; no timing assumption may turn
+    // a truthful, still-unconfirmed stop into a failure under a busy full test run.
+    while (manager.instances.hosts.get(instance.id)?.host.status().worker && Date.now() < deadline) {
+      await new Promise(done => setTimeout(done, 25))
+    }
+    assert.equal(manager.instances.hosts.get(instance.id)?.host.status().worker, false)
     const after = await manager.instances.stop(instance.id)
     assert.equal(after.stopped, true)
     assert.equal(manager.instances.hosts.has(instance.id), false)
@@ -1066,6 +1076,35 @@ test('model settings are refused for a Worker-only instance and for itself', asy
   })
 })
 
+test('copying an inherited model creates an independent override and replaces obsolete keys', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const source = await addInstance(manager, 'Default source', { agentId: 'agent-alpha' })
+    const target = await addInstance(manager, 'Copy target', { agentId: 'agent-beta' })
+    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
+    await manager.instances.setDefaultModel({ ...scope, url: 'https://provider.example/v1', name: 'default', key: 'default-key', thinking: 'enabled' })
+    await manager.instances.setInstanceModel(source.id, { ...scope, source: 'default' })
+    const result = await manager.instances.copyModelSettings(target.id, source.id)
+    assert.equal(result.model, 'default')
+    assert.equal(result.modelKeyCopied, true)
+    assert.equal(manager.instances.overview().find(row => row.id === target.id).model.source, 'custom')
+    assert.equal(loadInstanceConfig(target.directory).agent.env.RULITH_MODEL_KEY, 'default-key')
+    assert.equal(JSON.stringify(result).includes('default-key'), false)
+    await manager.instances.setDefaultModel({ ...scope, url: 'http://127.0.0.1:8080/v1', name: 'keyless', key: '', thinking: 'standard' })
+    assert.equal(loadInstanceConfig(target.directory).agent.env.RULITH_MODEL, 'default', 'the copied model is now independent')
+    for (const open of [false, true]) {
+      if (open) await manager.instances.open(target.id, '/setup')
+      await manager.instances.setInstanceModel(target.id, { ...scope, source: 'custom', url: 'http://127.0.0.1:8080/v1',
+        name: 'previous', key: 'obsolete-key', thinking: 'enabled' })
+      const copied = await manager.instances.copyModelSettings(target.id, source.id)
+      const env = loadInstanceConfig(target.directory).agent.env
+      assert.equal(env.RULITH_MODEL, 'keyless')
+      assert.equal(env.RULITH_MODEL_KEY, '', 'a copy clears the old key in both closed and open hosts')
+      assert.equal(env.RULITH_MODEL_THINKING, '')
+      assert.equal(copied.modelKeyCopied, false)
+    }
+  })
+})
+
 // ── The way back, and the rest of the surface ────────────────────────────────
 
 test('an opened instance is given the manager\'s own address to return to, and never the device token', async (t) => {
@@ -1116,9 +1155,9 @@ test('the manager answers exactly the operations it documents, and none that tou
     assert.deepEqual(routes, [
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
       '/manager/device/start', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget', '/manager/instances/import',
-      '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
+      '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll', '/manager/instances/start',
-      '/manager/instances/stop',
+      '/manager/instances/stop', '/manager/model/default',
     ], 'a new manager operation is a new way to act on this computer and must be deliberate')
     assert.equal(routes.some((route) => /tool|resource|source|grant/.test(route)), false,
       'granting tools stays in Console and in each instance\'s own setup; the manager adds no second path')
@@ -1246,5 +1285,128 @@ test('Worker-only profiles cannot start a model Agent through workbench role con
     await assert.rejects(manager.instances.control(row.id, { role: 'agent', operation: 'start' }), /does not run/)
     assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'start' })).started, true)
     assert.equal(manager.instances.hosts.get(row.id).host.status().agent, false)
+  })
+})
+
+test('account defaults are scoped, inherited at the next Agent start, and never leak their key', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
+    const call = async (path, body) => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}${path}`, { method: 'POST',
+        headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { response, body: await response.json() }
+    }
+    const defaulted = await manager.instances.create({ name: 'Inherited', mode: 'local_agent',
+      setupTarget: { origin: gateway.origin, accountId: scope.expectedAccountId, agentId: AGENTS[0] } })
+    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.source, 'default')
+    const saved = await call('/manager/model/default', { ...scope, url: 'https://provider.example/v1', name: 'remote-default', key: 'default-key-must-not-leak' })
+    assert.equal(saved.response.status, 200)
+    assert.equal(saved.body.modelDefaults.configured, true, 'a remote model with a key is configured')
+    assert.equal(JSON.stringify(saved.body).includes('default-key-must-not-leak'), false)
+    await manager.instances.pair(defaulted.id, { agentId: AGENTS[0] })
+    await manager.instances.closeHost(defaulted.id)
+    const config = loadInstanceConfig(defaulted.directory)
+    config.paths = { agent: ECHO, worker: ECHO }
+    saveInstanceConfig(defaulted.directory, config)
+    assert.equal((await manager.instances.start(defaulted.id)).started, true)
+    assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL, 'remote-default', 'the actual child received the inherited model')
+    assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL_KEY, 'default-key-must-not-leak')
+    assert.equal(observedEnv(manager, defaulted.id, 'worker').RULITH_MODEL_KEY, undefined, 'the Worker never receives the Agent model key')
+    assert.equal(loadInstanceConfig(defaulted.directory).agent.env.RULITH_MODEL_KEY, '', 'an inherited key was not persisted in the profile')
+    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, false)
+
+    const changed = await call('/manager/model/default', { ...scope, url: 'http://127.0.0.1:11434/v1', name: 'second-local', key: '' })
+    assert.equal(changed.response.status, 200)
+    assert.equal(changed.body.modelDefaults.configured, true, 'loopback models may omit a provider key')
+    assert.equal(changed.body.instances.find(row => row.id === defaulted.id).model.restartRequired, true)
+    assert.equal((await manager.instances.control(defaulted.id, { role: 'agent', operation: 'stop' })).stopped, true)
+    assert.equal(manager.instances.hosts.get(defaulted.id).host.status().worker, true, 'the Worker remains running while only Agent restarts')
+    assert.equal((await manager.instances.control(defaulted.id, { role: 'agent', operation: 'start' })).started, true)
+    assert.equal(childEvents(manager, defaulted.id, 'agent').filter(row => row.observed !== undefined).at(-1).observed.RULITH_MODEL,
+      'second-local', 'a default change applies on the next Agent start')
+    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, true,
+      'a Worker still bound to the old endpoint must be named as needing restart for new attachments')
+    await manager.instances.control(defaulted.id, { role: 'worker', operation: 'stop' })
+    await manager.instances.control(defaulted.id, { role: 'worker', operation: 'start' })
+    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, false)
+    await manager.instances.stop(defaulted.id)
+
+    const opened = await manager.instances.open(defaulted.id, '/setup')
+    const setupUrl = new URL(opened.url)
+    const manual = await fetch(setupUrl.origin + '/setup/model', { method: 'POST',
+      headers: { 'x-rulith-local': setupUrl.searchParams.get('k'), 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'http://127.0.0.1:11434/v1', name: 'manual-custom', key: '' }) })
+    assert.equal(manual.status, 200)
+    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.source, 'custom',
+      'an existing Setup page write explicitly leaves inheritance')
+    await manager.instances.closeHost(defaulted.id)
+
+    const custom = await call('/manager/instances/model', { ...scope, instanceId: defaulted.id, source: 'custom',
+      url: 'https://provider.example/v1', name: 'remote', key: 'do-not-return-this-key', thinking: 'enabled' })
+    assert.equal(custom.response.status, 200)
+    assert.equal(custom.body.instances.find(row => row.id === defaulted.id).model.source, 'custom')
+    assert.equal(JSON.stringify(custom.body).includes('do-not-return-this-key'), false)
+    const retained = await call('/manager/instances/model', { ...scope, instanceId: defaulted.id, source: 'custom',
+      url: 'https://provider.example/v1', name: 'remote', key: '', clearKey: false })
+    assert.equal(retained.response.status, 200)
+    assert.equal(loadInstanceConfig(defaulted.directory).agent.env.RULITH_MODEL_KEY, 'do-not-return-this-key',
+      'a blank key retains a key only for the same provider origin')
+    const changedEndpoint = await call('/manager/instances/model', { ...scope, instanceId: defaulted.id, source: 'custom',
+      url: 'https://other-provider.example/v1', name: 'other', key: '', clearKey: false })
+    assert.equal(changedEndpoint.response.status, 200)
+    assert.equal(changedEndpoint.body.instances.find(row => row.id === defaulted.id).model.configured, false)
+    assert.equal(loadInstanceConfig(defaulted.directory).agent.env.RULITH_MODEL_KEY, '', 'a blank key cannot cross provider origins')
+    const stale = await call('/manager/instances/model', { ...scope, expectedAccountId: 'another-account', instanceId: defaulted.id,
+      source: 'default' })
+    assert.equal(stale.response.status, 400)
+    assert.match(stale.body.teaching, /account or Console address changed/)
+
+    const old = await manager.instances.create({ name: 'Old profile' })
+    const external = await manager.instances.create({ name: 'External', mode: 'existing_client' })
+    const models = manager.instances.overview()
+    assert.equal(models.find(row => row.id === old.id).model.source, 'custom', 'a profile without the new marker keeps its old model')
+    assert.equal(models.find(row => row.id === external.id).model.source, 'external')
+  })
+})
+
+test('leaving a keyed account default needs an explicit custom key', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const row = await addInstance(manager, 'Default to custom', { agentId: AGENTS[0] })
+    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
+    await manager.instances.setDefaultModel({ ...scope, url: 'https://provider.example/v1', name: 'account-default', key: 'account-default-key' })
+    await manager.instances.setInstanceModel(row.id, { ...scope, source: 'default' })
+
+    await manager.instances.setInstanceModel(row.id, { ...scope, source: 'custom',
+      url: 'https://provider.example/v1', name: 'custom-name', key: '', clearKey: false })
+    let model = manager.instances.overview().find(entry => entry.id === row.id).model
+    assert.equal(model.source, 'custom')
+    assert.equal(model.configured, false, 'a remote custom configuration without an entered key is not ready')
+    assert.equal(loadInstanceConfig(row.directory).agent.env.RULITH_MODEL_KEY, '', 'the account default key was not copied into the profile')
+    await assert.rejects(manager.instances.start(row.id), /no ready model configuration/)
+
+    await manager.instances.setInstanceModel(row.id, { ...scope, source: 'custom',
+      url: 'https://provider.example/v1', name: 'custom-name', key: 'explicit-custom-key' })
+    assert.equal((await manager.instances.start(row.id)).started, true, 'an explicitly entered custom key starts the real Agent fixture')
+    await manager.instances.stop(row.id)
+    await manager.instances.setInstanceModel(row.id, { ...scope, source: 'custom',
+      url: 'https://provider.example/v1', name: 'renamed-custom', key: '', clearKey: false })
+    assert.equal(loadInstanceConfig(row.directory).agent.env.RULITH_MODEL_KEY, 'explicit-custom-key',
+      'an existing custom configuration retains only its own same-service key')
+    await manager.instances.setInstanceModel(row.id, { ...scope, source: 'custom',
+      url: 'https://other-provider.example/v1', name: 'other-custom', key: '', clearKey: false })
+    model = manager.instances.overview().find(entry => entry.id === row.id).model
+    assert.equal(model.configured, false)
+    assert.equal(loadInstanceConfig(row.directory).agent.env.RULITH_MODEL_KEY, '', 'a key does not cross provider origins')
+
+    const live = await addInstance(manager, 'Live default to custom', { agentId: AGENTS[1] })
+    await manager.instances.setInstanceModel(live.id, { ...scope, source: 'custom',
+      url: 'https://provider.example/v1', name: 'old-custom', key: 'shadow-custom-key' })
+    await manager.instances.open(live.id, '/setup')
+    await manager.instances.setInstanceModel(live.id, { ...scope, source: 'default' })
+    await manager.instances.setInstanceModel(live.id, { ...scope, source: 'custom',
+      url: 'https://provider.example/v1', name: 'new-custom', key: '', clearKey: false })
+    assert.equal(loadInstanceConfig(live.directory).agent.env.RULITH_MODEL_KEY, '',
+      'an open host cannot re-retain its old custom key after leaving the default')
+    await assert.rejects(manager.instances.start(live.id), /no ready model configuration/)
   })
 })

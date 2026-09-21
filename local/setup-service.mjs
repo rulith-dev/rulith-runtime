@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdir
 import { dirname, join, resolve } from 'node:path'
 import { hostname } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { checkedModelInput, resolvedKey } from './model-settings.mjs'
 
 const read = (path, fallback) => existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : fallback
 const digest = value => createHash('sha256').update(value).digest('hex')
@@ -21,7 +22,7 @@ export function setupOrigin(raw) {
 }
 
 /** 本机保存模型配置和领取私钥；Cloud 只收到配对公钥、资源定位及无凭据工具定义。 */
-export function createSetupService({ configFile, getConfig, saveConfig, effectiveEnv, mcpServices, toolManagement, stopped, agentStopped = stopped, agentCredentialConfigured = () => !!getConfig().agent?.env?.RULITH_TOKEN, approvePairing }) {
+export function createSetupService({ configFile, getConfig, saveConfig, effectiveEnv, mcpServices, toolManagement, stopped, agentStopped = stopped, agentCredentialConfigured = () => !!getConfig().agent?.env?.RULITH_TOKEN, approvePairing, onModelConfigured }) {
   const stateFile = configFile + '.setup.json'
   let busy = false
   const state = () => read(stateFile, {})
@@ -187,15 +188,16 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
     }),
     model: body => exclusive(async () => {
       // thinking 是可选的既有模型设置；沿用同一次写入，避免出现第二条改模型的路径。
-      fields(body, ['url', 'name', 'key', 'thinking'])
-      const url = new URL(body.url)
-      if (url.username || url.password || url.search || url.hash || !(url.protocol === 'https:' || url.protocol === 'http:' && ['127.0.0.1','localhost','[::1]'].includes(url.hostname)) || !text(body.name).trim() || text(body.name).length > 256 || text(body.key).length > 4096) throw new Error('Provide a model name and HTTPS endpoint, or a local HTTP endpoint.')
-      if (body.thinking !== undefined && !['enabled', 'standard', ''].includes(text(body.thinking))) throw new Error('Thinking must be enabled or standard.')
+      fields(body, ['url', 'name', 'key', 'clearKey', 'thinking'])
+      const input = checkedModelInput(body)
+      const previous = getConfig().agent?.env ?? {}
+      const key = resolvedKey({ url: previous.RULITH_MODEL_URL, key: previous.RULITH_MODEL_KEY }, input.url, input)
       persistConfiguration(next => {
-        next.agent = { ...next.agent, env: { ...next.agent?.env, RULITH_MODEL_URL: url.href, RULITH_MODEL: body.name.trim(),
-          ...(text(body.key) ? { RULITH_MODEL_KEY: body.key } : {}),
-          ...(body.thinking === undefined ? {} : { RULITH_MODEL_THINKING: text(body.thinking) === 'enabled' ? 'enabled' : '' }) } }
+        next.agent = { ...next.agent, env: { ...next.agent?.env, RULITH_MODEL_URL: input.url, RULITH_MODEL: input.name,
+          RULITH_MODEL_KEY: key,
+          ...(body.thinking === undefined ? {} : { RULITH_MODEL_THINKING: input.thinking === 'enabled' ? 'enabled' : '' }) } }
       }, true)
+      await onModelConfigured?.()
       return { teaching: 'Model configuration saved on this computer.' }
     }),
     example: body => exclusive(async () => {

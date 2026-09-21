@@ -124,6 +124,7 @@ export function createManagerServer({
   const state = () => ({
     root: registry.root,
     device: device.status(),
+    modelDefaults: instances.modelDefaults(),
     instances: instances.overview(),
     // Offered, never acted on: an installation is imported only when somebody asks for it.
     legacyInstall: existsSync(resolve(legacyConfigFile))
@@ -137,6 +138,7 @@ export function createManagerServer({
     '/manager/device/refresh': (body) => { onlyFields(body, []); return instances.admit(() => device.refresh()) },
     '/manager/device/signout': (body) => { onlyFields(body, []); return instances.signOut() },
     '/manager/device/forget': (body) => { onlyFields(body, []); return instances.forgetDevice() },
+    '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking'])),
     '/manager/instances/create': (body) => instances.create(onlyFields(body, ['name', 'mode', 'setupTarget'])),
     '/manager/instances/import': (body) => instances.import(onlyFields(body, ['sourceConfigFile', 'name', 'mode'])),
     '/manager/instances/pair': (body) => {
@@ -148,6 +150,10 @@ export function createManagerServer({
     '/manager/instances/model/copy': (body) => {
       const fields = onlyFields(body, ['instanceId', 'fromInstanceId'])
       return instances.copyModelSettings(String(fields.instanceId ?? ''), String(fields.fromInstanceId ?? ''))
+    },
+    '/manager/instances/model': (body) => {
+      const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'source', 'url', 'name', 'key', 'clearKey', 'thinking'])
+      return instances.setInstanceModel(String(fields.instanceId ?? ''), fields)
     },
     '/manager/instances/open': (body) => {
       const fields = onlyFields(body, ['instanceId', 'page'])

@@ -30,20 +30,13 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createLocalHost, defaultLocalConfig, normalizeLocalConfig } from './rulith-local.mjs'
 import { newInstanceId, processAlive, writeJsonAtomic } from './manager-registry.mjs'
+import { checkedModelInput, createModelSettings, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RUNTIME_ROOT = resolve(HERE, '..')
 export const INSTANCE_MODES = Object.freeze(['local_agent', 'existing_client'])
 /** Credentials a sign-out must remove from an instance; everything else is the operator's. */
 const ISSUED_CREDENTIALS = Object.freeze({ agent: ['RULITH_TOKEN'], worker: ['RULITH_CONNECTION', 'RULITH_CONNECTION_KEY'] })
-/**
- * The model configuration, and nothing adjacent to it.
- *
- * An allow-list rather than "the agent environment minus the tokens": a future variable that
- * happened to carry identity would be copied by a deny-list the day it was added, and the
- * symptom would be two instances quietly sharing something they must not.
- */
-const MODEL_SETTINGS = Object.freeze(['RULITH_MODEL_URL', 'RULITH_MODEL', 'RULITH_MODEL_KEY', 'RULITH_MODEL_THINKING'])
 
 const text = (value) => (typeof value === 'string' ? value : '')
 const readJson = (file, fallback) => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : fallback)
@@ -325,6 +318,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
   /** Live hosts, by instance id. Created once, cached, never re-created on selection. */
   const hosts = new Map()
   const instancesRoot = join(registry.root, 'instances')
+  const modelSettings = createModelSettings({ root: registry.root })
 
   /**
    * One owner at a time, per instance.
@@ -400,6 +394,58 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     const row = registry.instance(id)
     if (row === undefined) throw new Error(`No local instance ${id} is registered.`)
     return row
+  }
+
+  const scopeFor = (row) => ({ origin: text(row.origin) || text(row.setupTarget?.origin),
+    accountId: text(row.accountId) || text(row.setupTarget?.accountId) })
+  const currentScope = (grant = device.status()) => ({ origin: text(grant.origin), accountId: text(grant.account?.id) })
+  const modelSource = (row) => row.mode === 'existing_client' ? 'external' : row.modelSource === 'default' ? 'default' : 'custom'
+  const defaultFor = (row, grant = device.status()) => {
+    const scope = scopeFor(row), current = currentScope(grant)
+    if (grant.state !== 'linked' || !scope.origin || scope.origin !== current.origin || scope.accountId !== current.accountId) return undefined
+    return modelSettings.read(scope.origin, scope.accountId)
+  }
+  const modelFor = (row, grant = device.status()) => {
+    const source = modelSource(row)
+    if (source === 'external') return { source, url: '', name: '', key: '', thinking: 'standard' }
+    if (source === 'default') return { source, ...(defaultFor(row, grant) ?? {}) }
+    const env = loadInstanceConfig(resolve(row.directory)).agent?.env ?? {}
+    return { source, url: text(env.RULITH_MODEL_URL), name: text(env.RULITH_MODEL), key: text(env.RULITH_MODEL_KEY),
+      thinking: text(env.RULITH_MODEL_THINKING) === 'enabled' ? 'enabled' : 'standard' }
+  }
+  const publicModel = (row, grant = device.status()) => {
+    const result = modelView(modelFor(row, grant))
+    if (result.source === 'external') return { ...result, configured: false, ready: true, reason: '' }
+    return result
+  }
+  const defaultView = (grant = device.status()) => {
+    const scope = currentScope(grant)
+    const value = grant.state === 'linked' ? modelSettings.read(scope.origin, scope.accountId) : undefined
+    const view = modelView({ source: 'default', ...(value ?? {}) })
+    return { available: grant.state === 'linked', origin: scope.origin, accountId: scope.accountId,
+      url: view.url, name: view.name, thinking: view.thinking, keyConfigured: view.keyConfigured, configured: view.configured }
+  }
+  const assertExpectedScope = ({ expectedOrigin, expectedAccountId }) => {
+    const grant = device.status(), current = currentScope(grant)
+    if (grant.state !== 'linked' || text(expectedOrigin) !== current.origin || text(expectedAccountId) !== current.accountId) {
+      throw new Error('The account or Console address changed. Reopen model settings before saving.')
+    }
+    return { grant, ...current }
+  }
+  const assertRowScope = (row, scope) => {
+    const owned = scopeFor(row)
+    if (owned.origin && (owned.origin !== scope.origin || owned.accountId !== scope.accountId)) {
+      throw new Error(`Instance ${row.name} belongs to a different account or Console address than the one open in this page.`)
+    }
+  }
+  /** Refresh an open Worker-only host immediately before its Agent is started. */
+  const refreshInheritedModel = (id, row, grant = device.status()) => {
+    if (modelSource(row) !== 'default' || runningRoles(id).includes('agent')) return
+    const live = hosts.get(id)
+    if (live === undefined) return
+    const inherited = defaultFor(row, grant)
+    live.host.setAgentModel({ url: text(inherited?.url), name: text(inherited?.name), key: text(inherited?.key), thinking: inherited?.thinking })
+    live.inheritedModelSignature = modelSignature(inherited ?? {})
   }
 
   /**
@@ -521,14 +567,23 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
    * the duplicate-attach hole reopened through the side door. So pairing is refused unless
    * this manager has a *persisted* reservation for this exact instance.
    */
-  const policyFor = (id) => ({ kind, path, fromOwner }) => {
+  const policyFor = (id) => ({ kind, path, role, fromOwner }) => {
     // An instance page reaches its own host directly, so the drain has to be visible from
     // there too — otherwise signing out races a role somebody just started from a browser
     // tab. The manager's own calls are exempt: they belong to an operation that was already
     // admitted, and refusing them here would abandon work half-done. Stopping is not gated at
     // all: `policyFor` is only consulted for `start` and for `/setup/*`.
     if (phase !== 'ready' && fromOwner !== true) return phaseTeaching()
-    if (kind === 'start') return grantRefusal(id, { requirePaired: true })
+    if (kind === 'start') {
+      const refusal = grantRefusal(id, { requirePaired: true })
+      if (refusal !== null) return refusal
+      const row = record(id)
+      if (role === 'agent' && row.mode === 'local_agent' && !publicModel(row).ready) {
+        return `Instance ${row.name} has no ready model configuration. Set a default model or choose a custom model before starting its Agent.`
+      }
+      if (role === 'agent') refreshInheritedModel(id, row)
+      return null
+    }
     if (path === '/setup/pair/start' || path === '/setup/pair/poll' || path === '/setup/pair/cancel') {
       const row = registry.instance(id)
       if (row?.pairing === undefined) {
@@ -597,6 +652,10 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     const directory = resolve(row.directory)
     if (!existsSync(instanceConfigFile(directory))) throw new Error(`Instance ${row.name} has no configuration at ${instanceConfigFile(directory)}.`)
     const config = loadInstanceConfig(directory)
+    // Defaults are resolved only as a host is built, under the account that currently owns
+    // this instance. They are never copied to local.json, so a later sign-in cannot inherit
+    // a prior account's provider key through an old profile file.
+    const inherited = modelSource(row) === 'default' ? defaultFor(row) : undefined
     const taken = new Set([...hosts.values()].flatMap((entry) => [entry.host.port, entry.servePort]))
 
     const wanted = Number(config.agent?.env?.RULITH_SERVE_PORT ?? 0)
@@ -614,6 +673,11 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       managedCallToken,
       protectedPaths: [registry.root],
       onChildChange: (children) => recordRuntime(id, children),
+      onModelConfigured: () => registry.patchInstance(id, () => ({ modelSource: 'custom' })),
+      modelOverlay: modelSource(row) === 'default' ? {
+        RULITH_MODEL_URL: text(inherited?.url), RULITH_MODEL: text(inherited?.name),
+        RULITH_MODEL_KEY: text(inherited?.key), RULITH_MODEL_THINKING: inherited?.thinking === 'enabled' ? 'enabled' : '',
+      } : undefined,
       ...(startConfirmMs === undefined ? {} : { startConfirmMs }),
     })
     if (phase !== 'ready') throw new Error(phaseTeaching())
@@ -631,7 +695,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       await host.close()
       throw new Error(phaseTeaching())
     }
-    const entry = { host, servePort, directory, hostGeneration: randomUUID() }
+    const entry = { host, servePort, directory, hostGeneration: randomUUID(),
+      inheritedModelSignature: inherited === undefined ? '' : modelSignature(inherited) }
     hosts.set(id, entry)
     await recordRuntime(id)
     return entry
@@ -795,6 +860,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       return registry.read().instances.map((row) => {
       const live = hosts.get(row.id)
       const status = live?.host.status()
+      const model = publicModel(row, grant)
+      const currentDefault = modelSource(row) === 'default' ? defaultFor(row, grant) : undefined
       return {
         id: row.id, name: row.name, mode: row.mode, directory: row.directory,
         createdAt: row.createdAt ?? '', importedFrom: row.importedFrom ?? '',
@@ -807,6 +874,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         pendingAgentId: row.pairing?.agentId ?? '', pendingAgentName: row.pairing?.agentName ?? '',
         pendingOrigin: row.pairing?.origin ?? '', pendingAccountId: row.pairing?.accountId ?? '',
         setupTarget: row.setupTarget ?? null,
+        model: { ...model, workerRestartRequired: live?.host.workerModelRestartRequired === true,
+          restartRequired: model.source === 'default' && status?.agent === true
+            && live?.inheritedModelSignature !== modelSignature(currentDefault ?? {}) },
         pendingApproved: row.pairing?.approvedAt !== undefined,
         blocked: grantRefusal(row.id, { requirePaired: true, grant, row }) ?? '',
         orphaned: row.orphaned ?? null,
@@ -820,6 +890,76 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       })
     },
+
+    modelDefaults: () => defaultView(),
+
+    setDefaultModel: (body = {}) => admit(async () => {
+      const scope = assertExpectedScope(body)
+      const input = checkedModelInput(body)
+      const previous = modelSettings.read(scope.origin, scope.accountId)
+      const saved = modelSettings.save(scope.origin, scope.accountId, {
+        url: input.url, name: input.name,
+        key: resolvedKey(previous, input.url, input),
+        thinking: body.thinking === undefined ? (previous?.thinking === 'enabled' ? 'enabled' : 'standard') : input.thinking,
+      })
+      // A Worker may remain up while its Agent is stopped. Update that open host's in-memory
+      // inherited values so the *next* Agent start uses the new default without closing the
+      // Worker or writing the default key into the profile.
+      for (const [id, live] of hosts) {
+        const row = registry.instance(id)
+        if (row === undefined || modelSource(row) !== 'default') continue
+        const rowScope = scopeFor(row)
+        if (rowScope.origin !== scope.origin || rowScope.accountId !== scope.accountId || runningRoles(id).includes('agent')) continue
+        live.host.setAgentModel(saved)
+        live.inheritedModelSignature = modelSignature(saved)
+      }
+      return { modelDefaults: defaultView() }
+    }),
+
+    setInstanceModel: (id, body = {}) => admit(() => lifecycle(id, async () => {
+      const scope = assertExpectedScope(body)
+      const row = record(id)
+      assertRowScope(row, scope)
+      if (row.mode !== 'local_agent') throw new Error(`Instance ${row.name} uses an existing client for its Agent, so it has no model of its own to configure.`)
+      if (!['default', 'custom'].includes(body.source)) throw new Error('Choose the account default model or a custom model.')
+      const busy = runningRoles(id)
+      if (busy.includes('agent')) throw new Error(`Instance ${row.name} is running its Agent. Stop Agent before changing its model configuration.`)
+      if (body.source === 'default') {
+        if (['url', 'name', 'key', 'clearKey', 'thinking'].some(field => body[field] !== undefined)) {
+          throw new Error('A default model selection does not accept custom model fields.')
+        }
+        await registry.patchInstance(id, () => ({ modelSource: 'default' }))
+        const live = hosts.get(id)
+        const inherited = defaultFor(record(id), scope.grant)
+        if (live !== undefined) {
+          live.host.setAgentModel(inherited ?? {})
+          live.inheritedModelSignature = modelSignature(inherited ?? {})
+        }
+        return { instanceId: id, model: publicModel(record(id)) }
+      }
+      const input = checkedModelInput(body)
+      // Leaving account inheritance is not a transfer of the account default credential.
+      // Only a profile that was already custom may retain its own key across a same-service
+      // edit. A new custom remote endpoint therefore needs an explicitly entered key.
+      const previous = modelSource(row) === 'custom' ? modelFor(row, scope.grant) : undefined
+      const key = resolvedKey(previous, input.url, input)
+      const live = hosts.get(id)
+      if (live === undefined) {
+        const directory = resolve(row.directory), config = loadInstanceConfig(directory)
+        config.agent = { ...config.agent, env: { ...config.agent.env, RULITH_MODEL_URL: input.url, RULITH_MODEL: input.name,
+          RULITH_MODEL_KEY: key, RULITH_MODEL_THINKING: input.thinking === 'enabled' ? 'enabled' : '' } }
+        saveInstanceConfig(directory, config)
+        await registry.patchInstance(id, () => ({ modelSource: 'custom' }))
+      } else {
+        const answer = await localCall(live.host, '/setup/model', { url: input.url, name: input.name,
+          // `key` is resolved above from the persistent source selected by this operation.
+          // Tell Setup that empty is final: letting its live host resolve an empty value again
+          // would retain an old custom key after default → custom switched this profile away.
+          key, clearKey: key === '', thinking: input.thinking })
+        if (answer.status !== 200 || answer.body.ok === false) throw new Error(text(answer.body.teaching) || `Instance ${row.name} did not accept the model configuration.`)
+      }
+      return { instanceId: id, model: publicModel(record(id)) }
+    })),
 
     create: ({ name, mode = 'local_agent', setupTarget } = {}) => admit(async () => {
       if (!INSTANCE_MODES.includes(mode)) throw new Error('Choose the Local agent, or an existing client using this computer as a Worker.')
@@ -858,7 +998,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         const servePort = await freePort(new Set([...hosts.values()].map(entry => entry.servePort)))
         mkdirSync(join(directory, 'workspace'), { recursive: true, mode: 0o700 })
         saveInstanceConfig(directory, newInstanceConfig({ directory, mode, servePort }))
-        result = { id, name: display, mode, directory, servePort, createdAt: new Date().toISOString(), ...(target ? { setupTarget: target } : {}) }
+        result = { id, name: display, mode, directory, servePort, createdAt: new Date().toISOString(),
+          ...(target ? { setupTarget: target } : {}),
+          ...(target && mode === 'local_agent' ? { modelSource: 'default' } : {}) }
         state.instances.push(result)
         return state
       })
@@ -941,6 +1083,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       if (operation === 'start') {
         const refusal = grantRefusal(id, { requirePaired: true })
         if (refusal !== null) throw new Error(refusal)
+        if (role === 'agent' && row.mode === 'local_agent' && !publicModel(row).ready) {
+          throw new Error(`Instance ${row.name} has no ready model configuration. Set a default model or choose a custom model before starting its Agent.`)
+        }
       }
       const live = hosts.get(id)
       if (operation === 'stop' && live === undefined) {
@@ -964,6 +1109,10 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     start: (id) => admit(() => lifecycle(id, async () => {
       const refusal = grantRefusal(id, { requirePaired: true })
       if (refusal !== null) throw new Error(refusal)
+      const row = record(id)
+      if (row.mode === 'local_agent' && !publicModel(row).ready) {
+        throw new Error(`Instance ${row.name} has no ready model configuration. Set a default model or choose a custom model before starting its Agent.`)
+      }
       const { host } = await ensureHostLocked(id)
       const results = []
       for (const role of host.roles) {
@@ -1215,21 +1364,21 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const grant = device.status()
       if (grant.state !== 'linked') throw new Error('Sign in to a Rulith account in the manager before copying settings between instances.')
       for (const row of [source, target]) {
-        if (text(row.accountId) !== '' && (text(row.accountId) !== String(grant.account?.id ?? '') || text(row.origin) !== grant.origin)) {
-          throw new Error(`Instance ${row.name} belongs to a different account or Console address than the one signed in now.`)
-        }
+        assertRowScope(row, currentScope(grant))
       }
       const busy = runningRoles(id)
       if (busy.length > 0) {
         throw new Error(`Instance ${target.name} is running its ${busy.join(' and ')}. Stop it before changing its model configuration:`
           + ' this manager will not close a host while a child may still be finishing work.')
       }
-      const from = loadInstanceConfig(resolve(source.directory)).agent?.env ?? {}
-      const applied = {}
-      for (const name of MODEL_SETTINGS) if (text(from[name]).trim() !== '') applied[name] = from[name]
-      if (applied.RULITH_MODEL_URL === undefined || applied.RULITH_MODEL === undefined) {
+      const from = modelFor(source, grant)
+      if (!text(from.url).trim() || !text(from.name).trim()) {
         throw new Error(`Instance ${source.name} has no model endpoint and name configured yet.`)
       }
+      // Copy the resolved model even when the source inherits it. Empty fields also replace
+      // the target: an absent source key must never retain the target's previous provider key.
+      const applied = { RULITH_MODEL_URL: from.url, RULITH_MODEL: from.name,
+        RULITH_MODEL_KEY: text(from.key), RULITH_MODEL_THINKING: from.thinking === 'enabled' ? 'enabled' : '' }
       const live = hosts.get(id)
       if (live === undefined) {
         const directory = resolve(target.directory)
@@ -1241,15 +1390,17 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         const answer = await localCall(live.host, '/setup/model', {
           url: applied.RULITH_MODEL_URL, name: applied.RULITH_MODEL,
           key: applied.RULITH_MODEL_KEY ?? '',
+          clearKey: !text(applied.RULITH_MODEL_KEY).trim(),
           thinking: text(applied.RULITH_MODEL_THINKING) === 'enabled' ? 'enabled' : 'standard',
         })
         if (answer.status !== 200 || answer.body.ok === false) {
           throw new Error(text(answer.body.teaching) || `Instance ${target.name} did not accept the model configuration.`)
         }
       }
+      await registry.patchInstance(id, () => ({ modelSource: 'custom' }))
       return { instanceId: id, from: source.id,
         modelService: applied.RULITH_MODEL_URL, model: applied.RULITH_MODEL,
-        modelKeyCopied: applied.RULITH_MODEL_KEY !== undefined }
+        modelKeyCopied: text(applied.RULITH_MODEL_KEY).trim() !== '' }
     },
 
     /**

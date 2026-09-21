@@ -2,6 +2,22 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.2 - 2026-09-21
+
+- Configure a default model from the local account menu and optionally override it
+  for each Agent. Defaults stay on this computer, scoped to the account and Console;
+  existing profiles retain their model settings. Saved API keys never return to the page.
+  Switching from inheritance to a separate remote model requires entering its key;
+  the account default key is never copied implicitly into that Agent's configuration.
+- Guide first use directly to model configuration, with an explicit **Save and start
+  Agent** action. Default changes apply when an inheriting Agent next starts; running
+  Agents keep their current configuration and Workers never receive model credentials.
+- Preserve account and Agent scope across model-editor polling, errors and delayed
+  responses. Copying settings resolves the source Agent's effective model configuration.
+- When a running Worker's material binding still targets a previous model service,
+  ask for a Worker restart before using new attachments. Existing attachments keep
+  the model destination originally approved for them.
+
 ## 0.8.1 - 2026-09-21
 
 - Simplify browser sign-in: Rulith opens the authorization request directly and

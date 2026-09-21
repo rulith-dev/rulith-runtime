@@ -1,6 +1,6 @@
 # Rulith
 
-Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in through Console, approve which Agents this computer may use, and set up each Agent with a local model or an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
+Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in with your browser, approve which Agents this computer may use, and choose a default model for this account on this computer. Each Agent can use that default, override it, or run through an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
 
 Rulith is a local multi-agent working environment. One installation manages multiple
 fixed-identity Agents: choose an Agent on the left, work in its conversation in the

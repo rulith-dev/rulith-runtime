@@ -79,7 +79,8 @@ async function addInstance(manager, name, { agentId, stopDelayMs = 0 } = {}) {
   const config = loadInstanceConfig(created.directory)
   config.paths = { agent: ECHO, worker: ECHO }
   const extra = stopDelayMs > 0 ? { RULITH_TEST_STOP_DELAY_MS: String(stopDelayMs) } : {}
-  config.agent.env = { ...config.agent.env, RULITH_TEST_IDENTITY: agentId, ...extra }
+  config.agent.env = { ...config.agent.env, RULITH_MODEL_URL: 'http://127.0.0.1:11434/v1', RULITH_MODEL: 'fixture-model',
+    RULITH_TEST_IDENTITY: agentId, ...extra }
   config.worker.env = { ...config.worker.env, RULITH_TEST_IDENTITY: agentId, ...extra }
   saveInstanceConfig(created.directory, config)
   return created

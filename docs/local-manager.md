@@ -38,14 +38,43 @@ neutral gray style as Console.
    it here with an LLM or provides only a Worker for an existing MCP client.
 4. Confirm setup for that Agent. Replacing an existing Agent token requires explicit
    consent; listing, refreshing and ordinary switching never allocate profiles or reissue tokens.
-5. Open setup to configure the local model and resources. Start the Agent and/or
-   Worker as needed. Tool and resource authorization remains in Console.
+5. For a local Agent, choose **Use the default model** or configure **Use a different model**.
+   If the default has not been configured, the same dialog asks for its endpoint, model
+   name and API key. **Save** only saves; **Save and start Agent** explicitly starts that Agent.
+   Existing MCP clients keep their own model configuration.
+6. Start the Worker when it is needed for tools. Tool and resource authorization remains in Console.
 
 One cloud Agent attaches to one profile in this workbench. Different profiles may
-share a display name but never a credential or mutable working directory. Device
+share a display name but never Agent/Connection credentials or a mutable working directory. Device
 credentials are stored privately and never sent to models or role subprocesses.
 Execution credentials are sent to their configured Gateway for authentication;
-model credentials are sent to the configured model service.
+model credentials are sent to the configured model service. Model defaults are local settings,
+scoped to the signed-in account and Console origin on this computer. They are not uploaded to Console.
+
+## Default model and Agent overrides
+
+Open the account menu at the bottom left and choose **Default model** to configure the model
+once. New local Agent profiles follow this default. For one Agent, open its gear menu and
+choose **Model settings** to switch between the default and a separate configuration.
+Profiles created before this feature and imported installations keep their existing settings.
+
+Changing the default applies when an inheriting Agent next starts. Running Agents keep their
+current model until restarted. Changing one Agent's model requires stopping that Agent;
+its independently running Worker does not have to stop. The page says when model settings
+are missing and takes **Set model** directly to the editor, without trying to start a child.
+If the model endpoint changes while a Worker remains running, its panel asks you to stop
+and start that Worker before using new attachments. Existing attachments retain the model
+destination approved when they were added; changing models never transfers that permission.
+
+Saved API keys are never sent back to the page. A blank key retains a saved key only for the
+same model service; changing services requires entering a new key or explicitly clearing it.
+A switch from the account default to a separate Agent configuration requires entering
+that Agent's key, even for the same service; it does not copy the account default key.
+A local loopback model can work without a key. **Remove the saved API key** is an explicit
+choice, separate from leaving the password field empty.
+
+The workbench shares an installation, not an execution identity. Connections still belong
+to their Agents, and each Agent keeps its own Worker, tool permissions and working files.
 
 The local manager is a limited client of the platform control plane. It uses dedicated
 device/manager endpoints for the authorized Agent directory, pairing and local role
