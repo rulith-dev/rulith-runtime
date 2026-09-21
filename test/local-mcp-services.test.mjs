@@ -124,3 +124,16 @@ test('MCP configuration uses the header key, exact browser origin, and does not 
   assert.doesNotMatch(await page.text(), /fixture-key/)
   assert.deepEqual((await (await fetch(base + '/mcp-services/state?k=fixture-key')).json()).services, [])
 })
+
+
+test('plain file arguments cannot expose account credentials or another Agent profile', async t => {
+  const dir = workspace(t), privateRoot = join(dir, 'accounts'), configFile = join(dir, 'local.json')
+  mkdirSync(privateRoot); writeFileSync(join(privateRoot, 'device.json'), '{"token":"private"}')
+  const services = createMcpServices(configFile, { protectedPaths: [privateRoot] })
+  await assert.rejects(services.probe(configuration(dir, {
+    args: [fixture, join(privateRoot, 'device.json')],
+  })), /file argument.*configuration and credentials/)
+  assert.equal(existsSync(join(dir, 'calls.jsonl')), false)
+  // A server's code in the installation remains usable; private state is the guarded file boundary.
+  assert.equal((await services.probe(configuration(dir))).tools.length, 2)
+})

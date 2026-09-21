@@ -306,7 +306,7 @@ test('RT-SURFACE-5 the approved five, exactly, reach the model (calibration)', a
 // ── A local read limit is not the same as no answer ──────────────────────────
 
 test('RT-RPC-5 a response too large to read is an unknown outcome that says which unknown it is', async () => {
-  const oversized = 'x'.repeat(1_200_000)
+  const oversized = 'x'.repeat(9 * 1_048_576)
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '4', RULITH_RECOVERY_WAIT_MS: '600' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,

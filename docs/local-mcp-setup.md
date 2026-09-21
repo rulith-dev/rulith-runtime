@@ -1,6 +1,6 @@
 # Local Worker tool management
 
-Open the URL printed by `rulith start`, then **Worker tools · manage**.
+Open the URL printed by `rulith start`, choose the Agent, then **Settings and details → Tools**. In the original single-instance mode, use **Worker tools · manage**.
 Stop Agent and Worker using Runtime controls before changing executable configuration.
 
 **My tools** lists the complete configured Worker inventory: built-in workspace and Source tools, original manifest tools, and selected MCP tools. Search by Tool ID, adapter or service, filter by configuration origin, and inspect each contract. Disabled workspace built-ins remain visible. This inventory uses the same composition and validation as Worker startup. It describes local configuration; actual advertisement, Connection locks and Agent permissions are shown in Console.

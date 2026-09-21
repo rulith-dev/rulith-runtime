@@ -80,7 +80,7 @@ test('GET / without the key is refused with 401 and returns no page', async () =
     assert.equal(response.status, 401, response.head)
     assert.doesNotMatch(response.body, /<!DOCTYPE html>/i, 'the workbench page was served to an unauthenticated caller')
     assert.doesNotMatch(response.body, new RegExp(KEY), 'the refusal body disclosed the per-run key')
-    assert.match(response.body, /Missing or invalid Rulith Local key/)
+    assert.match(response.body, /Missing or invalid Rulith key/)
   })
 })
 

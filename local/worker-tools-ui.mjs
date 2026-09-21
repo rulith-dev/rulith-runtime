@@ -1,10 +1,59 @@
 // SPDX-License-Identifier: Apache-2.0
 import { attachRegistryBrowser } from './mcp-registry-ui.mjs'
 import { startWorkerToolsPage } from './worker-tools-browser.mjs'
-export const workerToolsPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Worker tools · Rulith Local</title>
+import { localThemeCss, managerReturnHref, workbenchReadyScript } from './theme.mjs'
+export const workerToolsPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Worker tools · Rulith</title>
 <style>
-:root{color-scheme:dark;font:14px/1.6 system-ui,sans-serif;background:#0d0f12;color:#eef1f4}*{box-sizing:border-box}body{margin:0}header{padding:18px 28px;border-bottom:1px solid #292e36;display:flex;align-items:center;flex-wrap:wrap;gap:24px}header b{font-size:18px}main{max-width:1240px;margin:auto;padding:24px}article{background:#15181d;border:1px solid #292e36;border-radius:12px;padding:22px;margin:16px 0}h1,h2,h3{margin:0 0 12px}h1{font-size:24px}h2{font-size:18px}h3{font-size:15px}p{margin:8px 0 14px}a{color:#48d7c2}.muted,small{color:#969da8}button,input,select,textarea{font:inherit;color:inherit;border:1px solid #3a4049;border-radius:7px;background:#20242b;padding:8px 10px}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}.primary,button[aria-pressed=true]{background:#48d7c2;color:#071b18;font-weight:600}label{display:block;margin:12px 0}label>input:not([type=checkbox]),label>textarea,label>select{display:block;width:100%;margin-top:4px}input[readonly]{color:#b9c4cf;background:#181c21}textarea{resize:vertical;font:12px/1.6 Consolas,monospace;min-height:90px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.row input{min-width:160px;flex:1}nav{margin:16px 0}.fieldgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}code,pre{font:12px/1.55 Consolas,monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}.table{overflow:auto}table{border-collapse:collapse;width:100%;min-width:660px}th,td{border-bottom:1px solid #292e36;padding:12px;text-align:left;vertical-align:top}td:first-child{min-width:260px;max-width:600px;overflow-wrap:anywhere}td div{color:#969da8}td select{max-width:120px}td b{font-weight:600}.notice{position:sticky;bottom:12px;border-left:3px solid #48d7c2;padding:12px;background:#1b1f25;white-space:pre-wrap;z-index:2}.error{border-color:#ef7d7d}.service{padding:12px 0;border-bottom:1px solid #292e36;overflow-wrap:anywhere}.service button{margin:4px}[hidden]{display:none!important}details{margin-top:12px}summary{cursor:pointer;color:#8eb6ff}.directory-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:12px;margin-top:16px}.directory-card{border:1px solid #343b45;border-radius:8px;padding:16px;overflow-wrap:anywhere}.directory-card button{display:block;margin-top:12px}.directory-card div{color:#969da8;font-size:12px}#registry-detail{border-top:1px solid #343b45;margin-top:20px;padding-top:20px}#registry-identity{overflow-wrap:anywhere}#registry-option{max-width:100%}#registry-inputs small{display:block}#tool-definition{min-height:280px}#builtin-settings{padding:14px 0}.tight{max-width:700px}#tools td:first-child{min-width:35px;width:35px}.actions{margin-top:16px}@media(max-width:720px){main{padding:16px}article{padding:16px}.fieldgrid{display:block}header{padding:14px;gap:14px}td:first-child{min-width:230px}}
-</style></head><body><header><b>Rulith Local</b><a id="back">← Workbench</a><span>Worker tools</span></header><main>
+${localThemeCss}
+/* The work here is an inventory, so the content column stays at the full Console width and
+   the tables keep their own minimum width and scroll inside .table. Narrowing a tool table
+   to fit a phone would hide the adapter and origin columns a reader came to compare. */
+header{display:flex;align-items:center;flex-wrap:wrap;gap:12px 24px;padding:16px max(var(--content-gutter),calc((100% - var(--content-width))/2 + var(--content-gutter)));border-bottom:1px solid var(--line);background:var(--side)}
+header b{font-size:var(--fs-2)}
+.headerbrand{display:inline-flex;align-items:center;gap:10px}
+header .crumb{color:var(--faint)}
+#headerlinks{margin-left:auto;gap:16px}
+main{display:block;width:100%;max-width:var(--content-width);margin-inline:auto;padding:26px var(--content-gutter) 60px}
+h1{margin:0 0 8px}
+article{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin:16px 0}
+article>h2:first-child,article>h3:first-child{margin-top:0}
+p{margin:8px 0 14px}
+nav{margin:18px 0}
+/* Only a search box that IS the row stretches. Scoped to a direct child because the same
+   rule used to reach a checkbox nested in a label and stretch it to 160px. */
+.row>input{min-width:160px;flex:1}
+.row>label,.row>h2,.row>h3,.row>p{margin:0}
+/* A checkbox beside a labelled select lines up on the control, not on the block centre. */
+.row.baseline{align-items:flex-end;gap:10px 20px}
+.row.baseline>label{padding-bottom:9px}
+.row.baseline>label:has(>select){padding-bottom:0}
+table{min-width:660px}
+td:first-child{min-width:260px;max-width:600px;overflow-wrap:anywhere}
+td div{color:var(--dim)}
+td select{max-width:120px}
+td b{font-weight:650}
+td p{margin:6px 0}
+.notice{position:sticky;bottom:12px;z-index:2;margin-top:18px;box-shadow:0 10px 30px rgb(0 0 0/45%)}
+.service{padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.service button{margin:8px 8px 0 0}
+.directory-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:14px;margin-top:16px}
+.directory-card{display:flex;flex-direction:column;border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:16px;overflow-wrap:anywhere}
+.directory-card>.btn{justify-content:center;width:100%;margin-top:auto}
+.directory-card div{color:var(--dim);font-size:var(--fs-4)}
+.directory-card .card-title{font-size:var(--fs-3)}
+.package-downloads{color:var(--dim);font-size:var(--fs-4);margin:8px 0}
+.package-downloads .download-count{display:block;color:var(--fg);margin-top:4px}
+.outlink{white-space:nowrap}
+#registry-detail{border-top:1px solid var(--line);margin-top:20px;padding-top:20px}
+#registry-identity{overflow-wrap:anywhere}
+#registry-option{max-width:100%}
+#registry-inputs small{display:block;margin-top:4px}
+#tool-definition{min-height:280px}
+#builtin-settings{padding:14px 0}
+.tight{max-width:700px}
+#tools td:first-child{min-width:35px;width:35px;max-width:35px}
+@media(max-width:720px){main{padding:18px 16px 48px}article{padding:16px}header{padding:14px 16px;gap:10px 14px}#headerlinks{margin-left:0}td:first-child{min-width:230px}}
+</style></head><body><header><span class="headerbrand"><span class="brand-mark"></span><b>Rulith</b></span><span class="crumb">Worker tools</span><span class="row" id="headerlinks"><a id="back">← Workbench</a></span></header><main>
 <h1>Worker tools</h1><p class="muted">Manage built-in, declared and MCP tools in one place. Local configuration defines what Worker can offer; Console controls what an Agent may use.</p>
 <article><div class="row"><b id="runtime">Checking Runtime…</b><button id="refresh">Refresh</button><button data-control="agent" data-operation="stop">Stop Agent</button><button data-control="agent" data-operation="start">Start Agent</button><button data-control="worker" data-operation="stop">Stop Worker</button><button data-control="worker" data-operation="start">Start Worker</button></div><p id="runtime-note" class="muted"></p></article>
 <nav class="row" aria-label="Tool management"><button data-panel="inventory">My tools</button><button data-panel="add">Add tools</button></nav>
@@ -15,7 +64,7 @@ export const workerToolsPage = `<!doctype html><html lang="en"><head><meta chars
 <section id="add" hidden><nav class="row" aria-label="Add tool method"><button data-add="directory">MCP directory</button><button data-add="mcp">Connect MCP</button><button data-add="manual">Declare a Tool</button><button data-add="templates">Templates</button></nav>
 <article id="add-directory"><h2>Find an MCP service</h2><p class="muted">Search server names in the official MCP Registry. A directory listing is not a security review or Agent authorization.</p>
 <form id="registry-search" class="row"><input id="registry-query" aria-label="Search MCP servers" placeholder="filesystem, memory, time…" maxlength="150"><button id="registry-search-button">Search directory</button></form>
-<div class="row"><label><input id="registry-supported" type="checkbox" style="min-width:0"> Supported setup only</label><label>Sort loaded results<select id="registry-sort"><option value="directory">Directory order</option><option value="downloads">Package downloads ↓</option><option value="updated">Registry updated ↓</option></select></label></div>
+<div class="row baseline"><label><input id="registry-supported" type="checkbox"> Supported setup only</label><label>Sort loaded results<select id="registry-sort"><option value="directory">Directory order</option><option value="downloads">Package downloads ↓</option><option value="updated">Registry updated ↓</option></select></label></div>
 <p class="muted">Supported setup is based on the declared format; package identity and prerequisites are checked during installation. Downloads count packages across all versions, not unique users or tool calls. They do not certify quality.</p>
 <p id="registry-status" role="status"></p><p id="registry-scope" class="muted"></p><div id="registry-results" class="directory-results"></div><button id="registry-more" hidden>Load more</button>
 <div id="registry-detail" hidden><h3 id="registry-title"></h3><p id="registry-identity" class="muted"></p><p id="registry-description"></p><p id="registry-dates" class="muted"></p><div id="registry-links" class="row"></div><form id="registry-setup"><label>Local Source ID<input id="registry-source-name" required pattern="[a-z][a-z0-9_-]{0,39}" maxlength="40" placeholder="office-mail"></label><label>Installation option<select id="registry-option"></select></label><div id="registry-downloads" class="package-downloads"></div><p id="registry-limits" class="muted"></p><div id="registry-inputs"></div><button id="registry-prepare" class="primary">Install and discover tools</button></form></div></article>
@@ -26,4 +75,17 @@ export const workerToolsPage = `<!doctype html><html lang="en"><head><meta chars
 <div id="http-fields" hidden><label>MCP endpoint<input id="url" placeholder="http://127.0.0.1:3001/mcp"></label><label>Bearer token (blank preserves it for the same endpoint)<input id="token" type="password" autocomplete="new-password"></label></div><label><input id="clear-secrets" type="checkbox"> Clear saved credentials on this edit</label><p id="secret-status" class="muted"></p><button id="probe" class="primary" data-mutation>Configure and discover tools</button></form></article>
 <article id="discovery" hidden><h2>Select tools</h2><p class="muted">Review read / write / run classifications. Existing selections are preserved only when their input schema has not changed. Raw MCP output remains material.</p><div class="table"><table><thead><tr><th></th><th>Tool and inputs</th><th>Operation</th></tr></thead><tbody id="tools"></tbody></table></div><p id="truncated" class="muted"></p><button id="save" class="primary" data-mutation>Save selected tools locally</button></article>
 <article id="handoff" hidden><h2>Connect this service to an Agent</h2><p>Local configuration is saved. Review the following steps in Cloud Console; Local does not infer or grant Cloud authorization.</p><ol><li>Start Worker to advertise its configured tools.</li><li>Download the Source definition. Import and review it under the Agent's Configuration → Sources.</li><li>Under Runtime, bind the Source to this Worker's Connection, using the location below, then enable and lock its tools.</li><li>The Agent discovers authorized Actions with QueryBoard and uses ApplyAction.</li></ol><p>Source location: <code id="locator"></code></p><button id="download">Download Source definition</button><details><summary>Review Source definition</summary><pre id="definition"></pre></details></article></section>
-<div id="result" class="notice" role="status" aria-live="polite">Ready.</div></main><script>(${startWorkerToolsPage.toString()})(${attachRegistryBrowser.toString()});</script><script>const back=document.createElement('a');back.textContent='Back to setup';back.href='/setup?k='+encodeURIComponent(new URLSearchParams(location.search).get('k')||'');back.style.cssText='position:fixed;bottom:16px;right:20px;padding:10px;background:#17202c;color:#2dc8b6;border-radius:6px';document.body.append(back);</script></body></html>`
+<div id="result" class="notice" role="status" aria-live="polite">Ready.</div></main><script>(${startWorkerToolsPage.toString()})(${attachRegistryBrowser.toString()});</script><script>${managerReturnHref.toString()}
+/* Routes out of this page. "Back to setup" used to float over the bottom-right corner,
+   where it covered the sticky result notice this page writes every outcome into; it sits
+   with the other navigation instead. The manager return appears only when a launcher
+   supplied a loopback address, and is applied after the controller has set its own links
+   so every way out of here keeps the way back. */
+const pageKey=new URLSearchParams(location.search).get('k')||'',manager=managerReturnHref(location.search);
+const address=path=>path+'?k='+encodeURIComponent(pageKey)+(manager?'&manager='+encodeURIComponent(manager):'');
+const links=document.getElementById('headerlinks');
+document.getElementById('back').href=address('/');
+const setupLink=document.createElement('a');setupLink.id='backsetup';setupLink.textContent='Back to setup';setupLink.href=address('/setup');links.append(setupLink);
+if(manager){const home=document.createElement('a');home.id='managerreturn';home.className='manager-return';home.textContent='← Back to agents';home.href=manager;links.append(home);}
+${workbenchReadyScript}
+</script></body></html>`

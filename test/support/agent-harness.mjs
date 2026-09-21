@@ -274,9 +274,7 @@ export function defaultGateway({
           return accept(session)
         }
         case 'ReadArtifact': {
-          // The data plane answers in its own shape: a bounded window over an object the
-          // service issued a reference for. No `accepted`, because it decides nothing, and
-          // no Board View, because it is not a Board answer.
+          // Gateway wraps the bounded data result in its public admission envelope.
           const object = state.artifacts.get(String(args.ref ?? ''))
           if (object === undefined) {
             return { errorCode: 'artifact_unavailable', teaching: 'That reference is not readable by this Agent.' }
@@ -287,11 +285,11 @@ export function defaultGateway({
           const slice = bytes.subarray(offset, offset + maxBytes)
           const nextOffset = offset + slice.byteLength
           const complete = nextOffset >= bytes.byteLength
-          return {
+          return { accepted: true, result: {
             ref: String(args.ref), mediaType: object.mediaType, encoding: 'utf8',
             data: slice.toString('utf8'), offset, nextOffset: complete ? null : nextOffset,
             totalBytes: bytes.byteLength, complete, truncated: !complete,
-          }
+          } }
         }
         default:
           return refuse(session, 'unknown_operation', `${name} is not an advertised tool.`)
@@ -503,6 +501,10 @@ export async function runAgent({
     requests.push({
       httpMethod, method: String(input.method ?? ''), sessionId: request.headers['mcp-session-id'],
       protocolHeader: request.headers['mcp-protocol-version'], lastEventId,
+      // The whole header map, because host-to-host negotiation travels in headers rather than
+      // in the JSON-RPC body — an arm about whether a call negotiated something cannot read it
+      // anywhere else, and a hand-picked subset would go stale the moment another one is added.
+      headers: { ...request.headers },
     })
     // Connection control and session lifetime are decided before anything is answered, and
     // they are two different answers: 409 says another client owns this Agent now, 404 says
@@ -677,7 +679,7 @@ export async function runAgent({
     if (input.method === 'tools/list') {
       if (oversizeMcpResponse) {
         response.writeHead(200, { 'content-type': 'application/json', ...sessionHeaders })
-        return void response.end(JSON.stringify({ padding: 'x'.repeat(1_048_576) }))
+        return void response.end(JSON.stringify({ padding: 'x'.repeat(9 * 1_048_576) }))
       }
       const base = (toolSchemas ?? advertisedTools())
         .filter((entry) => advertise === undefined || advertise.includes(entry.name))
@@ -748,6 +750,7 @@ export async function runAgent({
         ...(handoff.withoutIsError === true ? {} : { isError: true }),
         content: [{ type: 'text', text: JSON.stringify(handoff.result) }],
         _meta: {
+          ...(handoff.localDelivery ? { 'rulith/local-delivery/v1': handoff.localDelivery } : {}),
           [RULITH_META]: {
             agentId: TEST_AGENT_ID,
             handoff: { callRef: handoff.callRef ?? 'call-1', tool: handoff.tool ?? 'ApplyAction', requestExecuted: false },
@@ -765,9 +768,11 @@ export async function runAgent({
     const core = explicit ? scripted.__core : (scripted === undefined ? board.tool(name, args, session, meta) : scripted)
     const hostMeta = explicit ? scripted.__meta : board.meta(session)
     const withRecovery = hostMeta === undefined ? recoveryNow() : { ...hostMeta, ...recoveryNow() }
+    const { ['rulith/local-delivery/v1']: localDelivery, ...ordinaryMeta } = withRecovery ?? {}
     return send({
       content: [{ type: 'text', text: JSON.stringify(core) }],
-      ...(withRecovery === undefined ? {} : { _meta: { [RULITH_META]: withRecovery } }),
+      ...(withRecovery === undefined ? {} : { _meta: { [RULITH_META]: ordinaryMeta,
+        ...(localDelivery === undefined ? {} : { 'rulith/local-delivery/v1': localDelivery }) } }),
     }, { sse: sseResults })
   })
 

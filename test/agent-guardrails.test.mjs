@@ -92,7 +92,7 @@ test('an oversized public MCP response is refused before the Agent buffers it wi
   const run = await runAgent({ oversizeMcpResponse: true })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0, 'an oversized tools/list response must stop startup')
-  assert.match(run.stderr, /MCP response exceeded the 1048576-byte local limit/)
+  assert.match(run.stderr, /MCP response exceeded the 8454144-byte local limit/)
 })
 
 // ── E. One task's failure is not the process's ───────────────────────────────

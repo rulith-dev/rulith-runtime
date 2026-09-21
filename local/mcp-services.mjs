@@ -100,8 +100,95 @@ async function installPackage(entry, root, trackChild) {
   }
 }
 
-export function createMcpServices(configFile, { registry = createMcpRegistry(), workerContext } = {}) {
+/**
+ * Does this path name, contain, or sit inside a directory that must stay out of reach?
+ *
+ * Both directions matter. A server rooted *at* the manager directory reads the device
+ * credential; a server rooted at the home directory contains it. Symlinks are resolved where
+ * the path exists, because the point is what it ends up addressing.
+ */
+function overlapsProtected(target, guarded) {
+  const actualTarget = existsSync(target) ? realpathSync(target) : resolve(target)
+  for (const protectedPath of guarded) {
+    const actual = existsSync(protectedPath) ? realpathSync(protectedPath) : resolve(protectedPath)
+    const rel = relative(actualTarget, actual)
+    const reverse = relative(actual, actualTarget)
+    const contains = existsSync(actual) && statSync(actual).isDirectory()
+      && (reverse === '' || (!reverse.startsWith('..') && !isAbsolute(reverse)))
+    if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)) || contains) return actual
+  }
+  return undefined
+}
+
+/**
+ * Refuse a launch line that identifiably points a server at protected configuration.
+ *
+ * **What this is, and what it is not.** Rulith Local is trusted operator software running as
+ * the operator. A stdio MCP server is an arbitrary executable started by that operator, and it
+ * keeps every power that operating-system user has: no string inspection of a command line can
+ * confine it, and this function does not claim to. Calling it a sandbox would be worse than
+ * having nothing, because it would invite people to install hostile servers on the strength of
+ * it.
+ *
+ * What it does close is the hole that made one dropdown contradict another. The Filesystem
+ * catalog entry launches as `node <installed server> <allowed directory>`, and the
+ * "Filesystem" branch refuses a directory overlapping the manager tree — while the "existing
+ * stdio server" and registry branches produced that identical command line with no check at
+ * all. So the guard now runs for every branch and covers what is genuinely identifiable:
+ *
+ *   · the working directory, which is where a server writes by default;
+ *   · the executable itself, which must not be something living in Rulith's own state;
+ *   · any argument that is an absolute path naming an existing directory or private file;
+ *     installed server code is allowed, but instance and workbench state files are not.
+ *
+ * An argument that is not a plain path — a URL, a glob, a flag with an
+ * embedded root — is not checked, and cannot be. That limit is documented rather than papered
+ * over.
+ */
+function refuseProtectedLaunch(source, guarded, allowed = [], privateFiles = guarded) {
+  const permitted = (value) => {
+    const actual = existsSync(value) ? realpathSync(value) : resolve(value)
+    return allowed.some((path) => {
+      const root = existsSync(path) ? realpathSync(path) : resolve(path)
+      const rel = relative(root, actual)
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    })
+  }
+  const named = (label, value, boundaries = guarded) => {
+    // The scratch directory Local mints for a server, under this instance's own MCP tree, is
+    // inside a guarded path by construction and is the one place such a server *should* write.
+    // It is this instance's own working area — not its credentials, and not a sibling's.
+    if (permitted(value)) return
+    const hit = overlapsProtected(value, boundaries)
+    if (hit !== undefined) {
+      throw new Error(`This server's ${label} (${value}) overlaps Rulith's own configuration and credentials at ${hit}.`
+        + ' Choose a location outside it. Rulith cannot confine an executable it starts, so it refuses the'
+        + ' configurations it can recognise rather than relying on the server to behave.')
+    }
+  }
+  if (source.transport !== 'stdio') return
+  if (source.cwd) named('working directory', source.cwd)
+  if (isAbsolute(source.command ?? '')) named('executable', source.command)
+  for (const argument of source.args ?? []) {
+    if (typeof argument !== 'string' || !isAbsolute(argument)) continue
+    if (!existsSync(argument)) continue
+    // 代码文件可来自安装目录；账户配置、凭据及兄弟实例中的文件不能作为参数暴露。
+    const directory = statSync(argument).isDirectory()
+    named(directory ? 'allowed directory' : 'file argument', argument, directory ? guarded : privateFiles)
+  }
+}
+
+/**
+ * @param {string[]} [options.protectedPaths] Extra directories no configured server may be
+ *   given access to. A multi-instance host passes its manager directory: that tree holds the
+ *   account's device credential and every other instance's configuration, and a filesystem
+ *   server rooted there would be one Agent's tool reading another Agent's token.
+ */
+export function createMcpServices(configFile, { registry = createMcpRegistry(), workerContext, protectedPaths = [] } = {}) {
   const root = join(dirname(resolve(configFile)), 'mcp')
+  /** Rulith's own state, plus whatever the host added — the manager tree, for an instance. */
+  const privatePaths = () => [resolve(configFile), root, ...protectedPaths.map(path => resolve(path))]
+  const guardedPaths = () => [...privatePaths(), resolve(import.meta.dirname, '..')]
   const stateFile = join(root, 'services.json')
   const toolsFile = join(root, 'worker-tools.json'), vaultFile = join(root, 'worker-secrets.json')
   let busy = false, closed = false, installChild = null, pending = Promise.resolve()
@@ -130,7 +217,7 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
   const save = next => {
     if (workerContext) {
       const { environment, directory } = workerContext()
-      configuredWorkerTools(project(environment, directory, next).manifest, String(environment.RULITH_WORKSPACE_TOOLS ?? 'read').trim())
+      configuredWorkerTools(project(environment, directory, next).manifest, String(environment.RULITH_WORKSPACE_TOOLS ?? 'read').trim(), String(environment.RULITH_MATERIALS_ROOT ?? ''))
     }
     // These are stopped-Worker projections. A fresh start rebuilds both from the one committed state.
     for (const file of [toolsFile, vaultFile]) rmSync(file, { force: true })
@@ -206,13 +293,7 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
         if (!existsSync(script)) throw new Error('Install Filesystem from the catalog first.')
         if (!isAbsolute(body.directory ?? '') || !statSync(body.directory).isDirectory()) throw new Error('Choose an existing absolute directory for this server.')
         directory = realpathSync(body.directory)
-        for (const protectedPath of [resolve(configFile), root, resolve(import.meta.dirname, '..')]) {
-          const actual = existsSync(protectedPath) ? realpathSync(protectedPath) : protectedPath
-          const rel = relative(directory, actual), reverse = relative(actual, directory)
-          const overlapsDirectory = existsSync(actual) && statSync(actual).isDirectory()
-            && (reverse === '' || (!reverse.startsWith('..') && !isAbsolute(reverse)))
-          if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)) || overlapsDirectory) throw new Error('Allowed directory must not overlap Rulith configuration, credentials or executable files.')
-        }
+        if (overlapsProtected(directory, guardedPaths()) !== undefined) throw new Error('Allowed directory must not overlap Rulith configuration, credentials or executable files.')
         source = { type: 'mcp', transport: 'stdio', command: process.execPath, args: [script, directory] }
       } else if (mode === 'stdio') {
         if (typeof body.command !== 'string' || !body.command.trim() || !Array.isArray(body.args) || body.args.some(value => typeof value !== 'string')) throw new Error('Specify an executable and a JSON array of arguments.')
@@ -232,6 +313,10 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
           : old?.source.url === url.href ? old.source.headers?.authorization ?? '' : ''
         source = { type: 'mcp', transport: 'streamable-http', url: url.href, headers: authorization ? { authorization } : {} }
       } else throw new Error('Choose Filesystem, an existing stdio server, or Streamable HTTP.')
+      // Every branch above ends here, including the two that build the same `node <server>
+      // <directory>` line the Filesystem branch does. Checking once, on the launch line that
+      // was actually assembled, is what stops one dropdown refusing what the next accepts.
+      refuseProtectedLaunch(source, guardedPaths(), [join(root, 'workspaces')], privatePaths())
       let discovered
       try {
         discovered = await invokeMcp({ sourceName: 'local-probe-' + randomUUID(), source, discovering: true, environment: adapterEnv(process.env, []) })
@@ -293,6 +378,14 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
       if (busy) throw new Error('Wait for MCP configuration to finish before starting Worker.')
       const services = Object.values(state().services)
       if (!services.length) return environment
+      // Checked again here, because this is the moment a server is actually launched. A saved
+      // configuration can predate the guard or be edited by hand in the file, and the check
+      // that only ran when somebody used the page would never see either.
+      for (const row of services) {
+        try { refuseProtectedLaunch(row.source, guardedPaths(), [join(root, 'workspaces')], privatePaths()) } catch (error) {
+          throw new Error(`MCP service ${row.name} cannot be started: ${error.message}`)
+        }
+      }
       const { manifest, vault } = project(environment, workerDirectory)
       write(toolsFile, manifest); write(vaultFile, vault)
       return { ...environment, RULITH_TOOLS_FILE: toolsFile, RULITH_SECRETS_FILE: vaultFile }

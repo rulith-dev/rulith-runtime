@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { configuredWorkerTools, workerToolDescriptor, builtinWorkspaceTools, builtinSourceTools } from '../worker/rulith-worker.mjs'
+import { configuredWorkerTools, workerToolDescriptor, builtinWorkspaceTools, builtinSourceTools, builtinMaterialTools } from '../worker/rulith-worker.mjs'
 import { automaticActionProblem } from './mcp-services.mjs'
 
 const revisionOf = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -19,11 +19,12 @@ export function createWorkerToolManagement({ mcpServices, workerContext, setWork
     const { environment, directory } = workerContext()
     const inputs = mcpServices.projectWorkerInputs(environment, directory)
     const workspaceMode = String(environment.RULITH_WORKSPACE_TOOLS ?? 'read').trim()
-    const tools = configuredWorkerTools(inputs.manifest, workspaceMode)
+    const materialsRoot = String(environment.RULITH_MATERIALS_ROOT ?? '')
+    const tools = configuredWorkerTools(inputs.manifest, workspaceMode, materialsRoot)
     const services = mcpServices.overview().services
-    const revision = revisionOf({ manifest: inputs.originalManifest, managed: services, workspaceMode,
+    const revision = revisionOf({ manifest: inputs.originalManifest, managed: services, workspaceMode, materialsRoot,
       file: inputs.originalTools, vaultFile: inputs.originalVault })
-    return { ...inputs, workspaceMode, tools, services, revision }
+    return { ...inputs, workspaceMode, materialsRoot, tools, services, revision }
   }
   const checked = revision => {
     const state = load()
@@ -36,13 +37,13 @@ export function createWorkerToolManagement({ mcpServices, workerContext, setWork
       if (Object.hasOwn(merged.tools, id)) throw new Error('This Tool belongs to an MCP service. Configure its tool selection instead.')
       merged.tools[id] = definition
     }
-    configuredWorkerTools(merged, mode)
+    configuredWorkerTools(merged, mode, state.materialsRoot)
   }
   return {
     overview() {
       const state = load()
       const managed = new Map(state.services.flatMap(service => Object.keys(service.tools).map(id => [id, service.name])))
-      const builtins = { ...builtinWorkspaceTools('read-write'), ...builtinSourceTools() }
+      const builtins = { ...builtinWorkspaceTools('read-write'), ...builtinSourceTools(), ...builtinMaterialTools(state.materialsRoot) }
       const rows = Object.entries(state.tools).map(([id, definition]) => ({ ...workerToolDescriptor(id, definition),
         adapter: definition.adapter, origin: managed.has(id) ? 'mcp' : Object.hasOwn(state.originalManifest.tools, id) ? 'manifest' : 'builtin',
         service: managed.get(id), configured: true,

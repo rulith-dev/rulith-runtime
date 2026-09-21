@@ -47,3 +47,38 @@ test('setup rejects arbitrary HTTP origins and URI credentials',()=>{
   for(const url of ['http://remote.example','https://user:secret@example.com','https://example.com/?token=a','https://example.com/console'])assert.throws(()=>setupOrigin(url));
   assert.equal(setupOrigin('https://console.rulith.ai/'),'https://console.rulith.ai');
 });
+
+
+test('expired or retargeted pairing retains its original proof and never creates replacement credentials', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-pair-expiry-'))
+  const configFile = join(dir, 'local.json'), config = defaultLocalConfig()
+  writeFileSync(configFile, JSON.stringify(config))
+  let starts = 0
+  const cloud = createServer(async (req, res) => {
+    for await (const chunk of req) {}
+    res.setHeader('content-type', 'application/json')
+    if (req.url === '/local-setup/cancel') { res.writeHead(503); res.end(JSON.stringify({ errorCode: 'local_setup_unavailable', teaching: 'Cannot confirm cancellation' })); return }
+    starts++
+    res.end(JSON.stringify({ code: 'ABCD2345', expiresAt: new Date(Date.now() + 600000).toISOString() }))
+  })
+  await new Promise(done => cloud.listen(0, '127.0.0.1', done))
+  const host = createLocalHost({ configFile, config, roles: config.roles, port: 0, autoStart: false })
+  await host.listen()
+  t.after(async () => { await host.close(); await new Promise(done => cloud.close(done)); rmSync(dir, { recursive: true, force: true }) })
+  const call = async name => {
+    const response = await fetch('http://127.0.0.1:' + host.port + '/setup/pair/start', {
+      method: 'POST', headers: { 'x-rulith-local': host.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ consoleUrl: 'http://127.0.0.1:' + cloud.address().port, name, clientMode: 'existing_agent' }) })
+    return { status: response.status, body: await response.json() }
+  }
+  assert.equal((await call('First')).status, 200)
+  const proof = readFileSync(configFile + '.setup.json', 'utf8')
+  assert.notEqual((await call('Other target')).status, 200)
+  assert.equal(readFileSync(configFile + '.setup.json', 'utf8'), proof)
+  const expired = { ...JSON.parse(proof), expiresAt: new Date(Date.now() - 1000).toISOString() }
+  writeFileSync(configFile + '.setup.json', JSON.stringify(expired))
+  const failure = await call('First')
+  assert.equal(failure.body.errorCode, 'local_setup_unavailable')
+  assert.deepEqual(JSON.parse(readFileSync(configFile + '.setup.json', 'utf8')), expired)
+  assert.equal(starts, 1)
+})

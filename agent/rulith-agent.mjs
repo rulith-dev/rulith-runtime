@@ -226,6 +226,57 @@ const MODEL_URL = pathNoSlash.endsWith('/chat/completions') || pathNoSlash.endsW
   : pathNoSlash === '' ? new URL('/v1/chat/completions', parsedModelUrl).toString()
     : pathNoSlash.endsWith('/v1') ? new URL(`${pathNoSlash}/chat/completions`, parsedModelUrl.origin).toString()
       : die('OpenAI-compatible model service URLs must be the server root, end in /v1, or end in /chat/completions.')
+// ── Local material delivery ──────────────────────────────────────────────────
+//
+// A Rulith host may be the custodian of objects whose bytes never left this machine. This Agent
+// never reads one from disk and holds no permission to: it negotiates local delivery on the MCP
+// call, the authority answers with a ticket **it** minted in host-only metadata, and the ticket
+// goes to this host's custodian — which exchanges it, at the authority, for a current
+// authorization before a byte is read. The two values below are an endpoint and a key that opens
+// only that endpoint; neither is a licence, and neither ever reaches the model.
+const MATERIALS_DELIVER_URL = (process.env.RULITH_MATERIALS_DELIVER_URL ?? '').trim()
+const MATERIALS_KEY = (process.env.RULITH_MATERIALS_KEY ?? '').trim()
+// A routing selector, never proof of ownership or authority. Gateway compares the custodian
+// before offering a ticket; the Worker still claims it using its current authenticated lease.
+const MATERIALS_CONNECTION = (process.env.RULITH_MATERIALS_CONNECTION ?? '').trim()
+/** The reserved `_meta` namespace the local-delivery ticket travels in. Never model content. */
+const LOCAL_DELIVERY_META = 'rulith/local-delivery/v1'
+const LOCAL_DELIVERY_PROTOCOL = 'rulith-local-delivery/1'
+/**
+ * The negotiation, sent as one header on the MCP request.
+ *
+ * A header rather than a `_meta` member on the way out, because `params._meta["rulith/v1"]` is
+ * refused as a host-metadata echo — that namespace is the authority's to write — and because a
+ * header cannot be mistaken for an argument the model authored.
+ *
+ * It is sent only when this host actually has a custodian to complete the read with. Negotiating
+ * without one would make the authority carry no bytes for a read nobody could finish, which
+ * reaches the model as an object that is mysteriously unavailable.
+ */
+const LOCAL_DELIVERY_HEADER = 'x-rulith-local-delivery'
+const CAN_DELIVER_LOCALLY = MATERIALS_DELIVER_URL !== '' && MATERIALS_KEY !== '' && MATERIALS_CONNECTION !== ''
+/**
+ * The configured model destination, reduced the same way the host reduces it.
+ *
+ * Duplicated rather than imported on purpose: this Agent ships as one file, downloaded and
+ * hashed on its own, and it has no sibling module to read. The input compared is the *configured*
+ * `RULITH_MODEL_URL` rather than the resolved `MODEL_URL` below — the host only ever saw the
+ * configured one, and comparing a value one side derived against a value the other side did not
+ * would make a passing check depend on both derivations staying identical forever.
+ */
+const modelDestinationOf = (raw) => {
+  const text = String(raw ?? '').trim()
+  if (text === '') return ''
+  try {
+    const url = new URL(text)
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`.toLowerCase()
+  } catch { return text.toLowerCase() }
+}
+const MODEL_DESTINATION = modelDestinationOf(MODEL_URL_INPUT)
 // No task = a multi-turn conversation; a task on the command line = an explicit one-shot
 // autopilot run that finishes and exits (CI/script compatible). `--serve` is
 // conversational too: an HTTP message is not authority to create a Case. The model
@@ -251,6 +302,36 @@ function emit(type, data) {
   if (events.length > 2000) events.splice(0, events.length - 1500)
   const line = `data: ${JSON.stringify(ev)}\n\n`
   for (const res of clients) { try { res.write(line) } catch { clients.delete(res) } }
+}
+/**
+ * A host that is gone is not a host that stopped this process.
+ *
+ * When Rulith Local launches this Agent it keeps an IPC channel open for the event stream.
+ * If that host dies — killed, crashed, or its terminal closed — the channel closes and this
+ * handler runs. Without it the Agent keeps running: still authenticated, still holding this
+ * Agent's one effective connection, still able to write to a Board, with nothing left on the
+ * machine that knows it exists or can stop it. The host that restarts next sees no parent
+ * process and reports the instance as stopped, which is then simply untrue.
+ *
+ * Leaving is all this does. Nothing is cancelled, nothing is marked resolved, and the durable
+ * record of a call whose outcome is unknown is left exactly as it is — an ended process says
+ * nothing about what the authority did with a command already dispatched, and this must not
+ * become a place that claims otherwise. It is the same ending a signal would give it.
+ *
+ * Only when Local asked for the IPC channel: a standalone run has no parent to lose.
+ *
+ * The `unref` matters as much as the listener. Node refs the IPC channel the moment a
+ * `disconnect` (or `message`) listener is added, and a ref'd handle keeps the event loop
+ * alive — so an Agent that had finished, or that was exiting because it could not reach its
+ * Gateway, would stop exiting and hang until something killed it. Listening for the parent's
+ * death must not become a reason to outlive everything else.
+ */
+if (process.env.RULITH_LOCAL_EVENTS === 'ipc' && typeof process.send === 'function') {
+  process.on('disconnect', () => {
+    try { console.error('Rulith Local is gone; this Agent is exiting. Anything already dispatched keeps its recorded, unresolved state.') } catch { /* the pipe may be gone too */ }
+    process.exit(0)
+  })
+  process.channel?.unref()
 }
 /** Segment events carry their slot and task, so one SSE stream stays legible when
  *  several conversations interleave. The default slot omits `session`, so the event
@@ -378,7 +459,10 @@ function inheritedUnresolved() {
 // tools/call membrane. The one Agent token is a client configuration secret, sent only as
 // an Authorization header; it never appears in a URL.
 let mcpSeq = 0
-const MCP_RESPONSE_MAX_BYTES = 1_048_576
+// ReadArtifact permits 1 MiB of raw material. UTF-8 control bytes can expand to seven bytes
+// each across the JSON tool text and its JSON-RPC envelope; base64 needs less. Keep a finite
+// ceiling with room for that documented window and envelope metadata.
+const MCP_RESPONSE_MAX_BYTES = 8 * 1_048_576 + 65_536
 /** The hop succeeded; this client could not read what came back. Not "no answer". */
 class McpResponseLimitError extends Error {}
 /** The peer answered something other than the answer to the request that was sent. */
@@ -674,7 +758,7 @@ const board = {
  *   · **a broken stream** — resumable from `Last-Event-ID`, and resumed here before
  *     anything is called unknown.
  */
-async function mcpRpc(method, params = {}, { timeoutMs = 45_000, id, notification = false, handshake = false } = {}) {
+async function mcpRpc(method, params = {}, { timeoutMs = 45_000, id, notification = false, handshake = false, headers = {} } = {}) {
   const session = connection
   const rpcId = notification ? undefined : (id ?? `runtime_${++mcpSeq}`)
   let response
@@ -699,6 +783,9 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000, id, notificatio
         authorization: `Bearer ${TOKEN}`,
         'mcp-protocol-version': MCP_PROTOCOL_VERSION,
         ...(presented === undefined ? {} : { 'mcp-session-id': presented }),
+        // Host-to-host negotiation only. Nothing the model authored reaches this map, and the
+        // caller that supplies one says in one place which request it applies to.
+        ...headers,
       },
       body: JSON.stringify(notification
         ? { jsonrpc: '2.0', method, params }
@@ -1503,7 +1590,105 @@ function looksAuthoritative(name, result) {
   if (result === undefined) return false
   if (typeof result.errorCode === 'string') return true
   if (BOARD_TOOLS.has(name)) return typeof result.accepted === 'boolean'
-  return typeof result.ref === 'string' && result.ref !== ''
+  return result.accepted === true && typeof result.result?.ref === 'string' && result.result.ref !== ''
+}
+
+const LOCAL_DELIVERY_REF = /^art_[0-9a-f]{32}$/
+/**
+ * The ticket's shape, as the published contract fixes it.
+ *
+ * Opaque is not the same as shapeless. A ticket is single use and the first claim spends it
+ * whatever else follows, so a value that cannot be one is refused before it is carried anywhere —
+ * refusing a guess costs nothing, and spending a real read handle on one is not recoverable.
+ */
+const LOCAL_DELIVERY_TICKET = /^mlt_[A-Za-z0-9_-]{43}$/
+const LOCAL_DELIVERY_CLAIM_PATH = '/work/artifact/claim'
+
+/**
+ * The authority's local-delivery ticket, read from an answer already judged authoritative.
+ *
+ * It lives in its own `_meta` namespace, a sibling of the host-metadata block and equally
+ * host-only: the model receives the text content and nothing from here. The ticket is the
+ * **authority's**, minted per read; this host neither issues one nor holds a standing capability
+ * that could stand in for one.
+ *
+ * An absent block means the authority carried its own bytes and its answer stands untouched. A
+ * block present and unreadable means it pointed at bytes this host was supposed to complete and
+ * could not, which is a refusal rather than a document — nothing is guessed, this Agent never
+ * reads a local path, and a naked ref is not a filename.
+ */
+function localDeliveryOf(block) {
+  if (block === undefined) return undefined
+  const unusable = (errorCode, teaching) => ({ errorCode, teaching })
+  if (block === null || typeof block !== 'object' || Array.isArray(block)) {
+    return unusable('local_delivery_malformed',
+      'The authority marked this object as locally delivered in a shape this host cannot read.')
+  }
+  if (block.protocol !== LOCAL_DELIVERY_PROTOCOL) {
+    return unusable('local_delivery_protocol_unknown',
+      `The authority offered local delivery under ${JSON.stringify(String(block.protocol ?? ''))}, which this host does not speak.`)
+  }
+  const ticket = typeof block.ticket === 'string' ? block.ticket.trim() : ''
+  if (!LOCAL_DELIVERY_TICKET.test(ticket) || !LOCAL_DELIVERY_REF.test(String(block.ref ?? ''))) {
+    return unusable('local_delivery_malformed',
+      'The local-delivery block names no ticket and reference this host can act on.')
+  }
+  // The claim happens at the authority, on the route the contract names, reached by the
+  // custodian's own authenticated Connection. A block naming a different path is not a route this
+  // host may be redirected onto — it is a block this host cannot act on.
+  if (block.claimPath !== undefined && block.claimPath !== LOCAL_DELIVERY_CLAIM_PATH) {
+    return unusable('local_delivery_malformed',
+      'The local-delivery block names a claim route other than the one this protocol fixes.')
+  }
+  return { ticket, ref: String(block.ref) }
+}
+
+/**
+ * Hand the authority's ticket to this host's custodian, and take back what it produced.
+ *
+ * Nothing is authorized here. The custodian exchanges the ticket, at the authority, for a
+ * per-read authorization that re-checks the session, the Agent, the device grant, the ownership
+ * triple and the Source permission as they stand now — and only then reads the one window that
+ * authorization names. This Agent contributes the model destination its content would reach, so
+ * that both this host and the authority can refuse a disclosure neither of them chose.
+ */
+async function deliverMaterialLocally(delivery) {
+  if (!CAN_DELIVER_LOCALLY) {
+    return { ok: false, errorCode: 'material_delivery_unavailable',
+      teaching: 'This Agent is not running under a Rulith host that holds custody of local material.' }
+  }
+  let response
+  try {
+    response = await fetch(MATERIALS_DELIVER_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-rulith-material': MATERIALS_KEY },
+      body: JSON.stringify({ ticket: delivery.ticket, ref: delivery.ref, modelDestination: MODEL_DESTINATION }),
+      signal: AbortSignal.timeout(25_000),
+    })
+  } catch (error) {
+    return { ok: false, errorCode: 'material_custodian_offline',
+      teaching: `The local material delivery endpoint did not answer (${String(error?.message ?? error).slice(0, 120)}).` }
+  }
+  const body = await response.json().catch(() => undefined)
+  if (!response.ok || body?.ok !== true) {
+    return { ok: false, errorCode: String(body?.errorCode ?? 'material_delivery_refused'),
+      teaching: String(body?.teaching ?? 'This Rulith host did not complete that local read.') }
+  }
+  const result = body.result
+  // The nine fields a proxy read answers with, and the reference this read was for. A custodian
+  // that answered about a different object has answered a different question, and its bytes are
+  // dropped rather than reconciled.
+  const wellFormed = result !== null && typeof result === 'object' && !Array.isArray(result)
+    && result.ref === delivery.ref && typeof result.data === 'string'
+    && typeof result.mediaType === 'string' && (result.encoding === 'utf8' || result.encoding === 'base64')
+    && Number.isSafeInteger(result.offset) && Number.isSafeInteger(result.totalBytes)
+    && typeof result.complete === 'boolean' && typeof result.truncated === 'boolean'
+    && (result.nextOffset === null || Number.isSafeInteger(result.nextOffset))
+  if (!wellFormed) {
+    return { ok: false, errorCode: 'local_delivery_malformed',
+      teaching: 'The local read answered in a shape this host cannot hand to a model, so nothing was read from it.' }
+  }
+  return { ok: true, result }
 }
 
 /**
@@ -1539,13 +1724,22 @@ async function callTool(ctx, name, input, { claim = false } = {}) {
   let text = ''
   let handoffText
   let hostMeta
+  let localMeta
   let isError = false
   let authoritative = true
   try {
-    const answer = await mcpRpc('tools/call', { name, arguments: input }, { id: identity.requestId })
+    // Any call can collect an earlier ReadArtifact outcome. Advertise this Host's delivery
+    // capability also during that recovery, without changing the model's requested operation.
+    const negotiate = CAN_DELIVER_LOCALLY
+    const answer = await mcpRpc('tools/call', { name, arguments: input }, {
+      id: identity.requestId,
+      ...(negotiate ? { headers: { [LOCAL_DELIVERY_HEADER]: LOCAL_DELIVERY_PROTOCOL,
+        'x-rulith-local-custodian': MATERIALS_CONNECTION } } : {}),
+    })
     // Host metadata and model content are two channels. The text is the authority's own
     // JSON; `_meta` never enters it.
     hostMeta = hostMetaOf(answer)
+    localMeta = answer?._meta?.[LOCAL_DELIVERY_META]
     isError = answer?.isError === true
     text = (Array.isArray(answer?.content) ? answer.content : [])
       .filter((item) => item?.type === 'text').map((item) => String(item.text ?? '')).join('\n')
@@ -1654,6 +1848,43 @@ async function callTool(ctx, name, input, { claim = false } = {}) {
     // Agent, so there is at most one; it is held, named and persisted until the authority
     // says what became of it, and it is never re-presented under another session.
     if (!claim) holdUnresolved(identity)
+  }
+  // Authorized local delivery, and only after everything above it.
+  //
+  // The order is the guarantee. `ReadArtifact` went to the authority first and came back
+  // authoritative, which means this host's MCP authentication, its serial-call gate and its
+  // session were all in force for this read — the same checks any other eligible host passes
+  // before it may be offered a ticket. Only then is the host-only namespace consulted.
+  //
+  // A negotiated read carries **no bytes**, by design: the authority states that the read was
+  // authorized for local delivery and carried nothing, so a host that fails to complete it
+  // leaves the model with a visible unavailable rather than a fabricated empty success. There is
+  // deliberately no automatic proxy inside a negotiated read — a Source that may be read here
+  // but not sent off the machine must never have its bytes moved as a convenience.
+  if (authoritative && (handoff?.tool === 'ReadArtifact' || (handoff === undefined && name === 'ReadArtifact'))) {
+    const delivery = localDeliveryOf(localMeta)
+    if (delivery !== undefined) {
+      const local = delivery.ticket === undefined ? { ok: false, ...delivery } : await deliverMaterialLocally(delivery)
+      let completed
+      if (local.ok) {
+        completed = { accepted: true, result: local.result }
+        if (handoff === undefined) isError = false
+        emitOn(ctx, 'material-read', { ref: local.result.ref, mediaType: String(local.result.mediaType ?? ''),
+          totalBytes: Number(local.result.totalBytes ?? 0), complete: local.result.complete === true })
+      } else {
+        // The model is told the read was refused, and is given no ticket, no key, no path and no
+        // content. A retry keeps the same local delivery route.
+        completed = { accepted: false, errorCode: local.errorCode, teaching: local.teaching }
+        log(`· Local delivery of ${delivery.ref ?? 'that object'} was refused (${local.errorCode}).`)
+      }
+      if (handoff === undefined) result = completed
+      else {
+        result = { ...result, earlierResult: completed }
+        delete result.earlierResultText
+        handoffText = JSON.stringify(completed)
+      }
+      text = JSON.stringify(result)
+    }
   }
   const view = handoff === undefined && BOARD_TOOLS.has(name) ? boardViewOf(result) : undefined
   if (view !== undefined) board.lastView = view
@@ -2451,17 +2682,17 @@ function emitVerdict(ctx, name, answer, callId) {
     return
   }
   if (!BOARD_TOOLS.has(name) && answer.authoritative === true && typeof result.errorCode !== 'string') {
-    // A data read, reported as one. It has no `accepted` because it decided nothing: it
-    // returned bytes from an object the Board already knows about.
-    const size = Number.isFinite(result.totalBytes) ? `${result.totalBytes} byte(s)` : 'an unstated size'
-    log(`Data: ${name} returned ${result.complete === true ? 'the final fragment of' : 'a fragment of'} ${size}`
-      + `${result.truncated === true ? ', truncated at the read limit' : ''}.`)
+    // Data admission is distinct from a Board verdict.
+    const data = result.result ?? {}
+    const size = Number.isFinite(data.totalBytes) ? `${data.totalBytes} byte(s)` : 'an unstated size'
+    log(`Data: ${name} returned ${data.complete === true ? 'the final fragment of' : 'a fragment of'} ${size}`
+      + `${data.truncated === true ? ', truncated at the read limit' : ''}.`)
     emitOn(ctx, 'artifact-read', {
       cmd: name,
-      ...(typeof result.ref === 'string' ? { ref: result.ref } : {}),
-      ...(typeof result.mediaType === 'string' ? { mediaType: result.mediaType } : {}),
-      complete: result.complete === true,
-      truncated: result.truncated === true,
+      ...(typeof data.ref === 'string' ? { ref: data.ref } : {}),
+      ...(typeof data.mediaType === 'string' ? { mediaType: data.mediaType } : {}),
+      complete: data.complete === true,
+      truncated: data.truncated === true,
     })
     return
   }
@@ -2671,6 +2902,7 @@ async function runCaseTurn(ctx, userText, {
   caseTypePinnedForTurn = caseTypePinned,
   businessKey = selectedBusinessKey,
   requestedCaseId = '',
+  attachments = [],
 } = {}) {
   compactTranscript(ctx)
   const messages = ctx.messages
@@ -2751,8 +2983,22 @@ async function runCaseTurn(ctx, userText, {
   // answer to something the model asked earlier, not part of what the user just said.
   for (const note of carried.splice(0)) messages.push(userEntry(note))
 
+  // Attachments enter the transcript as **metadata**: a name, a media type, a length, a digest
+  // and the opaque id an authorized read would name. No content, and no summary of content —
+  // this host has not read the files either, and a sentence that sounded like it had would be
+  // this host asserting something no read has established. The model's route to the bytes is an
+  // Action that references the material read Tool, which is governed like any other.
+  const attachmentNotice = attachments.length === 0 ? '' : [
+    `\n\nLocal materials attached to this message (${attachments.length}):`,
+    ...attachments.map((material) => `\n· ${material.name} — ${material.mediaType}, ${material.totalBytes} byte(s),`
+      + ` id ${material.id}${material.digest === undefined ? '' : `, ${material.digest}`}`),
+    '\n\nYou have not been given their contents. To read one, find an authorized Action that references this Agent\'s'
+    + ' material read Tool and dispatch it with the material id. Do not describe or assume anything about a material'
+    + ' you have not actually read.',
+  ].join('')
   messages.push(userEntry([
     `${policy === 'continue' ? 'Task' : 'User message'}: ${userText}`,
+    attachmentNotice,
     selectionNotice === '' ? '' : `\n\n${selectionNotice}`,
     board.roots.length === 0 ? '' : `\n\nCases in focus: ${board.roots.map((row) => `${row.caseId} (root ${row.root}, ${row.status})`).join(' · ')}`,
     board.lastView === undefined ? '' : `\n\nBoard View last observed (not refreshed; call QueryBoard for a current one):\n${viewText(board.lastView)}`,
@@ -3129,8 +3375,34 @@ if (SERVE) {
         // exactly as `--case-type` does for the process. The model may not move off it.
         let caseTypeGiven = caseTypePinned
         let businessKey = selectedBusinessKey
+        /**
+         * Local material the host accepted on the operator's behalf.
+         *
+         * Metadata, and only metadata. There is nothing else to carry: a read is authorized by
+         * the authority, per read, and an attachment is not a read — so nothing arriving here
+         * grants anything, and this Agent has not read these files and does not claim to.
+         */
+        let attachments = []
         try {
           const b = JSON.parse(raw || '{}')
+          if (b.attachments !== undefined) {
+            if (!Array.isArray(b.attachments) || b.attachments.length > 8) {
+              return deny('attachments must be an array of at most 8 material descriptions from the Rulith host.', 400)
+            }
+            for (const entry of b.attachments) {
+              if (entry === null || typeof entry !== 'object' || Array.isArray(entry)
+                || !/^mat_[0-9a-f]{32}$/.test(String(entry.id ?? ''))
+                || typeof entry.name !== 'string' || entry.name === ''
+                || typeof entry.mediaType !== 'string' || entry.mediaType === ''
+                || !Number.isSafeInteger(entry.totalBytes) || entry.totalBytes <= 0) {
+                return deny('Each attachment must state {id, name, mediaType, totalBytes} as the Rulith host issued them.', 400)
+              }
+              attachments.push({
+                id: String(entry.id), name: entry.name, mediaType: entry.mediaType, totalBytes: entry.totalBytes,
+                ...(typeof entry.digest === 'string' ? { digest: entry.digest } : {}),
+              })
+            }
+          }
           text = String(b.text ?? '').trim()
           sessionKey = String(b.sessionKey ?? '').trim()
           requestedCaseIdValue = b.caseId
@@ -3158,7 +3430,7 @@ if (SERVE) {
         if (requestedCaseId.length > 256) return deny('caseId exceeds 256 characters. Use the exact Case ID returned by /runs or shown in Console.', 400)
         const slot = slotFor(sessionKey)
         if (slot === undefined) return deny(`Conversation capacity is full (${SERVE_SLOTS_MAX} slots), and every slot is busy. Retry later or continue an existing sessionKey.`, 429)
-        const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey }
+        const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments }
         slot.queue.push(item)
         slot.lastUsed = item.at
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0)
@@ -3229,6 +3501,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
         caseTypePinnedForTurn: item.caseTypePinned === true || caseTypePinned,
         businessKey: item.businessKey,
         requestedCaseId: item.caseId,
+        attachments: item.attachments,
       })
       note = seg.note
       pendingCaseId = seg.pendingCaseId

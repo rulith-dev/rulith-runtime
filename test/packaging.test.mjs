@@ -29,7 +29,9 @@ test('the packed npm artifact prepares the demo offline and refuses a missing bu
     const pack = spawnSync(process.execPath, [npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', dir], { cwd: ROOT, encoding: 'utf8', windowsHide: true })
     assert.equal(pack.status, 0, pack.stderr)
     const filename = JSON.parse(pack.stdout)[0].filename
-    const extracted = spawnSync('tar', ['-xf', join(dir, filename), '-C', dir], { encoding: 'utf8', windowsHide: true })
+    // A relative archive name works with both BSD tar and GNU tar on Windows; GNU tar
+    // interprets the colon in an absolute C:/... filename as a remote host selector.
+    const extracted = spawnSync('tar', ['-xf', filename, '-C', dir], { cwd: dir, encoding: 'utf8', windowsHide: true })
     assert.equal(extracted.status, 0, extracted.stderr)
     const unpacked = join(dir, 'package')
     const manifest = JSON.parse(readFileSync(join(unpacked, 'artifact-manifest.json'), 'utf8'))
@@ -61,6 +63,25 @@ test('the packed npm artifact prepares the demo offline and refuses a missing bu
 })
 
 // ── The manifest and the bytes that ship ─────────────────────────────────────
+
+test('manifest verification refuses a newly shipped module without a reviewed pin', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'rulith-unpinned-'))
+  try {
+    for (const name of ['scripts', 'agent', 'worker', 'local']) mkdirSync(join(directory, name))
+    writeFileSync(join(directory, 'scripts/update-artifact-manifest.mjs'),
+      readFileSync(join(ROOT, 'scripts/update-artifact-manifest.mjs')))
+    writeFileSync(join(directory, 'local/unlisted.mjs'), 'export const value = 1\n')
+    writeFileSync(join(directory, 'artifact-manifest.json'), '{"untouched":true}\n')
+    const result = spawnSync(process.execPath, [join(directory, 'scripts/update-artifact-manifest.mjs'), '--check'],
+      { encoding: 'utf8', windowsHide: true })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /local\/unlisted\.mjs is missing from the artifact manifest list/)
+    assert.equal(readFileSync(join(directory, 'artifact-manifest.json'), 'utf8'), '{"untouched":true}\n')
+  } finally {
+    assert.equal(dirname(directory), tmpdir())
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 /**
  * Build a small tree that looks like a package: a manifest plus the files it lists.

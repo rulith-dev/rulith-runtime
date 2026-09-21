@@ -2,7 +2,66 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.8.0 - 2026-09-21
+
+- Add chat attachments and a file picker backed by immutable, per-profile Worker
+  material storage. Messages carry metadata; the Agent obtains contents through an
+  authorized Action and the existing `ReadArtifact` tool.
+- Keep Artifact originals with the Worker. Support negotiated local delivery and
+  separately authorized bounded Gateway proxy reads, with current credential/lease
+  checks, chunk integrity, explicit offline failures and per-account delivery limits.
+  Reading material does not attest its business meaning or authorize remote models.
+- Require the matching 0.8.0 Gateway deployment for device management and material
+  delivery. Gateway payload storage and its upload route are retired; historical
+  Artifact payloads are not migrated. Existing account identities are preserved.
+- Handle maximum binary and UTF-8 material response windows, reject corrupt UTF-8
+  tails and redirected material directories, and clear confirmed local Agent identity
+  when its process exits. PDF/DOCX extraction and the complete local document-authoring
+  assistant workflow are not included in this release.
+
+- Recover incomplete device sign-in with an editable Console address and an explicit retry; retain request proof, show useful errors, and avoid polling approval before a code arrives. Keep old installation imports in advanced local settings.
+- Treat a running Agent as ready for conversation while its optional Worker is stopped.
+
+- Rename the local product to **Rulith**, a local multi-agent workbench. Keep the
+  original three-column interaction: Agents on the left, the selected conversation
+  in the middle, and its Case and Worker activity on the right. Both content columns
+  switch together; the selected Agent's controls live in the left rail. Adopt Console's
+  gray surfaces, blue accents and restrained controls.
+- Anchor the account entry at the lower left. Present conversation as prose and compact
+  expandable activity lines; reserve stronger containers for errors and required input.
+  Embedded pages confirm their own readiness instead of treating any HTTP body as a
+  loaded workspace, and stopped/replaced hosts do not retain stale conversation frames.
+- List the device's authorized cloud Agents directly. First-use setup belongs to the
+  selected Agent; local configuration recovery and legacy import live in account settings.
+  Directory and device management stay on the control plane, separate from `/mcp` and `/work`.
+- `rulith` opens one page for a browser-assisted account sign-in
+  and for independent Agent instances on one computer. Each instance keeps its own
+  configuration directory, MCP state, tool manifest, workspace, unresolved-call store,
+  ports and loopback key; selecting one never starts, stops or re-keys another, and a
+  running process never changes identity. Starting a role and changing its setup are
+  checked against the current device grant, including from the instance's own page.
+  Signing out stops every child, revokes the device grant, then clears the credentials
+  that grant issued — and reports an unfinished step as incomplete rather than as a
+  sign-out. Copy model settings between instances without re-entering a provider account.
+- Start or stop the selected Agent and Worker independently. One workbench owns an
+  installation directory; shutdown rejects new work and waits for already admitted
+  operations. Surviving children block credential cleanup until their exit is observed.
+- Offer to import an existing single-instance installation as an unpaired profile in its
+  own directory: its model, tool, MCP and resource settings are copied, its Agent and
+  Worker credentials are not. Those stay with the original installation, which keeps
+  running under `rulith start --legacy` under its own authority — revoking this device
+  does not revoke them. The original is never moved, rewritten or deleted.
+- End the Agent and the Worker when the Rulith Local host that launched them exits, so a
+  killed host cannot leave an authenticated role running that nothing on the machine
+  knows about. Nothing in flight is reported as cancelled.
+- Refuse a configured MCP server whose working directory, executable or file/directory argument
+  overlaps Rulith's own configuration and credentials — in the stdio and registry options
+  as well as the Filesystem one, which alone used to check. Rulith runs tool servers as the
+  operator and cannot confine them; this closes a configuration bypass and says so rather
+  than claiming to be a sandbox.
+- Keep the single-instance mode reachable by the command an existing deployment already
+  runs: `--legacy`, `--config <file>`, `RULITH_LOCAL_CONFIG`, or naming roles with
+  `--role`.
 
 - Clarify that an announced action must include its actual tool call and that
   tool results should lead to an answer, a concrete blocker, or a necessary question.

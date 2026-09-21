@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { renderMarkdown } from './markdown.mjs'
+import { localThemeCss, managerReturnHref, workbenchReadyScript } from './theme.mjs'
 /** Browser projection for Rulith Local. It contains no Case or Worker authority. */
 /**
  * The Cases this conversation is working, as the Agent observed them.
@@ -123,47 +124,391 @@ export function renderToolCall(event, result) {
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
   const status = !result ? 'Waiting for result' : result.handedOver ? 'Earlier result returned; this request did not run' : result.refusedLocally ? 'Not sent' : !result.authoritative ? 'Outcome unknown' : result.accepted === false ? 'Rejected' : result.accepted === true ? 'Accepted' : 'Result returned'
   const snapshot = (name, value) => value ? '<div class="call-part"><b>' + name + '</b>' + (value.truncated ? '<p>Display truncated · ' + esc(value.totalBytes) + ' bytes in the original result. This preview is incomplete.</p>' : '') + '<pre>' + esc(value.text) + '</pre></div>' : ''
-  return '<div class="message"><details class="event tool-call" data-call="' + esc(event.callId) + '"><summary class="event-head"><span class="kind">' + esc(event.cmd) + '</span><span class="right">' + esc(status) + '</span></summary><div class="call-content">' + snapshot('Arguments', event.input) + snapshot('Result', result?.output) + '</div></details></div>'
+  // A call is one line of activity — what was asked for, and how it ended — that opens onto
+  // the request and the result it actually carried. The status word is the only place colour
+  // is spent, and only when the answer was a refusal.
+  const refused = Boolean(result) && (result.accepted === false || result.refusedLocally === true)
+  return '<div class="message quiet"><details class="activity tool-call" data-call="' + esc(event.callId) + '"><summary>'
+    + '<span class="act-ico">›</span><span class="act-text">' + esc(event.cmd) + '</span><span class="act-more"></span>'
+    + '<span class="act-state' + (refused ? ' bad' : '') + '">' + esc(status) + '</span></summary>'
+    + '<div class="call-content">' + snapshot('Arguments', event.input) + snapshot('Result', result?.output) + '</div></details></div>'
 }
 
 export const localPage = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Rulith Local</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Rulith</title>
 <style>
-:root{color-scheme:dark;--bg:#0d0f12;--sidebar:#111317;--panel:#15181d;--panel2:#1b1f25;--line:#292e36;--fg:#eef1f4;--muted:#969da8;--faint:#686f7a;--accent:#48d7c2;--blue:#8eb6ff;--green:#4fd19b;--amber:#e5ad55;--red:#ef7d7d;--radius:12px}
-*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;overflow:hidden}
-button,input,textarea,select{font:inherit;color:inherit}button{cursor:pointer}.app{display:grid;grid-template-columns:250px minmax(460px,1fr) 330px;height:100vh}.sidebar,.inspector{background:var(--sidebar);min-width:0}.sidebar{border-right:1px solid var(--line);display:flex;flex-direction:column}.inspector{border-left:1px solid var(--line);overflow:auto}.brand{height:58px;padding:17px 18px;display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.2px}.logo{width:17px;height:17px;border-radius:5px;background:var(--accent);box-shadow:0 0 24px rgba(72,215,194,.28)}.mode{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:2px 7px;margin-left:auto}.new{margin:6px 12px 16px;width:calc(100% - 24px);border:1px solid #3a4049;background:#22262d;border-radius:9px;padding:9px 12px;text-align:left}.new:hover{background:#292e36}.side-title{padding:0 16px 7px;color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.8px}.cases{overflow:auto;flex:1;padding:0 8px}.case{padding:9px 10px;border-radius:8px;margin:2px 0;color:#c9ced6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.case:hover,.case.active{background:#20242b;color:#fff}.case small{display:block;color:var(--faint);font-size:11px}.side-foot{border-top:1px solid var(--line);padding:10px 12px}.runtimeid{display:flex;align-items:center;gap:9px;padding:8px;margin-bottom:5px}.avatar{width:27px;height:27px;flex:0 0 27px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,#4bcfbc,#4679ca);color:white;font-weight:700}.runtimecopy{min-width:0}.runtimecopy b,.runtimecopy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtimecopy b{font-size:12px}.runtimecopy small{font-size:10px;color:var(--muted)}.statusline{display:flex;align-items:center;gap:8px;padding:4px 8px;color:var(--muted);font-size:11px}.dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}.dot.on{background:var(--green);box-shadow:0 0 10px rgba(79,209,155,.45)}
-.main{min-width:0;min-height:0;height:100vh;overflow:hidden;display:flex;flex-direction:column}.top{height:58px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 22px;gap:10px}.title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sub{color:var(--muted);font-size:12px}.spacer{flex:1}.views{align-self:stretch;display:flex;align-items:flex-end;gap:15px;margin-left:18px}.viewtab{height:38px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--muted);padding:0 2px}.viewtab.active{color:var(--fg);border-bottom-color:var(--accent)}.ghost{border:1px solid var(--line);background:transparent;border-radius:8px;padding:6px 10px;color:var(--muted)}.mobile-settings{display:none}.stream{flex:1;min-height:0;overflow:auto;padding:24px max(24px,calc((100% - 790px)/2)) 130px;overscroll-behavior:contain;scrollbar-gutter:stable}.empty{max-width:640px;margin:18vh auto 0;text-align:center;color:var(--muted)}.empty h1{color:var(--fg);font-size:24px;margin:0 0 8px}.message{max-width:780px;margin:0 auto 18px}.user{display:flex;justify-content:flex-end}.bubble{max-width:78%;background:#272b31;border-radius:16px 16px 4px 16px;padding:10px 14px;white-space:pre-wrap}.agent-text{white-space:normal;color:#e4e7eb}.meta{font-size:11px;color:var(--faint);margin-bottom:5px}.event{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}.event-head{display:flex;gap:9px;align-items:center;padding:9px 11px;color:#cfd4db}.event-head .kind{font-weight:600}.event-head .right{margin-left:auto;color:var(--faint);font-size:11px}.event-body{border-top:1px solid var(--line);padding:9px 11px;color:var(--muted);white-space:pre-wrap;overflow:auto;max-height:230px}.event.good{border-color:rgba(79,209,155,.34)}.event.warn{border-color:rgba(229,173,85,.34)}.event.bad{border-color:rgba(239,125,125,.35)}.ico{width:20px;height:20px;display:inline-grid;place-items:center;border-radius:6px;background:#252a31;color:var(--accent)}
-.composer{position:absolute;left:250px;right:330px;bottom:0;padding:12px 24px 18px;background:linear-gradient(transparent,var(--bg) 25%);display:flex;justify-content:center}.composebox{position:relative;width:min(790px,100%);background:#202329;border:1px solid #353a43;border-radius:16px;padding:11px 12px;box-shadow:0 12px 35px rgba(0,0,0,.28)}.composebox>textarea{display:block;width:100%;resize:none;min-height:30px;max-height:150px;border:0;outline:0;background:transparent}.composebar{display:flex;align-items:center;gap:7px;margin-top:8px}.roundbtn{flex:0 0 30px;width:30px;height:30px;border:1px solid var(--line);border-radius:50%;background:transparent;color:var(--muted);font-size:18px;line-height:1}.toolbarbadge,.modelbadge{height:30px;display:inline-flex;align-items:center;min-width:0;border:0;background:transparent;color:var(--muted);font-size:12px}.modelbadge{max-width:185px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 6px}.case-pop[hidden]{display:none}.case-pop{position:absolute;left:8px;bottom:54px;width:min(410px,calc(100% - 16px));z-index:3;background:var(--panel);border:1px solid #3a4049;border-radius:11px;padding:12px;box-shadow:0 15px 44px rgba(0,0,0,.45)}.case-pop label{display:block;color:var(--muted);font-size:11px;margin-bottom:9px}.case-pop label:last-child{margin-bottom:0}.case-pop input{display:block;width:100%;margin-top:4px;background:#0e1115;border:1px solid var(--line);border-radius:7px;padding:8px;outline:0}.send{margin-left:auto;flex:0 0 32px;width:32px;height:32px;border:0;border-radius:50%;background:var(--accent);color:#061512;font-weight:800}.send:disabled{opacity:.35}.worker-only .composer{display:none}.worker-only .stream{padding-bottom:24px}
-.inspect-head{height:58px;border-bottom:1px solid var(--line);padding:18px 16px;font-weight:600}.section{padding:15px 16px;border-bottom:1px solid var(--line)}.section h3{font-size:11px;text-transform:uppercase;letter-spacing:.75px;color:var(--faint);margin:0 0 10px}.kv{display:flex;gap:8px;justify-content:space-between;margin:6px 0;color:var(--muted)}.kv b{color:var(--fg);font-weight:500;text-align:right}.frontier,.workers{display:grid;gap:7px}.item{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 9px;color:#cbd0d7;font-size:12px}.item small{display:block;color:var(--faint);margin-top:3px}.settingsopen{width:100%;border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:9px 11px;text-align:left}.settingsopen:hover{border-color:#454c58}.modal[hidden]{display:none}.modal{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.68);display:grid;place-items:center;padding:24px}.modal-card{width:min(820px,96vw);max-height:88vh;overflow:auto;background:var(--panel);border:1px solid #383e48;border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)}.modal-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;padding:16px 18px;background:var(--panel);border-bottom:1px solid var(--line)}.modal-head b{font-size:16px}.modal-head .sub{display:block}.modal-close{margin-left:auto;width:32px;height:32px;border:1px solid var(--line);background:transparent;border-radius:8px}.runtimegrid{display:grid;grid-template-columns:1fr 1fr}.runtimepane{padding:18px}.runtimepane+ .runtimepane{border-left:1px solid var(--line)}.runtimepane h3{margin:0 0 10px}.runtimepane code{font:12px/1.45 ui-monospace,Consolas,monospace;color:#cbd0d7;word-break:break-all}.runtimecontrols{display:flex;gap:8px;margin-top:14px}.runtimecontrols button{border:1px solid var(--line);background:transparent;border-radius:8px;padding:7px 10px;color:var(--muted)}.runtimefoot{padding:14px 18px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}.runtimefoot code{color:#cbd0d7}
-@media(max-width:1050px){.app{grid-template-columns:220px minmax(420px,1fr)}.inspector{display:none}.composer{left:220px;right:0}}@media(max-width:720px){.app{display:block}.sidebar{display:none}.main{height:100vh}.composer{left:0}.top{padding:0 14px}.stream{padding-left:14px;padding-right:14px}.mobile-settings{display:inline-block}.runtimegrid{grid-template-columns:1fr}.runtimepane+ .runtimepane{border-left:0;border-top:1px solid var(--line)}.views{margin-left:4px;gap:9px}.sessionlog{display:none}}
-.agent-text p{margin:0 0 14px}.agent-text h1,.agent-text h2,.agent-text h3{margin:20px 0 10px;font-size:1.2em}.agent-text ul,.agent-text ol{padding-left:24px}.agent-text li{margin:5px 0}.agent-text a{color:var(--accent)}.agent-text blockquote{border-left:3px solid var(--line);padding-left:15px;margin-left:0}.agent-text code{background:#20262f;border-radius:4px;padding:1px 5px;font-family:ui-monospace,Consolas,monospace}.agent-text pre,.call-part pre{overflow:auto;white-space:pre;max-height:380px;background:#0d1117;border-radius:6px;padding:12px;font:12px/1.6 ui-monospace,Consolas,monospace}.markdown-table{overflow:auto;margin:14px 0}.markdown-table table{border-collapse:collapse;min-width:100%}.markdown-table th,.markdown-table td{border:1px solid var(--line);padding:8px 12px;text-align:left;min-width:100px}.markdown-table th{background:#20262f}.tool-call summary{cursor:pointer;list-style:revert}.tool-call summary::before{content:'▸';color:var(--accent)}.tool-call[open] summary::before{content:'▾'}.call-content{padding:0 12px 12px;border-top:1px solid var(--line)}.call-part{padding-top:12px}.call-part p{color:var(--amber)}
+${localThemeCss}
+/* The workbench is a fixed three-column application shell, so it opts out of the shared
+   document flow: the page itself never scrolls, only the stream and the two rails do. */
+html,body{height:100%}body{overflow:hidden}
+.app{display:grid;grid-template-columns:250px minmax(460px,1fr) 330px;height:100vh}.sidebar,.inspector{background:var(--side);min-width:0}.sidebar{border-right:1px solid var(--line);display:flex;flex-direction:column}.inspector{border-left:1px solid var(--line);overflow:auto}.brand{height:58px;padding:17px 18px;display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:.2px}.logo{width:14px;height:14px;border-radius:4px;background:var(--brand);flex:none}.mode{font-size:var(--fs-4);color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:2px 8px;margin-left:auto}.new{margin:6px 12px 16px;width:calc(100% - 24px);border:1px solid var(--line2);background:var(--panel);border-radius:8px;padding:9px 12px;text-align:left}.new:hover{background:var(--panel2);border-color:var(--faint)}.side-title{padding:0 16px 7px;color:var(--faint);font-size:var(--fs-4);text-transform:uppercase;letter-spacing:.8px}.cases{overflow:auto;flex:1;padding:0 8px}.case{padding:9px 10px;border-radius:8px;margin:2px 0;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}.case:hover{background:var(--panel2);color:var(--fg)}.case.active{background:var(--panel2);color:var(--fg);box-shadow:inset 2px 0 0 var(--accent)}.case small{display:block;color:var(--faint);font-size:var(--fs-4)}.side-foot{border-top:1px solid var(--line);padding:10px 12px}.side-foot .manager-return{display:flex;justify-content:center;margin:2px 0 10px}.runtimeid{display:flex;align-items:center;gap:9px;padding:8px;margin-bottom:5px}.avatar{width:26px;height:26px;flex:0 0 26px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--brand),var(--accent));color:var(--btn-ink);font-weight:700;font-size:var(--fs-4)}.runtimecopy{min-width:0}.runtimecopy b,.runtimecopy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runtimecopy b{font-size:var(--fs-4)}.runtimecopy small{font-size:11px;color:var(--dim)}.statusline{display:flex;align-items:center;gap:8px;padding:4px 8px;color:var(--dim);font-size:var(--fs-4)}.dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}.dot.on{background:var(--green)}
+.main{min-width:0;min-height:0;height:100vh;overflow:hidden;display:flex;flex-direction:column}.top{height:58px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 22px;gap:10px}
+/* Without this the header's title block refuses to shrink below its own text, the header
+   becomes wider than the window, and — because the shell never scrolls horizontally — the
+   conversation is silently cut off at the right edge on a narrow screen. */
+.top>div{min-width:0}.title{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sub{color:var(--dim);font-size:var(--fs-4)}.spacer{flex:1}.views{align-self:stretch;display:flex;align-items:flex-end;gap:15px;margin-left:18px}.viewtab{height:38px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--dim);padding:0 2px}.viewtab:hover{color:var(--fg)}.viewtab.active{color:var(--fg);border-bottom-color:var(--accent)}.ghost{border:1px solid var(--line2);background:transparent;border-radius:8px;padding:6px 12px;color:var(--dim);font-size:var(--fs-4);white-space:nowrap}.ghost:hover{color:var(--fg);border-color:var(--faint)}.mobile-settings{display:none}.stream{flex:1;min-height:0;overflow:auto;padding:26px max(24px,calc((100% - 790px)/2)) 130px;overscroll-behavior:contain;scrollbar-gutter:stable}.empty{max-width:640px;margin:16vh auto 0;text-align:center;color:var(--dim)}.empty h1{color:var(--fg);font-size:26px;margin:0 0 10px}.message{max-width:780px;margin:0 auto 18px}.user{display:flex;justify-content:flex-end}.bubble{max-width:78%;background:var(--panel2);border:1px solid var(--line);border-radius:14px 14px 4px 14px;padding:10px 14px;white-space:pre-wrap}.agent-text{white-space:normal;color:var(--fg)}.meta{font-size:var(--fs-4);color:var(--faint);margin-bottom:5px}/* A conversation is prose with things that happened alongside it, and almost all of those
+   things are routine: a Case opened, a turn finished, a lease taken. Giving each of them a
+   bordered panel made the transcript a stack of boxes in which the one that mattered looked
+   exactly like the nine that did not. So the ordinary event is a line of text — an icon
+   column, what happened, when — and weight is spent only where something is wrong, waiting,
+   or needs a person. Nothing is dropped: a line with more to say opens in place. */
+/* Pulled left by its own padding so the icon column starts on the same margin as the prose:
+   the hover surface has room, and the transcript still reads as one column of text. */
+.note,.activity>summary{display:flex;align-items:baseline;gap:8px;margin-left:-8px;padding:4px 8px;border-radius:8px;color:var(--dim);font-size:var(--fs-4);line-height:1.65}
+.note:hover,.activity>summary:hover{background:var(--panel2);color:var(--fg)}
+.activity{margin:0;border:0;background:transparent}
+.activity>summary{cursor:pointer;list-style:none}
+.activity>summary::-webkit-details-marker{display:none}
+.activity[open]>summary{color:var(--fg)}
+.act-ico{flex:none;width:13px;text-align:center;color:var(--faint)}
+.act-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act-more{flex:none;color:var(--faint);font-size:11px}
+.act-more::before{content:'▸'}
+.activity[open] .act-more::before{content:'▾'}
+.act-state{margin-left:auto;flex:none;color:var(--faint);white-space:nowrap}
+.act-state.bad{color:var(--red)}
+/* Evidence stays one click away and reads as what was sent and what came back, indented
+   under the line it belongs to rather than boxed off from it. */
+.call-content{margin:0 0 10px;padding:2px 8px 0 21px}
+.call-part{padding-top:8px}
+.call-part b{display:block;color:var(--faint);font-size:11px;letter-spacing:.5px;text-transform:uppercase;margin-bottom:5px}
+.call-part p{color:var(--amber);margin:0 0 6px}
+/* Wrong, waiting, or needing a person. One accent and a tint — enough to find at a glance in
+   a column of quiet lines, without being the same box every routine event used to get. */
+.alert{border-left:2px solid var(--line2);background:var(--panel);border-radius:0 8px 8px 0;padding:9px 13px;color:var(--dim);font-size:var(--fs-4)}
+.alert b{display:flex;gap:10px;align-items:baseline;color:var(--fg);font-size:var(--fs-3);font-weight:650}
+.alert b .right{margin-left:auto;color:var(--faint);font-size:var(--fs-4);font-weight:400;white-space:nowrap}
+.alert-body{margin-top:4px;white-space:pre-wrap;overflow:auto;max-height:230px}
+.alert.bad{border-left-color:var(--red);background:rgb(247 123 134/7%)}
+.alert.wait{border-left-color:var(--amber);background:rgb(237 182 66/7%)}
+.composer{position:absolute;left:250px;right:330px;bottom:0;padding:14px 24px 20px;background:linear-gradient(transparent,var(--bg) 25%);display:flex;justify-content:center}.composebox{position:relative;width:min(790px,100%);background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:11px 12px;box-shadow:0 12px 35px rgb(0 0 0/28%)}.composebox>textarea{display:block;width:100%;resize:none;min-height:30px;max-height:150px;border:0;outline:0;border-radius:0;padding:0;font:inherit;background:transparent}.composebar{display:flex;align-items:center;gap:7px;margin-top:8px}.roundbtn{flex:0 0 30px;width:30px;height:30px;padding:0;border:1px solid var(--line2);border-radius:50%;background:transparent;color:var(--dim);font-size:18px;line-height:1}.roundbtn:hover{color:var(--fg)}.toolbarbadge,.modelbadge{height:30px;display:inline-flex;align-items:center;min-width:0;border:0;padding:0;background:transparent;color:var(--dim);font-size:var(--fs-4)}.modelbadge{max-width:185px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 6px}.modelbadge:hover{color:var(--fg)}.case-pop[hidden]{display:none}.case-pop{position:absolute;left:8px;bottom:54px;width:min(410px,calc(100% - 16px));z-index:3;background:var(--panel);border:1px solid var(--line2);border-radius:10px;padding:14px;box-shadow:0 15px 44px rgb(0 0 0/45%)}.case-pop label{display:block;color:var(--dim);font-size:var(--fs-4);margin:0 0 10px}.case-pop label:last-child{margin-bottom:0}.case-pop input{display:block;width:100%;margin-top:4px;background:var(--field);border:1px solid var(--line2);border-radius:7px;padding:8px}.send{margin-left:auto;flex:0 0 32px;width:32px;height:32px;padding:0;border:0;border-radius:50%;background:var(--btn-fg);color:var(--btn-ink);font-weight:800}.send:hover{filter:brightness(.94)}.send:disabled{opacity:.35}.worker-only .composer{display:none}.worker-only .stream{padding-bottom:24px}
+.inspect-head{height:58px;border-bottom:1px solid var(--line);padding:18px 16px;font-weight:650}.section{padding:16px}.section+.section{border-top:1px solid var(--line)}.section h3{font-size:var(--fs-4);text-transform:uppercase;letter-spacing:.75px;color:var(--faint);margin:0 0 10px}.frontier,.workers{display:grid;gap:7px}.item{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 10px;color:var(--dim);font-size:var(--fs-4);overflow-wrap:anywhere}.item small{display:block;color:var(--faint);margin-top:3px}.settingsopen{width:100%;border:1px solid var(--line2);background:var(--panel);border-radius:8px;padding:9px 11px;text-align:left}.settingsopen:hover{background:var(--panel2);border-color:var(--faint)}.sidelink{display:block;margin-top:8px;color:var(--accent);font-size:var(--fs-4);text-decoration:none}.sidelink:hover{text-decoration:underline}.settingsopen.sidelink{color:var(--fg);font-size:var(--fs-3)}.modal[hidden]{display:none}.modal{position:fixed;inset:0;z-index:50;background:rgb(0 0 0/55%);display:grid;place-items:center;padding:24px}.modal-card{width:min(820px,96vw);max-height:88vh;overflow:auto;background:var(--panel);border:1px solid var(--line2);border-radius:var(--radius);box-shadow:0 18px 48px rgb(0 0 0/55%)}.modal-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;padding:16px 18px;background:var(--panel);border-bottom:1px solid var(--line)}.modal-head b{font-size:var(--fs-1)}.modal-head .sub{display:block;margin-top:4px}.modal-close{margin-left:auto;flex:none;width:32px;height:32px;padding:0;border:1px solid var(--line2);background:transparent;border-radius:8px}.runtimegrid{display:grid;grid-template-columns:1fr 1fr}.runtimepane{padding:18px}.runtimepane+.runtimepane{border-left:1px solid var(--line)}.runtimepane h3{margin:0 0 10px}.runtimepane code{color:var(--fg)}.runtimepane .kv>span{flex:none}.runtimepane .kv b{min-width:0}.runtimecontrols{display:flex;gap:8px;margin-top:14px}.runtimecontrols button{padding:7px 12px;color:var(--fg)}.runtimefoot{padding:14px 18px;border-top:1px solid var(--line);color:var(--dim);font-size:var(--fs-4)}.runtimefoot code{color:var(--fg)}.runtimefoot .manager-return{display:flex;width:max-content;margin:12px 0 0}
+@media(max-width:1050px){.app{grid-template-columns:220px minmax(420px,1fr)}.inspector{display:none}.composer{left:220px;right:0}}@media(max-width:720px){.app{display:block}.sidebar{display:none}.main{height:100vh}.composer{left:0;padding:10px 14px 16px}.top{height:auto;min-height:52px;padding:8px 14px;gap:8px}.sub{display:none}.stream{padding-left:16px;padding-right:16px}.mobile-settings{display:inline-block}.runtimegrid{grid-template-columns:1fr}.runtimepane+.runtimepane{border-left:0;border-top:1px solid var(--line)}.views{margin-left:6px;gap:12px;align-items:center}.viewtab{height:32px}.sessionlog{display:none}.composebar{gap:6px}.toolbarbadge,.modelbadge{max-width:112px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.agent-text p{margin:0 0 14px}.agent-text h1,.agent-text h2,.agent-text h3{margin:20px 0 10px;font-size:1.2em}.agent-text ul,.agent-text ol{padding-left:24px}.agent-text li{margin:5px 0}.agent-text a{color:var(--accent)}.agent-text blockquote{border-left:3px solid var(--line2);padding-left:15px;margin-left:0;color:var(--dim)}.agent-text code{background:var(--field);border:1px solid var(--line);border-radius:4px;padding:1px 5px}.agent-text pre,.call-part pre{overflow:auto;white-space:pre;max-height:380px;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:12px;font:var(--fs-4)/1.6 var(--mono)}.markdown-table{overflow:auto;margin:14px 0}.markdown-table table{border-collapse:collapse;min-width:100%}.markdown-table th,.markdown-table td{border:1px solid var(--line);padding:8px 12px;text-align:left;min-width:100px;vertical-align:top}.markdown-table th{background:var(--panel2);color:var(--fg)}.message.quiet{margin-bottom:0}
+.message.quiet+.message:not(.quiet){margin-top:14px}
+.agent-text pre code{background:none;border:0;padding:0}.markdown-table th{white-space:normal}
+/* The composer answers in the composer. A browser dialog is not available to this page when
+   it is a sandboxed frame — alert() there returns without showing anything — so a refused
+   send would be silent exactly where sending is the whole product. */
+.composererr{margin:8px 2px 0;color:var(--red);font-size:var(--fs-4);white-space:pre-wrap}
+.composererr:empty{display:none}
+/* A header that cannot wrap is a header whose last buttons leave the window: .main never
+   scrolls sideways, so Clear view and Runtime details simply stop existing. */
+.top{flex-wrap:wrap;row-gap:6px;height:auto;min-height:58px}
+/* Embedded in the Rulith workbench. The surrounding page already shows which Agent this is,
+   which other Agents there are, and what its Worker is doing, so the two rails here would be
+   a second copy of both. They are not deleted — the conversation list and the Case evidence
+   are the same elements, moved into dialogs the centre can open — because every one of their
+   behaviours (switching conversation, starting a new one, the live Case roots, the frontier,
+   the unresolved call) is expected to keep working exactly as it does standalone. */
+.app.embedded .top{height:auto;min-height:56px;padding:8px 14px}
+.app.embedded{display:grid;grid-template-columns:minmax(0,1fr) 330px}.app.embedded .sidebar{display:none}.app.embedded .inspector{display:block}.app.embedded .composer{left:0;right:330px}
+/* Only when the frame itself is too narrow to hold both does the inspector fold away, and its
+   sections move into the Evidence dialog — the same nodes, so the same live rendering keeps
+   writing to them — and move back when there is room again. */
+@media(max-width:900px){.app.embedded{grid-template-columns:minmax(0,1fr)}.app.embedded .inspector{display:none}.app.embedded .composer{right:0}}
+/* Files a person adds to a message are materials: bytes this computer keeps, named by a local
+   material id. A chip therefore says the filename and how far along it is, and nothing else —
+   the digest and the byte count are the material service's business, not something a reader
+   has to carry. Nothing here is an attestation about the file, and nothing here clears it for
+   any use: it is a file that was added, and the Agent's authorized tools are what read it. */
+.attach{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+.attach[hidden]{display:none}
+.chip{display:flex;align-items:center;gap:8px;max-width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:99px;padding:4px 6px 4px 12px;font-size:var(--fs-4)}
+.chip-name{max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip-state{color:var(--faint)}
+.chip.bad{border-color:var(--red)}.chip.bad .chip-state{color:var(--red)}
+.chip-drop{flex:none;width:20px;height:20px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--dim);line-height:1}
+.chip-drop:hover{background:var(--panel);color:var(--fg)}
+.attachnote{display:block;margin:0 2px 8px;color:var(--faint);font-size:11px}
+.attachnote[hidden]{display:none}
+.attachsent{margin:6px 2px 0;color:var(--faint);font-size:var(--fs-4)}
+.attachsent:empty{display:none}
+.attach-menu[hidden]{display:none}
+.attach-menu{position:absolute;left:8px;bottom:54px;width:min(300px,calc(100% - 16px));z-index:3;background:var(--panel);border:1px solid var(--line2);border-radius:10px;padding:6px;box-shadow:0 15px 44px rgb(0 0 0/45%)}
+.attach-menu button{display:block;width:100%;text-align:left;border:0;background:transparent;border-radius:8px;padding:9px 11px;color:var(--fg)}
+.attach-menu button:hover{background:var(--panel2)}
+.attach-menu small{display:block;color:var(--faint);font-size:11px}
+/* Case preferences are still here and still work; they are simply not what the control is for
+   most of the time, so they read as the advanced option they are. */
+.attach-menu .advanced{margin-top:4px;padding-top:9px;border-top:1px solid var(--line);border-radius:0 0 8px 8px;color:var(--dim);font-size:var(--fs-4)}
+.composer.dragging .composebox{border-color:var(--accent)}
+.dropzone{border:1px dashed var(--line2);border-radius:var(--radius);padding:18px;text-align:center;color:var(--dim)}
+.dropzone.dragging{border-color:var(--accent);background:var(--panel2)}
+.dropzone small{display:block;margin-top:6px;color:var(--faint);font-size:11px}
+.filesnote{margin:10px 2px 0;color:var(--red);font-size:var(--fs-4)}
+.filesnote:empty{display:none}
+.filesbody .attach{margin:14px 0 0}
+.bubble-files{margin-top:6px;color:var(--faint);font-size:var(--fs-4)}
+.runtimecontrols[hidden]{display:none}.embedded-only{display:none}.app.embedded .embedded-only{display:inline-block}.panelmodal .modal-card{width:min(560px,96vw)}.panelbody{padding:14px 16px}.panelbody .new{width:100%;margin:0 0 12px}.panelbody .cases{padding:0;max-height:56vh;overflow:auto}.panelbody .case{white-space:normal}.panelbody .section{padding:14px 0}.panelbody .section:first-child{padding-top:0;border-top:0}
 </style></head><body><div class="app" id="app">
-<aside class="sidebar"><div class="brand"><span class="logo"></span>Rulith Local<span class="mode" id="mode">…</span></div><button class="new" id="newcase">＋ New conversation</button><div class="side-title">Activity</div><div class="cases" id="cases"><div class="case active" data-case="">All activity</div></div><div class="side-foot"><div class="runtimeid"><span class="avatar">A</span><span class="runtimecopy"><b id="agentname">Configured Agent</b><small id="agentidentity">loading…</small></span></div><button class="settingsopen" id="runtimeopen">◎ Runtime details</button><div class="statusline"><span class="dot" id="agentdot"></span>Agent <span id="agentstate">off</span></div><div class="statusline"><span class="dot" id="workerdot"></span>Worker <span id="workerstate">off</span></div></div></aside>
-<main class="main"><header class="top"><div><div class="title" id="title">Local activity</div><div class="sub" id="subtitle">Conversation with optional Rulith Case tools</div></div><nav class="views" aria-label="Activity view"><button class="viewtab active" data-view="case">Conversation</button><button class="viewtab" data-view="trace">Trace</button></nav><span class="spacer"></span><button class="ghost sessionlog" id="exportlog">Session log ↓</button><button class="ghost mobile-settings" id="mobileruntime" title="Runtime details">◎</button><button class="ghost" id="clear">Clear view</button></header><div class="stream" id="stream"><div class="empty" id="empty"><h1>What would you like to discuss or handle?</h1><p>Chat normally. The Agent will use Rulith when governed work, evidence, or an auditable Case is useful.</p></div></div></main>
-<aside class="inspector"><div class="inspect-head">Rulith Cases</div><section class="section"><h3>Cases in focus</h3><div class="kv"><span>Acceptance roots</span><b id="casecount">Not in use</b></div><div class="frontier" id="roots"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Unresolved call</h3><div class="frontier" id="recovery"><div class="item">No unresolved call</div></div></section><section class="section"><h3>Current frontier</h3><div class="frontier" id="frontier"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Worker activity</h3><div class="workers" id="workers"><div class="item">No Worker activity for this conversation.</div></div></section></aside>
-<form class="composer" id="composer"><div class="composebox"><textarea id="prompt" placeholder="Message the Agent…" rows="1"></textarea><div class="case-pop" id="casepopover" hidden><label>Preferred Case Type if Rulith is used<input id="casetype" value="exploration" aria-label="Case Type"></label><label>Business key JSON (optional)<input id="businesskey" placeholder='{"job_id":"..."}' aria-label="Business key JSON"></label></div><div class="composebar"><button type="button" class="roundbtn" id="caseoptions" title="Rulith preferences">＋</button><span class="toolbarbadge" id="toolbadge">Rulith available</span><button type="button" class="modelbadge" id="modelbadge" title="Runtime details">Model</button><span class="toolbarbadge" id="thinkingbadge">Standard</span><button class="send" id="send" title="Send message">↑</button></div></div></form>
-</div><div class="modal" id="runtimemodal" role="dialog" aria-modal="true" aria-labelledby="runtimetitle" hidden><div class="modal-card"><div class="modal-head"><div><b id="runtimetitle">Runtime details</b><span class="sub">Read-only projection of the single-Agent Runtime configuration. Edit the configuration file or secret manager, then restart the process.</span></div><button class="modal-close" id="runtimeclose" aria-label="Close Runtime details">×</button></div><div class="runtimegrid"><section class="runtimepane"><h3>Agent</h3><div class="kv"><span>Cloud Agent</span><b id="detailagent">—</b></div><div class="kv"><span>Credential</span><b id="detailagentkey">—</b></div><div class="kv"><span>Model service</span><b><code id="detailmodelurl">—</code></b></div><div class="kv"><span>Model</span><b id="detailmodel">—</b></div><div class="kv"><span>Model key</span><b id="detailmodelkey">—</b></div><div class="kv"><span>Reasoning</span><b id="detailthinking">—</b></div><div class="kv"><span>Case calls</span><b id="detailconcurrency">—</b></div><div class="runtimecontrols"><button data-control="agent" data-operation="stop">Stop Agent</button><button data-control="agent" data-operation="start">Start Agent</button></div></section><section class="runtimepane"><h3>Worker</h3><div class="kv"><span>Connection</span><b id="detailconnection">—</b></div><div class="kv"><span>Credential</span><b id="detailworkerkey">—</b></div><div class="kv"><span>Workspace tools</span><b id="detailtools">—</b></div><div class="kv"><span>Tool manifest</span><b><code id="detailtoolsfile">—</code></b></div><div class="kv"><span>Source vault</span><b><code id="detailsourcesfile">—</code></b></div><div class="runtimecontrols"><button data-control="worker" data-operation="stop">Stop Worker</button><button data-control="worker" data-operation="start">Start Worker</button></div></section></div><div class="runtimefoot">Configuration: <code id="detailconfig">—</code><div id="runtimemsg"></div></div></div></div><script>
+<aside class="sidebar"><div class="brand"><span class="logo"></span>Rulith<span class="mode" id="mode">…</span></div><button class="new" id="newcase">＋ New conversation</button><div class="side-title">Activity</div><div class="cases" id="cases"><div class="case active" data-case="">All activity</div></div><div class="side-foot" id="sidefoot"><div class="runtimeid"><span class="avatar">A</span><span class="runtimecopy"><b id="agentname">Configured Agent</b><small id="agentidentity">loading…</small></span></div><button class="settingsopen" id="runtimeopen">◎ Runtime details</button><div class="statusline"><span class="dot" id="agentdot"></span>Agent <span id="agentstate">off</span></div><div class="statusline"><span class="dot" id="workerdot"></span>Worker <span id="workerstate">off</span></div></div></aside>
+<main class="main"><header class="top"><div><div class="title" id="title">Local activity</div><div class="sub" id="subtitle">Conversation with optional Rulith Case tools</div></div><nav class="views" aria-label="Activity view"><button class="viewtab active" data-view="case">Conversation</button><button class="viewtab" data-view="trace">Trace</button></nav><span class="spacer"></span><button class="ghost embedded-only" id="convopen" aria-haspopup="dialog">Conversations</button><button class="ghost" id="evidenceopen" aria-haspopup="dialog" hidden>Evidence</button><button class="ghost sessionlog" id="exportlog">Session log ↓</button><button class="ghost mobile-settings" id="mobileruntime" title="Runtime details">◎</button><button class="ghost" id="clear">Clear view</button></header><div class="stream" id="stream"><div class="empty" id="empty"><h1>What would you like to discuss or handle?</h1><p>Chat normally. The Agent will use Rulith when governed work, evidence, or an auditable Case is useful.</p></div></div></main>
+<aside class="inspector" id="inspector" tabindex="-1" aria-label="Rulith Cases"><div class="inspect-head">Rulith Cases</div><section class="section"><h3>Cases in focus</h3><div class="kv"><span>Acceptance roots</span><b id="casecount">Not in use</b></div><div class="frontier" id="roots"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Unresolved call</h3><div class="frontier" id="recovery"><div class="item">No unresolved call</div></div></section><section class="section"><h3>Current frontier</h3><div class="frontier" id="frontier"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Worker activity</h3><div class="workers" id="workers"><div class="item">No Worker activity for this conversation.</div></div></section></aside>
+<form class="composer" id="composer"><div class="composebox"><div class="attach" id="attachlist" hidden aria-live="polite" aria-label="Files added to this message"></div><small class="attachnote" id="attachnote" hidden>Files are kept on this computer. Reading them requires the Agent’s authorized tools. Content sent to your selected model follows its data permissions.</small><textarea id="prompt" placeholder="Message the Agent…" rows="1"></textarea><p class="composererr" id="composererr" role="alert" aria-live="assertive"></p><p class="attachsent" id="attachsent" role="status"></p><div class="case-pop" id="casepopover" hidden><label>Preferred Case Type if Rulith is used<input id="casetype" value="exploration" aria-label="Case Type"></label><label>Business key JSON (optional)<input id="businesskey" placeholder='{"job_id":"..."}' aria-label="Business key JSON"></label></div><div class="attach-menu" id="attachmenu" role="menu" aria-label="Add to this message" hidden><button type="button" id="attachfiles" role="menuitem">Add files<small>Up to 8 files, 8 MiB each</small></button><button type="button" class="advanced" id="attachprefs" role="menuitem">Advanced · Case preferences</button></div><input type="file" id="fileinput" multiple hidden aria-hidden="true" tabindex="-1"><div class="composebar"><button type="button" class="roundbtn" id="caseoptions" title="Add files" aria-label="Add files or Case preferences" aria-haspopup="menu" aria-expanded="false">＋</button><span class="toolbarbadge" id="toolbadge">Rulith available</span><button type="button" class="modelbadge" id="modelbadge" title="Runtime details">Model</button><span class="toolbarbadge" id="thinkingbadge">Standard</span><button class="send" id="send" title="Send message">↑</button></div></div></form>
+</div><div class="modal" id="runtimemodal" role="dialog" aria-modal="true" aria-labelledby="runtimetitle" hidden><div class="modal-card"><div class="modal-head"><div><b id="runtimetitle">Runtime details</b><span class="sub">Read-only projection of the single-Agent Runtime configuration. Edit the configuration file or secret manager, then restart the process.</span></div><button class="modal-close" id="runtimeclose" aria-label="Close Runtime details">×</button></div><div class="runtimegrid"><section class="runtimepane"><h3>Agent</h3><div class="kv"><span>Cloud Agent</span><b id="detailagent">—</b></div><div class="kv"><span>Credential</span><b id="detailagentkey">—</b></div><div class="kv"><span>Model service</span><b><code id="detailmodelurl">—</code></b></div><div class="kv"><span>Model</span><b id="detailmodel">—</b></div><div class="kv"><span>Model key</span><b id="detailmodelkey">—</b></div><div class="kv"><span>Reasoning</span><b id="detailthinking">—</b></div><div class="kv"><span>Case calls</span><b id="detailconcurrency">—</b></div><div class="runtimecontrols"><button data-control="agent" data-operation="stop">Stop Agent</button><button data-control="agent" data-operation="start">Start Agent</button></div></section><section class="runtimepane"><h3>Worker</h3><div class="kv"><span>Connection</span><b id="detailconnection">—</b></div><div class="kv"><span>Credential</span><b id="detailworkerkey">—</b></div><div class="kv"><span>Workspace tools</span><b id="detailtools">—</b></div><div class="kv"><span>Tool manifest</span><b><code id="detailtoolsfile">—</code></b></div><div class="kv"><span>Source vault</span><b><code id="detailsourcesfile">—</code></b></div><div class="runtimecontrols"><button data-control="worker" data-operation="stop">Stop Worker</button><button data-control="worker" data-operation="start">Start Worker</button></div></section></div><div class="runtimefoot">Configuration: <code id="detailconfig">—</code><div id="runtimemsg"></div></div></div></div>
+<div class="modal panelmodal" id="convmodal" role="dialog" aria-modal="true" aria-labelledby="convtitle" hidden><div class="modal-card"><div class="modal-head"><div><b id="convtitle">Conversations</b><span class="sub">Everything this Agent has worked on in this session.</span></div><button class="modal-close" id="convclose" aria-label="Close conversations">×</button></div><div class="panelbody" id="convbody"></div></div></div>
+<div class="modal panelmodal" id="filesmodal" role="dialog" aria-modal="true" aria-labelledby="filestitle" hidden><div class="modal-card"><div class="modal-head"><div><b id="filestitle">Add files</b><span class="sub">Files are kept on this computer. Reading them requires the Agent’s authorized tools. Content sent to your selected model follows its data permissions.</span></div><button class="modal-close" id="filesclose" aria-label="Close Add files">×</button></div><div class="panelbody filesbody"><div class="dropzone" id="filesdrop">Drop files here, or <button type="button" class="ghost" id="filespick">Choose files</button><small>Up to 8 files, 8 MiB each. Files added here go with your next message.</small></div><div class="attach" id="fileslist" aria-live="polite" aria-label="Files added to this message"></div><p class="filesnote" id="filesnote" role="alert"></p></div></div></div>
+<div class="modal panelmodal" id="evidencemodal" role="dialog" aria-modal="true" aria-labelledby="evidencetitle" hidden><div class="modal-card"><div class="modal-head"><div><b id="evidencetitle">Case evidence</b><span class="sub">What this conversation is working on the Board, as the Agent observed it.</span></div><button class="modal-close" id="evidenceclose" aria-label="Close Case evidence">×</button></div><div class="panelbody" id="evidencebody"></div></div></div>
+<script>
 ${projectCaseRoots.toString()}
 ${projectRecovery.toString()}
 ${renderMarkdown.toString()}
 ${renderToolCall.toString()}
-const K=new URLSearchParams(location.search).get('k')||'', $=(id)=>document.getElementById(id), state={status:null,events:[],cases:new Map(),active:'',view:'case',session:'',lastCases:'',lastStream:'',lastRoots:'',lastRecovery:'',lastFrontier:'',lastWorkers:''}
+${managerReturnHref.toString()}
+const K=new URLSearchParams(location.search).get('k')||'', $=(id)=>document.getElementById(id)
+/* Embedded means this page is the conversation inside the Rulith workbench rather than a
+   window of its own. It changes presentation only: no state, no route and no behaviour here
+   depends on the surrounding page. Only a bounded readiness receipt crosses its origin. */
+const EMBEDDED=new URLSearchParams(location.search).get('embedded')==='1'
+const state={status:null,events:[],cases:new Map(),active:'',view:'case',session:'',lastCases:'',lastStream:'',lastRoots:'',lastRecovery:'',lastFrontier:'',lastWorkers:''}
 const esc=(v)=>String(v??'').replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
 const caseOf=(e)=>String(e.session||e.sessionKey||e.caseId||e.task||(e.type&&e.type.startsWith('task-')?e.id:'')||'')
 const timeOf=(e)=>new Date(e.at||e.t||Date.now()).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
 function remember(e){const id=caseOf(e);if(!id)return;const prior=state.cases.get(id)||{id,title:id,status:'Ready',caseId:'',roots:0};if(e.text)prior.title=String(e.text).slice(0,70);if(e.type==='task-start'&&prior.status==='Waiting')prior.status=prior.caseId?'Case active':'Ready';if(e.type==='case-state'){prior.caseId=e.caseId||prior.caseId;if(e.caseStatus==='closed'){prior.status='Ready';prior.caseId=''}else if(e.caseStatus==='paused')prior.status='Case paused';else if(e.caseStatus==='unavailable')prior.status='Case state unavailable';else if(e.caseStatus==='running')prior.status='Case active'}if(e.type==='focus'){const rs=Array.isArray(e.roots)?e.roots:[];prior.roots=rs.length;if(rs.length===0){if(prior.status!=='Detached'&&prior.status!=='Waiting'){prior.status='Ready';prior.caseId=''}}else prior.caseId=String(rs[0].caseId||prior.caseId)}if(e.type==='case-unfocused'&&prior.caseId===e.caseId){prior.caseId='';if(prior.status!=='Detached'&&prior.status!=='Waiting')prior.status='Ready'}if(e.type==='case-open'&&e.ok!==false){prior.status='Case active';prior.caseId=e.caseId||''}if(e.type==='case-pending'){prior.status='Waiting';prior.caseId=e.caseId||prior.caseId}if(e.type==='session-detached'){prior.status='Detached';prior.caseId=e.caseId||prior.caseId}if(e.type==='case-closed'){prior.status='Ready';prior.caseId=''}if(e.type==='task-done'&&e.activeCaseId){if(prior.caseId!==e.activeCaseId)prior.status='Case active';prior.caseId=e.activeCaseId}else if(e.type==='task-done'&&!prior.caseId)prior.status='Ready';state.cases.set(id,prior)}
-function renderCases(){const root=$('cases'),oldTop=root.scrollTop;let html='<div class="case '+(state.active===''?'active':'')+'" data-case="">All activity</div>';for(const c of [...state.cases.values()].reverse())html+='<div class="case '+(state.active===c.id?'active':'')+'" data-case="'+esc(c.id)+'"><span>'+esc(c.title)+'</span><small>'+esc(c.status)+' · '+esc(c.id)+'</small></div>';if(html===state.lastCases)return;root.innerHTML=html;state.lastCases=html;root.scrollTop=oldTop;root.querySelectorAll('.case').forEach((n)=>n.onclick=()=>{state.active=n.dataset.case;if(n.dataset.case)state.session=n.dataset.case;render(true)})}
+function renderCases(){const root=$('cases'),oldTop=root.scrollTop;let html='<div class="case '+(state.active===''?'active':'')+'" data-case="">All activity</div>';for(const c of [...state.cases.values()].reverse())html+='<div class="case '+(state.active===c.id?'active':'')+'" data-case="'+esc(c.id)+'"><span>'+esc(c.title)+'</span><small>'+esc(c.status)+' · '+esc(c.id)+'</small></div>';if(html===state.lastCases)return;root.innerHTML=html;state.lastCases=html;root.scrollTop=oldTop;root.querySelectorAll('.case').forEach((n)=>n.onclick=()=>{sayCompose('');state.active=n.dataset.case;if(n.dataset.case)state.session=n.dataset.case;showNotes();renderAttachments();render(true);if(EMBEDDED)closeModal('convmodal')})}
 function eventBody(e){if(e.type==='tool-call')return e.input?.text||'';if(e.type==='tool-result')return e.output?.text||'';if(e.type==='case-state')return 'Case lifecycle: '+(e.caseStatus||'unavailable')+(e.root?' · root '+e.root:'')+(typeof e.gaps==='number'?' · '+e.gaps+' open gap(s)':'');if(e.type==='focus')return (e.roots||[]).length?'In focus: '+(e.roots||[]).map((r)=>r.caseId+' ('+r.status+')').join(' · '):'No Case is in focus.';if(e.type==='case-unfocused')return 'Released from this conversation\\'s focus. Its lifecycle on the Board is unchanged.';if(e.type==='affected')return (e.affectedCases||[]).length?'Affected Cases: '+e.affectedCases.join(' · '):'No live acceptance root advanced.';if(e.type==='recovery')return projectRecovery([{...e,src:'agent'}]).label;if(e.type==='handoff')return 'The outcome of an earlier '+(e.tool||'tool')+' call was handed to the model. That request executed nothing.';if(e.type==='blocked')return e.teaching||'This turn stopped without asking the model.';if(e.type==='queue-suspended')return e.notSent+' further call(s) proposed in that turn were not sent: an earlier call had an unknown outcome.';if(e.type==='artifact-read')return 'Artifact '+(e.ref||'')+' · '+(e.complete?'final fragment':'fragment')+(e.truncated?' · truncated at the read limit':'')+(e.mediaType?' · '+e.mediaType:'');if(e.type==='worker-activity-unavailable')return e.note||'This Runtime cannot yet report a dispatched invocation: the Agent Profile result has no published field carrying it. Follow the Action in Console.';if(e.type==='loss')return 'Bounded view: '+(e.omitted===undefined?'rows were':e.omitted+' row(s) were')+' omitted ('+(e.reason||'limit')+'). This answer is partial.';if(e.type==='propose')return e.say||JSON.stringify(e.tool||e.cmds||e.ops||{},null,2);if(e.type==='verdict')return e.accepted?'Accepted by Board'+(e.cmd?' · '+e.cmd:''):(e.teaching||'Rejected by Board');if(e.type==='source-plan')return (e.plans||[]).map((p)=>p.action+' via '+p.source+' → '+p.predicate).join('\\n');if(e.type==='claimed')return (e.kind||'work')+' · '+(e.id||'claimed');if(e.type==='reported')return (e.kind||'work')+' · '+(e.id||'')+' · '+(e.landed?'receipt committed':'receipt not committed')+(e.result?'\\n'+e.result:'')+(e.reason?'\\n'+e.reason:'');if(e.type==='case-open')return e.ok===false?'Case could not be opened':'Case Type '+(e.caseType||'exploration');if(e.type==='case-closed')return 'Disposition: '+(e.disposition||'closed');if(e.type==='case-pending')return e.reason||e.note||'Waiting for evidence';if(e.type==='session-detached')return e.note||'The local conversation was reclaimed; its Rulith Case remains on the Board.';if(e.type==='log')return e.line||'';return e.note||e.text||''}
-function card(e,trace=false){const body=eventBody(e);if(!trace&&e.type==='tool-result')return '';if(!trace&&e.type==='verdict'&&e.callId)return '';if(!trace&&e.type==='tool-call')return renderToolCall(e,state.toolResults?.get(e.callId));if(!trace&&['case-state','focus','case-unfocused','affected','spawn','exit','up','log','start','round','task-queued','slot-open'].includes(e.type))return '';if(!trace&&(e.type==='task-start'||(e.type==='user'&&!e.interject)))return '<div class="message user"><div class="bubble">'+esc(e.text||'')+'</div></div>';if(!trace&&e.type==='propose'&&e.say)return '<div class="message"><div class="meta">Agent · '+timeOf(e)+'</div><div class="agent-text">'+renderMarkdown(e.say)+'</div></div>';const good=e.accepted===true||e.landed===true||e.type==='case-closed',bad=e.accepted===false||e.landed===false||e.type==='error',cls=bad?'bad':good?'good':'warn';const label=({'case-state':'Case lifecycle','focus':'Cases in focus','case-unfocused':'Case released from focus','affected':'Affected Cases','loss':'Bounded view','recovery':'Unresolved call','handoff':'Earlier outcome handed over','blocked':'Turn stopped','queue-suspended':'Remaining calls not sent','artifact-read':'Artifact fragment read','worker-activity-unavailable':'Invocation reporting unavailable','case-open':'Rulith Case opened','case-closed':'Rulith Case closed','case-pending':'Rulith Case pending','session-detached':'Conversation detached','source-plan':'Source route','verdict':'Board decision','claimed':'Worker claimed','reported':'Worker receipt','task-done':'Agent turn finished','task-start':'Message','task-queued':'Message queued','slot-open':'Capacity available','up':'Runtime online','spawn':'Process started','exit':'Process exited','round':'Agent turn','log':'Runtime log','error':'Runtime error'})[e.type]||e.type.replaceAll('-',' ');return '<div class="message"><div class="event '+cls+'"><div class="event-head"><span class="ico">'+(e.src==='worker'?'⚙':'◇')+'</span><span class="kind">'+esc(label)+'</span><span class="right">'+esc(e.src)+' · '+timeOf(e)+'</span></div>'+(body?'<div class="event-body">'+esc(body)+'</div>':'')+'</div></div>'}
+/* The words each event gets. A label a person can read is the whole of what most events
+   need to contribute; the rest of the transcript is the conversation itself. */
+const EVENT_LABELS={'case-state':'Case lifecycle','focus':'Cases in focus','case-unfocused':'Case released from focus','affected':'Affected Cases','loss':'Bounded view','recovery':'Unresolved call','handoff':'Earlier outcome handed over','blocked':'Turn stopped','queue-suspended':'Remaining calls not sent','artifact-read':'Artifact fragment read','worker-activity-unavailable':'Invocation reporting unavailable','case-open':'Rulith Case opened','case-closed':'Rulith Case closed','case-pending':'Rulith Case pending','session-detached':'Conversation detached','source-plan':'Source route','verdict':'Board decision','claimed':'Worker claimed','reported':'Worker receipt','task-done':'Agent turn finished','task-start':'Message','task-queued':'Message queued','slot-open':'Capacity available','up':'Runtime online','spawn':'Process started','exit':'Process exited','round':'Agent turn','log':'Runtime log','error':'Runtime error'}
+/* Which events are allowed to raise their voice. A refusal, a stopped turn, a Case waiting on
+   evidence and a conversation that was detached are the states a person has to act on; a
+   lease, an accepted call and a finished turn are not, however many of them arrive. */
+function eventLevel(e){
+  if(e.accepted===false||e.landed===false||e.type==='error'||e.type==='blocked'||e.type==='recovery-conflict')return 'bad'
+  if(e.type==='recovery')return e.state&&e.state!=='none'?'wait':''
+  if(['case-pending','queue-suspended','session-detached','worker-activity-unavailable','loss'].includes(e.type))return 'wait'
+  return ''
+}
+/* A stable name for a quiet line that can be opened, so that expanding one and then receiving
+   another event does not close it again. */
+const noteKey=(e)=>'note:'+e.type+':'+(e.at||e.t||'')+':'+(e.callId||e.caseId||e.id||'')
+/* What a person's message carried, when the event says so.
+   Only what the event itself published is shown, and only the filenames: a material id is a
+   local handle and the bytes are not in this page at all, so there is nothing here that
+   reconstructs what any model was given. An event that names no file, but says a count, says
+   the count — inventing a filename would be a claim about a file nobody recorded. */
+function attachedFiles(e){
+  const rows=Array.isArray(e.attachments)?e.attachments:[]
+  if(!rows.length)return ''
+  const names=rows.map((row)=>row&&typeof row==='object'?String(row.name||''):'').filter(Boolean)
+  return '<div class="bubble-files">'+esc(names.length?'Attached · '+names.join(' · ')
+    :rows.length+' file'+(rows.length===1?'':'s')+' attached')+'</div>'
+}
+function card(e,trace=false){
+  const body=eventBody(e)
+  if(!trace&&e.type==='tool-result')return ''
+  if(!trace&&e.type==='verdict'&&e.callId)return ''
+  if(!trace&&e.type==='tool-call')return renderToolCall(e,state.toolResults?.get(e.callId))
+  if(!trace&&['case-state','focus','case-unfocused','affected','spawn','exit','up','log','start','round','task-queued','slot-open'].includes(e.type))return ''
+  if(!trace&&(e.type==='task-start'||(e.type==='user'&&!e.interject)))return '<div class="message user"><div class="bubble">'+esc(e.text||'')+attachedFiles(e)+'</div></div>'
+  if(!trace&&e.type==='propose'&&e.say)return '<div class="message"><div class="meta">Agent · '+timeOf(e)+'</div><div class="agent-text">'+renderMarkdown(e.say)+'</div></div>'
+  const label=EVENT_LABELS[e.type]||e.type.replaceAll('-',' ')
+  const when='<span class="act-state">'+esc(e.src||'')+' · '+timeOf(e)+'</span>'
+  const level=eventLevel(e)
+  if(level!=='')return '<div class="message"><div class="alert '+level+'"><b>'+esc(label)+'<span class="right">'+esc(e.src||'')+' · '+timeOf(e)+'</span></b>'+(body?'<div class="alert-body">'+esc(body)+'</div>':'')+'</div></div>'
+  const NL=String.fromCharCode(10),first=String(body||'').split(NL)[0]
+  const head='<span class="act-ico">'+(e.src==='worker'?'⚙':'◇')+'</span><span class="act-text">'+esc(label)+(first?' · '+esc(first):'')+'</span>'
+  if(!body||(body.length<=110&&body.indexOf(NL)<0))return '<div class="message quiet"><div class="note">'+head+when+'</div></div>'
+  return '<div class="message quiet"><details class="activity" data-call="'+esc(noteKey(e))+'"><summary>'+head+'<span class="act-more"></span>'+when+'</summary><div class="call-content"><div class="call-part"><pre>'+esc(body)+'</pre></div></div></details></div>'
+}
 function renderInspector(filtered){const reversed=[...filtered].reverse();const rows=projectCaseRoots(filtered),rec=projectRecovery(filtered),recMarkup='<div class="item">'+esc(rec.label)+(rec.detail?'<small>'+esc(rec.detail)+'</small>':'')+'</div>';if(recMarkup!==state.lastRecovery){$('recovery').innerHTML=recMarkup;state.lastRecovery=recMarkup}const inFocus=rows.filter((r)=>r.focused),hasCase=rows.length>0;const countText=!hasCase?'Not in use':inFocus.length+' in focus'+(rows.length>inFocus.length?' · '+(rows.length-inFocus.length)+' released':'');if($('casecount').textContent!==countText)$('casecount').textContent=countText;const rootsMarkup=hasCase?rows.map((r)=>'<div class="item">'+esc(r.caseId)+' — '+esc(r.label)+'<small>'+(r.root?'root '+esc(r.root)+' · ':'')+esc(r.observation)+(r.gaps===null?'':' · '+r.gaps+' open gap(s)')+(r.focused?'':' · released from focus')+'</small></div>').join(''):'<div class="item">Rulith has not been used for this conversation.</div>';if(rootsMarkup!==state.lastRoots){$('roots').innerHTML=rootsMarkup;state.lastRoots=rootsMarkup}const plan=reversed.find((e)=>e.type==='source-plan'),frontierMarkup=plan&&plan.plans?.length?plan.plans.map((p)=>'<div class="item">'+esc(p.predicate)+'<small>'+esc(p.action)+' via '+esc(p.source)+'</small></div>').join(''):hasCase?'<div class="item">No frontier has been reported.</div>':'<div class="item">Rulith has not been used for this conversation.</div>';if(frontierMarkup!==state.lastFrontier){$('frontier').innerHTML=frontierMarkup;state.lastFrontier=frontierMarkup}const worker=filtered.filter((e)=>(e.src==='worker'&&(['claimed','reported','error','skip','up'].includes(e.type)||(e.type==='log'&&e.stderr)))||(e.src==='agent'&&e.type==='worker-activity-unavailable')).slice(-8).reverse(),workerMarkup=worker.length?worker.map((e)=>'<div class="item">'+esc(e.type==='up'?'Worker online':e.type==='worker-activity-unavailable'?'Invocation reporting unavailable · '+eventBody(e):eventBody(e))+'<small>'+timeOf(e)+'</small></div>').join(''):'<div class="item">No Worker activity for this conversation.</div>';if(workerMarkup!==state.lastWorkers){$('workers').innerHTML=workerMarkup;state.lastWorkers=workerMarkup}}
-function render(forceTail){const stream=$('stream'),oldTop=stream.scrollTop,stick=forceTail===true||stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;renderCases();const filtered=state.events.filter((e)=>!state.active||caseOf(e)===state.active);state.toolResults=new Map(filtered.filter(e=>e.type==='tool-result').map(e=>[e.callId,e]));const cards=filtered.map((e)=>card(e,state.view==='trace')).filter(Boolean).join('');$('title').textContent=state.active?(state.cases.get(state.active)?.title||state.active):state.status?.mode==='worker'?'Worker activity':'Local activity';$('subtitle').textContent=state.active?state.active:'Conversation with optional Rulith Case tools';document.querySelectorAll('[data-view]').forEach((button)=>button.classList.toggle('active',button.dataset.view===state.view));const needsSetup=state.status&&(state.status.roles.includes('agent')&&!state.status.agent||state.status.roles.includes('worker')&&!state.status.worker);const heading=needsSetup?'Runtime is not ready':state.status?.mode==='worker'?'Worker is ready for governed work':'What would you like to discuss or handle?',copy=needsSetup?'Inspect Trace and Runtime details, then edit the configured file or secret manager and restart the role.':state.status?.mode==='worker'?'Claims, Tool execution, and receipts will appear here.':'Chat normally. The Agent will use Rulith when governed work, evidence, or an auditable Case is useful.',markup=cards||'<div class="empty"><h1>'+heading+'</h1><p>'+copy+'</p></div>';const open=new Set(markup===state.lastStream?[]:[...stream.querySelectorAll('details[data-call][open]')].map(e=>e.dataset.call));if(markup!==state.lastStream){stream.innerHTML=markup;for(const detail of stream.querySelectorAll('details[data-call]'))detail.open=open.has(detail.dataset.call);state.lastStream=markup;stream.scrollTop=stick?stream.scrollHeight:oldTop}else if(stick)stream.scrollTop=stream.scrollHeight;renderInspector(filtered)}
-function showRuntime(r){const a=r.runtime?.agent||{},w=r.runtime?.worker||{};$('agentname').textContent='Agent Runtime';$('agentidentity').textContent=a.id||'not configured';$('modelbadge').textContent=a.model||'No model';$('thinkingbadge').textContent=a.thinking==='extended'?'Extended thinking':'Standard';$('toolbadge').textContent=r.roles.includes('worker')?'Rulith + Worker '+(w.workspaceTools||'read'):'Rulith MCP';$('detailagent').textContent=a.id||'—';$('detailagentkey').textContent=a.credentialConfigured?'Configured':'Missing';$('detailmodelurl').textContent=a.modelService||'—';$('detailmodel').textContent=a.model||'—';$('detailmodelkey').textContent=a.modelKeyConfigured?'Configured':'Not configured';$('detailthinking').textContent=a.thinking||'standard';$('detailconcurrency').textContent='serial · one connection';$('detailconnection').textContent=w.connection||'—';$('detailworkerkey').textContent=w.credentialConfigured?'Configured':'Missing';$('detailtools').textContent=w.workspaceTools||'read';$('detailtoolsfile').textContent=w.toolsFile||'built-in only';$('detailsourcesfile').textContent=w.sourcesFile||'none';$('detailconfig').textContent=r.runtime?.configFile||'—';document.querySelectorAll('[data-control]').forEach((button)=>button.hidden=!r.roles.includes(button.dataset.control))}
+function render(forceTail){const stream=$('stream'),oldTop=stream.scrollTop,stick=forceTail===true||stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;renderCases();const filtered=state.events.filter((e)=>!state.active||caseOf(e)===state.active);state.toolResults=new Map(filtered.filter(e=>e.type==='tool-result').map(e=>[e.callId,e]));const cards=filtered.map((e)=>card(e,state.view==='trace')).filter(Boolean).join('');$('title').textContent=state.active?(state.cases.get(state.active)?.title||state.active):state.status?.mode==='worker'?'Worker activity':'Local activity';$('subtitle').textContent=state.active?state.active:'Conversation with optional Rulith Case tools';document.querySelectorAll('[data-view]').forEach((button)=>button.classList.toggle('active',button.dataset.view===state.view));const needsSetup=state.status&&(state.status.roles.includes('agent')?!state.status.agent:state.status.roles.includes('worker')&&!state.status.worker);const heading=needsSetup?'Runtime is not ready':state.status?.mode==='worker'?'Worker is ready for governed work':'What would you like to discuss or handle?',copy=needsSetup?(state.status.roles.includes('agent')?'Configure and start the Agent to begin a conversation.':'Start the Worker to handle authorized tool requests.'):state.status?.mode==='worker'?'Claims, Tool execution, and receipts will appear here.':'Chat normally. The Agent will use Rulith when governed work, evidence, or an auditable Case is useful.',markup=cards||'<div class="empty"><h1>'+heading+'</h1><p>'+copy+'</p></div>';const open=new Set(markup===state.lastStream?[]:[...stream.querySelectorAll('details[data-call][open]')].map(e=>e.dataset.call));if(markup!==state.lastStream){stream.innerHTML=markup;for(const detail of stream.querySelectorAll('details[data-call]'))detail.open=open.has(detail.dataset.call);state.lastStream=markup;stream.scrollTop=stick?stream.scrollHeight:oldTop}else if(stick)stream.scrollTop=stream.scrollHeight;renderInspector(filtered)}
+function showRuntime(r){const a=r.runtime?.agent||{},w=r.runtime?.worker||{};$('agentname').textContent='Agent Runtime';$('agentidentity').textContent=a.id||'not configured';$('modelbadge').textContent=a.model||'No model';$('thinkingbadge').textContent=a.thinking==='extended'?'Extended thinking':'Standard';$('toolbadge').textContent=r.roles.includes('worker')?'Rulith + Worker '+(w.workspaceTools||'read'):'Rulith MCP';$('detailagent').textContent=a.id||'—';$('detailagentkey').textContent=a.credentialConfigured?'Configured':'Missing';$('detailmodelurl').textContent=a.modelService||'—';$('detailmodel').textContent=a.model||'—';$('detailmodelkey').textContent=a.modelKeyConfigured?'Configured':'Not configured';$('detailthinking').textContent=a.thinking||'standard';$('detailconcurrency').textContent='serial · one connection';$('detailconnection').textContent=w.connection||'—';$('detailworkerkey').textContent=w.credentialConfigured?'Configured':'Missing';$('detailtools').textContent=w.workspaceTools||'read';$('detailtoolsfile').textContent=w.toolsFile||'built-in only';$('detailsourcesfile').textContent=w.sourcesFile||'none';$('detailconfig').textContent=r.runtime?.configFile||'—';document.querySelectorAll('[data-control]').forEach((button)=>button.hidden=EMBEDDED||!r.roles.includes(button.dataset.control))}
 async function refresh(){const response=await fetch('/status?k='+encodeURIComponent(K)).catch(()=>null);if(response?.status===401||response?.status===403){location.reload();return}const r=await response?.json().catch(()=>null);if(!r||!r.ok)return;state.status=r;$('mode').textContent=r.mode;$('agentstate').textContent=r.roles.includes('agent')?(r.agent?'local online':'local off'):'not local';$('workerstate').textContent=r.roles.includes('worker')?(r.worker?'local online':'local off'):'not local';$('agentdot').className='dot '+(r.agent?'on':'');$('workerdot').className='dot '+(r.worker?'on':'');$('newcase').hidden=!r.roles.includes('agent');$('composer').hidden=!r.roles.includes('agent');$('app').classList.toggle('worker-only',r.mode==='worker');showRuntime(r);render()}
 const es=new EventSource('/events?k='+encodeURIComponent(K));es.onmessage=(m)=>{const e=JSON.parse(m.data);state.events.push(e);remember(e);render()}
-$('composer').addEventListener('submit',async(ev)=>{ev.preventDefault();const text=$('prompt').value.trim();if(!text)return;let businessKey;const raw=$('businesskey').value.trim();if(raw){try{businessKey=JSON.parse(raw)}catch{alert('Business key must be valid JSON.');return}}$('send').disabled=true;$('send').textContent='…';const r=await fetch('/cases?k='+encodeURIComponent(K),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text,caseType:$('casetype').value,...(state.session?{sessionKey:state.session}:{}),...(businessKey===undefined?{}:{businessKey})})}).then((x)=>x.json()).catch(()=>null);$('send').disabled=false;$('send').textContent='↑';if(!r?.ok){alert(r?.teaching||'The message could not be submitted.');return}$('prompt').value='';$('casepopover').hidden=true;if(r.sessionKey){state.session=r.sessionKey;state.active=r.sessionKey}render(true)})
-$('newcase').onclick=()=>{state.session='';state.active='';state.view='case';render(true);$('prompt').focus()};$('clear').onclick=()=>{state.events=[];render(true)};$('prompt').addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit()}});$('caseoptions').onclick=()=>{$('casepopover').hidden=!$('casepopover').hidden};document.addEventListener('click',(event)=>{if(!$('casepopover').hidden&&!$('casepopover').contains(event.target)&&event.target!==$('caseoptions'))$('casepopover').hidden=true});document.querySelectorAll('[data-view]').forEach((button)=>button.onclick=()=>{state.view=button.dataset.view;render(true)});$('exportlog').onclick=()=>{const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),mode:state.status?.mode,activeCase:state.active||null,events:state.events},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='rulith-local-session-'+new Date().toISOString().replaceAll(':','-')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-const openRuntime=()=>{$('runtimemodal').hidden=false;$('runtimemsg').textContent='';refresh()},closeRuntime=()=>{$('runtimemodal').hidden=true}
-$('runtimeopen').onclick=openRuntime;$('mobileruntime').onclick=openRuntime;$('modelbadge').onclick=openRuntime;$('runtimeclose').onclick=closeRuntime;$('runtimemodal').onclick=(event)=>{if(event.target===$('runtimemodal'))closeRuntime()};document.addEventListener('keydown',(event)=>{if(event.key==='Escape')closeRuntime()})
+/* Both ways a send can fail are answered in the page itself, never through a browser dialog:
+   embedded in the workbench this document is a sandboxed frame without allow-modals, where
+   alert() returns immediately and shows nothing — so the message that explains why nothing
+   was sent would be the one message that never arrives. The text typed is left where it is,
+   so the refusal costs nothing but the reading. */
+/* Files a person adds are materials and nothing more: bytes this computer keeps, named by a
+   local material id. Adding one is never a statement that a person attested to anything, and
+   never clearance for any use — what may read a material is the Agent's authorized tools.
+   Only the id is ever sent with a message; the bytes went to this computer's own material
+   service and the path they came from is not something the conversation carries.
+   A draft is one conversation being composed in: its files, and the two answers the composer
+   gives about them. It is named by an identity of its own rather than by the session key,
+   because a conversation that has not been sent yet has no key — the draft is renamed when the
+   host answers with one, so what was composed stays with the conversation it was composed in
+   wherever the person happens to be by then. Everything a send does afterwards is addressed to
+   that draft, never to whatever is selected now: a request that is still open is not a claim on
+   the next conversation the person opens. */
+const MAX_FILES=8,MAX_BYTES=8*1024*1024,ATTACH_SAID={adding:'Adding…',ready:'Ready'}
+const drafts=new Map();let attachSeq=0,newDrafts=0,newDraftKey='new:0'
+const draftOwner=()=>state.session?'session:'+state.session:newDraftKey
+function draftOf(owner){const key=owner===undefined?draftOwner():owner,held=drafts.get(key)
+  if(held)return held
+  const made={rows:[],error:'',sent:''};drafts.set(key,made);return made}
+const attachRows=(owner)=>draftOf(owner).rows
+/* The draft a new conversation was composed in is the conversation the host just named, so it
+   keeps its files and its answer under the key it was given. The record itself is moved, not
+   copied: an upload still in flight holds it, and a copy would strand that upload. */
+function adoptDraft(from,to){const moved=draftOf(from),held=drafts.get(to)
+  if(held&&held!==moved)moved.rows.push(...held.rows)
+  drafts.set(to,moved);drafts.delete(from)}
+/* Both answers the composer gives belong to the draft they are about, so a send that fails
+   after the person moved on says so in the conversation it was sent from — not over the top of
+   what the conversation they are now reading is saying. */
+function showNotes(){const note=draftOf();$('composererr').textContent=note.error;$('attachsent').textContent=note.sent}
+function sayIn(owner,patch){Object.assign(draftOf(owner),patch);if(owner===draftOwner())showNotes()}
+const sayCompose=(message,owner)=>sayIn(owner===undefined?draftOwner():owner,{error:message||''})
+const saySent=(message,owner)=>sayIn(owner===undefined?draftOwner():owner,{sent:message||''})
+function sayFiles(message){$('filesnote').textContent=message||'';sayCompose(message||'')}
+/* Chips are built as elements rather than assigned as markup: the remove control has to be a
+   real button a keyboard can reach, and a filename is text, never something escaped into
+   markup and hoped for. */
+function chipInto(row,host){
+  const chip=document.createElement('div');chip.className='chip'+(row.status==='error'?' bad':'')
+  const name=document.createElement('span');name.className='chip-name';name.textContent=row.name;chip.appendChild(name)
+  const said=document.createElement('span');said.className='chip-state'
+  said.textContent=row.status==='error'?(row.reason||'Could not be added'):ATTACH_SAID[row.status];chip.appendChild(said)
+  const drop=document.createElement('button');drop.type='button';drop.className='chip-drop';drop.textContent='×'
+  drop.setAttribute('aria-label','Remove '+row.name);drop.dataset.attach=row.key
+  drop.onclick=()=>removeAttachment(row.key);chip.appendChild(drop)
+  host.appendChild(chip)
+}
+function renderAttachments(){
+  const rows=attachRows()
+  for(const host of [$('attachlist'),$('fileslist')]){host.replaceChildren();for(const row of rows)chipInto(row,host)}
+  $('attachlist').hidden=rows.length===0;$('attachnote').hidden=rows.length===0
+}
+function base64(buffer){const bytes=new Uint8Array(buffer);let binary='';for(let at=0;at<bytes.length;at+=0x8000)binary+=String.fromCharCode.apply(null,bytes.subarray(at,at+0x8000));return btoa(binary)}
+/* The one way bytes leave this page, for both entry points. The answer is the material this
+   computer stored; a row that was removed while its bytes were being read stays removed, and
+   a row belongs to the draft it was added to whatever is selected when the answer arrives. */
+async function addMaterial(file,row,into){
+  let answer=null
+  try{
+    /* Storing bytes is a mutating route, so it is asked for the way Setup and Worker tools ask:
+       the page key in the header as well as the address, on this page's own origin. */
+    answer=await fetch('/materials?k='+encodeURIComponent(K),{method:'POST',headers:{'x-rulith-local':K,'content-type':'application/json'},
+      body:JSON.stringify({name:row.name,mediaType:String(file.type||'application/octet-stream'),bytes:base64(await file.arrayBuffer())})})
+      .then((x)=>x.json()).catch(()=>null)
+  }catch{answer=null}
+  /* The draft record itself, not its name: a new conversation that was given a key while this
+     was in flight is the same draft under a different name, and this row is still in it. */
+  if(into.rows.indexOf(row)<0)return
+  if(answer&&answer.ok&&answer.material&&answer.material.id){row.status='ready';row.id=String(answer.material.id)}
+  else{row.status='error';row.reason=answer&&answer.teaching?String(answer.teaching):'Could not be added'}
+  if(into===draftOf())renderAttachments()
+}
+function addFiles(list){
+  const chosen=[...(list||[])];if(!chosen.length)return
+  const into=draftOf(),rows=into.rows;let refused=''
+  for(const file of chosen){
+    if(rows.length>=MAX_FILES){refused='Up to '+MAX_FILES+' files can go with one message. The rest were not added.';break}
+    if(Number(file.size)>MAX_BYTES){refused=String(file.name)+' is larger than 8 MiB and was not added.';continue}
+    attachSeq+=1
+    const row={key:'a'+attachSeq,name:String(file.name||'file'),status:'adding',id:'',reason:''}
+    rows.push(row);addMaterial(file,row,into)
+  }
+  saySent('');sayFiles(refused);renderAttachments()
+}
+/* Removing is immediate and final for that row, including while its bytes are still being
+   read: the answer, when it comes, finds the row is no longer in the draft and stops there. */
+function removeAttachment(key){
+  const rows=attachRows(),at=rows.findIndex((row)=>row.key===key)
+  if(at<0)return
+  rows.splice(at,1);sayFiles('');renderAttachments()
+  const back=$('filesmodal').hidden?$('caseoptions'):$('filespick')
+  if(back&&back.focus)back.focus()
+}
+$('composer').addEventListener('submit',async(ev)=>{
+  ev.preventDefault();sayCompose('')
+  /* What this send is about, captured before anything can be waited on: which draft it came
+     from, what was selected, and the exact text that went. A person is free to move, type and
+     add files while the request is open, and none of it belongs to this send. */
+  const typed=$('prompt').value,text=typed.trim(),owner=draftOwner(),selection=state.active,rows=attachRows(owner)
+  /* A file that is not stored yet has no id to send, and a file that failed has nothing to
+     send at all. Either one stops the send and says which file it is, rather than quietly
+     sending a message the person believes carried their file. */
+  if(rows.some((row)=>row.status==='adding')){sayCompose('Still adding '+rows.filter((row)=>row.status==='adding').map((row)=>row.name).join(', ')+'. Send when it is ready, or remove it.');return}
+  const failed=rows.filter((row)=>row.status==='error')
+  if(failed.length){sayCompose(failed.map((row)=>row.name).join(', ')+' could not be added: '+(failed[0].reason||'the material service refused it')+'. Remove it or try again.');return}
+  const ready=rows.filter((row)=>row.status==='ready')
+  if(!text&&!ready.length)return
+  let businessKey;const raw=$('businesskey').value.trim()
+  if(raw){try{businessKey=JSON.parse(raw)}catch{sayCompose('Business key must be valid JSON.');$('casepopover').hidden=false;$('businesskey').focus();return}}
+  $('send').disabled=true;$('send').textContent='…'
+  const r=await fetch('/cases?k='+encodeURIComponent(K),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text,caseType:$('casetype').value,...(state.session?{sessionKey:state.session}:{}),...(businessKey===undefined?{}:{businessKey}),...(ready.length?{attachments:ready.map((row)=>row.id)}:{})})}).then((x)=>x.json()).catch(()=>null)
+  $('send').disabled=false;$('send').textContent='↑'
+  /* Whether the person is still in the draft this was sent from. Everything below is decided
+     by it, and it is read once, here, before anything is moved. */
+  const here=draftOwner()===owner
+  /* A refused send keeps both halves of what was composed, and says so where it was composed.
+     Dropping the files here would mean adding them again to retry a message the host never
+     accepted; saying it in the composer they are reading now would attach the failure to a
+     conversation that had nothing to do with it. */
+  if(!r?.ok){sayCompose(r?.teaching||'The message could not be submitted. This Agent may not be started.',owner);return}
+  /* Only the rows that actually went are taken out, one by one: a file added while the request
+     was open was never part of this message and is still waiting to be sent. */
+  const kept=attachRows(owner)
+  for(const row of ready){const at=kept.indexOf(row);if(at>=0)kept.splice(at,1)}
+  sayIn(owner,{error:'',sent:ready.length?'Sent with '+ready.length+' file'+(ready.length===1?'':'s')+': '+ready.map((row)=>row.name).join(', '):''})
+  // A new conversation has just been given its key, so its draft takes that name.
+  if(r.sessionKey&&owner.indexOf('new:')===0)adoptDraft(owner,'session:'+r.sessionKey)
+  if(!here){render();return}
+  /* Still in the draft that was sent. The box is emptied only if what is in it is still what
+     went — anything typed since is the next message, not this one — and the selection follows
+     the new conversation only if the person has not chosen a different one meanwhile. */
+  if($('prompt').value===typed)$('prompt').value=''
+  $('casepopover').hidden=true
+  if(r.sessionKey){state.session=r.sessionKey;if(state.active===selection)state.active=r.sessionKey}
+  showNotes();renderAttachments();render(true)})
+/* Starting a new conversation starts a new draft, and not the one a previous new conversation
+   left behind: without a name of its own, every unsent conversation is the same one. */
+$('newcase').onclick=()=>{sayCompose('');state.session='';state.active='';state.view='case';newDrafts+=1;newDraftKey='new:'+newDrafts;showNotes();renderAttachments();render(true);if(EMBEDDED)closeModal('convmodal');$('prompt').focus()};$('clear').onclick=()=>{state.events=[];render(true)};$('prompt').addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit()}});$('prompt').addEventListener('input',()=>{sayCompose('');saySent('')});
+/* The composer's ＋ is about the thing people reach for: adding files. Case preferences did not
+   move away — they are the second entry in the same menu, named as the advanced option they
+   are, and the popover they open is unchanged. */
+function openAttachMenu(){$('casepopover').hidden=true;$('attachmenu').hidden=false;$('caseoptions').setAttribute('aria-expanded','true');if($('attachfiles').focus)$('attachfiles').focus()}
+function closeAttachMenu(back){if($('attachmenu').hidden)return;$('attachmenu').hidden=true;$('caseoptions').setAttribute('aria-expanded','false');if(back&&$('caseoptions').focus)$('caseoptions').focus()}
+$('caseoptions').onclick=()=>{if($('attachmenu').hidden)openAttachMenu();else closeAttachMenu(true)};
+$('attachfiles').onclick=()=>{closeAttachMenu(true);openFiles()};
+$('attachprefs').onclick=()=>{closeAttachMenu(true);$('casepopover').hidden=false;if($('casetype').focus)$('casetype').focus()};
+/* Add files is a dialog rather than only a picker, so it can be opened again in the middle of
+   a turn to add supplemental materials. It asks the model for nothing and invents no event:
+   what it does is add materials to the draft, which go with the next message. */
+function openFiles(){openModal('filesmodal');sayFiles('');renderAttachments();if($('filespick').focus)$('filespick').focus()}
+$('filesclose').onclick=()=>closeModal('filesmodal');$('filespick').onclick=()=>$('fileinput').click()
+$('fileinput').addEventListener('change',()=>{addFiles($('fileinput').files);$('fileinput').value=''})
+/* Dropping on the composer is the same act as choosing in the dialog, and goes the same way. */
+for(const id of ['composer','filesdrop']){
+  const host=$(id)
+  host.addEventListener('dragover',(event)=>{event.preventDefault();host.classList.add('dragging')})
+  host.addEventListener('dragleave',()=>host.classList.remove('dragging'))
+  host.addEventListener('drop',(event)=>{event.preventDefault();host.classList.remove('dragging');const dropped=event.dataTransfer&&event.dataTransfer.files;if(dropped&&dropped.length)addFiles(dropped)})
+}
+/* The click that opened the popover is still travelling when this runs, so the menu it came
+   from counts as inside: without that, choosing Case preferences opens the popover and closes
+   it again in the same click. */
+document.addEventListener('click',(event)=>{if(!$('casepopover').hidden&&!$('casepopover').contains(event.target)&&!$('attachmenu').contains(event.target)&&event.target!==$('caseoptions'))$('casepopover').hidden=true;if(!$('attachmenu').hidden&&!$('attachmenu').contains(event.target)&&event.target!==$('caseoptions'))closeAttachMenu(false)});document.querySelectorAll('[data-view]').forEach((button)=>button.onclick=()=>{state.view=button.dataset.view;render(true)});$('exportlog').onclick=()=>{const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),mode:state.status?.mode,activeCase:state.active||null,events:state.events},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='rulith-local-session-'+new Date().toISOString().replaceAll(':','-')+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+/* Four dialogs now — Runtime details, Conversations, Case evidence and Add files — so opening
+   one is one function: it remembers what had focus, moves focus into the dialog, and gives it
+   back on close. Escape closes whichever is open. */
+/* aria-modal says the rest of the document is not there; inert is what makes that true.
+   Without both, Tab from a dialog walks into the composer and the stream behind the scrim,
+   which is exactly the mismatch a screen-reader user is told does not exist. */
+const MODALS=['runtimemodal','convmodal','evidencemodal','filesmodal'];let lastFocus=null,openModalId=''
+function openModal(id){lastFocus=document.activeElement;openModalId=id;$(id).hidden=false;$('app').inert=true;const close=$(id).querySelector('.modal-close');if(close)close.focus()}
+function closeModal(id){if($(id).hidden)return;$(id).hidden=true;if(openModalId===id)openModalId='';$('app').inert=MODALS.some((other)=>!$(other).hidden);if(lastFocus&&lastFocus.focus)lastFocus.focus();lastFocus=null}
+function trapTab(event){
+  if(event.key!=='Tab'||!openModalId||$(openModalId).hidden)return
+  const items=[...$(openModalId).querySelectorAll('button,a[href],input,select,textarea,summary,[tabindex]:not([tabindex="-1"])')]
+    .filter((el)=>!el.disabled&&el.getClientRects().length>0)
+  if(!items.length)return
+  const first=items[0],last=items[items.length-1]
+  if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}
+  else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}
+}
+document.addEventListener('keydown',trapTab)
+const openRuntime=()=>{openModal('runtimemodal');$('runtimemsg').textContent='';refresh()},closeRuntime=()=>closeModal('runtimemodal')
+$('runtimeopen').onclick=openRuntime;$('mobileruntime').onclick=openRuntime;$('modelbadge').onclick=openRuntime;$('runtimeclose').onclick=closeRuntime
+$('convopen').onclick=()=>openModal('convmodal');$('convclose').onclick=()=>closeModal('convmodal')
+$('evidenceopen').onclick=()=>openModal('evidencemodal');$('evidenceclose').onclick=()=>closeModal('evidencemodal')
+for(const id of MODALS)$(id).onclick=(event)=>{if(event.target===$(id))closeModal(id)}
+document.addEventListener('keydown',(event)=>{if(event.key!=='Escape')return;closeAttachMenu(true);for(const id of MODALS)closeModal(id)})
 /* A start waits for the role to report that it finished initializing, which can take seconds.
    Say so while it is happening: a button that goes quiet for that long reads as a hung page,
    and the answer that follows is the host's own state word, not a guess made here. */
@@ -174,7 +519,68 @@ $('runtimeopen').onclick=openRuntime;$('mobileruntime').onclick=openRuntime;$('m
    (No backticks in here: this whole script lives inside a template literal.) */
 var CONTROL_SAID={ready:'started and reported ready.',stopped:'stopped.',stopping:'was sent the stop signal and has not exited yet.'}
 document.querySelectorAll('[data-control]').forEach((button)=>button.onclick=async()=>{button.disabled=true;$('runtimemsg').textContent=button.dataset.operation==='start'?'Starting '+button.dataset.control+'; waiting for it to report ready…':'Stopping '+button.dataset.control+'…';const result=await fetch('/control?k='+encodeURIComponent(K),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({role:button.dataset.control,operation:button.dataset.operation})}).then((x)=>x.json()).catch(()=>null);$('runtimemsg').textContent=result?.ok?button.dataset.control+' '+(CONTROL_SAID[result.state]||(button.dataset.operation+'ed.')):(result?.teaching||'Runtime control failed.');button.disabled=false;setTimeout(refresh,300)})
-const setupLink=document.createElement('a');setupLink.textContent='Setup wizard';setupLink.href='/setup?k='+encodeURIComponent(K);setupLink.style.cssText='display:block;color:var(--accent);margin-top:8px';$('runtimeopen').after(setupLink);
-const toolLink=document.createElement('a');toolLink.textContent='Worker tools · manage';toolLink.href='/worker-tools?k='+encodeURIComponent(K);toolLink.className='settingsopen';toolLink.style.cssText='display:block;color:var(--accent);margin-top:8px;text-decoration:none';$('runtimeopen').after(toolLink);const mobileToolLink=toolLink.cloneNode(true);$('runtimemsg').before(mobileToolLink)
+/* Where "back" goes is the launcher's statement, never this page's assumption: a manager
+   listens on a port it chose, and a Local opened on its own has nowhere to return to. The
+   address arrives in the optional manager parameter, is accepted only as a loopback
+   http(s) origin, and is carried on to the sibling Local pages so the way back survives
+   navigation. Only the manager's loopback browser key is retained; the cloud device token
+   is never in the browser. The sidebar copy disappears with the sidebar on a
+   phone, so the Runtime details dialog carries the same link. */
+/* Embedded, this page has no way back to render and therefore no reason to hold the
+   launcher's address at all — and every reason not to: it carries the manager's own browser
+   key, and anything this document links to would carry it onward into a top-level tab. The
+   workbench strips the parameter before loading this page; dropping it here as well means a
+   hand-typed address cannot put it back. Standalone is unchanged. */
+var MANAGER=EMBEDDED?'':managerReturnHref(location.search), LINKQ=(path)=>path+'?k='+encodeURIComponent(K)+(MANAGER?'&manager='+encodeURIComponent(MANAGER):'')
+/* Embedded, the way back is the page this one is inside: a link here would put the workbench
+   inside the workbench. */
+if(MANAGER&&!EMBEDDED){const back=document.createElement('a');back.id='managerreturn';back.className='manager-return';back.textContent='← Back to agents';back.href=MANAGER;$('sidefoot').prepend(back);const narrow=back.cloneNode(true);narrow.removeAttribute('id');$('runtimemsg').before(narrow)}
+const setupLink=document.createElement('a');setupLink.textContent='Setup wizard';setupLink.href=LINKQ('/setup');setupLink.className='sidelink';$('runtimeopen').after(setupLink);
+const toolLink=document.createElement('a');toolLink.textContent='Worker tools · manage';toolLink.href=LINKQ('/worker-tools');toolLink.className='settingsopen sidelink';$('runtimeopen').after(toolLink);const mobileToolLink=toolLink.cloneNode(true);$('runtimemsg').before(mobileToolLink)
+/* The two rails move into dialogs rather than being rebuilt: the same elements, the same
+   handlers, the same rendering. Setup and the tools page open in a window of their own so
+   that reaching them never replaces the conversation the workbench is showing. */
+/* Embedded, this page keeps its own Case inspector: it is the right-hand column of the
+   workbench, rendered from the events this conversation is reading, and switching Agent or
+   conversation moves it because it is the same projection that moves. Only when the frame is
+   too narrow to hold it do the very same section nodes move into the Evidence dialog, and
+   they move back — in their original order, with the dialog closed and focus returned first —
+   as soon as there is room. Nothing is copied and nothing is re-rendered from a second store. */
+const evidenceSections=[],evidenceBreakpoint=EMBEDDED?900:1050,evidenceQuery='(max-width:'+evidenceBreakpoint+'px)'
+const evidenceNarrow=()=>typeof window.matchMedia==='function'
+  ?window.matchMedia(evidenceQuery).matches===true:!(Number(window.innerWidth)>evidenceBreakpoint)
+// CSS can hide the focused inspector before the media-query callback runs. Keep its last
+// meaningful focus so that this browser-induced blur does not lose the user's place.
+let evidenceHadFocus=false
+document.addEventListener('focusin',event=>{
+  if(event.target!==document.body)evidenceHadFocus=$('inspector').contains(event.target)
+})
+function syncEvidence(){
+  const narrow=evidenceNarrow(),host=narrow?$('evidencebody'):$('inspector')
+  const foldingFocus=narrow&&(evidenceHadFocus||$('inspector').contains(document.activeElement))
+  const wasOpen=!narrow&&!$('evidencemodal').hidden
+  if(wasOpen)closeModal('evidencemodal')
+  for(const section of evidenceSections)if(section.parentNode!==host)host.appendChild(section)
+  $('evidenceopen').hidden=!narrow
+  /* The control that opened the dialog does not exist at this width, so returning focus to it
+     would drop focus onto the document body — the reader loses their place and has to Tab in
+     from the start. Focus follows the evidence into the column it just moved back to. */
+  if(wasOpen&&$('inspector').focus)$('inspector').focus()
+  if(foldingFocus)$('evidenceopen').focus()
+}
+if(EMBEDDED){
+  $('app').classList.add('embedded')
+  for(const controls of document.querySelectorAll('.runtimecontrols'))controls.hidden=true
+  $('convbody').appendChild($('newcase'));$('convbody').appendChild($('cases'))
+  for(const link of document.querySelectorAll('a.sidelink')){link.target='_blank';link.rel='noopener noreferrer'}
+}
+for(const section of document.querySelectorAll('.inspector .section'))evidenceSections.push(section)
+syncEvidence()
+if(typeof window.matchMedia==='function'){
+  const query=window.matchMedia(evidenceQuery)
+  if(query.addEventListener)query.addEventListener('change',()=>syncEvidence())
+  else if(query.addListener)query.addListener(()=>syncEvidence())
+}
 refresh();setInterval(refresh,2500)
+${workbenchReadyScript}
 </script></body></html>`

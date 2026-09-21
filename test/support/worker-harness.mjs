@@ -374,7 +374,8 @@ export function evidenceRow(overrides = {}) {
  * than the default `orders`.
  */
 export async function driveWorker({
-  reply, artifactReply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {}, extraTools = {}, env = {},
+  reply, artifactReply, materialReply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {},
+  extraTools = {}, env = {}, ipc = false,
   leaseGeneration = 7, lease: leaseOverride, sources = (root) => [{ name: 'orders', type: 'file', access: root }],
 }) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-p2-'))
@@ -462,6 +463,21 @@ export async function driveWorker({
         response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
         return void response.end(JSON.stringify(out.body))
       }
+      // The material surface (`rulith-worker-material/1`) is a set of named routes rather than
+      // one operation envelope, so it is logged by path. An unscripted route answers with the
+      // private surface's own refusal envelope, which is what an unconfigured deployment sends
+      // — a scenario that wanted it to work says so by scripting it.
+      if (String(request.url ?? '').startsWith('/work/artifact/')) {
+        const path = String(request.url).slice('/work'.length)
+        const payload = JSON.parse(raw)
+        const entry = { raw, material: payload, path, operation: { kind: `Material${path}` }, headers: { ...request.headers } }
+        seen.push(entry)
+        const out = materialReply?.(path, payload, entry)
+          ?? { status: 503, body: { accepted: false, errorCode: 'rejected', reason: 'material_unconfigured' } }
+        entry.reply = out
+        response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
+        return void response.end(JSON.stringify(out.body))
+      }
       const operation = JSON.parse(raw).operation
       // The headers are kept beside the body because the Gateway authenticates the header
       // pair and Core records the operation pair. An arm that checked only one of them would
@@ -507,15 +523,21 @@ export async function driveWorker({
       }),
       ...env,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // An IPC channel only when a scenario asks for one. The Worker uses it for the launching
+    // host's control and custody messages, and a scenario that drives those needs to be the
+    // host on the other end of it.
+    stdio: ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
+  /** Every message the Worker sent over IPC, in order. */
+  const messages = []
+  if (ipc) child.on('message', (message) => messages.push(message))
   child.stdout.setEncoding('utf8').on('data', (chunk) => { output += chunk })
   child.stderr.setEncoding('utf8').on('data', (chunk) => { output += chunk })
 
   const deadline = Date.now() + timeoutMs
   let timedOut = false
-  while (!done(seen, output)) {
+  while (!done(seen, output, { messages, send: (message) => { try { child.send(message) } catch { /* the child has gone */ } } })) {
     if (Date.now() > deadline) { timedOut = true; break }
     await new Promise((tick) => setTimeout(tick, 25))
   }
@@ -529,5 +551,6 @@ export async function driveWorker({
     : []
   rmSync(dir, { recursive: true, force: true })
   const of = (kind) => seen.filter((entry) => entry.operation.kind === kind)
-  return { seen, output, effects, timedOut, of, ran: (label) => effects.filter((line) => line === label).length }
+  return { seen, output, effects, timedOut, of, messages,
+    ran: (label) => effects.filter((line) => line === label).length }
 }

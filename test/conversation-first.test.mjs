@@ -544,7 +544,7 @@ test('RT-ART-1 an artifact is read in bounded fragments and touches no Board sta
   // unreadable one presented as empty, is the defect this shape exists to prevent.
   // The last request carries the whole conversation, so it holds both fragments once.
   const results = run.modelRequests.at(-1).messages.filter((message) => message.role === 'tool')
-  const fragments = results.map((message) => JSON.parse(message.content)).filter((value) => value.ref === 'art-1')
+  const fragments = results.map((message) => JSON.parse(message.content).result).filter((value) => value?.ref === 'art-1')
   assert.equal(fragments.length, 2)
   assert.deepEqual(fragments.map((fragment) => [fragment.complete, fragment.truncated, fragment.nextOffset]),
     [[false, true, 8], [true, false, null]])

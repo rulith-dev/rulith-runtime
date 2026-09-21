@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rulith-worker-material-v1.schema.json",
+  "title": "Worker custody and bounded Artifact delivery",
+  "description": "Private material data plane under the existing authenticated Worker Connection and active lease. Registration carries no bytes; Gateway verifies producer identity against authoritative dispatch. Shape validation is not authorization. Manifest arithmetic, byte hashes, scope, current disclosure permission, session identity, retention and single-use claims require runtime checks. The public ReadArtifact schema is unchanged. This contract replaces payload upload for new objects; historical upload format is not accepted by these routes.",
+  "$ref": "#/$defs/MaterialRegistration",
+  "$defs": {
+    "Digest": {"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},
+    "ArtifactRef": {"type":"string","pattern":"^art_[a-f0-9]{32}$"},
+    "CustodyId": {"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_.-]+$","not":{"enum":[".",".."]}},
+    "MediaType": {"type":"string","minLength":1,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
+    "Encoding": {"enum":["utf8","base64"]},
+    "Permission": {"enum":["granted","denied","absent"]},
+    "Position": {"type":"integer","minimum":0,"maximum":9007199254740991},
+    "ByteCount": {"type":"integer","minimum":1,"maximum":9007199254740991},
+    "Generation": {"type":"integer","minimum":1,"maximum":9007199254740991},
+    "WorkerId": {"type":"string","pattern":"^wkr_[A-Za-z0-9_-]{8,80}$"},
+    "RequestId": {"type":"string","pattern":"^mdr_[a-f0-9]{32}$"},
+    "Ticket": {"type":"string","pattern":"^mlt_[A-Za-z0-9_-]{43}$"},
+    "ChunkDigests": {"type":"array","minItems":1,"maxItems":16384,"items":{"$ref":"#/$defs/Digest"}},
+    "WindowChunkDigests": {"type":"array","minItems":1,"maxItems":17,"items":{"$ref":"#/$defs/Digest"}},
+    "MaterialRegistration": {
+      "type":"object","additionalProperties":false,
+      "required":["protocol","executionGrant","custodyId","mediaType","encoding","totalBytes","digest","chunkBytes","chunkDigests","custody"],
+      "properties": {
+        "protocol":{"const":"rulith-worker-material/1"},
+        "executionGrant":{"type":"string","minLength":1},
+        "custodyId":{"$ref":"#/$defs/CustodyId"},
+        "mediaType":{"$ref":"#/$defs/MediaType"},
+        "encoding":{"$ref":"#/$defs/Encoding"},
+        "totalBytes":{"$ref":"#/$defs/ByteCount"},
+        "digest":{"$ref":"#/$defs/Digest"},
+        "chunkBytes":{"const":65536},
+        "chunkDigests":{"$ref":"#/$defs/ChunkDigests"},
+        "custody":{"type":"object","additionalProperties":false,"required":["durable","acknowledged"],"properties":{"durable":{"const":true},"acknowledged":{"const":"rulith-worker-custody/1"}}}
+      }
+    },
+    "SourceMaterialPermission": {
+      "type":"object","additionalProperties":false,
+      "required":["sourceRecordId","register","proxy","localRead","refusal"],
+      "properties": {
+        "sourceRecordId":{"type":"string"},"register":{"type":"boolean"},
+        "proxy":{"$ref":"#/$defs/Permission"},"localRead":{"$ref":"#/$defs/Permission"},
+        "refusal":{"enum":[null,"source_material_absent","source_material_denied"]}
+      }
+    },
+    "PollDelivery": {
+      "type":"object","additionalProperties":false,"required":["protocol","kind","workerId","workerGeneration"],
+      "properties": {
+        "protocol":{"const":"rulith-worker-material/1"},"kind":{"const":"PollDelivery"},
+        "workerId":{"$ref":"#/$defs/WorkerId"},"workerGeneration":{"$ref":"#/$defs/Generation"},
+        "waitMillis":{"$ref":"#/$defs/Position"}
+      }
+    },
+    "DeliveryRequest": {
+      "type":"object","additionalProperties":false,
+      "required":["requestId","ref","custodyId","chunkBytes","firstChunk","chunkCount","digest","chunkDigests","deadlineMillis","sourceMaterial"],
+      "properties": {
+        "requestId":{"$ref":"#/$defs/RequestId"},"ref":{"$ref":"#/$defs/ArtifactRef"},"custodyId":{"$ref":"#/$defs/CustodyId"},
+        "chunkBytes":{"const":65536},"firstChunk":{"$ref":"#/$defs/Position"},"chunkCount":{"type":"integer","minimum":1,"maximum":17},
+        "lastChunkBytes":{"type":"integer","minimum":1,"maximum":65536},"digest":{"$ref":"#/$defs/Digest"},
+        "chunkDigests":{"$ref":"#/$defs/WindowChunkDigests"},"deadlineMillis":{"type":"integer","minimum":1,"maximum":20000},
+        "sourceMaterial":{"$ref":"#/$defs/SourceMaterialPermission"}
+      }
+    },
+    "DeliverChunks": {
+      "type":"object","additionalProperties":false,"required":["protocol","kind","workerId","workerGeneration","requestId","ref","firstChunk","chunks"],
+      "properties": {
+        "protocol":{"const":"rulith-worker-material/1"},"kind":{"const":"DeliverChunks"},
+        "workerId":{"$ref":"#/$defs/WorkerId"},"workerGeneration":{"$ref":"#/$defs/Generation"},
+        "requestId":{"$ref":"#/$defs/RequestId"},"ref":{"$ref":"#/$defs/ArtifactRef"},"firstChunk":{"$ref":"#/$defs/Position"},
+        "chunks":{"type":"array","minItems":1,"maxItems":17,"items":{"type":"object","additionalProperties":false,"required":["index","bytes"],"properties":{"index":{"$ref":"#/$defs/Position"},"bytes":{"type":"string","minLength":4,"maxLength":87384,"pattern":"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"}}}}
+      }
+    },
+    "DeliverUnavailable": {
+      "type":"object","additionalProperties":false,"required":["protocol","kind","workerId","workerGeneration","requestId","ref","reason"],
+      "properties": {
+        "protocol":{"const":"rulith-worker-material/1"},"kind":{"const":"DeliverUnavailable"},
+        "workerId":{"$ref":"#/$defs/WorkerId"},"workerGeneration":{"$ref":"#/$defs/Generation"},
+        "requestId":{"$ref":"#/$defs/RequestId"},"ref":{"$ref":"#/$defs/ArtifactRef"},
+        "reason":{"enum":["material_missing","material_corrupt","material_unreadable","material_permission_withdrawn"]}
+      }
+    },
+    "LocalDeliveryMetadata": {
+      "type":"object","additionalProperties":false,"required":["protocol","ticket","ref","custodyId","claimPath","expiresInMillis"],
+      "description":"Host-only result metadata at _meta[rulith/local-delivery/v1], negotiated with X-Rulith-Local-Delivery: rulith-local-delivery/1. Any Host may implement this. Never expose tickets or custody IDs to the model as proof of authorization. Gateway claim is mandatory; this block alone contains no payload.",
+      "properties": {
+        "protocol":{"const":"rulith-local-delivery/1"},"ticket":{"$ref":"#/$defs/Ticket"},
+        "ref":{"$ref":"#/$defs/ArtifactRef"},"custodyId":{"$ref":"#/$defs/CustodyId"},
+        "claimPath":{"const":"/work/artifact/claim"},"expiresInMillis":{"type":"integer","minimum":1,"maximum":15000}
+      }
+    },
+    "ClaimLocalRead": {
+      "type":"object","additionalProperties":false,"required":["protocol","kind","workerId","workerGeneration","ticket"],
+      "properties": {
+        "protocol":{"const":"rulith-local-delivery/1"},"kind":{"const":"ClaimLocalRead"},
+        "workerId":{"$ref":"#/$defs/WorkerId"},"workerGeneration":{"$ref":"#/$defs/Generation"},"ticket":{"$ref":"#/$defs/Ticket"}
+      }
+    },
+    "LocalReadAuthorization": {
+      "type":"object","additionalProperties":false,
+      "required":["protocol","ref","custodyId","mediaType","encoding","totalBytes","digest","chunkBytes","firstChunk","chunkDigests","offset","maximumLength","trimming","modelDisclosure"],
+      "description":"Returned only after current authenticated, scoped, single-use claim. Host verifies covering chunks against the pinned manifest, then discloses only the authorized window. modelDisclosure is the separately checked current off-machine permission; denied or absent forbids sending local bytes to a non-loopback model endpoint. Authorization is not an attestation of document meaning.",
+      "properties": {
+        "protocol":{"const":"rulith-local-delivery/1"},"ref":{"$ref":"#/$defs/ArtifactRef"},"custodyId":{"$ref":"#/$defs/CustodyId"},
+        "mediaType":{"$ref":"#/$defs/MediaType"},"encoding":{"$ref":"#/$defs/Encoding"},"totalBytes":{"$ref":"#/$defs/ByteCount"},
+        "digest":{"$ref":"#/$defs/Digest"},"chunkBytes":{"const":65536},"firstChunk":{"$ref":"#/$defs/Position"},
+        "chunkDigests":{"$ref":"#/$defs/WindowChunkDigests"},"offset":{"$ref":"#/$defs/Position"},"maximumLength":{"type":"integer","minimum":1,"maximum":1048576},
+        "trimming":{"const":"utf8-code-point/1"},"modelDisclosure":{"$ref":"#/$defs/Permission"}
+      }
+    }
+  }
+}

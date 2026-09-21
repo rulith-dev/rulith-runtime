@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
@@ -16,10 +16,24 @@ const files = [
   // download that fetched the worker without it would install bytes nobody could reconcile
   // against the commit they were projected from.
   'protocol/worker-contract.json',
+  // Separately approved material amendment; the historical execution bundle keeps its pin.
+  'protocol/worker-material.json',
+  'protocol/worker-material-sha256.txt',
   'worker/rulith-worker.mjs',
   'worker/mcp-client.mjs',
+  'worker/material-store.mjs',
+  'worker/material-transport.mjs',
   'local/rulith-local.mjs',
+  'local/material-service.mjs',
   'local/local-ui.mjs',
+  'local/theme.mjs',
+  'local/manager-registry.mjs',
+  'local/device-client.mjs',
+  'local/instance-manager.mjs',
+  'local/manager-server.mjs',
+  'local/manager-ui.mjs',
+  'docs/local-manager.md',
+  'docs/local-materials.md',
   'local/markdown.mjs',
   'local/setup-service.mjs',
   'local/setup-ui.mjs',
@@ -42,6 +56,16 @@ const files = [
   'examples/verified-calculation/verify-output.mjs',
   'examples/verified-calculation/write-output.mjs',
 ]
+
+// Every shipped executable module must be pinned. Keep the list explicit for review,
+// but reject an overlooked new import instead of silently packing unpinned source.
+for (const directory of ['agent', 'worker', 'local']) {
+  for (const entry of readdirSync(resolve(root, directory), { recursive: true })) {
+    const file = directory + '/' + entry.replaceAll('\\', '/')
+    if (file.endsWith('.mjs') && !files.includes(file))
+      throw new Error(`Shipped module ${file} is missing from the artifact manifest list.`)
+  }
+}
 
 // The public release is served from Git blobs, whose text form is LF. Windows
 // checkouts may present the same tracked file as CRLF; hashing that worktree

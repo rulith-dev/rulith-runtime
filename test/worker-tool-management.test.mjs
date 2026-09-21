@@ -22,6 +22,19 @@ function setup(t, tools = {}) {
 }
 const http = { adapter: 'http', sourceTypes: ['http'], entry: '/items', fence: { method: 'GET' }, params: {}, returns: [] }
 
+test('the selected profile material reader is in the same inventory as the real Worker composition', t => {
+  const {manager,environment,directory,file}=setup(t)
+  const old=manager.overview()
+  environment.RULITH_MATERIALS_ROOT=join(directory,'materials')
+  const view=manager.overview(), reader=view.tools.find(row=>row.id==='rulith.materials.read@1')
+  assert.equal(reader?.configured,true)
+  assert.equal(reader.origin,'builtin')
+  assert.deepEqual(reader.returns,[])
+  assert.equal(reader.digest,configuredWorkerTools(JSON.parse(readFileSync(file)),environment.RULITH_WORKSPACE_TOOLS,environment.RULITH_MATERIALS_ROOT)[reader.id].digest)
+  assert.notEqual(view.revision,old.revision)
+  assert.throws(()=>manager.save({id:reader.id,definition:http,revision:view.revision}),/redefines built-in/)
+})
+
 test('unified inventory covers built-ins, every declared adapter and selected MCP tools without exposing the vault or writing projections', async t => {
   const declared = {
     'test.http@1': http,

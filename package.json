@@ -1,8 +1,8 @@
 {
   "name": "rulith",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "type": "module",
-  "description": "Rulith Local: a conversation-first Agent workbench with optional governed Cases",
+  "description": "Rulith: a local multi-agent workbench with conversations and governed Worker tools",
   "bin": {
     "rulith": "local/rulith-local.mjs"
   },
@@ -19,6 +19,10 @@
     "config/",
     "protocol/mcp-contract.json",
     "protocol/worker-contract.json",
+    "protocol/worker-material.json",
+    "protocol/worker-material-sha256.txt",
+    "docs/local-manager.md",
+    "docs/local-materials.md",
     "docs/local-mcp-setup.md",
     "docs/local-setup.md",
     "examples/verified-calculation/README.md",

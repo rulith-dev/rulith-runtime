@@ -78,6 +78,21 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { invokeMcp, closeMcpClients, McpExecutionUnknownError } from './mcp-client.mjs'
+import {
+  MATERIAL_CHUNK_BYTES, MATERIAL_ID_PATTERN, MATERIAL_OBJECT_ID_PATTERN, MaterialError,
+  materialIdentityFromFingerprints, materialTextOf, openMaterialStore,
+} from './material-store.mjs'
+import {
+  LOCAL_DELIVERY_PROTOCOL, MATERIAL_CLAIM_PATH, MATERIAL_DELIVERY_PATH, MATERIAL_DELIVERY_RESULT_PATH,
+  MATERIAL_PROTOCOL, MATERIAL_REGISTER_PATH, assertDisclosurePermitted, claimAuthorization,
+  deliveryChunks, deliveryRequestOf, localReadResult, localTicketOf, registrationBody,
+  registrationResult, uploadDecision,
+} from './material-transport.mjs'
+// The off-machine permission reading travels with the Worker surface it has always been part
+// of, so the committed cross-repository permission rows keep one importable answer to compare
+// against. Its consumer moved — from an upload that no longer exists to the disclosure decision
+// that replaced it — and the rule it states did not.
+export { uploadDecision }
 
 /** 直接跑=干活;被 import=只把纯函数交出去(测试用)。
  *  没有这道闸,判词解析这类"模型说了算"的地方就永远只能靠读源码断言——
@@ -198,6 +213,35 @@ const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToP
  *  版本对不上时能问出「你那台跑的是哪一版」——在此之前这句话问不出答案。 */
 export const WORKER_VERSION = '2026-09-01'
 const SECRETS_FILE = process.env.RULITH_SECRETS_FILE ?? './worker-secrets.json'
+/**
+ * The material area this Worker was launched against, and the owner binding it reads under.
+ *
+ * All of it comes from the launching host, which is the process that holds the Agent credential
+ * this Worker deliberately does not. The two fingerprints are sha256 digests of stable identity
+ * — Gateway origin, Connection, Agent — not of any secret; the Worker compares them and never
+ * reconstructs anything from them. A Worker started without a root has no material area, does
+ * not advertise the read Tool, and registers nothing.
+ */
+const MATERIALS_ROOT = (process.env.RULITH_MATERIALS_ROOT ?? '').trim()
+const MATERIALS_BINDING = Object.freeze({
+  profile: (process.env.RULITH_MATERIALS_PROFILE ?? '').trim(),
+  owner: (process.env.RULITH_MATERIALS_OWNER ?? '').trim(),
+  modelDestination: (process.env.RULITH_MATERIALS_MODEL_DESTINATION ?? '').trim(),
+})
+/**
+ * The material area, opened under this Worker's binding — or a named refusal.
+ *
+ * Opened per call rather than held: the area is a directory this process shares with the host
+ * that writes into it, and a handle cached across a store that was moved, re-owned or migrated
+ * underneath it would answer from a world that no longer exists.
+ */
+function materialStore() {
+  if (MATERIALS_ROOT === '') {
+    throw new MaterialError('materials_not_configured',
+      'This Worker was started with no material area, so it holds custody of nothing and registers nothing.')
+  }
+  return openMaterialStore(MATERIALS_ROOT, materialIdentityFromFingerprints(MATERIALS_BINDING), { create: false })
+}
 let SOURCE_CONTEXT = {}
 let LOCAL_SOURCE_CONTEXT = {}
 // 首张工单也必须拿到完整执行契约。来源地址同步失败可以降级到本机密文库，
@@ -317,7 +361,7 @@ function say(line, type, data = {}) {
  *  **必须声明在装载块之前**（2026-08-11 P0）：`checkImpls` 是函数声明会提升，
  *  但它函数体里引用的这个 `const` **不会**——放在后面就是模块顶层执行时踩进暂时性死区。
  *  「函数提升了，常量没有」——而当时那一发还落在读工具表的 try 里，被报成了"读不了工具表"。 */
-const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp', 'workspace'])
+const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp', 'workspace', 'material'])
 
 /**
  * The parameter types a Tool may declare, in the Tool Manifest and on the wire alike.
@@ -413,6 +457,17 @@ const WORKSPACE_WRITE_TOOLS = Object.freeze({
 const SOURCE_READ_TOOLS = Object.freeze({
   'rulith.mcp.discover@1': { adapter: 'mcp', sourceTypes: ['mcp'], entry: 'discover' },
 })
+/**
+ * The generic read over this profile's immutable material area.
+ *
+ * It is a `file` Source Tool like every other one, and that is the whole point: the material
+ * area is reached through a governed Source record whose access root is that area, so the
+ * ordinary Source permission and realm checks decide whether this Tool may run at all. There is
+ * no second door — this Worker will not read a material because a work item named one.
+ */
+const MATERIAL_READ_TOOLS = Object.freeze({
+  'rulith.materials.read@1': { adapter: 'material', sourceTypes: ['file'], entry: 'read' },
+})
 
 /**
  * One descriptor shape for every Tool this Worker advertises (board-spec TOOL-08).
@@ -468,11 +523,27 @@ const SOURCE_TOOL_CONTRACTS = Object.freeze({
       source: '$source', tool_name: '$tool_name', description: '$description', input_schema_json: '$input_schema_json',
     } }] },
 })
+/**
+ * `returns: []` is a decision, not an omission.
+ *
+ * A material is data somebody put on this machine. Reading its bytes establishes that the bytes
+ * are what the manifest says they are, and nothing else — it does not make the sentences inside
+ * them true. A `returns` mapping would land those bytes on the Board as attested facts under
+ * this Worker's Source, which is exactly the upgrade that must never happen: a model reading raw
+ * bytes is reading data, and data does not become testimony by being read.
+ *
+ * What the Tool reports instead is a reference to a durable local object, so the content travels
+ * through the artifact plane where it is addressed, bounded, and permissioned.
+ */
+const MATERIAL_TOOL_CONTRACTS = Object.freeze({
+  read: { kind: 'read', params: { material: 'string' }, returns: [] },
+})
 
 /** The fixed contract of a Tool whose handler ships with this Worker, if it has one. */
 function builtinContract(definition) {
   if (definition?.adapter === 'workspace') return WORKSPACE_TOOL_CONTRACTS[definition.entry]
   if (definition?.adapter === 'mcp') return SOURCE_TOOL_CONTRACTS[definition.entry]
+  if (definition?.adapter === 'material') return MATERIAL_TOOL_CONTRACTS[definition.entry]
   return undefined
 }
 
@@ -498,6 +569,7 @@ export function toolKind(definition) {
     case 'db-query': return 'read'
     case 'db-exec-fenced': return 'write'
     case 'mcp': return 'read'
+    case 'material': return 'read'
     case 'http': return ['GET', 'HEAD'].includes(String(definition?.fence?.method ?? '').toUpperCase()) ? 'read' : 'write'
     default: return 'write'
   }
@@ -558,10 +630,24 @@ export function builtinSourceTools() {
   return Object.fromEntries(Object.entries(SOURCE_READ_TOOLS).map(([id, definition]) =>
     [id, { ...definition, ...SOURCE_TOOL_CONTRACTS[definition.entry], digest: toolDigest(definition) }]))
 }
+/**
+ * The material read Tool, advertised only when this profile actually has a material area.
+ *
+ * Advertising it unconditionally would put a Tool on the Connection lock that answers every
+ * invocation with "there is no store here" — an installed capability that cannot work, which an
+ * operator has to discover by dispatching an Action. A profile with no material area simply does
+ * not have this Tool, and says so by not listing it.
+ */
+export function builtinMaterialTools(root = MATERIALS_ROOT) {
+  if (String(root ?? '').trim() === '') return {}
+  return Object.fromEntries(Object.entries(MATERIAL_READ_TOOLS).map(([id, definition]) =>
+    [id, { ...definition, ...MATERIAL_TOOL_CONTRACTS[definition.entry], digest: toolDigest(definition) }]))
+}
 /** Local 管理页与 Worker 启动共用一份组成规则，避免页面漏列内置工具或接受启动必拒的配置。 */
-export function configuredWorkerTools(manifest, workspaceMode = 'read') {
+export function configuredWorkerTools(manifest, workspaceMode = 'read', materialsRoot = MATERIALS_ROOT) {
   const tools = workerToolsOf(manifest)
-  const builtins = { ...(workspaceMode === 'off' ? {} : builtinWorkspaceTools(workspaceMode)), ...builtinSourceTools() }
+  const builtins = { ...(workspaceMode === 'off' ? {} : builtinWorkspaceTools(workspaceMode)), ...builtinSourceTools(),
+    ...builtinMaterialTools(materialsRoot) }
   const collisions = Object.keys(builtins).filter(id => Object.hasOwn(tools, id))
   if (collisions.length) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
   return { ...tools, ...builtins }
@@ -596,6 +682,22 @@ if (IS_MAIN) {
       : { format: 'rulith-worker-tools/1', tools: {} }, workspaceMode)
     if (workspaceMode !== 'off') {
       console.log(`· Built-in workspace Tools enabled (${workspaceMode}). A governed Source is injected with each work item; a Tool is usable only while it is locked on this Connection in Console.`)
+    }
+    // A material area with no owner binding is a deployment error, and it is said here rather
+    // than discovered by dispatching an Action. The Tool is withdrawn rather than left
+    // advertised: a Tool on the Connection lock that answers every invocation with "this
+    // process was never told whose material area that is" is worse than one that is absent,
+    // because the lock says the capability exists.
+    if (MATERIALS_ROOT !== '' && Object.keys(TOOLS).some((id) => Object.hasOwn(MATERIAL_READ_TOOLS, id))) {
+      try {
+        materialIdentityFromFingerprints(MATERIALS_BINDING)
+      } catch (error) {
+        for (const id of Object.keys(MATERIAL_READ_TOOLS)) delete TOOLS[id]
+        console.error(`· The material area ${MATERIALS_ROOT} is configured without a usable owner binding`
+          + ` (${String(error?.message ?? error)}). ${Object.keys(MATERIAL_READ_TOOLS).join(', ')} is not advertised.`
+          + ' A Rulith host sets RULITH_MATERIALS_PROFILE, RULITH_MATERIALS_OWNER and'
+          + ' RULITH_MATERIALS_MODEL_DESTINATION together with the root; a partial set is not completed by guessing.')
+      }
     }
     if (Object.keys(TOOLS).length === 0) console.log('· No Worker Tools installed. This Worker will not claim action work.')
     printAnchorHints(TOOLS)
@@ -1401,29 +1503,6 @@ export function grantMismatch(grant, expected, held = lease) {
 }
 
 /**
- * Whether one produced object may leave this machine, decided before any byte does.
- *
- * The rule is one-directional: only an explicit granted permission from the actual Source
- * record admits an upload. `denied` is a recorded refusal and `absent` means no record was
- * found — including the Source-free case, where there is no Source to have granted
- * anything — and each is refused under its own name, so that adding, renaming or
- * normalizing a policy key can never turn a refusal into a silent allow.
- *
- * This decision concerns Artifact object storage. Ordinary bounded reports still require their
- * existing Tool and Source disclosure authorization.
- */
-export function uploadDecision(permission, sourceRecordId) {
-  const source = typeof sourceRecordId === 'string' ? sourceRecordId : ''
-  if (permission === 'granted' && source !== '') {
-    return { sourceRecordId: source, permission: 'granted', upload: true, refusal: null }
-  }
-  if (permission === 'denied') {
-    return { sourceRecordId: source, permission: 'denied', upload: false, refusal: 'source_off_machine_denied' }
-  }
-  return { sourceRecordId: source, permission: 'absent', upload: false, refusal: 'source_permission_required' }
-}
-
-/**
  * A reference a Worker may put in a report: the service-issued ref, and nothing else.
  *
  * Metadata is the Gateway's to resolve from the granted invocation. A Worker that stated a
@@ -1436,35 +1515,85 @@ export function workerArtifactReference(value) {
   return typeof value.ref === 'string' && ARTIFACT_REF_PATTERN.test(value.ref) ? { ref: value.ref } : undefined
 }
 
-/** Route a completed executor's data without changing its claimed business facts or outcome. */
-export async function prepareActionReport(row, execution, upload) {
-  const { ok, result = '', reason, facts = [] } = execution
+/**
+ * A durable local object an executor produced, checked before anything downstream acts on it.
+ *
+ * Every field is compared because this value decides that a result is reported **by reference**:
+ * it selects the custody path and it makes the ordinary "is this small enough to send inline"
+ * question moot. A malformed record must therefore refuse rather than fall through — "I could
+ * not read the local record" turning into "so put the bytes in the result" is exactly the
+ * implicit fallback this design forbids.
+ */
+export function workerLocalArtifact(value) {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const { id, mediaType, encoding, totalBytes, digest, chunkBytes, chunks } = value
+  const wellFormed = MATERIAL_OBJECT_ID_PATTERN.test(String(id))
+    && typeof mediaType === 'string' && mediaType !== ''
+    && (encoding === 'utf8' || encoding === 'base64')
+    && Number.isSafeInteger(totalBytes) && totalBytes > 0
+    && DIGEST_PATTERN.test(String(digest))
+    && chunkBytes === MATERIAL_CHUNK_BYTES
+    && Array.isArray(chunks) && chunks.length === Math.ceil(totalBytes / MATERIAL_CHUNK_BYTES)
+    && chunks.every((chunk) => DIGEST_PATTERN.test(String(chunk)))
+  return wellFormed ? value : undefined
+}
+
+/**
+ * Route a completed executor's data without changing its claimed business facts or outcome.
+ *
+ * **No byte of a produced object travels to the Gateway.** The old `POST /work/artifact` payload
+ * upload is gone and nothing replaces it as a byte upload: an object too large to report inline
+ * is written into this machine's material area — durable, immutable, chunked at the fixed size
+ * the wire names — and only its *manifest* is registered, in exchange for a reference.
+ *
+ * That removes the local off-machine gate this function used to apply, and the removal is the
+ * point rather than an omission. That gate asked "may these bytes leave the machine"; under this
+ * protocol they do not leave, so asking it here would refuse work for a journey nobody is making.
+ * Whether the bytes may later be *disclosed* — proxied by the Gateway, or read locally — is
+ * decided per read, by the Gateway, against the Source permission in force then. A permission
+ * checked once at production time and cached in a reference is exactly the staleness this
+ * protocol removes.
+ *
+ * `custody` is the callback that makes bytes durable and returns a store record; `register` is
+ * the callback that exchanges a manifest for a reference. Both are injected so this function can
+ * be exercised without a filesystem or a network.
+ */
+export async function prepareActionReport(row, execution, { custody, register } = {}) {
+  const { ok, result = '', reason, facts = [], localArtifact } = execution
   const body = { kind: 'ReportWork', workType: 'action', id: row.work, executionGrant: row.executionGrant, ok,
     ...(ok ? { result, ...(facts.length ? { facts } : {}) } : { result: '', reason }) }
   const size = value => Buffer.byteLength(JSON.stringify(value), 'utf8')
   const data = { result: ok ? result : '', reason: reason ?? '', facts }
-  if (size(data) <= row.artifactPolicy.inlineBytes) return { body }
-  const decision = row.sourceUpload
-  if (decision.sourceRecordId !== row.sourceRecordId || row.sourceRecordId === '') return { unavailable: 'source_permission_required' }
-  const expected = uploadDecision(decision.permission, row.sourceRecordId)
-  if (!expected.upload) return { unavailable: expected.refusal }
-  if (decision.upload !== true) return { unavailable: decision.refusal === 'source_off_machine_denied' ? decision.refusal : 'source_permission_required' }
-  if ((decision.refusal ?? null) !== null) return { unavailable: 'source_permission_required' }
+  // A material read is reported as a reference **whatever its size**. Its bytes are somebody's
+  // file, and copying a small one into the inline result would put it in the cloud receipt as a
+  // side effect of being short — the one thing the whole custody path exists to prevent.
+  if (localArtifact === undefined && size(data) <= row.artifactPolicy.inlineBytes) return { body }
   // Facts remain the exact required business values. A reference cannot stand in for them.
-  if (size({ result: '', reason: '', facts }) > row.artifactPolicy.inlineBytes) return { unavailable: 'required_facts_exceed_inline_budget' }
-  const bytes = Buffer.from(ok ? result : reason ?? '', 'utf8')
-  if (bytes.length === 0 || bytes.length > row.artifactPolicy.objectBytes) return { unavailable: 'artifact_object_limit' }
-  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
-  let object
-  try { object = await upload({ executionGrant: row.executionGrant, mediaType: 'text/plain; charset=utf-8',
-    digest, payloadEncoding: 'base64', bytes: bytes.toString('base64') }) }
-  catch (error) {
-    if (error instanceof CredentialRejectedError) throw error
-    return { unavailable: 'artifact_delivery_unknown' }
+  if (size({ result: '', reason: '', facts }) > row.artifactPolicy.inlineBytes) {
+    return { unavailable: 'required_facts_exceed_inline_budget' }
   }
-  const ref = workerArtifactReference({ ref: object?.ref })
-  if (!ref || object?.digest !== digest || object.totalBytes !== bytes.length || object.mediaType !== 'text/plain; charset=utf-8'
-    || !['utf8', 'base64'].includes(object.encoding)) return { unavailable: 'artifact_delivery_unconfirmed' }
+  let record = localArtifact
+  if (record === undefined) {
+    const bytes = Buffer.from(ok ? result : reason ?? '', 'utf8')
+    if (bytes.length === 0 || bytes.length > row.artifactPolicy.objectBytes) return { unavailable: 'artifact_object_limit' }
+    if (typeof custody !== 'function') return { unavailable: 'material_custody_unavailable' }
+    try {
+      record = await custody({ bytes, mediaType: 'text/plain; charset=utf-8', encoding: 'utf8' })
+    } catch (error) {
+      if (error instanceof CredentialRejectedError) throw error
+      return { unavailable: error instanceof MaterialError ? error.code : 'material_custody_unavailable' }
+    }
+  }
+  if (record.totalBytes > row.artifactPolicy.objectBytes) return { unavailable: 'artifact_object_limit' }
+  let object
+  try {
+    object = await register(record)
+  } catch (error) {
+    if (error instanceof CredentialRejectedError) throw error
+    return { unavailable: error instanceof MaterialError ? error.code : 'artifact_registration_unknown' }
+  }
+  const ref = workerArtifactReference(registrationResult(object, record))
+  if (ref === undefined) return { unavailable: 'artifact_registration_unconfirmed' }
   if (ok) body.result = ''
   else body.reason = 'Diagnostic data is available through the attached Artifact.'
   body.artifacts = [ref]
@@ -1474,16 +1603,187 @@ export async function prepareActionReport(row, execution, upload) {
   return { body }
 }
 
-async function uploadActionArtifact(payload, identity) {
-  const response = await fetch(`${WORK_URL}/artifact`, { method: 'POST',
+/**
+ * One authenticated request on the private material surface.
+ *
+ * Same Connection, same Worker headers and same fencing generation as every other private call.
+ * A refusal keeps its name: the wire reports most of them in `reason` and two — `unauthenticated`
+ * and `bad_command` — in `errorCode`, so both are read and the more specific one wins.
+ */
+async function materialCall(path, payload, identity) {
+  const response = await fetch(`${WORK_URL}${path}`, { method: 'POST',
     headers: { 'content-type': 'application/json', 'x-rulith-connection': CONNECTION_ID,
       'x-rulith-connection-key': CONNECTION_KEY, 'x-rulith-worker-version': WORKER_VERSION,
       [WORKER_HEADER_ID]: WORKER_ID, [WORKER_HEADER_GENERATION]: String(identity.workerGeneration) },
-    body: JSON.stringify(payload) })
-  const data = await response.json().catch(() => undefined)
-  if (response.status === 401) throw new CredentialRejectedError(data?.teaching ?? '')
-  if (!response.ok) throw new Error('Artifact storage did not confirm delivery')
-  return data
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(35_000) })
+  const answer = await response.json().catch(() => undefined)
+  if (response.status === 401) throw new CredentialRejectedError(answer?.teaching ?? '')
+  // Registration returns the pinned five-field Artifact metadata directly; delivery and
+  // claim return accepted envelopes. prepareActionReport verifies every metadata field.
+  if (!response.ok || answer?.accepted === false
+    || (path !== MATERIAL_REGISTER_PATH && answer?.accepted !== true)) {
+    const named = String(answer?.reason ?? answer?.errorCode ?? `http_${response.status}`)
+    throw new MaterialError(named, String(answer?.teaching ?? `${path} refused this request (${named}).`))
+  }
+  return answer
+}
+
+/** Make a produced result durable in this machine's material area, before anything references it. */
+async function takeCustody({ bytes, mediaType, encoding }) {
+  return materialStore().putResult({ name: 'action-result', mediaType, encoding, bytes })
+}
+
+/** Exchange one durable object's manifest for a Gateway reference. No byte travels. */
+async function registerActionArtifact(record, identity, executionGrant) {
+  return materialCall(MATERIAL_REGISTER_PATH, registrationBody(record, executionGrant), identity)
+}
+
+/**
+ * The custodian's outbound data channel, run beside the business loop under the same lease.
+ *
+ * **Separate from execution on purpose.** This carries no work, claims nothing, mutates no
+ * Board and never touches a lease's work assignment; it answers "send me chunks 3 and 4 of an
+ * object you hold" so a proxied read can complete. Folding it into the Poll loop would make one
+ * model's bounded read wait behind whatever action happened to be executing, and would make an
+ * execution's duration depend on how many people were reading its output.
+ *
+ * It holds the line rather than taking it: it only ever runs while `leaseOf()` returns the live
+ * lease, it stops the moment that goes, and a lease it does not hold is a reason to idle rather
+ * than a reason to poll harder.
+ */
+async function runDeliveryBroker({ leaseOf, alive, sleep = (ms) => new Promise((wait) => setTimeout(wait, ms)) }) {
+  if (MATERIALS_ROOT === '') return
+  let announced = false
+  while (alive()) {
+    const held = leaseOf()
+    if (held === undefined) { await sleep(2000); continue }
+    let answer
+    try {
+      answer = await materialCall(MATERIAL_DELIVERY_PATH,
+        { protocol: MATERIAL_PROTOCOL, kind: 'PollDelivery', workerId: WORKER_ID, workerGeneration: held.workerGeneration },
+        held)
+    } catch (error) {
+      if (error instanceof CredentialRejectedError) throw error
+      // A refused or unreachable broker is not a reason to stop being a custodian. It is said
+      // once per outage rather than every two seconds: repetition is not information.
+      if (!announced) {
+        announced = true
+        console.error(`· The material delivery channel is not answering (${String(error?.message ?? error).slice(0, 160)}).`
+          + ' This Worker still holds its objects; reads that need them will report the custodian as offline until it recovers.')
+        wev('material', { channel: 'delivery', state: 'unavailable', why: String(error?.code ?? error?.message ?? '').slice(0, 80) })
+      }
+      await sleep(5000)
+      continue
+    }
+    announced = false
+    let request
+    try {
+      request = deliveryRequestOf(answer)
+    } catch (error) {
+      console.error(`· A delivery request could not be read (${String(error?.message ?? error).slice(0, 160)}); it is left unanswered.`)
+      continue
+    }
+    if (request === null) continue
+    // The lease may have gone while the poll was held. A custodian that answered under a
+    // generation it no longer holds would be delivering bytes on somebody else's line.
+    const answeringUnder = leaseOf()
+    if (answeringUnder === undefined || answeringUnder.workerGeneration !== held.workerGeneration) continue
+    let reply
+    try {
+      reply = { protocol: MATERIAL_PROTOCOL, kind: 'DeliverChunks', workerId: WORKER_ID,
+        workerGeneration: answeringUnder.workerGeneration, requestId: request.requestId, ref: request.ref,
+        firstChunk: request.firstChunk, chunks: deliveryChunks(materialStore(), request) }
+    } catch (error) {
+      if (error instanceof CredentialRejectedError) throw error
+      // **Always answer.** A silent custodian turns a read that cannot be served into a read that
+      // times out, and the person waiting is told "offline" when the truth is "that object is
+      // corrupt". The four reasons the wire admits are named; anything else is unreadable.
+      const named = String(error?.code ?? '')
+      reply = { protocol: MATERIAL_PROTOCOL, kind: 'DeliverUnavailable', workerId: WORKER_ID,
+        workerGeneration: answeringUnder.workerGeneration, requestId: request.requestId, ref: request.ref,
+        reason: named === 'material_bytes_unavailable' || named === 'material_not_found' ? 'material_missing'
+          : named === 'material_chunk_corrupt' || named === 'material_digest_mismatch' || named === 'material_chunk_digest_mismatch' ? 'material_corrupt'
+            : named === 'material_permission_withdrawn' || named === 'materials_store_owner_mismatch'
+              || named === 'materials_store_profile_mismatch' ? 'material_permission_withdrawn'
+              : 'material_unreadable' }
+      console.error(`· Delivery of ${request.ref} could not be served (${named || String(error?.message ?? error).slice(0, 120)});`
+        + ` the waiting read is told ${reply.reason} rather than being left to time out.`)
+    }
+    try {
+      // Polled on one route, answered on another. They are two endpoints on the Gateway, and a
+      // reply posted back to the poll route reaches the wrong handler.
+      await materialCall(MATERIAL_DELIVERY_RESULT_PATH, reply, answeringUnder)
+      wev('material', { channel: 'delivery', ref: request.ref, kind: reply.kind,
+        ...(reply.reason === undefined ? { chunks: reply.chunks.length } : { reason: reply.reason }) })
+    } catch (error) {
+      if (error instanceof CredentialRejectedError) throw error
+      console.error(`· A delivery reply for ${request.ref} was not accepted (${String(error?.message ?? error).slice(0, 160)}).`)
+    }
+  }
+}
+
+/**
+ * Complete one locally delivered `ReadArtifact`, from a ticket the Gateway minted.
+ *
+ * The ticket is not authorization and nothing here treats it as one: it is exchanged, at the
+ * Gateway, for a per-read authorization that re-checks the session, the Agent, the device grant,
+ * the ownership triple and the Source permission **now**. Only then is a byte read, and only the
+ * window that authorization names.
+ *
+ * Two permissions then have to hold together, and `assertDisclosurePermitted` states both. The
+ * Gateway's `modelDisclosure` decides whether these bytes may leave the machine at all; this
+ * host's own record decides which model destination the person who added the file was disclosing
+ * it to. Neither substitutes for the other, and an unstated answer is never a grant.
+ */
+async function serveLocalRead({ ticket, modelDestination }, identity) {
+  if (MATERIALS_ROOT === '') {
+    throw new MaterialError('materials_not_configured', 'This Worker holds custody of nothing, so it can complete no local read.')
+  }
+  if (identity === undefined) {
+    throw new MaterialError('worker_fenced', 'This Worker holds no confirmed active lease, so it may not claim a local read.')
+  }
+  // A ticket is single use and the first claim consumes it whatever else follows, so a value of
+  // the wrong shape is refused here rather than spent at the Gateway. Refusing a guess locally
+  // costs nothing; spending somebody's real read handle on one is not recoverable.
+  const presented = localTicketOf(ticket)
+  if (presented === undefined) {
+    throw new MaterialError('local_ticket_invalid',
+      'That is not a delivery ticket this protocol issues. Nothing was claimed, so no read handle was spent on it.')
+  }
+  const claimed = await materialCall(MATERIAL_CLAIM_PATH, {
+    protocol: LOCAL_DELIVERY_PROTOCOL, kind: 'ClaimLocalRead',
+    workerId: WORKER_ID, workerGeneration: identity.workerGeneration, ticket: presented,
+  }, identity)
+  const authorization = claimAuthorization(claimed)
+  const store = materialStore()
+  const record = store.require(authorization.custodyId)
+  if (record.digest !== authorization.digest || record.totalBytes !== authorization.totalBytes) {
+    throw new MaterialError('material_integrity_failed',
+      `The object this host holds under ${authorization.custodyId} is not the object the authorization describes.`)
+  }
+  // The label is the Artifact reference, not a Source record id: a claim names no Source, because
+  // the Gateway has already resolved one and reduced it to `modelDisclosure`. The permission
+  // reading below needs something non-empty to name what it is deciding about, and the reference
+  // is the thing this authorization actually identifies.
+  //
+  // The host's own recorded destination is offered only for a file a **person** added — that
+  // recording is their choice about where its contents may go. Bytes an action produced carry no
+  // such choice, and holding them to whichever model endpoint happened to be configured at
+  // production time would refuse ordinary results for a reason nobody made.
+  assertDisclosurePermitted(authorization, {
+    modelDestination, sourceRecordId: authorization.ref,
+    ...(record.disclosure?.origin === 'operator' ? { recordDisclosure: record.disclosure.modelDestination } : {}),
+  })
+  // Every covering chunk is compared against the Gateway's pinned manifest as well as this
+  // host's own, before one byte of the window is sliced out of it.
+  for (const [offset, digest] of authorization.chunkDigests.entries()) {
+    if (record.chunks[authorization.firstChunk + offset] !== digest) {
+      throw new MaterialError('material_integrity_failed',
+        `Chunk ${authorization.firstChunk + offset} of ${record.id} is pinned to a different digest than the authorization states.`)
+    }
+  }
+  const { chunks } = store.chunks(authorization.custodyId, authorization.firstChunk, authorization.chunkDigests.length)
+  return localReadResult(authorization, chunks)
 }
 
 /**
@@ -1851,6 +2151,93 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
   throw new Error(`Unsupported workspace operation "${operation}"`)
 }
 
+/**
+ * The material area, reached the way every other located Adapter reaches its resource.
+ *
+ * The invocation names a governed `file` Source; that Source's access root must *be* this
+ * profile's material area. Two things follow, and both are the point:
+ *
+ *   · The realm is not bypassed. A Worker that read the area straight out of its own
+ *     environment would be a second door past the Source record — the Gateway would have
+ *     granted a Source and this process would have read somewhere else.
+ *   · An operator cannot widen it by pointing the Source at a parent directory. The comparison
+ *     is equality against the resolved area, not containment, so `C:\` does not become a
+ *     material area with a governed name on it.
+ */
+async function materialRootOf(t, sources) {
+  if (MATERIALS_ROOT === '') {
+    throw new Error('This Worker was started with no material area (RULITH_MATERIALS_ROOT), so it reads no local materials.')
+  }
+  const source = resolveSourceCreds(t, sources)
+  if (typeof source.access !== 'string' || source.access.trim() === '') {
+    throw new Error(`Material Tool ${t.name ?? t.operation ?? ''} requires a file Source whose access root is this profile's material area`)
+  }
+  const configured = isAbsolute(source.access) ? resolve(source.access) : resolve(WORKER_ROOT, source.access)
+  let root
+  try { root = await realpath(configured) } catch { throw new Error(`Material Source root does not exist: ${configured}`) }
+  let expected
+  try { expected = await realpath(MATERIALS_ROOT) } catch { throw new Error(`This profile's material area does not exist: ${resolve(MATERIALS_ROOT)}`) }
+  if (resolve(root) !== resolve(expected)) {
+    throw new Error(`The governed file Source names ${root} and this profile's material area is ${expected}.`
+      + ' A material read runs against the area itself, never against a directory that merely contains it.')
+  }
+  return expected
+}
+
+/**
+ * Read one material and report a **reference** to durable local bytes.
+ *
+ * Three things this deliberately does not do:
+ *
+ *   · It does not put the content in the result. Even a three-byte text file is reported as a
+ *     reference, so material bytes are never copied into a cloud inline result as a side effect
+ *     of being small.
+ *   · It does not land facts. `returns` is empty, so nothing about the content reaches the Board
+ *     as testimony. Reading bytes establishes what the bytes are, not that they are right.
+ *   · It does not open containers. A DOCX or a PDF is delivered as bytes under its media type.
+ *     A partial extraction that read as "the document" would be the worst possible answer here.
+ */
+async function handMaterial(t, args, sources = SOURCE_CONTEXT) {
+  const root = await materialRootOf(t, sources)
+  const operation = String(t.operation ?? t.entry ?? '')
+  if (operation !== 'read') throw new Error(`Unsupported material operation "${operation}"`)
+  const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+  const id = String(input.material ?? '')
+  if (!MATERIAL_ID_PATTERN.test(id)) {
+    throw new Error('The material argument must be a material id this host issued, for example mat_<32 hex>.'
+      + ' It is an opaque token: it is not a path, and this Worker will not read a file because a work item named one.')
+  }
+  let record
+  let produced
+  let readable
+  try {
+    const store = openMaterialStore(root, materialIdentityFromFingerprints(MATERIALS_BINDING), { create: false })
+    // `read` does three things the produced object could not honestly exist without: it confirms
+    // the owner binding, it refuses a material whose recorded disclosure does not match the
+    // destination this Worker was launched against, and it reads every chunk and compares it with
+    // the manifest and the whole digest. A material edited, truncated or partly removed
+    // underneath this process fails here, by name, rather than becoming a reference to bytes
+    // nobody checked.
+    const { record: found, bytes } = store.read(id, { modelDestination: MATERIALS_BINDING.modelDestination })
+    record = found
+    // Whether the model could read this as text is decided from the bytes, not the label. It
+    // becomes the registration's `encoding`, which the Gateway enforces at disclosure — so a
+    // wrong answer here buys a visible failure there, never a substitution character.
+    readable = materialTextOf(found, bytes) === undefined ? 'base64' : 'utf8'
+    produced = store.deriveResult(id, { mediaType: found.mediaType, encoding: readable })
+  } catch (error) {
+    throw new Error(error instanceof MaterialError ? `${error.code}: ${error.message}` : String(error?.message ?? error))
+  }
+  // The reported result is a sentence about an Artifact, never the Artifact. `prepareActionReport`
+  // registers the produced object and attaches its reference; what the model reads is whatever a
+  // later authorized `ReadArtifact` delivers, in bounded fragments, through the Gateway's own
+  // permission check.
+  return {
+    result: `${record.name} (${record.mediaType}, ${record.totalBytes} bytes) is attached as an Artifact.`,
+    localArtifact: produced,
+  }
+}
+
 // ── 数据库双工具的**牙齿**（DPC-6，2026-08-11 随批一起交付）─────────────────────────
 //
 // **为什么这四个函数必须跟着 worker 走**：`db-exec-fenced` 背后的 SQL 机械分类是
@@ -2106,6 +2493,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   if (t.impl === 'http') out = await handHttp(t, args, sources)
   else if (t.impl === 'run') out = await handRun(t, args, context, sources)
   else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
+  else if (t.impl === 'material') out = await handMaterial(t, args, sources)
   else if (t.impl === 'mcp') out = await handMcp(t, args, sources)
   // The database hands take no args: their statement is the compiled template. They do take
   // the Source table, like every other Adapter — reading the module global here meant a
@@ -2747,6 +3135,7 @@ async function handleAction(w) {
   let ok = true
   let result = ''
   let resultFacts = []
+  let localArtifact
   let reason
   let undeliverable
   try {
@@ -2755,6 +3144,17 @@ async function handleAction(w) {
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
+      // The durable local object this executor produced, if it produced one. It travels to the
+      // report path because it selects custody over an inline result — see `prepareActionReport`.
+      //
+      // A record that is present but unreadable is a fault, not an absence. Letting it fall
+      // through as `undefined` would report the executor's short reference *sentence* inline with
+      // no Artifact attached, which reads to a model as an object that was delivered and is
+      // simply empty.
+      localArtifact = workerLocalArtifact(executed.localArtifact)
+      if (executed.localArtifact !== undefined && localArtifact === undefined) {
+        undeliverable = 'material_custody_record_unreadable'
+      }
     } else {
       result = String(executed ?? '')
     }
@@ -2812,8 +3212,10 @@ async function handleAction(w) {
   const stopUploadRenewing = keepLeaseAlive()
   let prepared
   try {
-    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts },
-      payload => uploadActionArtifact(payload, dispatchedUnder))
+    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts, localArtifact }, {
+      custody: takeCustody,
+      register: record => registerActionArtifact(record, dispatchedUnder, w.executionGrant),
+    })
   } finally { await stopUploadRenewing() }
   if (prepared.unavailable) {
     console.error(`⚠ Result data for ${action} could not be delivered (${prepared.unavailable}). The action already ran; no success or failure receipt was manufactured. This invocation remains pending for operator reconciliation after Worker fencing; do not rerun it.`)
@@ -2975,8 +3377,22 @@ function adapterToolFromSpec(specJson, argsJson) {
     return { impl: 'workspace', source: spec.source, operation: spec.exec, _args: wargs,
       ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}) }
   }
+  if (spec.impl === 'material') {
+    // A locating Adapter like the database pair: the material area is a governed `file` Source,
+    // and a Source-free dispatch has no area to read. Refused during compilation, before the
+    // claim, so the Board never records a dispatch for an execution that could not happen.
+    if (typeof spec.source !== 'string' || spec.source === '') {
+      throw new Error('material toolSpec is missing source: the material area is reached through a governed file Source,'
+        + ' and this Worker does not substitute its own configured path for one.')
+    }
+    if (spec.exec !== 'read') throw new Error(`material toolSpec has unsupported operation "${String(spec.exec)}"`)
+    let margs = {}
+    if (typeof argsJson === 'string' && argsJson !== '') margs = JSON.parse(argsJson)
+    return { impl: 'material', source: spec.source, operation: spec.exec, _args: margs,
+      ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}) }
+  }
   if (spec.impl !== 'db-query' && spec.impl !== 'db-exec-fenced') {
-    throw new Error(`toolSpec impl "${spec.impl}" is not supported for generic execution; supported implementations are http, run, workspace, db-query, db-exec-fenced, and mcp`)
+    throw new Error(`toolSpec impl "${spec.impl}" is not supported for generic execution; supported implementations are http, run, workspace, material, db-query, db-exec-fenced, and mcp`)
   }
   // A database Adapter is a *locating* one: it cannot run without a connection string, and
   // the only place one may come from is the governed Source the invocation selected. So a
@@ -3092,6 +3508,14 @@ export function workerToolsOf(raw) {
     if (typeof value.entry !== 'string' || value.entry === '') throw new Error(`Worker Tool ${id} must define an adapter entry`)
     if (adapter === 'workspace' && !Object.values({ ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS }).includes(value.entry)) {
       throw new Error(`Worker Tool ${id} uses unknown workspace operation "${value.entry}"`)
+    }
+    // The material adapter is this Worker's own, and it is not declarable. A manifest entry
+    // could otherwise name a second Tool id over the same immutable store with its own
+    // `returns` mapping — which is precisely how reading bytes would become asserting facts.
+    if (adapter === 'material') {
+      throw new Error(`Worker Tool ${id} declares the material adapter, which ships with this Worker and is not declarable.`
+        + ' The material area is reached through the built-in rulith.materials.read@1 and a governed file Source;'
+        + ' a declared copy could map raw bytes onto Board predicates, which is the one thing a material read must never do.')
     }
     const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'sourceTypes', 'entry', 'fence', 'handles', 'kind', 'params', 'returns', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
@@ -3378,7 +3802,31 @@ if (IS_MAIN) {
   }
   process.on('message', message => {
     if (message?.protocol === 'rulith-local-control' && message.operation === 'stop') void stopLocal()
+    /**
+     * A locally delivered read, asked for over the channel this process already has.
+     *
+     * The custodian is this Worker and the requester is the Agent, and neither may talk to the
+     * other directly: the Worker is purely outbound and opens no inbound port, and handing the
+     * Agent a way to reach it would be a second door into execution. The launching host sits
+     * between them and this is its side of that hop — an IPC message on the pipe the host
+     * already owns, answered with a result or with a named refusal, and nothing else.
+     */
+    if (message?.protocol === 'rulith-local-material' && message.operation === 'read') {
+      const reply = (body) => { try { process.send?.({ protocol: 'rulith-local-material', id: message.id, ...body }) } catch { /* the host has gone */ } }
+      void serveLocalRead({ ticket: message.ticket, modelDestination: message.modelDestination }, lease)
+        .then((result) => reply({ ok: true, result }))
+        .catch((error) => {
+          if (error instanceof CredentialRejectedError) { reply({ ok: false, errorCode: 'unauthenticated', teaching: error.message }); return }
+          reply({ ok: false, errorCode: String(error?.code ?? 'material_local_read_failed'),
+            teaching: String(error?.message ?? error).slice(0, 400) })
+        })
+    }
   })
+  // The launching host died. Ending here is what keeps a Worker from outliving everything
+  // that knows about it — still holding a lease, still claiming work, while the machine
+  // reports the instance as stopped. It takes the ordinary managed-stop path, so the lease is
+  // released; anything already dispatched keeps its recorded, unresolved state.
+  process.on('disconnect', () => { void stopLocal() })
   process.on('SIGTERM', () => { void stopLocal() })
   process.on('SIGINT', () => {
     running = false
@@ -3412,7 +3860,25 @@ if (IS_MAIN) {
       { connectionId: CONNECTION_ID, workerId: WORKER_ID, version: WORKER_VERSION, tools: advertised.length,
         workerContract: RULITH_WORKER_CONTRACT_SOURCE_COMMIT, managedStop: true,
         reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
+    if (MATERIALS_ROOT !== '') {
+      console.log('· Material custody is in hand for this profile. Object bytes stay on this machine;'
+        + ' the Gateway holds references and permissions, and a bounded read is served over the separate delivery channel.')
+    }
   }
+  // The custodian channel runs beside the business loop, not inside it, and under the same
+  // lease. A rejected credential is the one thing that ends the process from here: it is not
+  // about any one delivery, and a custodian that kept polling on a refused credential would be
+  // asking the same question for ever.
+  const delivering = runDeliveryBroker({ leaseOf: () => (leaseIsLive() ? lease : undefined), alive: () => running })
+    .catch((error) => {
+      if (error instanceof CredentialRejectedError) {
+        console.error(error.message)
+        process.exitCode = 3
+        running = false
+        return
+      }
+      console.error(`· The material delivery channel stopped: ${String(error?.message ?? error).slice(0, 200)}`)
+    })
   while (running) {
     try {
       // Poll is the whole Worker inbox surface and the only verb that takes the line. It
@@ -3559,6 +4025,7 @@ if (IS_MAIN) {
   // Stopping is a release, not a disappearance: the Gateway learns that this instance has
   // finished rather than that it has gone quiet. An unknown answer is kept as unknown — it
   // never becomes a claim that an already dispatched invocation did not happen.
+  await delivering
   await releaseLease().catch(() => false)
   await closeMcpClients()
 }

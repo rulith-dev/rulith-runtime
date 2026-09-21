@@ -11,7 +11,8 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
     prepare.disabled = isBlocked() || !option || !!option.unsupported || selected.status !== 'active'
   }
   const externalLink = (label, url) => {
-    const anchor = node('a', label); anchor.href = url; anchor.target = '_blank'; anchor.rel = 'noreferrer'; return anchor
+    const anchor = node('a', label); anchor.href = url; anchor.target = '_blank'; anchor.rel = 'noreferrer'
+    anchor.className = 'outlink'; return anchor
   }
   const dateLabel = value => value ? value.slice(0, 10) + ' UTC' : 'Not provided'
   function showDownloads(container, packageName) {
@@ -21,7 +22,8 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
     container.append(node('div', 'npm package: ' + packageName))
     if (!stats) { container.append(node('div', 'Loading package downloads…')); return }
     if (stats.status !== 'available') { container.append(node('div', 'Package downloads unavailable. This does not mean zero usage.')); return }
-    container.append(node('b', stats.downloads.toLocaleString('en-US') + ' package downloads'),
+    const count = node('b', stats.downloads.toLocaleString('en-US') + ' package downloads'); count.className = 'download-count'
+    container.append(count,
       node('div', stats.start + ' – ' + stats.end + ' · all versions'),
       node('div', 'Fetched ' + stats.fetchedAt.replace('T', ' ').replace(/\.\d+Z$/, ' UTC')),
       externalLink('npm data ↗', stats.source))
@@ -46,7 +48,8 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
     $('registry-results').replaceChildren()
     for (const server of visible) {
       const card = node('div'); card.className = 'directory-card'; card.dataset.server = server.name
-      card.append(node('b', server.title), node('div', server.name), node('p', server.description),
+      const title = node('b', server.title); title.className = 'card-title'
+      card.append(title, node('div', server.name), node('p', server.description),
         node('div', 'Version ' + server.version + ' · Registry status: ' + server.status),
         node('div', 'Declared formats: ' + (server.formats.join(' / ') || 'Not provided')),
         node('div', 'Registry updated: ' + dateLabel(server.updatedAt)))
@@ -55,7 +58,8 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
       if (!server.setup.supported && server.setup.reason) card.append(node('div', server.setup.reason))
       const downloads = node('div'); downloads.className = 'package-downloads'; showDownloads(downloads, server.downloadPackage); card.append(downloads)
       if (server.downloadPackage) card.append(node('div', 'Counts refer to the first supported npm option shown above.'))
-      const button = node('button', 'Details and setup'); button.onclick = () => detail(server); card.append(button)
+      const button = node('button', 'Details and setup'); button.className = 'btn s'
+      button.onclick = () => detail(server); card.append(button)
       $('registry-results').append(card)
     }
     $('registry-scope').textContent = 'Showing ' + visible.length + ' of ' + servers.length + ' loaded services. Filters and sorting apply only to loaded results, not the entire directory.'

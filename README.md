@@ -1,10 +1,19 @@
-# Rulith Local Runtime
+# Rulith
 
-For guided setup with a local model or an existing MCP client, run `rulith setup`. See [cross-end setup](docs/local-setup.md).
+Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in through Console, approve which Agents this computer may use, and set up each Agent with a local model or an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
 
-This repository contains **Rulith Local**, the local half of Rulith. One runtime
-can start in Agent, Worker, or Agent+Worker mode and always exposes the same
-loopback Local UI.
+Rulith is a local multi-agent working environment. One installation manages multiple
+fixed-identity Agents: choose an Agent on the left, work in its conversation in the
+center, and follow that conversation's Cases and Worker activity on the right.
+The account sits at the lower left; settings open when needed. Each Agent keeps its
+own credentials, model settings, tools and working
+directory; switching views leaves other running tasks alone.
+
+Use **+ → Add files** in a conversation to retain a document in that Agent's local
+Worker material area. Adding a file supplies metadata; an authorized material-read
+Action is required before the model can read its contents. See
+[local attachments and material access](docs/local-materials.md) for setup and
+the separate permissions for local reading and off-machine disclosure.
 
 It is the canonical source for the downloadable local runtime. Hosted services may
 carry release copies of these files, but changes must originate here and retain the
@@ -15,6 +24,7 @@ hashes recorded in `artifact-manifest.json`.
 | Agent Runtime | Drives the model-to-board loop | Model credentials stay in this process |
 | Worker | Executes declared tools and reports synchronous receipts | Source credentials stay in the local vault |
 | Local host | Starts selected roles and projects one Case-aware CLI/Web experience | Listens on loopback and requires a per-run key |
+| Workbench | Browser-assisted device sign-in and independent instance management | Device management credentials stay out of model context and role environments; tools are still authorized in Console |
 
 The runtime is domain-neutral. An Agent reasons in Actions. Its installed Capability
 defines vocabulary, criteria, Actions, and Source requirements; an independent
@@ -36,17 +46,20 @@ summary describes observed outcomes, not a second verification decision.
 - A model endpoint compatible with Anthropic Messages or OpenAI Chat Completions
 - A Rulith Connection id and key when a workflow needs local execution
 
-Run the current Rulith Local CLI without writing to a system-wide npm directory:
+Run the current Rulith CLI without writing to a system-wide npm directory:
 
 ```bash
 npx --yes rulith@latest --help
-npx --yes rulith@latest start --role agent+worker
+npx --yes rulith@latest
 ```
 
-The first start creates `~/.rulith/local.json` (mode `0o600`, in a `0o700` directory)
-and prints the loopback Local UI address, which carries the per-run key as `?k=`.
+The workbench stores its account grant and separate Agent profiles under
+`~/.rulith/manager` and prints a loopback address with a per-run `?k=` browser key.
+Browser-assisted sign-in replaces copying account credentials. To keep an existing
+single-Agent deployment, use `rulith start --legacy` or an explicit `--config`; this
+mode uses `~/.rulith/local.json` (mode `0o600`, in a `0o700` directory).
 Windows does not enforce those mode bits, so on Windows restrict the file through its
-ACL or keep the secrets in the deployment environment instead. Edit that file or inject
+ACL or keep the secrets in the deployment environment instead. For the single-Agent deployment, edit that file or inject
 equivalent secrets through the deployment environment: one Agent identity and token,
 one local model configuration, and—when Worker is enabled—one Agent-owned Connection
 and key.
@@ -78,7 +91,8 @@ cd rulith-runtime
 npm test
 ```
 
-No build step is required. Start one of the three supported modes:
+No build step is required. Run `npm start` for the workbench. Explicit role flags
+keep the compatible single-Agent deployment:
 
 ```powershell
 npm start -- --role agent
@@ -86,7 +100,8 @@ npm start -- --role worker
 npm start -- --role agent+worker
 ```
 
-`rulith start` is the installed command.
+`rulith start` opens the manager by default. An explicit `--role`, `--config`,
+`RULITH_LOCAL_CONFIG`, or `--legacy` retains the original single-instance entry.
 The Agent and Worker remain separate child processes even in combined mode. Database
 tools load the optional `pg` package only when used.
 
@@ -309,7 +324,7 @@ or shared Agent law and disappear when the Case closes. Its Terminal Receipt is
 exploratory and never Publisher-billable; only later attribution and replay may
 turn repeated paths into a Capability draft.
 
-Use Rulith Local for the browser workbench. The direct Agent entry point remains a
+Use Rulith for the browser workbench. The direct Agent entry point remains a
 terminal and automation surface. Run `node agent/rulith-agent.mjs --help` to inspect
 its options without configuring credentials.
 
@@ -532,7 +547,7 @@ must still be approved as its own versioned local Tool and governed Action.
 
 The Local web page has **Worker tools · manage**, a single inventory for built-ins, manifest tools and selected MCP tools. Inspect contracts, edit native tool definitions or manage MCP services; built-in workspace availability uses its existing mode setting. Under **Add tools**, search the official MCP Registry, connect an existing service, declare a tool, or use a template such as Filesystem. MCP setup discovers and selects tools, then exports a credential-free Source definition for Console authorization. See [Local Worker tool management](docs/local-mcp-setup.md) for supported formats and boundaries. This batch is pending publication and requires the matching Gateway update.
 
-Rulith Local's Worker is an outbound MCP client. It supports local **stdio** processes
+Rulith's Worker is an outbound MCP client. It supports local **stdio** processes
 and **Streamable HTTP** endpoints, including initialization, session headers, JSON/SSE
 responses, and paginated Tool discovery. The Agent still calls Rulith's single `/mcp`.
 Install the complete npm package so the pinned MCP SDK and Worker module are present;
@@ -650,7 +665,7 @@ Source root they are handed and nothing else: they have no path override and no 
 directory, so an Adapter granted no Source, or one of the wrong type, refuses instead of
 reading a file of its own choosing.
 
-## Rulith Local
+## Compatible single-Agent deployment
 
 Copy `config/rulith-local.example.json` outside the repository, select `agent`,
 `worker`, or both roles, fill in the local values, and run:
@@ -660,7 +675,7 @@ $env:RULITH_LOCAL_CONFIG = 'C:\path\to\rulith-local.json'
 npm start
 ```
 
-Rulith Local prints one loopback URL containing a random key. Open that exact URL: the
+Rulith prints one loopback URL containing a random key. Open that exact URL: the
 key gates every route, including the page itself, and the page reads it from its own
 address rather than carrying an embedded copy. The Agent is conversational first:
 greetings and ordinary discussion create no Case and perform no Board operation.
@@ -675,10 +690,10 @@ at the bottom, and the active Rulith Case, frontier, Worker activity, evidence, 
 receipts on the right. Agent and Worker modes use role-specific projections of the same
 UI and event contract.
 
-The browser UI is a read-only runtime observer. It shows the configured Agent identity,
-credential presence, model profile, Worker Connection, Tool and Source file locations,
-process health, Cases, Trace, Frontier, evidence, and receipts. It never signs in to a
-Cloud account, selects an Agent, edits credentials, or changes Worker and Source wiring.
+The single-Agent page observes its configured identity, process health, Cases, Trace,
+evidence and receipts. Its setup and tool pages configure this instance while the
+required roles are stopped. The multi-Agent workbench adds browser-assisted device
+sign-in and Agent selection; neither page grants cloud tools or changes governance.
 
 The deployment configuration owns the model endpoint and key, Agent runtime,
 Worker Connection key, Source credentials, Tool adapters, workspace roots, local Tool
@@ -710,7 +725,8 @@ The model never supplies the trusted input values or the calculated output value
 ## Security model
 
 - Agent tokens and model keys belong to the Agent Runtime process.
-- Rulith Local stores no Cloud account session. Runtime identity comes only from the configured Agent-scoped credential.
+- Rulith stores no Cloud account cookie. The workbench holds a scoped device grant;
+  Agent execution still uses only its own Agent-scoped credential.
 - Connection keys and source credentials belong to the Worker machine.
 - Built-in workspace Tools are fenced to the configured Source root, bounded in size and
   result count, and expose neither delete nor arbitrary shell execution.

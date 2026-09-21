@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Rulith Local is one host with Agent, Worker, or Agent+Worker modes.
+ * Rulith is one host with Agent, Worker, or Agent+Worker modes.
  * Roles remain separate child processes with separate credentials. Local owns
  * only lifecycle, a bounded diagnostic journal, and its loopback UI.
  */
@@ -18,6 +18,10 @@ import { workerToolsPage } from './worker-tools-ui.mjs'
 import { createWorkerToolManagement } from './worker-tool-management.mjs'
 import { createSetupService } from './setup-service.mjs'
 import { setupPage } from './setup-ui.mjs'
+import { attachmentInstruction, createMaterialService } from './material-service.mjs'
+import {
+  MAX_MATERIAL_REQUEST_BYTES, MaterialError, defaultMaterialRoot, materialIdentity,
+} from '../worker/material-store.mjs'
 
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -55,7 +59,7 @@ export function rolesFromArgs(args, fallback) {
   let chosen
   for (let i = 0; i < input.length; i++) {
     if ((input[i] === '--role' || input[i] === '--roles') && input[i + 1] !== undefined) { chosen = input[++i]; continue }
-    throw new Error(`Unknown Rulith Local option: ${input[i]}`)
+    throw new Error(`Unknown Rulith option: ${input[i]}`)
   }
   return rolesOf(chosen ?? fallback)
 }
@@ -96,12 +100,37 @@ export function effectiveChildEnv(base, configured = {}) {
   return { ...base, ...overlay }
 }
 
+/**
+ * Non-Rulith environment only, for a host that runs more than one identity.
+ *
+ * Inheritance is the right default for a single deployment: a process supervisor supplies
+ * `RULITH_TOKEN` and the configuration file leaves the slot blank. It is the wrong default
+ * the moment one process launches children for several different Agents. An inherited
+ * `RULITH_TOKEN` would reach every instance's Agent, an inherited `RULITH_CONNECTION_KEY`
+ * would reach every Worker, and `ANTHROPIC_API_KEY` is read by the Agent as a model key
+ * whenever `RULITH_MODEL_KEY` is empty — so the operator's own shell would silently become
+ * a credential source no instance configuration mentions.
+ *
+ * Every `RULITH_*` variable is removed rather than a curated list of the secret-looking
+ * ones: the non-secret ones (`RULITH_URL`, `RULITH_MODEL`, `RULITH_WORKSPACE_TOOLS`)
+ * select *which* identity and *which* resources a child uses, and inheriting those across
+ * instances is the same class of mistake with a quieter symptom.
+ *
+ * This is application-level isolation of configuration, not an OS sandbox: a child process
+ * can still read the filesystem this account can read.
+ */
+export const INHERITED_CREDENTIAL_VARIABLES = Object.freeze(['ANTHROPIC_API_KEY'])
+export function isolatedEnvironmentBase(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([name]) =>
+    !/^RULITH_/i.test(name) && !INHERITED_CREDENTIAL_VARIABLES.includes(name)))
+}
+
 function loadConfig(configFile) {
   if (!existsSync(configFile)) {
     const config = defaultLocalConfig()
     mkdirSync(dirname(resolve(configFile)), { recursive: true, mode: 0o700 })
     writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 })
-    console.log(`Created ${configFile}. Add credentials for the selected roles, then restart Rulith Local.`)
+    console.log(`Created ${configFile}. Add credentials for the selected roles, then restart Rulith.`)
     return config
   }
   const raw = JSON.parse(readFileSync(configFile, 'utf8'))
@@ -120,18 +149,29 @@ function saveConfig(configFile, config) {
   finally { rmSync(temporary, { force: true }) }
 }
 
-const readJson = (req) => new Promise((accept, reject) => {
+const readJsonUpTo = (req, limit, over) => new Promise((accept, reject) => {
   const chunks = []
   let size = 0
   req.on('data', (chunk) => {
     size += chunk.length
-    if (size > MAX_BODY) { reject(new Error('Request body exceeds 64KB.')); req.destroy(); return }
+    if (size > limit) { reject(new Error(over)); req.destroy(); return }
     chunks.push(chunk)
   })
   req.on('end', () => {
     try { accept(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')) } catch { reject(new Error('Body is not valid JSON.')) }
   })
 })
+const readJson = (req) => readJsonUpTo(req, MAX_BODY, 'Request body exceeds 64KB.')
+/**
+ * One file's worth of body, and no more.
+ *
+ * The ceiling is not the file limit: 8 MiB of bytes is about 10.7 MiB of canonical base64, and
+ * refusing at 8 MiB would reject every file at the documented limit as if it were over it. This
+ * is the smallest ceiling that admits a legal maximum request, and the *file* limit is checked
+ * separately, on the decoded bytes, where it means what it says.
+ */
+const readMaterialJson = (req) => readJsonUpTo(req, MAX_MATERIAL_REQUEST_BYTES,
+  `Request body exceeds ${Math.floor(MAX_MATERIAL_REQUEST_BYTES / (1024 * 1024))} MiB. One file per request.`)
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
@@ -190,9 +230,60 @@ const STOP_OBSERVE_MS = 2_000
 export function createLocalHost({
   configFile, config, roles, port = 7790, key = randomUUID().replace(/-/g, ''),
   startConfirmMs = START_CONFIRM_MS, autoStart = true,
+  isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
+  materialRoot,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
+  /** What a child inherits before this instance's own configuration is applied. */
+  const baseEnv = () => (isolateEnvironment ? isolatedEnvironmentBase(process.env) : process.env)
+  /**
+   * The owner's veto on the two things that change what this host is running under.
+   *
+   * A host launched by the manager is one *managed* instance: its Agent identity is frozen,
+   * and whether it may run at all depends on a device grant that lives outside this process's
+   * configuration file. The instance's own page is reachable by anyone holding this host's
+   * key, and `POST /control` and `POST /setup/*` are exactly the two routes that could
+   * otherwise start execution, or re-pair, or re-point a model, without the manager — and
+   * therefore without the account lifecycle the manager is responsible for.
+   *
+   * So a managed host asks its owner first. The callback is bound to one instance id, so it
+   * answers about *this* instance and never about whatever is selected in a browser
+   * somewhere. A host with no owner — the single-instance deployment — has no policy and
+   * keeps exactly the semantics it always had.
+   */
+  /**
+   * `fromOwner` distinguishes the manager's own calls from everything else reaching this host.
+   *
+   * The owner already decided an operation may proceed before issuing it; re-applying its
+   * installation-wide gate to its own in-flight call would refuse the second half of work it
+   * had admitted. The marker is a secret this host was built with, so a page holding the
+   * host key cannot claim to be the owner.
+   */
+  const permitted = async (operation, req) => {
+    if (managedPolicy === undefined) return null
+    const fromOwner = managedCallToken !== undefined && req?.headers['x-rulith-managed'] === managedCallToken
+    const teaching = await managedPolicy({ ...operation, fromOwner })
+    return typeof teaching === 'string' && teaching.trim() !== '' ? teaching : null
+  }
+  /**
+   * Tell the owner, every time this host gains or loses a child process.
+   *
+   * A supervisor that only learns about children through its own start and stop calls has a
+   * blind spot the size of this host's `/control` route: that route is reachable from the
+   * instance's own page, which is a perfectly ordinary thing for an operator to use. A child
+   * started that way existed only in this process's memory, so the record another manager
+   * reads after a crash said there were none. This fires on spawn and on exit, whoever asked.
+   */
+  const announceChildren = () => {
+    if (onChildChange === undefined) return
+    try {
+      const result = onChildChange(['agent', 'worker']
+        .filter((role) => running(role))
+        .map((role) => ({ role, pid: components[role].child.pid })))
+      if (result !== undefined && typeof result.catch === 'function') result.catch(() => undefined)
+    } catch { /* an owner that cannot record this must not take the host down with it */ }
+  }
   const events = []
   const clients = new Set()
   let nextSequence = 1
@@ -200,9 +291,98 @@ export function createLocalHost({
     agent: { child: null, serveKey: '', servePort: 7799, agentId: 'unconfigured' },
     worker: { child: null },
   }
-  const workerContext = () => ({ environment: effectiveChildEnv(process.env, config.worker?.env ?? {}),
+  /**
+   * Who this host is, for the purposes of owning material.
+   *
+   * The binding is made of things that do **not** change when a credential is rotated: which
+   * Gateway this profile talks to, which Connection it holds, and which Agent it is. Rotating a
+   * token or a Connection key is the same owner continuing and must not make somebody's files
+   * unreadable; re-pointing the profile at another Gateway or another Connection is a different
+   * owner and fails closed. A profile with neither a Connection nor an Agent identity has no
+   * owner to bind to at all, and the store refuses rather than bucketing it under a hash of the
+   * empty string — which would make every unconfigured profile on this machine look like one.
+   *
+   * Recomputed on every call rather than captured once, because all three live in a
+   * configuration file this host rewrites.
+   */
+  const materialIdentityNow = () => {
+    const agentEnv = effectiveChildEnv(baseEnv(), config.agent?.env ?? {})
+    const workerEnv = effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
+    return materialIdentity({
+      configFile: resolve(configFile),
+      gatewayUrl: String(agentEnv.RULITH_URL ?? ''),
+      connectionId: String(workerEnv.RULITH_CONNECTION ?? ''),
+      agentId: components.agent.agentId,
+      modelUrl: String(agentEnv.RULITH_MODEL_URL ?? ''),
+      model: String(agentEnv.RULITH_MODEL ?? ''),
+    })
+  }
+  /**
+   * Ask the Worker child to complete one locally delivered read.
+   *
+   * The custodian is the Worker: it holds the bytes and it holds the Connection the Gateway
+   * issued the ticket to. It is purely outbound and opens no inbound port, so the request goes
+   * over the IPC pipe this host already owns — which is also why the Agent cannot reach it
+   * directly, and must not be able to.
+   *
+   * A Worker that is not running, or does not answer inside the bound, is reported as offline.
+   * Nothing here substitutes a reading of its own for one it could not obtain.
+   */
+  const CUSTODIAN_TIMEOUT_MS = 20_000
+  let nextCustodyCall = 1
+  const custodian = (request) => new Promise((settle) => {
+    const child = components.worker.child
+    if (!running('worker') || child === null || !child.connected) {
+      return void settle({ ok: false, errorCode: 'material_custodian_offline',
+        teaching: 'The Worker that holds custody of this profile\'s local material is not running.' })
+    }
+    const id = `mlr-${nextCustodyCall++}`
+    const done = (body) => { clearTimeout(timer); child.off('message', onMessage); settle(body) }
+    const onMessage = (message) => {
+      if (message?.protocol === 'rulith-local-material' && message.id === id) done(message)
+    }
+    const timer = setTimeout(() => done({ ok: false, errorCode: 'material_custodian_offline',
+      teaching: 'The custodian did not answer this local read inside the delivery bound.' }), CUSTODIAN_TIMEOUT_MS)
+    child.on('message', onMessage)
+    child.send({ protocol: 'rulith-local-material', operation: 'read', id, ...request }, (error) => {
+      if (error) done({ ok: false, errorCode: 'material_custodian_offline', teaching: String(error.message ?? error) })
+    })
+  })
+  const materials = createMaterialService({
+    root: materialRoot ?? defaultMaterialRoot(configFile),
+    getIdentity: materialIdentityNow,
+    custodian,
+    key: randomUUID().replace(/-/g, ''),
+  })
+  /**
+   * The material binding a Worker started now would receive.
+   *
+   * It is built here rather than inline at spawn so the Worker Tools page and the Worker see
+   * the same input: the page composes the advertised Tool list from this environment, and a
+   * page that composed it from a *different* environment would list a set the Worker does not
+   * advertise — which is the exact confusion the shared composition rule exists to prevent.
+   * Returns `{}` when the area cannot be opened at all, so the page and the Worker are both
+   * without it rather than disagreeing about it.
+   */
+  const materialChildEnv = () => {
+    const area = materials.configured ? materials.ensure() : undefined
+    if (area === undefined) return {}
+    let binding
+    // A profile with no owner to bind to starts its roles without a material area rather than
+    // with one nothing can open. `ensure` already answers `undefined` for that case; this is the
+    // same refusal said again, because two callers reading one identity must not disagree about
+    // whether it exists.
+    try { binding = materialIdentityNow() } catch { return {} }
+    return {
+      RULITH_MATERIALS_ROOT: area,
+      RULITH_MATERIALS_PROFILE: binding.profile,
+      RULITH_MATERIALS_OWNER: binding.owner,
+      RULITH_MATERIALS_MODEL_DESTINATION: binding.modelDestination,
+    }
+  }
+  const workerContext = () => ({ environment: { ...effectiveChildEnv(baseEnv(), config.worker?.env ?? {}), ...materialChildEnv() },
     directory: dirname(config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')) })
-  const mcpServices = createMcpServices(configFile, { workerContext })
+  const mcpServices = createMcpServices(configFile, { workerContext, protectedPaths })
   const toolManagement = createWorkerToolManagement({ mcpServices, workerContext, setWorkspaceMode: mode => {
     // 只更新既有部署字段，保留文件中的其他配置；不在此编辑 Agent/模型凭据。
     const next = existsSync(configFile) ? JSON.parse(readFileSync(configFile, 'utf8')) : structuredClone(config)
@@ -212,9 +392,10 @@ export function createLocalHost({
   } })
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
   const setup = createSetupService({ configFile, getConfig: () => config,
-    effectiveEnv: () => effectiveChildEnv(process.env, config.worker?.env ?? {}),
-    agentCredentialConfigured: () => !!effectiveChildEnv(process.env, config.agent?.env ?? {}).RULITH_TOKEN,
+    effectiveEnv: () => effectiveChildEnv(baseEnv(), config.worker?.env ?? {}),
+    agentCredentialConfigured: () => !!effectiveChildEnv(baseEnv(), config.agent?.env ?? {}).RULITH_TOKEN,
     stopped: () => !running('agent') && !running('worker'), agentStopped: () => !running('agent'), mcpServices, toolManagement,
+    approvePairing: setupApprover,
     saveConfig: next => {
       const normalized = normalizeLocalConfig(next)
       saveConfig(configFile, normalized)
@@ -266,7 +447,8 @@ export function createLocalHost({
         components[src].onReady = undefined
         settle?.()
       }
-      if (src === 'agent' && event.type === 'start' && typeof event.agentId === 'string' && event.agentId.trim() !== '') {
+      if (src === 'agent' && components.agent.child === child && !stopRequested.has(child)
+        && event.type === 'start' && typeof event.agentId === 'string' && event.agentId.trim() !== '') {
         components.agent.agentId = event.agentId
       }
       const { type: _type, t: _time, ...rest } = event
@@ -291,9 +473,9 @@ export function createLocalHost({
   const startAgent = () => {
     if (running('agent')) return 'Agent is already running.'
     const path = config.paths?.agent ? resolve(configDir, config.paths.agent) : resolve(HERE, '../agent/rulith-agent.mjs')
-    if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.agent in the Rulith Local configuration.`
+    if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.agent in the Rulith configuration.`
     const serveKey = randomUUID().replace(/-/g, '')
-    const roleEnv = effectiveChildEnv(process.env, config.agent?.env ?? {})
+    const roleEnv = effectiveChildEnv(baseEnv(), config.agent?.env ?? {})
     const servePort = localInteger(
       'RULITH_SERVE_PORT',
       roleEnv.RULITH_SERVE_PORT,
@@ -301,31 +483,55 @@ export function createLocalHost({
     )
     const args = Array.isArray(config.agent?.args) ? [...config.agent.args] : []
     if (!args.includes('--serve')) args.push('--serve')
+    // Roles can start in either order. A configured custodian can negotiate even before it
+    // is online (claim then fails visibly); an Agent-only profile must use ordinary proxy reads.
+    const materialConnection = selectedRoles.includes('worker') && materials.configured
+      ? String(effectiveChildEnv(baseEnv(), config.worker?.env ?? {}).RULITH_CONNECTION ?? '').trim() : ''
     const child = spawn(process.execPath, [path, ...args], {
-      env: { ...roleEnv, RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort) },
+      env: { ...roleEnv, RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort),
+        // The Agent is given the delivery endpoint and the one key that opens it — never this
+        // host's page key, which would also open `/control` and `/setup/*`.
+        RULITH_MATERIALS_CONNECTION: materialConnection,
+        ...(materialConnection !== '' ? {
+          RULITH_MATERIALS_DELIVER_URL: `http://127.0.0.1:${server.address()?.port ?? port}/materials/deliver`,
+          RULITH_MATERIALS_KEY: materials.key,
+        } : {}) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
-    components.agent = { ...components.agent, child, serveKey, servePort, readyAt: undefined, onReady: undefined }
+    components.agent = { ...components.agent, child, serveKey, servePort, agentId: 'unconfigured', readyAt: undefined, onReady: undefined }
     wireChild('agent', child)
-    child.on('exit', (code) => { emit('agent', 'exit', { code }); components.agent.child = null })
+    child.on('exit', (code) => {
+      if (components.agent.child === child) {
+        components.agent.child = null
+        components.agent.agentId = 'unconfigured'
+      }
+      emit('agent', 'exit', { code })
+      announceChildren()
+    })
     emit('agent', 'spawn', { pid: child.pid })
+    announceChildren()
     return null
   }
   const startWorker = () => {
     if (running('worker')) return 'Worker is already running.'
     const path = config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')
-    if (!existsSync(path)) return `Worker runtime not found at ${path}. Set paths.worker in the Rulith Local configuration.`
+    if (!existsSync(path)) return `Worker runtime not found at ${path}. Set paths.worker in the Rulith configuration.`
     let roleEnv
-    try { roleEnv = mcpServices.workerEnvironment(effectiveChildEnv(process.env, config.worker?.env ?? {}), dirname(path)) }
+    try { roleEnv = mcpServices.workerEnvironment(effectiveChildEnv(baseEnv(), config.worker?.env ?? {}), dirname(path)) }
     catch (error) { return error.message }
+    // The Worker is told where the material area is and whose it is, and is given neither the
+    // Agent credential nor anything it could reconstruct one from: the two bindings travel as
+    // sha256 fingerprints, which it compares and never inverts. The same values the Worker
+    // Tools page composed its list from — one function, so the two cannot disagree.
     const child = spawn(process.execPath, [path], {
-      env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc' },
+      env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc', ...materialChildEnv() },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
     components.worker = { ...components.worker, child, roleEnv, readyAt: undefined, onReady: undefined, managedStop: false }
     wireChild('worker', child)
-    child.on('exit', (code) => { emit('worker', 'exit', { code }); components.worker.child = null })
+    child.on('exit', (code) => { emit('worker', 'exit', { code }); components.worker.child = null; announceChildren() })
     emit('worker', 'spawn', { pid: child.pid })
+    announceChildren()
     return null
   }
   const stop = (role) => {
@@ -431,20 +637,81 @@ export function createLocalHost({
    * the CLI prints. A missing or wrong key is 401 (this request did not authenticate);
    * a bad Origin or Host is 403 (authenticated shape, refused context).
    */
-  const gate = (req) => {
-    const url = new URL(req.url, 'http://127.0.0.1')
-    const presented = req.headers['x-rulith-local'] ?? url.searchParams.get('k') ?? ''
-    if (presented !== key) return { status: 401, teaching: 'Missing or invalid Rulith Local key. Open the URL printed at startup, which carries ?k=<key>.' }
+  /**
+   * The context half of the gate: which origin asked, and which name it used to get here.
+   *
+   * Split out from the key check because one route on this host is authenticated by a
+   * *different* secret — see `/materials/deliver` — and the browser-rebinding protections must
+   * still apply to it. Splitting the function is how that route gets the same protections
+   * without also being handed the key that starts and stops execution.
+   */
+  const contextGate = (req) => {
     const origin = req.headers.origin
     if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return { status: 403, teaching: `Cross-origin request rejected (Origin: ${origin}).` }
     if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host ?? ''))) return { status: 403, teaching: 'Non-local Host rejected to prevent DNS rebinding.' }
     return null
   }
+  const gate = (req) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    const presented = req.headers['x-rulith-local'] ?? url.searchParams.get('k') ?? ''
+    if (presented !== key) return { status: 401, teaching: 'Missing or invalid Rulith key. Open the URL printed at startup, which carries ?k=<key>.' }
+    return contextGate(req)
+  }
+  /** A refusal that carries its code, so a caller can act on the case rather than on the prose. */
+  const materialFailure = (res, error) => {
+    if (error instanceof MaterialError) {
+      return void json(res, error.code.startsWith('materials_store_') ? 500 : 400,
+        { ok: false, errorCode: error.code, teaching: error.message })
+    }
+    return void json(res, 400, { ok: false, teaching: String(error?.message ?? error) })
+  }
   const server = http.createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0]
     try {
+      /**
+       * Authorized local delivery, authenticated by its own secret and nothing else.
+       *
+       * This route is answered **before** the page gate, deliberately. The Agent is the caller,
+       * and handing the Agent this host's page key to reach one read endpoint would also hand it
+       * `/control`, `/setup/*` and every other route the key admits. It gets the materials key
+       * instead, which admits exactly this. The rebinding and cross-origin protections are the
+       * same ones every other route has — that is what `contextGate` is for — and a browser page
+       * holding the page key does not hold this one.
+       */
+      if (path === '/materials/deliver' && req.method === 'POST') {
+        const context = contextGate(req)
+        if (context !== null) return void json(res, context.status, { ok: false, teaching: context.teaching })
+        if (req.headers['x-rulith-material'] !== materials.key) {
+          return void json(res, 401, { ok: false, errorCode: 'material_delivery_unauthorized',
+            teaching: 'Local material delivery requires this host\'s materials key, which is issued only to the roles it starts.' })
+        }
+        res.setHeader('cache-control', 'no-store')
+        try {
+          return void json(res, 200, { ok: true, ...await materials.deliver(await readJson(req)) })
+        } catch (error) { return materialFailure(res, error) }
+      }
       const denied = gate(req)
       if (denied !== null) return void json(res, denied.status, { ok: false, teaching: denied.teaching })
+      if (path === '/materials' && req.method === 'GET') {
+        res.setHeader('cache-control', 'no-store')
+        try {
+          return void json(res, 200, { ok: true, ...materials.list() })
+        } catch (error) { return materialFailure(res, error) }
+      }
+      if (path === '/materials' && req.method === 'POST') {
+        // The same header-and-exact-origin requirement the other data-carrying POSTs have: a
+        // loopback origin is not this page, and storing a file is an action on the operator's
+        // behalf.
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
+          return void json(res, 403, { ok: false, teaching: 'Adding a material requires the Local page key and the same origin.' })
+        }
+        res.setHeader('cache-control', 'no-store')
+        try {
+          // The body is read first and stored whole before this answers. There is no partial
+          // success to report: either the object landed under its own id, or nothing did.
+          return void json(res, 200, { ok: true, ...materials.add(await readMaterialJson(req)) })
+        } catch (error) { return materialFailure(res, error) }
+      }
       if (path === '/setup' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
         return void res.end(setupPage)
@@ -455,14 +722,31 @@ export function createLocalHost({
         if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Setup requires the Local page key and the same origin.' })
         const body = await readJson(req)
         if (mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for tool configuration to finish.' })
-        const operation = { '/setup/pair/start': setup.start, '/setup/pair/poll': setup.poll,
+        const operation = { '/setup/pair/start': setup.start, '/setup/pair/poll': setup.poll, '/setup/pair/cancel': setup.cancel,
           '/setup/model': setup.model, '/setup/example': setup.example, '/setup/resources': setup.resources }[path]
         if (!operation) return void json(res, 404, { ok: false, teaching: 'Setup step not found.' })
+        const refused = await permitted({ kind: 'setup', path }, req)
+        if (refused !== null) return void json(res, 409, { ok: false, teaching: refused })
         res.setHeader('cache-control', 'no-store')
-        return void json(res, 200, { ok: true, ...await operation(body) })
+        try {
+          return void json(res, 200, { ok: true, ...await operation(body) })
+        } catch (error) {
+          // The service's own code travels back to the caller. Cancelling a pairing has to
+          // tell "already approved" apart from "could not be confirmed", and a flattened
+          // message would make the second look like the first.
+          if (error?.errorCode === undefined) throw error
+          return void json(res, error.status === 409 ? 409 : 400,
+            { ok: false, teaching: String(error.message), errorCode: error.errorCode })
+        }
       }
       if (path === '/mcp-services' && req.method === 'GET') {
-        res.writeHead(302, { location: '/worker-tools?k=' + encodeURIComponent(key), 'cache-control': 'no-store' })
+        // A retired address that still has to arrive somewhere useful. The launcher's return
+        // address travels with it: dropping the parameter here is how a redirect quietly
+        // becomes the one page in the product with no way back to where the operator came
+        // from, which reads as the manager having lost the instance.
+        const carried = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('manager')
+        res.writeHead(302, { 'cache-control': 'no-store',
+          location: '/worker-tools?k=' + encodeURIComponent(key) + (carried === null ? '' : '&manager=' + encodeURIComponent(carried)) })
         return void res.end()
       }
       if (path === '/worker-tools' && req.method === 'GET') {
@@ -509,17 +793,22 @@ export function createLocalHost({
         clients.add(res); req.on('close', () => clients.delete(res)); return
       }
       if (path === '/status' && req.method === 'GET') {
-        const agentEnv = effectiveChildEnv(process.env, config.agent?.env ?? {})
-        const workerEnv = components.worker.roleEnv ?? effectiveChildEnv(process.env, config.worker?.env ?? {})
+        const agentEnv = effectiveChildEnv(baseEnv(), config.agent?.env ?? {})
+        const workerEnv = components.worker.roleEnv ?? effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
           agent: running('agent'), worker: running('worker'),
           runtime: {
             configFile,
+            // No launcher address here, deliberately. The way back to a manager is a link the
+            // operator navigates, built by the page from its own address; putting the
+            // manager's browser key in a machine-readable status body would make every holder
+            // of this instance's key a holder of the manager's, which is a different and much
+            // larger thing.
             agent: {
               id: components.agent.agentId, credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
               modelService: safeUrl(agentEnv.RULITH_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
-              modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? process.env.ANTHROPIC_API_KEY ?? '') !== '',
+              modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? baseEnv().ANTHROPIC_API_KEY ?? '') !== '',
               thinking: String(agentEnv.RULITH_MODEL_THINKING ?? '') === 'enabled' ? 'extended' : 'standard',
             },
             worker: {
@@ -534,6 +823,10 @@ export function createLocalHost({
         const body = await readJson(req)
         const role = String(body.role ?? '')
         if (body.operation === 'start' && (mcpServices.busy || setup.busy)) return void json(res, 409, { ok: false, teaching: 'Wait for configuration to finish before starting Runtime.' })
+        if (body.operation === 'start') {
+          const refused = await permitted({ kind: 'start', role }, req)
+          if (refused !== null) return void json(res, 409, { ok: false, state: 'refused', teaching: refused })
+        }
         let error = !selectedRoles.includes(role)
           ? `${role} is not enabled in mode ${modeOf(selectedRoles)}.`
           : body.operation === 'stop' ? stop(role)
@@ -548,7 +841,7 @@ export function createLocalHost({
             ? { ok: true, state: 'stopped' }
             : { ok: true, state: 'stopping', teaching:
                 `The stop signal was sent to ${role === 'agent' ? 'the Agent' : 'the Worker'}, and it has not exited yet.`
-                + ' Rulith Local does not force a process to end; it is still listed as running,'
+                + ' Rulith does not force a process to end; it is still listed as running,'
                 + ' and its exit will appear in Trace if it does end.' })
         }
         if (error === null && body.operation === 'start') {
@@ -576,7 +869,7 @@ export function createLocalHost({
             // so calling it started would be the fake success this gate exists to prevent.
             return void json(res, 202, { ok: false, state: 'unconfirmed', teaching:
               `${named} was started and is still running, but it has not reported that it finished initializing.`
-              + ` Rulith Local confirms a start by the role's own readiness event — the Agent reports its task endpoint is listening,`
+              + ` Rulith confirms a start by the role's own readiness event — the Agent reports its task endpoint is listening,`
               + ' the Worker reports its Tool Manifest is loaded — so a program configured under paths that does not send one cannot'
               + ' be confirmed here. Open Trace to read what it has printed so far.' })
           }
@@ -592,9 +885,27 @@ export function createLocalHost({
         if (!running('agent')) return void json(res, 409, { ok: false, teaching: 'This Local runtime is not running the Agent role.' })
         const body = await readJson(req)
         const sessionKey = String(body.sessionKey ?? '').trim() || `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`
+        // Membership, ownership and disclosure are settled here, before anything is forwarded.
+        // A submission naming one material this profile does not own fails whole: honouring the
+        // rest would hand the Agent a list that does not say which of the operator's selections
+        // were silently dropped.
+        let selected
+        try {
+          selected = materials.attachments(body.attachments)
+        } catch (error) { return materialFailure(res, error) }
+        // A person may attach files and write nothing. The host then says what was attached and
+        // tells the model to go and find an authorized Action that reads it — it does not read
+        // the files, and it puts no part of their content into the message.
+        const text = String(body.text ?? '')
+        if (text.trim() === '' && selected.attachments.length === 0) {
+          return void json(res, 400, { ok: false, teaching: 'A case submission needs a message, an attachment, or both.' })
+        }
         const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/task`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey },
-          body: JSON.stringify({ text: String(body.text ?? ''), sessionKey,
+          body: JSON.stringify({
+            text: text.trim() === '' ? attachmentInstruction(selected.attachments) : text,
+            sessionKey,
+            ...(selected.attachments.length === 0 ? {} : { attachments: selected.attachments }),
             ...(body.caseId === undefined ? {} : { caseId: body.caseId }),
             ...(body.caseType === undefined ? {} : { caseType: body.caseType }),
             ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) }),
@@ -607,6 +918,32 @@ export function createLocalHost({
   })
   return {
     key, get port() { return server.address()?.port ?? port }, get mode() { return modeOf(selectedRoles) }, roles: selectedRoles,
+    configFile: resolve(configFile),
+    /**
+     * The secret that opens local material delivery, and only that.
+     *
+     * It is deliberately a different value from `key`: the roles this host starts are given
+     * this one, and giving them the page key would also give them `/control` and `/setup/*`.
+     * It is never served over HTTP and never reaches a model.
+     */
+    materialsKey: materials.key,
+    get materialRoot() { return materials.root },
+    // The Agent identity this host's child reported for itself. A manager shows it beside
+    // the instance, and a value it read from its own registry instead would be a second
+    // claim about which Agent a running process is — exactly the claim that must come from
+    // the process.
+    get agentId() { return components.agent.agentId },
+    /**
+     * The operating-system processes this host currently owns.
+     *
+     * A supervisor that records only its own pid cannot tell, after it dies and restarts,
+     * whether the roles it launched went with it — and they do not: a child outlives its
+     * parent. Recording the children by pid is what lets the next manager ask the kernel
+     * instead of assuming.
+     */
+    children: () => ['agent', 'worker']
+      .filter((role) => running(role))
+      .map((role) => ({ role, pid: components[role].child.pid })),
     status: () => ({ mode: modeOf(selectedRoles), roles: selectedRoles, agent: running('agent'), worker: running('worker') }),
     events: () => events.map((event) => ({ ...event })),
     listen: () => new Promise((accept, reject) => {
@@ -642,23 +979,122 @@ export function createLocalHost({
   }
 }
 
-if (IS_MAIN) {
-  const port = localInteger('RULITH_LOCAL_PORT', process.env.RULITH_LOCAL_PORT, 7790)
-  const key = (process.env.RULITH_LOCAL_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
-  if (process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')) {
-    console.log('Rulith Local\n\nUsage:\n  rulith setup\n  rulith start [--role agent|worker|agent+worker]\n\nThe configured roles are used when --role is omitted. Configuration defaults to ~/.rulith/local.json.')
-    process.exit(0)
+export const CLI_HELP = `Rulith
+
+Usage:
+  rulith                      Open the manager: accounts and independent Agent instances
+  rulith setup                Same manager page, for a first installation
+  rulith start                Same manager page
+
+  rulith start --legacy [--role agent|worker|agent+worker]
+                              The original single-instance mode, on one configuration file
+  rulith start --config <file>
+                              Single-instance mode on that exact file
+
+The single-instance mode is also selected by setting RULITH_LOCAL_CONFIG, or by naming
+roles with --role: an existing deployment keeps working with the command it already uses.
+Its configuration defaults to ~/.rulith/local.json and is never migrated or deleted by the
+manager; the manager offers to import a copy into its own instance directory.
+
+Environment:
+  RULITH_LOCAL_CONFIG   Single-instance configuration file (also selects that mode)
+  RULITH_LOCAL_PORT     Single-instance loopback UI port (default 7790)
+  RULITH_MANAGER_HOME   Manager directory (default ~/.rulith/manager)
+  RULITH_MANAGER_PORT   Manager loopback UI port (default 7780)
+  RULITH_MANAGER_KEY    Fixed manager browser key: 16-128 of A-Z a-z 0-9 - _
+                        (default: 32 random hex characters, new on every run)`
+
+/**
+ * Which of the two entry points this command line asked for.
+ *
+ * The manager is the normal entry now, and the single-instance mode has to stay reachable
+ * *by the command an existing deployment already runs*. Three things select it, and each one
+ * is an explicit statement that this invocation is about one configuration file: `--legacy`,
+ * `--config <file>`, and `RULITH_LOCAL_CONFIG` in the environment. `--role` selects it too,
+ * because roles are a property of one instance — under the manager each instance names its
+ * own — so a command that passes them is describing the single-instance deployment it always
+ * described.
+ *
+ * Nothing here reads or writes configuration. Choosing an entry point must not be the step
+ * that creates a file.
+ */
+export function parseLocalCli(argv, env = {}) {
+  if (argv.includes('--help') || argv.includes('-h')) return { help: true }
+  const input = [...argv]
+  const command = ['setup', 'start', 'manager'].includes(input[0]) ? input.shift() : 'start'
+  let configFile
+  let legacy = false
+  const roleArgs = []
+  for (let index = 0; index < input.length; index++) {
+    if (input[index] === '--legacy') { legacy = true; continue }
+    if (input[index] === '--config') {
+      if (input[index + 1] === undefined) throw new Error('--config needs a configuration file path.')
+      configFile = input[++index]
+      legacy = true
+      continue
+    }
+    if (input[index] === '--role' || input[index] === '--roles') legacy = true
+    roleArgs.push(input[index])
   }
-  const configFile = process.env.RULITH_LOCAL_CONFIG ?? defaultConfigPath()
-  const config = loadConfig(configFile)
-  let roles
-  try { roles = rolesFromArgs(process.argv.slice(2), config.roles) } catch (error) { console.error(error.message); process.exit(1) }
-  const setupMode = process.argv[2] === 'setup'
-  const host = createLocalHost({ configFile, config, roles, port, key, autoStart: !setupMode })
-  await host.listen()
-  console.log(`Rulith Local · mode ${host.mode}`)
-  if (setupMode) console.log(`Local UI: http://127.0.0.1:${host.port}/setup?k=${host.key}`)
-  else console.log(`Local UI: http://127.0.0.1:${host.port}/?k=${host.key}`)
-  console.log(`Configuration: ${resolve(configFile)} · secret values never leave this host.`)
-  process.on('SIGINT', async () => { await host.close(); process.exit(0) })
+  const inherited = String(env.RULITH_LOCAL_CONFIG ?? '').trim()
+  if (command === 'manager') {
+    if (legacy) throw new Error('rulith manager runs the multi-instance manager. Use "rulith start --legacy" or --config for the single-instance mode.')
+    return { command: 'manager', legacy: false, roleArgs }
+  }
+  if (!legacy && inherited !== '') { legacy = true; configFile = inherited }
+  if (!legacy && roleArgs.length > 0) throw new Error(`Unknown Rulith option: ${roleArgs[0]}`)
+  return { command, legacy, roleArgs, ...(legacy ? { configFile: configFile ?? (inherited || defaultConfigPath()) } : {}) }
+}
+
+if (IS_MAIN) {
+  let cli
+  try { cli = parseLocalCli(process.argv.slice(2), process.env) } catch (error) { console.error(error.message); process.exit(1) }
+  if (cli.help) { console.log(CLI_HELP); process.exit(0) }
+  if (cli.legacy) {
+    const port = localInteger('RULITH_LOCAL_PORT', process.env.RULITH_LOCAL_PORT, 7790)
+    const key = (process.env.RULITH_LOCAL_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
+    const configFile = cli.configFile
+    const config = loadConfig(configFile)
+    let roles
+    try { roles = rolesFromArgs(cli.roleArgs, config.roles) } catch (error) { console.error(error.message); process.exit(1) }
+    const setupMode = cli.command === 'setup'
+    const host = createLocalHost({ configFile, config, roles, port, key, autoStart: !setupMode })
+    await host.listen()
+    console.log(`Rulith · mode ${host.mode}`)
+    if (setupMode) console.log(`Local UI: http://127.0.0.1:${host.port}/setup?k=${host.key}`)
+    else console.log(`Local UI: http://127.0.0.1:${host.port}/?k=${host.key}`)
+    console.log(`Configuration: ${resolve(configFile)} · credentials are stored here, and are sent only to the services they authenticate to.`)
+    process.on('SIGINT', async () => { await host.close(); process.exit(0) })
+  } else {
+    /**
+     * Started after this module finishes evaluating, deliberately.
+     *
+     * The manager builds its instance hosts out of `createLocalHost`, so its module graph
+     * depends on this one. Importing it from a *top-level* await here would suspend this
+     * module's evaluation while the manager's graph waited for this module to finish — a
+     * cycle that never settles and exits with nothing printed. Loading it from a callback
+     * lets this module complete first, which is all the cycle needs.
+     */
+    void import('./manager-server.mjs').then(async ({ createManagerServer }) => {
+      const { defaultManagerRoot } = await import('./manager-registry.mjs')
+      const root = (process.env.RULITH_MANAGER_HOME ?? '').trim() || defaultManagerRoot()
+      const manager = createManagerServer({
+        root,
+        port: localInteger('RULITH_MANAGER_PORT', process.env.RULITH_MANAGER_PORT, 7780),
+        key: (process.env.RULITH_MANAGER_KEY ?? '').trim() || randomUUID().replace(/-/g, ''),
+      })
+      await manager.listen()
+      console.log('Rulith')
+      console.log(`Workbench: http://127.0.0.1:${manager.port}/?k=${manager.key}`)
+      console.log(`Instances: ${resolve(root)} · credentials are stored here; execution credentials are sent to their own configured Gateway.`)
+      if (existsSync(defaultConfigPath())) {
+        console.log(`An existing single-instance configuration is at ${defaultConfigPath()}. It has not been read or changed:`
+          + ' import a copy from the manager, or run "rulith start --legacy" to keep using it directly.')
+      }
+      process.on('SIGINT', async () => { await manager.close(); process.exit(0) })
+    }).catch((error) => {
+      console.error(String(error?.message ?? error))
+      process.exit(1)
+    })
+  }
 }

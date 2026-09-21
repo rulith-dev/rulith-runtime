@@ -1,15 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
+import { localThemeCss, managerReturnHref, workbenchReadyScript } from './theme.mjs'
 export const setupPage = String.raw`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Setup · Rulith Local</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Setup · Rulith</title>
 <style>
-:root{color-scheme:dark;font:15px/1.6 system-ui;background:#0b1017;color:#e3eaf2}*{box-sizing:border-box}body{max-width:860px;margin:36px auto;padding:0 24px}h1{font-size:26px}h2{font-size:18px;margin-top:0}p{color:#a0b0c4}a{color:#37cbbc}header,nav,.actions{display:flex;gap:14px;align-items:center;flex-wrap:wrap}header{justify-content:space-between}nav{margin:24px 0}nav button{background:transparent;color:#8f9fb4;border:0;border-bottom:2px solid transparent;border-radius:0}nav button[aria-current=step]{color:#e3eaf2;border-color:#2dc8b6}section{padding:24px;border:1px solid #2b3543;border-radius:12px;background:#101722;margin:18px 0}label{display:block;margin:14px 0}input:not([type=radio]):not([type=checkbox]),select{display:block;width:100%;padding:11px;margin-top:6px;border:1px solid #445064;border-radius:7px;background:#0b1017;color:inherit;font:inherit}button,.button{padding:10px 16px;border:1px solid #445064;background:#182334;color:inherit;border-radius:7px;cursor:pointer;font:inherit;text-decoration:none}button.primary{background:#2dc8b6;color:#081413;border:0;font-weight:600}button:disabled{opacity:.5;cursor:wait}[hidden]{display:none!important}#notice{white-space:pre-wrap;padding:12px 0;color:#edc878}.code{font-size:32px;letter-spacing:7px;font-family:monospace}small{color:#9cacc0}.resource{border-top:1px solid #2b3543;padding:10px 0}code{overflow-wrap:anywhere}.actions{margin-top:20px}
+${localThemeCss}
+/* A wizard is a reading task: one centred column, narrower than the tables elsewhere in
+   Local, with each step a card on the same centre line as the header and the footer. */
+body{max-width:960px;margin:0 auto;padding:36px var(--content-gutter) 64px}
+h1{font-size:26px;margin:0 0 10px}
+p{color:var(--dim)}
+header{display:flex;gap:14px 20px;align-items:center;flex-wrap:wrap;justify-content:space-between;margin:0 0 30px}
+header strong{display:inline-flex;align-items:center;gap:9px;font-size:var(--fs-2);letter-spacing:.2px}
+header .row{gap:14px}
+nav{display:flex;gap:4px;flex-wrap:wrap;margin:26px 0 0;border-bottom:1px solid var(--line)}
+nav button{background:transparent;color:var(--dim);border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 14px;margin-bottom:-1px;font-size:var(--fs-3)}
+nav button:hover{color:var(--fg)}
+nav button[aria-current=step]{color:var(--fg);border-bottom-color:var(--accent)}
+section{padding:22px 24px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);margin:18px 0}
+section>h2:first-child{margin-top:0}
+#notice{white-space:pre-wrap;color:var(--amber)}
+#notice:empty{display:none}
+#notice:not(:empty){margin:16px 0 0;padding:11px 14px;border-left:3px solid var(--amber);background:var(--panel2);border-radius:0 8px 8px 0}
+.code{font:32px/1.25 var(--mono);letter-spacing:7px;text-align:center;background:var(--field);border:1px solid var(--line);border-radius:8px;padding:16px 12px;margin:14px 0 8px;overflow-wrap:anywhere}
+.resource{border-top:1px solid var(--line);padding:12px 0}
+.resource:first-child{border-top:0}
+.resource>input{display:block;width:100%;margin-top:6px}
+.resource label,#service-list label{margin:0}
+#service-list label{border-top:1px solid var(--line);padding:11px 0}
+#service-list+p{margin:16px 0 0}
+#resource-result:empty,#context-name:empty{display:none}
+@media(max-width:640px){body{padding:22px 16px 48px}section{padding:16px}.code{font-size:24px;letter-spacing:4px}}
 </style></head><body>
-<header><strong>RULITH · Local setup</strong><a id="home">Open workspace</a></header>
+<header><strong><span class="brand-mark"></span>RULITH · Setup</strong><span class="row" id="headerlinks"><a id="home">Open workspace</a></span></header>
 <h1>Connect this computer</h1><p>Keep local resources here. Choose their Agent and authorize access in Console.</p>
 <nav aria-label="Setup steps"><button data-step="pair">1 · Connect</button><button data-step="resources">2 · Resources</button><button data-step="run">3 · Start</button></nav>
 <div id="notice" role="status" aria-live="polite"></div>
 <section id="pair"><h2>How will you use Rulith?</h2>
-<div id="pair-form"><label><input type="radio" name="mode" value="existing_agent" checked> Connect an existing agent or MCP client</label><label><input type="radio" name="mode" value="local_agent"> Run the agent with Rulith Local</label>
+<div id="pair-form"><label><input type="radio" name="mode" value="existing_agent" checked> Connect an existing agent or MCP client</label><label><input type="radio" name="mode" value="local_agent"> Run the agent with Rulith</label>
 <label>Console address<input id="console-url" type="url" value="https://console.rulith.ai" autocomplete="url"></label><label>Computer name<input id="machine-name" maxlength="120" placeholder="My computer"></label>
 <button class="primary" id="pair-start">Get pairing code</button></div>
 <div id="pair-code" hidden><p>Open Console, sign in, and confirm this code for your Agent.</p><div class="code" id="code"></div><small id="expiry"></small><div class="actions"><a id="console-link" class="button" target="_blank" rel="noopener noreferrer">Open Console</a><button id="pair-check">Check connection</button></div></div>
@@ -25,7 +52,14 @@ export const setupPage = String.raw`<!doctype html>
 const $=id=>document.getElementById(id), key=new URLSearchParams(location.search).get('k')||'';
 let state={},context={},busy=false,step='pair',pollTimer;
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-for(const [id,path]of[['home','/'],['chat-link','/'],['tools-link','/worker-tools']])$(id).href=path+'?k='+encodeURIComponent(key);
+${managerReturnHref.toString()}
+/* Optional, and only ever what the launcher said: a manager passes its own loopback
+   address in the manager parameter, which is carried on to the other Local pages so the
+   way back survives this wizard. Nothing is assumed when it is absent, and the launcher's
+   browser access key is retained for the authenticated return; other query fields are dropped. */
+const manager=managerReturnHref(location.search), address=path=>path+'?k='+encodeURIComponent(key)+(manager?'&manager='+encodeURIComponent(manager):'');
+for(const [id,path]of[['home','/'],['chat-link','/'],['tools-link','/worker-tools']])$(id).href=address(path);
+if(manager){const back=document.createElement('a');back.id='managerreturn';back.className='manager-return';back.textContent='← Back to agents';back.href=manager;$('headerlinks').prepend(back);}
 async function api(path,body){const r=await fetch(path,{method:body===undefined?'GET':'POST',cache:'no-store',headers:{'x-rulith-local':key,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});const v=await r.json();if(!r.ok||v.ok===false)throw Error(v.teaching||'This step could not be confirmed.');return v;}
 async function act(fn){if(busy)return;busy=true;$('notice').textContent='';document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn()}catch(e){$('notice').textContent=e.message}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false)}}
 function show(next){step=next;for(const id of ['pair','resources','run'])$(id).hidden=id!==next;document.querySelectorAll('nav button').forEach(b=>b.setAttribute('aria-current',b.dataset.step===next?'step':'false'));}
@@ -43,4 +77,5 @@ $('model-save').onclick=()=>act(async()=>{await api('/setup/model',{url:$('model
 for(const role of ['worker','agent'])$(role+'-start').onclick=()=>act(async()=>{await api('/control',{role,operation:'start'});await refresh();$('notice').textContent=role==='worker'?'Worker started. Confirm the reported tools in Console.':'Agent started. Open the conversation to submit your task.';});
 $('runtime-stop').onclick=()=>act(async()=>{const s=await api('/status');for(const role of s.roles)if(s[role])await api('/control',{role,operation:'stop'});await refresh();});
 act(async()=>{await refresh();$('machine-name').value=state.machineName;$('console-url').value=state.consoleUrl;$('model-url').value=state.model.url;$('model-name').value=state.model.name;show(state.linked?'resources':'pair');if(state.linked)await resources();schedulePoll();});
+${workbenchReadyScript}
 </script></body></html>`
