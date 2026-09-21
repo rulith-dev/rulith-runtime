@@ -26,9 +26,14 @@ neutral gray style as Console.
 
 1. Open the account menu at the bottom left and choose **Sign in**. Rulith opens the browser sign-in page.
    A different Console address and computer name are optional settings under **Advanced local settings**.
-2. Sign in and approve the exact Agents this computer may use. The link carries
+2. The browser shows a dedicated **Sign in to Rulith** page, without Console navigation.
+   Sign in and approve the exact Agents this computer may use. The link carries
    the authorization request; no code needs to be copied or typed. Return to Rulith:
    your Agents appear automatically. No cloud account cookie reaches the local runtime.
+   While the sign-in request is valid, Rulith collects the authorization even while its tab is in the background. After
+   delivery is acknowledged, the sign-in tab closes when the browser permits it;
+   otherwise it explains how to return. Account login alone does not start an Agent
+   or authorize a tool.
 3. Choose an authorized Agent from the list. On first use, choose whether Rulith runs
    it here with an LLM or provides only a Worker for an existing MCP client.
 4. Confirm setup for that Agent. Replacing an existing Agent token requires explicit

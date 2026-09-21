@@ -1081,10 +1081,10 @@ $('open-setup').onclick=()=>openSettings(selected,'/setup','details-notice');
 /* A poll refreshes the state and nothing else: it never replaces a field being typed in, a
    checkbox, an open dialog, a disclosure, the selection, or the frame that is showing. It
    stands aside while an action is in flight so a stale answer cannot overwrite a fresh one. */
+function awaitingSignIn(){const device=state.device||{};return (device.state==='pending'&&device.code&&device.consoleUrl)||device.state==='approved';}
 function poll(){
   if(polling)return polling;
-  const device=state.device||{};
-  const canCheck=(device.state==='pending'&&device.code&&device.consoleUrl)||device.state==='approved';
+  const canCheck=Boolean(awaitingSignIn());
   const step=canCheck?api('/manager/device/poll',{}):api('/manager/state');
   // Sign-in has no manual poll button: refusals need their own visible teaching and reset
   // path. Keep retrying the same request; a transient failure can still recover by itself.
@@ -1094,7 +1094,13 @@ function poll(){
   return polling;
 }
 function schedule(){clearTimeout(pollTimer);pollTimer=setTimeout(()=>{
-  if(busy.size===0&&!document.hidden)poll().then(schedule,schedule);
+  // The browser sign-in page waits for the device delivery acknowledgement. That must
+  // still be collected while this workbench is behind it; other refreshes stay idle.
+  const expires=Date.parse(state.device?.codeExpiresAt||'');
+  // Once credentials are stored, the one-time code is no longer exposed. Finish the
+  // acknowledgement even then; code expiry bounds only the pending authorization.
+  const signingIn=state.device?.state==='approved'||(awaitingSignIn()&&Number.isFinite(expires)&&expires>Date.now());
+  if(busy.size===0&&(!document.hidden||signingIn))poll().then(schedule,schedule);
   else schedule();},3000);}
 document.addEventListener('visibilitychange',()=>{
   if(!document.hidden&&busy.size===0&&['pending','approved'].includes(state.device?.state)){

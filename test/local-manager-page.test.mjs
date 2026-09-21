@@ -1092,6 +1092,40 @@ test('returning to the visible workbench immediately collects approval', async (
   assert.match(page.$('notice').textContent, /Signed in as Test Account/)
 })
 
+for (const state of ['pending', 'approved']) test('sign-in completes while the workbench is hidden: ' + state, async () => {
+  let device = deviceOf({ state, code: state === 'pending' ? 'ABCD2345' : '',
+    codeExpiresAt: state === 'pending' ? new Date(Date.now() + 600000).toISOString() : '',
+    consoleUrl: state === 'pending' ? ORIGIN + '/console/#/devices?code=ABCD2345' : '' })
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path.endsWith('/device/poll')) device = linkedDevice()
+    return { body: stateOf({ device }) }
+  } })
+  page.document.hidden = true
+  page.timers.find(t => t.ms === 3000).callback(); await settle()
+  assert.equal(page.$('account-line').textContent, 'Test Account')
+  assert.equal(page.calls.filter(c => c.path.endsWith('/device/poll')).length, 1)
+  const count = page.calls.length
+  page.timers.find(t => t.ms === 3000).callback(); await settle()
+  assert.equal(page.calls.length, count, 'background checks stop on the same page once linked')
+})
+
+test('hidden workbenches do not retry incomplete or expired login requests', async () => {
+  for (const device of [deviceOf({ state: 'pending' }), deviceOf({ state: 'pending', code: 'ABCD2345', consoleUrl: ORIGIN,
+    codeExpiresAt: new Date(Date.now() - 1000).toISOString() })]) {
+    const page = await openPage(stateOf({ device }))
+    page.document.hidden = true
+    page.timers.find(t => t.ms === 3000).callback(); await settle()
+    assert.equal(page.calls.length, 1)
+  }
+})
+
+test('background account refresh remains idle after sign-in completes', async () => {
+  const page = await openPage(stateOf({ device: linkedDevice() }))
+  page.document.hidden = true
+  page.timers.find(t => t.ms === 3000).callback(); await settle()
+  assert.equal(page.calls.length, 1, 'only the initial state request was made')
+})
+
 test('a refused operation shows its teaching and leaves the operator where they can retry', async () => {
   const page = await runPageScript(managerPage, {
     respond: async (path) => (path.endsWith('/device/start')
