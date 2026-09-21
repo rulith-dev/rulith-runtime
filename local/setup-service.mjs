@@ -22,7 +22,7 @@ export function setupOrigin(raw) {
 }
 
 /** 本机保存模型配置和领取私钥；Cloud 只收到配对公钥、资源定位及无凭据工具定义。 */
-export function createSetupService({ configFile, getConfig, saveConfig, effectiveEnv, mcpServices, toolManagement, stopped, agentStopped = stopped, agentCredentialConfigured = () => !!getConfig().agent?.env?.RULITH_TOKEN, approvePairing, onModelConfigured }) {
+export function createSetupService({ configFile, getConfig, saveConfig, effectiveEnv, mcpServices, toolManagement, stopped, agentStopped = stopped, workerStopped = stopped, agentCredentialConfigured = () => !!getConfig().agent?.env?.RULITH_TOKEN, approvePairing, onModelConfigured, onConnectionKeyConfigured, authorizeConnectionKey }) {
   const stateFile = configFile + '.setup.json'
   let busy = false
   const state = () => read(stateFile, {})
@@ -32,10 +32,12 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
     busy = true; try { return await action() } finally { busy = false }
   }
   const cloud = async (base, path, body, worker = false) => {
-    const credentials = connection()
+    // Most Worker calls use the configured credential. A replacement proves the new
+    // credential to this same origin before it is allowed to replace the configured one.
+    const credentials = worker === true ? connection() : worker || undefined
     const response = await fetch(setupOrigin(base) + path, { method: body === undefined ? 'GET' : 'POST',
       redirect: 'error', signal: AbortSignal.timeout(15000),
-      headers: { 'content-type': 'application/json', ...(worker ? { 'x-rulith-connection': credentials.id, 'x-rulith-connection-key': credentials.key } : {}) },
+      headers: { 'content-type': 'application/json', ...(credentials ? { 'x-rulith-connection': credentials.id, 'x-rulith-connection-key': credentials.key } : {}) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     const bytes = []; let size = 0
     for await (const chunk of response.body) { size += chunk.length; if (size > 262144) throw new Error('Setup response exceeds its size limit.'); bytes.push(chunk) }
@@ -50,8 +52,11 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
     return value
   }
   const configured = () => !!(connection().id && connection().key)
-  const persistConfiguration = (mutate, modelOnly = false) => {
-    if (!(modelOnly ? agentStopped() : stopped())) throw new Error(modelOnly ? 'Stop Agent before changing its model.' : 'Stop Agent and Worker before changing local setup.')
+  const persistConfiguration = (mutate, role = 'all') => {
+    const allowed = role === 'agent' ? agentStopped() : role === 'worker' ? workerStopped() : stopped()
+    if (!allowed) throw new Error(role === 'agent' ? 'Stop Agent before changing its model.'
+      : role === 'worker' ? 'Stop Worker before replacing its Connection key.'
+        : 'Stop Agent and Worker before changing local setup.')
     const current = read(configFile, getConfig()), next = structuredClone(current)
     mutate(next); saveConfig(next)
   }
@@ -70,6 +75,52 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
         services: mcpServices.overview().services.map(service => ({ name: service.name, tools: service.definition.accessModes.map(mode => ({ name: mode.title, kind: mode.operation })) })), busy }
     },
     context,
+    connectionKey: body => exclusive(async () => {
+      fields(body, ['expectedOrigin', 'expectedAccountId', 'expectedAgentId', 'expectedConnectionId', 'key'])
+      const key = text(body.key)
+      if (key.trim() === '') throw new Error('Enter the replacement Connection key.')
+      if (!workerStopped()) throw new Error('Stop Worker before replacing its Connection key.')
+      const before = connection(), identity = state()
+      if (!before.id || !before.key || !before.base || !identity.agentId) throw new Error('This Local has no complete Connection identity to replace.')
+      let expectedOrigin
+      try { expectedOrigin = setupOrigin(text(body.expectedOrigin)) }
+      catch { throw new Error('The replacement Connection identity is no longer current. Reopen its details before trying again.') }
+      if (!text(body.expectedAccountId) || text(body.expectedAgentId) !== text(identity.agentId)
+        || text(body.expectedConnectionId) !== before.id || expectedOrigin !== before.base) {
+        throw new Error('The replacement Connection identity is no longer current. Reopen its details before trying again.')
+      }
+      // A delivery that still has a credential digest can be polled again. Replacing its key
+      // midway would make that recovery correctly reject its changed credential, so wait until
+      // the one-time pairing is completely acknowledged first.
+      if (identity.credentialDigest) throw new Error('Finish the current Connection pairing before replacing its key.')
+      // The new secret is sent only to the existing Work origin. `cloud` canonicalizes that
+      // origin and rejects redirects; the reply proves both halves of the fixed identity.
+      let verified
+      try { verified = await cloud(before.base, '/local-setup/context', undefined, { id: before.id, key }) }
+      catch { throw new Error('The replacement Connection key could not be verified. Nothing was saved.') }
+      if (text(verified.agentId) !== text(identity.agentId) || text(verified.connectionId) !== before.id) {
+        throw new Error('The replacement key belongs to a different Agent or Connection. Nothing was saved.')
+      }
+      // The manager repeats its account/profile gate after the network wait and immediately
+      // before this atomic write. A direct host page still receives its normal route policy;
+      // a managed host additionally supplies this owner-bound check.
+      await authorizeConnectionKey?.({ expectedOrigin, expectedAccountId: text(body.expectedAccountId),
+        expectedAgentId: text(body.expectedAgentId), expectedConnectionId: text(body.expectedConnectionId) })
+      const after = connection()
+      if (!workerStopped()) throw new Error('Worker started while the replacement key was being verified. Nothing was saved.')
+      if (after.id !== before.id || after.key !== before.key || after.base !== before.base) {
+        throw new Error('The local Connection identity changed while the replacement key was being verified. Nothing was saved.')
+      }
+      persistConfiguration(next => {
+        const worker = next.worker?.env ?? {}
+        if (text(worker.RULITH_CONNECTION) !== before.id || text(worker.RULITH_CONNECTION_KEY) !== before.key) {
+          throw new Error('The local Connection identity changed before the replacement key could be saved.')
+        }
+        next.worker = { ...next.worker, env: { ...worker, RULITH_CONNECTION_KEY: key } }
+      }, 'worker')
+      await onConnectionKeyConfigured?.()
+      return { agentId: text(identity.agentId), connectionId: before.id }
+    }),
     start: body => exclusive(async () => {
       fields(body, ['consoleUrl', 'name', 'clientMode'])
       if (!stopped()) throw new Error('Stop Agent and Worker before pairing.')
@@ -196,7 +247,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
         next.agent = { ...next.agent, env: { ...next.agent?.env, RULITH_MODEL_URL: input.url, RULITH_MODEL: input.name,
           RULITH_MODEL_KEY: key,
           ...(body.thinking === undefined ? {} : { RULITH_MODEL_THINKING: input.thinking === 'enabled' ? 'enabled' : '' }) } }
-      }, true)
+      }, 'agent')
       await onModelConfigured?.()
       return { teaching: 'Model configuration saved on this computer.' }
     }),

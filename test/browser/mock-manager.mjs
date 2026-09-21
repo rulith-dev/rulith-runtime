@@ -59,7 +59,7 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   /** The account and Console this device is signed in to; the directory joins on both. */
   const CONSOLE = 'https://console.example', ACCOUNT = 'acct-1'
   /** Flipped by a test: what the conversation host answers when a message is sent. */
-  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', modelRefusal: '', modelRequests: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
+  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
 
   // Configured Agents, as the manager reports them once pairing has completed: the directory
   // joins a profile to an Agent by account, Console origin and Agent id together.
@@ -153,6 +153,14 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       if (!row) return void json(res, 400, { ok: false, teaching: 'No such Agent.', ...state() })
       row[body.role] = body.operation === 'start'
       return void json(res, 200, { ok: true, control: { role: body.role, state: body.operation === 'start' ? 'ready' : 'stopped' }, ...state() })
+    }
+    if (path === '/manager/authoring/review') return void json(res, 200, { ok: true, resultId: 'res_' + '1'.repeat(32),
+      report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } },
+      draft: { program: { id: 'local-policy', title: 'Local policy', rules: [{ id: 'rule-1', label: 'Check invoices' }] }, citations: [{}], examples: [{}], questions: control.authoringQuestions ? [{ question: 'Which exception applies?' }] : [] },
+      cases: [{ caseId: 'CASE-LOCAL', title: 'Local authoring Case' }, { caseId: 'CASE-SECOND', title: 'Second certified Case' }] })
+    if (path === '/manager/authoring/save') {
+      control.authoringSaves.push(body)
+      return void json(res, 200, { ok: true, entry: { packId: 'local_policy' }, packId: 'local_policy', caseId: body.caseId })
     }
     if (path === '/manager/instances/pair') {
       if (!row) return void json(res, 400, { ok: false, teaching: 'No such Agent.', ...state() })

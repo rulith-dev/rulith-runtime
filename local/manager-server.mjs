@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * The Rulith Local manager: one loopback page for an account, its authorized Agents, and the
+ * The Rulith Local manager: one loopback page for an account, its enabled Agents, and the
  * independent Local instances running them.
  *
  * This server is **operator software, not an Agent host**. It holds the device management
@@ -14,14 +14,17 @@
  * separating them, and it travels in the URL the CLI prints rather than in the page.
  */
 import http from 'node:http'
-import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { acquireWorkbenchLease, createManagerRegistry, defaultManagerRoot } from './manager-registry.mjs'
 import { createDeviceClient } from './device-client.mjs'
 import { createInstanceManager } from './instance-manager.mjs'
 import { managerPage } from './manager-ui.mjs'
+import { installAuthoringChecker } from './authoring-checker.mjs'
+import { materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
+import { proposalDigest } from '../worker/local-authoring.mjs'
 
 const MAX_BODY = 64 * 1024
 const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/
@@ -131,11 +134,48 @@ export function createManagerServer({
       ? { configFile: resolve(legacyConfigFile), imported: registry.read().instances.some((row) => row.importedFrom === resolve(legacyConfigFile)) }
       : null,
   })
+  const authoringTarget = (instanceId, { requireWorker = false } = {}) => {
+    const grant = device.status()
+    if (grant.state !== 'linked') throw new Error('Sign in before preparing the local document assistant.')
+    const row = instances.overview().find((entry) => entry.id === instanceId)
+    if (!row || !row.paired || !row.agentId || !row.connectionId) throw new Error('Choose an attached Agent with its Worker connection before preparing the document assistant.')
+    if (requireWorker && row.worker !== true) throw new Error('Start this Agent’s Worker and wait for its tool advertisement before preparing the document assistant.')
+    if (row.origin !== grant.origin || row.accountId !== String(grant.account?.id ?? '') || !grant.agents.some((agent) => agent.id === row.agentId)) {
+      throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+    }
+    return { expectedAccountId: String(grant.account.id), agentId: row.agentId, connectionId: row.connectionId,
+      materialRoot: String(row.authoring?.materialRoot ?? ''), toolDescriptors: Array.isArray(row.authoring?.toolDescriptors) ? row.authoring.toolDescriptors : [] }
+  }
+  const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex')
+  const checkedResult = (instanceId, resultId = '') => {
+    const target = authoringTarget(instanceId)
+    const row = instances.overview().find((entry) => entry.id === instanceId)
+    const identity = materialIdentity({ configFile: join(row.directory, 'local.json'), gatewayUrl: row.origin,
+      connectionId: row.connectionId, agentId: row.agentId })
+    const store = openMaterialStore(target.materialRoot, identity, { create: false })
+    const rows = JSON.parse(readFileSync(join(target.materialRoot, 'local-authoring', 'results.json'), 'utf8'))
+    if (!Array.isArray(rows)) throw new Error('The local authoring result index is invalid.')
+    const index = rows.filter((entry) => entry.profile === identity.profile && entry.owner === identity.owner
+      && (resultId === '' || entry.resultId === resultId)).at(-1)
+    if (!index) throw new Error('No checked local authoring result belongs to this selected Agent.')
+    const result = store.read(String(index.resultId)).bytes
+    if (digest(result) !== index.resultDigest) throw new Error('The checked result bytes no longer match their immutable digest.')
+    const payload = JSON.parse(result.toString('utf8'))
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !payload.draft || !payload.report) throw new Error('The checked result has an invalid draft/report payload.')
+    const checkedProposalDigest = proposalDigest(payload.draft)
+    const material = store.require(String(index.materialId))
+    const node = 'node_' + createHash('sha256').update(String(index.materialId) + '\u0000' + String(index.documentDigest), 'utf8').digest('hex').slice(0, 32)
+    if (material.digest !== index.documentDigest || index.proposalDigest !== checkedProposalDigest || payload.report.proposalDigest !== checkedProposalDigest || index.node !== node) {
+      throw new Error('The checked result no longer matches its immutable material and proposal.')
+    }
+    return { taskId: index.materialId, materialId: index.materialId, documentDigest: index.documentDigest,
+      proposalDigest: checkedProposalDigest, resultId: index.resultId, checkedAt: index.checkedAt, draft: payload.draft, report: payload.report }
+  }
 
   const operations = {
     '/manager/device/start': (body) => instances.admit(() => device.start(onlyFields(body, ['consoleUrl', 'name']))),
     '/manager/device/poll': (body) => { onlyFields(body, []); return instances.admit(() => device.poll()) },
-    '/manager/device/refresh': (body) => { onlyFields(body, []); return instances.admit(() => device.refresh()) },
+    '/manager/device/refresh': (body) => { onlyFields(body, []); return instances.refreshDevice() },
     '/manager/device/signout': (body) => { onlyFields(body, []); return instances.signOut() },
     '/manager/device/forget': (body) => { onlyFields(body, []); return instances.forgetDevice() },
     '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking'])),
@@ -154,6 +194,38 @@ export function createManagerServer({
     '/manager/instances/model': (body) => {
       const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'source', 'url', 'name', 'key', 'clearKey', 'thinking'])
       return instances.setInstanceModel(String(fields.instanceId ?? ''), fields)
+    },
+    '/manager/instances/connection-key': (body) => {
+      const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'expectedAgentId', 'expectedConnectionId', 'key'])
+      return instances.setConnectionKey(String(fields.instanceId ?? ''), fields)
+    },
+    '/manager/authoring/prepare': (body) => {
+      const fields = onlyFields(body, ['instanceId', 'materialPermissions'])
+      return instances.admit(async () => {
+        await installAuthoringChecker()
+        return device.authoringPrepare({ ...authoringTarget(String(fields.instanceId ?? ''), { requireWorker: true }),
+          requestId: randomUUID(), materialPermissions: fields.materialPermissions })
+      })
+    },
+    '/manager/authoring/save': (body) => {
+      const fields = onlyFields(body, ['instanceId', 'resultId', 'caseId'])
+      return instances.admit(() => {
+        const checked = checkedResult(String(fields.instanceId ?? ''), String(fields.resultId ?? ''))
+        const target = authoringTarget(String(fields.instanceId ?? ''))
+        return device.authoringSave({ expectedAccountId: target.expectedAccountId, agentId: target.agentId, caseId: fields.caseId,
+          materialId: checked.materialId, documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest,
+          draft: checked.draft, requestId: randomUUID() })
+      })
+    },
+    '/manager/authoring/review': (body) => {
+      const fields = onlyFields(body, ['instanceId', 'resultId'])
+      return instances.admit(async () => {
+        const checked = checkedResult(String(fields.instanceId ?? ''), String(fields.resultId ?? ''))
+        const target = authoringTarget(String(fields.instanceId ?? ''))
+        const cases = await device.authoringCases({ expectedAccountId: target.expectedAccountId, agentId: target.agentId,
+          materialId: checked.materialId, documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest })
+        return { ...checked, cases: Array.isArray(cases.cases) ? cases.cases : [] }
+      })
     },
     '/manager/instances/open': (body) => {
       const fields = onlyFields(body, ['instanceId', 'page'])

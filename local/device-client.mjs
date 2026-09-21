@@ -5,8 +5,8 @@
  * What this client is, and what it deliberately is not:
  *
  *   · It obtains a **device** grant, not an account session. The browser approves one
- *     device record and an explicit set of Agents; no cookie and no account-wide token
- *     ever reaches this computer. The device management token it does receive is an
+ *     device record; its Agent directory is the account's current enabled Agents, refreshed
+ *     through this device grant. No cookie ever reaches this computer. The management token it does receive is an
  *     operator credential — it authorizes management calls, and it is never placed in a
  *     child process environment or in model context.
  *   · The token arrives **encrypted to a key this computer generated**, so a Console that
@@ -52,7 +52,7 @@ class DeviceRefused extends Error {
  * being outside what it may do.
  *
  * The distinction is the whole point. `/local-devices/pair` refuses for two very different
- * reasons — the device is no longer authorized, or the chosen Agent is not in its scope —
+ * reasons — the device is no longer authorized, or the chosen Agent is no longer enabled —
  * and an earlier version treated both as "signed out". One operator mistake (picking an
  * Agent that had been removed in Console) would then discard a perfectly valid device grant
  * and every instance's route back to it. So only these codes, or a failure of the route
@@ -380,7 +380,9 @@ export function createDeviceClient({ root } = {}) {
         if (!token.trim()) throw new Error('The account service delivered an empty device token.')
         const account = reply.account ?? {}
         const agents = Array.isArray(reply.agents) ? reply.agents : []
-        if (!text(account.id) || agents.length === 0) throw new Error('The approval did not name an account and at least one Agent.')
+        // A device may be linked while this account happens to have no enabled Agents. The
+        // dynamic directory is empty in that state; it is not a failed device identity.
+        if (!text(account.id)) throw new Error('The approval did not name an account.')
         record = { ...record, state: 'approved', token,
           account: { id: String(account.id), name: String(account.name ?? account.id) },
           agents: agents.map((row) => ({ id: String(row.id), name: String(row.name ?? row.id) })),
@@ -408,10 +410,11 @@ export function createDeviceClient({ root } = {}) {
     }),
 
     /**
-     * Re-read the authorized scope from the Gateway.
+     * Re-read the account's enabled Agent directory from the Gateway.
      *
-     * The list of Agents is consent, not configuration: one removed in Console must stop
-     * being offered here, and a grant that has expired must stop looking usable. So this is
+     * This list is dynamic account state, not a remembered approval selection: one disabled
+     * in Console must stop being offered here, a newly enabled one must appear, and a grant
+     * that has expired must stop looking usable. So this is
      * asked fresh rather than trusted from the local copy.
      */
     refresh: () => exclusive(async () => {
@@ -437,13 +440,35 @@ export function createDeviceClient({ root } = {}) {
       const current = linked()
       if (!text(pairingId) || !text(deviceSecret) || !text(agentId)) throw new Error('Pairing approval needs the pairing id, its proof and the chosen Agent.')
       if (!current.agents?.some((row) => row.id === agentId)) {
-        throw new Error('That Agent is not part of what this device was authorized for. Refresh the account, or approve it in Console.')
+        throw new Error('That Agent is not enabled in this account. Refresh Agents after enabling it in Console.')
       }
       // An operation route: a refusal here is usually about the Agent or the pairing, and
       // only the account service naming a device-level code — or the device route itself
       // refusing — may conclude that this computer is signed out.
       return call(current.origin, '/local-devices/pair', { bearer: current.token,
         body: { pairingId, deviceSecret, agentId, replaceAgentToken: replaceAgentToken === true } }).catch(operationRefusal)
+    },
+
+    // The manager supplies only the selected Agent's Worker projection. Document bytes never
+    // pass through this device-control client.
+    authoringPrepare: (body = {}) => {
+      const current = linked()
+      if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) {
+        throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+      }
+      return call(current.origin, '/local-devices/authoring/prepare', { bearer: current.token, body }).catch(operationRefusal)
+    },
+    authoringSave: (body = {}) => {
+      const current = linked()
+      if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) {
+        throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+      }
+      return call(current.origin, '/local-devices/authoring/save', { bearer: current.token, body }).catch(operationRefusal)
+    },
+    authoringCases: (body = {}) => {
+      const current = linked()
+      if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+      return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
     },
 
     /**

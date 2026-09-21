@@ -1,0 +1,18 @@
+{
+  "format": "rulith-local-authoring-checker/1",
+  "sourceCommit": "5e88e813108debd62dc723c32a86ed0fb9a3d338",
+  "files": [
+    {
+      "name": "local-authoring.jar",
+      "bytes": 34185903,
+      "sha256": "774a67fed8af8fdc0800029f01e3fcc2abd2a63322d7209888b09b212bd170bf",
+      "url": "https://console.rulith.ai/downloads/authoring/5e88e813108debd62dc723c32a86ed0fb9a3d338/local-authoring.jar"
+    },
+    {
+      "name": "rule-check.jar",
+      "bytes": 33732364,
+      "sha256": "701b5441444064a8357f2b5fd1fc887aa524dbbb984f0c51ab0673b27c5b5799",
+      "url": "https://console.rulith.ai/downloads/authoring/5e88e813108debd62dc723c32a86ed0fb9a3d338/rule-check.jar"
+    }
+  ]
+}

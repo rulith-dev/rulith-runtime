@@ -27,6 +27,7 @@ import test from 'node:test'
 import { defaultMaterialRoot, materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
 
 const TOOL = 'rulith.materials.read@1'
+const AUTHORING_INGEST = 'rulith.official_authoring.ingest_document@2'
 const REMOTE_MODEL = 'https://api.anthropic.com/v1/messages'
 const GATEWAY = 'https://api.rulith.ai'
 
@@ -102,6 +103,22 @@ test('the material Tool is advertised only where a material area is configured',
   assert.match(descriptor.digest, /^[a-f0-9]{64}$/u)
   // It survives the advertisement check the Poll sends it through.
   assert.equal(worker.workerToolManifest(withArea).some((row) => row.id === TOOL), true)
+})
+
+test('local authoring ingest reaches the actual adapter compiler, preserves work args, maps facts and returns an Artifact', async () => {
+  const builtins = worker.builtinLocalAuthoringTools(ROOT)
+  const definition = builtins[AUTHORING_INGEST]
+  const resolved = worker.adapterToolFromSpec(JSON.stringify({
+    name: AUTHORING_INGEST, kind: 'read', impl: 'local-authoring', source: 'materials', exec: 'ingest',
+    params: definition.params, returns: definition.returns,
+  }), JSON.stringify({ material: TEXT.id }))
+  const executed = await worker.execute(AUTHORING_INGEST, resolved._args, { [AUTHORING_INGEST]: resolved }, SOURCES, {})
+  assert.equal(executed.facts.length, 1)
+  assert.equal(executed.facts[0].predicate, 'rulith.official_authoring.authoring_task')
+  assert.equal(executed.facts[0].args.task_id, TEXT.id)
+  assert.match(executed.facts[0].args.node, /^node_[a-f0-9]{32}$/u)
+  assert.match(executed.localArtifact.id, /^res_[a-f0-9]{32}$/u)
+  assert.equal(executed.localArtifact.producedFrom, TEXT.id)
 })
 
 test('the material adapter ships with this Worker and cannot be declared in a Manifest', () => {

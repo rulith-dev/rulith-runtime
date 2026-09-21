@@ -88,6 +88,7 @@ import {
   deliveryChunks, deliveryRequestOf, localReadResult, localTicketOf, registrationBody,
   registrationResult, uploadDecision,
 } from './material-transport.mjs'
+import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring } from './local-authoring.mjs'
 // The off-machine permission reading travels with the Worker surface it has always been part
 // of, so the committed cross-repository permission rows keep one importable answer to compare
 // against. Its consumer moved — from an upload that no longer exists to the disclosure decision
@@ -361,7 +362,7 @@ function say(line, type, data = {}) {
  *  **必须声明在装载块之前**（2026-08-11 P0）：`checkImpls` 是函数声明会提升，
  *  但它函数体里引用的这个 `const` **不会**——放在后面就是模块顶层执行时踩进暂时性死区。
  *  「函数提升了，常量没有」——而当时那一发还落在读工具表的 try 里，被报成了"读不了工具表"。 */
-const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp', 'workspace', 'material'])
+const KNOWN_IMPLS = new Set(['http', 'run', 'db-query', 'db-exec-fenced', 'mcp', 'workspace', 'material', 'local-authoring'])
 
 /**
  * The parameter types a Tool may declare, in the Tool Manifest and on the wire alike.
@@ -468,6 +469,7 @@ const SOURCE_READ_TOOLS = Object.freeze({
 const MATERIAL_READ_TOOLS = Object.freeze({
   'rulith.materials.read@1': { adapter: 'material', sourceTypes: ['file'], entry: 'read' },
 })
+const LOCAL_AUTHORING_TOOLS = Object.freeze(localAuthoringDefinitions())
 
 /**
  * One descriptor shape for every Tool this Worker advertises (board-spec TOOL-08).
@@ -538,12 +540,16 @@ const SOURCE_TOOL_CONTRACTS = Object.freeze({
 const MATERIAL_TOOL_CONTRACTS = Object.freeze({
   read: { kind: 'read', params: { material: 'string' }, returns: [] },
 })
+const LOCAL_AUTHORING_TOOL_CONTRACTS = Object.freeze(Object.fromEntries(
+  Object.values(LOCAL_AUTHORING_TOOLS).map(tool => [tool.entry, { kind: tool.kind, params: tool.params, returns: tool.returns }]),
+))
 
 /** The fixed contract of a Tool whose handler ships with this Worker, if it has one. */
 function builtinContract(definition) {
   if (definition?.adapter === 'workspace') return WORKSPACE_TOOL_CONTRACTS[definition.entry]
   if (definition?.adapter === 'mcp') return SOURCE_TOOL_CONTRACTS[definition.entry]
   if (definition?.adapter === 'material') return MATERIAL_TOOL_CONTRACTS[definition.entry]
+  if (definition?.adapter === 'local-authoring') return LOCAL_AUTHORING_TOOL_CONTRACTS[definition.entry]
   return undefined
 }
 
@@ -643,11 +649,19 @@ export function builtinMaterialTools(root = MATERIALS_ROOT) {
   return Object.fromEntries(Object.entries(MATERIAL_READ_TOOLS).map(([id, definition]) =>
     [id, { ...definition, ...MATERIAL_TOOL_CONTRACTS[definition.entry], digest: toolDigest(definition) }]))
 }
+export function builtinLocalAuthoringTools(root = MATERIALS_ROOT) {
+  if (String(root ?? '').trim() === '') return {}
+  return Object.fromEntries(Object.entries(LOCAL_AUTHORING_TOOLS).map(([id, definition]) => {
+    const pinned = { adapter: definition.adapter, sourceTypes: definition.sourceTypes, entry: definition.entry,
+      implementationVersion: definition.implementationVersion, release: definition.release }
+    return [id, { ...definition, digest: toolDigest(pinned) }]
+  }))
+}
 /** Local 管理页与 Worker 启动共用一份组成规则，避免页面漏列内置工具或接受启动必拒的配置。 */
 export function configuredWorkerTools(manifest, workspaceMode = 'read', materialsRoot = MATERIALS_ROOT) {
   const tools = workerToolsOf(manifest)
   const builtins = { ...(workspaceMode === 'off' ? {} : builtinWorkspaceTools(workspaceMode)), ...builtinSourceTools(),
-    ...builtinMaterialTools(materialsRoot) }
+    ...builtinMaterialTools(materialsRoot), ...builtinLocalAuthoringTools(materialsRoot) }
   const collisions = Object.keys(builtins).filter(id => Object.hasOwn(tools, id))
   if (collisions.length) throw new Error(`Worker Tool Manifest redefines built-in Tool(s): ${collisions.join(', ')}`)
   return { ...tools, ...builtins }
@@ -2494,6 +2508,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   else if (t.impl === 'run') out = await handRun(t, args, context, sources)
   else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
   else if (t.impl === 'material') out = await handMaterial(t, args, sources)
+  else if (t.impl === 'local-authoring') out = await executeLocalAuthoring(t, t._args ?? args, { materialRoot: await materialRootOf(t, sources), binding: materialIdentityFromFingerprints(MATERIALS_BINDING) })
   else if (t.impl === 'mcp') out = await handMcp(t, args, sources)
   // The database hands take no args: their statement is the compiled template. They do take
   // the Source table, like every other Adapter — reading the module global here meant a
@@ -2527,7 +2542,9 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
       if (!Array.isArray(rows)) {
         throw new Error('A Worker Tool with returns must output JSON shaped as {rows:[...]}')
       }
-      return { result: text, facts: resultFactsFromRows(t, rows) }
+      const localArtifact = workerLocalArtifact(out?.localArtifact)
+      if (out?.localArtifact !== undefined && localArtifact === undefined) throw new Error('The local executor returned an invalid Artifact custody record')
+      return { result: text, facts: resultFactsFromRows(t, rows), ...(localArtifact ? { localArtifact } : {}) }
     } catch (error) {
       if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
       throw error
@@ -3303,6 +3320,13 @@ export function refuseReservedParameter(params, label = 'Tool') {
 function adapterToolFromSpec(specJson, argsJson) {
   const spec = JSON.parse(specJson)
   if (typeof spec.impl !== 'string') throw new Error('toolSpec is missing impl')
+  if (spec.impl === 'local-authoring') {
+    if (typeof spec.source !== 'string' || !spec.source || !['ingest', 'check'].includes(spec.exec)) {
+      throw new Error('Local authoring requires its governed file Source and a fixed local operation')
+    }
+    return { impl: 'local-authoring', source: spec.source, entry: spec.exec,
+      _args: JSON.parse(argsJson || '{}'), returns: spec.returns ?? [] }
+  }
   if (spec.impl === 'mcp') {
     let margs = {}
     if (typeof argsJson === 'string' && argsJson !== '') margs = JSON.parse(argsJson)
@@ -3512,7 +3536,7 @@ export function workerToolsOf(raw) {
     // The material adapter is this Worker's own, and it is not declarable. A manifest entry
     // could otherwise name a second Tool id over the same immutable store with its own
     // `returns` mapping — which is precisely how reading bytes would become asserting facts.
-    if (adapter === 'material') {
+    if (adapter === 'material' || adapter === 'local-authoring') {
       throw new Error(`Worker Tool ${id} declares the material adapter, which ships with this Worker and is not declarable.`
         + ' The material area is reached through the built-in rulith.materials.read@1 and a governed file Source;'
         + ' a declared copy could map raw bytes onto Board predicates, which is the one thing a material read must never do.')

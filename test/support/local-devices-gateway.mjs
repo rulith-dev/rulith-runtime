@@ -84,9 +84,8 @@ export function createDevicesGateway({
     if (Date.parse(device.expiresAt) <= Date.now()) refuse(401, 'This device authorization has expired.', 'device_expired')
     return device
   }
-  /** The consented, still-enabled Agents of a grant. Consent is a filter, not a memory. */
-  const grantedAgents = (device) => device.agentIds
-    .map((id) => enabled.get(id))
+  /** The device bearer returns its account's current enabled Agent directory. */
+  const grantedAgents = (_device) => [...enabled.values()]
     .filter((row) => row !== undefined && row.enabled)
     .map((row) => ({ id: row.id, name: row.name }))
 
@@ -310,7 +309,7 @@ export function createDevicesGateway({
         const connection = [...connections.values()].find((row) => row.id === request.headers['x-rulith-connection'])
         if (connection === undefined || connection.key !== request.headers['x-rulith-connection-key']) return void reply(401, { teaching: 'Unknown connection.' })
         if (connection.revoked) return void reply(401, { teaching: 'This Connection was revoked with its device.' })
-        return void reply(200, { agentId: connection.agentId, agentName: enabled.get(connection.agentId)?.name ?? '', sources: [] })
+        return void reply(200, { agentId: connection.agentId, connectionId: connection.id, agentName: enabled.get(connection.agentId)?.name ?? '', sources: [] })
       }
       if (url.pathname === '/local-setup/resources' && method === 'POST') {
         const connection = [...connections.values()].find((row) => row.id === request.headers['x-rulith-connection'])
@@ -407,8 +406,15 @@ export function createDevicesGateway({
       })
       return { deviceId: row.id, agentIds: row.agentIds }
     },
-    /** Console-side removal of an Agent from the account, after a grant already named it. */
+    /** Console-side directory changes after this device signed in. */
     disableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = false },
+    enableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = true },
+    /** Console has already invalidated the old key; Local must prove and save this replacement. */
+    replaceConnectionKey(connectionId, key) {
+      const row = connections.get(connectionId)
+      if (row === undefined) throw new Error('No Connection has that id.')
+      row.key = String(key)
+    },
     /** Expire a grant without revoking it, as the clock would. */
     expireDevice(deviceId) { devices.get(deviceId).expiresAt = new Date(Date.now() - 1000).toISOString() },
     /** The owner revoking this device from the Console device list, before Local asks to. */

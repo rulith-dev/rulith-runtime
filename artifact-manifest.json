@@ -21,7 +21,7 @@
       "sha256": "182e7ca2a9d5442e43471b6a0240fd16796631fcf002f0f24f29950acaa515c8"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "78b922ddf8912421b5a150fbf1503dbe08f9ae8e5c432c4c2fb1e604795837e2"
+      "sha256": "d7e8de0f2ed49793fd390fa3521b0c159c5e8642019ffd6d31922c2dca6901c0"
     },
     "worker/mcp-client.mjs": {
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
@@ -32,8 +32,20 @@
     "worker/material-transport.mjs": {
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
     },
+    "worker/local-authoring.mjs": {
+      "sha256": "cb88943758e09b114423238b1c632b5ee645dc32ed8031074edc3767ac436e0c"
+    },
+    "local/authoring-checker.mjs": {
+      "sha256": "857ecc0ed62e2e050931217c61c357b9d7ef2e2402d1da59f263e6622027bd38"
+    },
+    "local/authoring-checker.json": {
+      "sha256": "4582e0d6f53a47caa069840090b73a09708faf406598bd4cfc60881eefd84143"
+    },
+    "local/process-tree.mjs": {
+      "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
+    },
     "local/rulith-local.mjs": {
-      "sha256": "9c5081635ed7ca728c63ffa8e3d1474548c2390eec9fee72e0f65243175f6aaf"
+      "sha256": "5b59d9b5163c45b06b260d57f1619bd213a1a04d3c97e3aedda050a023621f57"
     },
     "local/material-service.mjs": {
       "sha256": "d3ded26b5999cadd8d4cd74d79f0a67d9e27187f3771a11eb9db60b21a9caff0"
@@ -51,19 +63,19 @@
       "sha256": "9f6dda1f8417477875fd0c2a006aa7a6ba6bc18bc186b9563ca7d75232a39d79"
     },
     "local/device-client.mjs": {
-      "sha256": "c8ac71be2ade99b9fc76c39b89e0bd956bb3373537c1e619c3bdaf901943cc15"
+      "sha256": "4b529f0649c6c44bdbac34fbe0b95a52b0bf0db83171383d811d816b9902a6fb"
     },
     "local/instance-manager.mjs": {
-      "sha256": "de846c695e2bb842d8aa4925516482fab984a8ca9ac77b836b53b72c639843bb"
+      "sha256": "07e4f897333b1789c3e5c5721a0f4505a58be4cb8dd88f3dc68aaa55f9d28af0"
     },
     "local/manager-server.mjs": {
-      "sha256": "6d3373bdd2acf999a72b8611e485fac917bb9c5f7d8ffd4250247964c95a1d58"
+      "sha256": "41ac96609a83c22aae8f318bb50038626ecc29facede3a487f794ae614d6dc75"
     },
     "local/manager-ui.mjs": {
-      "sha256": "d2a91afef5386f780dce0f137c29c11ea27843fa27b2b80006241a335859d919"
+      "sha256": "f6ac59f9b78f6d6c789c943b618cc629b13890f6215d6cc81c0949e27e78e013"
     },
     "docs/local-manager.md": {
-      "sha256": "e912ca57f079c62ba5f01e163783a45f383decb36f2dcfea7d57031edca09a0b"
+      "sha256": "55f36d0b6df8292f59be8c75dedd8c371406ee25cbeea404f71c1829ca804232"
     },
     "docs/local-materials.md": {
       "sha256": "41aafb717f6a6b1b1f63ecf6bb60c8b99f8eb5df12ac207ecb2cd412098272af"
@@ -72,7 +84,7 @@
       "sha256": "dda52e94ccf9957fdb12538d0a29b7e2261826df4c55164de5a89c10a3f62b23"
     },
     "local/setup-service.mjs": {
-      "sha256": "51b68957b9821b6fea6b86cda2ec1972b5e8b3d90d02aac3f6cb76a6ecd6ea5a"
+      "sha256": "e79d97cd9a78e752d02e01334f41e223c48e76834beb84715acd8491814ab2dc"
     },
     "local/setup-ui.mjs": {
       "sha256": "e54c02a1a8a9ce62eba84a899e22f22983696a0ab87f7f6e9aece1dd48bdc4a8"
@@ -111,7 +123,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "d0983fd9fd426ddc0d4689eed988cabb186792726f2fe07f4e3ff0c7ffdf1dc6"
+      "sha256": "a6dc874a2965a16a2813c20490e6e0356a5ed2da2be77b7a89f58b317c9a57ba"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -120,7 +132,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "3c88dc113e759cef2efa355505a428027629c93f8c675f94cc283e2c368f1a8f"
+      "sha256": "caba2d95bc6f9027f2a4ed32a1164ef4bfe2b38c34c11037bc1723b992a1b037"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

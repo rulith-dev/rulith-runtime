@@ -187,7 +187,7 @@ export const managerPage = String.raw`<!doctype html>
   <div class="railsel" id="railsel" hidden>
     <div class="railcap"><span>Selected Agent</span><span class="spacer"></span><button class="iconbtn" id="details-open" aria-label="Agent settings and details" aria-haspopup="dialog">⚙</button></div>
     <div class="railrow"><span class="pill" id="agent-pill" hidden></span><button id="agent-toggle" hidden>Start Agent</button></div>
-    <div class="railrow"><span class="pill" id="worker-pill">No Agent selected</span><button id="worker-toggle" hidden>Start Worker</button><button id="tools-open" hidden>Tools</button></div>
+    <div class="railrow"><span class="pill" id="worker-pill">No Agent selected</span><button id="worker-toggle" hidden>Start Worker</button><button id="tools-open" hidden>Tools</button><button id="authoring-open" hidden>Document assistant</button></div>
     <p class="muted" id="worker-note">Choose an Agent to see the Worker on this computer.</p>
     <div id="worker-notice" class="notice" role="status" aria-live="polite"></div>
     <details id="worker-details"><summary>Connection and details</summary>
@@ -242,7 +242,7 @@ export const managerPage = String.raw`<!doctype html>
       <p id="agent-summary"></p>
       <p class="muted" id="default-model-summary"></p>
       <div class="actions"><button id="default-model-open">Default model</button></div>
-      <div class="actions"><button id="refresh-account">Refresh Agents</button><button class="btn danger" id="sign-out">Sign out and stop this computer</button></div>
+      <div class="actions"><button id="refresh-account">Refresh enabled Agents</button><button class="btn danger" id="sign-out">Sign out and stop this computer</button></div>
       <p id="signout-state" class="muted"></p>
     </div>
     <div id="unusable" hidden>
@@ -296,7 +296,7 @@ export const managerPage = String.raw`<!doctype html>
   <div class="modal-head"><div><b id="attach-title">Connect a cloud Agent</b><span class="subline" id="attach-sub"></span></div><button class="modal-close" id="attach-close" aria-label="Close connect Agent">×</button></div>
   <div class="modal-body">
     <div id="attach-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
-    <p id="attach-blocked" hidden>Sign in first; the Agents you may use come from that authorization.</p>
+    <p id="attach-blocked" hidden>Sign in first; enabled Agents from this account appear here.</p>
     <div id="attach-form">
       <label for="agent-select">Agent</label>
       <div class="inlinefield"><select id="agent-select" aria-label="Agent to connect"></select><button class="btn" id="pair">Connect</button></div>
@@ -315,7 +315,8 @@ export const managerPage = String.raw`<!doctype html>
   <div class="modal-body">
     <div id="details-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
     <p class="notice error" id="detail-attention" hidden></p>
-    <div class="actions"><button class="btn" id="open-setup">Open setup</button><button id="attach-open">Connect a cloud Agent</button></div>
+      <div class="actions"><button class="btn" id="open-setup">Open setup</button><button id="attach-open">Connect a cloud Agent</button></div>
+      <div class="actions"><button id="connection-key-open">Replace Connection key</button></div>
     <div id="model-row">
       <h3>Model settings</h3>
       <p class="muted" id="agent-model-summary"></p>
@@ -336,6 +337,16 @@ export const managerPage = String.raw`<!doctype html>
     <h3>Remove</h3>
     <p class="muted">Removes this Agent from the list on this computer. Its folder, settings and credentials are left exactly where they are.</p>
     <div class="actions"><button class="btn danger" id="forget">Remove from Rulith</button></div>
+  </div>
+</div></div>
+
+<div class="modal" id="dlg-connection-key" role="dialog" aria-modal="true" aria-labelledby="connection-key-title" hidden><div class="modal-card">
+  <div class="modal-head"><div><b id="connection-key-title">Replace Connection key</b><span class="subline" id="connection-key-sub"></span></div><button class="modal-close" id="connection-key-close" aria-label="Close Connection key">×</button></div>
+  <div class="modal-body"><div id="connection-key-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
+    <p class="muted">Enter the current replacement key from Console. The previous key is invalidated there; it is never displayed or sent to another service.</p>
+    <p id="connection-key-blocked" class="notice error" role="alert" hidden></p>
+    <label>New Connection key<input id="connection-key-value" type="password" autocomplete="new-password" maxlength="4096"></label>
+    <div class="actions"><button class="btn" id="connection-key-save">Replace key</button></div>
   </div>
 </div></div>
 
@@ -367,6 +378,15 @@ export const managerPage = String.raw`<!doctype html>
   <div class="modal-body"><div class="pagestatus" id="page-status"><p id="page-loading" role="status"></p><p id="page-notice" role="alert"></p><button class="btn" id="page-retry" hidden>Try again</button></div><iframe class="pageframe" id="page-frame" title="Agent settings" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-popups-to-escape-sandbox"></iframe></div>
 </div></div>
 
+<div class="modal" id="dlg-authoring" role="dialog" aria-modal="true" aria-labelledby="authoring-title" hidden><div class="modal-card">
+  <div class="modal-head"><div><b id="authoring-title">Document assistant</b><span class="subline" id="authoring-sub"></span></div><button class="modal-close" id="authoring-close" aria-label="Close document assistant">×</button></div>
+  <div class="modal-body"><div id="authoring-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
+    <p id="authoring-copy">Install the Document Authoring Assistant on this Agent and bind its existing Worker to this profile’s material area. Preparation downloads the pinned local checker once for this computer; Java 25 is required. Your Agent uses its configured model.</p>
+    <label class="checkline"><input id="authoring-local-read" type="checkbox" checked> Allow local material delivery to this Agent</label><label class="checkline"><input id="authoring-off-machine" type="checkbox"> Allow document text to reach a remote model or an authorized Gateway proxy</label>
+    <div class="actions"><button class="btn" id="authoring-prepare">Prepare local assistant</button><button id="authoring-review-open">Review checked draft</button></div>
+    <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
+  </div>
+</div></div>
 <script>
 const $=id=>document.getElementById(id), key=new URLSearchParams(location.search).get('k')||'';
 const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -379,7 +399,7 @@ let state={instances:[],device:{state:'none'},legacyInstall:null},selected='',no
    on a picture that may be minutes old is worse than a control that says why it is waiting. */
 let offline='',pollFails=0;
 /* The exact (Agent here, cloud Agent) pair the replacement tick was given for. */
-let replaceFor='';
+let replaceFor='',authoringResult=null,authoringFor='',authoringScope='';
 const busy=new Set(),frames=new Map(),dialogs=[],lastMarkup={};
 const rowOf=id=>(state.instances||[]).find(r=>r.id===id)||null, sel=()=>rowOf(selected);
 /* A closed host reports no roles, so what a stopped Agent is *for* comes from its mode; a
@@ -458,6 +478,10 @@ function controlSpec(){
     'agent-readiness-action':['role:'+selected+':agent',Boolean(row)&&row.mode==='local_agent'&&!row.agent&&!row.orphaned&&!row.blocked],
     'worker-toggle':['role:'+selected+':worker',Boolean(row)&&hasRole(row,'worker')&&!row.orphaned&&(row.worker===true||!row.blocked)],
     'tools-open':[windowScope(selected),Boolean(row)],
+    'authoring-open':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned],
+    'authoring-prepare':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned],
+    'authoring-review-open':['authoring:'+selected,Boolean(row)&&row.paired&&!row.blocked&&!row.orphaned],
+    'authoring-save':['authoring:'+selected,Boolean(row)&&authoringResult&&String($('authoring-case').value||'')!==''&&String(authoringResult.resultId||'')!==''&&authoringResult.report?.compiled===true&&authoringResult.report?.examples?.total>0&&authoringResult.report?.examples?.passed===authoringResult.report?.examples?.total&&authoringResult.report?.citations?.total>0&&authoringResult.report?.citations?.verified===authoringResult.report?.citations?.total&&!(authoringResult.draft?.questions||[]).length ],
     'page-retry':[windowScope(pageEntry?.id||''),Boolean(pageEntry&&rowOf(pageEntry.id))],
     'open-setup':[windowScope(selected),Boolean(row)],
     'model-copy':['model:'+selected,Boolean(row)&&row.mode==='local_agent'&&!live&&modelSources(row).length>0],
@@ -519,6 +543,35 @@ function openModel(instanceId=''){
   fillModelFields(!instanceId||$('model-source').value==='default'?state.modelDefaults:row.model);
   say('model-notice','');
   if(dialogs.some(d=>d.id==='dlg-model'))render();else openDialog('dlg-model','model-close');
+}
+let connectionKeyTarget=null;
+const connectionKeyTargetValid=()=>{
+  const target=connectionKeyTarget,row=target&&rowOf(target.instanceId),device=state.device||{};
+  return Boolean(target&&row&&device.state==='linked'&&device.origin===target.origin&&(device.account||{}).id===target.accountId
+    &&row.agentId===target.agentId&&row.connectionId===target.connectionId&&!row.worker&&!row.blocked);
+};
+function openConnectionKey(){
+  const row=sel(),device=state.device||{};
+  if(!row||!row.paired||!row.connectionId||device.state!=='linked')return;
+  connectionKeyTarget={instanceId:row.id,origin:device.origin,accountId:(device.account||{}).id,agentId:row.agentId,connectionId:row.connectionId};
+  $('connection-key-value').value='';say('connection-key-notice','');openDialog('dlg-connection-key','connection-key-value');
+}
+function renderConnectionKey(){
+  const valid=connectionKeyTargetValid(),row=connectionKeyTarget&&rowOf(connectionKeyTarget.instanceId);
+  $('connection-key-sub').textContent=row?.name||'';
+  $('connection-key-blocked').hidden=valid;
+  $('connection-key-blocked').textContent=valid?'':'The account, Agent, Connection, or Worker state changed. Close and reopen this dialog.';
+  $('connection-key-value').disabled=!valid||busy.has('connection-key');$('connection-key-save').disabled=!valid||busy.has('connection-key');
+  if(!valid)$('connection-key-value').value='';
+}
+function saveConnectionKey(){
+  const target=connectionKeyTarget;if(!target||!connectionKeyTargetValid())return Promise.resolve();
+  return run('connection-key','connection-key-notice',async()=>{
+    if(connectionKeyTarget!==target||!connectionKeyTargetValid())throw Error('The account, Agent, Connection, or Worker state changed. Reopen this dialog.');
+    await api('/manager/instances/connection-key',{instanceId:target.instanceId,expectedOrigin:target.origin,expectedAccountId:target.accountId,
+      expectedAgentId:target.agentId,expectedConnectionId:target.connectionId,key:$('connection-key-value').value});
+    $('connection-key-value').value='';closeDialog('dlg-connection-key');say('details-notice','Connection key replaced on this computer.');
+  });
 }
 function renderModel(){
   if(!modelTarget)return;
@@ -630,8 +683,8 @@ function renderAgents(){
   }).join('');
   $('agents-empty').hidden=entries.length>0;
   $('agents-empty').textContent=linked
-    ?'No Agent is authorized for this computer. Create one in Console, then refresh from the account.'
-    :'Sign in to see the Agents this account authorizes.';
+    ?'No enabled Agents are available in this account. Create or enable one in Console, then refresh.'
+    :'Sign in to see this account’s enabled Agents.';
   if(markup===lastMarkup.agents)return;
   // Whoever had focus is on a node this replacement is about to remove, so the key is read
   // first and the same row is given focus back once the list exists again.
@@ -645,7 +698,7 @@ function renderAgents(){
     if(focused===id+'/'+agentId&&focused!=='/'&&node.focus&&$('rail').inert!==true)node.focus();
   }
 }
-/* First use of an authorized Agent on this computer. The target is captured when the dialog
+/* First use of an enabled Agent on this computer. The target is captured when the dialog
    opens and never re-chosen: a person picks the Agent once, in the list, and chooses only how
    this computer should run it. */
 let setupFor=null;const setupProfiles=new Map();
@@ -675,7 +728,7 @@ function renderSetup(){
   const known=setupAuthorized(agent);
   const reason=!agent?''
     :!linked?'This computer is not signed in to an account any more. Sign in again before setting up an Agent.'
-      :!known?'This Agent is no longer part of what this computer is authorized for. Refresh the account and choose again.':'';
+      :!known?'This Agent is no longer enabled in this account. Refresh Agents and choose again.':'';
   $('setup-blocked').hidden=reason==='';$('setup-blocked').textContent=reason;
   $('setup-form').hidden=!agent||reason!=='';
   const existing=agent?setupProfile(agent):null;
@@ -720,7 +773,7 @@ function renderAccount(){
   $('device-tag').textContent=device.deviceName?('This computer: '+device.deviceName):'';
   $('agent-summary').textContent=(device.agents||[]).length
     ?'Agents you may run here: '+device.agents.map(a=>a.name).join(', ')
-    :'No Agent is authorized for this computer.';
+    :'No enabled Agents are available in this account.';
   $('signout-state').textContent=device.signOut&&device.signOut.state==='incomplete'
     ?'Sign-out is incomplete at the '+device.signOut.step+' step. It is still signed in; retry uses the same revoke request.':'';
   $('unusable-teaching').textContent=device.teaching||'This authorization is no longer accepted by the account service.';
@@ -733,7 +786,7 @@ function profileReason(row){
   if(row.pendingAgentId)return 'Finishing setup for '+(row.pendingAgentName||row.pendingAgentId);
   if(!row.paired)return row.legacyImport?'Imported; not connected to an Agent yet':'Not connected to an Agent yet';
   if(row.origin!==origin||row.accountId!==accountId)return 'Connected under another account or Console address';
-  return 'Connected to '+(row.agentName||row.agentId)+', which this computer is not authorized for now';
+  return 'Connected to '+(row.agentName||row.agentId)+', which is not enabled in this account now';
 }
 function renderProfiles(){
   const legacy=state.legacyInstall,rows=looseProfiles();
@@ -777,8 +830,8 @@ function renderAttach(){
     :row.pendingAgentId?''
       :row.paired?'This Agent is already connected to '+(row.agentName||row.agentId||'a cloud Agent')
         +'. One cloud Agent runs in one Agent here; add another instead.'
-        :!linked?'Sign in first; the Agents you may use come from that authorization.'
-          :!offers?'No Agent is authorized for this computer. Approve one in Console, then refresh it from the account dialog.':'';
+          :!linked?'Sign in first; this account’s enabled Agents appear here.'
+          :!offers?'No enabled Agents are available in this account. Create or enable one in Console, then refresh it here.':'';
   $('attach-blocked').hidden=reason==='';
   $('attach-blocked').textContent=reason;
   $('attach-form').hidden=!row||Boolean(row.pendingAgentId)||reason!=='';
@@ -808,6 +861,8 @@ function renderDetails(){
     +((legacy.credentialsLeftInPlace||[]).length?'. Its original credentials ('+legacy.credentialsLeftInPlace.join(', ')
       +') stayed with that installation and are not covered by signing this computer out.':'.');
   $('model-row').hidden=!row||row.mode!=='local_agent';
+  $('connection-key-open').hidden=!row||!row.paired||!row.connectionId;
+  $('connection-key-open').disabled=Boolean(row?.worker)||Boolean(row?.blocked);
   $('agent-model-summary').textContent=row?.model
     ?(row.model.source==='default'?'Using the default model. ':'')+modelDescription(row.model)
       +(row.model.restartRequired?' Restart this Agent to apply the updated default.':'')
@@ -840,7 +895,7 @@ function renderCenter(){
 }
 function renderWorker(){
   const row=sel();
-  $('worker-toggle').hidden=!row;$('tools-open').hidden=!row;
+  $('worker-toggle').hidden=!row;$('tools-open').hidden=!row;$('authoring-open').hidden=!row;
   if(!row){
     $('worker-pill').textContent='No Agent selected';$('worker-pill').className='pill';
     $('worker-note').textContent='Choose an Agent to see the Worker on this computer.';
@@ -864,6 +919,26 @@ function renderWorker(){
   $('worker-address').textContent=row.open&&row.hostPort?('127.0.0.1:'+row.hostPort):'Not open';
   $('worker-dir').textContent=row.directory||'—';
 }
+function renderAuthoring(){
+  const current=sel();if(authoringFor!==selected||authoringScope!==(current?.origin||'')+'/'+(current?.accountId||''))authoringResult=null;
+  const row=sel();$('authoring-sub').textContent=row?.name||'';
+  const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
+  $('authoring-publication').hidden=!(ready&&authoringResult.savedPackId);
+  if(ready&&authoringResult.savedPackId)$('authoring-publication').href=new URL('/console/#/studio?localAuthoringDraft='+encodeURIComponent(authoringResult.savedPackId)+'&publish=1',current.origin).href;else $('authoring-publication').removeAttribute('href');
+  if(!ready)return;
+  const report=authoringResult.report||{},checks=[report.compiled===true?'Compiled':'Not compiled','Examples: '+(report.examples?.passed??0)+'/'+(report.examples?.total??0),'Citations: '+(report.citations?.verified??0)+'/'+(report.citations?.total??0)],questions=Array.isArray(authoringResult.draft?.questions)?authoringResult.draft.questions:[];
+  const program=authoringResult.draft?.program||{},rules=Array.isArray(program.rules)?program.rules:[],citations=Array.isArray(authoringResult.draft?.citations)?authoringResult.draft.citations:[],examples=Array.isArray(authoringResult.draft?.examples)?authoringResult.draft.examples:[];
+  $('authoring-result').innerHTML='<p><b>'+esc(program.title||program.id||'Checked draft')+'</b></p>'
+    +(rules.length?'<h4>Rules</h4><ul>'+rules.map(r=>'<li>'+esc(r.label||r.id||JSON.stringify(r))+'</li>').join('')+'</ul>':'<p class="notice error">No draft rules were reported.</p>')
+    +'<p class="sub">'+citations.length+' citation(s) · '+examples.length+' example(s)</p>'
+    +(checks.length?'<h4>Checks</h4><ul>'+checks.map(c=>'<li>'+esc(typeof c==='string'?c:(c.title||c.teaching||JSON.stringify(c)))+'</li>').join('')+'</ul>':'<p class="sub">No checks were reported.</p>')
+    +(questions.length?'<h4>Questions</h4><ul>'+questions.map(q=>'<li>'+esc(typeof q==='string'?q:(q.question||q.title||JSON.stringify(q)))+'</li>').join('')+'</ul>':'')
+    +(!report.compiled||questions.length?'<p class="notice error">Resolve failed checks and questions in the local conversation before saving.</p>':'');
+  const prior=$('authoring-case').value,cases=Array.isArray(authoringResult.cases)?authoringResult.cases:[];$('authoring-case-row').hidden=cases.length===0;
+  $('authoring-case').innerHTML=cases.map(c=>'<option value="'+esc(c.caseId||c.id||'')+'">'+esc(c.title||c.caseId||c.id)+'</option>').join('');
+  if(cases.some(c=>(c.caseId||c.id||'')===prior))$('authoring-case').value=prior;
+  if(cases.length===0)$('authoring-result').innerHTML+='<p class="notice error">Continue the local conversation until it completes a certified Case for this document.</p>';
+}
 /* What the centre says about a frame is what the frame has actually done: asked for, arrived,
    taken too long, or failed. A frame that was appended and never loaded is a blank rectangle,
    and calling that "open" — or worse, "closed" — is a guess this page has no business making. */
@@ -876,8 +951,8 @@ function renderStage(){
   const entries=directory();
   if(!row&&entries.length===0&&(state.device||{}).state!=='linked'){title='Welcome to Rulith';
     copy='Sign in with your browser to see the Agents your account authorizes for this computer.';label='Account';mode='account';}
-  else if(!row&&entries.length===0){title='No Agent is authorized yet';
-    copy='Agents are created in Console. Once one is approved for this computer, it appears here.';label='Account';mode='account';}
+  else if(!row&&entries.length===0){title='No enabled Agents yet';
+    copy='Agents are created and enabled in Console. Refresh this account when one is ready.';label='Account';mode='account';}
   else if(!row){title='Choose an Agent';copy='Your Agents are listed beside this conversation.';label='Show Agents';mode='rail';}
   else if(frame&&frame.failed){title=row.name;copy=frame.failed;label='Try again';mode='retry';}
   else if(frame&&frame.loaded){note.hidden=true;action.hidden=true;showFrames();return;}
@@ -919,7 +994,7 @@ function render(next){
   if(signedIn){signInPollError='';say('account-notice','');closeDialog('dlg-account');say('notice','Signed in as '+(state.device.account?.name||'your account')+'.');}
   if(selected&&!rowOf(selected))selected='';
   pruneFrames();renderAgents();renderCenter();renderWorker();renderStage();
-  renderAccount();renderProfiles();renderSetup();renderAttach();renderDetails();renderModel();applyControls();
+  renderAccount();renderProfiles();renderSetup();renderAttach();renderDetails();renderModel();renderConnectionKey();renderAuthoring();applyControls();
   if(pageEntry&&!rowOf(pageEntry.id)){$('page-status').hidden=false;$('page-loading').hidden=false;$('page-loading').textContent='This Agent is no longer available. Close this panel and select another Agent.';$('page-retry').disabled=true;}
 }
 
@@ -1042,6 +1117,7 @@ function closeDialog(id){
   const at=dialogs.map(d=>d.id).indexOf(id);if(at<0)return;
   const entry=dialogs.splice(at,1)[0];$(id).hidden=true;
   if(id==='dlg-model'){$('model-key').value='';modelTarget=null;modelOriginal=null;}
+  if(id==='dlg-connection-key'){$('connection-key-value').value='';connectionKeyTarget=null;}
   // A settings page left loaded in a closed dialog keeps polling its own host. It is let go,
   // and reopened fresh next time, which is also what an operator expects of a closed window.
   if(id==='dlg-page'){if(pageEntry?.timer)clearTimeout(pageEntry.timer);pageEntry=null;$('page-frame').src='about:blank';$('page-tab').href='';$('page-tab').hidden=true;}
@@ -1068,7 +1144,7 @@ if(typeof window.matchMedia==='function'){
   if(query.addEventListener)query.addEventListener('change',()=>applyShell());
   else if(query.addListener)query.addListener(()=>applyShell());
 }
-for(const pair of [['dlg-account','account-close'],['dlg-setup','setup-close'],['dlg-attach','attach-close'],['dlg-details','details-close'],['dlg-model','model-close'],['dlg-page','page-close']]){
+for(const pair of [['dlg-account','account-close'],['dlg-setup','setup-close'],['dlg-attach','attach-close'],['dlg-details','details-close'],['dlg-connection-key','connection-key-close'],['dlg-model','model-close'],['dlg-page','page-close'],['dlg-authoring','authoring-close']]){
   $(pair[1]).onclick=()=>closeDialog(pair[0]);
   $(pair[0]).onclick=event=>{if(event.target===$(pair[0]))closeDialog(pair[0]);};
 }
@@ -1092,6 +1168,8 @@ $('account-open').onclick=()=>openDialog('dlg-account','account-close');
 $('details-open').onclick=()=>openDialog('dlg-details','details-close');
 $('default-model-open').onclick=()=>openModel();
 $('agent-model-open').onclick=()=>openModel(selected);
+$('connection-key-open').onclick=openConnectionKey;
+$('connection-key-save').onclick=saveConnectionKey;
 $('model-edit-default').onclick=()=>openModel();
 $('model-source').onchange=()=>{
   const row=modelTarget?.instanceId?rowOf(modelTarget.instanceId):null;
@@ -1138,7 +1216,11 @@ function signIn(){
   });
 }
 $('sign-in').onclick=signIn;
-$('refresh-account').onclick=()=>run('account','account-notice',()=>api('/manager/device/refresh',{}));
+$('refresh-account').onclick=()=>run('account','account-notice',()=>api('/manager/device/refresh',{}).then(v=>{
+  const added=(v.addedAgents||[]).map(a=>a.name||a.id), removed=(v.removedAgents||[]).map(a=>a.name||a.id), stopped=(v.stoppedInstances||[]).map(i=>i.name), stopping=(v.stoppingInstances||[]).map(i=>i.name);
+  const parts=[];if(added.length)parts.push('Added: '+added.join(', ')+'.');if(removed.length)parts.push('No longer enabled: '+removed.join(', ')+'.');if(stopped.length)parts.push('Stopped on this computer: '+stopped.join(', ')+'.');if(stopping.length)parts.push('Stopping: '+stopping.join(', ')+'.');
+  say('account-notice',parts.join(' ')||'Enabled Agent list is up to date.',stopping.length>0);
+}));
 $('start-over').onclick=()=>run('account','account-notice',()=>api(state.device?.state==='approved'?'/manager/device/signout':'/manager/device/forget',{}).then(v=>{
   say('account-notice',v.state==='incomplete'?(v.teaching||'Some Agents are still running.')
     :v.revoke==='unconfirmed'?(v.teaching||'Cleared on this computer; the revocation was not confirmed.')
@@ -1150,7 +1232,7 @@ $('sign-out').onclick=()=>run('account','account-notice',()=>api('/manager/devic
 /* A new Agent cannot work until a cloud Agent is connected to it, so the next step is offered
    rather than left to be found. Its workspace is not opened: there is nothing in it yet, and
    opening one would start a host for an Agent that cannot run. */
-/* Setting an authorized Agent up here, in one press: a profile named after the Agent it is
+/* Setting an enabled Agent up here, in one press: a profile named after the Agent it is
    for, then the ordinary pairing against that exact Agent. Never a replacement — first use
    mints this profile's own credential, and replacing an existing one stays the deliberate,
    separately consented step it always was.
@@ -1161,7 +1243,7 @@ $('sign-out').onclick=()=>run('account','account-notice',()=>api('/manager/devic
 $('setup-start').onclick=()=>{
   const agent=setupFor;if(!agent)return;
   run('setup:'+agent.id,'setup-notice',async()=>{
-    if(!setupAuthorized(agent))throw Error('The account or Agent authorization changed. Close this panel and choose the Agent again.');
+    if(!setupAuthorized(agent))throw Error('The account changed or this Agent is no longer enabled. Close this panel and choose again.');
     const existing=setupProfile(agent);
     let id=existing?existing.id:'';
     if(id===''){
@@ -1170,7 +1252,7 @@ $('setup-start').onclick=()=>{
       if(id==='')throw Error('This computer did not name the profile it created for that Agent.');
       setupProfiles.set(setupIdentity(agent),id);
     }
-    if(!setupAuthorized(agent))throw Error('The account or Agent authorization changed. The unconnected profile remains in this computer settings.');
+    if(!setupAuthorized(agent))throw Error('The account changed or this Agent is no longer enabled. The unconnected profile remains in this computer settings.');
     await api('/manager/instances/pair',{instanceId:id,agentId:agent.id,replaceAgentToken:false});
     if(!rowOf(id))throw Error('That profile is no longer on this computer.');
     if(setupFor!==agent||$('dlg-setup').hidden)return;
@@ -1225,6 +1307,11 @@ $('agent-readiness-action').onclick=()=>$('agent-toggle').onclick();
    including while that rail covers the conversation on a phone. */
 $('worker-toggle').onclick=()=>{const id=selected,row=rowOf(id);if(row)controlRole(id,'worker',row.worker?'stop':'start','worker-notice');};
 $('tools-open').onclick=()=>openSettings(selected,'/worker-tools','worker-notice');
+$('authoring-open').onclick=()=>{const row=sel();authoringFor=selected;authoringScope=(row?.origin||'')+'/'+(row?.accountId||'');authoringResult=null;say('authoring-notice','');openDialog('dlg-authoring','authoring-close');};
+$('authoring-prepare').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead:$('authoring-local-read').checked,offMachine:$('authoring-off-machine').checked}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
+$('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice','Read and verified the immutable local check result.');}));};
+$('authoring-case').onchange=()=>applyControls();
+$('authoring-save').onclick=()=>{const id=selected,v=authoringResult;if(!v)return;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/save',{instanceId:id,resultId:v.resultId,caseId:$('authoring-case').value}).then(saved=>{if(!saved.entry||!saved.packId||!saved.caseId)throw Error('The private-draft receipt was incomplete.');if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}}));};
 $('open-setup').onclick=()=>openSettings(selected,'/setup','details-notice');
 
 /* A poll refreshes the state and nothing else: it never replaces a field being typed in, a

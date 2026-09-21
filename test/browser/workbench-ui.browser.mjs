@@ -111,6 +111,47 @@ const openAgent = async (page, id) => {
   return page.frames().find((frame) => frame.url() === src)
 }
 
+arm('local authoring review shows the checked program and keeps Save disabled for questions',
+  { width: 1400, height: 900 }, async ({ page }) => {
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.getByText('Local policy', { exact: true }).waitFor()
+    await page.getByText('Check invoices', { exact: true }).waitFor()
+    await page.getByText('Which exception applies?', { exact: true }).waitFor()
+    await page.getByText('Resolve failed checks and questions in the local conversation before saving.', { exact: true }).waitFor()
+    assert.equal(await page.locator('#authoring-save').isDisabled(), true)
+    await page.selectOption('#authoring-case', 'CASE-SECOND')
+    await page.waitForTimeout(3200)
+    assert.equal(await page.inputValue('#authoring-case'), 'CASE-SECOND', 'a refresh preserves the chosen certified Case')
+    await page.click('#authoring-close')
+    await openAgent(page, 'inst-2')
+    await page.click('#authoring-open')
+    assert.equal(await page.locator('#authoring-review').isHidden(), true)
+  })
+
+arm('saving a locally checked draft exposes only the scoped Console publication link',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    fixture.control.authoringQuestions = false
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.getByText('Local policy', { exact: true }).waitFor()
+    await page.selectOption('#authoring-case', 'CASE-SECOND')
+    await page.click('#authoring-save')
+    const publication = page.locator('#authoring-publication')
+    await publication.waitFor({ state: 'visible' })
+    assert.equal(await publication.getAttribute('href'), 'https://console.example/console/#/studio?localAuthoringDraft=local_policy&publish=1')
+    assert.equal(await publication.getAttribute('target'), '_blank')
+    assert.equal(page.url(), fixture.managerUrl, 'saving does not navigate to or publish through Console')
+    assert.deepEqual(fixture.control.authoringSaves, [{ instanceId: 'inst-1', resultId: 'res_' + '1'.repeat(32), caseId: 'CASE-SECOND' }])
+    await page.click('#authoring-close')
+    await openAgent(page, 'inst-2')
+    await page.click('#authoring-open')
+    assert.equal(await publication.isHidden(), true, 'switching Agent clears the saved publication receipt')
+    assert.equal(await publication.getAttribute('href'), null)
+  })
+
 arm('embedded runtime details never expose a second set of role controls',
   { width: 1400, height: 900 }, async ({ page }) => {
     const child = await openAgent(page, 'inst-1')

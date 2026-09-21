@@ -231,7 +231,7 @@ export function createLocalHost({
   configFile, config, roles, port = 7790, key = randomUUID().replace(/-/g, ''),
   startConfirmMs = START_CONFIRM_MS, autoStart = true,
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
-  materialRoot, onModelConfigured, modelOverlay,
+  materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -399,9 +399,14 @@ export function createLocalHost({
   const setup = createSetupService({ configFile, getConfig: () => config,
     effectiveEnv: () => effectiveChildEnv(baseEnv(), config.worker?.env ?? {}),
     agentCredentialConfigured: () => !!agentEnvironment().RULITH_TOKEN,
-    stopped: () => !running('agent') && !running('worker'), agentStopped: () => !running('agent'), mcpServices, toolManagement,
+    stopped: () => !running('agent') && !running('worker'), agentStopped: () => !running('agent'), workerStopped: () => !running('worker'), mcpServices, toolManagement,
     approvePairing: setupApprover,
     onModelConfigured: async () => { activeModelOverlay = undefined; return await onModelConfigured?.() },
+    // A stopped Worker leaves its last launch environment for diagnostics. It must not remain
+    // the source of truth after a key rotation, or status could describe a credential that the
+    // next Worker will no longer receive.
+    onConnectionKeyConfigured: () => { components.worker.roleEnv = undefined },
+    authorizeConnectionKey,
     saveConfig: next => {
       const normalized = normalizeLocalConfig(next)
       saveConfig(configFile, normalized)
@@ -731,7 +736,8 @@ export function createLocalHost({
         const body = await readJson(req)
         if (mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for tool configuration to finish.' })
         const operation = { '/setup/pair/start': setup.start, '/setup/pair/poll': setup.poll, '/setup/pair/cancel': setup.cancel,
-          '/setup/model': setup.model, '/setup/example': setup.example, '/setup/resources': setup.resources }[path]
+          '/setup/model': setup.model, '/setup/connection-key': setup.connectionKey,
+          '/setup/example': setup.example, '/setup/resources': setup.resources }[path]
         if (!operation) return void json(res, 404, { ok: false, teaching: 'Setup step not found.' })
         const refused = await permitted({ kind: 'setup', path }, req)
         if (refused !== null) return void json(res, 409, { ok: false, teaching: refused })

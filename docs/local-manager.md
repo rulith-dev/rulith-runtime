@@ -6,7 +6,7 @@ browser access key; keep it on this computer.
 
 ## Three columns
 
-- **Agents, left:** the Agents this device is authorized to use. Choose one to enter
+- **Agents, left:** this account's currently enabled Agents. Choose one to enter
   its workspace or set it up on this computer for the first time. Each local profile
   keeps its own model settings, credentials, tools, workspace and pending-call recovery records.
 - **Conversation, center:** the original conversation, Trace and composer. Changing
@@ -27,14 +27,15 @@ neutral gray style as Console.
 1. Open the account menu at the bottom left and choose **Sign in**. Rulith opens the browser sign-in page.
    A different Console address and computer name are optional settings under **Advanced local settings**.
 2. The browser shows a dedicated **Sign in to Rulith** page, without Console navigation.
-   Sign in and approve the exact Agents this computer may use. The link carries
+   Sign in to connect this computer to the account. Rulith then shows every Agent currently
+   enabled in that account; no per-Agent selection is retained on this computer. The link carries
    the authorization request; no code needs to be copied or typed. Return to Rulith:
    your Agents appear automatically. No cloud account cookie reaches the local runtime.
    While the sign-in request is valid, Rulith collects the authorization even while its tab is in the background. After
    delivery is acknowledged, the sign-in tab closes when the browser permits it;
    otherwise it explains how to return. Account login alone does not start an Agent
    or authorize a tool.
-3. Choose an authorized Agent from the list. On first use, choose whether Rulith runs
+3. Choose an enabled Agent from the list. On first use, choose whether Rulith runs
    it here with an LLM or provides only a Worker for an existing MCP client.
 4. Confirm setup for that Agent. Replacing an existing Agent token requires explicit
    consent; listing, refreshing and ordinary switching never allocate profiles or reissue tokens.
@@ -43,6 +44,12 @@ neutral gray style as Console.
    name and API key. **Save** only saves; **Save and start Agent** explicitly starts that Agent.
    Existing MCP clients keep their own model configuration.
 6. Start the Worker when it is needed for tools. Tool and resource authorization remains in Console.
+
+Use **Refresh enabled Agents** in Account after Console changes the directory. The refresh adds
+newly enabled Agents and removes disabled ones. Profiles are kept, but a disabled Agent cannot
+start or make a new call; Rulith asks its running local roles to stop and reports any process
+that is still stopping. An account with no enabled Agents is still signed in and can be refreshed
+after an Agent is enabled in Console.
 
 One cloud Agent attaches to one profile in this workbench. Different profiles may
 share a display name but never Agent/Connection credentials or a mutable working directory. Device
@@ -76,8 +83,18 @@ choice, separate from leaving the password field empty.
 The workbench shares an installation, not an execution identity. Connections still belong
 to their Agents, and each Agent keeps its own Worker, tool permissions and working files.
 
+## Replace a Worker Connection key
+
+When Console rotates or restores a Connection key, open that Agent's settings and choose
+**Replace Connection key**. Stop its Worker, enter the replacement key, and Rulith verifies it
+against the currently attached Agent and Connection at that profile's Console origin before
+saving it atomically. The old key is not displayed or retained by the page. A key for another
+Agent, Connection, account, or Console address is refused; a remote verification error never
+echoes the entered key. Replacing this Worker credential does not change the Agent token, model,
+conversation, tools, or other profiles.
+
 The local manager is a limited client of the platform control plane. It uses dedicated
-device/manager endpoints for the authorized Agent directory, pairing and local role
+device/manager endpoints for the current enabled-Agent directory, pairing and local role
 controls. It does not use `/mcp` or `/work` for management. Those remain the Agent's
 business interface and the Worker's execution interface. Creating cloud Agents,
 installing capabilities, governing resource access, publishing and billing remain in Console.

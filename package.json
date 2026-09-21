@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "type": "module",
   "description": "Rulith: a local multi-agent workbench with conversations and governed Worker tools",
   "bin": {
@@ -23,6 +23,7 @@
     "protocol/worker-material-sha256.txt",
     "docs/local-manager.md",
     "docs/local-materials.md",
+    "docs/local-authoring.md",
     "docs/local-mcp-setup.md",
     "docs/local-setup.md",
     "examples/verified-calculation/README.md",

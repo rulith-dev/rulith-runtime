@@ -109,8 +109,8 @@ test('the shell is the Agent list and the stage, and the third column belongs to
   const rail = managerPage.slice(managerPage.indexOf('<aside class="rail"'), managerPage.indexOf('<main class="center"'))
   for (const id of ['railsel', 'agent-toggle', 'details-open', 'worker-toggle', 'tools-open', 'account-open'])
     assert.ok(rail.includes('id="' + id + '"'), id + ' belongs in the Agent rail, beside the Agent it acts on')
-  assert.equal((managerPage.match(/role="dialog" aria-modal="true"/g) ?? []).length, 6,
-    'account, add, connect, model, settings and the settings page are dialogs, not a homepage')
+  assert.equal((managerPage.match(/role="dialog" aria-modal="true"/g) ?? []).length, 8,
+    'account, add, connect, Connection key, model, settings, document assistant and the settings page are dialogs, not a homepage')
 })
 
 test('on a desk the shell adds no second activity header', () => {
@@ -170,7 +170,7 @@ test('the directory is empty without a grant, and never claims a remembered one 
   const signedOut = await openPage(stateOf({ instances: [configuredOf('agent-alpha', { id: 'a' })] }))
   assert.equal(signedOut.$('agents').innerHTML, '', 'a list of Agents is an authorization, not a memory')
   assert.equal(signedOut.$('agents-empty').hidden, false)
-  assert.match(signedOut.$('agents-empty').textContent, /Sign in to see the Agents/)
+  assert.match(signedOut.$('agents-empty').textContent, /Sign in to see this account’s enabled Agents/)
 
   // A grant that the account service no longer accepts cannot go on naming Agents either,
   // and the profile stays reachable from the account dialog instead.
@@ -185,8 +185,8 @@ test('the directory is empty without a grant, and never claims a remembered one 
 
   const linked = await openPage(stateOf({ device: linkedDevice([]), instances: [] }))
   assert.equal(linked.$('agents-empty').hidden, false)
-  assert.match(linked.$('agents-empty').textContent, /No Agent is authorized/)
-  assert.match(linked.$('stage-copy').textContent, /created in Console/)
+  assert.match(linked.$('agents-empty').textContent, /No enabled Agents are available/)
+  assert.match(linked.$('stage-copy').textContent, /created and enabled in Console/)
 })
 
 test('a profile from another account or another Console is never shown as one of these Agents', async () => {
@@ -207,7 +207,7 @@ test('a profile from another account or another Console is never shown as one of
 
   const profiles = page.$('profiles').innerHTML
   for (const [id, why] of [['other-account', /another account or Console/], ['other-console', /another account or Console/],
-    ['unpaired', /Not connected to an Agent/], ['stale', /not authorized for now/]]) {
+    ['unpaired', /Not connected to an Agent/], ['stale', /not enabled in this account now/]]) {
     assert.ok(profiles.includes('data-profile="' + id + '"'), id + ' is not recoverable anywhere')
     assert.match(profiles, why, id + ' does not say why it is here')
   }
@@ -693,7 +693,7 @@ test('first use is refused when the grant no longer names that Agent', async () 
   page.render(stateOf({ device: linkedDevice([{ id: 'agent-beta', name: 'Beta' }]), instances: [] }))
   assert.equal(page.$('setup-start').disabled, true)
   assert.equal(page.$('setup-form').hidden, true)
-  assert.match(page.$('setup-blocked').textContent, /no longer part of what this computer is authorized for/)
+  assert.match(page.$('setup-blocked').textContent, /no longer enabled in this account/)
 
   page.render(stateOf({ device: deviceOf({ state: 'revoked', origin: ORIGIN, agents: [{ id: 'agent-alpha', name: 'Alpha' }] }), instances: [] }))
   assert.equal(page.$('setup-start').disabled, true)
@@ -723,7 +723,7 @@ test('first-use target remains pinned when the account changes during creation',
   await page.choose('agent-alpha')
   await page.$('setup-start').onclick(); await settle()
   assert.equal(page.calls.some(call => call.path === '/manager/instances/pair'), false)
-  assert.match(page.$('setup-notice').textContent, /authorization changed/)
+  assert.match(page.$('setup-notice').textContent, /account changed or this Agent is no longer enabled/)
   assert.equal(page.$('setup-start').disabled, true)
 })
 

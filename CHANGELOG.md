@@ -2,6 +2,23 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.3 - 2026-09-22
+
+- Add the local Document assistant workflow with the ordinary `official_authoring@2.0.0`
+  capability. The selected Agent uses its own model; the Worker reads UTF-8 text/Markdown
+  material and runs pinned Java 25 authoring/kernel checkers on this computer.
+- Review immutable checked drafts locally and explicitly save them to the account's private
+  authoring library. The control plane verifies the matching certified Case, material and
+  proposal; this does not publish a Release or certify business meaning.
+
+- Synchronize the signed-in account's full current enabled-Agent directory. Refresh reports
+  newly enabled and disabled Agents, and safely stops local roles for an Agent that was disabled;
+  accounts with no enabled Agents remain signed in. Existing profiles, model defaults,
+  conversations and Worker isolation remain separate.
+- Add **Replace Connection key** for an attached Worker's existing Connection. It requires a
+  stopped Worker, verifies the replacement at the fixed Console origin and Agent/Connection
+  identity before an atomic local save, and never returns the submitted or prior key.
+
 ## 0.8.2 - 2026-09-21
 
 - Configure a default model from the local account menu and optionally override it

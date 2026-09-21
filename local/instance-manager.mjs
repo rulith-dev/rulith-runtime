@@ -491,7 +491,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       return `Instance ${row.name} was attached to a different account or Console address than the one signed in now. Attach it again before using it.`
     }
     if (!grant.agents.some((agent) => agent.id === attached)) {
-      return `Agent ${row.agentName || attached} is no longer part of what this device is authorized for. Review it in Console, then attach this instance again.`
+      return `Agent ${row.agentName || attached} is no longer enabled in this account. Refresh Agents after enabling it in Console, then attach this instance again.`
     }
     return null
   }
@@ -674,6 +674,17 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       protectedPaths: [registry.root],
       onChildChange: (children) => recordRuntime(id, children),
       onModelConfigured: () => registry.patchInstance(id, () => ({ modelSource: 'custom' })),
+      authorizeConnectionKey: async ({ expectedOrigin, expectedAccountId, expectedAgentId, expectedConnectionId }) => {
+        const current = record(id), grant = device.status()
+        if (text(expectedOrigin) !== text(grant.origin) || text(expectedAccountId) !== text(grant.account?.id)
+          || current.origin !== expectedOrigin || current.accountId !== expectedAccountId
+          || current.agentId !== expectedAgentId || current.connectionId !== expectedConnectionId) {
+          throw new Error('The account, Agent, or Connection changed while the replacement key was being verified. Nothing was saved.')
+        }
+        const refusal = grantRefusal(id, { requirePaired: true, grant, row: current })
+        if (refusal !== null) throw new Error('The account or Agent is no longer available for this Connection. Nothing was saved.')
+        if (runningRoles(id).includes('worker')) throw new Error('Worker started while the replacement key was being verified. Nothing was saved.')
+      },
       modelOverlay: modelSource(row) === 'default' ? {
         RULITH_MODEL_URL: text(inherited?.url), RULITH_MODEL: text(inherited?.name),
         RULITH_MODEL_KEY: text(inherited?.key), RULITH_MODEL_THINKING: inherited?.thinking === 'enabled' ? 'enabled' : '',
@@ -862,6 +873,12 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const status = live?.host.status()
       const model = publicModel(row, grant)
       const currentDefault = modelSource(row) === 'default' ? defaultFor(row, grant) : undefined
+      const worker = loadInstanceConfig(resolve(row.directory)).worker?.env ?? {}
+      const manifest = readJson(text(worker.RULITH_TOOLS_FILE), { tools: {} })
+      const toolDescriptors = Object.entries(manifest?.tools ?? {}).map(([id, value]) => ({
+        id, title: text(value?.title) || id, sourceTypes: Array.isArray(value?.sourceTypes) ? value.sourceTypes : [],
+        digest: text(value?.digest),
+      }))
       return {
         id: row.id, name: row.name, mode: row.mode, directory: row.directory,
         createdAt: row.createdAt ?? '', importedFrom: row.importedFrom ?? '',
@@ -887,11 +904,34 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         runningAgentId: live === undefined ? '' : String(live.host.agentId ?? ''),
         hostPort: live === undefined ? 0 : live.host.port, hostGeneration: live?.hostGeneration ?? '', servePort: live?.servePort ?? row.servePort ?? 0,
         signedOutAt: row.signedOutAt ?? '',
+        // Attachments and immutable checked results are the profile's material store, never the
+        // Worker workspace (which is mutable tool scratch space).
+        authoring: { materialRoot: join(resolve(row.directory), 'materials'), toolDescriptors },
       }
       })
     },
 
     modelDefaults: () => defaultView(),
+
+    /** Refresh the enabled account directory, then stop profiles whose Agent was disabled.
+     * The refresh is not an authorization expansion: it records the service's current
+     * directory, and a removed Agent is stopped through the same observed-stop path as
+     * sign-out before this method reports it stopped. */
+    refreshDevice: () => admit(async () => {
+      const before = device.status()
+      const refreshed = await device.refresh()
+      const beforeIds = new Set((before.agents ?? []).map(agent => agent.id))
+      const afterIds = new Set((refreshed.agents ?? []).map(agent => agent.id))
+      const addedAgents = (refreshed.agents ?? []).filter(agent => !beforeIds.has(agent.id))
+      const removedAgents = (before.agents ?? []).filter(agent => !afterIds.has(agent.id))
+      const stopped = [], stopping = []
+      for (const row of registry.read().instances) {
+        if (!row.agentId || row.origin !== refreshed.origin || row.accountId !== String(refreshed.account?.id ?? '') || afterIds.has(row.agentId)) continue
+        const result = await manager.stop(row.id)
+        ;(result.stopped ? stopped : stopping).push({ id: row.id, name: row.name, results: result.results })
+      }
+      return { addedAgents, removedAgents, stoppedInstances: stopped, stoppingInstances: stopping }
+    }),
 
     setDefaultModel: (body = {}) => admit(async () => {
       const scope = assertExpectedScope(body)
@@ -915,6 +955,41 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       return { modelDefaults: defaultView() }
     }),
+
+    /**
+     * Replace only this profile's Worker Connection key.
+     *
+     * The manager binds the request to the account page that opened it and to the profile's
+     * already-issued Agent/Connection pair. The instance host then proves the new key to that
+     * same Work origin before its atomic config write. No secret crosses the registry or a
+     * status response, and a key for another Connection cannot become this Worker's key.
+     */
+    setConnectionKey: (id, body = {}) => admit(() => lifecycle(id, async () => {
+      const scope = assertExpectedScope(body)
+      const row = record(id)
+      assertRowScope(row, scope)
+      const agentId = text(body.expectedAgentId), connectionId = text(body.expectedConnectionId)
+      if (!agentId || !connectionId || row.agentId !== agentId || row.connectionId !== connectionId) {
+        throw new Error('The Agent or Connection changed. Reopen its details before replacing the Connection key.')
+      }
+      const refusal = grantRefusal(id, { requirePaired: true, grant: scope.grant, row })
+      if (refusal !== null) throw new Error(refusal)
+      if (runningRoles(id).includes('worker')) throw new Error(`Instance ${row.name} is running its Worker. Stop Worker before replacing its Connection key.`)
+      const key = text(body.key)
+      if (key.trim() === '') throw new Error('Enter the replacement Connection key.')
+      const { host } = await ensureHostLocked(id)
+      const answer = await localCall(host, '/setup/connection-key', { expectedOrigin: scope.origin, expectedAccountId: scope.accountId,
+        expectedAgentId: agentId, expectedConnectionId: connectionId, key })
+      if (answer.status !== 200 || answer.body.ok === false) {
+        // A hostile Work service must not reflect a submitted secret through its teaching text
+        // into this manager response.
+        throw new Error(`Instance ${row.name} could not verify the replacement Connection key. Nothing was saved.`)
+      }
+      if (text(answer.body.agentId) !== agentId || text(answer.body.connectionId) !== connectionId) {
+        throw new Error('The replacement key verification did not confirm this Agent and Connection.')
+      }
+      return { instanceId: id, agentId, connectionId, keyConfigured: true }
+    })),
 
     setInstanceModel: (id, body = {}) => admit(() => lifecycle(id, async () => {
       const scope = assertExpectedScope(body)
@@ -1148,7 +1223,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     closeHost: (id, options) => lifecycle(id, () => closeHostLocked(id, options)),
 
     /**
-     * Attach one instance to one Agent from this device's authorized set.
+     * Attach one instance to one currently enabled Agent from this account.
      *
      * The ordinary pairing runs unchanged — a fresh per-instance proof and key, the same
      * `/local-setup` start, poll and acknowledge — and the device grant only *approves* it.
@@ -1160,7 +1235,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       if (grant.state !== 'linked') throw new Error('Sign in to a Rulith account from the manager before attaching an Agent.')
       const chosen = text(agentId).trim()
       const known = (grant.agents ?? []).find((row) => row.id === chosen)
-      if (known === undefined) throw new Error('Choose one of the Agents this device is authorized for.')
+      if (known === undefined) throw new Error('Choose one of the enabled Agents in this account. Refresh Agents if Console changed it.')
       const accountId = text(grant.account?.id)
       const row = record(id)
       const config = loadInstanceConfig(resolve(row.directory))

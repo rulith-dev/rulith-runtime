@@ -1,6 +1,6 @@
 # Rulith
 
-Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in with your browser, approve which Agents this computer may use, and choose a default model for this account on this computer. Each Agent can use that default, override it, or run through an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
+Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in with your browser and choose a default model for this account on this computer. Local lists the account's enabled Agents; Refresh Agents includes newly created or re-enabled Agents. Each Agent can use the default model, override it, or run through an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
 
 Rulith is a local multi-agent working environment. One installation manages multiple
 fixed-identity Agents: choose an Agent on the left, work in its conversation in the
@@ -14,6 +14,9 @@ Worker material area. Adding a file supplies metadata; an authorized material-re
 Action is required before the model can read its contents. See
 [local attachments and material access](docs/local-materials.md) for setup and
 the separate permissions for local reading and off-machine disclosure.
+
+For document-to-capability work, select **Document assistant** for your Agent.
+See the [local document workflow](docs/local-authoring.md) for preparation, checks and private draft review.
 
 It is the canonical source for the downloadable local runtime. Hosted services may
 carry release copies of these files, but changes must originate here and retain the

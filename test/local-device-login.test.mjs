@@ -132,7 +132,7 @@ test('a device grant is delivered encrypted, survives a lost acknowledgement, an
     assert.equal(resumed.body.device.state, 'linked')
     assert.equal(gateway.requests.filter((row) => row.path === '/local-devices/poll').length, 2,
       'the resumed delivery acknowledges the token it already holds instead of fetching a replacement')
-    assert.deepEqual(resumed.body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-beta'])
+    assert.deepEqual(resumed.body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-beta', 'agent-gamma'])
 
     // What is on disk after delivery, and what a page can read.
     const stored = JSON.parse(readFileSync(join(root, 'device.json'), 'utf8'))
@@ -171,14 +171,31 @@ test('a second sign-in is refused while one is already signed in', async (t) => 
   })
 })
 
-test('authorized Agents are consent, re-read from the account rather than remembered', async (t) => {
+test('enabled Agents are synchronized from the account, not remembered from sign-in', async (t) => {
   await withManager(t, async ({ gateway, call }) => {
-    await signIn(gateway, call, ['agent-alpha', 'agent-beta'])
     gateway.disableAgent('agent-beta')
+    await signIn(gateway, call, ['agent-alpha'])
+    assert.deepEqual((await call('/manager/state')).body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-gamma'])
+    gateway.enableAgent('agent-beta')
     const refreshed = await call('/manager/device/refresh', {})
     assert.equal(refreshed.status, 200)
-    assert.deepEqual(refreshed.body.device.agents.map((row) => row.id), ['agent-alpha'],
-      'an Agent removed after the grant must stop being offered here')
+    assert.deepEqual(refreshed.body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-beta', 'agent-gamma'],
+      'an enabled Agent omitted during sign-in appears after refresh')
+    assert.deepEqual(refreshed.body.addedAgents.map((row) => row.id), ['agent-beta'])
+    gateway.disableAgent('agent-beta')
+    const disabled = await call('/manager/device/refresh', {})
+    assert.deepEqual(disabled.body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-gamma'])
+    assert.deepEqual(disabled.body.removedAgents.map((row) => row.id), ['agent-beta'])
+  })
+})
+
+test('a login remains linked when the account currently has no enabled Agents', async (t) => {
+  await withManager(t, async ({ gateway, call }) => {
+    for (const agent of ['agent-alpha', 'agent-beta', 'agent-gamma']) gateway.disableAgent(agent)
+    await signIn(gateway, call, ['agent-alpha'])
+    const state = await call('/manager/state')
+    assert.equal(state.body.device.state, 'linked')
+    assert.deepEqual(state.body.device.agents, [], 'an empty dynamic directory is not a failed login')
   })
 })
 

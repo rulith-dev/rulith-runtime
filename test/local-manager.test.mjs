@@ -325,8 +325,8 @@ test('an Agent removed from the grant stops covering the instance it was attache
     gateway.disableAgent('agent-alpha')
     await manager.device.refresh()
     const dropped = await manager.instances.start(instance.id).catch((error) => error)
-    assert.match(dropped.message, /no longer part of what this device is authorized for/)
-    assert.match(manager.instances.overview()[0].blocked, /no longer part of what this device/)
+    assert.match(dropped.message, /no longer enabled in this account/)
+    assert.match(manager.instances.overview()[0].blocked, /no longer enabled in this account/)
   })
 })
 
@@ -672,7 +672,7 @@ test('an Agent outside the authorized set is refused without signing this comput
   await withManager(t, async ({ manager }, ) => {
     const instance = await manager.instances.create({ name: 'Alpha', mode: 'local_agent' })
     const outside = await manager.instances.pair(instance.id, { agentId: 'agent-nobody' }).catch((error) => error)
-    assert.match(outside.message, /authorized for/)
+    assert.match(outside.message, /enabled Agents in this account/)
     assert.equal(manager.device.status().state, 'linked', 'choosing the wrong Agent must not discard the account grant')
 
     await manager.instances.pair(instance.id, { agentId: 'agent-alpha' })
@@ -1148,11 +1148,12 @@ test('the retired /mcp-services address keeps the way back', async (t) => {
   })
 })
 
-test('the manager answers exactly the operations it documents, and none that touch tools or resources', async (t) => {
+test('the manager answers exactly its documented control-plane operations', async (t) => {
   await withManager(t, async ({ manager }) => {
     const source = readFileSync(join(import.meta.dirname, '..', 'local', 'manager-server.mjs'), 'utf8')
     const routes = [...source.matchAll(/'(\/manager\/[a-z/]+)':/g)].map((match) => match[1]).sort()
     assert.deepEqual(routes, [
+      '/manager/authoring/prepare', '/manager/authoring/review', '/manager/authoring/save',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
       '/manager/device/start', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget', '/manager/instances/import',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
@@ -1285,6 +1286,52 @@ test('Worker-only profiles cannot start a model Agent through workbench role con
     await assert.rejects(manager.instances.control(row.id, { role: 'agent', operation: 'start' }), /does not run/)
     assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'start' })).started, true)
     assert.equal(manager.instances.hosts.get(row.id).host.status().agent, false)
+  })
+})
+
+test('refreshing the enabled account directory stops a disabled Agent and refuses another start', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const row = await addInstance(manager, 'Disabled after refresh', { agentId: AGENTS[0] })
+    assert.equal((await manager.instances.start(row.id)).started, true)
+    gateway.disableAgent(AGENTS[0])
+    const refreshed = await manager.instances.refreshDevice()
+    assert.deepEqual(refreshed.removedAgents.map(agent => agent.id), [AGENTS[0]])
+    assert.deepEqual(refreshed.stoppedInstances.map(instance => instance.id), [row.id])
+    assert.equal(manager.instances.hosts.has(row.id), false, 'the observed stop closes the host only after both roles exit')
+    await assert.rejects(manager.instances.start(row.id), /no longer enabled/)
+  })
+})
+
+test('a Connection key replacement proves the fixed Worker identity before atomically saving it', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const row = await addInstance(manager, 'Connection replacement', { agentId: AGENTS[0] })
+    const connected = manager.instances.overview().find(entry => entry.id === row.id)
+    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id,
+      expectedAgentId: connected.agentId, expectedConnectionId: connected.connectionId }
+    const before = loadInstanceConfig(row.directory).worker.env.RULITH_CONNECTION_KEY
+    const replacement = 'replacement-key-must-not-leak'
+    gateway.replaceConnectionKey(connected.connectionId, replacement)
+
+    assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'start' })).started, true)
+    await assert.rejects(manager.instances.setConnectionKey(row.id, { ...scope, key: replacement }), /Stop Worker/)
+    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_CONNECTION_KEY, before, 'a running Worker prevents any local write')
+    assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'stop' })).stopped, true)
+
+    const rejected = await manager.instances.setConnectionKey(row.id, { ...scope, key: 'unverified-input-key' }).catch(error => error)
+    assert.match(rejected.message, /could not verify the replacement Connection key/)
+    assert.equal(rejected.message.includes('unverified-input-key'), false, 'a remote refusal cannot reflect the submitted key')
+    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_CONNECTION_KEY, before, 'failed verification leaves the old local value untouched')
+
+    const saved = await manager.instances.setConnectionKey(row.id, { ...scope, key: replacement })
+    assert.deepEqual(saved, { instanceId: row.id, agentId: connected.agentId, connectionId: connected.connectionId, keyConfigured: true })
+    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_CONNECTION_KEY, replacement)
+    assert.equal(JSON.stringify(manager.state()).includes(replacement), false, 'a manager state response never discloses a Connection key')
+    assert.equal(manager.instances.hosts.get(row.id).host.status().worker, false)
+    assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'start' })).started, true)
+    assert.equal(childEvents(manager, row.id, 'worker').filter(event => event.observed !== undefined).at(-1).observed.RULITH_CONNECTION_KEY,
+      replacement, 'the next Worker receives only the verified replacement')
+
+    await assert.rejects(manager.instances.setConnectionKey(row.id, { ...scope, expectedConnectionId: 'conn-other', key: replacement }), /Agent or Connection changed/)
   })
 })
 

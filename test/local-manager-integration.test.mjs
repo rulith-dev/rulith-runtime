@@ -81,7 +81,7 @@ async function taskDone(manager, instanceId, taskId, timeoutMs = 25_000) {
   assert.fail('the task never reached a terminal record')
 }
 
-test('two approved Agents run as two instances on one computer, and revoking the device denies exactly what it issued', async (t) => {
+test('two enabled Agents run as two instances on one computer, and revoking the device denies exactly what it issued', async (t) => {
   const gateway = createDevicesGateway({ model: openOneCase })
   await gateway.listen()
   const root = mkdtempSync(join(tmpdir(), 'rulith-integration-'))
@@ -101,15 +101,14 @@ test('two approved Agents run as two instances on one computer, and revoking the
     return { status: response.status, body: await response.json().catch(() => ({})) }
   }
 
-  // 1 · The browser approves two of three Agents, and this computer is offered those two.
+  // 1 · Device sign-in establishes the account. The current enabled directory is account-wide,
+  // so all three appear even though this scenario only configures two profiles.
   const started = await call('/manager/device/start', { consoleUrl: gateway.origin, name: 'Integration computer' })
   assert.equal(started.status, 200, JSON.stringify(started.body))
   gateway.approve(started.body.device.code, ['agent-alpha', 'agent-beta'])
   const linked = await call('/manager/device/poll', {})
   assert.equal(linked.body.device.state, 'linked')
-  assert.deepEqual(linked.body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-beta'])
-  assert.equal(linked.body.device.agents.some((row) => row.id === 'agent-gamma'), false,
-    'an Agent the browser did not approve is not part of what this computer may run')
+  assert.deepEqual(linked.body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-beta', 'agent-gamma'])
 
   // 2 · Two instances, one Agent each, configured without a person handling a port or a key.
   const instances = {}
