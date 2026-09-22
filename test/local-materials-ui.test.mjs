@@ -135,7 +135,8 @@ test('several files each become one material, and the message carries only their
     // A mutating route is asked the way Setup and Worker tools ask: the key in the header too.
     assert.equal(upload.headers['x-rulith-local'], 'page-test-key')
     assert.equal(upload.headers['content-type'], 'application/json')
-    assert.deepEqual(Object.keys(upload.body).sort(), ['bytes', 'mediaType', 'name'])
+    assert.deepEqual(Object.keys(upload.body).sort(), ['bytes', 'mediaType', 'modelDestination', 'name'])
+    assert.equal(upload.body.modelDestination, page.state.status.runtime.agent.modelService)
   }
   assert.equal(uploads[0].body.bytes, Buffer.from('alpha').toString('base64'))
   assert.equal(uploads[1].body.bytes, Buffer.from('beta').toString('base64'))
@@ -513,6 +514,7 @@ test('a late failure answers in the conversation it was sent from, not over anot
 
   // Meanwhile, in another conversation, the composer is saying something of its own.
   await page.click(caseOf('s-beta'))
+  await page.type('A separate beta message')
   page.$('businesskey').value = '{not json'
   await page.submit()
   assert.equal(page.$('composererr').textContent, 'Business key must be valid JSON.')

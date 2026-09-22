@@ -31,6 +31,18 @@ test('page selects saved history, archives without sending a task and restores b
   assert.equal(page.control.posts.filter(x=>x.body.text).length,1)
 })
 
+test('All activity retains a working restore control for its archived composer target',async()=>{
+  const page=await library()
+  await page.click(page.find('[data-case="chat"]'));await page.click('archivehistory')
+  await page.click(page.find('[data-case=""]'))
+  assert.equal(page.$('historybar').hidden,false)
+  assert.equal(page.$('archivehistory').textContent,'Restore conversation')
+  await page.type('after restoring');await page.submit()
+  assert.equal(page.control.posts.filter(x=>x.body.text).length,0)
+  await page.click('archivehistory');assert.equal(page.control.archived,false)
+  await page.submit();assert.equal(page.control.posts.filter(x=>x.body.text).length,1)
+})
+
 test('switching away ignores delayed history and an older page cannot overwrite a live reply',async()=>{
   const page=await library(),hold=deferred()
   page.control.history=()=>hold.promise

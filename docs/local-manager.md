@@ -11,6 +11,11 @@ browser access key; keep it on this computer.
   keeps its own model settings, credentials, tools, workspace and pending-call recovery records.
 - **Conversation, center:** the original conversation, Trace and composer. Changing
   Agents preserves each open conversation page and its unsent input.
+  Switching conversations also preserves each draft's text, attachments and Case
+  preferences. New unsent drafts appear in Conversations. These drafts live only in
+  the open page; closing or reloading it discards unsent input. Accepted conversation
+  history is saved separately. All activity retains the selected composer destination
+  and names it above the input.
 - **Execution information, right:** the selected conversation's Cases, unresolved call,
   frontier and Worker activity. These live in the same page as the conversation, so
   choosing an Agent or conversation switches both together.
@@ -222,6 +227,12 @@ tools, install capabilities, change billing, delegate work between Agents, or gi
 one Worker access to another Agent's queue.
 
 ## Browser verification
+
+**Export view** (also in Conversations on narrow screens) downloads the currently
+loaded local events for the selected conversation, including trace details. All activity
+exports the loaded events across conversations. The file explicitly marks incomplete
+history; it is not a backup, original material contents, or Board proof. Unsent drafts
+are never included. Load earlier messages before exporting if they are needed.
 
 Run `node --test test/browser/workbench-ui.browser.mjs` for browser behavior, separately
 from `npm test`. For installations outside the development workspace, set

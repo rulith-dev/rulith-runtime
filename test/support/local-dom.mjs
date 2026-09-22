@@ -255,6 +255,13 @@ export async function loadLocalPage(html, { search = '?k=page-test-key', respond
   const calls = []
   const timers = []
   const streams = []
+  const downloads = []
+  const blobs = new Map()
+  let nextBlobId = 0
+  class TestURL extends URL {
+    static createObjectURL(blob) { const url = "blob:test-" + nextBlobId++; blobs.set(url, blob); return url }
+    static revokeObjectURL(url) { blobs.delete(url) }
+  }
 
   const doc = {
     activeElement: null,
@@ -267,6 +274,7 @@ export async function loadLocalPage(html, { search = '?k=page-test-key', respond
     querySelector: (selector) => root.querySelector(selector),
     /** The node's own handler, then every ancestor's, then the document's. */
     dispatch(node, type, event = {}) {
+      if (type === 'click' && node?.tagName === 'A' && node.download) downloads.push({ name: node.download, blob: blobs.get(node.href) })
       const full = { type, target: node, preventDefault() {}, stopPropagation() {}, ...event }
       for (let walk = node; walk; walk = walk.parentNode) {
         if (typeof walk['on' + type] === 'function') walk['on' + type](full)
@@ -278,6 +286,7 @@ export async function loadLocalPage(html, { search = '?k=page-test-key', respond
   }
   const body = html.slice(html.indexOf('<body>') + 6, html.indexOf('<script>'))
   const root = createNode('body', doc)
+  doc.body = root
   for (const node of parseMarkup(body, doc)) root.appendChild(node, true)
   for (const node of [root, ...root.descendants()]) doc.register(node)
   for (const form of root.querySelectorAll('form')) form.requestSubmit = () => doc.dispatch(form, 'submit')
@@ -313,7 +322,7 @@ export async function loadLocalPage(html, { search = '?k=page-test-key', respond
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1]
   if (script === undefined) throw new Error('The page has no script to run.')
   const exported = ['state', 'drafts', 'renderAttachments', 'addFiles'].map((name) => `${name}:(typeof ${name}==='undefined'?undefined:${name})`).join(',')
-  const run = new Function('document', 'location', 'fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'window', 'console', 'EventSource',
+  const run = new Function('document', 'location', 'fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'window', 'console', 'EventSource', 'URL',
     `${script}\nreturn {${exported}};`)
   const page = run(
     doc,
@@ -325,6 +334,7 @@ export async function loadLocalPage(html, { search = '?k=page-test-key', respond
     windowStub,
     { log() {}, error() {} },
     EventSourceStub,
+    TestURL,
   )
 
   const flush = async () => { for (let turn = 0; turn < 6; turn += 1) await new Promise((done) => setImmediate(done)) }
@@ -337,6 +347,7 @@ export async function loadLocalPage(html, { search = '?k=page-test-key', respond
     document: doc,
     calls,
     timers,
+    downloads,
     $: (id) => byId.get(id),
     find: (selector) => root.querySelector(selector),
     all: (selector) => root.querySelectorAll(selector),

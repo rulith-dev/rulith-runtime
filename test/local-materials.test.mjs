@@ -68,7 +68,7 @@ const raw = (port, path, { method = 'GET', headers = {}, body } = {}) => new Pro
  * process standing in for the Agent so `/cases` has somewhere to forward to.
  */
 async function withHost(run, {
-  withAgent = false, custodyReply, modelUrl = REMOTE_MODEL, token = AGENT_TOKEN,
+  withAgent = false, custodyReply, modelUrl = REMOTE_MODEL, omitModelUrl = false, token = AGENT_TOKEN,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-materials-'))
   const configFile = join(dir, 'local.json')
@@ -78,6 +78,7 @@ async function withHost(run, {
     ...config.agent.env, RULITH_TOKEN: token, RULITH_URL: GATEWAY,
     RULITH_MODEL_URL: modelUrl, RULITH_MODEL: 'test-model',
   }
+  if (omitModelUrl) delete config.agent.env.RULITH_MODEL_URL
   config.worker.env = { ...config.worker.env, RULITH_CONNECTION: CONNECTION, RULITH_CONNECTION_KEY: 'key-1' }
   const withWorker = custodyReply !== undefined
   const roles = withWorker ? ['agent', 'worker'] : ['agent']
@@ -139,6 +140,29 @@ async function withHost(run, {
 const add = (call, { name, mediaType, text, bytes }) => call('/materials', {
   method: 'POST',
   body: JSON.stringify({ name, mediaType, bytes: (bytes ?? Buffer.from(text, 'utf8')).toString('base64') }),
+})
+
+test('a stale file selection is refused before storage when the model destination changed', async () => {
+  await withHost(async ({ call }) => {
+    const request = { name: 'selected-before-change.txt', mediaType: 'text/plain', bytes: Buffer.from('private input').toString('base64') }
+    const denied = await call('/materials', { method: 'POST', body: JSON.stringify({ ...request, modelDestination: 'https://different-model.example/v1' }) })
+    assert.equal((await denied.json()).errorCode, 'material_destination_changed')
+    assert.deepEqual((await (await call('/materials')).json()).materials, [])
+    const allowed = await call('/materials', { method: 'POST', body: JSON.stringify({ ...request, modelDestination: REMOTE_MODEL + '/' }) })
+    assert.equal((await allowed.json()).ok, true, 'equivalent destination spelling remains usable')
+    assert.equal((await (await call('/materials')).json()).materials.length, 1)
+  })
+})
+
+test('file selection agrees with the actual default provider when the model URL is unset', async () => {
+  await withHost(async ({ call }) => {
+    const status = await (await call('/status')).json()
+    const response = await call('/materials', { method: 'POST', body: JSON.stringify({
+      name: 'default-provider.txt', mediaType: 'text/plain', bytes: Buffer.from('test').toString('base64'),
+      modelDestination: status.runtime.agent.modelService,
+    }) })
+    assert.equal((await response.json()).ok, true)
+  }, { omitModelUrl: true })
 })
 
 test('POST /materials stores a file whole and answers with metadata, not content', async () => {

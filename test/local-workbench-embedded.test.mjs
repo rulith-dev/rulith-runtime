@@ -81,8 +81,8 @@ test('the dialogs that hold them are dialogs, with names, a close and Escape', (
 })
 
 test('choosing a conversation closes the dialog it was chosen in', () => {
-  assert.match(script, /render\(true\);if\(EMBEDDED\)closeModal\('convmodal'\)/)
-  assert.match(script, /if\(EMBEDDED\)closeModal\('convmodal'\);\$\('prompt'\)\.focus\(\)/)
+  assert.match(script, /render\(true\);closeModal\('convmodal'\)/)
+  assert.match(script, /closeModal\('convmodal'\);\$\('prompt'\)\.focus\(\)/)
 })
 
 test('embedded, settings open beside the conversation rather than replacing it', () => {

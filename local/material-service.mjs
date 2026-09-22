@@ -89,6 +89,13 @@ export function createMaterialService({ root, getIdentity, custodian, key }) {
      * any byte lands, and the bytes land whole before the caller is told it worked.
      */
     add(body) {
+      // A retry retains the destination shown when the file was selected. Never silently
+      // attribute that selection to a different model after a configuration change.
+      if (body?.modelDestination !== undefined
+        && normalizeModelDestination(body.modelDestination) !== normalizeModelDestination(getIdentity().modelDestination)) {
+        throw new MaterialError('material_destination_changed',
+          'The model service changed after this file was selected. Remove it and add it again under the current configuration.')
+      }
       const store = open()
       const bytes = decodeCanonicalBase64(body?.bytes)
       if (bytes.byteLength > MAX_MATERIAL_BYTES) {

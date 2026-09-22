@@ -2,6 +2,19 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.9 - 2026-09-23
+
+- Keep unsent text, attachments and Case preferences with their own conversation.
+  Unsent new conversations remain selectable while the page stays open; late send
+  acknowledgements preserve input typed in either draft.
+- Offer explicit retry for a failed local file addition. Retrying preserves the
+  originally selected model service; a changed destination requires selecting the file
+  again. The default model service now agrees with material custody metadata.
+- Export only loaded events for the selected conversation, including trace details,
+  and label the file as a partial local record. Unsent drafts are excluded.
+- Keep archive recovery and history controls available on narrow screens, and add
+  export to the Conversations dialog. All activity identifies its composer destination.
+
 ## 0.8.8 - 2026-09-23
 
 - Browse conversation history in pages and archive or restore completed conversations.

@@ -334,7 +334,7 @@ export function createLocalHost({
       gatewayUrl: String(agentEnv.RULITH_URL ?? ''),
       connectionId: String(workerEnv.RULITH_CONNECTION ?? ''),
       agentId: components.agent.agentId,
-      modelUrl: String(agentEnv.RULITH_MODEL_URL ?? ''),
+      modelUrl: String(agentEnv.RULITH_MODEL_URL ?? DEFAULT_MODEL_URL),
       model: String(agentEnv.RULITH_MODEL ?? ''),
     })
   }
@@ -895,7 +895,7 @@ export function createLocalHost({
             // larger thing.
             agent: {
               id: components.agent.agentId, credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
-              modelService: safeUrl(agentEnv.RULITH_MODEL_URL || DEFAULT_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
+              modelService: safeUrl(agentEnv.RULITH_MODEL_URL ?? DEFAULT_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
               modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? baseEnv().ANTHROPIC_API_KEY ?? '') !== '',
               thinking: agentEnv.RULITH_MODEL_THINKING === 'disabled' ? 'disabled' : agentEnv.RULITH_MODEL_THINKING === 'enabled' ? 'extended' : 'standard',
             },

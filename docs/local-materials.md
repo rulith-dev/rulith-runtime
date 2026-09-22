@@ -48,6 +48,18 @@ An ordinary MCP client can receive permitted material through the Gateway proxy.
 
 ## Retained originals
 
+A failed addition offers **Add again** while the selected file is still available in
+the open page. This retries local storage, not sending a message or reading the file
+through an Action. An earlier request with an unconfirmed response may already have
+stored a copy; explicit retry can retain another immutable original. Removing a chip
+removes it from the draft, not from custody storage.
+
+The page records the model service at file selection. If that destination changes,
+retry refuses before storing bytes and asks the person to remove and select the file
+again. An unset endpoint resolves to the same default used by the Agent. Older materials
+recorded with an empty destination are preserved but require re-selection before use;
+they are not silently granted disclosure to the default provider.
+
 The Worker retains immutable originals and their integrity metadata. Closing a conversation or Case does not delete referenced materials. Keep this area with the profile's backups if the original evidence must remain available. An offline Worker is temporarily unavailable; missing or damaged originals are reported as unavailable or corrupt. The Gateway cannot reconstruct an original from its hash.
 
 This material transport is the foundation for document workflows. The full document-to-capability assistant, including rule extraction, clarification and checking, still needs its own workflow and acceptance.
