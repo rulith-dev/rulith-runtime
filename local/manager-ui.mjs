@@ -390,7 +390,7 @@ export const managerPage = String.raw`<!doctype html>
   <div class="modal-body"><div id="authoring-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
     <p id="authoring-copy">Install the Document Authoring Assistant on this Agent and bind its existing Worker to this profile’s material area. Preparation downloads the pinned local checker once for this computer; Java 25 is required. Your Agent uses its configured model.</p>
     <label class="checkline"><input id="authoring-local-read" type="checkbox" checked> Allow local material delivery to this Agent</label><label class="checkline"><input id="authoring-off-machine" type="checkbox"> Allow document text to reach a remote model or an authorized Gateway proxy</label>
-    <div class="actions"><button class="btn" id="authoring-prepare">Prepare local assistant</button><button id="authoring-review-open">Review checked draft</button></div>
+    <div class="actions"><button class="btn" id="authoring-prepare">Prepare local assistant</button><button id="authoring-review-open">Review checked draft</button><a class="btn" id="authoring-configure" target="_blank" rel="noopener noreferrer" hidden>Manage installed capabilities</a></div>
     <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
   </div>
 </div></div>
@@ -1404,6 +1404,7 @@ $('tools-open').onclick=()=>openSettings(selected,'/worker-tools','worker-notice
 $('authoring-open').onclick=()=>{
   const row=sel(),id=selected,scope=(row?.origin||'')+'/'+(row?.accountId||''),load=++authoringLoad;
   authoringFor=id;authoringScope=scope;authoringResult=null;authoringPermissionsReady=false;
+  $('authoring-configure').hidden=true;$('authoring-configure').removeAttribute('href');
   $('authoring-local-read').checked=false;$('authoring-off-machine').checked=false;
   say('authoring-notice','Reading this Agent’s current material permissions…');
   openDialog('dlg-authoring','authoring-close');applyControls();
@@ -1414,7 +1415,8 @@ $('authoring-open').onclick=()=>{
     const p=v.materialPermissions;
     if(typeof p?.localRead!=='boolean'||typeof p?.offMachine!=='boolean')throw Error('Current material permissions could not be confirmed. Reopen this dialog to retry.');
     $('authoring-local-read').checked=p.localRead;$('authoring-off-machine').checked=p.offMachine;
-    authoringPermissionsReady=v.bindingMatches===true;
+    authoringPermissionsReady=v.bindingMatches===true&&v.preparationBlocked!==true;
+    if(v.preparationBlocked===true&&row?.origin&&row?.agentId){$('authoring-configure').href=new URL('/console/#/agents/'+encodeURIComponent(row.agentId)+'?tab=configuration',row.origin).href;$('authoring-configure').hidden=false;}
     say('authoring-notice',v.teaching||(v.configured?'Saved material choices loaded. Prepare to apply them to this Worker binding.':'Choose the material permissions for this Agent.'),!authoringPermissionsReady);
   }).catch(e=>{if(current())say('authoring-notice',e.message,true);}).finally(()=>{if(current())applyControls();});
 };

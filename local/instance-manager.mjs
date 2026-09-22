@@ -668,6 +668,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     const build = (hostPort) => createLocalHost({
       configFile: instanceConfigFile(directory), config, roles: config.roles, port: hostPort,
       autoStart: false, isolateEnvironment: true,
+      ...(row.origin && row.accountId && row.agentId ? { conversationOwner: { origin: row.origin, accountId: row.accountId, agentId: row.agentId } } : {}),
       setupApprover: device === undefined ? undefined : approverFor(id),
       managedPolicy: policyFor(id),
       managedCallToken,
@@ -1433,6 +1434,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         return { origin: reservation.origin, accountId: reservation.accountId, agentId: delivered,
           agentName: reservation.agentName, connectionId: text(saved.connectionId), signedOutAt: '' }
       })
+      // 配对前的 host 没有已认证账号归属；重新打开后才可加载这个 Agent 的历史。
+      await closeHostLocked(id)
       return { instanceId: id, state: text(polled.body.state) || 'delivered', agentId: delivered, agentName: reservation.agentName }
     },
 

@@ -1340,6 +1340,19 @@ test('authoring reloads saved permissions and does not carry an unsaved choice i
   assert.match(page.$('authoring-notice').textContent, /Permission read unavailable/)
 })
 
+test('an older authoring installation blocks preparation and links to the exact Agent configuration', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
+  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
+  const page = await runPageScript(managerPage, { respond: async path => path === '/manager/authoring/status'
+    ? { body: { ok: true, bindingMatches: true, preparationBlocked: true, teaching: 'Remove the earlier installation in Agent Configuration.', materialPermissions: { localRead: true, offMachine: false } } }
+    : { body: snapshot } })
+  await page.choose('a'); await settle(); await page.$('authoring-open').onclick()
+  assert.equal(page.$('authoring-prepare').disabled, true)
+  assert.equal(page.$('authoring-configure').hidden, false)
+  assert.match(page.$('authoring-configure').href, /agents\/agent-alpha\?tab=configuration$/)
+  assert.match(page.$('authoring-notice').textContent, /earlier installation/)
+})
+
 test('a late readiness receipt clears only the matching unconfirmed-start notice', async () => {
   const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], ready: { agent: false, worker: false } })
   const snapshot = () => stateOf({ device: linkedDevice(), instances: [row] })

@@ -153,7 +153,38 @@ test('a text-only message is sent exactly as it was before', async () => {
   const page = await load()
   await page.type('No files here')
   await page.submit()
-  assert.deepEqual(sent(page, '/cases')[0].body, { text: 'No files here' })
+  const { requestId, sessionKey, ...body } = sent(page, '/cases')[0].body
+  assert.deepEqual(body, { text: 'No files here' })
+  assert.match(requestId, /^[\w-]{36}$/)
+  assert.match(sessionKey, /^ctx-/)
+})
+
+test('an uncertain send retains its request identity on retry, while an edited message gets a new identity', async () => {
+  const page = await load({ cases: () => { throw new Error('response lost') } })
+  await page.type('Please check this once')
+  await page.submit(); await page.submit()
+  const first = sent(page, '/cases')[0].body, retry = sent(page, '/cases')[1].body
+  assert.deepEqual(retry, first)
+  await page.type('A different request')
+  await page.submit()
+  assert.notEqual(sent(page, '/cases')[2].body.requestId, first.requestId)
+})
+
+test('reconnecting the event stream does not duplicate persisted messages or mark old work active', async () => {
+  const page = await load()
+  const rows = [
+    { type: 'task-start', src: 'agent', session: 'saved-chat', text: 'Saved question', historyKey: 't:user', historical: true },
+    { type: 'propose', src: 'agent', session: 'saved-chat', say: 'Saved answer', historyKey: 't:reply:0', historical: true },
+    { type: 'task-done', src: 'agent', session: 'saved-chat', outcome: 'interrupted', note: 'No task was replayed.', historyKey: 't:done', historical: true },
+  ]
+  for (const row of [...rows, ...rows]) await page.emit(row)
+  assert.equal((page.$('stream').innerHTML.match(/Saved question/g) || []).length, 1)
+  assert.equal((page.$('stream').innerHTML.match(/Saved answer/g) || []).length, 1)
+  assert.match(page.$('cases').innerHTML, /Interrupted/)
+  assert.match(page.$('stream').innerHTML, /Agent turn interrupted/)
+  assert.equal(page.$('casecount').textContent, 'Not in use')
+  await page.emit({ type: 'start', src: 'agent', task: '(task endpoint)' })
+  assert.doesNotMatch(page.$('cases').innerHTML, /task endpoint/)
 })
 
 test('only an explicit Case preference pins the model, and clearing it restores automatic choice', async () => {
@@ -333,7 +364,7 @@ test('starting a new conversation does not carry the files of the one left behin
   await page.type('A fresh start')
   await page.submit()
   assert.equal(sent(page, '/cases')[0].body.attachments, undefined)
-  assert.equal(sent(page, '/cases')[0].body.sessionKey, undefined)
+  assert.match(sent(page, '/cases')[0].body.sessionKey, /^ctx-/)
 })
 
 // ── A send that is still open while the person carries on ────────────────────
@@ -408,7 +439,9 @@ test('a file added while the send is open is not swept away with the one that we
 
   // And it sends as itself, in the conversation that now has a key.
   await page.submit()
-  assert.deepEqual(sent(page, '/cases')[1].body, { text: '', sessionKey: 's-1', attachments: ['mat-2'] })
+  const { requestId, ...body } = sent(page, '/cases')[1].body
+  assert.ok(requestId)
+  assert.deepEqual(body, { text: '', sessionKey: 's-1', attachments: ['mat-2'] })
 })
 
 test('a file still uploading when the conversation is given its key stays with it', async () => {

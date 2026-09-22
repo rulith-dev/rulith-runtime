@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { localToolSnapshot } from './local-trace.mjs'
+import { openConversations, ConversationStoreError } from './conversation-store.mjs'
 
 /**
  * Numeric knobs fall back to their default, loudly, instead of becoming NaN.
@@ -290,7 +291,7 @@ const nextTaskId = () => {
   const d = new Date()
   const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
   taskSeq += 1
-  return `task-${ymd}-${String(taskSeq).padStart(2, '0')}-${randomUUID().slice(0, 4)}`
+  return `task-${ymd}-${String(taskSeq).padStart(2, '0')}-${randomUUID()}`
 }
 // ── Event bus: the terminal and the Local UI read one stream ─────────────────
 const events = []
@@ -2509,6 +2510,7 @@ const makeSlot = (key) => ({
   lastUsed: Date.now(),
 })
 let defaultSlot
+let conversationStore
 let consoleUrl = ''
 
 // Startup failures set the status and fall through to the end of the module rather than
@@ -2522,6 +2524,11 @@ try {
   defaultSlot = makeSlot('')
   await openSession()
   await requirePublicMcpSurface()
+  if (process.env.RULITH_CONVERSATION_DIR) {
+    const owner = JSON.parse(process.env.RULITH_CONVERSATION_OWNER || '{}')
+    if (owner.agentId !== agentId) throw new ConversationStoreError('Authenticated Agent does not match the conversation owner.')
+    conversationStore = openConversations(process.env.RULITH_CONVERSATION_DIR, owner)
+  }
   if (agentId === '') {
     throw new McpSurfaceError('The public MCP endpoint authenticated this token but returned no Agent identity in'
       + ` initialize or tools/list _meta["${RULITH_META}"].agentId. Upgrade the Cloud endpoint: this Runtime will not`
@@ -2529,7 +2536,10 @@ try {
   }
 } catch (error) {
   startupFailed = true
-  if (error instanceof AgentCredentialRejectedError) {
+  if (error instanceof ConversationStoreError) {
+    console.error(`\n✗ Local conversation history needs attention: ${error.message}\n`)
+    process.exitCode = 5
+  } else if (error instanceof AgentCredentialRejectedError) {
     console.error(`\n✗ ${error.message}\n`)
     process.exitCode = 3
   } else if (error instanceof McpConnectionReplacedError) {
@@ -3054,7 +3064,10 @@ async function runCaseTurn(ctx, userText, {
     const say = String(reply.text ?? '').trim()
     if (say !== '') log(`\n${say.slice(0, 1200)}`)
     messages.push(assistantEntry(reply.text, reply.toolCalls, reply.reasoningContent))
-    if (say) emitOn(ctx, 'propose', { say })
+    if (say) {
+      const historyKey = ctx.taskId && conversationStore ? conversationStore.reply(ctx.taskId, say) : undefined
+      emitOn(ctx, 'propose', { say, ...(historyKey ? { historyKey } : {}) })
+    }
 
     if (reply.toolCalls.length === 0) {
       // A plain answer is a complete conversational turn. Focused Cases are deliberately
@@ -3312,7 +3325,7 @@ if (SERVE) {
     }
     return true
   }
-  const slotFor = (sessionKey) => {
+  const slotFor = (sessionKey, restoredMessages) => {
     if (sessionKey === '') return defaultSlot
     const hit = sessions.get(sessionKey)
     if (hit !== undefined) {
@@ -3322,6 +3335,7 @@ if (SERVE) {
     }
     if (!evictIfNeeded()) return undefined
     const slot = makeSlot(sessionKey)
+    if (conversationStore) slot.messages = restoredMessages ?? conversationStore.messages(sessionKey, KEEP_MESSAGES)
     const recovery = detachedCases.get(sessionKey)
     if (recovery !== undefined) {
       detachedCases.delete(sessionKey)
@@ -3371,8 +3385,12 @@ if (SERVE) {
           ...(slot.key === '' ? {} : { sessionKey: slot.key }),
           ...(board.roots.length === 0 ? {} : { console: consoleUrl }),
         }
+        if (conversationStore) {
+          try { conversationStore.finish(item.id, rec.note, 'not-started') }
+          catch (error) { emit('error', { teaching: error.message }) }
+        }
         pushRun(rec)
-        emit('task-done', rec)
+        emit('task-done', { ...rec, historyKey: `${item.id}:done` })
         log(`✗ ${rec.note} (task ${item.id})`)
       }
     }
@@ -3403,6 +3421,7 @@ if (SERVE) {
         let sessionKey = ''
         let requestedCaseId = ''
         let requestedCaseIdValue
+        let requestId = ''
         let caseType = selectedCaseType
         // A caller that names a Case Type has made the governance selection for this task,
         // exactly as `--case-type` does for the process. The model may not move off it.
@@ -3418,6 +3437,8 @@ if (SERVE) {
         let attachments = []
         try {
           const b = JSON.parse(raw || '{}')
+          if (b.requestId !== undefined && (typeof b.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(b.requestId))) return deny('requestId must be a short opaque identifier (16–100 letters, digits, _ or -).', 400)
+          requestId = b.requestId ?? ''
           if (b.attachments !== undefined) {
             if (!Array.isArray(b.attachments) || b.attachments.length > 8) {
               return deny('attachments must be an array of at most 8 material descriptions from the Rulith host.', 400)
@@ -3454,6 +3475,11 @@ if (SERVE) {
         }
         // Missing keys start independent conversations. The caller receives the generated
         // key and must echo it on follow-ups; unrelated clients never share a default Case.
+        const fingerprint = createHash('sha256').update(JSON.stringify({ text, sessionKey, caseType, caseTypeGiven, businessKey, requestedCaseId, attachments })).digest('hex')
+        try {
+          const previous = conversationStore?.find(requestId, fingerprint)
+          if (previous) { res.writeHead(previous.ok ? 202 : 409, { 'content-type': 'application/json' }); res.end(JSON.stringify(previous)); return }
+        } catch (error) { return deny(error.message, 409) }
         if (sessionKey === '') sessionKey = `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`
         // Session keys select bounded local transcript/queue slots and their authenticated
         // MCP session. They never select a Board.
@@ -3461,16 +3487,21 @@ if (SERVE) {
           return deny(`sessionKey exceeds ${SESSION_KEY_MAX} characters (${sessionKey.length} received). It cannot be truncated because it identifies a local conversation slot. Use a short opaque identifier.`, 400)
         }
         if (requestedCaseId.length > 256) return deny('caseId exceeds 256 characters. Use the exact Case ID returned by /runs or shown in Console.', 400)
-        const slot = slotFor(sessionKey)
-        if (slot === undefined) return deny(`Conversation capacity is full (${SERVE_SLOTS_MAX} slots), and every slot is busy. Retry later or continue an existing sessionKey.`, 429)
+        if (!sessions.has(sessionKey) && sessions.size >= SERVE_SLOTS_MAX
+          && ![...sessions.values()].some(s => !s.busy && s.queue.length === 0))
+          return deny(`Conversation capacity is full (${SERVE_SLOTS_MAX} slots), and every slot is busy. Retry later or continue an existing sessionKey.`, 429)
+        const restoredMessages = !sessions.has(sessionKey) ? conversationStore?.messages(sessionKey, KEEP_MESSAGES) : undefined
         const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments }
+        const depth = allSlots().reduce((n, s) => n + s.queue.length, 0) + 1
+        const receipt = { ok: true, id: item.id, queued: depth, sessionKey, teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }
+        try { conversationStore?.accept(item, receipt, requestId, fingerprint) }
+        catch (error) { return deny(error.message, 507) }
+        const slot = slotFor(sessionKey, restoredMessages)
         slot.queue.push(item)
         slot.lastUsed = item.at
-        const depth = allSlots().reduce((n, s) => n + s.queue.length, 0)
         emit('task-queued', { id: item.id, text: item.text, depth, session: sessionKey })
         res.writeHead(202, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ ok: true, id: item.id, queued: depth, sessionKey,
-          teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }))
+        res.end(JSON.stringify(receipt))
         pump()
       })
       return
@@ -3517,7 +3548,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     const flight = { id: item.id, text: item.text, startedAt: Date.now(),
       ...(slot.key === '' ? {} : { sessionKey: slot.key }) }
     inFlight = flight
-    emit('task-start', { id: item.id, text: item.text,
+    emit('task-start', { id: item.id, text: item.text, attachments: item.attachments, historyKey: `${item.id}:user`,
       ...(slot.key === '' ? {} : { session: slot.key }) })
     log(`
 ▶ Message ${item.id}${slot.key === '' ? '' : ` (session ${slot.key})`}: ${item.text}`)
@@ -3529,6 +3560,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     let closedCases = []
     let outcome = 'error'
     try {
+      conversationStore?.start(item.id)
       const seg = await runCaseTurn(slot, item.text, {
         policy: 'return',
         caseType: item.caseType,
@@ -3556,7 +3588,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       activeCaseId = actualCaseId
       activeCaseIds = board.roots.map((row) => row.caseId)
       pendingCaseId = actualCaseId
-      if (credentialRejected || connectionReplaced) {
+      if (credentialRejected || connectionReplaced || e instanceof ConversationStoreError) {
         // A revoked credential and a replaced connection both belong to the whole host
         // rather than to one task: neither is retryable per task, and continuing to admit
         // work would queue segments that can never be carried. Stop admission, let every
@@ -3589,8 +3621,15 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       ...(pendingCaseId === null ? {} : { pendingCaseId }),
       ...(actualCaseId === null ? {} : { console: consoleUrl }),
     }
+    try { conversationStore?.finish(item.id, note, outcome) }
+    catch (error) {
+      acceptingTasks = false
+      rec.outcome = 'interrupted'
+      rec.note = error.message + ' The turn may have executed; do not resend it without checking the Case.'
+      terminalizeQueuedTasks(rec.note)
+    }
     pushRun(rec)
-    emit('task-done', rec)
+    emit('task-done', { ...rec, historyKey: `${item.id}:done` })
     log(`· ${note}${activeCaseId === null ? '' : ` · Active Rulith Case: ${activeCaseId}.`}${pendingLine(pendingCaseId)}${actualCaseId === null ? '' : ` · Verify in Console: ${consoleUrl}`}
 `)
     if (!acceptingTasks && inFlight === undefined) {
@@ -3622,7 +3661,11 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
   // A task on the command line means the first message is already in hand, so a script
   // can start the process, handle one message, and go on accepting more. It carries no
   // sessionKey, so it lands in the default slot.
-  if (TASK !== '') { defaultSlot.queue.push({ id: nextTaskId(), text: TASK, caseType: selectedCaseType, businessKey: selectedBusinessKey, at: Date.now(), sessionKey: '' }); pump() }
+  if (TASK !== '') {
+    const item = { id: nextTaskId(), text: TASK, caseType: selectedCaseType, businessKey: selectedBusinessKey, at: Date.now(), sessionKey: '', attachments: [] }
+    conversationStore?.accept(item, { ok: true, id: item.id, sessionKey: '' }, '', '')
+    defaultSlot.queue.push(item); pump()
+  }
 } else if (!CHAT) {
   // ── One-shot (CI/script form) ──
   try {

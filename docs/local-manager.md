@@ -178,9 +178,25 @@ never silently moves or rewrites the legacy configuration.
 
 Profiles live under `~/.rulith/manager/instances/<id>` by default. Each contains
 `local.json`, MCP service state, Worker configuration, Source vault, workspace and
-`agent-sessions.json`. The latter stores pending calls for recovery, **not a durable
-chat transcript**. Conversation history lasts for the running Agent session;
-restarting it does not recreate the conversation. Board Cases remain in the cloud.
+`agent-sessions.json`. The latter stores pending MCP calls for recovery, separately
+from `conversations/<owner-hash>.json`, which preserves accepted messages, attachment
+names and visible replies. History is scoped to the Console origin, account and Agent;
+replacing a credential does not change its owner. It remains readable with the Agent
+stopped. New conversation starts empty; select an existing conversation to continue it.
+
+Restarting marks unfinished local turns as interrupted and never replays their work.
+Sending a new message may use the selected conversation's recent text as historical
+context; it does not restore MCP sessions, Board focus, tool results or file access.
+Board Cases and their evidence remain authoritative in the cloud. The same message
+request ID returns its original receipt on retry, including after restart.
+
+History is written atomically by the Agent, before a message is acknowledged. An
+unreadable history is preserved and blocks startup; a failed write blocks admission
+or stops further execution. Each owner is limited to 1,000 turns / 32 MiB without
+silent deletion. To archive a full history, stop the Agent and move that owner's
+JSON file to private storage before restarting. Do not restore it over running work.
+Old process-only conversations cannot be recovered. Explicit single-Agent CLI mode
+does not create account-scoped durable history.
 
 `RULITH_MANAGER_HOME`, `RULITH_MANAGER_PORT` (default7780) and `RULITH_MANAGER_KEY`
 configure the workbench. Only one workbench process can own a profile root at a time;

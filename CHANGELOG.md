@@ -2,6 +2,18 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.7 - 2026-09-22
+
+- Preserve account- and Agent-scoped conversation text across workbench restarts,
+  including attachment names. Continue explicitly without restoring Board authority
+  or replaying interrupted tasks.
+- Save accepted messages before acknowledging them and deduplicate retries. Interrupted
+  submissions keep the user's draft and explain why they were not replayed.
+- Merge restored and live messages without duplicates; show interrupted turns clearly
+  and keep runtime startup out of the conversation list.
+- Show earlier document assistant installation conflicts before local preparation,
+  with a direct link to the selected Agent's capability configuration.
+
 ## 0.8.6 - 2026-09-22
 
 - Load saved document material choices for the selected Agent and Worker binding before

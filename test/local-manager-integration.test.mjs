@@ -35,6 +35,7 @@ import { join } from 'node:path'
 import { createManagerServer } from '../local/manager-server.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { createDevicesGateway } from './support/local-devices-gateway.mjs'
+import { conversationFile, readConversations } from '../agent/conversation-store.mjs'
 
 const KEY = 'manager-integration-key'
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
@@ -177,6 +178,16 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
   const secondTask = await localCall(beta.entry, '/cases', { text: 'Open a Case for beta.', caseType: 'exploration' })
   assert.equal(secondTask.status, 202, JSON.stringify(secondTask.body))
   await taskDone(manager, beta.id, secondTask.body.id)
+  for (const [agentId, instance, expected, excluded] of [
+    ['agent-alpha', alpha, 'Open a Case for alpha.', 'Open a Case for beta.'],
+    ['agent-beta', beta, 'Open a Case for beta.', 'Open a Case for alpha.'],
+  ]) {
+    const owner = { origin: gateway.origin, accountId: linked.body.device.account.id, agentId }
+    const history = readConversations(conversationFile(join(instance.directory, 'conversations'), owner), owner)
+    assert.equal(history.turns.length, 1, 'a newly paired host must acquire its verified history owner')
+    assert.equal(history.turns[0].text, expected)
+    assert.equal(JSON.stringify(history).includes(excluded), false)
+  }
   assert.equal(gateway.boards.get('agent-beta').state.cases.size, 1)
   assert.equal(gateway.boards.get('agent-alpha').state.cases.size, 1, 'beta\'s work did not land on alpha\'s Board')
 

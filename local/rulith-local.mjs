@@ -6,8 +6,9 @@
  * only lifecycle, a bounded diagnostic journal, and its loopback UI.
  */
 import http from 'node:http'
+import { conversationFile, readConversations, conversationEvents } from '../agent/conversation-store.mjs'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -231,10 +232,12 @@ export function createLocalHost({
   configFile, config, roles, port = 7790, key = randomUUID().replace(/-/g, ''),
   startConfirmMs = START_CONFIRM_MS, autoStart = true,
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
-  materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey,
+  materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
+  const historyDirectory = join(configDir, 'conversations')
+  const historyFile = conversationOwner ? conversationFile(historyDirectory, conversationOwner) : undefined
   // An account default is runtime-only. It must never become part of `config`: Setup actions
   // clone and save that object, and doing so would turn an inherited provider key into a
   // durable per-instance credential.
@@ -499,7 +502,11 @@ export function createLocalHost({
     const materialConnection = selectedRoles.includes('worker') && materials.configured
       ? String(effectiveChildEnv(baseEnv(), config.worker?.env ?? {}).RULITH_CONNECTION ?? '').trim() : ''
     const child = spawn(process.execPath, [path, ...args], {
-      env: { ...roleEnv, RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort),
+      env: { ...roleEnv,
+        // Only the manager can select the history owner; profile/environment values cannot override it.
+        RULITH_CONVERSATION_DIR: historyFile ? historyDirectory : '',
+        RULITH_CONVERSATION_OWNER: historyFile ? JSON.stringify(conversationOwner) : '',
+        RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort),
         // The Agent is given the delivery endpoint and the one key that opens it — never this
         // host's page key, which would also open `/control` and `/setup/*`.
         RULITH_MATERIALS_CONNECTION: materialConnection,
@@ -517,6 +524,13 @@ export function createLocalHost({
         components.agent.agentId = 'unconfigured'
       }
       emit('agent', 'exit', { code })
+      if (historyFile) {
+        try {
+          for (const row of conversationEvents(readConversations(historyFile, conversationOwner), true)) {
+            if (row.type === 'task-done' && row.outcome === 'interrupted') emit('agent', row.type, row)
+          }
+        } catch (error) { emit('local', 'error', { note: error.message }) }
+      }
       announceChildren()
     })
     emit('agent', 'spawn', { pid: child.pid })
@@ -803,7 +817,15 @@ export function createLocalHost({
       }
       if (path === '/events' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
-        for (const event of events) res.write(`data: ${JSON.stringify(event)}\n\n`)
+        let saved = []
+        if (historyFile) {
+          try { saved = conversationEvents(readConversations(historyFile, conversationOwner), !running('agent')) }
+          catch (error) { saved = [{ src: 'local', type: 'error', note: error.message }] }
+        }
+        const known = new Set(saved.map(e => e.historyKey).filter(Boolean))
+        const replay = [...saved, ...events.filter(e => !e.historyKey || !known.has(e.historyKey))]
+          .sort((a, b) => (a.t ?? a.at ?? 0) - (b.t ?? b.at ?? 0))
+        for (const event of replay) res.write(`data: ${JSON.stringify(event)}\n\n`)
         clients.add(res); req.on('close', () => clients.delete(res)); return
       }
       if (path === '/status' && req.method === 'GET') {
@@ -900,7 +922,9 @@ export function createLocalHost({
       if (path === '/cases' && req.method === 'POST') {
         if (!running('agent')) return void json(res, 409, { ok: false, teaching: 'This Local runtime is not running the Agent role.' })
         const body = await readJson(req)
-        const sessionKey = String(body.sessionKey ?? '').trim() || `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`
+        const sessionKey = String(body.sessionKey ?? '').trim() || (body.requestId
+          ? 'ctx-' + createHash('sha256').update(String(body.requestId)).digest('hex').slice(0, 32)
+          : `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`)
         // Membership, ownership and disclosure are settled here, before anything is forwarded.
         // A submission naming one material this profile does not own fails whole: honouring the
         // rest would hand the Agent a list that does not say which of the operator's selections
@@ -921,6 +945,7 @@ export function createLocalHost({
           body: JSON.stringify({
             text: text.trim() === '' ? attachmentInstruction(selected.attachments) : text,
             sessionKey,
+            ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
             ...(selected.attachments.length === 0 ? {} : { attachments: selected.attachments }),
             ...(body.caseId === undefined ? {} : { caseId: body.caseId }),
             ...(body.caseType === undefined ? {} : { caseType: body.caseType }),
