@@ -48,12 +48,13 @@
   },
   "scripts": {
     "start": "node local/rulith-local.mjs start",
-    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/generate-worker-protocol.mjs --check",
+    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check scripts/verify-published.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/generate-worker-protocol.mjs --check",
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "verify:manifest": "node scripts/update-artifact-manifest.mjs --check",
     "test": "node --test test/*.test.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
     "release:verify": "npm run verify:manifest && npm run check && npm test",
+    "release:verify-published": "node scripts/verify-published.mjs",
     "release:tag": "node scripts/tag-release.mjs",
     "prepack": "npm run release:verify"
   },

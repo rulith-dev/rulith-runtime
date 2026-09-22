@@ -14,6 +14,8 @@ All notable changes to the local runtime are documented here.
   while shortening older Board View snapshots in requests to the model.
 - Exercise a saved local draft in Chromium across a workbench reload: its certified Case
   remains selected and Save stays disabled.
+- Verify a public npm release by checking registry integrity and manifest-listed artifact
+  hashes, installing it in a disposable directory, and starting the installed workbench.
 
 ## 0.8.10 - 2026-09-23
 
