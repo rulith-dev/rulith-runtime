@@ -89,7 +89,7 @@ test('Case preferences still opens the same popover, from its place in the menu'
   assert.equal(page.$('attachmenu').hidden, true, 'choosing an item closes the menu')
   assert.equal(page.$('casepopover').hidden, false)
   assert.equal(page.activeId(), 'casetype', 'the field it opens for is where the keyboard continues')
-  assert.equal(page.$('casetype').value, 'exploration', 'the preferences themselves are unchanged')
+  assert.equal(page.$('casetype').value, '', 'no Case Type is pinned unless the user chooses one')
 })
 
 test('Add files opens a dialog that can be opened again during a turn', async () => {
@@ -153,7 +153,19 @@ test('a text-only message is sent exactly as it was before', async () => {
   const page = await load()
   await page.type('No files here')
   await page.submit()
-  assert.deepEqual(sent(page, '/cases')[0].body, { text: 'No files here', caseType: 'exploration' })
+  assert.deepEqual(sent(page, '/cases')[0].body, { text: 'No files here' })
+})
+
+test('only an explicit Case preference pins the model, and clearing it restores automatic choice', async () => {
+  const page = await load()
+  page.$('casetype').value = 'official_authoring'
+  await page.type('Use my chosen Case Type')
+  await page.submit()
+  assert.equal(sent(page, '/cases')[0].body.caseType, 'official_authoring')
+  page.$('casetype').value = '  '
+  await page.type('Choose the next Case Type from the installed capabilities')
+  await page.submit()
+  assert.equal(Object.hasOwn(sent(page, '/cases')[1].body, 'caseType'), false)
 })
 
 test('a message with only files is allowed once one of them is stored', async () => {
@@ -396,7 +408,7 @@ test('a file added while the send is open is not swept away with the one that we
 
   // And it sends as itself, in the conversation that now has a key.
   await page.submit()
-  assert.deepEqual(sent(page, '/cases')[1].body, { text: '', caseType: 'exploration', sessionKey: 's-1', attachments: ['mat-2'] })
+  assert.deepEqual(sent(page, '/cases')[1].body, { text: '', sessionKey: 's-1', attachments: ['mat-2'] })
 })
 
 test('a file still uploading when the conversation is given its key stays with it', async () => {

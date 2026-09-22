@@ -2,6 +2,13 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.5 - 2026-09-22
+
+- Let the Agent choose an installed Case Type by default. A hidden `exploration`
+  preference no longer overrides document authoring; an explicit user preference still applies.
+- Include the rule format and published built-ins in local compilation failure reports so
+  the model can correct a draft through the existing checker and artifact tools.
+
 ## 0.8.4 - 2026-09-22
 
 - Show an existing Agent key as an actionable connection conflict, including after reopening
