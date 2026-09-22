@@ -130,6 +130,19 @@ arm('local authoring review shows the checked program and keeps Save disabled fo
     assert.equal(await page.locator('#authoring-review').isHidden(), true)
   })
 
+arm('local authoring review explains compilation failures without interpreting checker text as HTML',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    fixture.control.authoringQuestions = false
+    fixture.control.authoringCompileErrors = ['Rule check: <img src=x onerror=alert(1)> is not defined']
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.getByText('Compile errors', { exact: true }).waitFor()
+    await page.getByText(fixture.control.authoringCompileErrors[0], { exact: true }).waitFor()
+    assert.equal(await page.locator('#authoring-result img').count(), 0)
+    assert.equal(await page.locator('#authoring-save').isDisabled(), true)
+  })
+
 arm('saving a locally checked draft exposes only the scoped Console publication link',
   { width: 1400, height: 900 }, async ({ page, fixture }) => {
     fixture.control.authoringQuestions = false

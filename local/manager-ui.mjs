@@ -997,6 +997,7 @@ function renderAuthoring(){
   if(authoringRenderedFor===authoringResult)return;
   authoringRenderedFor=authoringResult;
   const report=authoringResult.report||{},checks=[report.compiled===true?'Compiled':'Not compiled','Examples: '+(report.examples?.passed??0)+'/'+(report.examples?.total??0),'Citations: '+(report.citations?.verified??0)+'/'+(report.citations?.total??0)],questions=Array.isArray(authoringResult.draft?.questions)?authoringResult.draft.questions:[];
+  const compileErrors=Array.isArray(report.compileErrors)?report.compileErrors.filter(e=>typeof e==='string'&&e.trim()).slice(0,20):[];
   const program=authoringResult.draft?.program||{},rules=Array.isArray(program.rules)?program.rules:[],citations=Array.isArray(authoringResult.draft?.citations)?authoringResult.draft.citations:[],examples=Array.isArray(authoringResult.draft?.examples)?authoringResult.draft.examples:[];
   const contracts=Array.isArray(authoringResult.draft?.caseContracts)?authoringResult.draft.caseContracts:[];
   const json=value=>esc(JSON.stringify(value,null,2));
@@ -1007,6 +1008,7 @@ function renderAuthoring(){
     +(examples.length?'<h4>Examples</h4>'+examples.map(e=>'<details class="authoring-review-item"><summary>'+esc(e.label||'Untitled example')+'</summary><b>Input facts</b><pre>'+json(e.facts||[])+'</pre><b>Expected conclusions</b><pre>'+json(e.expect||[])+'</pre>'+(e.forbid?.length?'<b>Forbidden conclusions</b><pre>'+json(e.forbid)+'</pre>':'')+(e.forbidPredicates?.length?'<b>No conclusions of these kinds</b><pre>'+json(e.forbidPredicates)+'</pre>':'')+'</details>').join(''):'<p class="notice error">No draft examples were reported.</p>')
     +(authoringResult.draft?.notes?'<h4>Scope and exclusions</h4><p class="authoring-notes">'+esc(authoringResult.draft.notes)+'</p>':'')
     +(checks.length?'<h4>Checks</h4><ul>'+checks.map(c=>'<li>'+esc(typeof c==='string'?c:(c.title||c.teaching||JSON.stringify(c)))+'</li>').join('')+'</ul>':'<p class="sub">No checks were reported.</p>')
+    +(compileErrors.length?'<h4>Compile errors</h4><ul>'+compileErrors.map(e=>'<li>'+esc(e.slice(0,500))+'</li>').join('')+'</ul>':'')
     +(questions.length?'<h4>Questions</h4><ul>'+questions.map(q=>'<li>'+esc(typeof q==='string'?q:(q.question||q.title||JSON.stringify(q)))+'</li>').join('')+'</ul>':'')
     +(!report.compiled||questions.length?'<p class="notice error">Resolve failed checks and questions in the local conversation before saving.</p>':'');
   const prior=$('authoring-case').value,cases=Array.isArray(authoringResult.cases)?[...authoringResult.cases]:[];

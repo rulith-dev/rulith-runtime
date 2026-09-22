@@ -4,6 +4,10 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Show the local checker's specific compile errors in the checked-draft review, with
+  bounded escaped text, so a failed draft can be corrected without guessing from a
+  generic “Not compiled” status.
+
 ## 0.8.11 - 2026-09-23
 
 - Give the Agent a compact draft JSON shape with the first local document-ingest result,
