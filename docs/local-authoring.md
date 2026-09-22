@@ -10,7 +10,8 @@
    the mechanical checks and close the matching Case after they pass.
 4. Open **Document assistant → Review checked draft**. Review its rules, examples,
    citations and unresolved questions. Choose **Save private draft** after the exact
-   proposal has a certified completed Case. Publication remains a separate Console action.
+   proposal has a certified completed Case. Reopening the same checked result shows its
+   saved receipt, including after restarting Local. Publication remains a separate Console action.
 
 Your Agent uses its selected model, including any Agent-specific override of the
 account's local default. A remote model receives authorized material text directly

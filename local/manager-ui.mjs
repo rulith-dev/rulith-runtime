@@ -985,9 +985,12 @@ function renderAuthoring(){
   const row=sel();$('authoring-sub').textContent=row?.name||'';
   const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
   $('authoring-publication').hidden=!(ready&&authoringResult.savedPackId);
-  if(ready&&authoringResult.savedPackId)$('authoring-publication').href=new URL('/console/#/studio?localAuthoringDraft='+encodeURIComponent(authoringResult.savedPackId)+'&publish=1',current.origin).href;else $('authoring-publication').removeAttribute('href');
-  $('authoring-save').textContent=ready&&authoringResult.savedPackId?'Private draft saved':'Save private draft';
-  if(ready&&authoringResult.savedCaseId)$('authoring-case').value=authoringResult.savedCaseId;
+  if(ready&&authoringResult.savedPackId){
+    const currentEntry=authoringResult.savedEntryCurrent!==false;
+    $('authoring-publication').href=new URL(currentEntry?'/console/#/studio?localAuthoringDraft='+encodeURIComponent(authoringResult.savedPackId)+'&publish=1':'/console/#/studio',current.origin).href;
+    $('authoring-publication').textContent=currentEntry?'Review publication in Console':'Inspect private drafts in Console';
+  }else $('authoring-publication').removeAttribute('href');
+  $('authoring-save').textContent=ready&&authoringResult.savedPackId?(authoringResult.savedEntryCurrent===false?'Previously saved':'Private draft saved'):'Save private draft';
   if(!ready){authoringRenderedFor=null;return;}
   // The manager polls while this dialog is open. Replacing the same review markup on each poll
   // would collapse the rule/example disclosures while somebody is reading them.
@@ -1006,9 +1009,12 @@ function renderAuthoring(){
     +(checks.length?'<h4>Checks</h4><ul>'+checks.map(c=>'<li>'+esc(typeof c==='string'?c:(c.title||c.teaching||JSON.stringify(c)))+'</li>').join('')+'</ul>':'<p class="sub">No checks were reported.</p>')
     +(questions.length?'<h4>Questions</h4><ul>'+questions.map(q=>'<li>'+esc(typeof q==='string'?q:(q.question||q.title||JSON.stringify(q)))+'</li>').join('')+'</ul>':'')
     +(!report.compiled||questions.length?'<p class="notice error">Resolve failed checks and questions in the local conversation before saving.</p>':'');
-  const prior=$('authoring-case').value,cases=Array.isArray(authoringResult.cases)?authoringResult.cases:[];$('authoring-case-row').hidden=cases.length===0;
+  const prior=$('authoring-case').value,cases=Array.isArray(authoringResult.cases)?[...authoringResult.cases]:[];
+  if(authoringResult.savedCaseId&&!cases.some(c=>(c.caseId||c.id||'')===authoringResult.savedCaseId))cases.unshift({caseId:authoringResult.savedCaseId,title:authoringResult.savedCaseId+' (saved)'});
+  $('authoring-case-row').hidden=cases.length===0;
   $('authoring-case').innerHTML=cases.map(c=>'<option value="'+esc(c.caseId||c.id||'')+'">'+esc(c.title||c.caseId||c.id)+'</option>').join('');
   if(cases.some(c=>(c.caseId||c.id||'')===prior))$('authoring-case').value=prior;
+  if(authoringResult.savedCaseId)$('authoring-case').value=authoringResult.savedCaseId;
   if(cases.length===0)$('authoring-result').innerHTML+='<p class="notice error">Continue the local conversation until it completes a certified Case for this document.</p>';
 }
 /* What the centre says about a frame is what the frame has actually done: asked for, arrived,
@@ -1440,9 +1446,9 @@ $('authoring-open').onclick=()=>{
   }).catch(e=>{if(current())say('authoring-notice',e.message,true);}).finally(()=>{if(current())applyControls();});
 };
 $('authoring-prepare').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead:$('authoring-local-read').checked,offMachine:$('authoring-off-machine').checked}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
-$('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice','Read and verified the immutable local check result.');}));};
+$('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice',v.savedPackId?(v.savedEntryCurrent===false?'This result was saved before, but its private draft has changed or been removed. Inspect it in Console; saving it again is unavailable.':'This checked result is already saved as '+v.savedPackId+'.'):'Read and verified the immutable local check result.');}));};
 $('authoring-case').onchange=()=>applyControls();
-$('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('authoring-case').value;if(!v||v.savedPackId)return;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/save',{instanceId:id,resultId:v.resultId,caseId}).then(saved=>{if(!saved.entry||!saved.packId||saved.caseId!==caseId)throw Error('The private-draft receipt did not match the selected Case.');if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;v.savedCaseId=saved.caseId;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}}));};
+$('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('authoring-case').value;if(!v||v.savedPackId)return;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/save',{instanceId:id,resultId:v.resultId,caseId}).then(saved=>{if(!saved.entry||!saved.packId||saved.caseId!==caseId)throw Error('The private-draft receipt did not match the selected Case.');if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;v.savedCaseId=saved.caseId;v.savedEntryCurrent=true;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}}));};
 $('open-setup').onclick=()=>openSettings(selected,'/setup','details-notice');
 
 /* A poll refreshes the state and nothing else: it never replaces a field being typed in, a

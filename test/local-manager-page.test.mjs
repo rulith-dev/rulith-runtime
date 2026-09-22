@@ -1383,6 +1383,40 @@ test('the private-draft review exposes premises, source quotes, examples and Cas
   assert.match(page.$('authoring-publication').href, /qa\.shipping_fee/)
 })
 
+test('reopening a saved document check shows its durable receipt and never offers Save again', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
+  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
+  let saves = 0
+  const review = { resultId: 'art_checked', cases: [], savedPackId: 'qa.shipping_fee', savedCaseId: 'case-4', savedEntryCurrent: true,
+    draft: { program: { id: 'qa.shipping_fee', title: 'Shipping fee', rules: [] }, questions: [] },
+    report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } } }
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/authoring/status') return { body: { ok: true, bindingMatches: true, configured: true, materialPermissions: { localRead: true, offMachine: false } } }
+    if (path === '/manager/authoring/review') return { body: review }
+    if (path === '/manager/authoring/save') { saves += 1; return { body: {} } }
+    return { body: snapshot }
+  } })
+  await page.choose('a'); await settle()
+  await page.$('authoring-open').onclick(); await settle()
+  await page.$('authoring-review-open').onclick(); await settle()
+  assert.equal(page.$('authoring-save').disabled, true)
+  assert.equal(page.$('authoring-save').textContent, 'Private draft saved')
+  assert.equal(page.$('authoring-case').value, 'case-4')
+  assert.equal(page.$('authoring-case').disabled, true)
+  assert.match(page.$('authoring-publication').href, /localAuthoringDraft=qa\.shipping_fee/)
+  await page.$('authoring-save').onclick(); await settle()
+  assert.equal(saves, 0)
+  assert.match(page.$('authoring-notice').textContent, /already saved/)
+
+  review.savedEntryCurrent = false
+  await page.$('authoring-review-open').onclick(); await settle()
+  assert.equal(page.$('authoring-save').disabled, true)
+  assert.equal(page.$('authoring-save').textContent, 'Previously saved')
+  assert.equal(page.$('authoring-publication').textContent, 'Inspect private drafts in Console')
+  assert.doesNotMatch(page.$('authoring-publication').href, /publish=1/)
+  assert.match(page.$('authoring-notice').textContent, /changed or been removed/)
+})
+
 test('an older authoring installation blocks preparation and links to the exact Agent configuration', async () => {
   const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
   const snapshot = stateOf({ device: linkedDevice(), instances: [row] })

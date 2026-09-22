@@ -10,6 +10,9 @@ All notable changes to the local runtime are documented here.
 - Keep expanded review items open through workbench refreshes. After a successful save,
   show the saved state and pin the certified Case named by the receipt instead of
   offering a second save of the same checked pack.
+- Reopening a checked result after a Local restart reads the durable private-draft
+  receipt from Console. It shows the saved Case and disables another Save; if the
+  private draft was later changed or removed, direct publication is not offered.
 
 ## 0.8.9 - 2026-09-23
 

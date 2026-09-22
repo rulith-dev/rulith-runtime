@@ -235,7 +235,11 @@ export function createManagerServer({
         const target = authoringTarget(String(fields.instanceId ?? ''))
         const cases = await device.authoringCases({ expectedAccountId: target.expectedAccountId, agentId: target.agentId,
           materialId: checked.materialId, documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest })
-        return { ...checked, cases: Array.isArray(cases.cases) ? cases.cases : [] }
+        const saved = cases.saved && typeof cases.saved === 'object' && !Array.isArray(cases.saved) ? cases.saved : null
+        return { ...checked, cases: Array.isArray(cases.cases) ? cases.cases : [],
+          ...(saved && typeof saved.packId === 'string' && typeof saved.caseId === 'string'
+            ? { savedPackId: saved.packId, savedCaseId: saved.caseId, savedEntryCurrent: saved.entryCurrent === true }
+            : {}) }
       })
     },
     '/manager/instances/open': (body) => {
