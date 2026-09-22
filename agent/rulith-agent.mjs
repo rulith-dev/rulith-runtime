@@ -2139,6 +2139,40 @@ const assistantEntry = (text, toolCalls = [], reasoningContent) => ({ role: 'ass
   ...(typeof reasoningContent === 'string' ? { reasoningContent } : {}) })
 const resultsEntry = (results) => ({ role: 'tool_results', results })
 
+/** Only older Board snapshots may be shortened in a model request. The
+ * latest Board View and every non-view field (including receipts, refusal reasons and Artifact
+ * data) stay byte-for-byte available. The stored transcript is never rewritten. */
+function requestEntries(entries) {
+  const beforeBytes = Buffer.byteLength(JSON.stringify(entries))
+  if (beforeBytes < 32 * 1024) return { entries, compactedViews: 0, compactedTranscriptBytes: 0 }
+  const views = []
+  for (let index = 0; index < entries.length; index++) {
+    if (entries[index].role !== 'tool_results' || !Array.isArray(entries[index].results)) continue
+    for (let resultIndex = 0; resultIndex < entries[index].results.length; resultIndex++) {
+      const result = entries[index].results[resultIndex]
+      let parsed
+      try { parsed = JSON.parse(result.text) } catch { continue }
+      const field = parsed?.view?.cases ? 'view' : parsed?.payload?.cases ? 'payload' : ''
+      if (typeof parsed?.accepted === 'boolean' && field !== '' && typeof parsed[field] === 'object') {
+        views.push({ index, resultIndex, parsed, field })
+      }
+    }
+  }
+  if (views.length < 2) return { entries, compactedViews: 0, compactedTranscriptBytes: 0 }
+  const rewritten = entries.slice()
+  for (const { index, resultIndex, parsed, field } of views.slice(0, -1)) {
+    if (rewritten[index] === entries[index]) rewritten[index] = { ...entries[index], results: entries[index].results.slice() }
+    const rest = { ...parsed }
+    delete rest[field]
+    rewritten[index].results[resultIndex] = {
+      ...entries[index].results[resultIndex],
+      text: JSON.stringify({ ...rest, earlierBoardView: 'Superseded by the latest Board View in this request.' }),
+    }
+  }
+  return { entries: rewritten, compactedViews: views.length - 1,
+    compactedTranscriptBytes: beforeBytes - Buffer.byteLength(JSON.stringify(rewritten)) }
+}
+
 function renderMessages(entries, style) {
   const out = []
   for (const entry of entries) {
@@ -2382,24 +2416,36 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
   const headers = wire === 'openai'
     ? (cfg.key === '' ? baseHeaders : { ...baseHeaders, authorization: `Bearer ${cfg.key}` })
     : (cfg.key === '' ? baseHeaders : { ...baseHeaders, 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' })
+  const { entries: suppliedEntries, compactedViews, compactedTranscriptBytes } = requestEntries(entries)
   const body = wire === 'openai'
     ? {
         model: cfg.model, max_tokens: 6000,
         // Omission uses the provider default. An explicit disable must reach providers that default to thinking.
         ...(['enabled', 'disabled'].includes(thinking) ? { thinking: { type: thinking } } : {}),
-        messages: [{ role: 'system', content: systemText }, ...renderMessages(entries, style)],
+        messages: [{ role: 'system', content: systemText }, ...renderMessages(suppliedEntries, style)],
         ...(declared ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: openAIParameters(tool.schema) } })) } : {}),
       }
     : {
-        model: cfg.model, max_tokens: 6000, system: systemText, messages: mergeAdjacent(renderMessages(entries, style)),
+        model: cfg.model, max_tokens: 6000, system: systemText, messages: mergeAdjacent(renderMessages(suppliedEntries, style)),
         ...(declared ? { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.schema })) } : {}),
       }
+  // Report sizes, never prompt text. Provider token counts alone say how expensive a
+  // call was; these three numbers show whether history, fixed instructions or tool
+  // declarations made it grow during a long document-authoring turn.
+  const requestBody = JSON.stringify(body)
+  const requestSize = {
+    requestBytes: Buffer.byteLength(requestBody),
+    transcriptBytes: Buffer.byteLength(JSON.stringify(body.messages)),
+    messageCount: entries.length,
+    compactedViews,
+    compactedTranscriptBytes,
+  }
   let response
   try {
-    response = await fetch(cfg.url, { method: 'POST', headers, body: JSON.stringify(body) })
+    response = await fetch(cfg.url, { method: 'POST', headers, body: requestBody })
   } catch (error) {
     // A user-facing tool does not print a raw stack: say who was called and how to change it.
-    onUsage?.({ durationMs: Math.round(performance.now() - started), inputTokens: null, outputTokens: null, httpStatus: null })
+    onUsage?.({ durationMs: Math.round(performance.now() - started), inputTokens: null, outputTokens: null, httpStatus: null, ...requestSize })
     failTask(`Cannot reach model service ${cfg.url}: ${error?.cause?.code ?? error?.message ?? error}.
    Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
     return { text: '', toolCalls: [] }
@@ -2408,7 +2454,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
   let payload
   try { payload = JSON.parse(raw) } catch { payload = {} }
   const tokenCount = n => Number.isSafeInteger(n) && n >= 0 ? n : null
-  onUsage?.({ durationMs: Math.round(performance.now() - started), httpStatus: response.status,
+  onUsage?.({ durationMs: Math.round(performance.now() - started), httpStatus: response.status, ...requestSize,
     inputTokens: tokenCount(wire === 'openai' ? payload.usage?.prompt_tokens : payload.usage?.input_tokens),
     outputTokens: tokenCount(wire === 'openai' ? payload.usage?.completion_tokens : payload.usage?.output_tokens) })
   if (!response.ok) {

@@ -119,6 +119,12 @@ test('local authoring ingest reaches the actual adapter compiler, preserves work
   assert.match(executed.facts[0].args.node, /^node_[a-f0-9]{32}$/u)
   assert.match(executed.localArtifact.id, /^res_[a-f0-9]{32}$/u)
   assert.equal(executed.localArtifact.producedFrom, TEXT.id)
+  assert.match(executed.result, /draft_json is a STRING containing one JSON object/u)
+  assert.match(executed.result, /program=\{id,title,summary,vocabulary:\{defines:/u)
+  assert.match(executed.result, /caseContracts=\[\{format:"rulith-case-contract\/1"/u)
+  assert.doesNotMatch(executed.result, /body text|Heading/u,
+    'ingest guidance must not disclose or claim the uploaded document text')
+  assert.ok(Buffer.byteLength(executed.result) < 2_048, 'the shape cue must stay inline and bounded')
 })
 
 test('the material adapter ships with this Worker and cannot be declared in a Manifest', () => {

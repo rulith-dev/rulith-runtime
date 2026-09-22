@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "298c46665ff5d9bfde422ff6b94220bea7590645c958edb34b0c7cd8a3d8bfb2"
+      "sha256": "cbb33c19628698a837e0a4f27981215df3e0a3e6d6e86a8602a3f076b7490007"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -39,7 +39,7 @@
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
     },
     "worker/local-authoring.mjs": {
-      "sha256": "cb88943758e09b114423238b1c632b5ee645dc32ed8031074edc3767ac436e0c"
+      "sha256": "fc4ff76e63c4f3186d32fdfbce45b0ba8a3f3893fe3d619b384cb796a8ebc0dd"
     },
     "local/authoring-checker.mjs": {
       "sha256": "857ecc0ed62e2e050931217c61c357b9d7ef2e2402d1da59f263e6622027bd38"

@@ -166,7 +166,9 @@ export async function startMockWorkbench({ instances, agents, events = [], model
     if (path === '/manager/authoring/review') return void json(res, 200, { ok: true, resultId: 'res_' + '1'.repeat(32),
       report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } },
       draft: { program: { id: 'local-policy', title: 'Local policy', rules: [{ id: 'rule-1', label: 'Check invoices' }] }, citations: [{}], examples: [{}], questions: control.authoringQuestions ? [{ question: 'Which exception applies?' }] : [] },
-      cases: [{ caseId: 'CASE-LOCAL', title: 'Local authoring Case' }, { caseId: 'CASE-SECOND', title: 'Second certified Case' }] })
+      cases: [{ caseId: 'CASE-LOCAL', title: 'Local authoring Case' }, { caseId: 'CASE-SECOND', title: 'Second certified Case' }],
+      ...(control.authoringSaves.length ? { savedPackId: 'local_policy', savedCaseId: control.authoringSaves.at(-1).caseId, savedEntryCurrent: true } : {}),
+    })
     if (path === '/manager/authoring/save') {
       control.authoringSaves.push(body)
       return void json(res, 200, { ok: true, entry: { packId: 'local_policy' }, packId: 'local_policy', caseId: body.caseId })

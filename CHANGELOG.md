@@ -2,6 +2,17 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Give the Agent a compact draft JSON shape with the first local document-ingest result,
+  so its first checker call can test a business proposal instead of discovering the
+  envelope through a failed check. The shape is guidance; only the checker validates it.
+- Record each model request's total and transcript byte counts alongside provider token
+  usage. In long turns, retain the latest authoritative Board View and all Artifact data
+  while shortening older Board View snapshots in requests to the model.
+- Exercise a saved local draft in Chromium across a workbench reload: its certified Case
+  remains selected and Save stays disabled.
+
 ## 0.8.10 - 2026-09-23
 
 - Review a locally checked private draft before saving: expand its vocabulary and Case

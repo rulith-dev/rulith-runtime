@@ -13,6 +13,18 @@ export const LOCAL_AUTHORING_RELEASE = '2.0.0'
 export const LOCAL_AUTHORING_LIMITS = Object.freeze({ documentBytes: 256 * 1024, draftBytes: 512 * 1024, outputBytes: 2 * 1024 * 1024, timeoutMs: 150_000, reportBytes: 32 * 1024 })
 let checkerBusy = false
 const IDS = Object.freeze({ ingest: 'rulith.official_authoring.ingest_document@2', check: 'rulith.official_authoring.check_draft@2' })
+// The first check should test a business proposal, not teach the JSON envelope by
+// rejecting it. This bounded shape cue travels with the ingest result once; it is
+// guidance, never a claim about the uploaded document or a Board fact. The
+// checker remains the authority; its versioned schema may reject this cue.
+export const LOCAL_AUTHORING_DRAFT_SHAPE = [
+  'Draft format (guidance, not evidence): draft_json is a STRING containing one JSON object with exactly',
+  'program, caseContracts, citations, examples, questions, notes.',
+  'program={id,title,summary,vocabulary:{defines:[{id,as,args}]},pins:[alias],rules:[{id,label,when:[{predicate,args}],then:[{predicate,args}]}]}.',
+  'caseContracts=[{format:"rulith-case-contract/1",caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:"attested"},terminal:{cardinality:"once_per_case",disposition:"completed",requiresCertified:true}}].',
+  'citations=[{ruleId,quote}], examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}], questions=[], notes="...".',
+  'Use full namespaced predicates in examples, aliases in program rules, and exact document substrings as quotes. Do not treat this cue as validation; the local checker decides.',
+].join(' ')
 const orderedDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex')}`
 // Java OrderedJson preserves insertion order, including nested objects. Only the four
 // top-level proposal fields are selected in this fixed order; missing values are null.
@@ -83,7 +95,7 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
     const found = material(materialRoot, binding, String(input.material ?? ''))
     const node = authoringNode(found.record.id, found.record.digest)
     const produced = found.store.deriveResult(found.record.id, { mediaType: found.record.mediaType, encoding: 'utf8' })
-    return { result: `Ingested ${found.record.name} locally.`, localArtifact: produced, rows: [{ node, task_id: found.record.id, document_digest: found.record.digest, characters: [...found.text].length }] }
+    return { result: `Ingested ${found.record.name} locally. ${LOCAL_AUTHORING_DRAFT_SHAPE}`, localArtifact: produced, rows: [{ node, task_id: found.record.id, document_digest: found.record.digest, characters: [...found.text].length }] }
   }
   if (tool.entry !== 'check') throw new Error('local_authoring_tool_unknown')
   const found = material(materialRoot, binding, String(input.task_id ?? ''))

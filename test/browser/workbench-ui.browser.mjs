@@ -152,6 +152,28 @@ arm('saving a locally checked draft exposes only the scoped Console publication 
     assert.equal(await publication.getAttribute('href'), null)
   })
 
+arm('a saved authoring receipt is still selected and cannot be saved twice after reloading the workbench',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    fixture.control.authoringQuestions = false
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.selectOption('#authoring-case', 'CASE-SECOND')
+    await page.click('#authoring-save')
+    await page.getByText('Private draft saved', { exact: true }).waitFor()
+    assert.equal(fixture.control.authoringSaves.length, 1)
+
+    await page.reload()
+    await page.waitForSelector('button[data-instance="inst-1"]')
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.getByText('Private draft saved', { exact: true }).waitFor()
+    assert.equal(await page.inputValue('#authoring-case'), 'CASE-SECOND')
+    assert.equal(await page.locator('#authoring-save').isDisabled(), true)
+    assert.equal(fixture.control.authoringSaves.length, 1, 'reloading retried a completed private save')
+  })
+
 arm('embedded runtime details never expose a second set of role controls',
   { width: 1400, height: 900 }, async ({ page }) => {
     const child = await openAgent(page, 'inst-1')

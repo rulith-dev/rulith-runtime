@@ -1638,3 +1638,55 @@ test('conversation trail remains bounded when transcript compaction runs repeate
     'bounded transcript compaction reintroduced an unbounded conversation trail')
   assert.match(latest, /Transcript compacted/)
 })
+
+test('model usage reports bounded request sizes without copying prompt content into the event', async () => {
+  const run = await runAgent({
+    argv: [], chatLines: ['unique private-sized prompt marker'], captureLocalEvents: true,
+    model: () => 'A short answer.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const usage = run.localEvents.find((event) => event.type === 'model-usage')
+  assert.ok(usage, 'the model call emitted no usage event')
+  assert.ok(Number.isSafeInteger(usage.requestBytes) && usage.requestBytes > 0)
+  assert.ok(Number.isSafeInteger(usage.transcriptBytes) && usage.transcriptBytes > 0)
+  assert.ok(usage.requestBytes >= usage.transcriptBytes)
+  assert.equal(usage.messageCount, 1)
+  assert.doesNotMatch(JSON.stringify(usage), /unique private-sized prompt marker/)
+})
+
+test('long turns retain Artifact evidence and the latest Board View while shortening older views', async () => {
+  const ref = 'art_' + 'a'.repeat(32)
+  const gateway = defaultGateway({
+    cases: Array.from({ length: 90 }, (_, index) => ({ caseId: `ARCHIVED_${index}`, root: `ROOT_${index}`, status: 'closed' })),
+    artifacts: { [ref]: { text: 'immutable document marker for authoring' } },
+  })
+  let queries = 0
+  const originalTool = gateway.tool.bind(gateway)
+  gateway.tool = (name, args, session) => {
+    const answer = originalTool(name, args, session)
+    if (name === 'QueryBoard' && ++queries % 3 === 0) {
+      return { ...answer, accepted: false, errorCode: 'query_refused_for_fixture', teaching: 'The Board refused this query.' }
+    }
+    return answer
+  }
+  const run = await runAgent({
+    argv: [], chatLines: ['Read the attached material and inspect the Board.'],
+    gateway, captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '12' },
+    model: (round) => round === 1 ? callTool('ReadArtifact', { ref })
+      : round < 11 ? callTool('QueryBoard', {}) : 'The inspection is complete.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.modelRequests.length, 11, 'the long-turn fixture did not reach the intended number of model calls')
+  const last = run.modelRequests.at(-1)
+  const transcript = JSON.stringify(last.messages)
+  assert.match(transcript, /immutable document marker for authoring/,
+    'view compaction discarded material evidence needed later in the same turn')
+  assert.match(transcript, /earlierBoardView/,
+    'the older full Board snapshots were repeated in an expensive request')
+  assert.match(transcript, /ARCHIVED_89/,
+    'the latest authoritative Board View was removed')
+  assert.match(transcript, /query_refused_for_fixture/,
+    'a refused tool result lost its reason when its older Board View was shortened')
+  assert.ok(run.localEvents.some((event) => event.type === 'model-usage'
+    && event.compactedViews > 0 && event.compactedTranscriptBytes > 0))
+})
