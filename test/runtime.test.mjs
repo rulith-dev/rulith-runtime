@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.8.5')
+  assert.equal(pkg.version, '0.8.6')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -419,7 +419,7 @@ test('Rulith Local starts exactly the selected roles and receives structured chi
         while (wanted.some((role) => !readySources().has(role)) && Date.now() < deadline) {
           await new Promise((accept) => setTimeout(accept, 25))
         }
-        assert.deepEqual(host.status(), { mode, roles: rolesOf(mode), ...expected })
+        assert.deepEqual(host.status(), { mode, roles: rolesOf(mode), ...expected, ready: { agent: false, worker: false } })
         const sources = readySources()
         assert.equal(sources.has('agent'), expected.agent)
         assert.equal(sources.has('worker'), expected.worker)
@@ -1694,4 +1694,22 @@ test('committed public files only teach Agent flags the Agent accepts', () => {
   assert.deepEqual(rejected, [],
     'these flags are published but the Agent rejects them and exits 1.\n  '
     + rejected.join('\n  '))
+})
+
+test('late Agent readiness is observable after the start confirmation bound, and clears on stop', async () => {
+  await localRole({
+    source: "setTimeout(() => process.send?.({protocol:'rulith-local-event',event:{type:'start',agentId:'late-ready'}}), 350);setInterval(()=>{},1000)\n",
+    startConfirmMs: 100,
+  }, async ({host, control, quiesce}) => {
+    await quiesce()
+    const answer = await control('start')
+    assert.equal(answer.body.state, 'unconfirmed')
+    assert.equal(host.status().agent, true)
+    assert.equal(host.status().ready.agent, false)
+    const deadline = Date.now() + 3000
+    while (!host.status().ready.agent && Date.now() < deadline) await new Promise(done => setTimeout(done, 20))
+    assert.equal(host.status().ready.agent, true)
+    await control('stop')
+    assert.equal(host.status().ready.agent, false)
+  })
 })

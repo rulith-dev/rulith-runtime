@@ -812,6 +812,8 @@ export function createLocalHost({
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
           agent: running('agent'), worker: running('worker'),
+          ready: Object.fromEntries(['agent', 'worker'].map(role => [role,
+            running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])),
           runtime: {
             configFile,
             // No launcher address here, deliberately. The way back to a manager is a link the
@@ -974,7 +976,9 @@ export function createLocalHost({
     children: () => ['agent', 'worker']
       .filter((role) => running(role))
       .map((role) => ({ role, pid: components[role].child.pid })),
-    status: () => ({ mode: modeOf(selectedRoles), roles: selectedRoles, agent: running('agent'), worker: running('worker') }),
+    status: () => ({ mode: modeOf(selectedRoles), roles: selectedRoles, agent: running('agent'), worker: running('worker'),
+      ready: Object.fromEntries(['agent', 'worker'].map(role => [role,
+        running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])) }),
     events: () => events.map((event) => ({ ...event })),
     listen: () => new Promise((accept, reject) => {
       server.once('error', reject)

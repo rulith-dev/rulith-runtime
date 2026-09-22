@@ -161,6 +161,8 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       row[body.role] = body.operation === 'start'
       return void json(res, 200, { ok: true, control: { role: body.role, state: body.operation === 'start' ? 'ready' : 'stopped' }, ...state() })
     }
+    if (path === '/manager/authoring/status') return void json(res, 200, { ok: true, configured: true, bindingMatches: true,
+      materialPermissions: { localRead: true, offMachine: true } })
     if (path === '/manager/authoring/review') return void json(res, 200, { ok: true, resultId: 'res_' + '1'.repeat(32),
       report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } },
       draft: { program: { id: 'local-policy', title: 'Local policy', rules: [{ id: 'rule-1', label: 'Check invoices' }] }, citations: [{}], examples: [{}], questions: control.authoringQuestions ? [{ question: 'Which exception applies?' }] : [] },

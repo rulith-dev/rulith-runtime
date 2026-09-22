@@ -451,6 +451,13 @@ export function createDeviceClient({ root } = {}) {
 
     // The manager supplies only the selected Agent's Worker projection. Document bytes never
     // pass through this device-control client.
+    authoringStatus: (body = {}) => {
+      const current = linked()
+      if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) {
+        throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+      }
+      return call(current.origin, '/local-devices/authoring/status', { bearer: current.token, body }).catch(operationRefusal)
+    },
     authoringPrepare: (body = {}) => {
       const current = linked()
       if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) {

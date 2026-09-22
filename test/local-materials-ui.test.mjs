@@ -582,3 +582,26 @@ test('the dialog is a dialog: named, closable, and Tab stays inside it', async (
   assert.notEqual(page.activeId(), '', 'Shift+Tab from the first control stays in the dialog')
   assert.ok(page.$('filesmodal').contains(page.document.activeElement))
 })
+
+test('new conversation is empty while All activity still retains previous messages', async () => {
+  const page = await load()
+  await page.emit({ src: 'agent', type: 'task-start', session: 'existing', text: 'Previous conversation content' })
+  assert.match(page.$('stream').textContent, /Previous conversation content/)
+  await page.click('newcase')
+  assert.doesNotMatch(page.$('stream').textContent, /Previous conversation content/)
+  assert.match(page.$('stream').textContent, /What would you like/)
+  await page.click(page.all('.case').find(row => row.dataset.case === ''))
+  assert.match(page.$('stream').textContent, /Previous conversation content/)
+})
+
+
+test('unconfirmed readiness does not permanently block a custom running Agent', async () => {
+  const page = await loadLocalPage(localPage, { respond: async path => {
+    if (path.startsWith('/status')) return { body: { ok:true, mode:'agent', roles:['agent'], agent:true, worker:false, ready:{agent:false,worker:false}, runtime:{} } }
+    if (path.startsWith('/cases')) return { body:{ok:true,sessionKey:'custom-agent'} }
+  } })
+  assert.match(page.$('stream').textContent, /readiness is not confirmed/)
+  page.$('prompt').value = 'Try the running task endpoint'
+  await page.submit()
+  assert.equal(page.calls.filter(call => call.path.startsWith('/cases')).length, 1)
+})

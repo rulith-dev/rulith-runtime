@@ -892,6 +892,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         agentName: row.agentName ?? '', connectionId: row.connectionId ?? '', paired: Boolean(row.agentId || row.connectionId),
         open: live !== undefined, roles: status?.roles ?? [],
         agent: status?.agent === true, worker: status?.worker === true,
+        ready: status?.ready ?? { agent: false, worker: false },
         // Everything a card needs to explain why a button is unavailable, computed from the
         // device grant rather than from what the page last saw.
         pendingAgentId: row.pairing?.agentId ?? '', pendingAgentName: row.pairing?.agentName ?? '',

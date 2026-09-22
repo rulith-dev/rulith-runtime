@@ -1234,7 +1234,7 @@ test('the manager answers exactly its documented control-plane operations', asyn
     const source = readFileSync(join(import.meta.dirname, '..', 'local', 'manager-server.mjs'), 'utf8')
     const routes = [...source.matchAll(/'(\/manager\/[a-z/]+)':/g)].map((match) => match[1]).sort()
     assert.deepEqual(routes, [
-      '/manager/authoring/prepare', '/manager/authoring/review', '/manager/authoring/save',
+      '/manager/authoring/prepare', '/manager/authoring/review', '/manager/authoring/save', '/manager/authoring/status',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
       '/manager/device/start', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget', '/manager/instances/import',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',

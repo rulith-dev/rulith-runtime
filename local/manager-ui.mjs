@@ -407,7 +407,27 @@ const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendin
    on a picture that may be minutes old is worse than a control that says why it is waiting. */
 let offline='',pollFails=0;
 /* The exact (Agent here, cloud Agent) pair the replacement tick was given for. */
-let replaceFor='',authoringResult=null,authoringFor='',authoringScope='';
+let replaceFor='',authoringResult=null,authoringFor='',authoringScope='',authoringPermissionsReady=false,authoringLoad=0;
+const pendingStartNotices=new Map();
+const shownStartNotices=new Map();
+function rememberStartNotice(id,role,noticeId,message){
+  pendingStartNotices.set(id+':'+role,{id,role,noticeId,message});
+}
+function renderStartNotices(){
+  for(const [key,pending] of pendingStartNotices){
+    const row=rowOf(pending.id);
+    if(!row||!row[pending.role]||row.ready?.[pending.role]===true)pendingStartNotices.delete(key);
+  }
+  for(const noticeId of ['worker-notice','details-notice']){
+    const previous=shownStartNotices.get(noticeId),el=$(noticeId);
+    const messages=[...pendingStartNotices.values()].filter(p=>p.id===selected&&p.noticeId===noticeId)
+      .map(p=>(rowOf(p.id)?.agentName||rowOf(p.id)?.name||p.id)+' · '+p.role+': '+p.message);
+    if(previous!==undefined&&el.textContent===previous)say(noticeId,'');
+    if(messages.length&&!el.textContent){
+      const message=messages.join('\n');say(noticeId,message,true);shownStartNotices.set(noticeId,message);
+    }else shownStartNotices.delete(noticeId);
+  }
+}
 const busy=new Set(),frames=new Map(),dialogs=[],lastMarkup={};
 const rowOf=id=>(state.instances||[]).find(r=>r.id===id)||null, sel=()=>rowOf(selected);
 /* A closed host reports no roles, so what a stopped Agent is *for* comes from its mode; a
@@ -441,7 +461,7 @@ async function api(path,body,signal){
     }
   }
   reachable();
-  if(!r.ok||v.ok===false)throw Error(v.teaching||'This step could not be confirmed.');
+  if(!r.ok||v.ok===false)throw Object.assign(Error(v.teaching||'This step could not be confirmed.'),{state:v.state});
   return v;
 }
 function connection(){$('connection').hidden=offline==='';$('connection').textContent=offline;}
@@ -500,7 +520,9 @@ function controlSpec(){
     'worker-toggle':['role:'+selected+':worker',Boolean(row)&&hasRole(row,'worker')&&!row.orphaned&&(row.worker===true||!row.blocked)],
     'tools-open':[windowScope(selected),Boolean(row)],
     'authoring-open':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned],
-    'authoring-prepare':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned],
+    'authoring-prepare':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned&&authoringPermissionsReady],
+    'authoring-local-read':['authoring:'+selected,authoringPermissionsReady],
+    'authoring-off-machine':['authoring:'+selected,authoringPermissionsReady],
     'authoring-review-open':['authoring:'+selected,Boolean(row)&&row.paired&&!row.blocked&&!row.orphaned],
     'authoring-save':['authoring:'+selected,Boolean(row)&&authoringResult&&String($('authoring-case').value||'')!==''&&String(authoringResult.resultId||'')!==''&&authoringResult.report?.compiled===true&&authoringResult.report?.examples?.total>0&&authoringResult.report?.examples?.passed===authoringResult.report?.examples?.total&&authoringResult.report?.citations?.total>0&&authoringResult.report?.citations?.verified===authoringResult.report?.citations?.total&&!(authoringResult.draft?.questions||[]).length ],
     'page-retry':[windowScope(pageEntry?.id||''),Boolean(pageEntry&&rowOf(pageEntry.id))],
@@ -947,7 +969,11 @@ function renderWorker(){
   $('worker-dir').textContent=row.directory||'—';
 }
 function renderAuthoring(){
-  const current=sel();if(authoringFor!==selected||authoringScope!==(current?.origin||'')+'/'+(current?.accountId||''))authoringResult=null;
+  const current=sel();if(authoringFor!==selected||authoringScope!==(current?.origin||'')+'/'+(current?.accountId||'')){
+    authoringResult=null;authoringPermissionsReady=false;
+    $('authoring-local-read').checked=false;$('authoring-off-machine').checked=false;
+    say('authoring-notice','The selected Agent changed. Close this dialog and choose the Agent again.');
+  }
   const row=sel();$('authoring-sub').textContent=row?.name||'';
   const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
   $('authoring-publication').hidden=!(ready&&authoringResult.savedPackId);
@@ -1022,6 +1048,7 @@ function render(next){
   if(next!==undefined)state={instances:next.instances||[],device:next.device||{state:'none'},modelDefaults:next.modelDefaults||null,legacyInstall:next.legacyInstall==null?null:next.legacyInstall};
   if(signedIn){signInPollError='';say('account-notice','');closeDialog('dlg-account');say('notice','Signed in as '+(state.device.account?.name||'your account')+'.');}
   if(selected&&!rowOf(selected))selected='';
+  renderStartNotices();
   pruneFrames();renderAgents();renderCenter();renderWorker();renderStage();
   renderAccount();renderProfiles();renderSetup();renderAttach();renderDetails();renderModel();renderConnectionKey();renderAuthoring();applyControls();
   if(pageEntry&&!rowOf(pageEntry.id)){$('page-status').hidden=false;$('page-loading').hidden=false;$('page-loading').textContent='This Agent is no longer available. Close this panel and select another Agent.';$('page-retry').disabled=true;}
@@ -1122,8 +1149,17 @@ $('page-retry').onclick=()=>{if(offline){say('page-notice',offline,true);return 
    otherwise would be a claim about a process this page cannot see. */
 function controlRole(id,role,operation,noticeId){
   const word=role==='agent'?'Agent':'Worker',name=(rowOf(id)||{}).name||'';
+  pendingStartNotices.delete(id+':'+role);
   return run('role:'+id+':'+role,noticeId,async()=>{
-    const answer=await api('/manager/instances/control',{instanceId:id,role:role,operation:operation});
+    let answer;
+    try{answer=await api('/manager/instances/control',{instanceId:id,role:role,operation:operation});}
+    catch(e){
+      if(operation==='start'&&e.state==='unconfirmed'){
+        if(rowOf(id)?.ready?.[role]===true)return;
+        rememberStartNotice(id,role,noticeId,e.message);return;
+      }
+      throw e;
+    }
     const row=rowOf(id),outcome=answer&&typeof answer.control==='object'&&answer.control?answer.control:answer||{};
     const still=row?row[role]===true:false,where=id===selected?'':name+': ';
     if(operation==='start'&&!still)say(noticeId,where+word+' did not report that it started'
@@ -1350,9 +1386,10 @@ $('forget').onclick=()=>{const id=selected;run('forget:'+id,'details-notice',()=
 $('start-all').onclick=()=>{const id=selected,row=rowOf(id);
   if(row?.mode==='local_agent'&&row.model&&!row.model.ready)return void openModel(id);
   run('instance:'+id,'details-notice',()=>api('/manager/instances/start',{instanceId:id}).then(v=>{
-  const failed=(v.results||[]).filter(r=>!r.ok);
+  for(const r of v.results||[])if(r.state==='unconfirmed')rememberStartNotice(id,r.role,'details-notice',r.teaching||r.state);
+  const failed=(v.results||[]).filter(r=>!r.ok&&r.state!=='unconfirmed');
   say('details-notice',failed.map(r=>r.role+': '+(r.teaching||r.state)).join('\n'),failed.length>0);}));};
-$('stop-all').onclick=()=>{const id=selected;run('instance:'+id,'details-notice',()=>api('/manager/instances/stop',{instanceId:id}).then(v=>{
+$('stop-all').onclick=()=>{const id=selected;for(const role of ['agent','worker'])pendingStartNotices.delete(id+':'+role);run('instance:'+id,'details-notice',()=>api('/manager/instances/stop',{instanceId:id}).then(v=>{
   const failed=(v.results||[]).filter(r=>!r.ok);
   say('details-notice',failed.length?failed.map(r=>r.role+': '+(r.teaching||r.state)).join('\n')
     :v.stopped?'':'Some roles were asked to stop and have not exited yet.',!v.stopped);}));};
@@ -1364,7 +1401,23 @@ $('agent-readiness-action').onclick=()=>$('agent-toggle').onclick();
    including while that rail covers the conversation on a phone. */
 $('worker-toggle').onclick=()=>{const id=selected,row=rowOf(id);if(row)controlRole(id,'worker',row.worker?'stop':'start','worker-notice');};
 $('tools-open').onclick=()=>openSettings(selected,'/worker-tools','worker-notice');
-$('authoring-open').onclick=()=>{const row=sel();authoringFor=selected;authoringScope=(row?.origin||'')+'/'+(row?.accountId||'');authoringResult=null;say('authoring-notice','');openDialog('dlg-authoring','authoring-close');};
+$('authoring-open').onclick=()=>{
+  const row=sel(),id=selected,scope=(row?.origin||'')+'/'+(row?.accountId||''),load=++authoringLoad;
+  authoringFor=id;authoringScope=scope;authoringResult=null;authoringPermissionsReady=false;
+  $('authoring-local-read').checked=false;$('authoring-off-machine').checked=false;
+  say('authoring-notice','Reading this Agent’s current material permissions…');
+  openDialog('dlg-authoring','authoring-close');applyControls();
+  const current=()=>load===authoringLoad&&selected===id&&authoringScope===scope
+    &&(sel()?.origin||'')+'/'+(sel()?.accountId||'')===scope;
+  return api('/manager/authoring/status',{instanceId:id}).then(v=>{
+    if(!current())return;
+    const p=v.materialPermissions;
+    if(typeof p?.localRead!=='boolean'||typeof p?.offMachine!=='boolean')throw Error('Current material permissions could not be confirmed. Reopen this dialog to retry.');
+    $('authoring-local-read').checked=p.localRead;$('authoring-off-machine').checked=p.offMachine;
+    authoringPermissionsReady=v.bindingMatches===true;
+    say('authoring-notice',v.teaching||(v.configured?'Saved material choices loaded. Prepare to apply them to this Worker binding.':'Choose the material permissions for this Agent.'),!authoringPermissionsReady);
+  }).catch(e=>{if(current())say('authoring-notice',e.message,true);}).finally(()=>{if(current())applyControls();});
+};
 $('authoring-prepare').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead:$('authoring-local-read').checked,offMachine:$('authoring-off-machine').checked}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
 $('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice','Read and verified the immutable local check result.');}));};
 $('authoring-case').onchange=()=>applyControls();

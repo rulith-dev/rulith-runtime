@@ -203,6 +203,13 @@ export function createManagerServer({
       const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'expectedAgentId', 'expectedConnectionId', 'key'])
       return instances.setConnectionKey(String(fields.instanceId ?? ''), fields)
     },
+    '/manager/authoring/status': (body) => {
+      const fields = onlyFields(body, ['instanceId'])
+      return instances.admit(() => {
+        const { toolDescriptors, ...target } = authoringTarget(String(fields.instanceId ?? ''))
+        return device.authoringStatus(target)
+      })
+    },
     '/manager/authoring/prepare': (body) => {
       const fields = onlyFields(body, ['instanceId', 'materialPermissions'])
       return instances.admit(async () => {

@@ -1310,3 +1310,74 @@ test('removing an Agent says where its files stayed, and is refused while it run
   assert.equal(page.$('dlg-details').hidden, true)
   assert.equal(page.frames.size, 0, 'the workspace of an Agent that is gone goes with it')
 })
+
+test('authoring reloads saved permissions and does not carry an unsaved choice into another opening', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
+  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
+  let unavailable = false, release
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/authoring/status') {
+      if (unavailable) return { status: 503, body: { ok: false, teaching: 'Permission read unavailable' } }
+      if (release === false) await new Promise(done => { release = done })
+      return { body: { ok: true, bindingMatches: true, configured: true, materialPermissions: { localRead: false, offMachine: true } } }
+    }
+    return { body: snapshot }
+  } })
+  await page.choose('a'); await settle()
+  release = false
+  const opening = page.$('authoring-open').onclick(); await settle()
+  assert.equal(page.$('authoring-prepare').disabled, true, 'unknown permissions cannot be submitted')
+  release(); await opening
+  assert.equal(page.$('authoring-local-read').checked, false)
+  assert.equal(page.$('authoring-off-machine').checked, true)
+  assert.equal(page.$('authoring-prepare').disabled, false)
+  page.$('authoring-off-machine').checked = false
+  await page.$('authoring-open').onclick()
+  assert.equal(page.$('authoring-off-machine').checked, true, 'unsaved UI choices are not the stored grant')
+  unavailable = true
+  await page.$('authoring-open').onclick()
+  assert.equal(page.$('authoring-prepare').disabled, true, 'read failure must not overwrite a saved grant with defaults')
+  assert.match(page.$('authoring-notice').textContent, /Permission read unavailable/)
+})
+
+test('a late readiness receipt clears only the matching unconfirmed-start notice', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], ready: { agent: false, worker: false } })
+  const snapshot = () => stateOf({ device: linkedDevice(), instances: [row] })
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/instances/control') {
+      row.agent = true
+      return { body: { ...snapshot(), ok: false, state: 'unconfirmed', teaching: 'Agent initialization is not yet confirmed.' } }
+    }
+    return { body: snapshot() }
+  } })
+  await page.choose('a'); await settle()
+  await page.$('agent-toggle').onclick(); await settle()
+  assert.match(page.$('worker-notice').textContent, /not yet confirmed/)
+  page.render(snapshot())
+  assert.match(page.$('worker-notice').textContent, /not yet confirmed/, 'process liveness is not readiness')
+  row.ready.agent = true
+  page.render(snapshot())
+  assert.equal(page.$('worker-notice').textContent, '')
+})
+
+test('identical slow-start messages remain scoped to their Agent across switching and late readiness', async () => {
+  const rows = ['a','b'].map(id => configuredOf('agent-'+id, { id, name:id.toUpperCase(), agentName:id.toUpperCase(), open:true, hostPort:9001, roles:['agent','worker'], ready:{agent:false,worker:false} }))
+  const snapshot = () => stateOf({device:linkedDevice(rows.map(r=>({id:r.agentId,name:r.name}))),instances:rows})
+  const page = await runPageScript(managerPage,{respond:async (path,request)=>{
+    if(path==='/manager/instances/control'){
+      rows.find(r=>r.id===request.body.instanceId).agent=true
+      return {body:{...snapshot(),ok:false,state:'unconfirmed',teaching:'Same slow start message'}}
+    }
+    return {body:snapshot()}
+  }})
+  await page.choose('a'); await settle(); await page.$('agent-toggle').onclick(); await settle()
+  assert.match(page.$('worker-notice').textContent,/A · agent/)
+  await page.choose('b'); await settle()
+  assert.equal(page.$('worker-notice').textContent,'','A warning does not describe B')
+  await page.$('agent-toggle').onclick(); await settle()
+  assert.match(page.$('worker-notice').textContent,/B · agent/)
+  rows[0].ready.agent=true; page.render(snapshot())
+  assert.match(page.$('worker-notice').textContent,/B · agent/,'A becoming ready does not silence B')
+  rows[1].ready.agent=true; page.render(snapshot())
+  assert.equal(page.$('worker-notice').textContent,'')
+})

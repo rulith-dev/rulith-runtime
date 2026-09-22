@@ -2,6 +2,16 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.6 - 2026-09-22
+
+- Load saved document material choices for the selected Agent and Worker binding before
+  enabling preparation. Failed or stale reads cannot overwrite existing choices.
+- Open a visibly empty new conversation while keeping All activity and earlier sessions
+  available for inspection.
+- Keep delayed startup notices with their own Agent and role, and clear them only after
+  a real readiness receipt or stop. Custom Agent processes without readiness events
+  remain usable and are shown as unconfirmed rather than ready.
+
 ## 0.8.5 - 2026-09-22
 
 - Let the Agent choose an installed Case Type by default. A hidden `exploration`

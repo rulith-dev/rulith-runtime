@@ -36,3 +36,11 @@ For an offline development fixture, `RULITH_AUTHORING_JAR` can name an absolute
 configuration, never arguments the model can supply.
 These overrides apply to the Worker process. The workbench's **Prepare local
 assistant** button installs the public checker pinned by this Rulith release.
+
+The preparation dialog reads the selected Agent's current material permissions through
+`POST /manager/authoring/status` before enabling submission. This is a read-only device
+control-plane request: the Gateway verifies the account, Agent, Connection and material
+root. Existing permissions are loaded afresh on each opening; an unavailable read cannot
+silently replace them with checkbox defaults. A binding to another Worker or material
+area must be unlocked in Console first. Periodic workbench refreshes do not overwrite
+choices while the dialog is being edited.
