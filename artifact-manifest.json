@@ -78,7 +78,7 @@
       "sha256": "6d16b66c3e0900ddd624ac7787c284967008b2edb0e392c07a3460935ce73cfa"
     },
     "local/manager-ui.mjs": {
-      "sha256": "39274a7670a11ed05ebfb45a7c3655bd0122e7df4f80f17f917adc2ed5d86b82"
+      "sha256": "215beed10f8f5c5a1ad3b8fadc4288172704232250f4244376c477ce2ffc6dc1"
     },
     "docs/local-manager.md": {
       "sha256": "3053949039c859bde991706a09c1abf5073494c1f409a22d3522618f1f113711"
@@ -129,7 +129,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "473e172a782f04926dcddbdebbd1565cf0f0f888f1b646831b38d2576273e186"
+      "sha256": "10f41d793322982597f9f46d7f84df762887d9a346a5231c738ec6f232efbf23"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -138,7 +138,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "975106afa206f4e5ea6c6ead1d1d5fa464432261c995f97d78ee0445a6a4ca50"
+      "sha256": "ba4c691316f9876d32fcaa865a8ecc9d4f78574ea5f511bb8cb58d9979f3de7d"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

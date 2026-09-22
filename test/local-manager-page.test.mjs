@@ -1340,6 +1340,49 @@ test('authoring reloads saved permissions and does not carry an unsaved choice i
   assert.match(page.$('authoring-notice').textContent, /Permission read unavailable/)
 })
 
+test('the private-draft review exposes premises, source quotes, examples and Case scope before saving once', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
+  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
+  let saves = 0
+  const review = {
+    resultId: 'art_checked', cases: [{ caseId: 'case-4', title: 'case-4' }],
+    draft: {
+      program: { id: 'qa.shipping_fee', title: 'Shipping fee', summary: 'For each order',
+        vocabulary: { defines: [{ id: 'qa.shipping_fee.fee', as: 'fee', args: ['order', 'yuan'] }] }, pins: ['fee'],
+        rules: [{ id: 'r1', label: 'At least 200', when: [{ predicate: 'gte', args: { left: '?amount', right: 200 } }], then: [{ predicate: 'fee', args: { yuan: 0 } }] }] },
+      caseContracts: [{ caseType: 'shipping_fee', businessKey: { arguments: ['order'] } }],
+      citations: [{ ruleId: 'r1', quote: 'amount <200> is free' }],
+      examples: [{ label: 'Boundary', facts: [{ predicate: 'qa.shipping_fee.amount', args: { order: 'A', yuan: 200 } }], expect: [{ predicate: 'qa.shipping_fee.fee', args: { order: 'A', yuan: 0 } }], forbidPredicates: ['qa.shipping_fee.error'] }],
+      questions: [], notes: 'One order at a time.' },
+    report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } },
+  }
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/authoring/status') return { body: { ok: true, bindingMatches: true, configured: true, materialPermissions: { localRead: true, offMachine: false } } }
+    if (path === '/manager/authoring/review') return { body: review }
+    if (path === '/manager/authoring/save') { saves += 1; return { body: { entry: {}, packId: 'qa.shipping_fee', caseId: 'case-4' } } }
+    return { body: snapshot }
+  } })
+  await page.choose('a'); await settle()
+  await page.$('authoring-open').onclick(); await settle()
+  await page.$('authoring-review-open').onclick(); await settle()
+  const shown = page.$('authoring-result').innerHTML
+  for (const evidence of ['Vocabulary and Case boundary', 'businessKey', 'When', 'Then', 'right', '200', 'Boundary', 'Input facts', 'Expected conclusions', 'No conclusions of these kinds', 'One order at a time.'])
+    assert.match(shown, new RegExp(evidence))
+  assert.match(shown, /amount &lt;200&gt; is free/, 'source quotes are visible but escaped')
+  page.$('authoring-result').innerHTML += '<details open>Reading this rule</details>'
+  page.$('authoring-case').value = 'case-4' // mini DOM does not create select options from innerHTML.
+  page.render(snapshot)
+  assert.match(page.$('authoring-result').innerHTML, /details open/, 'background refresh must not collapse an open review item')
+  assert.equal(page.$('authoring-save').disabled, false)
+  await page.$('authoring-save').onclick(); await settle()
+  assert.equal(saves, 1)
+  assert.equal(page.$('authoring-save').disabled, true, 'saving the exact checked draft again is not offered')
+  assert.equal(page.$('authoring-save').textContent, 'Private draft saved')
+  assert.equal(page.$('authoring-case').value, 'case-4')
+  assert.equal(page.$('authoring-case').disabled, true, 'the receipt pins the Case used for this private pack')
+  assert.match(page.$('authoring-publication').href, /qa\.shipping_fee/)
+})
+
 test('an older authoring installation blocks preparation and links to the exact Agent configuration', async () => {
   const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
   const snapshot = stateOf({ device: linkedDevice(), instances: [row] })

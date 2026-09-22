@@ -2,6 +2,15 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.10 - 2026-09-23
+
+- Review a locally checked private draft before saving: expand its vocabulary and Case
+  boundary, rule premises and conclusions, exact source quotes, and each example's
+  input and expected results. Show the draft's scope notes alongside check counts.
+- Keep expanded review items open through workbench refreshes. After a successful save,
+  show the saved state and pin the certified Case named by the receipt instead of
+  offering a second save of the same checked pack.
+
 ## 0.8.9 - 2026-09-23
 
 - Keep unsent text, attachments and Case preferences with their own conversation.

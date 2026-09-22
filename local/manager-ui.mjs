@@ -132,6 +132,11 @@ body{overflow:hidden}
 .modal-body>h3:first-child{margin-top:0}
 .dlgnotice{margin:0 0 14px}
 .dlgnotice:empty{display:none}
+.authoring-review-item{border:1px solid var(--line);border-radius:8px;margin:8px 0;padding:9px 11px}
+.authoring-review-item summary{cursor:pointer;font-weight:600}
+.authoring-review-item pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel2);border-radius:6px;padding:10px;font-size:var(--fs-4);max-height:260px;overflow:auto}
+.authoring-review-item blockquote{margin:10px 0 0;padding:7px 10px;border-left:2px solid var(--accent);color:var(--dim)}
+.authoring-notes{white-space:pre-wrap;overflow-wrap:anywhere}
 .notes{color:var(--dim);font-size:var(--fs-4);margin:12px 0 0;padding-left:18px}
 .notes:empty{display:none}
 .inlinefield{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
@@ -407,7 +412,7 @@ const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendin
    on a picture that may be minutes old is worse than a control that says why it is waiting. */
 let offline='',pollFails=0;
 /* The exact (Agent here, cloud Agent) pair the replacement tick was given for. */
-let replaceFor='',authoringResult=null,authoringFor='',authoringScope='',authoringPermissionsReady=false,authoringLoad=0;
+let replaceFor='',authoringResult=null,authoringRenderedFor=null,authoringFor='',authoringScope='',authoringPermissionsReady=false,authoringLoad=0;
 const pendingStartNotices=new Map();
 const shownStartNotices=new Map();
 function rememberStartNotice(id,role,noticeId,message){
@@ -524,7 +529,10 @@ function controlSpec(){
     'authoring-local-read':['authoring:'+selected,authoringPermissionsReady],
     'authoring-off-machine':['authoring:'+selected,authoringPermissionsReady],
     'authoring-review-open':['authoring:'+selected,Boolean(row)&&row.paired&&!row.blocked&&!row.orphaned],
-    'authoring-save':['authoring:'+selected,Boolean(row)&&authoringResult&&String($('authoring-case').value||'')!==''&&String(authoringResult.resultId||'')!==''&&authoringResult.report?.compiled===true&&authoringResult.report?.examples?.total>0&&authoringResult.report?.examples?.passed===authoringResult.report?.examples?.total&&authoringResult.report?.citations?.total>0&&authoringResult.report?.citations?.verified===authoringResult.report?.citations?.total&&!(authoringResult.draft?.questions||[]).length ],
+    'authoring-case':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId],
+    // program.id is the private pack identity: one checked result can be saved only once.
+    // The Case choice names that pack's certification, not a way to mint several packs.
+    'authoring-save':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId&&String($('authoring-case').value||'')!==''&&String(authoringResult.resultId||'')!==''&&authoringResult.report?.compiled===true&&authoringResult.report?.examples?.total>0&&authoringResult.report?.examples?.passed===authoringResult.report?.examples?.total&&authoringResult.report?.citations?.total>0&&authoringResult.report?.citations?.verified===authoringResult.report?.citations?.total&&!(authoringResult.draft?.questions||[]).length ],
     'page-retry':[windowScope(pageEntry?.id||''),Boolean(pageEntry&&rowOf(pageEntry.id))],
     'open-setup':[windowScope(selected),Boolean(row)],
     'model-copy':['model:'+selected,Boolean(row)&&row.mode==='local_agent'&&!live&&modelSources(row).length>0],
@@ -978,12 +986,23 @@ function renderAuthoring(){
   const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
   $('authoring-publication').hidden=!(ready&&authoringResult.savedPackId);
   if(ready&&authoringResult.savedPackId)$('authoring-publication').href=new URL('/console/#/studio?localAuthoringDraft='+encodeURIComponent(authoringResult.savedPackId)+'&publish=1',current.origin).href;else $('authoring-publication').removeAttribute('href');
-  if(!ready)return;
+  $('authoring-save').textContent=ready&&authoringResult.savedPackId?'Private draft saved':'Save private draft';
+  if(ready&&authoringResult.savedCaseId)$('authoring-case').value=authoringResult.savedCaseId;
+  if(!ready){authoringRenderedFor=null;return;}
+  // The manager polls while this dialog is open. Replacing the same review markup on each poll
+  // would collapse the rule/example disclosures while somebody is reading them.
+  if(authoringRenderedFor===authoringResult)return;
+  authoringRenderedFor=authoringResult;
   const report=authoringResult.report||{},checks=[report.compiled===true?'Compiled':'Not compiled','Examples: '+(report.examples?.passed??0)+'/'+(report.examples?.total??0),'Citations: '+(report.citations?.verified??0)+'/'+(report.citations?.total??0)],questions=Array.isArray(authoringResult.draft?.questions)?authoringResult.draft.questions:[];
   const program=authoringResult.draft?.program||{},rules=Array.isArray(program.rules)?program.rules:[],citations=Array.isArray(authoringResult.draft?.citations)?authoringResult.draft.citations:[],examples=Array.isArray(authoringResult.draft?.examples)?authoringResult.draft.examples:[];
+  const contracts=Array.isArray(authoringResult.draft?.caseContracts)?authoringResult.draft.caseContracts:[];
+  const json=value=>esc(JSON.stringify(value,null,2));
   $('authoring-result').innerHTML='<p><b>'+esc(program.title||program.id||'Checked draft')+'</b></p>'
-    +(rules.length?'<h4>Rules</h4><ul>'+rules.map(r=>'<li>'+esc(r.label||r.id||JSON.stringify(r))+'</li>').join('')+'</ul>':'<p class="notice error">No draft rules were reported.</p>')
-    +'<p class="sub">'+citations.length+' citation(s) · '+examples.length+' example(s)</p>'
+    +(program.summary?'<p class="sub">'+esc(program.summary)+'</p>':'')
+    +'<details class="authoring-review-item"><summary>Vocabulary and Case boundary</summary><b>Capability ID</b><pre>'+esc(program.id||'')+'</pre><b>Defined predicates</b><pre>'+json(program.vocabulary?.defines||[])+'</pre><b>Conclusions</b><pre>'+json(program.pins||[])+'</pre><b>Case contracts</b><pre>'+json(contracts)+'</pre></details>'
+    +(rules.length?'<h4>Rules and source quotes</h4>'+rules.map(r=>'<details class="authoring-review-item"><summary>'+esc(r.label||r.id||'Untitled rule')+'</summary><p class="sub">'+esc(r.id||'')+'</p><b>When</b><pre>'+json(r.when||[])+'</pre><b>Then</b><pre>'+json(r.then||[])+'</pre>'+(citations.filter(c=>c.ruleId===r.id).map(c=>'<blockquote>'+esc(c.quote||'')+'</blockquote>').join('')||'<p class="notice error">No source quote for this rule.</p>')+'</details>').join(''):'<p class="notice error">No draft rules were reported.</p>')
+    +(examples.length?'<h4>Examples</h4>'+examples.map(e=>'<details class="authoring-review-item"><summary>'+esc(e.label||'Untitled example')+'</summary><b>Input facts</b><pre>'+json(e.facts||[])+'</pre><b>Expected conclusions</b><pre>'+json(e.expect||[])+'</pre>'+(e.forbid?.length?'<b>Forbidden conclusions</b><pre>'+json(e.forbid)+'</pre>':'')+(e.forbidPredicates?.length?'<b>No conclusions of these kinds</b><pre>'+json(e.forbidPredicates)+'</pre>':'')+'</details>').join(''):'<p class="notice error">No draft examples were reported.</p>')
+    +(authoringResult.draft?.notes?'<h4>Scope and exclusions</h4><p class="authoring-notes">'+esc(authoringResult.draft.notes)+'</p>':'')
     +(checks.length?'<h4>Checks</h4><ul>'+checks.map(c=>'<li>'+esc(typeof c==='string'?c:(c.title||c.teaching||JSON.stringify(c)))+'</li>').join('')+'</ul>':'<p class="sub">No checks were reported.</p>')
     +(questions.length?'<h4>Questions</h4><ul>'+questions.map(q=>'<li>'+esc(typeof q==='string'?q:(q.question||q.title||JSON.stringify(q)))+'</li>').join('')+'</ul>':'')
     +(!report.compiled||questions.length?'<p class="notice error">Resolve failed checks and questions in the local conversation before saving.</p>':'');
@@ -1423,7 +1442,7 @@ $('authoring-open').onclick=()=>{
 $('authoring-prepare').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead:$('authoring-local-read').checked,offMachine:$('authoring-off-machine').checked}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
 $('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice','Read and verified the immutable local check result.');}));};
 $('authoring-case').onchange=()=>applyControls();
-$('authoring-save').onclick=()=>{const id=selected,v=authoringResult;if(!v)return;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/save',{instanceId:id,resultId:v.resultId,caseId:$('authoring-case').value}).then(saved=>{if(!saved.entry||!saved.packId||!saved.caseId)throw Error('The private-draft receipt was incomplete.');if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}}));};
+$('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('authoring-case').value;if(!v||v.savedPackId)return;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/save',{instanceId:id,resultId:v.resultId,caseId}).then(saved=>{if(!saved.entry||!saved.packId||saved.caseId!==caseId)throw Error('The private-draft receipt did not match the selected Case.');if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;v.savedCaseId=saved.caseId;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}}));};
 $('open-setup').onclick=()=>openSettings(selected,'/setup','details-notice');
 
 /* A poll refreshes the state and nothing else: it never replaces a field being typed in, a

@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "type": "module",
   "description": "Rulith: a local multi-agent workbench with conversations and governed Worker tools",
   "bin": {
