@@ -119,9 +119,16 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.8.10')
+  assert.equal(pkg.version, '0.8.11')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
+  assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
+    new RegExp(`^## ${pkg.version.replaceAll('.', '\\.')}(?: - |$)`, 'm'),
+    'the package version has no release notes')
+  assert.ok(readFileSync(join(ROOT, 'examples/verified-calculation/README.md'), 'utf8').includes(`rulith@${pkg.version}`),
+    'the installation guide still names another npm release')
+  assert.ok(readFileSync(join(ROOT, 'examples/verified-calculation/setup.mjs'), 'utf8').includes(`/v${pkg.version}`),
+    'the example setup still downloads another release tag')
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
   assert.equal(pkg.private, undefined)
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))

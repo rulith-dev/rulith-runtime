@@ -4,6 +4,8 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.8.11 - 2026-09-23
+
 - Give the Agent a compact draft JSON shape with the first local document-ingest result,
   so its first checker call can test a business proposal instead of discovering the
   envelope through a failed check. The shape is guidance; only the checker validates it.
