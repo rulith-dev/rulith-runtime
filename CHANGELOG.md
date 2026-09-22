@@ -2,6 +2,17 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.8 - 2026-09-23
+
+- Browse conversation history in pages and archive or restore completed conversations.
+  Archiving preserves messages and request receipts, and does not cancel a Board Case.
+- Store changes per turn; keep the original history during migration and reject duplicate
+  or damaged records without silently dropping them. Read history on a separate thread.
+- Require an explicit new submission after an interrupted attempt, and explicit consent
+  before sending an existing conversation to a different model service.
+- Show reconnection state, measured model and Worker adapter time, and provider-reported
+  token counts. These are diagnostic measurements, not billing or proof of completion.
+
 ## 0.8.7 - 2026-09-22
 
 - Preserve account- and Agent-scoped conversation text across workbench restarts,

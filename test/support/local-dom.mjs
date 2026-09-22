@@ -280,6 +280,7 @@ export async function loadLocalPage(html, { search = '?k=page-test-key', respond
   const root = createNode('body', doc)
   for (const node of parseMarkup(body, doc)) root.appendChild(node, true)
   for (const node of [root, ...root.descendants()]) doc.register(node)
+  for (const form of root.querySelectorAll('form')) form.requestSubmit = () => doc.dispatch(form, 'submit')
 
   const answer = async (path, request) => {
     const given = respond ? await respond(path, request) : undefined

@@ -27,6 +27,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { localToolSnapshot } from './local-trace.mjs'
 import { openConversations, ConversationStoreError } from './conversation-store.mjs'
+import { DEFAULT_MODEL_URL } from '../local/model-settings.mjs'
 
 /**
  * Numeric knobs fall back to their default, loudly, instead of becoming NaN.
@@ -101,7 +102,7 @@ const TOKEN = process.env.RULITH_TOKEN ?? ''
 // The explicit Runtime provider key wins over the legacy Anthropic environment fallback.
 const MODEL_KEY = process.env.RULITH_MODEL_KEY || process.env.ANTHROPIC_API_KEY || ''
 const MODEL = process.env.RULITH_MODEL ?? 'claude-sonnet-5'
-const MODEL_URL_INPUT = process.env.RULITH_MODEL_URL ?? 'https://api.anthropic.com/v1/messages'
+const MODEL_URL_INPUT = process.env.RULITH_MODEL_URL ?? DEFAULT_MODEL_URL
 const MAX_ROUNDS = envNumber('RULITH_MAX_ROUNDS', 12, { min: 1, max: 1000 })
 const LOCAL_REQUEST_MAX_BODY = 64 * 1024
 const SERVE_PORT = envNumber('RULITH_SERVE_PORT', 7799, { min: 1, max: 65_535 })
@@ -2369,7 +2370,8 @@ function openAIParameters(schema) {
   return expose(schema)
 }
 
-async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
+async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}) {
+  const started = performance.now()
   const wire = openaiStyle(cfg) ? 'openai' : 'anthropic'
   // The optional shadow has its own endpoint/model; do not copy main-provider settings to it.
   const thinking = cfg === MAIN_CFG ? process.env.RULITH_MODEL_THINKING : undefined
@@ -2397,6 +2399,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
     response = await fetch(cfg.url, { method: 'POST', headers, body: JSON.stringify(body) })
   } catch (error) {
     // A user-facing tool does not print a raw stack: say who was called and how to change it.
+    onUsage?.({ durationMs: Math.round(performance.now() - started), inputTokens: null, outputTokens: null, httpStatus: null })
     failTask(`Cannot reach model service ${cfg.url}: ${error?.cause?.code ?? error?.message ?? error}.
    Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
     return { text: '', toolCalls: [] }
@@ -2404,6 +2407,10 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
   const raw = await response.text().catch(() => '')
   let payload
   try { payload = JSON.parse(raw) } catch { payload = {} }
+  const tokenCount = n => Number.isSafeInteger(n) && n >= 0 ? n : null
+  onUsage?.({ durationMs: Math.round(performance.now() - started), httpStatus: response.status,
+    inputTokens: tokenCount(wire === 'openai' ? payload.usage?.prompt_tokens : payload.usage?.input_tokens),
+    outputTokens: tokenCount(wire === 'openai' ? payload.usage?.completion_tokens : payload.usage?.output_tokens) })
   if (!response.ok) {
     if (response.status === 400 && declared && /(?:does not support|unsupported|unrecognized|unknown)\s+(?:the\s+)?tools?\b|\btools?\b.{0,60}(?:not supported|unsupported)/i.test(raw)) {
       // The endpoint refuses tool definitions. Describe the identical schemas in the
@@ -2411,7 +2418,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
       // it is an agent that can no longer reach the Board.
       emulatedTools = true
       log('The model endpoint refused a request carrying tool definitions. The same six tools are now described in the prompt; their names and schemas are unchanged.')
-      return await ask(entries, system, { tools, cfg })
+      return await ask(entries, system, { tools, cfg, onUsage })
     }
     failTask(`Model service error (${response.status}): ${raw.replace(/\s+/g, ' ').slice(0, 300)}`)
     return { text: '', toolCalls: [] }
@@ -2527,7 +2534,7 @@ try {
   if (process.env.RULITH_CONVERSATION_DIR) {
     const owner = JSON.parse(process.env.RULITH_CONVERSATION_OWNER || '{}')
     if (owner.agentId !== agentId) throw new ConversationStoreError('Authenticated Agent does not match the conversation owner.')
-    conversationStore = openConversations(process.env.RULITH_CONVERSATION_DIR, owner)
+    conversationStore = await openConversations(process.env.RULITH_CONVERSATION_DIR, owner)
   }
   if (agentId === '') {
     throw new McpSurfaceError('The public MCP endpoint authenticated this token but returned no Agent identity in'
@@ -3053,7 +3060,10 @@ async function runCaseTurn(ctx, userText, {
     // Anything recovered since the last round is put in front of the model before it is
     // asked again — it is the outcome of a step this conversation already proposed.
     for (const note of carried.splice(0)) messages.push(userEntry(note))
-    const reply = await ask(messages, SYSTEM_PROMPT, { tools: modelTools })
+    const reply = await ask(messages, SYSTEM_PROMPT, { tools: modelTools, onUsage: usage => {
+      if (ctx.taskId && conversationStore) conversationStore.usage(ctx.taskId, usage)
+      emitOn(ctx, 'model-usage', usage)
+    } })
     if (reply.failure) {
       outcome = 'model-error'
       note = reply.failure
@@ -3397,11 +3407,27 @@ if (SERVE) {
   }
 
   const serveSrv = http.createServer((req, res) => {
-    const deny = (why, status = 403) => {
+    const deny = (why, status = 403, details = {}) => {
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ ok: false, teaching: why }))
+      res.end(JSON.stringify({ ok: false, teaching: why, ...details }))
     }
     const path = (req.url ?? '/').split('?')[0]
+    if (req.method === 'POST' && path === '/conversation/archive') {
+      const bad = serveGate(req)
+      if (bad !== null || req.headers['x-rulith-serve'] !== SERVE_KEY) return deny(bad ?? 'The Agent service key is required.')
+      let body = '', over = false
+      req.on('data', chunk => { body += chunk; if (Buffer.byteLength(body) > 4096) { over = true; req.destroy() } })
+      req.on('end', () => {
+        if (over) return
+        try {
+          const input = JSON.parse(body)
+          if (!conversationStore || typeof input.sessionKey !== 'string' || typeof input.archived !== 'boolean') return deny('Choose a saved conversation to archive or restore.', 400)
+          conversationStore.archive(input.sessionKey, input.archived)
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, archived: input.archived }))
+        } catch (error) { deny(error.message, 409) }
+      })
+      return
+    }
     if (req.method === 'POST' && path === '/task') {
       const bad = serveGate(req)
       if (bad !== null) return deny(bad)
@@ -3422,6 +3448,7 @@ if (SERVE) {
         let requestedCaseId = ''
         let requestedCaseIdValue
         let requestId = ''
+        let historyModelDestination = ''
         let caseType = selectedCaseType
         // A caller that names a Case Type has made the governance selection for this task,
         // exactly as `--case-type` does for the process. The model may not move off it.
@@ -3439,6 +3466,7 @@ if (SERVE) {
           const b = JSON.parse(raw || '{}')
           if (b.requestId !== undefined && (typeof b.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(b.requestId))) return deny('requestId must be a short opaque identifier (16–100 letters, digits, _ or -).', 400)
           requestId = b.requestId ?? ''
+          historyModelDestination = typeof b.historyModelDestination === 'string' ? b.historyModelDestination : ''
           if (b.attachments !== undefined) {
             if (!Array.isArray(b.attachments) || b.attachments.length > 8) {
               return deny('attachments must be an array of at most 8 material descriptions from the Rulith host.', 400)
@@ -3490,8 +3518,11 @@ if (SERVE) {
         if (!sessions.has(sessionKey) && sessions.size >= SERVE_SLOTS_MAX
           && ![...sessions.values()].some(s => !s.busy && s.queue.length === 0))
           return deny(`Conversation capacity is full (${SERVE_SLOTS_MAX} slots), and every slot is busy. Retry later or continue an existing sessionKey.`, 429)
+        if (conversationStore?.modelServices(sessionKey).some(destination => destination !== MODEL_DESTINATION) && historyModelDestination !== MODEL_DESTINATION) {
+          return deny('Earlier messages were used with a different model service. Confirm the current destination before sending this conversation history.', 409, { state: 'model-confirmation', modelService: MODEL_DESTINATION })
+        }
         const restoredMessages = !sessions.has(sessionKey) ? conversationStore?.messages(sessionKey, KEEP_MESSAGES) : undefined
-        const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments }
+        const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments, modelService: MODEL_DESTINATION }
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0) + 1
         const receipt = { ok: true, id: item.id, queued: depth, sessionKey, teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }
         try { conversationStore?.accept(item, receipt, requestId, fingerprint) }
@@ -3621,7 +3652,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       ...(pendingCaseId === null ? {} : { pendingCaseId }),
       ...(actualCaseId === null ? {} : { console: consoleUrl }),
     }
-    try { conversationStore?.finish(item.id, note, outcome) }
+    try { conversationStore?.finish(item.id, note, outcome, { caseIds: [...activeCaseIds, ...closedCases, actualCaseId].filter(v => typeof v === 'string') }) }
     catch (error) {
       acceptingTasks = false
       rec.outcome = 'interrupted'

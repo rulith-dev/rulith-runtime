@@ -6,7 +6,9 @@
  * only lifecycle, a bounded diagnostic journal, and its loopback UI.
  */
 import http from 'node:http'
-import { conversationFile, readConversations, conversationEvents } from '../agent/conversation-store.mjs'
+import { conversationFile, openConversations } from '../agent/conversation-store.mjs'
+import { createConversationReader } from '../agent/conversation-reader.mjs'
+import { DEFAULT_MODEL_URL } from './model-settings.mjs'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
@@ -238,6 +240,17 @@ export function createLocalHost({
   const configDir = dirname(resolve(configFile))
   const historyDirectory = join(configDir, 'conversations')
   const historyFile = conversationOwner ? conversationFile(historyDirectory, conversationOwner) : undefined
+  let historyBusy = false
+  let historyReader, historyReaderRetryAfter = 0
+  const readHistory = async input => {
+    if (historyReader?.failed) { void historyReader.close(); historyReader = undefined }
+    if (!historyReader) {
+      if (Date.now() < historyReaderRetryAfter) throw new Error('Conversation reader is temporarily unavailable. Retry opening Conversations in a few seconds.')
+      historyReaderRetryAfter = Date.now() + 5000
+      historyReader = createConversationReader(historyFile, conversationOwner)
+    }
+    return historyReader.read(input)
+  }
   // An account default is runtime-only. It must never become part of `config`: Setup actions
   // clone and save that object, and doing so would turn an inherited provider key into a
   // durable per-instance credential.
@@ -485,6 +498,7 @@ export function createLocalHost({
     child.stderr.on('data', (chunk) => feed('err', String(chunk)))
   }
   const startAgent = () => {
+    if (historyBusy) return 'Wait for the conversation archive operation to finish, then start the Agent.'
     if (running('agent')) return 'Agent is already running.'
     const path = config.paths?.agent ? resolve(configDir, config.paths.agent) : resolve(HERE, '../agent/rulith-agent.mjs')
     if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.agent in the Rulith configuration.`
@@ -525,11 +539,9 @@ export function createLocalHost({
       }
       emit('agent', 'exit', { code })
       if (historyFile) {
-        try {
-          for (const row of conversationEvents(readConversations(historyFile, conversationOwner), true)) {
-            if (row.type === 'task-done' && row.outcome === 'interrupted') emit('agent', row.type, row)
-          }
-        } catch (error) { emit('local', 'error', { note: error.message }) }
+        void readHistory({ kind: 'interrupted', stopped: true })
+          .then(rows => { for (const row of rows) emit('agent', row.type, row) })
+          .catch(error => emit('local', 'error', { note: error.message }))
       }
       announceChildren()
     })
@@ -694,6 +706,7 @@ export function createLocalHost({
   }
   const server = http.createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0]
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     try {
       /**
        * Authorized local delivery, authenticated by its own secret and nothing else.
@@ -815,18 +828,55 @@ export function createLocalHost({
         // response that escapes the gate would still not hand anyone a working key.
         return void res.end(localPage)
       }
+      if ((path === '/conversations' || path === '/conversation') && req.method === 'GET') {
+        res.setHeader('cache-control', 'no-store')
+        if (!historyFile) return void json(res, 200, { ok: true, available: false, items: [] })
+        try {
+          if (path === '/conversations') return void json(res, 200, { ok: true, available: true,
+            ...await readHistory({ kind: 'list', archived: url.searchParams.get('archived') === 'true', offset: url.searchParams.get('offset') }) })
+          const page = await readHistory({ kind: 'page', sessionKey: url.searchParams.get('sessionKey') ?? '', before: url.searchParams.get('before'), stopped: !running('agent') })
+          const origin = new URL(conversationOwner.origin)
+          if (origin.hostname === 'api.rulith.ai') origin.hostname = 'console.rulith.ai'
+          return void json(res, 200, { ok: true, available: true, ...page,
+            caseBase: origin.origin + '/console/#/cases/' + encodeURIComponent(conversationOwner.agentId) + '/' })
+        } catch (error) { return void json(res, 409, { ok: false, teaching: error.message }) }
+      }
+      if (path === '/conversation/archive' && req.method === 'POST') {
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Archiving requires this page key and the same origin.' })
+        if (!historyFile || historyBusy) return void json(res, 409, { ok: false, teaching: 'Conversation history is unavailable or another archive operation is running.' })
+        historyBusy = true
+        try {
+          const body = await readJson(req)
+          if (typeof body.sessionKey !== 'string' || typeof body.archived !== 'boolean') return void json(res, 400, { ok: false, teaching: 'Choose a conversation and archive or restore it.' })
+          if (running('agent')) {
+            if (components.agent.readyAt === undefined) return void json(res, 409, { ok: false, teaching: 'The Agent is still starting. Archive this conversation when it is ready, or stop it first.' })
+            const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/conversation/archive`, {
+              method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey },
+              body: JSON.stringify(body), signal: AbortSignal.timeout(10000),
+            })
+            return void json(res, response.status, await response.json())
+          }
+          const store = await openConversations(historyDirectory, conversationOwner, { recoverInterrupted: false })
+          try { store.archive(body.sessionKey, body.archived, { stopped: true }) } finally { store.close() }
+          return void json(res, 200, { ok: true, archived: body.archived })
+        } catch (error) { return void json(res, 409, { ok: false, teaching: error.message }) }
+        finally { historyBusy = false }
+      }
       if (path === '/events' && req.method === 'GET') {
+        let disconnected = false
+        req.on('close', () => { disconnected = true; clients.delete(res) })
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
         let saved = []
-        if (historyFile) {
-          try { saved = conversationEvents(readConversations(historyFile, conversationOwner), !running('agent')) }
+        if (historyFile && url.searchParams.get('history') !== 'paged') {
+          try { saved = await readHistory({ kind: 'recent', stopped: !running('agent') }) }
           catch (error) { saved = [{ src: 'local', type: 'error', note: error.message }] }
         }
         const known = new Set(saved.map(e => e.historyKey).filter(Boolean))
         const replay = [...saved, ...events.filter(e => !e.historyKey || !known.has(e.historyKey))]
           .sort((a, b) => (a.t ?? a.at ?? 0) - (b.t ?? b.at ?? 0))
+        if (disconnected) return
         for (const event of replay) res.write(`data: ${JSON.stringify(event)}\n\n`)
-        clients.add(res); req.on('close', () => clients.delete(res)); return
+        clients.add(res); return
       }
       if (path === '/status' && req.method === 'GET') {
         const agentEnv = agentEnvironment()
@@ -845,7 +895,7 @@ export function createLocalHost({
             // larger thing.
             agent: {
               id: components.agent.agentId, credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
-              modelService: safeUrl(agentEnv.RULITH_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
+              modelService: safeUrl(agentEnv.RULITH_MODEL_URL || DEFAULT_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
               modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? baseEnv().ANTHROPIC_API_KEY ?? '') !== '',
               thinking: agentEnv.RULITH_MODEL_THINKING === 'disabled' ? 'disabled' : agentEnv.RULITH_MODEL_THINKING === 'enabled' ? 'extended' : 'standard',
             },
@@ -948,6 +998,7 @@ export function createLocalHost({
             ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
             ...(selected.attachments.length === 0 ? {} : { attachments: selected.attachments }),
             ...(body.caseId === undefined ? {} : { caseId: body.caseId }),
+            ...(body.historyModelDestination === undefined ? {} : { historyModelDestination: body.historyModelDestination }),
             ...(body.caseType === undefined ? {} : { caseType: body.caseType }),
             ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) }),
         }).catch(() => undefined)
@@ -1033,6 +1084,7 @@ export function createLocalHost({
       await Promise.all(exits)
       for (const client of clients) client.end()
       clients.clear()
+      await historyReader?.close()
       await new Promise((accept) => server.close(accept))
     },
   }

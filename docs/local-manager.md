@@ -179,8 +179,8 @@ never silently moves or rewrites the legacy configuration.
 Profiles live under `~/.rulith/manager/instances/<id>` by default. Each contains
 `local.json`, MCP service state, Worker configuration, Source vault, workspace and
 `agent-sessions.json`. The latter stores pending MCP calls for recovery, separately
-from `conversations/<owner-hash>.json`, which preserves accepted messages, attachment
-names and visible replies. History is scoped to the Console origin, account and Agent;
+from `conversations/<owner-hash>.json` and its `.d` directory, which preserve accepted
+messages, attachment names and visible replies. History is scoped to the Console origin, account and Agent;
 replacing a credential does not change its owner. It remains readable with the Agent
 stopped. New conversation starts empty; select an existing conversation to continue it.
 
@@ -188,13 +188,25 @@ Restarting marks unfinished local turns as interrupted and never replays their w
 Sending a new message may use the selected conversation's recent text as historical
 context; it does not restore MCP sessions, Board focus, tool results or file access.
 Board Cases and their evidence remain authoritative in the cloud. The same message
-request ID returns its original receipt on retry, including after restart.
+request ID returns its original receipt on retry, including after restart. Interrupted
+requests offer an explicit new submission. Changing the model service requires consent
+before existing conversation text is sent to that destination.
 
 History is written atomically by the Agent, before a message is acknowledged. An
 unreadable history is preserved and blocks startup; a failed write blocks admission
-or stops further execution. Each owner is limited to 1,000 turns / 32 MiB without
-silent deletion. To archive a full history, stop the Agent and move that owner's
-JSON file to private storage before restarting. Do not restore it over running work.
+or stops further execution. Changes are stored per turn under an exclusive writer lock;
+the original JSON is retained during migration. The Conversations dialog pages through
+active and archived history. Archive preserves receipts and messages and frees active
+capacity; restore is required before sending again. Stop the Agent before archiving
+unfinished work. Archiving does not cancel a Board Case.
+Active history is limited to 1,000 turns and 256 MiB, including 8 MiB reserved for each
+unfinished turn. A single stored turn is limited to 32 MiB. No history is silently deleted.
+For a private backup, stop the Agent and copy both the owner JSON and its `.d` directory.
+Never overwrite history while the Agent is running. Windows protects atomic replacement
+against process interruption, but does not provide a directory-fsync guarantee on power loss.
+Archive releases active capacity, not disk space. List indexing still scans file metadata
+across archived history; very large libraries increase read latency. Reads run outside
+the UI server thread and page responses contain only the selected conversation slice.
 Old process-only conversations cannot be recovered. Explicit single-Agent CLI mode
 does not create account-scoped durable history.
 

@@ -100,7 +100,7 @@ test('the composer answers in the page, because a sandboxed frame has no browser
   assert.doesNotMatch(code, /\balert\(/, 'a send that fails must not fail silently when embedded')
   assert.doesNotMatch(managerPage, /allow-modals/, 'the fix is the page answering, not the sandbox letting dialogs through')
   assert.match(script, /sayCompose\('Business key must be valid JSON\.'\)/)
-  assert.match(script, /sayCompose\(r\?\.teaching\|\|'The message could not be submitted\./)
+  assert.match(script, /sayCompose\(r\?\.teaching\|\|'The message outcome is not confirmed\./)
   assert.match(localPage, /id="composererr" role="alert"/, 'the answer is announced, not only drawn')
   assert.match(localPage, /\.composererr:empty\{display:none\}/)
 })

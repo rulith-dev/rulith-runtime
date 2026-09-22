@@ -327,6 +327,7 @@ function renderModelAnswer(answer, provider) {
   }))
   if (provider === 'anthropic') {
     return {
+      ...(value.usage ? { usage: value.usage } : {}),
       content: [
         ...(text === '' ? [] : [{ type: 'text', text }]),
         // A raw input is a marker here; `serializeModelAnswer` splices the text in after
@@ -348,6 +349,7 @@ function renderModelAnswer(answer, provider) {
         }),
       },
     }],
+    ...(value.usage ? { usage: value.usage } : {}),
   }
 }
 

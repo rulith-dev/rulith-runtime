@@ -12,6 +12,7 @@ import { writeJsonAtomic } from './manager-registry.mjs'
 
 const text = value => typeof value === 'string' ? value : ''
 const clean = value => text(value).trim()
+export const DEFAULT_MODEL_URL = 'https://api.anthropic.com/v1/messages'
 
 export const modelDefaultsFile = root => join(root, 'model-defaults.json')
 

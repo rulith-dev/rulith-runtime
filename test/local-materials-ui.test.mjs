@@ -107,7 +107,7 @@ test('Add files opens a dialog that can be opened again during a turn', async ()
   assert.equal(page.$('filesmodal').hidden, false)
   await page.choose([fileOf('second.txt')])
   assert.deepEqual(page.chips().map((chip) => chip.name), ['first.txt', 'second.txt'])
-  assert.deepEqual([...new Set(page.calls.map((call) => call.path.split('?')[0]))], ['/status', '/materials'])
+  assert.deepEqual([...new Set(page.calls.map((call) => call.path.split('?')[0]))], ['/conversations', '/status', '/materials'])
 })
 
 test('dropping files on the composer is the same act as choosing them', async () => {

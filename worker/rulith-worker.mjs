@@ -2504,6 +2504,9 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   const t = tools[action]
   if (!t) throw new Error(`Worker Tool ${action} is not installed on this connection`)
   let out
+  const toolStarted = performance.now()
+  let adapterReturned = false
+  try {
   if (t.impl === 'http') out = await handHttp(t, args, sources)
   else if (t.impl === 'run') out = await handRun(t, args, context, sources)
   else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
@@ -2516,6 +2519,11 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   else if (t.impl === 'db-query') out = await handDbQuery(t, sources)
   else if (t.impl === 'db-exec-fenced') out = await handDbExec(t, sources)
   else throw new Error(`Unsupported impl "${t.impl}"; this Worker supports: ${[...KNOWN_IMPLS].join(' / ')}`)
+  adapterReturned = !(typeof out === 'string' && out.startsWith('error:'))
+  } finally {
+    // 仅本机诊断计时；不改变工具结果、事实档位或商业计量。
+    wev('tool-timing', { tool: action, adapter: t.impl, outcome: adapterReturned ? 'returned' : 'failed', durationMs: Math.round(performance.now() - toolStarted) })
+  }
   // 手的失败形态是 'error: …' 文本(mcp/db 同族十处)。必须在这唯一出口折成异常——
   // 返回值路径会把失败洗成 ok=true 的回执: 库一行没动,板却记「已执行」(RT-WK-HONEST,2026-08-17 真机)。
   if (typeof out === 'string' && out.startsWith('error:')) throw new Error(out.slice('error:'.length).trim())

@@ -9,6 +9,7 @@ const files = [
   'agent/rulith-agent.mjs',
   'agent/local-trace.mjs',
   'agent/conversation-store.mjs',
+  'agent/conversation-reader.mjs',
   // The vendored public MCP contract. The Agent's surface is generated from it, so a
   // download that fetched the agent without it would install bytes nobody could reconcile
   // against the commit they were projected from.

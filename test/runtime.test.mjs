@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.8.7')
+  assert.equal(pkg.version, '0.8.8')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.deepEqual(pkg.bin, { rulith: 'local/rulith-local.mjs' })
@@ -1380,7 +1380,7 @@ test('Rulith Local presents a conversation-first Agent workbench with optional R
     'the selected sidebar item must be the conversation, not one message id')
   assert.doesNotMatch(localPage, /state\.active=r\.id/,
     'a follow-up message must not split the current conversation into a new sidebar item')
-  assert.match(localPage, /if\(n\.dataset\.case\)state\.session=n\.dataset\.case/,
+  assert.match(localPage, /if\(key\)state\.session=key/,
     'selecting an earlier conversation must route composer follow-ups back to that session')
   assert.match(localPage, /session-detached/,
     'a reclaimed local conversation must visibly retain the recoverable Rulith Case id')
