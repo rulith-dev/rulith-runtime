@@ -43,7 +43,7 @@ export function modelView({ source = 'custom', url = '', name = '', key = '', th
     source,
     url: clean(url),
     name: clean(name),
-    thinking: thinking === 'enabled' ? 'enabled' : 'standard',
+    thinking: ['enabled', 'disabled'].includes(thinking) ? thinking : 'standard',
     keyConfigured: clean(key) !== '',
     configured,
     ready: configured,
@@ -52,7 +52,7 @@ export function modelView({ source = 'custom', url = '', name = '', key = '', th
 }
 
 export function modelSignature({ url = '', name = '', key = '', thinking = 'standard' } = {}) {
-  return createHash('sha256').update(`${clean(url)}\u0000${clean(name)}\u0000${clean(key)}\u0000${thinking === 'enabled' ? 'enabled' : 'standard'}`).digest('hex')
+  return createHash('sha256').update(`${clean(url)}\u0000${clean(name)}\u0000${clean(key)}\u0000${['enabled', 'disabled'].includes(thinking) ? thinking : 'standard'}`).digest('hex')
 }
 
 function load(file) {
@@ -95,11 +95,14 @@ export function checkedModelInput(body, { requireUrlAndName = true } = {}) {
   }
   if (body.clearKey !== undefined && body.clearKey !== true && body.clearKey !== false) throw new Error('clearKey must be true or false.')
   if (body.clearKey === true && clean(body.key) !== '') throw new Error('Choose either a replacement model key or clear it.')
-  if (body.thinking !== undefined && !['enabled', 'standard', ''].includes(text(body.thinking))) {
-    throw new Error('Thinking must be enabled or standard.')
+  if (body.thinking !== undefined && !['enabled', 'disabled', 'standard', ''].includes(text(body.thinking))) {
+    throw new Error('Thinking must be enabled, disabled, or standard.')
+  }
+  if (url?.pathname.replace(/\/+$/, '').endsWith('/messages') && ['enabled', 'disabled'].includes(body.thinking)) {
+    throw new Error('Choose Provider default for a Messages endpoint. Explicit thinking controls require an OpenAI-compatible Chat Completions endpoint.')
   }
   return { url: url?.href ?? '', name, key: body.key, clearKey: body.clearKey === true,
-    thinking: body.thinking === 'enabled' ? 'enabled' : 'standard' }
+    thinking: ['enabled', 'disabled'].includes(body.thinking) ? body.thinking : 'standard' }
 }
 
 /** A blank key preserves only a credential for the same provider origin. */

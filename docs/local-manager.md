@@ -60,6 +60,13 @@ scoped to the signed-in account and Console origin on this computer. They are no
 
 ## Default model and Agent overrides
 
+The **Thinking** option distinguishes **Provider default**, **Off**, and **On**. Provider
+default omits the setting; it can still enable reasoning when that is the service's default.
+Off and On send an explicit `thinking.type` to OpenAI-compatible services that support it.
+An empty response or a response cut off at its output limit is reported as a recoverable
+model failure, without executing partial tool calls. Continue the same conversation after
+adjusting the setting or asking for a smaller step; Rulith does not retry paid calls automatically.
+
 Open the account menu at the bottom left and choose **Default model** to configure the model
 once. New local Agent profiles follow this default. For one Agent, open its gear menu and
 choose **Model settings** to switch between the default and a separate configuration.

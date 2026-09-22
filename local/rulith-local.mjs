@@ -823,7 +823,7 @@ export function createLocalHost({
               id: components.agent.agentId, credentialConfigured: String(agentEnv.RULITH_TOKEN ?? '') !== '',
               modelService: safeUrl(agentEnv.RULITH_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
               modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? baseEnv().ANTHROPIC_API_KEY ?? '') !== '',
-              thinking: String(agentEnv.RULITH_MODEL_THINKING ?? '') === 'enabled' ? 'extended' : 'standard',
+              thinking: agentEnv.RULITH_MODEL_THINKING === 'disabled' ? 'disabled' : agentEnv.RULITH_MODEL_THINKING === 'enabled' ? 'extended' : 'standard',
             },
             worker: {
               connection: String(workerEnv.RULITH_CONNECTION ?? ''), credentialConfigured: String(workerEnv.RULITH_CONNECTION_KEY ?? '') !== '',
@@ -961,7 +961,7 @@ export function createLocalHost({
       if (running('agent')) throw new Error('Stop Agent before changing its model.')
       activeModelOverlay = {
         RULITH_MODEL_URL: String(url), RULITH_MODEL: String(name), RULITH_MODEL_KEY: String(modelKey),
-        RULITH_MODEL_THINKING: thinking === 'enabled' ? 'enabled' : '' }
+        RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(thinking) ? thinking : '' }
     },
     /**
      * The operating-system processes this host currently owns.

@@ -3,6 +3,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runAgent, callTool } from './support/agent-harness.mjs'
 
+for (const thinking of ['enabled', 'disabled']) test(`Messages endpoints refuse unsupported explicit thinking: ${thinking}`, async () => {
+  const run = await runAgent({ argv: ['Hello'], provider: 'anthropic', captureLocalEvents: true,
+    env: { RULITH_MODEL_THINKING: thinking }, model: () => 'Must not run' })
+  assert.equal(run.modelRequests.length, 0)
+  assert.equal(run.code, 1)
+  assert.match(run.stderr, /Choose Provider default/)
+  assert.equal(run.initializes.length, 0, 'invalid configuration must fail before the MCP session starts')
+})
+
 for (const thinking of ['enabled', 'disabled', '']) test(`OpenAI model thinking setting is preserved: ${thinking || 'provider default'}`, async () => {
   const run = await runAgent({ argv: [], provider: 'openai', chatLines: ['Hello'],
     env: { RULITH_MODEL_THINKING: thinking }, model: () => 'Hello' })

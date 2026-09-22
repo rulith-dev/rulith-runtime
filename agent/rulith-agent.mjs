@@ -226,6 +226,9 @@ const MODEL_URL = pathNoSlash.endsWith('/chat/completions') || pathNoSlash.endsW
   : pathNoSlash === '' ? new URL('/v1/chat/completions', parsedModelUrl).toString()
     : pathNoSlash.endsWith('/v1') ? new URL(`${pathNoSlash}/chat/completions`, parsedModelUrl.origin).toString()
       : die('OpenAI-compatible model service URLs must be the server root, end in /v1, or end in /chat/completions.')
+if (MODEL_URL.endsWith('/messages') && ['enabled', 'disabled'].includes(process.env.RULITH_MODEL_THINKING)) {
+  die('Explicit thinking controls currently require an OpenAI-compatible Chat Completions endpoint. Choose Provider default for this Messages endpoint (unset RULITH_MODEL_THINKING).')
+}
 // ── Local material delivery ──────────────────────────────────────────────────
 //
 // A Rulith host may be the custodian of objects whose bytes never left this machine. This Agent
@@ -2367,6 +2370,8 @@ function openAIParameters(schema) {
 
 async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
   const wire = openaiStyle(cfg) ? 'openai' : 'anthropic'
+  // The optional shadow has its own endpoint/model; do not copy main-provider settings to it.
+  const thinking = cfg === MAIN_CFG ? process.env.RULITH_MODEL_THINKING : undefined
   const style = emulatedTools ? 'emulated' : wire
   const declared = !emulatedTools && tools.length > 0
   const systemText = emulatedTools && tools.length > 0 ? `${system}\n\n${emulatedToolGuide(tools)}` : system
@@ -2378,7 +2383,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
     ? {
         model: cfg.model, max_tokens: 6000,
         // Omission uses the provider default. An explicit disable must reach providers that default to thinking.
-        ...(['enabled', 'disabled'].includes(process.env.RULITH_MODEL_THINKING) ? { thinking: { type: process.env.RULITH_MODEL_THINKING } } : {}),
+        ...(['enabled', 'disabled'].includes(thinking) ? { thinking: { type: thinking } } : {}),
         messages: [{ role: 'system', content: systemText }, ...renderMessages(entries, style)],
         ...(declared ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: openAIParameters(tool.schema) } })) } : {}),
       }
@@ -2409,6 +2414,22 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG } = {}) {
     }
     failTask(`Model service error (${response.status}): ${raw.replace(/\s+/g, ' ').slice(0, 300)}`)
     return { text: '', toolCalls: [] }
+  }
+  // A truncated or empty provider response is not a delivered answer. In particular,
+  // reasoning can exhaust the output budget before any text or tool call is produced.
+  // Refuse the entire truncated turn so even a syntactically valid partial call cannot run.
+  const finishReason = wire === 'openai' ? payload?.choices?.[0]?.finish_reason : payload?.stop_reason
+  if (finishReason === 'length' || finishReason === 'max_tokens') {
+    return { text: '', toolCalls: [], failure: 'The model reached its output token limit before finishing this response. No tools from this response were executed. Reduce the thinking level or ask for a smaller step, then continue the same conversation.' }
+  }
+  const spokenText = wire === 'openai'
+    ? payload?.choices?.[0]?.message?.content
+    : (Array.isArray(payload?.content) ? payload.content : []).filter(block => block?.type === 'text').map(block => String(block.text ?? '')).join('\n')
+  const nativeCalls = wire === 'openai'
+    ? payload?.choices?.[0]?.message?.tool_calls
+    : (Array.isArray(payload?.content) ? payload.content : []).filter(block => block?.type === 'tool_use')
+  if (!(typeof spokenText === 'string' && spokenText.trim()) && (emulatedTools || !Array.isArray(nativeCalls) || nativeCalls.length === 0)) {
+    return { text: '', toolCalls: [], failure: 'The model returned no answer or tool call. No tools from this response were executed. Continue the same conversation to try again, or check the model settings.' }
   }
   if (emulatedTools) {
     const spoken = wire === 'openai'
@@ -2908,7 +2929,7 @@ async function runCaseTurn(ctx, userText, {
   const messages = ctx.messages
   let opened = board.roots.length > 0
   let note = ''
-  let outcome = 'pending'
+  let outcome = 'stopped'
   let nudged = false
   let selectionNotice = ''
   let lastCaseId = board.roots[0]?.caseId ?? null
@@ -3023,6 +3044,13 @@ async function runCaseTurn(ctx, userText, {
     // asked again — it is the outcome of a step this conversation already proposed.
     for (const note of carried.splice(0)) messages.push(userEntry(note))
     const reply = await ask(messages, SYSTEM_PROMPT, { tools: modelTools })
+    if (reply.failure) {
+      outcome = 'model-error'
+      note = reply.failure
+      emitOn(ctx, 'model-error', { teaching: note })
+      log(`\n⚠ ${note}`)
+      break
+    }
     const say = String(reply.text ?? '').trim()
     if (say !== '') log(`\n${say.slice(0, 1200)}`)
     messages.push(assistantEntry(reply.text, reply.toolCalls, reply.reasoningContent))
@@ -3146,7 +3174,7 @@ async function runCaseTurn(ctx, userText, {
     // The shadow reviewer writes to the Board, so it is behind the same gate as everything
     // else. Running it after the turn was blocked would be this host announcing that no
     // further call would be sent and then sending one.
-    if (withShadow && board.roots.length > 0 && outcome !== 'blocked' && board.unresolved === undefined) {
+    if (withShadow && board.roots.length > 0 && !['blocked', 'model-error'].includes(outcome) && board.unresolved === undefined) {
       await shadowReview(ctx, userText)
     }
     if (note === `Stopped at the ${MAX_ROUNDS}-round limit.`) {
@@ -3185,6 +3213,11 @@ Do not invent criticism. If no issue is substantiated, reply with exactly PASS.
 Otherwise return at most three lines, each formatted FINDING: <one precise issue with a node or value>.`,
     { cfg: SHADOW_CFG },
   )
+  if (verdict.failure) {
+    log(`◆ Shadow review unavailable: ${verdict.failure}`)
+    emitOn(ctx, 'shadow', { pass: false, unavailable: true, teaching: verdict.failure })
+    return false
+  }
   const findings = String(verdict.text ?? '').split('\n').map((line) => line.trim()).filter((line) => line.startsWith('FINDING:')).slice(0, 3)
   if (findings.length === 0) { log('◆ Shadow review: PASS'); emitOn(ctx, 'shadow', { pass: true }); return true }
   for (const finding of findings) log(`◆ Shadow review: ${finding.slice(0, 200)}`)
@@ -3494,6 +3527,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     let activeCaseIds = []
     let actualCaseId = null
     let closedCases = []
+    let outcome = 'error'
     try {
       const seg = await runCaseTurn(slot, item.text, {
         policy: 'return',
@@ -3504,6 +3538,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
         attachments: item.attachments,
       })
       note = seg.note
+      outcome = seg.outcome
       pendingCaseId = seg.pendingCaseId
       activeCaseId = seg.activeCaseId
       activeCaseIds = seg.activeCaseIds
@@ -3542,7 +3577,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     }
     const rec = {
       id: item.id, text: item.text, at: item.at,
-      startedAt: flight.startedAt, endedAt: Date.now(), note,
+      startedAt: flight.startedAt, endedAt: Date.now(), note, outcome,
       board: agentId,
       ...(actualCaseId === null ? {} : { caseId: actualCaseId }),
       ...(activeCaseId === null ? {} : { activeCaseId }),
@@ -3631,7 +3666,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
       + '\n   Nothing was executed and no Case record exists. Fix the reported cause and run the task again.\n')
     process.exitCode = 1
   } else {
-    process.exitCode = 0
+    process.exitCode = outcome === 'model-error' ? 1 : 0
   }
   await endSession()
   } catch (error) {

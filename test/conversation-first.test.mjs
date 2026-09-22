@@ -1431,6 +1431,67 @@ test('--serve survives a model-provider failure and keeps taking work', async ()
   assert.match(String(runs[1].note), /Response delivered/)
 })
 
+for (const provider of ['openai', 'anthropic']) {
+  for (const truncated of [false, true]) {
+    test(`--serve reports ${provider} ${truncated ? 'truncation' : 'empty output'} and allows a later conversation turn`, async () => {
+      const port = await freePort()
+      const body = provider === 'openai'
+        ? { choices: [{ finish_reason: truncated ? 'length' : 'stop', message: truncated
+          ? { content: 'A partial answer', tool_calls: [{ id: 'partial', type: 'function', function: { name: 'OpenCase', arguments: '{"title":"must not run"}' } }] }
+          : { content: null, reasoning_content: 'Reasoning alone is not a response.' } }] }
+        : { stop_reason: truncated ? 'max_tokens' : 'end_turn', content: truncated
+          ? [{ type: 'text', text: 'A partial answer' }, { type: 'tool_use', id: 'partial', name: 'OpenCase', input: { title: 'must not run' } }]
+          : [{ type: 'thinking', thinking: 'Reasoning alone is not a response.' }] }
+      const run = await runAgent({
+        argv: ['--serve'], provider,
+        env: { RULITH_SERVE_PORT: String(port), RULITH_SERVE_KEY: 'provider-response-test' },
+        serveTasks: ['first turn', 'continue'], waitForServeCompletion: true,
+        model: n => n === 1 ? { status: 200, body } : 'The next turn works.',
+        timeoutMs: 6000,
+      })
+      assert.equal(run.modelRequests.length, 2, 'there must be no automatic paid retry')
+      assert.equal(run.verbs.includes('OpenCase'), false, 'a truncated tool call must never execute')
+      assert.equal(run.serveSnapshot.runs[0].outcome, 'model-error')
+      assert.match(run.serveSnapshot.runs[0].note, truncated ? /output token limit/ : /no answer or tool call/)
+      assert.doesNotMatch(run.serveSnapshot.runs[0].note, /Response delivered/)
+      assert.match(run.serveSnapshot.runs[1].note, /Response delivered/)
+      assert.equal(run.serveSnapshot.runs[1].outcome, 'conversation')
+    })
+  }
+}
+
+test('interactive chat survives empty model output and preserves prior tool results', async () => {
+  const run = await runAgent({ argv: [], chatLines: ['Open a Case.', 'Continue.'],
+    model: n => n === 1 ? callTool('OpenCase', {}) : n === 2 ? '' : 'The conversation continued.' })
+  assert.equal(run.code, 0, run.stderr)
+  assert.match(run.stdout, /no answer or tool call/)
+  assert.match(run.stdout, /The conversation continued/)
+  assert.equal(run.verbs.filter(verb => verb === 'OpenCase').length, 1)
+  assert.match(JSON.stringify(run.modelRequests.at(-1)), /CASE_1/)
+})
+
+test('one-shot reports a recoverable model failure with its open Case', async () => {
+  const run = await runAgent({ argv: ['Open a Case.'], captureLocalEvents: true,
+    model: n => n === 1 ? callTool('OpenCase', {}) : '' })
+  assert.equal(run.code, 1)
+  const end = run.localEvents.find(event => event.type === 'end')
+  assert.equal(end.outcome, 'model-error')
+  assert.equal(end.pendingCaseId, 'CASE_1')
+  assert.match(run.stdout, /Resume with --case CASE_1/)
+})
+
+test('an empty shadow review is unavailable and preserves the Case report', async () => {
+  const run = await runAgent({ argv: ['Open a Case.', '--shadow'], captureLocalEvents: true,
+    env: { RULITH_MODEL_THINKING: 'disabled' },
+    model: (n, request) => systemTextOf(request).includes('adversarial shadow reviewer') ? ''
+      : n === 1 ? callTool('OpenCase', {}) : 'Waiting for more information.' })
+  assert.equal(run.code, 0, run.stdout + run.stderr)
+  assert.equal(run.localEvents.find(event => event.type === 'end').pendingCaseId, 'CASE_1')
+  assert.equal(run.localEvents.find(event => event.type === 'shadow').unavailable, true)
+  assert.equal(run.modelRequests.at(-1).thinking, undefined, 'main model settings must not leak to a separately configured shadow')
+  assert.doesNotMatch(run.stdout, /Shadow review: PASS/)
+})
+
 test('--serve assigns independent conversation keys when callers omit sessionKey', async () => {
   const port = await freePort()
   const run = await runAgent({

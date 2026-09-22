@@ -8,6 +8,10 @@ All notable changes to the local runtime are documented here.
   preference no longer overrides document authoring; an explicit user preference still applies.
 - Include the rule format and published built-ins in local compilation failure reports so
   the model can correct a draft through the existing checker and artifact tools.
+- Report empty or truncated model responses as recoverable failures. Never execute their
+  partial tool calls or claim an answer was delivered; preserve existing Case outcomes.
+- Distinguish provider-default thinking from an explicit Off or On choice. Preserve that
+  choice through account defaults, Agent overrides, copying, and process restarts.
 
 ## 0.8.4 - 2026-09-22
 

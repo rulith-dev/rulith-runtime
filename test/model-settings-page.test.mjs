@@ -16,6 +16,16 @@ const snapshot = (extra = {}) => ({ device: { state: 'linked', origin, account: 
   agents: [{ id: 'agent-one', name: 'Research' }] }, instances: [instance()], modelDefaults: defaults(), ...extra })
 const settle = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)) }
 
+test('model form preserves and submits explicit thinking off', async () => {
+  const state = snapshot({ modelDefaults: defaults({ url: 'https://model.example/v1', name: 'model', thinking: 'disabled', keyConfigured: true, configured: true }) })
+  const page = await runPageScript(managerPage, { respond: async () => ({ body: state }) })
+  page.$('default-model-open').onclick()
+  assert.equal(page.$('model-thinking').value, 'disabled')
+  await page.$('model-save').onclick(); await settle()
+  const write = page.calls.find(call => call.path === '/manager/model/default')
+  assert.equal(write.body.thinking, 'disabled')
+})
+
 test('missing model opens a bound settings form instead of attempting to start a child', async () => {
   const state = snapshot()
   const page = await runPageScript(managerPage, { respond: async () => ({ body: state }) })

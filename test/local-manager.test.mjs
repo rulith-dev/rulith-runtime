@@ -1166,6 +1166,26 @@ test('copying an inherited model creates an independent override and replaces ob
   })
 })
 
+test('disabled thinking survives account inheritance, overrides, copying, and an open host', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const source = await addInstance(manager, 'Source', { agentId: 'agent-alpha' })
+    const target = await addInstance(manager, 'Target', { agentId: 'agent-beta' })
+    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
+    await manager.instances.setDefaultModel({ ...scope, url: 'http://127.0.0.1:8080/v1', name: 'model', thinking: 'disabled' })
+    await manager.instances.setInstanceModel(source.id, { ...scope, source: 'default' })
+    assert.equal(manager.instances.overview().find(row => row.id === source.id).model.thinking, 'disabled')
+    for (const open of [false, true]) {
+      if (open) await manager.instances.open(target.id, '/setup')
+      await manager.instances.setInstanceModel(target.id, { ...scope, source: 'custom', url: 'http://127.0.0.1:8080/v1', name: 'other', thinking: 'enabled' })
+      await manager.instances.copyModelSettings(target.id, source.id)
+      assert.equal(loadInstanceConfig(target.directory).agent.env.RULITH_MODEL_THINKING, 'disabled')
+      assert.equal(manager.instances.overview().find(row => row.id === target.id).model.thinking, 'disabled')
+    }
+    await manager.instances.setDefaultModel({ ...scope, url: 'http://127.0.0.1:8080/v1', name: 'model' })
+    assert.equal(manager.instances.overview().find(row => row.id === source.id).model.thinking, 'disabled', 'omitting thinking preserves the choice')
+  })
+})
+
 // ── The way back, and the rest of the surface ────────────────────────────────
 
 test('an opened instance is given the manager\'s own address to return to, and never the device token', async (t) => {

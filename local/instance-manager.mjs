@@ -411,7 +411,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     if (source === 'default') return { source, ...(defaultFor(row, grant) ?? {}) }
     const env = loadInstanceConfig(resolve(row.directory)).agent?.env ?? {}
     return { source, url: text(env.RULITH_MODEL_URL), name: text(env.RULITH_MODEL), key: text(env.RULITH_MODEL_KEY),
-      thinking: text(env.RULITH_MODEL_THINKING) === 'enabled' ? 'enabled' : 'standard' }
+      thinking: ['enabled', 'disabled'].includes(env.RULITH_MODEL_THINKING) ? env.RULITH_MODEL_THINKING : 'standard' }
   }
   const publicModel = (row, grant = device.status()) => {
     const result = modelView(modelFor(row, grant))
@@ -687,7 +687,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       },
       modelOverlay: modelSource(row) === 'default' ? {
         RULITH_MODEL_URL: text(inherited?.url), RULITH_MODEL: text(inherited?.name),
-        RULITH_MODEL_KEY: text(inherited?.key), RULITH_MODEL_THINKING: inherited?.thinking === 'enabled' ? 'enabled' : '',
+        RULITH_MODEL_KEY: text(inherited?.key), RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(inherited?.thinking) ? inherited.thinking : '',
       } : undefined,
       ...(startConfirmMs === undefined ? {} : { startConfirmMs }),
     })
@@ -948,7 +948,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const saved = modelSettings.save(scope.origin, scope.accountId, {
         url: input.url, name: input.name,
         key: resolvedKey(previous, input.url, input),
-        thinking: body.thinking === undefined ? (previous?.thinking === 'enabled' ? 'enabled' : 'standard') : input.thinking,
+        thinking: body.thinking === undefined ? (['enabled', 'disabled'].includes(previous?.thinking) ? previous.thinking : 'standard') : input.thinking,
       })
       // A Worker may remain up while its Agent is stopped. Update that open host's in-memory
       // inherited values so the *next* Agent start uses the new default without closing the
@@ -1030,7 +1030,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       if (live === undefined) {
         const directory = resolve(row.directory), config = loadInstanceConfig(directory)
         config.agent = { ...config.agent, env: { ...config.agent.env, RULITH_MODEL_URL: input.url, RULITH_MODEL: input.name,
-          RULITH_MODEL_KEY: key, RULITH_MODEL_THINKING: input.thinking === 'enabled' ? 'enabled' : '' } }
+          RULITH_MODEL_KEY: key, RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(input.thinking) ? input.thinking : '' } }
         saveInstanceConfig(directory, config)
         await registry.patchInstance(id, () => ({ modelSource: 'custom' }))
       } else {
@@ -1485,7 +1485,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       // Copy the resolved model even when the source inherits it. Empty fields also replace
       // the target: an absent source key must never retain the target's previous provider key.
       const applied = { RULITH_MODEL_URL: from.url, RULITH_MODEL: from.name,
-        RULITH_MODEL_KEY: text(from.key), RULITH_MODEL_THINKING: from.thinking === 'enabled' ? 'enabled' : '' }
+        RULITH_MODEL_KEY: text(from.key), RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(from.thinking) ? from.thinking : '' }
       const live = hosts.get(id)
       if (live === undefined) {
         const directory = resolve(target.directory)
@@ -1498,7 +1498,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
           url: applied.RULITH_MODEL_URL, name: applied.RULITH_MODEL,
           key: applied.RULITH_MODEL_KEY ?? '',
           clearKey: !text(applied.RULITH_MODEL_KEY).trim(),
-          thinking: text(applied.RULITH_MODEL_THINKING) === 'enabled' ? 'enabled' : 'standard',
+          thinking: ['enabled', 'disabled'].includes(applied.RULITH_MODEL_THINKING) ? applied.RULITH_MODEL_THINKING : 'standard',
         })
         if (answer.status !== 200 || answer.body.ok === false) {
           throw new Error(text(answer.body.teaching) || `Instance ${target.name} did not accept the model configuration.`)

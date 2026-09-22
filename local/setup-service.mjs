@@ -246,7 +246,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       persistConfiguration(next => {
         next.agent = { ...next.agent, env: { ...next.agent?.env, RULITH_MODEL_URL: input.url, RULITH_MODEL: input.name,
           RULITH_MODEL_KEY: key,
-          ...(body.thinking === undefined ? {} : { RULITH_MODEL_THINKING: input.thinking === 'enabled' ? 'enabled' : '' }) } }
+          ...(body.thinking === undefined ? {} : { RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(input.thinking) ? input.thinking : '' }) } }
       }, 'agent')
       await onModelConfigured?.()
       return { teaching: 'Model configuration saved on this computer.' }

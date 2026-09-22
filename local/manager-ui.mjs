@@ -371,7 +371,7 @@ export const managerPage = String.raw`<!doctype html>
       <label>API key<input id="model-key" type="password" autocomplete="new-password" maxlength="4096"></label>
       <p class="muted" id="model-key-hint"></p>
       <label class="checkline" id="model-clear-label"><input id="model-clear-key" type="checkbox">Remove the saved API key</label>
-      <details><summary>Model options</summary><label>Thinking<select id="model-thinking"><option value="standard">Standard</option><option value="enabled">Extended</option></select></label></details>
+      <details><summary>Model options</summary><label>Thinking (OpenAI-compatible endpoints)<select id="model-thinking"><option value="standard">Provider default</option><option value="disabled">Off</option><option value="enabled">On</option></select></label></details>
     </div>
     <p class="muted" id="model-effect"></p>
     <div class="actions"><button class="btn" id="model-save">Save</button><button id="model-save-start">Save and start Agent</button></div>
@@ -553,7 +553,7 @@ const modelDescription=model=>model?.configured?(model.name+' · '+model.url):'N
 function fillModelFields(model){
   $('model-url').value=model?.url||'';$('model-name').value=model?.name||'';
   $('model-key').value='';$('model-clear-key').checked=false;
-  $('model-thinking').value=model?.thinking==='enabled'?'enabled':'standard';
+  $('model-thinking').value=['enabled','disabled'].includes(model?.thinking)?model.thinking:'standard';
   modelOriginal=model||{};
 }
 function openModel(instanceId=''){
