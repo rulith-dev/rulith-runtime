@@ -51,7 +51,7 @@ try {
           let event
           try { event = JSON.parse(message.data) } catch { return }
           if (!event || typeof event !== 'object' || event.type !== 'model-usage') return
-          const fields = ['inputTokens', 'outputTokens', 'requestBytes', 'transcriptBytes', 'compactedViews', 'compactedTranscriptBytes']
+          const fields = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'uncachedInputTokens', 'requestBytes', 'transcriptBytes', 'compactedViews', 'compactedTranscriptBytes']
           const sample = {}
           for (const field of fields) if (Number.isFinite(event[field])) sample[field] = event[field]
           window.__rulithQaUsage.push(sample)

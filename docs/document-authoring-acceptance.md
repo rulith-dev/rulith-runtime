@@ -36,7 +36,9 @@ workbench. Its success does **not** prove the account or document workflow below
 
 For each model call, capture the local `model-usage` event's `inputTokens`,
 `outputTokens`, `requestBytes`, `transcriptBytes`, `compactedViews` and
-`compactedTranscriptBytes`. Compare the first checker submission and total model
+`compactedTranscriptBytes`. Also record `cachedInputTokens` and
+`uncachedInputTokens` when the provider reports a consistent cache breakdown;
+null means unknown, not zero. Compare the first checker submission and total model
 calls to the previous fixture run. A schema rejection, missing source citation or
 unexpected token increase is a finding, even if a later retry succeeds.
 
@@ -128,3 +130,13 @@ now addresses observed syntax mistakes, but first-draft reliability and the
 requested boundary coverage remain unproven. The next published-package trial
 must use a clean QA Agent and record which examples failed before claiming a
 reduction in retries or total token cost.
+
+Two consecutive one-call checks with the compact cue each reported 703 input
+tokens. The first had 0 cache hits and failed compilation; the second had 512
+cache-hit and 191 cache-miss input tokens, compiled, and passed only 4/6
+examples. Output was 1,297 and 1,354 tokens respectively. These provider
+counts show why raw input-token totals alone overstate repeated-input cost,
+but caching did not solve the first-draft correctness problem. The provider
+defines the hit/miss breakdown in its [Chat Completions usage fields](https://api-docs.deepseek.com/api/create-chat-completion/).
+This measured cost distinction is specific to this DeepSeek OpenAI-compatible
+wire; another provider may report cache usage differently or not at all.

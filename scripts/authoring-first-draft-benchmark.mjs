@@ -49,9 +49,15 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
   const choice = envelope?.choices?.[0]
   const raw = String(choice?.message?.content ?? '').trim()
   const json = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  const inputTokens = envelope?.usage?.prompt_tokens ?? null
+  const hit = envelope?.usage?.prompt_cache_hit_tokens ?? null
+  const miss = envelope?.usage?.prompt_cache_miss_tokens ?? null
+  const cacheBreakdownValid = [inputTokens, hit, miss].every(value => Number.isSafeInteger(value) && value >= 0)
+    && hit + miss === inputTokens
   const metrics = {
     fixtureSha256: digest(text), cueSha256: digest(LOCAL_AUTHORING_DRAFT_SHAPE),
-    model: model.name, inputTokens: envelope?.usage?.prompt_tokens ?? null,
+    model: model.name, inputTokens, cachedInputTokens: cacheBreakdownValid ? hit : null,
+    uncachedInputTokens: cacheBreakdownValid ? miss : null,
     outputTokens: envelope?.usage?.completion_tokens ?? null,
     requestBytes: Buffer.byteLength(JSON.stringify(body)), finishReason: choice?.finish_reason ?? null,
     responseBytes: Buffer.byteLength(json),

@@ -2445,7 +2445,8 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
     response = await fetch(cfg.url, { method: 'POST', headers, body: requestBody })
   } catch (error) {
     // A user-facing tool does not print a raw stack: say who was called and how to change it.
-    onUsage?.({ durationMs: Math.round(performance.now() - started), inputTokens: null, outputTokens: null, httpStatus: null, ...requestSize })
+    onUsage?.({ durationMs: Math.round(performance.now() - started), inputTokens: null, outputTokens: null,
+      cachedInputTokens: null, uncachedInputTokens: null, httpStatus: null, ...requestSize })
     failTask(`Cannot reach model service ${cfg.url}: ${error?.cause?.code ?? error?.message ?? error}.
    Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
     return { text: '', toolCalls: [] }
@@ -2454,8 +2455,14 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
   let payload
   try { payload = JSON.parse(raw) } catch { payload = {} }
   const tokenCount = n => Number.isSafeInteger(n) && n >= 0 ? n : null
+  const inputTokens = tokenCount(wire === 'openai' ? payload.usage?.prompt_tokens : payload.usage?.input_tokens)
+  const cacheHit = wire === 'openai' ? tokenCount(payload.usage?.prompt_cache_hit_tokens) : null
+  const cacheMiss = wire === 'openai' ? tokenCount(payload.usage?.prompt_cache_miss_tokens) : null
+  const cacheBreakdownValid = inputTokens !== null && cacheHit !== null && cacheMiss !== null
+    && cacheHit + cacheMiss === inputTokens
   onUsage?.({ durationMs: Math.round(performance.now() - started), httpStatus: response.status, ...requestSize,
-    inputTokens: tokenCount(wire === 'openai' ? payload.usage?.prompt_tokens : payload.usage?.input_tokens),
+    inputTokens, cachedInputTokens: cacheBreakdownValid ? cacheHit : null,
+    uncachedInputTokens: cacheBreakdownValid ? cacheMiss : null,
     outputTokens: tokenCount(wire === 'openai' ? payload.usage?.completion_tokens : payload.usage?.output_tokens) })
   if (!response.ok) {
     if (response.status === 400 && declared && /(?:does not support|unsupported|unrecognized|unknown)\s+(?:the\s+)?tools?\b|\btools?\b.{0,60}(?:not supported|unsupported)/i.test(raw)) {

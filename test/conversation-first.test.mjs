@@ -1642,7 +1642,9 @@ test('conversation trail remains bounded when transcript compaction runs repeate
 test('model usage reports bounded request sizes without copying prompt content into the event', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['unique private-sized prompt marker'], captureLocalEvents: true,
-    model: () => 'A short answer.',
+    model: () => ({ text: 'A short answer.', usage: {
+      prompt_tokens: 120, completion_tokens: 9, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 40,
+    } }),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const usage = run.localEvents.find((event) => event.type === 'model-usage')
@@ -1651,7 +1653,23 @@ test('model usage reports bounded request sizes without copying prompt content i
   assert.ok(Number.isSafeInteger(usage.transcriptBytes) && usage.transcriptBytes > 0)
   assert.ok(usage.requestBytes >= usage.transcriptBytes)
   assert.equal(usage.messageCount, 1)
+  assert.equal(usage.cachedInputTokens, 80)
+  assert.equal(usage.uncachedInputTokens, 40)
   assert.doesNotMatch(JSON.stringify(usage), /unique private-sized prompt marker/)
+})
+
+test('inconsistent provider cache counts remain unknown, not a fabricated discount', async () => {
+  const run = await runAgent({
+    argv: [], chatLines: ['check cache accounting'], captureLocalEvents: true,
+    model: () => ({ text: 'Done.', usage: {
+      prompt_tokens: 120, completion_tokens: 9, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 39,
+    } }),
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const usage = run.localEvents.find(event => event.type === 'model-usage')
+  assert.equal(usage.inputTokens, 120)
+  assert.equal(usage.cachedInputTokens, null)
+  assert.equal(usage.uncachedInputTokens, null)
 })
 
 test('long turns retain Artifact evidence and the latest Board View while shortening older views', async () => {
