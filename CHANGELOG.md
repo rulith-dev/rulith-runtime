@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.8.12 - 2026-09-23
 
 - Show the local checker's specific compile errors in the checked-draft review, with
   bounded escaped text, so a failed draft can be corrected without guessing from a
