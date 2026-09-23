@@ -1,18 +1,18 @@
 {
   "format": "rulith-local-authoring-checker/1",
-  "sourceCommit": "cd48b6bf485f9d8ec538344aaad8583ead6faae7",
+  "sourceCommit": "de3c07879d7993a12fe44ba3e01fb4793cc55eb3",
   "files": [
     {
       "name": "local-authoring.jar",
-      "bytes": 34194003,
-      "sha256": "6683daff538f4804bb1d8ea4f34c41af950dd8bc804784e04dfedcdf6188cdf0",
-      "url": "https://console.rulith.ai/downloads/authoring/cd48b6bf485f9d8ec538344aaad8583ead6faae7/local-authoring.jar"
+      "bytes": 34213037,
+      "sha256": "7ad359760df9acd8a43395c227cf4a5dccaa4ae62f20a55175cea2123e46c91a",
+      "url": "https://console.rulith.ai/downloads/authoring/de3c07879d7993a12fe44ba3e01fb4793cc55eb3/local-authoring.jar"
     },
     {
       "name": "rule-check.jar",
       "bytes": 33732364,
-      "sha256": "e45bf50a761528b50eb4536c4fbc07bf4435fe79fee4e911d80c2b27857052cd",
-      "url": "https://console.rulith.ai/downloads/authoring/cd48b6bf485f9d8ec538344aaad8583ead6faae7/rule-check.jar"
+      "sha256": "f63e2676d1dc2525a8a60036c31c1dc242bb615162b0b78d99d7ea549a5bc44d",
+      "url": "https://console.rulith.ai/downloads/authoring/de3c07879d7993a12fe44ba3e01fb4793cc55eb3/rule-check.jar"
     }
   ]
 }

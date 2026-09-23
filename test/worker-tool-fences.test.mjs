@@ -74,6 +74,19 @@ const lookupTool = () => adapterToolFromSpec(JSON.stringify({
   params: { order_id: 'number' },
 }), JSON.stringify({ order_id: 702 }))
 
+test('local authoring dispatch accepts only the three fixed operations of Release 3', () => {
+  for (const operation of ['ingest', 'check', 'construct']) {
+    const compiled = adapterToolFromSpec(JSON.stringify({
+      impl: 'local-authoring', source: 'official-authoring-local-files', exec: operation, returns: [],
+    }), JSON.stringify({ task_id: 'mat_fixture' }))
+    assert.equal(compiled.entry, operation)
+    assert.equal(compiled.source, 'official-authoring-local-files')
+  }
+  assert.throws(() => adapterToolFromSpec(JSON.stringify({
+    impl: 'local-authoring', source: 'official-authoring-local-files', exec: 'invent', returns: [],
+  }), '{}'), /fixed local operation/)
+})
+
 // ── A0. A database Tool runs against the Source it was given, or not at all ──
 
 /** Compile through the real dispatch path, exactly as a work row would. */

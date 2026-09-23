@@ -6,12 +6,16 @@
    permission as well as local delivery when it reads a locally held document. Preparation
    with both permissions off is refused before installing the assistant: its ingest action
    would otherwise run without any permitted path to register its Artifact result. Preparation installs the ordinary
-   `official_authoring@2.0.0` Release on that Agent and binds its file Source to this
+   `official_authoring@3.0.0` Release on that Agent and binds its file Source to this
    profile's material area. It downloads two pinned public checker JARs once per computer.
    Java 25 is required. Existing conversations and credentials are retained.
 3. Attach a UTF-8 `.txt` or `.md` document (at most 256 KiB) in the conversation. Ask
    the Agent to prepare a capability from it, answer its questions, and let it run
-   the mechanical checks and close the matching Case after they pass.
+   the mechanical checks and close the matching Case after they pass. The preferred
+   `construct_rule_draft` Action accepts an explicit compact construction, expands only
+   repeated predicate namespaces/references and the fixed certified Case terminal, then
+   sends that expanded draft through the same compiler, kernel example runner and exact
+   citation checker used by `check_rule_draft`.
 4. Open **Document assistant → Review checked draft**. Review its rules, examples,
    citations and unresolved questions. Choose **Save private draft** after the exact
    proposal has a certified completed Case. Reopening the same checked result shows its
@@ -34,6 +38,13 @@ The checker reports actual compilation, example execution and verbatim citation
 matching. An `attested` result describes those checks, not legal, tax or business
 correctness. The Release's official publisher and local execution do not increase
 the Source's grounding tier.
+
+The constructor is a syntax boundary, not a second author. Its input must still name
+every predicate, alias, rule atom, Case key, grounding floor, example, citation and
+unresolved question. It does not infer business keys, add missing guards, repair examples,
+choose evidence tiers or alter quotes. A construction error is reported separately from a
+checker failure. The local Artifact retains the submitted construction, the exact expanded
+draft and the checker report so Review checked draft always shows what actually ran.
 
 Check receipts carry mechanical counts and fixed error codes. The complete draft
 and detailed checker report remain in the local immutable Artifact. When space

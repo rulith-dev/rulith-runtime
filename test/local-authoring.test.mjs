@@ -10,22 +10,23 @@ import { materialIdentityFromFingerprints, openMaterialStore } from '../worker/m
 const binding = materialIdentityFromFingerprints({ profile: 'a'.repeat(64), owner: 'b'.repeat(64), modelDestination: 'http://127.0.0.1:11434' })
 test('an upgraded checker pin requires reviewing the Worker draft-shape cue', () => {
   const manifest = JSON.parse(readFileSync(new URL('../local/authoring-checker.json', import.meta.url), 'utf8'))
-  assert.equal(manifest.sourceCommit, 'cd48b6bf485f9d8ec538344aaad8583ead6faae7',
+  assert.equal(manifest.sourceCommit, 'de3c07879d7993a12fe44ba3e01fb4793cc55eb3',
     'the local checker changed; compare its AuthoringPrompt.localDraftReference with the Worker ingest cue before releasing')
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /minimumGroundingFloor:"attested"/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program is a JSON OBJECT, never DSL\/Markdown\/code/)
-  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /vocabulary\.defines\[\]\.id MUST be a canonical namespaced predicate/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /predicates\[\]\.name is the final name/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /atom args MUST be JSON objects keyed by field/)
-  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program\.id is a lowercase package name of 2-32 characters/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program\.id is a lowercase 2-32 character package name/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /Rules use declared aliases\/imports or built-ins/)
-  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /businessKey\.predicate and opening\.predicate name the same document INPUT predicate/)
-  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /Each key field must exist in both locally defined INPUT and OUTPUT predicate args/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /businessKey\.predicate and opening\.predicate name the same document INPUT/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /Each key field must exist in the INPUT and OUTPUT predicate args/)
 })
 test('local authoring tools are versioned file read tools with the fixed fact mappings', () => {
   const tools = builtinLocalAuthoringTools()
-  assert.deepEqual(Object.keys(tools).sort(), ['rulith.official_authoring.check_draft@2', 'rulith.official_authoring.ingest_document@2'])
+  assert.deepEqual(Object.keys(tools).sort(), ['rulith.official_authoring.check_draft@2', 'rulith.official_authoring.construct_draft@3', 'rulith.official_authoring.ingest_document@2'])
   for (const tool of Object.values(tools)) assert.deepEqual(tool.sourceTypes, ['file'])
   assert.equal(tools['rulith.official_authoring.ingest_document@2'].returns[0].predicate, 'rulith.official_authoring.authoring_task')
+  assert.equal(tools['rulith.official_authoring.construct_draft@3'].returns[0].predicate, 'rulith.official_authoring.draft_construction')
 })
 test("proposal digest follows Java's four-field authoring surface and treats omissions as null", () => {
   const first = proposalDigest({ program: { id: 'p' }, caseContracts: [], citations: [], examples: [], ignored: 'no' })

@@ -1,8 +1,8 @@
-# Explicit draft construction — proposed next release
+# Explicit draft construction
 
-Status: design only. Existing `check_draft@2` and `official_authoring@2.0.0`
-continue to accept their exact canonical input. This document changes no runtime
-contract or authority.
+Status: implemented as `construct_draft@3` in `official_authoring@3.0.0`. Existing
+`check_draft@2` continues to accept its exact canonical input. The new Tool changes
+no control-plane authority or evidence tier.
 
 ## Problem and measured limit
 
@@ -13,7 +13,7 @@ one argument-array failure but did not fix invalid-input guards. A constructor c
 remove repetition; it cannot decide the intended rule meaning or establish that
 the model's own examples cover the document.
 
-## Proposed boundary
+## Boundary
 
 Add a versioned construction input to an ordinary Source-bound authoring Tool in a
 new Release. Use the same Worker, authenticated Connection, local material storage
@@ -36,9 +36,57 @@ invent predicates, infer Case keys, insert validity guards, fill missing example
 adjust citation text or choose a Source's floor. Deliberately incomplete inputs in
 negative test examples must remain incomplete; normalization must not repair them.
 
-The initial implementation should live beside the Java authoring compiler, using
-its ordered JSON and exact number handling. The Node Worker invokes that one
-implementation. Do not maintain a second rule or Case validator in JavaScript.
+The v1 construction envelope is:
+
+```json
+{
+  "format": "rulith-authoring-construction/1",
+  "namespace": "acme.area",
+  "program": {
+    "id": "package_name",
+    "title": "Human title",
+    "summary": "Optional summary",
+    "predicates": [
+      {"name": "input_name", "as": "input", "args": ["entity_id"]},
+      {"name": "output_name", "as": "output", "args": ["entity_id"]}
+    ],
+    "imports": [],
+    "pins": ["output"],
+    "rules": [{"id": "rule_id", "label": "Reason",
+               "when": [{"predicate": "input", "args": {"entity_id": "?id"}}],
+               "then": [{"predicate": "output", "args": {"entity_id": "?id"}}]}],
+    "actions": [],
+    "acceptance": []
+  },
+  "caseContracts": [{
+    "caseType": "package_name",
+    "title": "One piece of work",
+    "businessKey": {"predicate": "input", "arguments": ["entity_id"]},
+    "opening": {"predicate": "input", "keyArguments": ["entity_id"]},
+    "acceptance": {"predicate": "output", "keyArguments": ["entity_id"],
+                   "minimumGroundingFloor": "attested"}
+  }],
+  "citations": [{"ruleId": "rule_id", "quote": "exact document text"}],
+  "examples": [{"label": "boundary",
+                "facts": [{"predicate": "input", "args": {"entity_id": "one"}}],
+                "expect": [{"predicate": "output", "args": {"entity_id": "one"}}],
+                "forbid": [], "forbidPredicates": []}],
+  "questions": [],
+  "notes": "Scope and deliberate omissions"
+}
+```
+
+The constructor joins `namespace` and each `predicates[].name`, uses `as` as the
+only local reference, expands example and Case references to canonical IDs, and
+adds the fixed certified terminal. Rule references remain aliases for the existing
+symbol compiler. Numbers that cannot survive the ECMAScript Worker boundary exactly
+are refused before expansion. Unknown fields, symbols and unsupported input versions
+produce stable codes and paths; their submitted values stay in the local Artifact.
+
+The implementation lives beside the Java authoring compiler, using its ordered JSON
+and exact number handling. The Node Worker invokes that implementation and verifies
+its versioned envelope and digests. It does not maintain a second rule or Case
+validator in JavaScript.
 
 ## Visible proposal and evidence
 

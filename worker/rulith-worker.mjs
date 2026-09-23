@@ -3341,7 +3341,7 @@ function adapterToolFromSpec(specJson, argsJson) {
   const spec = JSON.parse(specJson)
   if (typeof spec.impl !== 'string') throw new Error('toolSpec is missing impl')
   if (spec.impl === 'local-authoring') {
-    if (typeof spec.source !== 'string' || !spec.source || !['ingest', 'check'].includes(spec.exec)) {
+    if (typeof spec.source !== 'string' || !spec.source || !['ingest', 'check', 'construct'].includes(spec.exec)) {
       throw new Error('Local authoring requires its governed file Source and a fixed local operation')
     }
     return { impl: 'local-authoring', source: spec.source, entry: spec.exec,

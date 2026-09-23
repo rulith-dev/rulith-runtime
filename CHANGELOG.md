@@ -2,8 +2,16 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.8.16 - 2026-09-24
 
+- Add `official_authoring@3.0.0` with the ordinary Source-bound
+  `construct_draft@3` Tool. Its Java constructor expands only explicit namespaces,
+  symbols and the fixed certified Case terminal, then runs the unchanged compiler,
+  kernel examples and exact citation checker. The local Artifact retains the input,
+  expanded proposal and report; `check_draft@2` keeps its canonical input contract.
+- Admit the constructor's fixed `construct` operation through the same pre-claim
+  Worker fence as `ingest` and `check`. Unknown local-authoring operations remain
+  refused before a lease is used or an external action can run.
 - Show inherited unresolved calls on startup instead of displaying "No unresolved
   call". Keep the current Agent's recovery state visible when starting or clearing
   a conversation; historical transcript events cannot clear or revive it.

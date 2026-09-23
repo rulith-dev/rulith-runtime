@@ -119,9 +119,9 @@ test('local authoring ingest reaches the actual adapter compiler, preserves work
   assert.match(executed.facts[0].args.node, /^node_[a-f0-9]{32}$/u)
   assert.match(executed.localArtifact.id, /^res_[a-f0-9]{32}$/u)
   assert.equal(executed.localArtifact.producedFrom, TEXT.id)
-  assert.match(executed.safeInlineGuidance, /draft_json is a STRING containing one JSON object/u)
-  assert.match(executed.safeInlineGuidance, /program=\{id,title,summary,vocabulary:\{defines:/u)
-  assert.match(executed.safeInlineGuidance, /caseContracts=\[\{format:"rulith-case-contract\/1"/u)
+  assert.match(executed.safeInlineGuidance, /construction_json as a STRING containing one rulith-authoring-construction\/1 object/u)
+  assert.match(executed.safeInlineGuidance, /program=\{id,title,summary,predicates:/u)
+  assert.match(executed.safeInlineGuidance, /caseContracts=\[\{caseType,title,businessKey:/u)
   assert.doesNotMatch(executed.result, /body text|Heading/u,
     'ingest guidance must not disclose or claim the uploaded document text')
   assert.ok(Buffer.byteLength(executed.safeInlineGuidance) < 2_048, 'the shape cue must stay inline and bounded')

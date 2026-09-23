@@ -6,12 +6,33 @@ const count = value => Array.isArray(value) ? value.length : null
 const compileCode = value => value === 'Invalid Case Type' ? 'invalid_case_type'
   : value.includes('Every definition needs an argument-name array.') ? 'definition_args_required' : 'compile_error'
 const guidance = new WeakMap()
+const constructionCodes = new Set([
+  'construction_object_required', 'construction_format_unsupported', 'namespace_invalid',
+  'field_unknown', 'field_required', 'object_required', 'array_required', 'text_required',
+  'predicate_name_invalid', 'predicate_symbol_invalid', 'predicate_symbol_reserved',
+  'predicate_symbol_duplicate', 'predicate_id_duplicate', 'predicate_symbol_unknown',
+  'import_id_invalid', 'number_not_ecmascript_exact',
+])
+const constructionPath = /^\$(?:\.(?:format|namespace|program|caseContracts|citations|examples|questions|notes|id|title|summary|judges|predicates|imports|pins|rules|actions|acceptance|name|as|args|when|then|preconditions|effects|execution|returns|businessKey|opening|predicate|arguments|keyArguments|minimumGroundingFloor|label|facts|expect|forbid|forbidPredicates)(?:\[\d+\])?)*$/
 
 // An in-process carrier, minted only after the safe projection. Generic adapter
 // strings or copied objects cannot opt themselves into this inline exception.
 export function createAuthoringGuidance(report) {
   const carrier = Object.freeze({})
   guidance.set(carrier, 'Local checker diagnostics (guidance, not additional evidence): ' + JSON.stringify(authoringDiagnostics(report)))
+  return carrier
+}
+export function createConstructionGuidance(errors) {
+  const rows = Array.isArray(errors) ? errors : []
+  const safe = rows.slice(0, 8).map(row => ({
+    code: constructionCodes.has(row?.code) ? row.code : 'construction_invalid',
+    ...(constructionPath.test(row?.path) ? { path: row.path } : {}),
+  }))
+  const carrier = Object.freeze({})
+  guidance.set(carrier, 'Local constructor diagnostics (guidance, not additional evidence): ' + JSON.stringify({
+    errors: safe, errorCount: rows.length, diagnosticsTruncated: rows.length > safe.length,
+    details: 'Read the attached immutable construction Artifact for the complete submitted input and diagnostics.',
+  }))
   return carrier
 }
 export function authoringGuidanceText(carrier) {

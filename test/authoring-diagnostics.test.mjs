@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { authoringDiagnostics } from '../worker/authoring-diagnostics.mjs'
+import { authoringDiagnostics, authoringGuidanceText, createConstructionGuidance } from '../worker/authoring-diagnostics.mjs'
+
+test('construction guidance keeps fixed codes and schema paths but drops free-form names', () => {
+  const secret = 'PRIVATE_DOCUMENT_SENTINEL'
+  const carrier = createConstructionGuidance([
+    { code: 'predicate_symbol_unknown', path: '$.program.rules[3].when[1].predicate' },
+    { code: 'field_unknown', path: `$.program.${secret}` },
+    { code: secret, path: `$.${secret}` },
+  ])
+  const text = authoringGuidanceText(carrier)
+  assert.match(text, /predicate_symbol_unknown/)
+  assert.match(text, /\$\.program\.rules\[3\]\.when\[1\]\.predicate/)
+  assert.match(text, /construction_invalid/)
+  assert.doesNotMatch(text, new RegExp(secret))
+})
 
 test('inline diagnostics expose indexes and fixed codes without copying any free-form material', () => {
   const secret = 'PRIVATE_DOCUMENT_SENTINEL'
