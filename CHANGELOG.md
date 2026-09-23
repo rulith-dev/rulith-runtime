@@ -4,6 +4,16 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.8.15 - 2026-09-23
+
+- Download the pinned local authoring checker in bounded, parallel byte ranges
+  with transient retry, whole-file fallback for servers without Range support,
+  an installation deadline and an exact whole-file SHA check. A measured installation
+  of the 67.9 MB checker files finished in 223.7 seconds on the test connection;
+  the prior whole-file stream did not finish both files after eight minutes.
+- Record a failed first-draft cue experiment separately from checker download
+  performance. Draft correctness and model-token reduction remain open.
+
 ## 0.8.14 - 2026-09-23
 
 - Pin the rebuilt local authoring checker that rejects Case contract keys absent

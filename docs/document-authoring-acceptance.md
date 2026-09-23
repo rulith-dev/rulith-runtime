@@ -238,3 +238,21 @@ argument-name arrays. This is a measured first-draft failure. The checker
 upgrade narrows false acceptance of malformed Case keys; it does not yet prove
 that the model will produce a complete draft in one call or save tokens across
 the published browser workflow.
+
+An additional 2,041-byte cue explicitly described `vocabulary.defines[].args`
+as a field-name array. Its single DeepSeek Flash diagnostic used 728 input /
+1,344 output tokens and compiled, but only 4/6 self-selected examples and 6/11
+independent boundary examples passed. Neither direct output rule had the
+required numeric guards. This candidate was reverted. The download optimization
+below is independent of draft quality; first-draft reliability and total model
+cost remain open acceptance work.
+
+The 0.8.14 checker installer was separately measured against its pinned public
+JAR URLs. A whole-file stream ran for over eight minutes without finishing
+both files. Six bounded 256 KiB byte-range transfers in parallel installed and
+SHA-verified both files (67,926,367 bytes) in 223.7 seconds on the same
+computer and network. This measures dependency preparation only, not the
+document-to-capability workflow or model cost. The installer retains an exact
+digest check in both Range and whole-file modes and has a 30-minute overall
+preparation deadline. The whole-file fallback and cancellation paths are covered
+by local tests, not yet by a live non-Range production server.
