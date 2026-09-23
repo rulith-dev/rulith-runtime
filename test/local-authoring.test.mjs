@@ -10,7 +10,7 @@ import { materialIdentityFromFingerprints, openMaterialStore } from '../worker/m
 const binding = materialIdentityFromFingerprints({ profile: 'a'.repeat(64), owner: 'b'.repeat(64), modelDestination: 'http://127.0.0.1:11434' })
 test('an upgraded checker pin requires reviewing the Worker draft-shape cue', () => {
   const manifest = JSON.parse(readFileSync(new URL('../local/authoring-checker.json', import.meta.url), 'utf8'))
-  assert.equal(manifest.sourceCommit, '9e8733c7ea152935472eb7bc3006dba455c59e5a',
+  assert.equal(manifest.sourceCommit, 'cd48b6bf485f9d8ec538344aaad8583ead6faae7',
     'the local checker changed; compare its AuthoringPrompt.localDraftReference with the Worker ingest cue before releasing')
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /minimumGroundingFloor:"attested"/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program is a JSON OBJECT, never DSL\/Markdown\/code/)
@@ -19,6 +19,7 @@ test('an upgraded checker pin requires reviewing the Worker draft-shape cue', ()
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program\.id is a lowercase package name of 2-32 characters/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /Rules use declared aliases\/imports or built-ins/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /businessKey\.predicate and opening\.predicate name the same document INPUT predicate/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /Each key field must exist in both locally defined INPUT and OUTPUT predicate args/)
 })
 test('local authoring tools are versioned file read tools with the fixed fact mappings', () => {
   const tools = builtinLocalAuthoringTools()

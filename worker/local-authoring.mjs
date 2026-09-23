@@ -28,6 +28,7 @@ export const LOCAL_AUTHORING_DRAFT_SHAPE = [
   'Rules use declared aliases/imports or built-ins eq, neq, lt, lte, gt, gte (NOT ge); comparison args={left:"?yuan",right:200}. No invented missing/invalid predicates: use forbidden-output examples and guard valid inputs.',
   'caseContracts=[{format:"rulith-case-contract/1",caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:"attested"},terminal:{cardinality:"once_per_case",disposition:"completed",requiresCertified:true}}].',
   'For each contract, businessKey.predicate and opening.predicate name the same document INPUT predicate; acceptance.predicate names a distinct OUTPUT predicate. Their arguments/keyArguments are the same array of business key FIELD NAMES, e.g. ["order_id"], not the material task_id unless the document says so.',
+  'Each key field must exist in both locally defined INPUT and OUTPUT predicate args.',
   'citations=[{ruleId,quote}], examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}], questions=[], notes="...".',
   'Use full namespaced predicates in examples, aliases in program rules, and exact document substrings as quotes. Do not treat this cue as validation; the local checker decides.',
 ].join(' ')

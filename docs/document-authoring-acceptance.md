@@ -230,3 +230,11 @@ The Java checker source now rejects Case keys absent from locally defined
 predicates before examples run. Further prompt changes should be judged by
 repeated independent checks and a clean published-package browser run, not by
 one passing sample.
+
+For the 0.8.14 candidate, the new Java checker release and the bounded Worker
+cue were paired locally. One DeepSeek Flash call used 718 input / 1,550 output
+tokens and failed its first mechanical check: two vocabulary definitions lacked
+argument-name arrays. This is a measured first-draft failure. The checker
+upgrade narrows false acceptance of malformed Case keys; it does not yet prove
+that the model will produce a complete draft in one call or save tokens across
+the published browser workflow.

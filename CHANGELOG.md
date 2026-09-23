@@ -4,6 +4,15 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.8.14 - 2026-09-23
+
+- Pin the rebuilt local authoring checker that rejects Case contract keys absent
+  from the draft's declared predicates before a misleading compiled result can
+  be shown. The source document still remains in the local Worker material area.
+- Add an opt-in one-call synthetic benchmark with independently supplied boundary
+  examples, direct output-rule guard checks, and bounded token and failure
+  diagnostics. It does not replace published-account browser acceptance.
+
 ## 0.8.13 - 2026-09-23
 
 - Spell out canonical namespaced predicate IDs and matching Case business-key
