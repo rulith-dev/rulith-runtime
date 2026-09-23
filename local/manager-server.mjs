@@ -26,6 +26,13 @@ import { installAuthoringChecker } from './authoring-checker.mjs'
 import { materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
 import { proposalDigest } from '../worker/local-authoring.mjs'
 
+/** One checked proposal and certified Case are one logical private save, even after a browser retry or manager restart. */
+export function localAuthoringSaveRequestId({ accountId, agentId, caseId, materialId, documentDigest, proposalDigest }) {
+  return 'local-save:' + createHash('sha256').update(JSON.stringify([
+    accountId, agentId, caseId, materialId, documentDigest, proposalDigest,
+  ])).digest('hex')
+}
+
 const MAX_BODY = 64 * 1024
 const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/
 const LOOPBACK_ORIGIN = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/
@@ -225,7 +232,9 @@ export function createManagerServer({
         const target = authoringTarget(String(fields.instanceId ?? ''))
         return device.authoringSave({ expectedAccountId: target.expectedAccountId, agentId: target.agentId, caseId: fields.caseId,
           materialId: checked.materialId, documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest,
-          draft: checked.draft, requestId: randomUUID() })
+          draft: checked.draft, requestId: localAuthoringSaveRequestId({ accountId: target.expectedAccountId,
+            agentId: target.agentId, caseId: fields.caseId, materialId: checked.materialId,
+            documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest }) })
       })
     },
     '/manager/authoring/review': (body) => {

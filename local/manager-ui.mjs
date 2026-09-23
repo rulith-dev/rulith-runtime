@@ -466,7 +466,7 @@ async function api(path,body,signal){
     }
   }
   reachable();
-  if(!r.ok||v.ok===false)throw Object.assign(Error(v.teaching||'This step could not be confirmed.'),{state:v.state});
+  if(!r.ok||v.ok===false)throw Object.assign(Error(v.teaching||'This step could not be confirmed.'),{state:v.state,httpStatus:r.status});
   return v;
 }
 function connection(){$('connection').hidden=offline==='';$('connection').textContent=offline;}
@@ -532,7 +532,7 @@ function controlSpec(){
     'authoring-case':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId],
     // program.id is the private pack identity: one checked result can be saved only once.
     // The Case choice names that pack's certification, not a way to mint several packs.
-    'authoring-save':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId&&String($('authoring-case').value||'')!==''&&String(authoringResult.resultId||'')!==''&&authoringResult.report?.compiled===true&&authoringResult.report?.examples?.total>0&&authoringResult.report?.examples?.passed===authoringResult.report?.examples?.total&&authoringResult.report?.citations?.total>0&&authoringResult.report?.citations?.verified===authoringResult.report?.citations?.total&&!(authoringResult.draft?.questions||[]).length ],
+    'authoring-save':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId&&!authoringResult.saveOutcomeUnknown&&String($('authoring-case').value||'')!==''&&String(authoringResult.resultId||'')!==''&&authoringResult.report?.compiled===true&&authoringResult.report?.examples?.total>0&&authoringResult.report?.examples?.passed===authoringResult.report?.examples?.total&&authoringResult.report?.citations?.total>0&&authoringResult.report?.citations?.verified===authoringResult.report?.citations?.total&&!(authoringResult.draft?.questions||[]).length ],
     'page-retry':[windowScope(pageEntry?.id||''),Boolean(pageEntry&&rowOf(pageEntry.id))],
     'open-setup':[windowScope(selected),Boolean(row)],
     'model-copy':['model:'+selected,Boolean(row)&&row.mode==='local_agent'&&!live&&modelSources(row).length>0],
@@ -990,7 +990,7 @@ function renderAuthoring(){
     $('authoring-publication').href=new URL(currentEntry?'/console/#/studio?localAuthoringDraft='+encodeURIComponent(authoringResult.savedPackId)+'&publish=1':'/console/#/studio',current.origin).href;
     $('authoring-publication').textContent=currentEntry?'Review publication in Console':'Inspect private drafts in Console';
   }else $('authoring-publication').removeAttribute('href');
-  $('authoring-save').textContent=ready&&authoringResult.savedPackId?(authoringResult.savedEntryCurrent===false?'Previously saved':'Private draft saved'):'Save private draft';
+  $('authoring-save').textContent=ready&&authoringResult.savedPackId?(authoringResult.savedEntryCurrent===false?'Previously saved':'Private draft saved'):ready&&authoringResult.saveOutcomeUnknown?'Check save outcome':'Save private draft';
   if(!ready){authoringRenderedFor=null;return;}
   // The manager polls while this dialog is open. Replacing the same review markup on each poll
   // would collapse the rule/example disclosures while somebody is reading them.
@@ -1450,7 +1450,32 @@ $('authoring-open').onclick=()=>{
 $('authoring-prepare').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead:$('authoring-local-read').checked,offMachine:$('authoring-off-machine').checked}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
 $('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice',v.savedPackId?(v.savedEntryCurrent===false?'This result was saved before, but its private draft has changed or been removed. Inspect it in Console; saving it again is unavailable.':'This checked result is already saved as '+v.savedPackId+'.'):'Read and verified the immutable local check result.');}));};
 $('authoring-case').onchange=()=>applyControls();
-$('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('authoring-case').value;if(!v||v.savedPackId)return;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/save',{instanceId:id,resultId:v.resultId,caseId}).then(saved=>{if(!saved.entry||!saved.packId||saved.caseId!==caseId)throw Error('The private-draft receipt did not match the selected Case.');if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;v.savedCaseId=saved.caseId;v.savedEntryCurrent=true;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}}));};
+$('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('authoring-case').value;if(!v||v.savedPackId||v.saveOutcomeUnknown)return;run('authoring:'+id,'authoring-notice',async()=>{
+  v.saveOutcomeUnknown=true;applyControls();
+  try{
+    const saved=await api('/manager/authoring/save',{instanceId:id,resultId:v.resultId,caseId});
+    if(!saved.entry||!saved.packId||saved.caseId!==caseId)throw Error('The private-draft receipt did not match the selected Case.');
+    if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;v.savedCaseId=saved.caseId;v.savedEntryCurrent=true;v.saveOutcomeUnknown=false;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}
+  }catch(error){
+    let latest;
+    try{latest=await api('/manager/authoring/review',{instanceId:id});}
+    catch{
+      if(selected===id&&authoringResult===v)renderAuthoring();
+      throw Error('Save outcome is unknown. Reopen Review checked draft after the connection returns; do not send the save again yet.');
+    }
+    if(latest.resultId!==v.resultId)throw Error('The checked result changed while saving. Open Review checked draft before any further action.');
+    if(selected===id&&authoringResult===v){authoringResult=latest;renderAuthoring();}
+    if(latest.savedPackId){
+      if(latest.savedCaseId!==caseId)throw Error('A private draft exists for another Case. Inspect it in Console before any further action.');
+      if(latest.savedEntryCurrent===false)throw Error('This result was saved before, but its private draft changed or was removed. Inspect it in Console.');
+      if(selected===id&&authoringResult===latest)say('authoring-notice','Private draft saved: '+latest.savedPackId+'. Review publication in Console when ready.');
+      return;
+    }
+    if(error.httpStatus>=400&&error.httpStatus<500&&error.httpStatus!==408)throw error;
+    if(selected===id&&authoringResult===latest){latest.saveOutcomeUnknown=true;renderAuthoring();}
+    throw Error('Save outcome is still unknown. Open Review checked draft again before trying to save.');
+  }
+});};
 $('open-setup').onclick=()=>openSettings(selected,'/setup','details-notice');
 
 /* A poll refreshes the state and nothing else: it never replaces a field being typed in, a

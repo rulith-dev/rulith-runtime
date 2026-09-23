@@ -22,7 +22,7 @@ import { Socket, createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { createManagerServer } from '../local/manager-server.mjs'
+import { createManagerServer, localAuthoringSaveRequestId } from '../local/manager-server.mjs'
 import { processAlive } from '../local/manager-registry.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { isolatedEnvironmentBase } from '../local/rulith-local.mjs'
@@ -34,6 +34,17 @@ const ECHO = resolve(import.meta.dirname, 'support', 'echo-role.mjs')
 const ORPHAN_PARENT = resolve(import.meta.dirname, 'support', 'orphan-parent.mjs')
 const KEY = 'manager-instance-key'
 const AGENTS = ['agent-alpha', 'agent-beta', 'agent-gamma']
+
+test('private-save request identity survives a retry and changes with the certified proposal', () => {
+  const proposal = { accountId: 'account-1', agentId: 'agent-1', caseId: 'case-1', materialId: 'mat_' + 'a'.repeat(32),
+    documentDigest: 'sha256:' + 'b'.repeat(64), proposalDigest: 'sha256:' + 'c'.repeat(64) }
+  const first = localAuthoringSaveRequestId(proposal)
+  assert.match(first, /^local-save:[0-9a-f]{64}$/)
+  assert.equal(localAuthoringSaveRequestId({ ...proposal }), first)
+  for (const field of Object.keys(proposal)) {
+    assert.notEqual(localAuthoringSaveRequestId({ ...proposal, [field]: proposal[field] + '-different' }), first, field)
+  }
+})
 
 /** A manager and a Gateway on real sockets, signed in unless a scenario asks otherwise. */
 async function withManager(t, run, { signIn = true, agents = AGENTS } = {}) {

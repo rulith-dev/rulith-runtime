@@ -53,6 +53,10 @@ Automated coverage currently includes the real Chromium UI tests in
 the real manager/child-process tests in `test/local-manager.test.mjs`, and Worker,
 Agent and persistence tests under `test/`. Those browser fixtures use simulated
 Gateway responses, so they do not replace this published-account acceptance run.
+The workbench browser suite now exercises preparation refusal/retry, private-save
+refusal/retry, a committed save whose HTTP reply is lost, and an unresolved save
+whose read-back is temporarily unavailable. It checks that a later Review recovers
+the receipt without a second UI save.
 
 For a real-account browser run, `test/browser/live-document.browser.mjs` drives the
 installed npm package's Local UI through Chromium. It is deliberately excluded from

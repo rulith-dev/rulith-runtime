@@ -13,6 +13,13 @@
    proposal has a certified completed Case. Reopening the same checked result shows its
    saved receipt, including after restarting Local. Publication remains a separate Console action.
 
+If Save receives no reply, Rulith reads the checked result again before showing an
+outcome. When the private draft was committed, its receipt appears without another
+save. When the outcome cannot be checked, Save stays disabled; use **Review checked
+draft** after the connection returns. A definite refusal keeps the selected Case
+and permits an explicit retry. Repeated transport attempts for the same checked
+proposal and Case carry one stable request identity.
+
 Your Agent uses its selected model, including any Agent-specific override of the
 account's local default. A remote model receives authorized material text directly
 from Local. The Gateway stores material references and digests; the original file

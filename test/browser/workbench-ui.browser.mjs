@@ -143,6 +143,93 @@ arm('local authoring review explains compilation failures without interpreting c
     assert.equal(await page.locator('#authoring-save').isDisabled(), true)
   })
 
+arm('failed local assistant preparation keeps the selected Agent and permissions for retry',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.locator('#authoring-prepare').waitFor({ state: 'visible' })
+    assert.equal(await page.locator('#authoring-prepare').isEnabled(), true)
+    fixture.control.authoringPrepareRefusal = 'The local checker is unavailable. Retry preparation.'
+    await page.click('#authoring-prepare')
+    await page.locator('#authoring-notice').filter({ hasText: fixture.control.authoringPrepareRefusal }).waitFor()
+    assert.equal(await page.locator('#authoring-prepare').isEnabled(), true)
+    assert.equal(await page.locator('#authoring-local-read').isChecked(), true)
+    assert.equal(await page.locator('#authoring-off-machine').isChecked(), true)
+    assert.equal(fixture.control.authoringPrepareRequests.length, 1)
+    assert.equal(fixture.control.authoringPrepareRequests[0].instanceId, 'inst-1')
+    fixture.control.authoringPrepareRefusal = ''
+    await page.click('#authoring-prepare')
+    await page.locator('#authoring-notice').filter({ hasText: 'Local assistant prepared for this Agent.' }).waitFor()
+    assert.equal(fixture.control.authoringPrepareRequests.length, 2)
+  })
+
+arm('refused private save keeps the certified Case and checked draft for an explicit retry',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    fixture.control.authoringQuestions = false
+    fixture.control.authoringSaveRefusal = 'The private draft was not saved. Retry when Console is available.'
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.selectOption('#authoring-case', 'CASE-SECOND')
+    await page.click('#authoring-save')
+    await page.locator('#authoring-notice').filter({ hasText: fixture.control.authoringSaveRefusal }).waitFor()
+    assert.equal(await page.inputValue('#authoring-case'), 'CASE-SECOND')
+    assert.equal(await page.locator('#authoring-save').isEnabled(), true)
+    assert.equal(await page.locator('#authoring-publication').isHidden(), true)
+    assert.equal(fixture.control.authoringSaves.length, 0)
+    assert.deepEqual(fixture.control.authoringSaveRequests.map(request => request.caseId), ['CASE-SECOND'])
+    fixture.control.authoringSaveRefusal = ''
+    await page.click('#authoring-save')
+    await page.getByText('Private draft saved', { exact: true }).waitFor()
+    assert.equal(fixture.control.authoringSaves.length, 1)
+    assert.equal(await page.locator('#authoring-save').isDisabled(), true)
+  })
+
+arm('a lost private-save reply reconciles the committed result without sending a second save',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    fixture.control.authoringQuestions = false
+    fixture.control.authoringSaveDropResponse = true
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.selectOption('#authoring-case', 'CASE-SECOND')
+    await page.click('#authoring-save')
+    await page.getByText('Private draft saved', { exact: true }).waitFor({ timeout: 15000 })
+    const requestsBeforeReload = fixture.control.authoringSaveRequests.length
+    assert.ok(requestsBeforeReload >= 1, 'the first save did not reach the manager')
+    assert.equal(fixture.control.authoringSaves.length, 1)
+    assert.equal(await page.inputValue('#authoring-case'), 'CASE-SECOND')
+    assert.equal(await page.locator('#authoring-save').isDisabled(), true)
+    await page.reload()
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.getByText('Private draft saved', { exact: true }).waitFor()
+    assert.equal(fixture.control.authoringSaveRequests.length, requestsBeforeReload, 'reload sent the uncertain save again')
+  })
+
+arm('an unconfirmed save stays disabled until Review can establish its outcome',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    fixture.control.authoringQuestions = false
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.selectOption('#authoring-case', 'CASE-SECOND')
+    fixture.control.authoringSaveDropResponse = true
+    fixture.control.authoringReviewRefusal = 'Review is temporarily unavailable.'
+    await page.click('#authoring-save')
+    await page.locator('#authoring-notice').filter({ hasText: 'Save outcome is unknown' }).waitFor()
+    const sent = fixture.control.authoringSaveRequests.length
+    assert.ok(sent >= 1)
+    assert.equal(await page.locator('#authoring-save').isDisabled(), true)
+    assert.equal(await page.locator('#authoring-save').innerText(), 'Check save outcome')
+    fixture.control.authoringReviewRefusal = ''
+    await page.click('#authoring-review-open')
+    await page.getByText('Private draft saved', { exact: true }).waitFor()
+    assert.equal(fixture.control.authoringSaveRequests.length, sent, 'Review retried the uncertain save')
+    assert.equal(fixture.control.authoringSaves.length, 1)
+  })
+
 arm('saving a locally checked draft exposes only the scoped Console publication link',
   { width: 1400, height: 900 }, async ({ page, fixture }) => {
     fixture.control.authoringQuestions = false
