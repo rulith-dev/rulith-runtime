@@ -165,3 +165,68 @@ but caching did not solve the first-draft correctness problem. The provider
 defines the hit/miss breakdown in its [Chat Completions usage fields](https://api-docs.deepseek.com/api/create-chat-completion/).
 This measured cost distinction is specific to this DeepSeek OpenAI-compatible
 wire; another provider may report cache usage differently or not at all.
+
+The next isolated one-call diagnostic exposed a concrete chain of first-check
+failures on the same synthetic shipping document: an invalid Case Type,
+unbound conclusion variables, then output rules that still inferred a fee for
+negative or fractional input despite passing the other examples. A candidate
+generic cue stated the Case Type and alias identifier shapes, required
+positive premise bindings and explicit validity guards in every affected
+output rule, and required a questions array even when it is empty. The
+benchmark now reports bounded failed-example labels and missing/unexpected
+counts without saving or printing the generated draft.
+
+With that cue (SHA-256 `bfb6cb94b762e3141018cdc50bae8a94940c2b4fc7b1ab5d120d53a4fef285f8`),
+three consecutive DeepSeek Flash one-call diagnostics compiled and passed all
+their own examples and citations: 6/6 and 4/4, 6/6 and 8/8, then 7/7 and 6/6.
+Each used 892 reported input tokens; cache-miss input was 380, 252 and 252,
+and output was 1,575, 1,852 and 1,901 tokens. These are three stochastic
+samples of one synthetic document, not a general first-draft pass-rate or a
+paired cost comparison. The checker verifies only the model's chosen examples;
+the specified boundary cases and two independent order IDs still need a
+separate audit. The published-package browser run on a clean Agent remains
+required before claiming that Local now saves a correct private draft in fewer
+rounds or tokens.
+
+The first independent audit ran eight checker examples it built independently of
+the model's selected examples: zero, 199, 200 and 201 yuan; negative, fractional
+and missing amounts; and two order IDs in one closure with distinct expected
+fees. It maps the input and output predicates and field names from the draft's
+Case contract and vocabulary, so a draft with an unmappable shape fails this
+fixture-specific audit rather than silently skipping it. With the cue above,
+one additional one-call sample passed its own 6/6 examples and 8/8 citations
+and the independent 8/8 examples (892 input / 1,591 output tokens). The cue was
+then made generic by removing order-specific variable names. Its new SHA-256 is
+`2b21b7c03f41bf9241aebcdcbc33812c0e3c06eabe07348b32a813d5567db851`.
+One diagnostic with that version passed 6/6 model examples, 3/3 citations and
+all eight independent cases (912 input / 1,454 output tokens, of which 784
+input tokens were cache misses). These samples establish only the local
+synthetic-shape check; a clean published-package browser run and paired
+end-to-end token comparison are still needed.
+
+The Worker test initially held the inline cue below 2 KiB. An overlong revision
+failed that test. A compressed 2,026-byte revision met the limit but omitted a
+concrete namespaced-predicate example; its one-call model draft failed to
+compile because both predicate IDs were not canonical. A 2,024-byte
+cue restored that example while retaining generic business-key and numeric
+variables (SHA-256 `7e5e7cac7d04c0e5e40488f3ffc3c6fa04e94b21ccb3b171850085e47e325ba5`).
+One diagnostic with that cue compiled, passed 6/6 model examples and 4/4
+citations, and passed all eight independently supplied boundary examples. It
+used 745 input / 1,486 output tokens with no reported input cache hit. This is
+one stochastic synthetic check, not a measured production success rate. Later
+samples exposed more invalid predicate and Case-key shapes, so the candidate
+was not accepted as reliably green.
+
+The current diagnostic uses eleven independently authored boundary examples,
+checks that each contracted key field exists in both defined input and output
+predicates, and checks numeric guards on every direct output rule. These are
+fixture-specific assertions, not a general proof of business correctness.
+A 3 KiB cue was also tried with explicit guidance for alias names, output
+guards and unique business keys. It used about 956 input tokens per synthetic
+call, versus 745 for the short candidate, but its sampled drafts still failed
+different Case-key or example checks. That cue and the larger inline allowance
+were not retained; there is no established retry or total-token improvement.
+The Java checker source now rejects Case keys absent from locally defined
+predicates before examples run. Further prompt changes should be judged by
+repeated independent checks and a clean published-package browser run, not by
+one passing sample.

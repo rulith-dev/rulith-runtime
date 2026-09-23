@@ -99,11 +99,86 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
           const results = Array.isArray(full.examples?.results) ? full.examples.results : null
           const failingExampleIndexes = results === null || results.length !== summary.examples_total
             ? null : results.flatMap((entry, index) => entry?.passed === false ? [index] : [])
+          const failedExamples = failingExampleIndexes === null ? null : failingExampleIndexes.map(index => {
+            const row = results[index]
+            return { index, label: typeof row?.label === 'string' ? row.label.slice(0, 80) + (row.label.length > 80 ? '…' : '') : null,
+              missingCount: Array.isArray(row?.missing) ? row.missing.length : null,
+              unexpectedCount: Array.isArray(row?.unexpected) ? row.unexpected.length : null }
+          })
           const exampleDiagnosticsUnavailable = failingExampleIndexes === null && summary.examples_passed !== summary.examples_total
           const openQuestions = Array.isArray(draft.questions) ? draft.questions.length : -1
-          console.log(JSON.stringify({ ...metrics, parsed: true, checked: true, ...summary, failingExampleIndexes, exampleDiagnosticsUnavailable, openQuestions }))
+          let independent = { available: false, reason: 'draft_shape_unmapped' }
+          const contract = Array.isArray(draft.caseContracts) && draft.caseContracts.length === 1 ? draft.caseContracts[0] : null
+          const definitions = Array.isArray(draft.program?.vocabulary?.defines) ? draft.program.vocabulary.defines : []
+          const keyFields = contract?.businessKey?.arguments
+          const inputPredicate = contract?.businessKey?.predicate
+          const outputPredicate = contract?.acceptance?.predicate
+          const inputFields = definitions.find(row => row.id === inputPredicate)?.args
+          const outputFields = definitions.find(row => row.id === outputPredicate)?.args
+          const inputAlias = definitions.find(row => row.id === inputPredicate)?.as
+          const outputAlias = definitions.find(row => row.id === outputPredicate)?.as
+          const extraInput = Array.isArray(inputFields) && Array.isArray(keyFields) ? inputFields.filter(field => !keyFields.includes(field)) : []
+          const extraOutput = Array.isArray(outputFields) && Array.isArray(keyFields) ? outputFields.filter(field => !keyFields.includes(field)) : []
+          const feeCandidates = extraOutput.filter(field => /(?:^|_)(?:fee|shipping|cost)(?:_|$)/i.test(field))
+          const feeField = extraOutput.length === 1 ? extraOutput[0] : feeCandidates.length === 1 ? feeCandidates[0] : null
+          const carryField = extraOutput.length === 2 ? extraOutput.find(field => field !== feeField) : null
+          const outputShapeKnown = extraOutput.length === 1 || (extraOutput.length === 2 && carryField === extraInput[0])
+          const keyFieldsPresent = Array.isArray(keyFields) && Array.isArray(inputFields) && Array.isArray(outputFields)
+            && keyFields.every(field => inputFields.includes(field) && outputFields.includes(field))
+          const shape = { contracts: draft.caseContracts?.length ?? null,
+            keyFields: keyFields?.length ?? null, inputFields: inputFields?.length ?? null, outputFields: outputFields?.length ?? null,
+            extraInput: extraInput.length, extraOutput: extraOutput.length, aliasesFound: Boolean(inputAlias && outputAlias),
+            keyFieldsPresent,
+            inputNames: Array.isArray(inputFields) ? inputFields.map(name => String(name).slice(0, 40)) : null,
+            outputNames: Array.isArray(outputFields) ? outputFields.map(name => String(name).slice(0, 40)) : null }
+          let guards = { available: false, outputRules: 0, guardedRules: 0 }
+          if (keyFields?.length === 1 && keyFieldsPresent && extraInput.length === 1 && outputShapeKnown &&
+            [inputPredicate, outputPredicate, keyFields[0], extraInput[0], feeField].every(value => typeof value === 'string' && value)) {
+            const key = keyFields[0], amount = extraInput[0], fee = feeField
+            const input = (id, value) => ({ predicate: inputPredicate, args: { [key]: id, [amount]: value } })
+            const output = (id, value, inputValue) => ({ predicate: outputPredicate,
+              args: { [key]: id, ...(carryField ? { [carryField]: inputValue } : {}), [fee]: value } })
+            const positive = (label, value, expected) => ({ label, facts: [input(label, value)], expect: [output(label, expected, value)], forbid: [], forbidPredicates: [] })
+            const invalid = (label, value) => ({ label, facts: [input(label, value)], expect: [], forbid: [], forbidPredicates: [outputPredicate] })
+            const boundaryDraft = { ...draft, examples: [
+              positive('qa_zero', 0, 12), positive('qa_199', 199, 12), positive('qa_200', 200, 0), positive('qa_201', 201, 0),
+              invalid('qa_negative', -1), invalid('qa_negative_two', -2),
+              invalid('qa_fractional', 0.5), invalid('qa_fractional_tenth', 0.1), invalid('qa_fractional_above', 1.5),
+              { label: 'qa_missing', facts: [{ predicate: inputPredicate, args: { [key]: 'qa_missing' } }], expect: [], forbid: [], forbidPredicates: [outputPredicate] },
+              { label: 'qa_two_orders', facts: [input('qa_a', 199), input('qa_b', 200)],
+                expect: [output('qa_a', 12, 199), output('qa_b', 0, 200)],
+                forbid: [output('qa_a', 0, 199), output('qa_b', 12, 200)], forbidPredicates: [] },
+            ] }
+            try {
+              const audit = await executeLocalAuthoring(tool, {
+                node: authoringNode(material.id, material.digest), task_id: material.id, draft_json: JSON.stringify(boundaryDraft),
+              }, { materialRoot: root, binding })
+              const report = JSON.parse(audit.rows[0].report)
+              independent = { available: true, compiled: report.compiled, examplesTotal: report.examples_total,
+                examplesPassed: report.examples_passed, citationsTotal: report.citations_total, citationsVerified: report.citations_verified }
+            } catch (error) {
+              const code = String(error?.code ?? error?.message ?? '').split(':', 1)[0]
+              independent = { available: false, reason: 'independent_checker_error', errorCode: /^[a-z_]{1,60}$/i.test(code) ? code : null }
+            }
+            if (typeof inputAlias === 'string' && typeof outputAlias === 'string' && Array.isArray(draft.program?.rules)) {
+              const outputRules = draft.program.rules.filter(rule => rule.then?.some(atom => atom.predicate === outputAlias))
+              const guardedRules = outputRules.filter(rule => {
+                const when = Array.isArray(rule.when) ? rule.when : []
+                const variable = when.find(atom => atom.predicate === inputAlias)?.args?.[amount]
+                if (typeof variable !== 'string' || !variable.startsWith('?')) return false
+                const nonnegative = when.some(atom => atom.predicate === 'gte' && atom.args?.left === variable && atom.args?.right === 0)
+                const remainder = when.find(atom => atom.predicate === 'imod' && atom.args?.left === variable && atom.args?.right === 1)?.args?.result
+                const integer = typeof remainder === 'string' && when.some(atom => atom.predicate === 'eq' && atom.args?.left === remainder && atom.args?.right === 0)
+                return nonnegative && integer
+              })
+              guards = { available: true, outputRules: outputRules.length, guardedRules: guardedRules.length }
+            }
+          }
+          console.log(JSON.stringify({ ...metrics, parsed: true, checked: true, ...summary, failedExamples, exampleDiagnosticsUnavailable, openQuestions, shape, independent, guards }))
           if (!summary.compiled || summary.examples_total === 0 || summary.examples_passed !== summary.examples_total
-            || summary.citations_total === 0 || summary.citations_verified !== summary.citations_total || openQuestions !== 0) process.exitCode = 1
+            || summary.citations_total === 0 || summary.citations_verified !== summary.citations_total || openQuestions !== 0
+            || !independent.available || !independent.compiled || independent.examplesTotal !== 11 || independent.examplesPassed !== 11
+            || !guards.available || guards.outputRules === 0 || guards.guardedRules !== guards.outputRules) process.exitCode = 1
         } catch (error) {
           const code = String(error?.message ?? '').split(':', 1)[0]
           console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, reason: /^[a-z_]+$/.test(code) ? code : 'checker_error' }))
