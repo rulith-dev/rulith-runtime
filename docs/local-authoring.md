@@ -1,7 +1,11 @@
 # Document assistant
 
 1. Sign in to Rulith, select an enabled Agent, configure its model and start its Worker.
-2. Open **Document assistant → Prepare local assistant**. This installs the ordinary
+2. Open **Document assistant**, choose at least one material delivery permission, then
+   press **Prepare local assistant**. A remote model needs the explicit remote-disclosure
+   permission as well as local delivery when it reads a locally held document. Preparation
+   with both permissions off is refused before installing the assistant: its ingest action
+   would otherwise run without any permitted path to register its Artifact result. Preparation installs the ordinary
    `official_authoring@2.0.0` Release on that Agent and binds its file Source to this
    profile's material area. It downloads two pinned public checker JARs once per computer.
    Java 25 is required. Existing conversations and credentials are retained.

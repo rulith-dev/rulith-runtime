@@ -1447,7 +1447,9 @@ $('authoring-open').onclick=()=>{
     say('authoring-notice',v.teaching||(v.configured?'Saved material choices loaded. Prepare to apply them to this Worker binding.':'Choose the material permissions for this Agent.'),!authoringPermissionsReady);
   }).catch(e=>{if(current())say('authoring-notice',e.message,true);}).finally(()=>{if(current())applyControls();});
 };
-$('authoring-prepare').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead:$('authoring-local-read').checked,offMachine:$('authoring-off-machine').checked}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
+$('authoring-prepare').onclick=()=>{const id=selected,localRead=$('authoring-local-read').checked,offMachine=$('authoring-off-machine').checked;
+  if(!localRead&&!offMachine){say('authoring-notice','Choose local material delivery or authorized remote delivery before preparing the assistant.',true);return;}
+  run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead,offMachine}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
 $('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice',v.savedPackId?(v.savedEntryCurrent===false?'This result was saved before, but its private draft has changed or been removed. Inspect it in Console; saving it again is unavailable.':'This checked result is already saved as '+v.savedPackId+'.'):'Read and verified the immutable local check result.');}));};
 $('authoring-case').onchange=()=>applyControls();
 $('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('authoring-case').value;if(!v||v.savedPackId||v.saveOutcomeUnknown)return;run('authoring:'+id,'authoring-notice',async()=>{

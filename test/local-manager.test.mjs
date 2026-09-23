@@ -1262,6 +1262,24 @@ test('the manager answers exactly its documented control-plane operations', asyn
   })
 })
 
+test('direct authoring preparation refuses an unreadable material Source before any setup', async (t) => {
+  await withManager(t, async ({ manager }) => {
+    const call = async materialPermissions => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/prepare`, {
+        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({ instanceId: 'not-set-up', materialPermissions }),
+      })
+      return { status: response.status, body: await response.json() }
+    }
+    const denied = await call({ localRead: false, offMachine: false })
+    assert.equal(denied.status, 400)
+    assert.match(denied.body.teaching, /Choose local material delivery/)
+    const malformed = await call({ localRead: true })
+    assert.equal(malformed.status, 400)
+    assert.match(malformed.body.teaching, /explicitly name localRead and offMachine/)
+  })
+})
+
 test('the manager key must be a shape the Local pages will carry back', () => {
   const root = mkdtempSync(join(tmpdir(), 'rulith-keyshape-'))
   try {

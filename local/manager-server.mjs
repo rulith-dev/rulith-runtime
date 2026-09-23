@@ -219,10 +219,15 @@ export function createManagerServer({
     },
     '/manager/authoring/prepare': (body) => {
       const fields = onlyFields(body, ['instanceId', 'materialPermissions'])
+      const permissions = onlyFields(fields.materialPermissions, ['localRead', 'offMachine'])
+      if (typeof permissions.localRead !== 'boolean' || typeof permissions.offMachine !== 'boolean')
+        throw new Error('Material permissions must explicitly name localRead and offMachine.')
+      if (!permissions.localRead && !permissions.offMachine)
+        throw new Error('Choose local material delivery or authorized remote delivery before preparing the assistant.')
       return instances.admit(async () => {
         await installAuthoringChecker()
         return device.authoringPrepare({ ...authoringTarget(String(fields.instanceId ?? ''), { requireWorker: true }),
-          requestId: randomUUID(), materialPermissions: fields.materialPermissions })
+          requestId: randomUUID(), materialPermissions: permissions })
       })
     },
     '/manager/authoring/save': (body) => {

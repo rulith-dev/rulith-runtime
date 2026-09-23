@@ -163,6 +163,23 @@ arm('failed local assistant preparation keeps the selected Agent and permissions
     assert.equal(fixture.control.authoringPrepareRequests.length, 2)
   })
 
+arm('preparation refuses an unreadable Source before any document action can be offered',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.locator('#authoring-prepare').waitFor({ state: 'visible' })
+    await page.uncheck('#authoring-local-read')
+    await page.uncheck('#authoring-off-machine')
+    await page.click('#authoring-prepare')
+    await page.locator('#authoring-notice').filter({ hasText: 'Choose local material delivery or authorized remote delivery' }).waitFor()
+    assert.equal(fixture.control.authoringPrepareRequests.length, 0, 'an unreadable Source was sent for preparation')
+    await page.check('#authoring-local-read')
+    await page.click('#authoring-prepare')
+    await page.locator('#authoring-notice').filter({ hasText: 'Local assistant prepared for this Agent.' }).waitFor()
+    assert.deepEqual(fixture.control.authoringPrepareRequests[0].materialPermissions,
+      { localRead: true, offMachine: false })
+  })
+
 arm('refused private save keeps the certified Case and checked draft for an explicit retry',
   { width: 1400, height: 900 }, async ({ page, fixture }) => {
     fixture.control.authoringQuestions = false

@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const step = process.env.RULITH_LIVE_STEP || 'inspect'
 const agentName = process.env.RULITH_LIVE_AGENT || ''
 const expectedCase = process.env.RULITH_LIVE_CASE || ''
+const remoteMaterialDisclosure = process.env.RULITH_LIVE_MATERIAL_DISCLOSURE === 'remote'
 if (process.env.RULITH_LIVE_RUN !== '1' || !agentName || !['inspect', 'start', 'prepare', 'upload', 'review', 'save', 'verify'].includes(step))
   throw new Error('Set RULITH_LIVE_RUN=1, RULITH_LIVE_AGENT and RULITH_LIVE_STEP=inspect|start|prepare|upload|review|save|verify.')
 if (['save', 'verify'].includes(step) && !expectedCase)
@@ -37,6 +38,13 @@ try {
   const state = manager.state()
   const row = state.instances.find(item => item.name === agentName && item.paired)
   if (state.device.state !== 'linked' || !row) throw new Error('QA account or Agent unavailable')
+  let modelHost = ''
+  try { modelHost = new URL(row.model?.url || '').hostname.toLowerCase() } catch { /* unknown endpoint is treated as remote */ }
+  const localModel = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(modelHost)
+  if (step === 'upload' && !localModel && !remoteMaterialDisclosure)
+    throw new Error('This Agent uses a remote model. Set RULITH_LIVE_MATERIAL_DISCLOSURE=remote to explicitly allow the synthetic fixture to reach it.')
+  if (remoteMaterialDisclosure && localModel)
+    throw new Error('Remote material disclosure was requested for a local model. Omit RULITH_LIVE_MATERIAL_DISCLOSURE instead.')
   browser = await chromium.launch({ headless: true, executablePath })
   page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   // Observe only diagnostics already delivered to this browser; never intercept or replay
@@ -66,12 +74,23 @@ try {
   console.log(JSON.stringify({ packageVersion: (await import(pathToFileURL(join(packageRoot, 'package.json')).href, { with: { type: 'json' } })).default.version,
     account: state.device.account?.name, agent: row.name, agentControl: await read('#agent-toggle'),
     workerControl: await read('#worker-toggle'), documentAssistant: await read('#authoring-open') }))
+  if (step === 'inspect') {
+    const child = page.frameLocator('#stage iframe:not([hidden])')
+    await child.locator('#stream').waitFor({ timeout: 30000 })
+    console.log(JSON.stringify({ phase: 'conversation-inspect', tail: (await child.locator('#stream').innerText()).slice(-3500) }))
+  }
   if (['start', 'prepare', 'upload', 'review', 'save', 'verify'].includes(step)) {
     await page.click('#agent-toggle')
     await page.waitForFunction(() => document.getElementById('agent-toggle').textContent.includes('Stop Agent'), null, { timeout: 30000 })
     await page.click('#worker-toggle')
     await page.waitForFunction(() => document.getElementById('worker-toggle').textContent.includes('Stop Worker'), null, { timeout: 30000 })
     console.log(JSON.stringify({ phase: 'roles-started', agentControl: await read('#agent-toggle'), workerControl: await read('#worker-toggle') }))
+    if (step === 'start') {
+      const child = page.frameLocator('#stage iframe:not([hidden])')
+      await child.locator('#stream').waitFor({ timeout: 30000 })
+      await page.waitForTimeout(5000)
+      console.log(JSON.stringify({ phase: 'conversation-after-start', tail: (await child.locator('#stream').innerText()).slice(-3500) }))
+    }
   }
   if (['prepare', 'upload'].includes(step)) {
     await page.click('#authoring-open')
@@ -80,13 +99,21 @@ try {
       localRead: await page.locator('#authoring-local-read').isChecked(), offMachine: await page.locator('#authoring-off-machine').isChecked() }))
     if (!await page.locator('#authoring-prepare').isEnabled())
       throw new Error(`Local authoring preparation is unavailable: ${(await page.locator('#authoring-notice').innerText()).trim()}`)
-    const before = await page.locator('#authoring-notice').innerText()
-    await page.click('#authoring-prepare')
-    await page.waitForFunction(previous => {
-      const notice = document.getElementById('authoring-notice').textContent.trim()
-      return notice !== '' && notice !== previous.trim() && !document.getElementById('authoring-prepare').disabled
-    }, before, { timeout: 180000 })
-    console.log(JSON.stringify({ phase: 'authoring-after-prepare', notice: await read('#authoring-notice'), prepare: await read('#authoring-prepare') }))
+    await page.check('#authoring-local-read')
+    if (remoteMaterialDisclosure && !localModel) await page.check('#authoring-off-machine')
+    console.log(JSON.stringify({ phase: 'material-permissions-chosen', localRead: await page.locator('#authoring-local-read').isChecked(),
+      offMachine: await page.locator('#authoring-off-machine').isChecked() }))
+    let prepared = false
+    for (let attempt = 1; attempt <= 12; attempt++) {
+      await page.click('#authoring-prepare')
+      await page.waitForFunction(() => !document.getElementById('authoring-prepare').disabled, null, { timeout: 180000 })
+      const notice = (await page.locator('#authoring-notice').innerText()).trim()
+      console.log(JSON.stringify({ phase: 'authoring-prepare', attempt, notice }))
+      if (notice.includes('Agent program is current') || notice.includes('Local assistant prepared for this Agent.')) { prepared = true; break }
+      if (!notice.includes('retry prepare')) throw new Error(`Local authoring preparation failed: ${notice}`)
+      await page.waitForTimeout(6000)
+    }
+    if (!prepared) throw new Error('Local authoring Source and authenticated Worker tools did not become current after bounded retries.')
   }
   if (step === 'upload') {
     await page.click('#authoring-close')

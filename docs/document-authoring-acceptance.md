@@ -14,7 +14,9 @@ workbench. Its success does **not** prove the account or document workflow below
    needed, and select the enabled QA Agent. Verify the account and Agent names before
    configuring its default or per-Agent model. Start the Agent and Worker in the UI.
 2. Open **Document assistant**. Prepare the local checker and Source. Verify that the
-   selected Agent, Connection, material area and permissions are shown. A preparation
+   selected Agent, Connection, material area and permissions are shown. For this synthetic
+   remote-model run explicitly allow both local material delivery and remote-model disclosure;
+   neither permission is implied by selecting a file. A preparation
    error must leave a visible retry path and must not claim readiness.
 3. Use the conversation's file chooser to attach the fixture. Verify the file name
    appears, then ask for a capability draft from that material. The Agent must ingest
@@ -61,8 +63,16 @@ the receipt without a second UI save.
 For a real-account browser run, `test/browser/live-document.browser.mjs` drives the
 installed npm package's Local UI through Chromium. It is deliberately excluded from
 `npm test`: `upload` calls the configured model and `save` writes a private draft.
+For a newly enabled QA Agent, first run `test/browser/live-setup.browser.mjs` with
+`RULITH_LIVE_RUN=1` and `RULITH_LIVE_AGENT` set; it refreshes the linked account,
+uses the first-use dialog, and pairs the local profile without replacing another key.
 Set `RULITH_LIVE_RUN=1`, `RULITH_LIVE_AGENT` to a dedicated enabled QA Agent, and
 `RULITH_LIVE_STEP` to `inspect`, `prepare`, `upload`, `review`, `save`, or `verify`.
+For a remote model, set `RULITH_LIVE_MATERIAL_DISCLOSURE=remote` only when the
+synthetic fixture may be disclosed to that provider. The upload arm refuses to send
+the fixture to a remote model without this explicit setting. Preparation retries
+the same Source setup while Worker tools and program projection become current;
+it does not count a pending projection as readiness.
 Run the script once per step, in that order, with `RULITH_LIVE_CASE` set to the
 certified Case displayed by `review` before `save` and `verify`. `upload` begins a
 fresh local conversation transcript. The Agent's Board focus is shared across its
@@ -107,6 +117,17 @@ closed the Case. This 12-call turn used 237,005 input and 8,372 output tokens.
 Three older Cases remained in the same Agent's Board focus, so the totals cannot
 be compared as a clean benchmark. No private draft was saved in this run. The
 next cue revision targets the two observed mistakes, pending another real test.
+
+On 2026-09-23 a fresh `Document QA` Agent paired and started through the real
+workbench. The synthetic file attached and sent correctly, but both material
+permissions had remained false. Preparation had reported a current Source and
+program. The first ingest action ran locally, then Artifact registration was
+refused as `source_material_denied`; no result receipt or completed Case was
+invented. The Agent stopped with the original call unresolved, using two model
+calls (19,824 input and 148 output tokens). The old local Worker was stopped;
+operator reconciliation is required before another turn on this Agent. The
+source-tree preparation guard now rejects this no-delivery configuration before
+installation. This run is a failure finding, not a clean first-draft benchmark.
 
 For a cheaper first-draft diagnostic before another full browser run, execute
 `$env:RULITH_AUTHORING_BENCHMARK='1'; node scripts/authoring-first-draft-benchmark.mjs`
