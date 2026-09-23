@@ -22,7 +22,9 @@ export const LOCAL_AUTHORING_DRAFT_SHAPE = [
   'program, caseContracts, citations, examples, questions, notes.',
   'The program FIELD MUST be a JSON OBJECT, never a string of rules, DSL, Markdown or code. Only the outer draft_json tool argument is a string.',
   'program={id,title,summary,vocabulary:{defines:[{id,as,args}]},pins:[alias],rules:[{id,label,when:[{predicate,args}],then:[{predicate,args}]}]}.',
+  'Every input and output vocabulary.defines[].id MUST be a canonical namespaced predicate such as acme.shipping.order_amount; never use a bare id like order_amount. Rules use each definition\'s local as alias.',
   'caseContracts=[{format:"rulith-case-contract/1",caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:"attested"},terminal:{cardinality:"once_per_case",disposition:"completed",requiresCertified:true}}].',
+  'For each contract, businessKey.predicate and opening.predicate name the same document INPUT predicate; acceptance.predicate names a distinct OUTPUT predicate. Their arguments/keyArguments are the same array of business key FIELD NAMES, e.g. ["order_id"], not the material task_id unless the document says so.',
   'citations=[{ruleId,quote}], examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}], questions=[], notes="...".',
   'Use full namespaced predicates in examples, aliases in program rules, and exact document substrings as quotes. Do not treat this cue as validation; the local checker decides.',
 ].join(' ')

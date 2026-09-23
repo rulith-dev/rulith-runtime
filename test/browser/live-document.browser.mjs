@@ -78,15 +78,15 @@ try {
     await page.waitForFunction(() => !document.getElementById('authoring-notice').textContent.includes('Reading this Agent'), null, { timeout: 30000 })
     console.log(JSON.stringify({ phase: 'authoring-before-prepare', notice: await read('#authoring-notice'), prepare: await read('#authoring-prepare'),
       localRead: await page.locator('#authoring-local-read').isChecked(), offMachine: await page.locator('#authoring-off-machine').isChecked() }))
-    if (['prepare', 'upload'].includes(step)) {
-      const before = await page.locator('#authoring-notice').innerText()
-      await page.click('#authoring-prepare')
-      await page.waitForFunction(previous => {
-        const notice = document.getElementById('authoring-notice').textContent.trim()
-        return notice !== '' && notice !== previous.trim() && !document.getElementById('authoring-prepare').disabled
-      }, before, { timeout: 180000 })
-      console.log(JSON.stringify({ phase: 'authoring-after-prepare', notice: await read('#authoring-notice'), prepare: await read('#authoring-prepare') }))
-    }
+    if (!await page.locator('#authoring-prepare').isEnabled())
+      throw new Error(`Local authoring preparation is unavailable: ${(await page.locator('#authoring-notice').innerText()).trim()}`)
+    const before = await page.locator('#authoring-notice').innerText()
+    await page.click('#authoring-prepare')
+    await page.waitForFunction(previous => {
+      const notice = document.getElementById('authoring-notice').textContent.trim()
+      return notice !== '' && notice !== previous.trim() && !document.getElementById('authoring-prepare').disabled
+    }, before, { timeout: 180000 })
+    console.log(JSON.stringify({ phase: 'authoring-after-prepare', notice: await read('#authoring-notice'), prepare: await read('#authoring-prepare') }))
   }
   if (step === 'upload') {
     await page.click('#authoring-close')

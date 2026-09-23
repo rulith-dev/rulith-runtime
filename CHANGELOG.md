@@ -2,6 +2,14 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Spell out canonical namespaced predicate IDs and matching Case business-key
+  fields in the one-time local authoring format cue, based on actual first-check
+  failures in the 0.8.12 published-account run.
+- Make the real-browser acceptance runner stop immediately with the visible reason
+  when the selected Agent cannot prepare the local assistant.
+
 ## 0.8.12 - 2026-09-23
 
 - Show the local checker's specific compile errors in the checked-draft review, with

@@ -92,3 +92,12 @@ the Worker reported the ingested material by Artifact reference and cleared its
 accompanying result, so that run never exposed the draft-shape cue to the model.
 The subsequent Worker change sends only a fixed format cue beside the reference;
 it still needs a clean-Agent, published-package trial before any efficiency claim.
+
+The 0.8.12 published-package run completed a new certified Case through the real
+browser and local checker, but the first two checker submissions still failed:
+bare predicate IDs in `vocabulary.defines`, then disagreeing Case business-key
+fields. The third passed with 9/9 examples and 2/2 citations, and the Agent
+closed the Case. This 12-call turn used 237,005 input and 8,372 output tokens.
+Three older Cases remained in the same Agent's Board focus, so the totals cannot
+be compared as a clean benchmark. No private draft was saved in this run. The
+next cue revision targets the two observed mistakes, pending another real test.
