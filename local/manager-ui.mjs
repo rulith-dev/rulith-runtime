@@ -214,6 +214,7 @@ export const managerPage = String.raw`<!doctype html>
   </header>
   <div id="connection" class="notice error" role="status" aria-live="polite" hidden></div>
   <div id="notice" class="notice" role="status" aria-live="polite"></div>
+  <div id="access-stop-warning" class="notice error" role="alert" hidden><span id="access-stop-copy"></span> <button id="access-stop-open">Review local profiles</button></div>
   <div id="agent-readiness" class="notice" role="status" hidden><span id="agent-readiness-copy"></span> <button id="agent-readiness-action" class="btn">Set model</button></div>
   <div class="stage" id="stage">
     <div class="stagenote" id="stage-note">
@@ -245,6 +246,7 @@ export const managerPage = String.raw`<!doctype html>
     <div id="linked" hidden>
       <div class="row" style="justify-content:space-between"><h3 id="account-name"></h3><span class="pill" id="device-tag"></span></div>
       <p id="agent-summary"></p>
+      <p class="muted" id="directory-sync" role="status"></p>
       <p class="muted" id="default-model-summary"></p>
       <div class="actions"><button id="default-model-open">Default model</button></div>
       <div class="actions"><button id="refresh-account">Refresh enabled Agents</button><button class="btn danger" id="sign-out">Sign out and stop this computer</button></div>
@@ -329,6 +331,7 @@ export const managerPage = String.raw`<!doctype html>
     <p class="notice error" id="detail-attention" hidden></p>
       <div class="actions"><button class="btn" id="open-setup">Open setup</button><button id="attach-open">Connect a cloud Agent</button></div>
       <div class="actions"><button id="connection-key-open">Replace Connection key</button></div>
+      <p><a id="agent-runtime-link" target="_blank" rel="noopener noreferrer" hidden>Open this Agent’s Runtime in Console</a></p>
     <div id="model-row">
       <h3>Model settings</h3>
       <p class="muted" id="agent-model-summary"></p>
@@ -393,7 +396,9 @@ export const managerPage = String.raw`<!doctype html>
 <div class="modal" id="dlg-authoring" role="dialog" aria-modal="true" aria-labelledby="authoring-title" hidden><div class="modal-card">
   <div class="modal-head"><div><b id="authoring-title">Document assistant</b><span class="subline" id="authoring-sub"></span></div><button class="modal-close" id="authoring-close" aria-label="Close document assistant">×</button></div>
   <div class="modal-body"><div id="authoring-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
-    <p id="authoring-copy">Install the Document Authoring Assistant on this Agent and bind its existing Worker to this profile’s material area. Preparation downloads the pinned local checker once for this computer; Java 25 is required. Your Agent uses its configured model.</p>
+    <p id="authoring-copy">Prepare this Agent to create and check capability drafts from documents using its selected model. Preparation installs a local checker on this computer; Java 25 is required.</p>
+    <p id="authoring-worker-status" role="status"></p>
+    <button id="authoring-worker-start" hidden>Start Worker</button>
     <label class="checkline"><input id="authoring-local-read" type="checkbox" checked> Allow local material delivery to this Agent</label><label class="checkline"><input id="authoring-off-machine" type="checkbox"> Allow document text to reach a remote model or an authorized Gateway proxy</label>
     <div class="actions"><button class="btn" id="authoring-prepare">Prepare local assistant</button><button id="authoring-review-open">Review checked draft</button><a class="btn" id="authoring-configure" target="_blank" rel="noopener noreferrer" hidden>Manage installed capabilities</a></div>
     <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
@@ -423,7 +428,7 @@ function renderStartNotices(){
     const row=rowOf(pending.id);
     if(!row||!row[pending.role]||row.ready?.[pending.role]===true)pendingStartNotices.delete(key);
   }
-  for(const noticeId of ['worker-notice','details-notice']){
+  for(const noticeId of ['worker-notice','details-notice','authoring-notice']){
     const previous=shownStartNotices.get(noticeId),el=$(noticeId);
     const messages=[...pendingStartNotices.values()].filter(p=>p.id===selected&&p.noticeId===noticeId)
       .map(p=>(rowOf(p.id)?.agentName||rowOf(p.id)?.name||p.id)+' · '+p.role+': '+p.message);
@@ -521,11 +526,12 @@ function controlSpec(){
       &&$('pair-replace-confirm').checked&&pendingReplaceFor===pendingTarget(row))],
     'pair-cancel':['attach:'+selected,Boolean(row&&row.pendingAgentId)],
     'agent-toggle':['role:'+selected+':agent',Boolean(row)&&hasRole(row,'agent')&&!row.orphaned&&(row.agent===true||!row.blocked)],
-    'agent-readiness-action':['role:'+selected+':agent',Boolean(row)&&row.mode==='local_agent'&&!row.agent&&!row.orphaned&&!row.blocked],
+    'agent-readiness-action':[nextStep(row)?.scope||'readiness',Boolean(nextStep(row)?.action)],
     'worker-toggle':['role:'+selected+':worker',Boolean(row)&&hasRole(row,'worker')&&!row.orphaned&&(row.worker===true||!row.blocked)],
     'tools-open':[windowScope(selected),Boolean(row)],
     'authoring-open':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned],
-    'authoring-prepare':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned&&authoringPermissionsReady],
+    'authoring-prepare':['authoring:'+selected,Boolean(row)&&row.paired&&row.worker&&row.ready?.worker!==false&&!row.model?.workerRestartRequired&&!row.blocked&&!row.orphaned&&authoringPermissionsReady],
+    'authoring-worker-start':['role:'+selected+':worker',Boolean(row)&&row.paired&&!row.worker&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned&&!busy.has('authoring:'+selected)],
     'authoring-local-read':['authoring:'+selected,authoringPermissionsReady],
     'authoring-off-machine':['authoring:'+selected,authoringPermissionsReady],
     'authoring-review-open':['authoring:'+selected,Boolean(row)&&row.paired&&!row.blocked&&!row.orphaned],
@@ -555,6 +561,7 @@ function statusOf(row){
   if(row.orphaned)return{word:'Needs attention',dot:'bad',tone:' bad'};
   if(row.blocked)return{word:'Unavailable',dot:'bad',tone:' bad'};
   if(row.pendingAgentId)return{word:'Connecting',dot:'wait',tone:' wait'};
+  if((row.agent&&row.ready?.agent===false)||(row.worker&&row.ready?.worker===false))return{word:'Starting',dot:'wait',tone:' wait'};
   if(row.agent&&row.worker)return{word:'Running',dot:'on',tone:' ok'};
   if(row.agent)return{word:'Agent running',dot:'on',tone:' ok'};
   if(row.worker)return{word:'Worker running',dot:'on',tone:' ok'};
@@ -563,6 +570,26 @@ function statusOf(row){
   return{word:'Stopped',dot:'',tone:''};
 }
 const modeWord=row=>row.mode==='existing_client'?'Worker only':'';
+/* A next step is a projection of observed state, not another readiness state machine. */
+function nextStep(row){
+  if(!row)return null;
+  const step=(copy,action,label)=>({copy,action,label,scope:action==='agent'||action==='worker'?'role:'+row.id+':'+action:'readiness'});
+  if(row.orphaned)return step('An earlier process is still running. Review its state before continuing.','details','Review settings');
+  if(row.pendingAgentId)return step('Connection setup is unfinished. Continue the same attempt or cancel it.','attach','Continue setup');
+  if(row.blocked)return step(row.blocked,'details','Review settings');
+  if(!row.paired)return step('Connect this local profile to an enabled Agent in your account.','attach','Connect Agent');
+  if(row.mode==='local_agent'){
+    if(!row.agent)return step(row.model?.ready?'Ready to chat. Start this Agent when you are ready.':'Choose a model before starting this Agent.','agent',row.model?.ready?'Start Agent':'Set model');
+    if(row.ready?.agent===false)return step('The Agent process is running; initialization has not been confirmed yet.','details','Review settings');
+    if(row.model?.restartRequired)return step('The default model changed. Stop this Agent, then start it to apply the change.','agent','Stop Agent');
+  }
+  if(hasRole(row,'worker')){
+    if(!row.worker)return step(row.mode==='existing_client'?'Start this Worker to handle this Agent’s tools and files.':'Chat is ready. Start the Worker when you need local tools or attachments.','worker','Start Worker');
+    if(row.ready?.worker===false)return step('The Worker process is running; initialization has not been confirmed yet.','details','Review settings');
+    if(row.model?.workerRestartRequired)return step('The model service changed. Stop this Worker, then start it before using new attachments.','worker','Stop Worker');
+  }
+  return null;
+}
 function modelSources(row){return (state.instances||[]).filter(r=>r.id!==row.id&&r.mode==='local_agent');}
 /* 模型弹窗绑定打开时的账号及 Agent；轮询只更新状态，不改写正在输入的值。
    默认凭据只在本机管理 API 的写入请求中出现，页面不会读取已保存的密钥。 */
@@ -825,6 +852,11 @@ function renderAccount(){
   $('agent-summary').textContent=(device.agents||[]).length
     ?'Agents you may run here: '+device.agents.map(a=>a.name).join(', ')
     :'No enabled Agents are available in this account.';
+  const sync=state.directorySync,checked=sync?.checkedAt?new Date(sync.checkedAt):null;
+  $('directory-sync').textContent=!sync?'':sync.error?'Agent sync could not finish: '+sync.error+' Retrying automatically; you can also Refresh Agents.'
+    :sync.checking?'Checking the account’s enabled Agents…'
+    :sync.stale?'The Agent list is waiting for a fresh account check. Refresh Agents to check now.'
+    :'Agents sync automatically.'+(checked&&Number.isFinite(checked.getTime())?' List received '+checked.toLocaleTimeString()+'.':'');
   $('signout-state').textContent=device.signOut&&device.signOut.state==='incomplete'
     ?'Sign-out is incomplete at the '+device.signOut.step+' step. It is still signed in; retry uses the same revoke request.':'';
   $('unusable-teaching').textContent=device.teaching||'This authorization is no longer accepted by the account service.';
@@ -905,7 +937,7 @@ function renderDetails(){
   const attention=!row?'This Agent is no longer on this computer. Close this and choose another.'
     :row.orphaned?'Processes from a manager that is gone are still running: '
       +((row.orphaned.children||[]).map(c=>c.role+' pid '+c.pid).join(', '))+'. Stop them before using this Agent.'
-    :row.blocked?row.blocked:'';
+    :row.accessStopWarning?row.accessStopWarning:row.blocked?row.blocked:'';
   $('detail-attention').hidden=attention==='';
   $('detail-attention').textContent=attention;
   $('detail-id').textContent=row?row.id:'—';
@@ -920,6 +952,10 @@ function renderDetails(){
   $('model-row').hidden=!row||row.mode!=='local_agent';
   $('connection-key-open').hidden=!row||!row.paired||!row.connectionId;
   $('connection-key-open').disabled=Boolean(row?.worker)||Boolean(row?.blocked);
+  const sameAccount=row?.paired&&state.device?.state==='linked'&&row.origin===state.device.origin&&row.accountId===state.device.account?.id;
+  $('agent-runtime-link').hidden=!sameAccount;
+  if(sameAccount)$('agent-runtime-link').href=new URL('/console/#/agents/'+encodeURIComponent(row.agentId)+'?tab=runtime',row.origin).href;
+  else $('agent-runtime-link').removeAttribute('href');
   $('agent-model-summary').textContent=row?.model
     ?(row.model.source==='default'?'Using the default model. ':'')+modelDescription(row.model)
       +(row.model.restartRequired?' Restart this Agent to apply the updated default.':'')
@@ -928,10 +964,13 @@ function renderDetails(){
 }
 function renderCenter(){
   const row=sel();
-  const needsStart=Boolean(row?.model&&row.mode==='local_agent'&&!row.agent&&!row.blocked&&!row.orphaned&&row.paired);
-  $('agent-readiness').hidden=!needsStart;
-  $('agent-readiness-copy').textContent=row?.model?.ready?'Ready to chat. Start this Agent when you are ready.':'Choose a model before starting this Agent.';
-  $('agent-readiness-action').textContent=row?.model?.ready?'Start Agent':'Set model';
+  const warnings=(state.instances||[]).filter(r=>r.accessStopWarning);
+  $('access-stop-warning').hidden=warnings.length===0;
+  $('access-stop-copy').textContent=warnings.length?'Account access changed. Local processes still need attention: '+warnings.map(r=>r.name).join(', ')+'.':'';
+  const step=nextStep(row);
+  $('agent-readiness').hidden=!step;
+  $('agent-readiness-copy').textContent=step?.copy||'';
+  $('agent-readiness-action').textContent=step?.label||'';
   $('center-title').textContent=row?row.name:'Rulith';
   $('center-sub').textContent=row
     ?(row.mode==='existing_client'?'This computer does the work for an Agent you run elsewhere.'
@@ -944,7 +983,7 @@ function renderCenter(){
   $('agent-pill').hidden=!row;
   if(row){
     const s=statusOf(row);
-    $('agent-pill').textContent=row.mode==='existing_client'?'Worker only':row.agent?'Agent running':s.word==='Stopped'?'Agent stopped':s.word;
+    $('agent-pill').textContent=row.mode==='existing_client'?'Worker only':row.agent?(row.ready?.agent===false?'Agent starting':'Agent running'):s.word==='Stopped'?'Agent stopped':s.word;
     $('agent-pill').className='pill'+(row.mode==='existing_client'?'':s.tone);
   }
   $('agent-toggle').hidden=!isAgent;
@@ -962,13 +1001,13 @@ function renderWorker(){
   const has=hasRole(row,'worker');
   $('worker-toggle').hidden=!has;
   $('worker-pill').textContent=!has?'Not on this computer'
-    :row.orphaned?'Needs attention':row.blocked?'Unavailable':row.worker?'Running':'Stopped';
-  $('worker-pill').className='pill'+(!has?'':row.orphaned||row.blocked?' bad':row.worker?' ok':'');
+    :row.orphaned?'Needs attention':row.blocked?'Unavailable':row.worker?(row.ready?.worker===false?'Starting':'Running'):'Stopped';
+  $('worker-pill').className='pill'+(!has?'':row.orphaned||row.blocked?' bad':row.worker?(row.ready?.worker===false?' wait':' ok'):'');
   $('worker-note').textContent=!has?'This Agent does not run a Worker on this computer.'
     :row.orphaned?'Processes from a manager that is gone are still running. Open settings for what is still there.'
       :row.blocked?row.blocked
         :row.worker&&row.model?.workerRestartRequired?'Model service changed. Stop and start this Worker before using new attachments.'
-        :row.worker?'Doing the work this Agent asks for on this computer.'
+        :row.worker?(row.ready?.worker===false?'Waiting for Worker initialization.':'Doing the work this Agent asks for on this computer.')
           :'Start the Worker when this Agent should use the tools and files on this computer.';
   if(has)$('worker-toggle').textContent=row.worker?'Stop Worker':'Start Worker';
   $('worker-agent').textContent=row.agentName||row.agentId||'Not connected';
@@ -983,6 +1022,12 @@ function renderAuthoring(){
     say('authoring-notice','The selected Agent changed. Close this dialog and choose the Agent again.');
   }
   const row=sel();$('authoring-sub').textContent=row?.name||'';
+  $('authoring-worker-start').hidden=!row||Boolean(row.worker);
+  $('authoring-worker-status').textContent=!row?'Choose an Agent first.':row.blocked||row.orphaned?'Resolve this Agent’s setup in settings before preparing the assistant.'
+    :!row.worker?'Start this Agent’s Worker before preparing the assistant.'
+    :row.ready?.worker===false?'Waiting for Worker initialization. Preparation becomes available when it is confirmed.'
+    :row.model?.workerRestartRequired?'Stop and start this Worker to apply the model service change before preparing the assistant.'
+    :'Worker is initialized. Preparation will verify its tools.';
   const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
   $('authoring-publication').hidden=!(ready&&authoringResult.savedPackId);
   if(ready&&authoringResult.savedPackId){
@@ -1072,7 +1117,7 @@ function pruneFrames(){
 }
 function render(next){
   const signedIn=next?.device?.state==='linked'&&['pending','approved'].includes(state.device?.state);
-  if(next!==undefined)state={instances:next.instances||[],device:next.device||{state:'none'},modelDefaults:next.modelDefaults||null,legacyInstall:next.legacyInstall==null?null:next.legacyInstall};
+  if(next!==undefined)state={instances:next.instances||[],device:next.device||{state:'none'},directorySync:next.directorySync||null,modelDefaults:next.modelDefaults||null,legacyInstall:next.legacyInstall==null?null:next.legacyInstall};
   if(signedIn){signInPollError='';say('account-notice','');closeDialog('dlg-account');say('notice','Signed in as '+(state.device.account?.name||'your account')+'.');}
   if(selected&&!rowOf(selected))selected='';
   renderStartNotices();
@@ -1423,11 +1468,18 @@ $('stop-all').onclick=()=>{const id=selected;for(const role of ['agent','worker'
 $('agent-toggle').onclick=()=>{const id=selected,row=rowOf(id);if(!row)return;
   if(!row.agent&&row.model&&!row.model.ready)return void openModel(id);
   controlRole(id,'agent',row.agent?'stop':'start','worker-notice');};
-$('agent-readiness-action').onclick=()=>$('agent-toggle').onclick();
+$('agent-readiness-action').onclick=()=>{const action=nextStep(sel())?.action;
+  if(action==='agent')return $('agent-toggle').onclick();
+  if(action==='worker')return $('worker-toggle').onclick();
+  if(action==='attach')return $('attach-open').onclick();
+  if(action==='details')return $('details-open').onclick();
+};
+$('access-stop-open').onclick=()=>{openDialog('dlg-account','account-close');$('local-settings').open=true;};
 /* Both role controls live in the Agent rail. Their answers stay beside those controls,
    including while that rail covers the conversation on a phone. */
 $('worker-toggle').onclick=()=>{const id=selected,row=rowOf(id);if(row)controlRole(id,'worker',row.worker?'stop':'start','worker-notice');};
 $('tools-open').onclick=()=>openSettings(selected,'/worker-tools','worker-notice');
+$('authoring-worker-start').onclick=()=>{const row=sel();if(row&&!row.worker)return controlRole(row.id,'worker','start','authoring-notice');};
 $('authoring-open').onclick=()=>{
   const row=sel(),id=selected,scope=(row?.origin||'')+'/'+(row?.accountId||''),load=++authoringLoad;
   authoringFor=id;authoringScope=scope;authoringResult=null;authoringPermissionsReady=false;

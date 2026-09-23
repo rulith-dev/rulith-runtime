@@ -729,6 +729,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
    * "this instance's processes are not recorded" can act; a silent gap cannot be acted on.
    */
   const runtimeRecordFailures = new Map()
+  const accessStopWarnings = new Map()
   const recordRuntime = async (id, children) => {
     const live = hosts.get(id)
     if (live === undefined) return
@@ -878,6 +879,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       return registry.read().instances.map((row) => {
       const live = hosts.get(row.id)
       const status = live?.host.status()
+      if (runningRoles(row.id).length === 0) accessStopWarnings.delete(row.id)
       const model = publicModel(row, grant)
       const currentDefault = modelSource(row) === 'default' ? defaultFor(row, grant) : undefined
       const worker = loadInstanceConfig(resolve(row.directory)).worker?.env ?? {}
@@ -908,6 +910,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         blocked: grantRefusal(row.id, { requirePaired: true, grant, row }) ?? '',
         orphaned: row.orphaned ?? null,
         runtimeRecordWarning: runtimeRecordFailures.get(row.id) ?? '',
+        accessStopWarning: accessStopWarnings.get(row.id) ?? '',
         legacyImport: row.importedFrom === undefined ? null : { configFile: row.importedFrom, credentialsLeftInPlace: row.legacyCredentials ?? [] },
         // Reported by the running child, not by this registry: a stored id is a memory of an
         // identity, and only the process can say which one it is actually using.
@@ -929,18 +932,41 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
      * sign-out before this method reports it stopped. */
     refreshDevice: () => admit(async () => {
       const before = device.status()
-      const refreshed = await device.refresh()
+      const stopRows = async rows => {
+        const stopped = [], stopping = []
+        for (const row of rows) {
+          try {
+            const result = await manager.stop(row.id)
+            ;(result.stopped ? stopped : stopping).push({ id: row.id, name: row.name, results: result.results })
+            if (result.stopped) accessStopWarnings.delete(row.id)
+            else accessStopWarnings.set(row.id, 'Account access changed, but local processes have not exited. Open Agent settings and stop them before continuing.')
+          } catch (error) {
+            stopping.push({ id: row.id, name: row.name, teaching: String(error?.message ?? error) })
+            accessStopWarnings.set(row.id, 'Account access changed and stopping local processes failed: ' + String(error?.message ?? error))
+          }
+        }
+        return { stoppedInstances: stopped, stoppingInstances: stopping }
+      }
+      let refreshed
+      try { refreshed = await device.refresh() }
+      catch (error) {
+        // Only a confirmed device refusal withdraws access. A transient outage preserves
+        // the last directory and must not stop unrelated running work.
+        const after = device.status()
+        if (['unusable', 'revoked', 'expired'].includes(after.state) && after.deviceId === before.deviceId) {
+          const outcome = await stopRows(registry.read().instances.filter(row => row.origin === before.origin && row.accountId === String(before.account?.id ?? '')))
+          Object.assign(error, outcome)
+          if (outcome.stoppingInstances.length) error.message += ' Local processes still need attention: ' + outcome.stoppingInstances.map(row => row.name).join(', ') + '.'
+        }
+        throw error
+      }
       const beforeIds = new Set((before.agents ?? []).map(agent => agent.id))
       const afterIds = new Set((refreshed.agents ?? []).map(agent => agent.id))
       const addedAgents = (refreshed.agents ?? []).filter(agent => !beforeIds.has(agent.id))
       const removedAgents = (before.agents ?? []).filter(agent => !afterIds.has(agent.id))
-      const stopped = [], stopping = []
-      for (const row of registry.read().instances) {
-        if (!row.agentId || row.origin !== refreshed.origin || row.accountId !== String(refreshed.account?.id ?? '') || afterIds.has(row.agentId)) continue
-        const result = await manager.stop(row.id)
-        ;(result.stopped ? stopped : stopping).push({ id: row.id, name: row.name, results: result.results })
-      }
-      return { addedAgents, removedAgents, stoppedInstances: stopped, stoppingInstances: stopping }
+      const outcome = await stopRows(registry.read().instances.filter(row => row.agentId && row.origin === refreshed.origin
+        && row.accountId === String(refreshed.account?.id ?? '') && !afterIds.has(row.agentId)))
+      return { addedAgents, removedAgents, ...outcome }
     }),
 
     setDefaultModel: (body = {}) => admit(async () => {

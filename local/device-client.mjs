@@ -268,6 +268,7 @@ export function createDeviceClient({ root } = {}) {
       account: current.account ?? null,
       agents: Array.isArray(current.agents) ? current.agents.map((row) => ({ id: String(row.id), name: String(row.name ?? row.id) })) : [],
       expiresAt: text(current.expiresAt),
+      directoryCheckedAt: text(current.refreshedAt) || text(current.linkedAt),
       signOut: current.signOut ?? null,
       teaching: text(current.unusableTeaching) || text(current.signInTeaching),
     }
@@ -421,9 +422,15 @@ export function createDeviceClient({ root } = {}) {
       const current = linked()
       const reply = await call(current.origin, '/local-devices/context', { bearer: current.token }).catch(deviceRouteRefusal)
       if (text(reply.deviceId) !== current.deviceId) throw new Error('The account service answered for a different device record.')
+      if (text(reply.account?.id) !== text(current.account?.id)) throw new Error('The account service answered for a different account.')
       const agents = (Array.isArray(reply.agents) ? reply.agents : []).map((row) => ({ id: String(row.id), name: String(row.name ?? row.id) }))
-      await mutate((latest) => ({ ...latest, account: { id: String(reply.account?.id ?? latest.account?.id ?? ''), name: String(reply.account?.name ?? '') },
-        agents, expiresAt: text(reply.expiresAt), refreshedAt: new Date().toISOString() }))
+      await mutate((latest) => {
+        if (latest.state !== 'linked' || latest.origin !== current.origin || latest.deviceId !== current.deviceId
+            || latest.token !== current.token || text(latest.account?.id) !== text(current.account?.id))
+          throw new Error('The signed-in account changed while refreshing. Read its current Agent list again.')
+        return { ...latest, account: { id: String(reply.account.id), name: String(reply.account?.name ?? '') },
+          agents, expiresAt: text(reply.expiresAt), refreshedAt: new Date().toISOString() }
+      })
       return status()
     }),
 

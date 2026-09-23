@@ -56,3 +56,12 @@ root. Existing permissions are loaded afresh on each opening; an unavailable rea
 silently replace them with checkbox defaults. A binding to another Worker or material
 area must be unlocked in Console first. Periodic workbench refreshes do not overwrite
 choices while the dialog is being edited.
+
+The dialog offers **Start Worker** when needed and waits for its initialization before
+enabling preparation. The manager checks the selected account, Agent, Connection and
+Worker before any checker download, then checks the same target again after installation.
+If access, configuration or Worker readiness changes during the download, preparation
+stops before sending the setup command. A model endpoint change requires restarting the
+Worker before new attachments or preparation, as indicated in the selected workspace.
+Signing out can stop the local roles and revoke the device while the public checker
+download continues; completing that download cannot resume setup under a different login.

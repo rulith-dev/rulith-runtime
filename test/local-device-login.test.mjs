@@ -26,11 +26,11 @@ import { createDevicesGateway } from './support/local-devices-gateway.mjs'
 const KEY = 'manager-test-key'
 
 /** A manager and a Gateway, both on real loopback sockets, torn down together. */
-async function withManager(t, run) {
+async function withManager(t, run, options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'rulith-manager-'))
   const gateway = createDevicesGateway()
   await gateway.listen()
-  const manager = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json') })
+  const manager = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json'), ...options })
   await manager.listen()
   const call = async (path, body, headers = {}) => {
     const response = await fetch(`http://127.0.0.1:${manager.port}${path}`, {
@@ -186,6 +186,73 @@ test('enabled Agents are synchronized from the account, not remembered from sign
     const disabled = await call('/manager/device/refresh', {})
     assert.deepEqual(disabled.body.device.agents.map((row) => row.id), ['agent-alpha', 'agent-gamma'])
     assert.deepEqual(disabled.body.removedAgents.map((row) => row.id), ['agent-beta'])
+  })
+})
+
+test('a running workbench synchronizes enabled Agents without a browser or new credentials', async (t) => {
+  await withManager(t, async ({ gateway, call, manager }) => {
+    gateway.disableAgent('agent-beta')
+    await signIn(gateway, call)
+    gateway.enableAgent('agent-beta')
+    const deadline = Date.now() + 2500
+    while (!manager.device.status().agents.some(a => a.id === 'agent-beta') && Date.now() < deadline)
+      await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(manager.device.status().agents.some(a => a.id === 'agent-beta'))
+    assert.ok(manager.state().directorySync.checkedAt)
+    assert.equal(manager.registry.read().instances.length, 0)
+    assert.equal(gateway.requests.some(r => r.path === '/local-devices/pair'), false)
+    await call('/manager/device/signout', {})
+    const requests = gateway.requests.length
+    await new Promise(resolve => setTimeout(resolve, 100))
+    assert.equal(gateway.requests.length, requests, 'signed-out workbenches do not refresh or sign in themselves')
+    assert.equal(manager.state().directorySync, null)
+  }, { directoryRefreshMs: 40 })
+})
+
+test('a shared in-flight directory refresh drains before sign-out and cannot restore the signed-out account', async t => {
+  await withManager(t, async ({ manager, gateway, call }) => {
+    await signIn(gateway, call)
+    const originalFetch = globalThis.fetch
+    let enter, release, reads = 0
+    const entered = new Promise(resolve => { enter = resolve })
+    const released = new Promise(resolve => { release = resolve })
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+      const response = await originalFetch(url, options)
+      if (String(url) === gateway.origin + '/local-devices/context') {
+        reads += 1; enter(); await released
+      }
+      return response
+    })
+    const first = call('/manager/device/refresh', {})
+    await entered
+    const second = call('/manager/device/refresh', {})
+    const signout = call('/manager/device/signout', {})
+    try {
+      const deadline = Date.now() + 2000
+      while (manager.instances.phase === 'ready' && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+      assert.equal(manager.instances.phase, 'signing_out')
+      assert.equal(manager.device.status().state, 'linked', 'sign-out waits for the already admitted refresh')
+    } finally { release() }
+    const results = await Promise.all([first, second, signout])
+    assert.equal(reads, 1, 'manual refreshes share the same context request')
+    assert.equal(results[2].status, 200)
+    assert.equal(manager.device.status().state, 'none')
+    assert.equal(manager.state().directorySync, null)
+  })
+})
+
+test('directory refresh failure is visible without erasing a valid account and clears after retry', async (t) => {
+  await withManager(t, async ({ gateway, call, manager }) => {
+    await signIn(gateway, call)
+    const before = manager.device.status().agents
+    gateway.failNext('/local-devices/context')
+    assert.equal((await call('/manager/device/refresh', {})).status, 400)
+    assert.equal(manager.device.status().state, 'linked')
+    assert.deepEqual(manager.device.status().agents, before)
+    assert.ok(manager.state().directorySync.error)
+    assert.equal((await call('/manager/device/refresh', {})).status, 200)
+    assert.equal(manager.state().directorySync.error, '')
+    assert.ok(manager.state().directorySync.checkedAt)
   })
 })
 

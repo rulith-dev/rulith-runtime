@@ -147,7 +147,9 @@ arm('failed local assistant preparation keeps the selected Agent and permissions
   { width: 1400, height: 900 }, async ({ page, fixture }) => {
     await openAgent(page, 'inst-1')
     await page.click('#authoring-open')
+    await page.click('#authoring-worker-start')
     await page.locator('#authoring-prepare').waitFor({ state: 'visible' })
+    await page.waitForFunction(() => !document.getElementById('authoring-prepare').disabled)
     assert.equal(await page.locator('#authoring-prepare').isEnabled(), true)
     fixture.control.authoringPrepareRefusal = 'The local checker is unavailable. Retry preparation.'
     await page.click('#authoring-prepare')
@@ -167,6 +169,7 @@ arm('preparation refuses an unreadable Source before any document action can be 
   { width: 1400, height: 900 }, async ({ page, fixture }) => {
     await openAgent(page, 'inst-1')
     await page.click('#authoring-open')
+    await page.click('#authoring-worker-start')
     await page.locator('#authoring-prepare').waitFor({ state: 'visible' })
     await page.uncheck('#authoring-local-read')
     await page.uncheck('#authoring-off-machine')
@@ -1088,3 +1091,32 @@ arm('model editor remains usable on a narrow screen and an error retains the typ
     assert.equal(await page.locator('#dlg-account').isVisible(), true)
     assert.equal(await page.evaluate(() => document.activeElement.id), 'default-model-open')
   }, modelFixture)
+
+for (const viewport of [{ width: 1440, height: 960 }, { width: 390, height: 844 }]) {
+  arm('document preparation guides Worker readiness and survives a directory update at ' + viewport.width + 'px', viewport,
+    async ({ page, fixture }) => {
+      fixture.rows[0].agent = true
+      fixture.rows[0].ready = { agent: true, worker: false }
+      if (viewport.width < 980) await page.click('#rail-open')
+      await openAgent(page, 'inst-1')
+      if (viewport.width < 980) await page.click('#rail-open')
+      await page.click('#authoring-open')
+      assert.equal(await page.locator('#authoring-prepare').isEnabled(), false)
+      assert.match(await page.locator('#authoring-worker-status').textContent(), /Start.*Worker/)
+      await page.uncheck('#authoring-off-machine')
+      await page.click('#authoring-worker-start')
+      assert.equal(await page.locator('#authoring-prepare').isEnabled(), false)
+      assert.match(await page.locator('#authoring-worker-status').textContent(), /Waiting/)
+      fixture.device.agents.push({ id: 'agent-new', name: 'New Agent' })
+      fixture.rows[0].ready.worker = true
+      await page.waitForFunction(() => !document.getElementById('authoring-prepare').disabled)
+      assert.equal(await page.locator('#authoring-off-machine').isChecked(), false, 'polls preserve the current permission choice')
+      assert.equal(await page.locator('[data-agent="agent-new"]').count(), 1)
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+      if (process.env.RULITH_FLOW_SCREENSHOTS) await page.screenshot({ path: join(process.env.RULITH_FLOW_SCREENSHOTS, 'document-prepare-' + viewport.width + '.png') })
+      await page.click('#authoring-prepare')
+      await page.locator('#authoring-notice').filter({ hasText: 'Local assistant prepared' }).waitFor()
+      assert.equal(fixture.control.authoringPrepareRequests.length, 1)
+      assert.deepEqual(fixture.control.authoringPrepareRequests[0].materialPermissions, { localRead: true, offMachine: false })
+    })
+}

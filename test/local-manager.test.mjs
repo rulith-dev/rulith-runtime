@@ -47,11 +47,11 @@ test('private-save request identity survives a retry and changes with the certif
 })
 
 /** A manager and a Gateway on real sockets, signed in unless a scenario asks otherwise. */
-async function withManager(t, run, { signIn = true, agents = AGENTS } = {}) {
+async function withManager(t, run, { signIn = true, agents = AGENTS, ...managerOptions } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'rulith-instances-'))
   const gateway = createDevicesGateway()
   await gateway.listen()
-  const manager = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json'), startConfirmMs: 8000 })
+  const manager = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json'), startConfirmMs: 8000, ...managerOptions })
   await manager.listen()
   t.after(async () => {
     await manager.close()
@@ -1280,6 +1280,64 @@ test('direct authoring preparation refuses an unreadable material Source before 
   })
 })
 
+test('document preparation checks Worker readiness before downloading and rechecks after a long installation', async t => {
+  let downloads = 0, releaseInstall, enteredInstall
+  const entered = new Promise(resolve => { enteredInstall = resolve })
+  const installed = new Promise(resolve => { releaseInstall = resolve })
+  await withManager(t, async ({ manager, gateway }) => {
+    const row = await addInstance(manager, 'Preparation', { agentId: AGENTS[0] })
+    const prepare = async () => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/prepare`, {
+        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({ instanceId: row.id, materialPermissions: { localRead: true, offMachine: false } }),
+      })
+      return { status: response.status, body: await response.json() }
+    }
+    const stopped = await prepare()
+    assert.equal(stopped.status, 400)
+    assert.match(stopped.body.teaching, /Start.*Worker/)
+    assert.equal(downloads, 0, 'a known missing prerequisite does not download the checker')
+    await manager.instances.control(row.id, { role: 'worker', operation: 'start' })
+    const pending = prepare()
+    try {
+      await entered
+      gateway.disableAgent(AGENTS[0])
+      await manager.instances.refreshDevice()
+    } finally { releaseInstall() }
+    const changed = await pending
+    assert.equal(changed.status, 400)
+    assert.equal(downloads, 1)
+    assert.equal(gateway.requests.some(request => /authoring\/prepare/.test(request.path)), false,
+      'authorization withdrawn during download cannot create an installation')
+  }, { installChecker: async () => { downloads += 1; enteredInstall(); await installed } })
+})
+
+test('a stalled public checker installation cannot delay stopping and signing out of the account', async t => {
+  let releaseInstall, enteredInstall
+  const entered = new Promise(resolve => { enteredInstall = resolve })
+  const installed = new Promise(resolve => { releaseInstall = resolve })
+  await withManager(t, async ({ manager, gateway }) => {
+    const row = await addInstance(manager, 'Download sign-out', { agentId: AGENTS[0] })
+    await manager.instances.start(row.id)
+    const pending = fetch(`http://127.0.0.1:${manager.port}/manager/authoring/prepare`, {
+      method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
+      body: JSON.stringify({ instanceId: row.id, materialPermissions: { localRead: true, offMachine: false } }),
+    })
+    await entered
+    try {
+      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/device/signout`, {
+        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(3000),
+      })
+      assert.equal(response.status, 200)
+      assert.equal(manager.device.status().state, 'none')
+      assert.equal(manager.instances.hosts.has(row.id), false)
+    } finally { releaseInstall() }
+    const prepared = await pending
+    assert.equal(prepared.status, 400)
+    assert.equal(gateway.requests.some(request => /authoring\/prepare/.test(request.path)), false)
+  }, { installChecker: async () => { enteredInstall(); await installed } })
+})
+
 test('the manager key must be a shape the Local pages will carry back', () => {
   const root = mkdtempSync(join(tmpdir(), 'rulith-keyshape-'))
   try {
@@ -1409,6 +1467,44 @@ test('refreshing the enabled account directory stops a disabled Agent and refuse
     assert.deepEqual(refreshed.stoppedInstances.map(instance => instance.id), [row.id])
     assert.equal(manager.instances.hosts.has(row.id), false, 'the observed stop closes the host only after both roles exit')
     await assert.rejects(manager.instances.start(row.id), /no longer enabled/)
+  })
+})
+
+test('a directory network failure preserves live work, while confirmed revocation attempts every stop and exposes failures', async t => {
+  await withManager(t, async ({ manager, gateway, deviceId }) => {
+    const first = await addInstance(manager, 'First', { agentId: AGENTS[0] })
+    const second = await addInstance(manager, 'Second', { agentId: AGENTS[1] })
+    const third = await addInstance(manager, 'Third', { agentId: AGENTS[2] })
+    await manager.instances.start(first.id)
+    await manager.instances.start(second.id)
+    await manager.instances.start(third.id)
+    gateway.failNext('/local-devices/context')
+    await assert.rejects(manager.instances.refreshDevice())
+    assert.equal(manager.device.status().state, 'linked')
+    assert.equal(manager.instances.overview().every(row => row.agent && row.worker), true)
+    const stop = manager.instances.stop, attempted = []
+    manager.instances.stop = async id => {
+      attempted.push(id)
+      if (id === first.id) throw Error('simulated stop failure')
+      if (id === second.id) return { stopped: false, results: [{ role: 'worker', state: 'stopping' }] }
+      return stop(id)
+    }
+    try {
+      gateway.revokeDeviceFromConsole(deviceId)
+      await assert.rejects(manager.instances.refreshDevice(), error => {
+        assert.match(error.message, /Local processes still need attention: First, Second/)
+        assert.deepEqual(error.stoppingInstances.map(row => row.id), [first.id, second.id])
+        return true
+      })
+      assert.deepEqual(attempted, [first.id, second.id, third.id])
+      assert.equal(manager.instances.hosts.has(third.id), false)
+      assert.match(manager.instances.overview().find(row => row.id === first.id).accessStopWarning, /simulated stop failure/)
+      assert.match(manager.instances.overview().find(row => row.id === second.id).accessStopWarning, /have not exited/)
+      assert.equal(manager.device.status().state, 'unusable')
+    } finally { manager.instances.stop = stop }
+    await stop(first.id)
+    await stop(second.id)
+    assert.equal(manager.instances.overview().find(row => row.id === first.id).accessStopWarning, '')
   })
 })
 

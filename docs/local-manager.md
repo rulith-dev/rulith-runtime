@@ -50,11 +50,21 @@ neutral gray style as Console.
    Existing MCP clients keep their own model configuration.
 6. Start the Worker when it is needed for tools. Tool and resource authorization remains in Console.
 
-Use **Refresh enabled Agents** in Account after Console changes the directory. The refresh adds
+While Rulith is running, the workbench checks the account directory every 30 seconds,
+including when its browser is closed. Account shows when the list was received and any
+temporary sync failure. **Refresh enabled Agents** requests an immediate check. The refresh adds
 newly enabled Agents and removes disabled ones. Profiles are kept, but a disabled Agent cannot
 start or make a new call; Rulith asks its running local roles to stop and reports any process
 that is still stopping. An account with no enabled Agents is still signed in and can be refreshed
-after an Agent is enabled in Console.
+after an Agent is enabled in Console. A temporary network failure preserves the last directory;
+a confirmed device rejection stops that account's local roles. Incomplete stops remain visible
+with a link to the local profiles; one failed stop does not prevent stopping other profiles.
+
+The selected workspace names its next step: finish connection, set a model, start the
+Agent, or prepare the Worker. **Starting** means the process exists but initialization
+has not yet been confirmed. Agent settings also links directly to
+that Agent's Runtime in Console, where an unresolved call can be inspected through the
+existing recovery procedure. Opening the link does not retry or dispose of a call.
 
 One cloud Agent attaches to one profile in this workbench. Different profiles may
 share a display name but never Agent/Connection credentials or a mutable working directory. Device

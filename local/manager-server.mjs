@@ -81,6 +81,7 @@ const onlyFields = (body, allowed) => {
 export function createManagerServer({
   root = defaultManagerRoot(), port = 7780, key = randomUUID().replace(/-/g, ''),
   legacyConfigFile = join(homedir(), '.rulith', 'local.json'), startConfirmMs, leaseWaitMs = 0,
+  directoryRefreshMs = 30_000, installChecker = installAuthoringChecker,
 } = {}) {
   /** The installation claim, held from `listen` to `close`. */
   let lease
@@ -105,6 +106,43 @@ export function createManagerServer({
      * opened from this manager, on this machine.
      */
     managerReturnUrl: () => `http://127.0.0.1:${server.address()?.port ?? port}/?k=${encodeURIComponent(key)}` })
+
+  if (!Number.isFinite(directoryRefreshMs) || directoryRefreshMs < 20) throw new Error('Directory refresh interval must be at least 20 ms.')
+  let directoryTimer, directoryPending, directoryLast, closing = false
+  const deviceScope = grant => JSON.stringify([grant.origin, grant.deviceId, grant.account?.id])
+  const directoryStatus = () => {
+    const grant = device.status()
+    if (grant.state !== 'linked') return null
+    const scope = deviceScope(grant), last = directoryLast?.scope === scope ? directoryLast : null
+    const checkedAt = grant.directoryCheckedAt || ''
+    return { checking: directoryPending?.scope === scope, checkedAt, error: last?.error || '',
+      stale: Boolean(last?.error) || !Number.isFinite(Date.parse(checkedAt)) || Date.now() - Date.parse(checkedAt) > directoryRefreshMs * 3 }
+  }
+  // One request per installation, independent of the number or visibility of browser tabs.
+  // Sign-out drains this admitted refresh before it clears the device record.
+  const refreshDirectory = () => {
+    const scope = deviceScope(device.status())
+    if (directoryPending?.scope === scope) return directoryPending.promise
+    const pending = { scope }
+    pending.promise = instances.refreshDevice().then(result => {
+      if (deviceScope(device.status()) === scope) directoryLast = { scope, error: '' }
+      return result
+    }, error => {
+      if (deviceScope(device.status()) === scope) directoryLast = { scope, error: String(error?.message ?? error) }
+      throw error
+    }).finally(() => { if (directoryPending === pending) directoryPending = undefined })
+    directoryPending = pending
+    return pending.promise
+  }
+  const scheduleDirectory = () => {
+    if (closing) return
+    directoryTimer = setTimeout(async () => {
+      try { if (instances.phase === 'ready' && device.status().state === 'linked' && !device.busy) await refreshDirectory() }
+      catch { /* The state projection exposes the error; a network failure is not sign-out. */ }
+      finally { scheduleDirectory() }
+    }, directoryRefreshMs)
+    directoryTimer.unref?.()
+  }
 
   /** Is this request from a loopback page addressing this server by a loopback name? */
   const localContext = (req) => {
@@ -138,6 +176,7 @@ export function createManagerServer({
     stateRevision: ++stateRevision,
     root: registry.root,
     device: device.status(),
+    directorySync: directoryStatus(),
     modelDefaults: instances.modelDefaults(),
     instances: instances.overview(),
     // Offered, never acted on: an installation is imported only when somebody asks for it.
@@ -150,7 +189,9 @@ export function createManagerServer({
     if (grant.state !== 'linked') throw new Error('Sign in before preparing the local document assistant.')
     const row = instances.overview().find((entry) => entry.id === instanceId)
     if (!row || !row.paired || !row.agentId || !row.connectionId) throw new Error('Choose an attached Agent with its Worker connection before preparing the document assistant.')
-    if (requireWorker && row.worker !== true) throw new Error('Start this Agent’s Worker and wait for its tool advertisement before preparing the document assistant.')
+    if (requireWorker && row.worker !== true) throw new Error('Start this Agent’s Worker and wait for initialization before preparing the document assistant.')
+    if (requireWorker && row.ready?.worker !== true) throw new Error('The Worker is still starting. Wait for initialization before preparing the document assistant.')
+    if (requireWorker && row.model?.workerRestartRequired) throw new Error('Stop and start this Worker to apply the model service change before preparing the document assistant.')
     if (row.origin !== grant.origin || row.accountId !== String(grant.account?.id ?? '') || !grant.agents.some((agent) => agent.id === row.agentId)) {
       throw new Error('The selected Agent is no longer enabled for this signed-in account.')
     }
@@ -186,7 +227,7 @@ export function createManagerServer({
   const operations = {
     '/manager/device/start': (body) => instances.admit(() => device.start(onlyFields(body, ['consoleUrl', 'name']))),
     '/manager/device/poll': (body) => { onlyFields(body, []); return instances.admit(() => device.poll()) },
-    '/manager/device/refresh': (body) => { onlyFields(body, []); return instances.refreshDevice() },
+    '/manager/device/refresh': (body) => { onlyFields(body, []); return refreshDirectory() },
     '/manager/device/signout': (body) => { onlyFields(body, []); return instances.signOut() },
     '/manager/device/forget': (body) => { onlyFields(body, []); return instances.forgetDevice() },
     '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking'])),
@@ -217,16 +258,23 @@ export function createManagerServer({
         return device.authoringStatus(target)
       })
     },
-    '/manager/authoring/prepare': (body) => {
+    '/manager/authoring/prepare': async (body) => {
       const fields = onlyFields(body, ['instanceId', 'materialPermissions'])
       const permissions = onlyFields(fields.materialPermissions, ['localRead', 'offMachine'])
       if (typeof permissions.localRead !== 'boolean' || typeof permissions.offMachine !== 'boolean')
         throw new Error('Material permissions must explicitly name localRead and offMachine.')
       if (!permissions.localRead && !permissions.offMachine)
         throw new Error('Choose local material delivery or authorized remote delivery before preparing the assistant.')
-      return instances.admit(async () => {
-        await installAuthoringChecker()
-        return device.authoringPrepare({ ...authoringTarget(String(fields.instanceId ?? ''), { requireWorker: true }),
+      const scope = deviceScope(device.status())
+      const target = await instances.admit(() => authoringTarget(String(fields.instanceId ?? ''), { requireWorker: true }))
+      // Public file downloads cannot hold sign-out behind network progress. Only the
+      // account-scoped setup command participates in admission after a fresh check.
+      await installChecker()
+      return instances.admit(() => {
+        const current = authoringTarget(String(fields.instanceId ?? ''), { requireWorker: true })
+        if (deviceScope(device.status()) !== scope || JSON.stringify(current) !== JSON.stringify(target))
+          throw new Error('The selected Agent or Worker binding changed during preparation. Open Document assistant again.')
+        return device.authoringPrepare({ ...current,
           requestId: randomUUID(), materialPermissions: permissions })
       })
     },
@@ -330,6 +378,7 @@ export function createManagerServer({
           server.once('error', reject)
           server.listen(port, '127.0.0.1', accept)
         })
+        scheduleDirectory()
       } catch (error) {
         lease.release()
         lease = undefined
@@ -346,6 +395,8 @@ export function createManagerServer({
      * not be told is that everything stopped.
      */
     close: async () => {
+      closing = true
+      clearTimeout(directoryTimer)
       const result = await instances.closeAll()
       await new Promise((accept) => server.close(accept))
       // Last, and only after `closeAll` recorded whatever children outlived their hosts: the

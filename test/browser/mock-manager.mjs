@@ -112,7 +112,7 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   const hostUrl = (id, page) => 'http://127.0.0.1:' + hosts.get(id).port + page + '?k=' + HOST_KEY
     + '&manager=' + encodeURIComponent('http://127.0.0.1:' + managerPort + '/?k=' + MANAGER_KEY)
 
-  const state = () => ({ ok: true, root: 'D:/manager', device, instances: rows, modelDefaults, legacyInstall: null })
+  const state = () => ({ ok: true, root: 'D:/manager', device, instances: rows, directorySync: control.directorySync || null, modelDefaults, legacyInstall: null })
   const find = (id) => rows.find((entry) => entry.id === id)
 
   const manager = http.createServer(async (req, res) => {

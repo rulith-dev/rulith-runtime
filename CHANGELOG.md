@@ -4,6 +4,17 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Synchronize the account's enabled Agents every 30 seconds while the workbench is
+  running, with one in-flight directory request, visible sync status and no automatic
+  pairing or starts. Temporary network failure keeps the current account; confirmed
+  withdrawal attempts to stop every affected profile and exposes incomplete stops.
+- Guide the selected Agent through connection, model and role readiness. Distinguish
+  running processes from confirmed initialization, and link Agent settings to its
+  existing Console Runtime recovery page.
+- Check document-assistant prerequisites before downloading, keep sign-out independent
+  of public checker downloads, and revalidate the exact device and material binding
+  before the setup command. The dialog offers the required Worker start in place.
+
 ## 0.8.15 - 2026-09-23
 
 - Download the pinned local authoring checker in bounded, parallel byte ranges
