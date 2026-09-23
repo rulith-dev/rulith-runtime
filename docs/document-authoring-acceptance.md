@@ -58,7 +58,10 @@ installed npm package's Local UI through Chromium. It is deliberately excluded f
 Set `RULITH_LIVE_RUN=1`, `RULITH_LIVE_AGENT` to a dedicated enabled QA Agent, and
 `RULITH_LIVE_STEP` to `inspect`, `prepare`, `upload`, `review`, `save`, or `verify`.
 Run the script once per step, in that order, with `RULITH_LIVE_CASE` set to the
-certified Case displayed by `review` before `save` and `verify`. Each invocation
+certified Case displayed by `review` before `save` and `verify`. `upload` begins a
+fresh local conversation transcript. The Agent's Board focus is shared across its
+conversations, so this does not remove previously focused Cases from model context;
+use a dedicated QA Agent with no old Cases for comparable token measurements. Each invocation
 starts the installed workbench, uses its ordinary browser controls, then closes
 the browser and workbench, and checks that no owned child was left running.
 It never publishes the draft. `RULITH_PLAYWRIGHT_MODULE` must point to an
@@ -77,3 +80,15 @@ calls, 207,935 input tokens and 4,351 output tokens. Earlier Cases were still in
 focus, so these totals are a diagnostic, **not** a clean before/after token baseline.
 The first-draft shape cue needs another clean-Agent trial before claiming an
 improvement in first-check pass rate.
+
+A second, source-tree run on 2026-09-23 used a fresh local conversation on the
+same Agent. Its Board still focused earlier Cases. The first check submitted a
+`program` object but omitted required package fields; the next check still had
+schema errors, and the third check passed (9/9 examples, 2/2 citations). The
+Agent stopped at its 12-round limit before closing a Case. It used 213,099 input
+and 6,857 output tokens. This is evidence of an unresolved first-draft and
+completion problem, not evidence that the cue reduced model work. At the time,
+the Worker reported the ingested material by Artifact reference and cleared its
+accompanying result, so that run never exposed the draft-shape cue to the model.
+The subsequent Worker change sends only a fixed format cue beside the reference;
+it still needs a clean-Agent, published-package trial before any efficiency claim.

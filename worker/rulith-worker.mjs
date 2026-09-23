@@ -88,7 +88,7 @@ import {
   deliveryChunks, deliveryRequestOf, localReadResult, localTicketOf, registrationBody,
   registrationResult, uploadDecision,
 } from './material-transport.mjs'
-import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring } from './local-authoring.mjs'
+import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, LOCAL_AUTHORING_DRAFT_SHAPE } from './local-authoring.mjs'
 // The off-machine permission reading travels with the Worker surface it has always been part
 // of, so the committed cross-repository permission rows keep one importable answer to compare
 // against. Its consumer moved — from an upload that no longer exists to the disclosure decision
@@ -1573,7 +1573,7 @@ export function workerLocalArtifact(value) {
  * be exercised without a filesystem or a network.
  */
 export async function prepareActionReport(row, execution, { custody, register } = {}) {
-  const { ok, result = '', reason, facts = [], localArtifact } = execution
+  const { ok, result = '', reason, facts = [], localArtifact, safeInlineGuidance } = execution
   const body = { kind: 'ReportWork', workType: 'action', id: row.work, executionGrant: row.executionGrant, ok,
     ...(ok ? { result, ...(facts.length ? { facts } : {}) } : { result: '', reason }) }
   const size = value => Buffer.byteLength(JSON.stringify(value), 'utf8')
@@ -1611,6 +1611,12 @@ export async function prepareActionReport(row, execution, { custody, register } 
   if (ok) body.result = ''
   else body.reason = 'Diagnostic data is available through the attached Artifact.'
   body.artifacts = [ref]
+  // The Artifact's result may contain material bytes and must never be reported inline.
+  // Only this fixed, source-independent authoring format cue may accompany its reference.
+  // A smaller negotiated inline budget simply omits the cue; it must not lose the receipt.
+  if (ok && safeInlineGuidance === LOCAL_AUTHORING_DRAFT_SHAPE
+    && size({ result: safeInlineGuidance, reason: body.reason ?? '', facts, artifacts: body.artifacts }) <= row.artifactPolicy.inlineBytes)
+    body.result = safeInlineGuidance
   if (size({ result: body.result, reason: body.reason ?? '', facts, artifacts: body.artifacts }) > row.artifactPolicy.inlineBytes) {
     return { unavailable: 'artifact_reference_exceeds_inline_budget' }
   }
@@ -2552,7 +2558,8 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
       }
       const localArtifact = workerLocalArtifact(out?.localArtifact)
       if (out?.localArtifact !== undefined && localArtifact === undefined) throw new Error('The local executor returned an invalid Artifact custody record')
-      return { result: text, facts: resultFactsFromRows(t, rows), ...(localArtifact ? { localArtifact } : {}) }
+      return { result: text, facts: resultFactsFromRows(t, rows), ...(localArtifact ? { localArtifact } : {}),
+        ...(t.impl === 'local-authoring' && t.entry === 'ingest' && localArtifact ? { safeInlineGuidance: LOCAL_AUTHORING_DRAFT_SHAPE } : {}) }
     } catch (error) {
       if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
       throw error
@@ -3161,6 +3168,7 @@ async function handleAction(w) {
   let result = ''
   let resultFacts = []
   let localArtifact
+  let safeInlineGuidance
   let reason
   let undeliverable
   try {
@@ -3169,6 +3177,7 @@ async function handleAction(w) {
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
+      safeInlineGuidance = executed.safeInlineGuidance
       // The durable local object this executor produced, if it produced one. It travels to the
       // report path because it selects custody over an inline result — see `prepareActionReport`.
       //
@@ -3237,7 +3246,7 @@ async function handleAction(w) {
   const stopUploadRenewing = keepLeaseAlive()
   let prepared
   try {
-    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts, localArtifact }, {
+    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts, localArtifact, safeInlineGuidance }, {
       custody: takeCustody,
       register: record => registerActionArtifact(record, dispatchedUnder, w.executionGrant),
     })

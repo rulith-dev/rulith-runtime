@@ -9,16 +9,19 @@ All notable changes to the local runtime are documented here.
   generic “Not compiled” status.
 - Clarify that `program` itself must be a JSON object when the Agent first ingests
   a document. A published 0.8.11 browser run still submitted a rule string on its
-  first check despite the earlier shape cue.
+  first check because the Artifact boundary removed the earlier shape cue from the
+  model-visible receipt. Send only a fixed, source-independent format cue beside
+  the local Artifact reference; material bytes and file names remain local.
 - Add an opt-in Chromium acceptance runner for the installed package's real-account
   document flow, including attachment, certified Case, private Save, restart receipt
   and numeric model-use diagnostics.
 
 ## 0.8.11 - 2026-09-23
 
-- Give the Agent a compact draft JSON shape with the first local document-ingest result,
-  so its first checker call can test a business proposal instead of discovering the
-  envelope through a failed check. The shape is guidance; only the checker validates it.
+- Add a compact draft JSON shape to the local document-ingest executor. The Artifact
+  boundary in this release did not forward that executor result to the Agent; the
+  subsequent Unreleased fix makes the static guidance model-visible. Only the checker
+  validates a proposal.
 - Record each model request's total and transcript byte counts alongside provider token
   usage. In long turns, retain the latest authoritative Board View and all Artifact data
   while shortening older Board View snapshots in requests to the model.

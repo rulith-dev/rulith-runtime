@@ -14,9 +14,9 @@ export const LOCAL_AUTHORING_LIMITS = Object.freeze({ documentBytes: 256 * 1024,
 let checkerBusy = false
 const IDS = Object.freeze({ ingest: 'rulith.official_authoring.ingest_document@2', check: 'rulith.official_authoring.check_draft@2' })
 // The first check should test a business proposal, not teach the JSON envelope by
-// rejecting it. This bounded shape cue travels with the ingest result once; it is
-// guidance, never a claim about the uploaded document or a Board fact. The
-// checker remains the authority; its versioned schema may reject this cue.
+// rejecting it. The Worker sends this fixed cue beside the ingest Artifact reference;
+// it never sends material bytes or a file name in that result. This is guidance, not
+// a document claim or Board fact. The checker remains the authority.
 export const LOCAL_AUTHORING_DRAFT_SHAPE = [
   'Draft format (guidance, not evidence): draft_json is a STRING containing one JSON object with exactly',
   'program, caseContracts, citations, examples, questions, notes.',
@@ -96,7 +96,7 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
     const found = material(materialRoot, binding, String(input.material ?? ''))
     const node = authoringNode(found.record.id, found.record.digest)
     const produced = found.store.deriveResult(found.record.id, { mediaType: found.record.mediaType, encoding: 'utf8' })
-    return { result: `Ingested ${found.record.name} locally. ${LOCAL_AUTHORING_DRAFT_SHAPE}`, localArtifact: produced, rows: [{ node, task_id: found.record.id, document_digest: found.record.digest, characters: [...found.text].length }] }
+    return { result: 'Document ingested locally.', localArtifact: produced, rows: [{ node, task_id: found.record.id, document_digest: found.record.digest, characters: [...found.text].length }] }
   }
   if (tool.entry !== 'check') throw new Error('local_authoring_tool_unknown')
   const found = material(materialRoot, binding, String(input.task_id ?? ''))

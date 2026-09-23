@@ -119,12 +119,27 @@ test('local authoring ingest reaches the actual adapter compiler, preserves work
   assert.match(executed.facts[0].args.node, /^node_[a-f0-9]{32}$/u)
   assert.match(executed.localArtifact.id, /^res_[a-f0-9]{32}$/u)
   assert.equal(executed.localArtifact.producedFrom, TEXT.id)
-  assert.match(executed.result, /draft_json is a STRING containing one JSON object/u)
-  assert.match(executed.result, /program=\{id,title,summary,vocabulary:\{defines:/u)
-  assert.match(executed.result, /caseContracts=\[\{format:"rulith-case-contract\/1"/u)
+  assert.match(executed.safeInlineGuidance, /draft_json is a STRING containing one JSON object/u)
+  assert.match(executed.safeInlineGuidance, /program=\{id,title,summary,vocabulary:\{defines:/u)
+  assert.match(executed.safeInlineGuidance, /caseContracts=\[\{format:"rulith-case-contract\/1"/u)
   assert.doesNotMatch(executed.result, /body text|Heading/u,
     'ingest guidance must not disclose or claim the uploaded document text')
-  assert.ok(Buffer.byteLength(executed.result) < 2_048, 'the shape cue must stay inline and bounded')
+  assert.ok(Buffer.byteLength(executed.safeInlineGuidance) < 2_048, 'the shape cue must stay inline and bounded')
+  const report = await worker.prepareActionReport(ROW,
+    { ok: true, ...executed }, { register: async record => accept(record) })
+  assert.equal(report.body.result, executed.safeInlineGuidance,
+    'the fixed format cue must reach the model beside the Artifact reference')
+  assert.deepEqual(report.body.artifacts, [{ ref: `art_${'a'.repeat(32)}` }])
+  assert.equal(JSON.stringify(report.body).includes('body text'), false)
+  const narrow = await worker.prepareActionReport(
+    { ...ROW, artifactPolicy: { ...ROW.artifactPolicy, inlineBytes: 200 } },
+    { ok: true, result: 'body text', localArtifact: executed.localArtifact, safeInlineGuidance: executed.safeInlineGuidance },
+    { register: async record => accept(record) })
+  assert.equal(narrow.body.result, '', 'the cue must be optional under a small negotiated inline budget')
+  const untrusted = await worker.prepareActionReport(ROW,
+    { ok: true, result: 'body text', localArtifact: executed.localArtifact, safeInlineGuidance: 'body text' },
+    { register: async record => accept(record) })
+  assert.equal(untrusted.body.result, '', 'an arbitrary tool result must never cross the Artifact boundary')
 })
 
 test('the material adapter ships with this Worker and cannot be declared in a Manifest', () => {
