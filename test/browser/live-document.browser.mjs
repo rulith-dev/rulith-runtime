@@ -4,6 +4,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { selectLiveDocumentAgent } from './live-document-selection.mjs'
 
 const step = process.env.RULITH_LIVE_STEP || 'inspect'
 const agentName = process.env.RULITH_LIVE_AGENT || ''
@@ -32,12 +33,13 @@ const fixture = fileURLToPath(new URL('../fixtures/authoring-shipping-policy.md'
 
 const manager = createManagerServer({ port: 0 })
 let browser, page, started = false
+let agentStartedByScript = false
+let workerStartedByScript = false
 try {
   await manager.listen()
   started = true
   const state = manager.state()
-  const row = state.instances.find(item => item.name === agentName && item.paired)
-  if (state.device.state !== 'linked' || !row) throw new Error('QA account or Agent unavailable')
+  const row = selectLiveDocumentAgent(state, agentName)
   let modelHost = ''
   try { modelHost = new URL(row.model?.url || '').hostname.toLowerCase() } catch { /* unknown endpoint is treated as remote */ }
   const localModel = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(modelHost)
@@ -71,9 +73,26 @@ try {
   await page.click(`button[data-instance="${row.id}"]`)
   await page.waitForFunction(id => document.querySelector('button.agentrow[aria-current="true"]')?.dataset.instance === id, row.id, { timeout: 15000 })
   const read = async id => ({ text: (await page.locator(id).innerText()).trim(), visible: await page.locator(id).isVisible(), enabled: await page.locator(id).isEnabled() })
+  const ensureRoleStarted = async (selector, runningLabel, markOwned) => {
+    if ((await page.locator(selector).innerText()).includes(runningLabel)) return
+    markOwned()
+    await page.click(selector)
+    await page.waitForFunction(([id, label]) => document.querySelector(id)?.textContent.includes(label), [selector, runningLabel], { timeout: 30000 })
+  }
   console.log(JSON.stringify({ packageVersion: (await import(pathToFileURL(join(packageRoot, 'package.json')).href, { with: { type: 'json' } })).default.version,
     account: state.device.account?.name, agent: row.name, agentControl: await read('#agent-toggle'),
     workerControl: await read('#worker-toggle'), documentAssistant: await read('#authoring-open') }))
+  if (['prepare', 'upload'].includes(step)) {
+    // A historical installation conflict is visible before any role starts. Do not
+    // spend a model/Worker session merely to rediscover that this Agent is ineligible.
+    await page.click('#authoring-open')
+    await page.waitForFunction(() => !document.getElementById('authoring-notice').textContent.includes('Reading this Agent'), null, { timeout: 30000 })
+    const notice = (await page.locator('#authoring-notice').innerText()).trim()
+    console.log(JSON.stringify({ phase: 'authoring-preflight', notice }))
+    if (notice.includes('earlier Document Authoring Assistant installed'))
+      throw new Error(`Local authoring preparation is unavailable: ${notice}`)
+    await page.click('#authoring-close')
+  }
   if (step === 'inspect') {
     const child = page.frameLocator('#stage iframe:not([hidden])')
     await child.locator('#stream').waitFor({ timeout: 30000 })
@@ -82,19 +101,16 @@ try {
   if (step === 'inspect-recovery') {
     // Inspect startup's local recovery marker. No Worker, message or business Tool
     // is started; server recovery is only checked when the runtime next contacts it.
-    await page.click('#agent-toggle')
-    await page.waitForFunction(() => document.getElementById('agent-toggle').textContent.includes('Stop Agent'), null, { timeout: 30000 })
+    await ensureRoleStarted('#agent-toggle', 'Stop Agent', () => { agentStartedByScript = true })
     const child = page.frameLocator('#stage iframe:not([hidden])')
     await child.locator('#stream').waitFor({ timeout: 30000 })
     await page.waitForTimeout(5000)
     console.log(JSON.stringify({ phase: 'recovery-inspect', workerControl: await read('#worker-toggle'),
       tail: (await child.locator('body').innerText()).slice(-4500) }))
   }
-  if (['start', 'prepare', 'upload', 'review', 'save', 'verify'].includes(step)) {
-    await page.click('#agent-toggle')
-    await page.waitForFunction(() => document.getElementById('agent-toggle').textContent.includes('Stop Agent'), null, { timeout: 30000 })
-    await page.click('#worker-toggle')
-    await page.waitForFunction(() => document.getElementById('worker-toggle').textContent.includes('Stop Worker'), null, { timeout: 30000 })
+  if (['start', 'prepare', 'upload'].includes(step)) {
+    await ensureRoleStarted('#agent-toggle', 'Stop Agent', () => { agentStartedByScript = true })
+    await ensureRoleStarted('#worker-toggle', 'Stop Worker', () => { workerStartedByScript = true })
     console.log(JSON.stringify({ phase: 'roles-started', agentControl: await read('#agent-toggle'), workerControl: await read('#worker-toggle') }))
     if (step === 'start') {
       const child = page.frameLocator('#stage iframe:not([hidden])')
@@ -191,8 +207,8 @@ try {
   try {
     if (page && !page.isClosed()) {
       if (await page.locator('#authoring-close').isVisible()) await page.click('#authoring-close')
-      for (const [selector, stoppedLabel] of [['#agent-toggle', 'Start Agent'], ['#worker-toggle', 'Start Worker']]) {
-        if ((await page.locator(selector).innerText()).startsWith('Stop ')) {
+      for (const [owned, selector, stoppedLabel] of [[workerStartedByScript, '#worker-toggle', 'Start Worker'], [agentStartedByScript, '#agent-toggle', 'Start Agent']]) {
+        if (owned && (await page.locator(selector).innerText()).startsWith('Stop ')) {
           await page.click(selector)
           await page.waitForFunction(([id, label]) => document.querySelector(id)?.textContent.includes(label), [selector, stoppedLabel], { timeout: 30000 })
         }
