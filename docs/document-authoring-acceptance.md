@@ -51,3 +51,29 @@ Automated coverage currently includes the real Chromium UI tests in
 the real manager/child-process tests in `test/local-manager.test.mjs`, and Worker,
 Agent and persistence tests under `test/`. Those browser fixtures use simulated
 Gateway responses, so they do not replace this published-account acceptance run.
+
+For a real-account browser run, `test/browser/live-document.browser.mjs` drives the
+installed npm package's Local UI through Chromium. It is deliberately excluded from
+`npm test`: `upload` calls the configured model and `save` writes a private draft.
+Set `RULITH_LIVE_RUN=1`, `RULITH_LIVE_AGENT` to a dedicated enabled QA Agent, and
+`RULITH_LIVE_STEP` to `inspect`, `prepare`, `upload`, `review`, `save`, or `verify`.
+Run the script once per step, in that order, with `RULITH_LIVE_CASE` set to the
+certified Case displayed by `review` before `save` and `verify`. Each invocation
+starts the installed workbench, uses its ordinary browser controls, then closes
+the browser and workbench, and checks that no owned child was left running.
+It never publishes the draft. `RULITH_PLAYWRIGHT_MODULE` must point to an
+installed Playwright module unless Playwright resolves from this source tree;
+set `RULITH_LIVE_PACKAGE_ROOT` or `RULITH_CHROMIUM_EXECUTABLE` when their
+normal installed locations are unavailable.
+The browser observer records only numeric `model-usage` diagnostics already sent
+to the UI; it does not collect prompts, credentials or material bytes.
+
+The 2026-09-23 run against published `rulith@0.8.11` used this synthetic fixture
+and a previously used Agent. The first check failed because `program` was a rule
+string; the corrected second check compiled with 9/9 examples and 2/2 citations.
+The Agent closed a certified Case; the UI saved its private draft, and a workbench
+restart restored the saved Case and disabled a second Save. That turn used 12 model
+calls, 207,935 input tokens and 4,351 output tokens. Earlier Cases were still in
+focus, so these totals are a diagnostic, **not** a clean before/after token baseline.
+The first-draft shape cue needs another clean-Agent trial before claiming an
+improvement in first-check pass rate.

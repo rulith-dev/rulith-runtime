@@ -7,6 +7,12 @@ All notable changes to the local runtime are documented here.
 - Show the local checker's specific compile errors in the checked-draft review, with
   bounded escaped text, so a failed draft can be corrected without guessing from a
   generic “Not compiled” status.
+- Clarify that `program` itself must be a JSON object when the Agent first ingests
+  a document. A published 0.8.11 browser run still submitted a rule string on its
+  first check despite the earlier shape cue.
+- Add an opt-in Chromium acceptance runner for the installed package's real-account
+  document flow, including attachment, certified Case, private Save, restart receipt
+  and numeric model-use diagnostics.
 
 ## 0.8.11 - 2026-09-23
 

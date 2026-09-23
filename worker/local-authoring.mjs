@@ -20,6 +20,7 @@ const IDS = Object.freeze({ ingest: 'rulith.official_authoring.ingest_document@2
 export const LOCAL_AUTHORING_DRAFT_SHAPE = [
   'Draft format (guidance, not evidence): draft_json is a STRING containing one JSON object with exactly',
   'program, caseContracts, citations, examples, questions, notes.',
+  'The program FIELD MUST be a JSON OBJECT, never a string of rules, DSL, Markdown or code. Only the outer draft_json tool argument is a string.',
   'program={id,title,summary,vocabulary:{defines:[{id,as,args}]},pins:[alias],rules:[{id,label,when:[{predicate,args}],then:[{predicate,args}]}]}.',
   'caseContracts=[{format:"rulith-case-contract/1",caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:"attested"},terminal:{cardinality:"once_per_case",disposition:"completed",requiresCertified:true}}].',
   'citations=[{ruleId,quote}], examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}], questions=[], notes="...".',

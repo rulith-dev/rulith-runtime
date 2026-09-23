@@ -13,6 +13,7 @@ test('an upgraded checker pin requires reviewing the Worker draft-shape cue', ()
   assert.equal(manifest.sourceCommit, '9e8733c7ea152935472eb7bc3006dba455c59e5a',
     'the local checker changed; compare its AuthoringPrompt.localDraftReference with the Worker ingest cue before releasing')
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /minimumGroundingFloor:"attested"/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program FIELD MUST be a JSON OBJECT, never a string/)
 })
 test('local authoring tools are versioned file read tools with the fixed fact mappings', () => {
   const tools = builtinLocalAuthoringTools()
