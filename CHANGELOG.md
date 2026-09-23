@@ -4,11 +4,21 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+## 0.8.13 - 2026-09-23
+
 - Spell out canonical namespaced predicate IDs and matching Case business-key
   fields in the one-time local authoring format cue, based on actual first-check
   failures in the 0.8.12 published-account run.
 - Make the real-browser acceptance runner stop immediately with the visible reason
   when the selected Agent cannot prepare the local assistant.
+- Reconcile a private draft Save whose response is lost by reading the durable
+  receipt before allowing another attempt. Keep its request identity stable across
+  retries and workbench restarts.
+- Refuse document assistant preparation when both local and authorized remote
+  material delivery are disabled. The workbench and its local manager both stop
+  before checker installation; the Gateway independently rejects the same state.
+- Add opt-in real-account Chromium setup and document-flow checks for a dedicated
+  QA Agent, with explicit remote-model material consent and bounded preparation.
 
 ## 0.8.12 - 2026-09-23
 
