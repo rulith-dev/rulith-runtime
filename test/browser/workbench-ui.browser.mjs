@@ -22,6 +22,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { startMockWorkbench } from './mock-manager.mjs'
+import { projectRecovery } from '../../local/local-ui.mjs'
 
 const PLAYWRIGHT = process.env.RULITH_PLAYWRIGHT_MODULE || 'D:/Work/rulith-java/console-web/node_modules/playwright/index.js'
 
@@ -67,6 +68,13 @@ const arm = (name, viewport, body, options) => test(name, { skip: SKIP }, async 
     await page.waitForSelector('button[data-instance="inst-1"]')
     await body({ page, context, fixture })
     assert.deepEqual(failures, [], 'the page raised something while this arm ran')
+  } catch (error) {
+    // Only this synthetic fixture's DOM is captured, and page keys are omitted.
+    // A disappeared locator needs navigation/render evidence, not a longer timeout.
+    const url = new URL(page.url())
+    console.error(JSON.stringify({ browserFailure: name, page: url.origin + url.pathname,
+      pageErrors: failures, body: await page.locator('body').innerText({ timeout: 2000 }).then(text => text.slice(0, 2500)).catch(() => '[page unavailable]') }))
+    throw error
   } finally {
     await context.close()
     await fixture.stop()
@@ -110,6 +118,37 @@ const openAgent = async (page, id) => {
   const src = await page.getAttribute('#stage iframe:not([hidden])', 'src')
   return page.frames().find((frame) => frame.url() === src)
 }
+
+arm('an inherited unresolved call survives conversation changes and clear view without leaking to another Agent',
+  { width: 1440, height: 900 }, async ({ page }) => {
+    const child = await openAgent(page, 'inst-1')
+    await child.locator('#recovery').getByText('Earlier ApplyAction outcome is unknown', { exact: false }).waitFor()
+    assert.match(await child.locator('#recovery').innerText(), /current server state has not been checked/)
+    assert.match(await child.locator('#stream').innerText(), /Earlier call awaiting recovery/)
+    await child.click('#convopen')
+    await child.click('#newcase')
+    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
+    await child.click('#clear')
+    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
+    const other = await openAgent(page, 'inst-2')
+    assert.match(await other.locator('#recovery').innerText(), /No unresolved call/)
+    await openAgent(page, 'inst-1')
+    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
+  }, { events: { 'inst-1': [
+    { src: 'agent', type: 'pending-inherited', tool: 'ApplyAction', requestId: 'fixture-request', at: at(30) },
+    { src: 'agent', type: 'recovery', state: 'none', historical: true, historyKey: 'old-cleared-call', session: 'past', at: at(10) },
+  ], 'inst-2': [] } })
+
+arm('a new browser frame restores the recovery snapshot even without its original log event',
+  { width: 1440, height: 900 }, async ({ page }) => {
+    const child = await openAgent(page, 'inst-1')
+    await child.locator('#recovery').getByText('Earlier ApplyAction outcome is unknown', { exact: false }).waitFor()
+    assert.doesNotMatch(await child.locator('#stream').innerText(), /runtime recovery|runtime-recovery/,
+      'the host snapshot is state, not a fabricated conversation event')
+    await child.click('#clear')
+    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
+  }, { events: [{ src: 'local', type: 'runtime-recovery', recovery:
+    projectRecovery([{ src: 'agent', type: 'pending-inherited', tool: 'ApplyAction' }]) }] })
 
 arm('local authoring review shows the checked program and keeps Save disabled for questions',
   { width: 1400, height: 900 }, async ({ page }) => {

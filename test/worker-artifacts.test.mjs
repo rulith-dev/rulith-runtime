@@ -25,6 +25,7 @@ import { prepareActionReport, actionRowFaults } from '../worker/rulith-worker.mj
 import { defaultMaterialRoot, materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
 import { loadWorkerContract } from '../scripts/verify-worker-contract.mjs'
 import { actionRow, CONNECTION, HOLD, driveWorker } from './support/worker-harness.mjs'
+import { authoringDiagnostics, createAuthoringGuidance, authoringGuidanceText } from '../worker/authoring-diagnostics.mjs'
 
 const contract = loadWorkerContract()
 const ref = `art_${'a'.repeat(32)}`
@@ -57,6 +58,41 @@ async function withArea(run) {
 const confirm = (record) => ({ accepted: true, payload: {
   ref, mediaType: record.mediaType, encoding: record.encoding,
   totalBytes: record.totalBytes, digest: record.digest } })
+
+test('checker guidance fits the receipt budget or is omitted, without copying local report text', async () => {
+  await withArea(async ({ store }) => {
+    const privateText = 'PRIVATE_MATERIAL_' + '\u0000😀'.repeat(1000)
+    const report = { compileErrors: [privateText, 'Invalid Case Type'], examples: { total: 20, results: Array(20).fill({
+      passed: false, label: privateText, detail: privateText, missing: [], unexpected: [{}], copiedIntoInputs: [],
+    }) }, citations: { unverified: Array(20).fill({ ruleId: privateText, reason: privateText }) } }
+    const localArtifact = store.putResult({ bytes: Buffer.from(JSON.stringify(report)), mediaType: 'application/json', encoding: 'utf8' })
+    const counts = { examples_total: 20, examples_passed: 0, citations_total: 20, citations_verified: 0, external_actions: 0 }
+    const summary = JSON.stringify({ compiled: false, ...counts, errors: authoringDiagnostics(report).errors })
+    const facts = [{ predicate: 'rulith.official_authoring.draft_check', args: {
+      node: 'node_' + 'c'.repeat(32), task_id: 'mat_' + 'b'.repeat(32), proposal_digest: 'sha256:' + 'a'.repeat(64),
+      compiled: false, ...counts, report: summary,
+    } }]
+    const safeInlineGuidance = createAuthoringGuidance(report)
+    const baseBytes = Buffer.byteLength(JSON.stringify({ result: '', reason: '', facts, artifacts: [{ ref }] }))
+    for (const inlineBytes of [baseBytes, 8192]) {
+      const row = { ...actionRow(), artifactPolicy: { ...actionRow().artifactPolicy, inlineBytes } }
+      const prepared = await prepareActionReport(row, { ok: true, facts, localArtifact, safeInlineGuidance }, { register: async () => confirm(localArtifact) })
+      assert.equal(prepared.unavailable, undefined)
+      assert.deepEqual(prepared.body.facts, facts)
+      assert.equal(prepared.body.result, inlineBytes === baseBytes ? '' : authoringGuidanceText(safeInlineGuidance))
+      assert.doesNotMatch(JSON.stringify(prepared.body), /PRIVATE_MATERIAL_/)
+      assert.deepEqual(prepared.body.artifacts, [{ ref }])
+    }
+    const narrow = await prepareActionReport({ ...actionRow(), artifactPolicy: { ...actionRow().artifactPolicy, inlineBytes: 200 } },
+      { ok: true, facts, localArtifact, safeInlineGuidance }, { register: () => assert.fail('required facts should fail before registration') })
+    assert.equal(narrow.unavailable, 'required_facts_exceed_inline_budget')
+    for (const forged of [privateText, {}, { ...safeInlineGuidance }]) {
+      const prepared = await prepareActionReport(actionRow(), { ok: true, facts, localArtifact, safeInlineGuidance: forged }, { register: async () => confirm(localArtifact) })
+      assert.equal(prepared.body.result, '')
+    }
+    assert.ok(store.read(localArtifact.id, { modelDestination: 'http://127.0.0.1:1234' }).bytes.includes(Buffer.from('PRIVATE_MATERIAL_')))
+  })
+})
 
 test('ART-WK-1: an over-budget result is durable here before anything references it', async () => {
   await withArea(async ({ store }) => {

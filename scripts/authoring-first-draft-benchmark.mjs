@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-/** Opt-in, paid, one-call diagnostic. Never logs the prompt, draft or credential. */
+/** Opt-in, paid diagnostic. One call by default; at most two explicit repair rounds.
+ * Never logs the prompt, draft or credential, or feeds held-out boundaries to repairs. */
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -10,9 +11,10 @@ import { defaultManagerRoot } from '../local/manager-registry.mjs'
 import { createModelSettings } from '../local/model-settings.mjs'
 import { authoringNode, builtinLocalAuthoringTools, executeLocalAuthoring, LOCAL_AUTHORING_DRAFT_SHAPE } from '../worker/local-authoring.mjs'
 import { materialIdentityFromFingerprints, openMaterialStore } from '../worker/material-store.mjs'
+import { authoringGuidanceText } from '../worker/authoring-diagnostics.mjs'
 
 if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
-  console.error('Set RULITH_AUTHORING_BENCHMARK=1 to authorize one paid model request with the synthetic fixture.')
+  console.error('Set RULITH_AUTHORING_BENCHMARK=1 for one paid model request with the synthetic fixture. RULITH_AUTHORING_REPAIR_ROUNDS=1 or 2 explicitly permits that many additional requests.')
   process.exitCode = 2
 } else {
   const digest = value => createHash('sha256').update(value).digest('hex')
@@ -33,10 +35,18 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
     LOCAL_AUTHORING_DRAFT_SHAPE,
     'Document follows:\n' + text,
   ].join('\n\n')
+  const repairRounds = Number(process.env.RULITH_AUTHORING_REPAIR_ROUNDS ?? '0')
+  if (!Number.isInteger(repairRounds) || repairRounds < 0 || repairRounds > 2)
+    throw new Error('RULITH_AUTHORING_REPAIR_ROUNDS must be 0, 1 or 2.')
+  const messages = [{ role: 'user', content: prompt }]
+  let cumulativeInputTokens = 0, cumulativeOutputTokens = 0, attempts = 0
+  for (let attempt = 1; attempt <= 1 + repairRounds; attempt++) {
+  attempts = attempt
+  let repairFeedback = ''
   const body = {
     model: model.name, max_tokens: 8000,
     ...(['enabled', 'disabled'].includes(model.thinking) ? { thinking: { type: model.thinking } } : {}),
-    messages: [{ role: 'user', content: prompt }],
+    messages,
   }
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -54,11 +64,15 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
   const miss = envelope?.usage?.prompt_cache_miss_tokens ?? null
   const cacheBreakdownValid = [inputTokens, hit, miss].every(value => Number.isSafeInteger(value) && value >= 0)
     && hit + miss === inputTokens
+  const outputTokens = envelope?.usage?.completion_tokens ?? null
+  cumulativeInputTokens = cumulativeInputTokens !== null && Number.isSafeInteger(inputTokens) && inputTokens >= 0 ? cumulativeInputTokens + inputTokens : null
+  cumulativeOutputTokens = cumulativeOutputTokens !== null && Number.isSafeInteger(outputTokens) && outputTokens >= 0 ? cumulativeOutputTokens + outputTokens : null
   const metrics = {
+    attempt, maximumCalls: 1 + repairRounds, cumulativeInputTokens, cumulativeOutputTokens,
     fixtureSha256: digest(text), cueSha256: digest(LOCAL_AUTHORING_DRAFT_SHAPE),
     model: model.name, inputTokens, cachedInputTokens: cacheBreakdownValid ? hit : null,
     uncachedInputTokens: cacheBreakdownValid ? miss : null,
-    outputTokens: envelope?.usage?.completion_tokens ?? null,
+    outputTokens,
     requestBytes: Buffer.byteLength(JSON.stringify(body)), finishReason: choice?.finish_reason ?? null,
     responseBytes: Buffer.byteLength(json),
   }
@@ -68,19 +82,22 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
     const argumentsObject = JSON.parse(json)
     draft = JSON.parse(argumentsObject.draft_json)
   } catch {
-    console.log(JSON.stringify({ ...metrics, parsed: false, checked: false }))
+    console.log(JSON.stringify({ ...metrics, parsed: false, checked: false, passed: false }))
     process.exitCode = 1
+    repairFeedback = 'Return one JSON object with a draft_json string containing the complete draft object. The previous answer could not be parsed in that form.'
   }
-  if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
-    console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, reason: 'draft_not_object' }))
+  if (draft !== undefined && (draft === null || typeof draft !== 'object' || Array.isArray(draft))) {
+    console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, passed: false, reason: 'draft_not_object' }))
     process.exitCode = 1
+    repairFeedback = 'draft_json must serialize a JSON object, not a scalar or array.'
   } else if (draft !== undefined) {
     const allowed = new Set(['program', 'caseContracts', 'citations', 'examples', 'questions', 'notes'])
     const extraKeys = draft && typeof draft === 'object' && !Array.isArray(draft)
       ? Object.keys(draft).filter(key => !allowed.has(key)).map(key => key.slice(0, 80)) : []
     if (extraKeys.length) {
-      console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, reason: 'extra_top_level_keys', extraKeys }))
+      console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, passed: false, reason: 'extra_top_level_keys', extraKeys }))
       process.exitCode = 1
+      repairFeedback = 'Use only the six documented top-level draft fields. Unexpected fields: ' + extraKeys.join(', ')
     } else {
       const root = await mkdtemp(join(tmpdir(), 'rulith-authoring-benchmark-'))
       try {
@@ -95,6 +112,10 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
             node: authoringNode(material.id, material.digest), task_id: material.id, draft_json: JSON.stringify(draft),
           }, { materialRoot: root, binding })
           const summary = JSON.parse(checked.rows[0].report)
+          // The application receives this same bounded checker feedback. A repair is
+          // an explicit benchmark mode, not a hidden paid retry in the product.
+          if (!summary.compiled || summary.examples_passed !== summary.examples_total || summary.citations_verified !== summary.citations_total)
+            repairFeedback = JSON.stringify(summary) + '\n' + (authoringGuidanceText(checked.safeInlineGuidance) ?? '')
           const full = JSON.parse(store.read(checked.localArtifact.id, { modelDestination: endpoint.origin }).bytes.toString('utf8')).report
           const results = Array.isArray(full.examples?.results) ? full.examples.results : null
           const failingExampleIndexes = results === null || results.length !== summary.examples_total
@@ -174,17 +195,24 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
               guards = { available: true, outputRules: outputRules.length, guardedRules: guardedRules.length }
             }
           }
-          console.log(JSON.stringify({ ...metrics, parsed: true, checked: true, ...summary, failedExamples, exampleDiagnosticsUnavailable, openQuestions, shape, independent, guards }))
-          if (!summary.compiled || summary.examples_total === 0 || summary.examples_passed !== summary.examples_total
+          const passed = !(!summary.compiled || summary.examples_total === 0 || summary.examples_passed !== summary.examples_total
             || summary.citations_total === 0 || summary.citations_verified !== summary.citations_total || openQuestions !== 0
             || !independent.available || !independent.compiled || independent.examplesTotal !== 11 || independent.examplesPassed !== 11
-            || !guards.available || guards.outputRules === 0 || guards.guardedRules !== guards.outputRules) process.exitCode = 1
+            || !guards.available || guards.outputRules === 0 || guards.guardedRules !== guards.outputRules)
+          console.log(JSON.stringify({ ...metrics, parsed: true, checked: true, passed, ...summary, failedExamples, exampleDiagnosticsUnavailable, openQuestions, shape, independent, guards }))
+          process.exitCode = passed ? 0 : 1
         } catch (error) {
           const code = String(error?.message ?? '').split(':', 1)[0]
-          console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, reason: /^[a-z_]+$/.test(code) ? code : 'checker_error' }))
+          console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, passed: false, reason: /^[a-z_]+$/.test(code) ? code : 'checker_error' }))
           process.exitCode = 1
         }
       } finally { await rm(root, { recursive: true, force: true }) }
     }
   }
+  if (!repairFeedback || attempt === 1 + repairRounds) break
+  messages.push({ role: 'assistant', content: raw }, { role: 'user', content:
+    'The local checker reported the following. Correct your draft using the original document; do not remove failing examples just to pass. Return the complete draft_json wrapper again.\n' + repairFeedback })
+  }
+  console.log(JSON.stringify({ phase: 'complete', attempts, maximumCalls: 1 + repairRounds,
+    cumulativeInputTokens, cumulativeOutputTokens, passed: process.exitCode === 0 }))
 }

@@ -780,10 +780,14 @@ export async function runAgent({
 
   // A fixed port lets two runs share one endpoint identity, which is what the durable
   // session store is keyed on: a session issued by one endpoint is not a session at another.
-  let port
-  await new Promise((ready) => server.listen(listenPort, '127.0.0.1', () => { port = server.address().port; ready() }))
+  let port, child, childClosed, timer
+  try {
+  await new Promise((ready, reject) => {
+    server.once('error', reject)
+    server.listen(listenPort, '127.0.0.1', () => { server.off('error', reject); port = server.address().port; ready() })
+  })
 
-  const child = spawn(process.execPath, ['agent/rulith-agent.mjs', ...argv], {
+  child = spawn(process.execPath, ['agent/rulith-agent.mjs', ...argv], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -809,12 +813,20 @@ export async function runAgent({
 
   let stdout = ''
   let stderr = ''
+  let stdinFailure
+  // Listen before readiness polling or writing stdin: a fast child can exit while
+  // those await, and a late exit listener would wait until the artificial timeout.
+  childClosed = new Promise(resolve => {
+    child.once('close', code => resolve(code))
+    child.once('error', error => { stderr += 'Agent fixture spawn failed: ' + error.message })
+  })
   child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk })
   child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
+  child.stdin?.on('error', error => { stdinFailure = error })
 
   if (chatLines.length > 0) {
     const deadline = Date.now() + 10_000
-    while (!/Interactive mode/.test(stdout) && Date.now() < deadline) {
+    while (!/Interactive mode/.test(stdout) && child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
       await new Promise((ready) => setTimeout(ready, 25))
     }
     if (!/Interactive mode/.test(stdout)) throw new Error(`interactive Agent did not become ready:\n${stdout}\n${stderr}`)
@@ -826,7 +838,7 @@ export async function runAgent({
   let serveSnapshot
   if (serveTasks.length > 0) {
     const deadline = Date.now() + 10_000
-    while (!/Task endpoint ready/.test(stdout) && Date.now() < deadline) {
+    while (!/Task endpoint ready/.test(stdout) && child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
       await new Promise((ready) => setTimeout(ready, 25))
     }
     if (!/Task endpoint ready/.test(stdout)) throw new Error(`serve endpoint did not become ready:\n${stdout}\n${stderr}`)
@@ -857,19 +869,13 @@ export async function runAgent({
       .then((candidate) => candidate.json()).catch(() => undefined)
   }
 
-  let timer
   const code = await Promise.race([
-    new Promise((exited) => child.on('exit', exited)),
+    childClosed,
     new Promise((late) => { timer = setTimeout(() => { child.kill('SIGKILL'); late('timeout') }, timeoutMs) }),
   ])
   const exitedAt = Date.now()
   clearTimeout(timer)
-  for (const stream of heldStreams) { try { stream.destroy() } catch { /* already gone */ } }
-  const serverClosed = new Promise((closed) => server.close(closed))
-  server.closeAllConnections()
-  await serverClosed
-  if (storeDir !== undefined) rmSync(storeDir, { recursive: true, force: true })
-
+  if (stdinFailure) throw new Error(`Agent fixture input failed (${stdinFailure.code}):\n${stdout}\n${stderr}`)
   return {
     code, stdout, stderr, modelRequests, localEvents, port, exitedAt,
     serveStatuses, serveResponses, serveSnapshot, board, toolCalls, initializes, methods, paths, requests,
@@ -880,6 +886,25 @@ export async function runAgent({
     verbs: toolCalls.map((call) => call.name),
     /** The `_meta["rulith/v1"]` block each tool call carried, in order. */
     sentMeta: toolCalls.map((call) => call.meta),
+  }
+  } finally {
+    clearTimeout(timer)
+    // An assertion/readiness/transport failure must not strand the fixture server
+    // and keep the whole parallel test run alive after its test already failed.
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    for (const stream of heldStreams) { try { stream.destroy() } catch { /* already gone */ } }
+    const serverClosed = new Promise(resolve => server.close(resolve))
+    server.closeAllConnections()
+    await serverClosed
+    if (childClosed) {
+      let deadline
+      try {
+        await Promise.race([childClosed, new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(new Error('Agent fixture did not exit during cleanup')), 3000)
+        })])
+      } finally { clearTimeout(deadline) }
+    }
+    if (storeDir !== undefined) rmSync(storeDir, { recursive: true, force: true })
   }
 }
 

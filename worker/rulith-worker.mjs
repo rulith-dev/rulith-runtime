@@ -89,6 +89,7 @@ import {
   registrationResult, uploadDecision,
 } from './material-transport.mjs'
 import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, LOCAL_AUTHORING_DRAFT_SHAPE } from './local-authoring.mjs'
+import { authoringGuidanceText } from './authoring-diagnostics.mjs'
 // The off-machine permission reading travels with the Worker surface it has always been part
 // of, so the committed cross-repository permission rows keep one importable answer to compare
 // against. Its consumer moved — from an upload that no longer exists to the disclosure decision
@@ -1612,11 +1613,13 @@ export async function prepareActionReport(row, execution, { custody, register } 
   else body.reason = 'Diagnostic data is available through the attached Artifact.'
   body.artifacts = [ref]
   // The Artifact's result may contain material bytes and must never be reported inline.
-  // Only this fixed, source-independent authoring format cue may accompany its reference.
+  // Only source-independent authoring guidance may accompany its reference: the
+  // fixed ingest cue or a carrier minted by the safe checker projection.
   // A smaller negotiated inline budget simply omits the cue; it must not lose the receipt.
-  if (ok && safeInlineGuidance === LOCAL_AUTHORING_DRAFT_SHAPE
-    && size({ result: safeInlineGuidance, reason: body.reason ?? '', facts, artifacts: body.artifacts }) <= row.artifactPolicy.inlineBytes)
-    body.result = safeInlineGuidance
+  const guidance = safeInlineGuidance === LOCAL_AUTHORING_DRAFT_SHAPE ? safeInlineGuidance : authoringGuidanceText(safeInlineGuidance)
+  if (ok && guidance !== undefined
+    && size({ result: guidance, reason: body.reason ?? '', facts, artifacts: body.artifacts }) <= row.artifactPolicy.inlineBytes)
+    body.result = guidance
   if (size({ result: body.result, reason: body.reason ?? '', facts, artifacts: body.artifacts }) > row.artifactPolicy.inlineBytes) {
     return { unavailable: 'artifact_reference_exceeds_inline_budget' }
   }
@@ -2559,7 +2562,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
       const localArtifact = workerLocalArtifact(out?.localArtifact)
       if (out?.localArtifact !== undefined && localArtifact === undefined) throw new Error('The local executor returned an invalid Artifact custody record')
       return { result: text, facts: resultFactsFromRows(t, rows), ...(localArtifact ? { localArtifact } : {}),
-        ...(t.impl === 'local-authoring' && t.entry === 'ingest' && localArtifact ? { safeInlineGuidance: LOCAL_AUTHORING_DRAFT_SHAPE } : {}) }
+        ...(t.impl === 'local-authoring' && localArtifact ? { safeInlineGuidance: t.entry === 'ingest' ? LOCAL_AUTHORING_DRAFT_SHAPE : out.safeInlineGuidance } : {}) }
     } catch (error) {
       if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
       throw error

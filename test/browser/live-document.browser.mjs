@@ -9,8 +9,8 @@ const step = process.env.RULITH_LIVE_STEP || 'inspect'
 const agentName = process.env.RULITH_LIVE_AGENT || ''
 const expectedCase = process.env.RULITH_LIVE_CASE || ''
 const remoteMaterialDisclosure = process.env.RULITH_LIVE_MATERIAL_DISCLOSURE === 'remote'
-if (process.env.RULITH_LIVE_RUN !== '1' || !agentName || !['inspect', 'start', 'prepare', 'upload', 'review', 'save', 'verify'].includes(step))
-  throw new Error('Set RULITH_LIVE_RUN=1, RULITH_LIVE_AGENT and RULITH_LIVE_STEP=inspect|start|prepare|upload|review|save|verify.')
+if (process.env.RULITH_LIVE_RUN !== '1' || !agentName || !['inspect', 'inspect-recovery', 'start', 'prepare', 'upload', 'review', 'save', 'verify'].includes(step))
+  throw new Error('Set RULITH_LIVE_RUN=1, RULITH_LIVE_AGENT and RULITH_LIVE_STEP=inspect|inspect-recovery|start|prepare|upload|review|save|verify.')
 if (['save', 'verify'].includes(step) && !expectedCase)
   throw new Error('Set RULITH_LIVE_CASE to the certified Case shown by the review before saving or verifying.')
 const packageRoot = process.env.RULITH_LIVE_PACKAGE_ROOT || (process.platform === 'win32' ? join(process.env.APPDATA || '', 'npm', 'node_modules', 'rulith') : '')
@@ -78,6 +78,17 @@ try {
     const child = page.frameLocator('#stage iframe:not([hidden])')
     await child.locator('#stream').waitFor({ timeout: 30000 })
     console.log(JSON.stringify({ phase: 'conversation-inspect', tail: (await child.locator('#stream').innerText()).slice(-3500) }))
+  }
+  if (step === 'inspect-recovery') {
+    // Inspect startup's local recovery marker. No Worker, message or business Tool
+    // is started; server recovery is only checked when the runtime next contacts it.
+    await page.click('#agent-toggle')
+    await page.waitForFunction(() => document.getElementById('agent-toggle').textContent.includes('Stop Agent'), null, { timeout: 30000 })
+    const child = page.frameLocator('#stage iframe:not([hidden])')
+    await child.locator('#stream').waitFor({ timeout: 30000 })
+    await page.waitForTimeout(5000)
+    console.log(JSON.stringify({ phase: 'recovery-inspect', workerControl: await read('#worker-toggle'),
+      tail: (await child.locator('body').innerText()).slice(-4500) }))
   }
   if (['start', 'prepare', 'upload', 'review', 'save', 'verify'].includes(step)) {
     await page.click('#agent-toggle')

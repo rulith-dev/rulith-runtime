@@ -2139,37 +2139,47 @@ const assistantEntry = (text, toolCalls = [], reasoningContent) => ({ role: 'ass
   ...(typeof reasoningContent === 'string' ? { reasoningContent } : {}) })
 const resultsEntry = (results) => ({ role: 'tool_results', results })
 
-/** Only older Board snapshots may be shortened in a model request. The
- * latest Board View and every non-view field (including receipts, refusal reasons and Artifact
- * data) stay byte-for-byte available. The stored transcript is never rewritten. */
+/** Shorten only repeated, identical successful QueryBoard snapshots in a request.
+ * A newer focused or partial view does not supersede earlier observations of another
+ * scope. Keep command receipts, refusals, Artifact data and the stored transcript intact. */
 function requestEntries(entries) {
   const beforeBytes = Buffer.byteLength(JSON.stringify(entries))
   if (beforeBytes < 32 * 1024) return { entries, compactedViews: 0, compactedTranscriptBytes: 0 }
-  const views = []
+  const views = [], latest = new Map()
   for (let index = 0; index < entries.length; index++) {
     if (entries[index].role !== 'tool_results' || !Array.isArray(entries[index].results)) continue
     for (let resultIndex = 0; resultIndex < entries[index].results.length; resultIndex++) {
       const result = entries[index].results[resultIndex]
+      if (result.name !== 'QueryBoard') continue
       let parsed
       try { parsed = JSON.parse(result.text) } catch { continue }
       const field = parsed?.view?.cases ? 'view' : parsed?.payload?.cases ? 'payload' : ''
-      if (typeof parsed?.accepted === 'boolean' && field !== '' && typeof parsed[field] === 'object') {
-        views.push({ index, resultIndex, parsed, field })
+      if (parsed?.accepted === true && field !== '' && typeof parsed[field] === 'object' && !viewIsTruncated(parsed[field])) {
+        const identity = field + ':' + JSON.stringify(parsed[field])
+        const observation = { index, resultIndex, parsed, field, identity, id: result.id }
+        views.push(observation)
+        latest.set(identity, observation)
       }
     }
   }
   if (views.length < 2) return { entries, compactedViews: 0, compactedTranscriptBytes: 0 }
   const rewritten = entries.slice()
-  for (const { index, resultIndex, parsed, field } of views.slice(0, -1)) {
+  let compactedViews = 0
+  for (const observation of views) {
+    const { index, resultIndex, parsed, field, identity } = observation
+    const retained = latest.get(identity)
+    if (retained === observation) continue
     if (rewritten[index] === entries[index]) rewritten[index] = { ...entries[index], results: entries[index].results.slice() }
     const rest = { ...parsed }
     delete rest[field]
     rewritten[index].results[resultIndex] = {
       ...entries[index].results[resultIndex],
-      text: JSON.stringify({ ...rest, earlierBoardView: 'Superseded by the latest Board View in this request.' }),
+      text: JSON.stringify({ ...rest, earlierBoardView: { identicalToToolCall: retained.id,
+        note: 'The identical QueryBoard snapshot is retained at that later result in this request.' } }),
     }
+    compactedViews += 1
   }
-  return { entries: rewritten, compactedViews: views.length - 1,
+  return { entries: rewritten, compactedViews,
     compactedTranscriptBytes: beforeBytes - Buffer.byteLength(JSON.stringify(rewritten)) }
 }
 

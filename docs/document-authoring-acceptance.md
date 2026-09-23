@@ -256,3 +256,41 @@ document-to-capability workflow or model cost. The installer retains an exact
 digest check in both Range and whole-file modes and has a 30-minute overall
 preparation deadline. The whole-file fallback and cancellation paths are covered
 by local tests, not yet by a live non-Range production server.
+
+## Bounded repair diagnostic and recovery inspection (2026-09-23)
+
+The benchmark still defaults to a single paid request. An explicit
+`RULITH_AUTHORING_REPAIR_ROUNDS=1` or `2` permits one or two additional attempts.
+Each attempt records `checked` (checker ran) separately from `passed` (the complete
+diagnostic gate passed), plus cumulative input/output usage. The final record
+reports attempt count and pass/fail. Missing provider usage remains unknown.
+Only model-selected checker feedback enters repair prompts; the independent
+boundary answers are held out. These local diagnostics make no Gateway Case or
+private draft and do not establish UI acceptance.
+
+One three-call run used 6,787 input / 4,088 output tokens. Call one failed because
+definition arguments were not name arrays. Calls two and three compiled, verified
+5/5 citations, and passed 4/6 model examples but only 6/11 independent examples.
+Neither of the two output rules had the audited numeric guards. The process
+correctly exited nonzero. This run preceded the final privacy-safe projection of
+diagnostics; it cannot establish the final implementation's repair quality or cost.
+
+The current checker projection retains free-form errors, labels, details and
+quotations in the local Artifact. Only fixed codes and bounded numeric indexes/
+counts can accompany its receipt, and optional guidance is omitted when it would
+exceed the negotiated receipt budget. Detailed report reads keep their Source
+permissions. The input grammar and installed @2 Release are unchanged.
+
+`RULITH_LIVE_STEP=inspect-recovery` starts only the selected local Agent to inspect
+startup recovery markers. It sends no conversation message and starts no Worker.
+It does not by itself force a server recovery query. On the real michal account,
+Document QA still reported an inherited ApplyAction with unknown outcome. Its
+original action was not replayed. The test exposed an inspector bug that said
+"No unresolved call" despite the marker; the UI now distinguishes this local record
+and keeps it visible across conversation changes. A clean end-to-end authoring run
+remains pending resolution through the original-call recovery protocol.
+
+A subsequent authenticated MCP initialization probe matched Document QA's Agent ID
+and returned `waiting` for `ApplyAction`. It made zero Tool calls and closed its
+transport session with HTTP 204. This confirms the current server still has the
+call outstanding; the startup marker is not merely a stale local-file warning.

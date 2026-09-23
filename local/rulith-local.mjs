@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync 
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { localPage } from './local-ui.mjs'
+import { localPage, projectRecovery } from './local-ui.mjs'
 import { createMcpServices } from './mcp-services.mjs'
 import { workerToolsPage } from './worker-tools-ui.mjs'
 import { createWorkerToolManagement } from './worker-tool-management.mjs'
@@ -306,6 +306,9 @@ export function createLocalHost({
     } catch { /* an owner that cannot record this must not take the host down with it */ }
   }
   const events = []
+  // A bounded log is not the latest recovery observation. Keep this small
+  // projection separately so a reconnect cannot turn an evicted warning into idle.
+  let recoverySnapshot = projectRecovery([])
   const clients = new Set()
   let nextSequence = 1
   const components = {
@@ -432,6 +435,7 @@ export function createLocalHost({
   })
   const emit = (src, type, data = {}) => {
     const event = { sequence: nextSequence++, t: Date.now(), src, type, ...data }
+    if (!event.historical) recoverySnapshot = projectRecovery([event], recoverySnapshot)
     events.push(event)
     if (events.length > 2000) events.splice(0, events.length - 1500)
     const frame = `data: ${JSON.stringify(event)}\n\n`
@@ -876,6 +880,7 @@ export function createLocalHost({
           .sort((a, b) => (a.t ?? a.at ?? 0) - (b.t ?? b.at ?? 0))
         if (disconnected) return
         for (const event of replay) res.write(`data: ${JSON.stringify(event)}\n\n`)
+        res.write(`data: ${JSON.stringify({ src: 'local', type: 'runtime-recovery', recovery: recoverySnapshot })}\n\n`)
         clients.add(res); return
       }
       if (path === '/status' && req.method === 'GET') {

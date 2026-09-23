@@ -1682,8 +1682,10 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
   const originalTool = gateway.tool.bind(gateway)
   gateway.tool = (name, args, session) => {
     const answer = originalTool(name, args, session)
-    if (name === 'QueryBoard' && ++queries % 3 === 0) {
-      return { ...answer, accepted: false, errorCode: 'query_refused_for_fixture', teaching: 'The Board refused this query.' }
+    if (name === 'QueryBoard') {
+      queries += 1
+      if (queries % 3 === 0) return { ...answer, accepted: false, errorCode: 'query_refused_for_fixture', teaching: 'The Board refused this query.' }
+      return { ...answer, observationReceipt: `UNIQUE_RECEIPT_${queries}` }
     }
     return answer
   }
@@ -1705,6 +1707,34 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
     'the latest authoritative Board View was removed')
   assert.match(transcript, /query_refused_for_fixture/,
     'a refused tool result lost its reason when its older Board View was shortened')
+  for (const query of [1, 2, 4, 5, 7, 8]) assert.match(transcript, new RegExp(`UNIQUE_RECEIPT_${query}`),
+    'identical snapshots lost their distinct non-view metadata')
+  assert.equal((transcript.match(/ARCHIVED_89/g) ?? []).length, 4,
+    'all three refused snapshots and the latest accepted snapshot must remain complete')
+  assert.match(transcript, /identicalToToolCall/)
   assert.ok(run.localEvents.some((event) => event.type === 'model-usage'
     && event.compactedViews > 0 && event.compactedTranscriptBytes > 0))
+})
+
+test('context compression retains distinct Board observations and partial or refused snapshots', async () => {
+  let queries = 0
+  const cases = Array.from({ length: 350 }, (_, index) => ({ caseId: `C_${index}`, root: `R_${index}`, status: 'closed' }))
+  const run = await runAgent({
+    argv: [], chatLines: ['Compare these observations without dropping their evidence.'], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '6' },
+    tool: name => {
+      if (name !== 'QueryBoard') return undefined
+      queries += 1
+      const marker = ['FIRST_SCOPE_ONLY', 'PARTIAL_SCOPE_ONLY', 'REFUSED_SCOPE_ONLY', 'LAST_SCOPE_ONLY'][queries - 1]
+      return { accepted: queries !== 3, ...(queries === 3 ? { errorCode: 'refused_but_retained', teaching: 'Use the earlier complete result.' } : {}),
+        payload: { cases: { directory: [{ caseId: marker, root: marker, status: 'closed' }, ...cases], total: cases.length + 1, truncated: queries === 2 },
+          roots: [], gaps: [], nodes: [], actions: [] } }
+    },
+    model: round => round <= 4 ? callTool('QueryBoard', {}) : 'Compared all observations.',
+  })
+  assert.equal(run.code, 0, run.stderr)
+  assert.equal(run.modelRequests.length, 5)
+  const transcript = JSON.stringify(run.modelRequests.at(-1).messages)
+  for (const marker of ['FIRST_SCOPE_ONLY', 'PARTIAL_SCOPE_ONLY', 'REFUSED_SCOPE_ONLY', 'LAST_SCOPE_ONLY'])
+    assert.ok(transcript.includes(marker), 'lost observation: ' + marker)
+  assert.match(transcript, /refused_but_retained/)
 })

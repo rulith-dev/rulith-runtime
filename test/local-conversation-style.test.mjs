@@ -15,7 +15,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
-import { localPage, renderToolCall } from '../local/local-ui.mjs'
+import { localPage, renderToolCall, projectRecovery } from '../local/local-ui.mjs'
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
@@ -30,6 +30,7 @@ const shippedCard = () => {
     eventBody: (e) => e.body ?? '',
     renderMarkdown: (value) => '<p>' + esc(value) + '</p>',
     renderToolCall,
+    projectRecovery,
     state: { toolResults: new Map() },
   })
   vm.runInContext(localPage.slice(start, end), context)
@@ -72,6 +73,7 @@ test('wrong, waiting, or needing a person keeps a treatment of its own', () => {
   }
   for (const event of [
     { src: 'agent', type: 'case-pending', body: 'Waiting for evidence' },
+    { src: 'agent', type: 'pending-inherited', tool: 'ApplyAction' },
     { src: 'agent', type: 'queue-suspended', body: '2 further call(s) were not sent' },
     { src: 'agent', type: 'session-detached', body: 'The local conversation was reclaimed.' },
     { src: 'agent', type: 'recovery', state: 'waiting', body: 'Waiting for an earlier ApplyAction call' },

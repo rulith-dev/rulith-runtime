@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Local-only implementation of the versioned official-authoring Tools. */
 import { createHash, randomUUID } from 'node:crypto'
+import { authoringDiagnostics, createAuthoringGuidance } from './authoring-diagnostics.mjs'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
@@ -131,11 +132,10 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
   if (report.proposalDigest !== proposal_digest) throw new Error('local_authoring_report_mismatch: checker report names another proposal digest.')
   const counts = { examples_total: report.examples?.total ?? 0, examples_passed: report.examples?.passed ?? 0, citations_total: report.citations?.total ?? 0, citations_verified: report.citations?.verified ?? 0, external_actions: Array.isArray(report.externalActions) ? report.externalActions.length : -1 }
   if (![...Object.values(counts)].every(Number.isSafeInteger) || Object.values(counts).some(value => value < 0) || counts.examples_passed > counts.examples_total || counts.citations_verified > counts.citations_total || typeof report.compiled !== 'boolean') throw new Error('local_authoring_report_invalid: checker report has invalid mechanical counts.')
-  const errors = Array.isArray(report.compileErrors) ? report.compileErrors.filter(error => typeof error === 'string').slice(0, 20).map(error => error.slice(0, 500)) : []
-  const summary = JSON.stringify({ compiled: report.compiled, ...counts, errors })
+  const summary = JSON.stringify({ compiled: report.compiled, ...counts, errors: authoringDiagnostics(report).errors })
   const result = found.store.putResult({ name: `authoring-check-${found.record.id}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify({ draft, report }), 'utf8') })
   await recordResult(materialRoot, { profile: binding.profile, owner: binding.owner, materialId: found.record.id, documentDigest: found.record.digest, node, proposalDigest: proposal_digest, resultId: result.id, resultDigest: result.digest, checkedAt: new Date().toISOString() })
-  return { result: 'Local mechanical authoring check completed.', localArtifact: result, rows: [{ node, task_id: found.record.id, proposal_digest, compiled: report.compiled, ...counts, report: summary }] }
+  return { result: 'Local mechanical authoring check completed.', localArtifact: result, safeInlineGuidance: createAuthoringGuidance(report), rows: [{ node, task_id: found.record.id, proposal_digest, compiled: report.compiled, ...counts, report: summary }] }
   } finally {
     checkerBusy = false
     const root = resolve(materialRoot, 'local-authoring')

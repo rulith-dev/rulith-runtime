@@ -165,6 +165,10 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   // An unresolved call is neither an error nor idleness, and the panel says which it is.
   // Shown as idle, a person concludes the Runtime is stuck or that nothing was dispatched.
   assert.match(elements.get('recovery').innerHTML, /No unresolved call/)
+  context.events = [{ src: 'agent', type: 'pending-inherited', tool: 'ApplyAction' }]
+  vm.runInContext('renderInspector(events)', context)
+  assert.match(elements.get('recovery').innerHTML, /Earlier ApplyAction outcome is unknown/)
+  assert.match(elements.get('recovery').innerHTML, /current server state has not been checked/)
   context.events = [{ src: 'agent', type: 'recovery', state: 'waiting', tool: 'ApplyAction', callRef: 'call-9' }]
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('recovery').innerHTML, /Waiting for an earlier ApplyAction call/)

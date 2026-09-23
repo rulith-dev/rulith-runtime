@@ -4,6 +4,19 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Show inherited unresolved calls on startup instead of displaying "No unresolved
+  call". Keep the current Agent's recovery state visible when starting or clearing
+  a conversation; historical transcript events cannot clear or revive it.
+- Preserve distinct, partial and refused Board observations in long model turns.
+  Only byte-identical successful QueryBoard snapshots are shortened; per-call
+  metadata, material evidence and the durable transcript stay intact.
+- Give local authoring checks bounded example indexes, counts and format guidance
+  when the inline receipt budget allows. Free-form checker errors, labels and
+  document text remain in the permission-protected local Artifact. Optional guidance
+  is omitted rather than blocking a required receipt under a smaller byte budget.
+- Add explicit, bounded repair measurement to the opt-in synthetic authoring
+  benchmark, with per-attempt pass/fail and cumulative usage. Independent boundary
+  answers are not sent into the repair loop. No model-cost improvement is claimed.
 - Synchronize the account's enabled Agents every 30 seconds while the workbench is
   running, with one in-flight directory request, visible sync status and no automatic
   pairing or starts. Temporary network failure keeps the current account; confirmed

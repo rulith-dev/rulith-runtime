@@ -26,6 +26,7 @@ const files = [
   'worker/material-store.mjs',
   'worker/material-transport.mjs',
   'worker/local-authoring.mjs',
+  'worker/authoring-diagnostics.mjs',
   'local/authoring-checker.mjs',
   'local/authoring-checker.json',
   'local/process-tree.mjs',

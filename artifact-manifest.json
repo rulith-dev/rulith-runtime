@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "237b9aeaf3e2f7f449d3869af3d7a2ba073dba9f5bb7c37b035265168409b972"
+      "sha256": "62f79904a6d69a51caac48e0f97a48f23ffa3d816a9629316669fe2595cb5e7d"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -27,7 +27,7 @@
       "sha256": "182e7ca2a9d5442e43471b6a0240fd16796631fcf002f0f24f29950acaa515c8"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "7e44d9e4fe4df895fae4f2f6c633d37d336232b653380501e059f593ea7b381c"
+      "sha256": "bbe1d4bf078743d21bbf0bbadbe8e6a3cb2772a6473d040d5461c636f028e223"
     },
     "worker/mcp-client.mjs": {
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
@@ -39,7 +39,10 @@
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
     },
     "worker/local-authoring.mjs": {
-      "sha256": "4e33dd3333f46bc33977137184238fa8cb5e2e21076aed12cb149d62c2c24071"
+      "sha256": "718d38bf0983cc527391f6a62ee893e5f06d878a4f8be3e10a84b31b2857685c"
+    },
+    "worker/authoring-diagnostics.mjs": {
+      "sha256": "5f53fd28d851bc19f2c5e4961bea5bf69708e9570b5e4560a700bd8d2d1fc422"
     },
     "local/authoring-checker.mjs": {
       "sha256": "cebacf0c3f211eef33386c209d6fe7ff5be0a2e218ff93e3dcbc8ff9acd6f621"
@@ -51,13 +54,13 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "8626066883715314859fa18586d4bad29e7820891b49a5a1e6bcd90d18e90f67"
+      "sha256": "05005294911317d8ac2000f6f475bab404e68cd7a33d5bf5187ee00cb0a0f420"
     },
     "local/material-service.mjs": {
       "sha256": "0b17e366c0aa8ce1fbcf94273bb6efa5579cf38991bebfdf68e60cca1800eaf3"
     },
     "local/local-ui.mjs": {
-      "sha256": "8cf9787ce14c03ad69bb429cb4c8d74de594ed4bd419b833bb496f01529b8ddd"
+      "sha256": "a102d0d0d75216edc6846a38addc560d00d6b6fd6621d9f08331fab4440129a8"
     },
     "local/theme.mjs": {
       "sha256": "a0d692385464527706e0d12126970190a518c4b03077731473bdd58b6f2a141a"

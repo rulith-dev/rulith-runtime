@@ -35,6 +35,15 @@ matching. An `attested` result describes those checks, not legal, tax or busines
 correctness. The Release's official publisher and local execution do not increase
 the Source's grounding tier.
 
+Check receipts carry mechanical counts and fixed error codes. The complete draft
+and detailed checker report remain in the local immutable Artifact. When space
+permits, the model also receives failing example indexes (zero-based), counts,
+fixed citation failure reasons and separately labelled format guidance. Free-form
+example labels, exception details and quoted text are not copied into this inline
+guidance. A smaller receipt budget omits the optional guidance; it does not discard
+required facts or turn a failed check into a pass. Reading the full report still
+requires the current material delivery permission.
+
 Preparation grants material access only to the selected Agent and its current
 Source/Connection/material-root binding. Deployment denials take precedence.
 An unlocked Source or a different Connection/material-root binding cannot use that
