@@ -132,3 +132,25 @@ Test infrastructure findings and final checks:
 - GPT-6 Sol independently reviewed the final production changes and the harness
   cleanup. No remaining P0/P1 was identified. The historical-event snapshot guard
   was also checked with a failing-then-passing regression.
+
+Batch 2 mechanical construction release (0.8.16, 2026-09-24):
+
+- `official_authoring@3.0.0` and its ordinary Source-bound `construct_draft@3`
+  shipped. The deterministic Java constructor expands only explicit symbols and the
+  fixed Case terminal, then runs the existing compiler, examples and exact citations.
+- The isolated device/Worker/MCP path passed constructor and legacy-check journeys,
+  certified two Cases and saved their exact private proposals. Public JAR bytes and
+  the npm archive were independently pinned and verified. No paid model was used.
+- This completes the mechanical constructor and compatibility foundation. The clean
+  real-model browser comparison and a defensible cost-per-success measurement remain
+  open; no token-saving claim is made.
+
+Batch 3 release gate (0.8.17 candidate):
+
+- The published npm archive must now agree with the immutable public authoring
+  manifest, including source revision, executable names, lengths, SHA-256 pins and
+  exact download URLs. Mixed-revision pins fail before download.
+- An explicit full mode downloads both JARs through the downloader actually shipped
+  in the npm package and runs a deterministic constructor/checker CLI probe. The fast
+  default still verifies archive integrity, every shipped artifact hash, manifest
+  parity and authenticated workbench startup.

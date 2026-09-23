@@ -8,12 +8,20 @@ import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { validateAuthoringCheckerManifest } from '../local/authoring-checker.mjs'
 import { publishedArtifactPath } from './published-artifact-path.mjs'
+import { downloadAndProbePublishedAuthoring, verifyPublishedAuthoringManifest } from './published-authoring-verifier.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const localPackage = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-const version = process.argv[2] ?? localPackage.version
-if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Usage: npm run release:verify-published -- [major.minor.patch]')
+const inputs = process.argv.slice(2)
+const fullAuthoring = inputs.includes('--full-authoring')
+const unknown = inputs.filter(value => value.startsWith('--') && value !== '--full-authoring')
+const versions = inputs.filter(value => !value.startsWith('--'))
+if (unknown.length || versions.length > 1) throw new Error('Usage: npm run release:verify-published -- [major.minor.patch] [--full-authoring]')
+const version = versions[0] ?? localPackage.version
+if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Usage: npm run release:verify-published -- [major.minor.patch] [--full-authoring]')
 const packageName = `rulith@${version}`
 const registry = 'https://registry.npmjs.org/'
 
@@ -124,6 +132,15 @@ try {
     const actual = createHash('sha256').update(await readFile(target)).digest('hex')
     assert.equal(actual, expected.sha256, `${file} differs from the published artifact manifest`)
   }
+  const checkerModule = await import(pathToFileURL(join(packageRoot, 'local/authoring-checker.mjs')).href
+    + `?published=${encodeURIComponent(version)}`)
+  if (version === localPackage.version)
+    assert.equal(typeof checkerModule.validateAuthoringCheckerManifest, 'function',
+      'the current published checker does not export its manifest validator')
+  const checkerManifest = JSON.parse(await readFile(join(packageRoot, 'local/authoring-checker.json'), 'utf8'))
+  const checkerValidator = checkerModule.validateAuthoringCheckerManifest ?? validateAuthoringCheckerManifest
+  const checkerPublic = await verifyPublishedAuthoringManifest(checkerManifest, { validate: checkerValidator })
+  console.log(`published ${packageName}: authoring manifest matches ${checkerPublic.sourceCommit} and ${checkerPublic.files} executable pins`)
   if (version === localPackage.version) {
     assert.deepEqual(manifestBytes, await readFile(join(ROOT, 'artifact-manifest.json')),
       'npm published an artifact manifest different from this verified release')
@@ -137,6 +154,13 @@ try {
   await mkdir(install)
   command('npm', ['install', '--prefix', install, packageName, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', `--registry=${registry}`])
   await smokeStart(join(install, 'node_modules', 'rulith'), join(temp, 'manager'))
+  if (fullAuthoring) {
+    const probe = await downloadAndProbePublishedAuthoring(checkerManifest, join(temp, 'authoring'), {
+      downloadFile: checkerModule.downloadPinnedAuthoringFile,
+      validate: checkerValidator,
+    })
+    console.log(`published ${packageName}: downloaded ${probe.transferred} pinned authoring bytes and passed the constructor CLI probe on Java ${probe.javaMajor}`)
+  }
 } finally {
   const target = resolve(temp), parent = resolve(tmpdir())
   if (dirname(target) !== parent || !target.startsWith(join(parent, 'rulith-published-')))

@@ -23,18 +23,24 @@ function pinnedFile(file) {
     && Number.isSafeInteger(file.bytes) && file.bytes > 0 && file.bytes <= 50 * 1024 * 1024
 }
 
-async function settings() {
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
-  if (manifest.format !== 'rulith-local-authoring-checker/1' || !/^[0-9a-f]{40}$/.test(manifest.sourceCommit)
+/** The source revision and every executable URL are one immutable release identity. */
+export function validateAuthoringCheckerManifest(manifest) {
+  if (manifest?.format !== 'rulith-local-authoring-checker/1' || !/^[0-9a-f]{40}$/.test(manifest.sourceCommit)
       || !Array.isArray(manifest.files) || manifest.files.length !== 2
       || manifest.files.map(f => f.name).sort().join(',') !== 'local-authoring.jar,rule-check.jar') {
     throw new Error('This Rulith release has no valid pinned authoring checker manifest.')
   }
   for (const file of manifest.files) {
-    if (!pinnedFile(file)) {
+    const expectedUrl = `https://console.rulith.ai/downloads/authoring/${manifest.sourceCommit}/${file.name}`
+    if (!pinnedFile(file) || file.url !== expectedUrl) {
       throw new Error('The authoring checker manifest has an invalid executable pin.')
     }
   }
+  return manifest
+}
+
+async function settings() {
+  const manifest = validateAuthoringCheckerManifest(JSON.parse(await readFile(manifestPath, 'utf8')))
   const fingerprint = sha(Buffer.from(JSON.stringify(manifest)))
   return { manifest, directory: join(homedir(), '.rulith', 'dependencies', 'authoring', fingerprint) }
 }

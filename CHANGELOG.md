@@ -2,6 +2,19 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.8.17 - 2026-09-24
+
+- Bind every local authoring executable URL to the manifest's exact source commit
+  and filename. A mixed-revision manifest is refused before any download starts.
+- Extend official npm-package verification to compare the immutable public authoring
+  manifest with the pins inside the downloaded archive. Status, media type, redirects
+  and response size are bounded, and a public pin mismatch fails the release journey.
+- Add an explicit `--full-authoring` post-publication gate. It uses the downloader from
+  the published package to fetch and hash both public JARs, then runs a deterministic
+  constructor/citation/example probe through the downloaded Java executable. Java is
+  selected and version-checked before transfer, and the transfer and CLI have deadlines.
+- Normalize npm repository metadata so publication no longer rewrites it implicitly.
+
 ## 0.8.16 - 2026-09-24
 
 - Add `official_authoring@3.0.0` with the ordinary Source-bound

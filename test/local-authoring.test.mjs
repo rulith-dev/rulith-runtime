@@ -5,9 +5,26 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { builtinLocalAuthoringTools, authoringNode, executeLocalAuthoring, proposalDigest, LOCAL_AUTHORING_DRAFT_SHAPE } from '../worker/local-authoring.mjs'
+import { validateAuthoringCheckerManifest } from '../local/authoring-checker.mjs'
 import { materialIdentityFromFingerprints, openMaterialStore } from '../worker/material-store.mjs'
 
 const binding = materialIdentityFromFingerprints({ profile: 'a'.repeat(64), owner: 'b'.repeat(64), modelDestination: 'http://127.0.0.1:11434' })
+test('the checker source revision and executable URLs are one release identity', () => {
+  const commit = 'a'.repeat(40)
+  const manifest = { format: 'rulith-local-authoring-checker/1', sourceCommit: commit, files: [
+    { name: 'local-authoring.jar', bytes: 1, sha256: 'b'.repeat(64),
+      url: `https://console.rulith.ai/downloads/authoring/${commit}/local-authoring.jar` },
+    { name: 'rule-check.jar', bytes: 1, sha256: 'c'.repeat(64),
+      url: `https://console.rulith.ai/downloads/authoring/${commit}/rule-check.jar` },
+  ] }
+  assert.equal(validateAuthoringCheckerManifest(structuredClone(manifest)).sourceCommit, commit)
+  const mixed = structuredClone(manifest)
+  mixed.files[1].url = `https://console.rulith.ai/downloads/authoring/${'d'.repeat(40)}/rule-check.jar`
+  assert.throws(() => validateAuthoringCheckerManifest(mixed), /invalid executable pin/)
+  const renamed = structuredClone(manifest)
+  renamed.files[0].url = `https://console.rulith.ai/downloads/authoring/${commit}/rule-check.jar`
+  assert.throws(() => validateAuthoringCheckerManifest(renamed), /invalid executable pin/)
+})
 test('an upgraded checker pin requires reviewing the Worker draft-shape cue', () => {
   const manifest = JSON.parse(readFileSync(new URL('../local/authoring-checker.json', import.meta.url), 'utf8'))
   assert.equal(manifest.sourceCommit, 'de3c07879d7993a12fe44ba3e01fb4793cc55eb3',

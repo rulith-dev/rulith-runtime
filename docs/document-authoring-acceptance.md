@@ -9,6 +9,12 @@ Do not put credentials, browser keys or document contents in the evidence record
 Before the browser run, execute `npm run release:verify-published -- <version>` from
 the release source tree. It checks the registry tarball and starts an isolated installed
 workbench. Its success does **not** prove the account or document workflow below.
+For a release that changes authoring executables or their pins, also run
+`npm run release:verify-published -- <version> --full-authoring`. The full mode checks
+Java before transfer, downloads both public JARs through the downloader shipped in
+that npm version, verifies their complete SHA-256 values, and runs a synthetic
+constructor/citation/example CLI probe. It uses no account credential or customer
+material and still does not replace the signed-in browser journey.
 
 1. Start the installed `rulith` workbench, open its printed loopback URL, sign in if
    needed, and select the enabled QA Agent. Verify the account and Agent names before

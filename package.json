@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.8.16",
+  "version": "0.8.17",
   "type": "module",
   "description": "Rulith: a local multi-agent workbench with conversations and governed Worker tools",
   "bin": {
@@ -8,7 +8,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/rulith-dev/rulith-runtime.git"
+    "url": "git+https://github.com/rulith-dev/rulith-runtime.git"
   },
   "homepage": "https://github.com/rulith-dev/rulith-runtime#readme",
   "license": "Apache-2.0",
@@ -48,7 +48,7 @@
   },
   "scripts": {
     "start": "node local/rulith-local.mjs start",
-    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check scripts/verify-published.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/generate-worker-protocol.mjs --check",
+    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check scripts/verify-published.mjs && node --check scripts/published-authoring-verifier.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/generate-worker-protocol.mjs --check",
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "verify:manifest": "node scripts/update-artifact-manifest.mjs --check",
     "test": "node --test test/*.test.mjs",
