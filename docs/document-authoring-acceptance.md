@@ -101,3 +101,30 @@ closed the Case. This 12-call turn used 237,005 input and 8,372 output tokens.
 Three older Cases remained in the same Agent's Board focus, so the totals cannot
 be compared as a clean benchmark. No private draft was saved in this run. The
 next cue revision targets the two observed mistakes, pending another real test.
+
+For a cheaper first-draft diagnostic before another full browser run, execute
+`$env:RULITH_AUTHORING_BENCHMARK='1'; node scripts/authoring-first-draft-benchmark.mjs`
+from the Runtime source tree. This is an **opt-in paid model call**: it reads the
+signed-in account's local default model credential in memory, sends only the
+synthetic fixture and fixed draft-shape cue, makes one Chat Completions request,
+and checks the returned `draft_json` with the installed local checker in a
+temporary material area. It prints token counts, content hashes and bounded
+checker diagnostics, not the credential, prompt, draft or document. It creates
+no Gateway task, Case or private draft. Exit 0 requires compiled=true, nonzero
+examples and citations all passing, and no open questions. A green result is
+only a shape diagnostic; it cannot replace the browser run, Case closure or the
+separate fixture boundary review above. This diagnostic supports configured
+OpenAI-compatible Chat Completions endpoints; it does not call Anthropic
+Messages endpoints.
+
+On 2026-09-23, DeepSeek Flash used 600 input / 1,038 output tokens with the
+original cue and failed because rule atom `args` was an array. Adding the
+object-argument and package-ID guidance exposed undeclared predicates in one
+generation. With explicit built-in names, one generation compiled and verified
+all five citations but passed only 4/6 examples (781 input / 1,527 output
+tokens); another generation with nearly the same cue also failed compilation.
+These are single stochastic samples, not a pass-rate estimate. The fixed cue
+now addresses observed syntax mistakes, but first-draft reliability and the
+requested boundary coverage remain unproven. The next published-package trial
+must use a clean QA Agent and record which examples failed before claiming a
+reduction in retries or total token cost.

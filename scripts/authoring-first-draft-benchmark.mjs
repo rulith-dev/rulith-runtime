@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: Apache-2.0
+/** Opt-in, paid, one-call diagnostic. Never logs the prompt, draft or credential. */
+import { createHash } from 'node:crypto'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createManagerServer } from '../local/manager-server.mjs'
+import { defaultManagerRoot } from '../local/manager-registry.mjs'
+import { createModelSettings } from '../local/model-settings.mjs'
+import { authoringNode, builtinLocalAuthoringTools, executeLocalAuthoring, LOCAL_AUTHORING_DRAFT_SHAPE } from '../worker/local-authoring.mjs'
+import { materialIdentityFromFingerprints, openMaterialStore } from '../worker/material-store.mjs'
+
+if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
+  console.error('Set RULITH_AUTHORING_BENCHMARK=1 to authorize one paid model request with the synthetic fixture.')
+  process.exitCode = 2
+} else {
+  const digest = value => createHash('sha256').update(value).digest('hex')
+  const text = await readFile(fileURLToPath(new URL('../test/fixtures/authoring-shipping-policy.md', import.meta.url)), 'utf8')
+  const device = createManagerServer({ port: 0 }).state().device
+  if (device.state !== 'linked' || !device.account?.id) throw new Error('Sign in to the local Rulith manager before benchmarking.')
+  const model = createModelSettings({ root: defaultManagerRoot() }).read(device.origin, device.account.id)
+  if (!model?.url || !model?.name || !model?.key) throw new Error('The signed-in account needs a configured model and key.')
+  const endpoint = new URL(model.url)
+  const path = endpoint.pathname.replace(/\/+$/, '')
+  if (!path) endpoint.pathname = '/v1/chat/completions'
+  else if (path.endsWith('/v1')) endpoint.pathname = `${path}/chat/completions`
+  else if (!path.endsWith('/chat/completions')) throw new Error('This benchmark needs an OpenAI-compatible Chat Completions endpoint.')
+  const prompt = [
+    'Create one mechanically checkable Rulith capability draft from the synthetic document below.',
+    'Return exactly one JSON object and no Markdown, shaped as the check_draft tool arguments: {"draft_json":"<one serialized draft JSON object>"}. Keep questions empty only when the document supplies every needed business decision.',
+    'Include boundary, missing, invalid and independent-key examples. Cite exact document substrings for each rule.',
+    LOCAL_AUTHORING_DRAFT_SHAPE,
+    'Document follows:\n' + text,
+  ].join('\n\n')
+  const body = {
+    model: model.name, max_tokens: 8000,
+    ...(['enabled', 'disabled'].includes(model.thinking) ? { thinking: { type: model.thinking } } : {}),
+    messages: [{ role: 'user', content: prompt }],
+  }
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${model.key}` },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(120_000),
+  })
+  // A provider error can include request details; never echo its raw body.
+  if (!response.ok) throw new Error(`Model request failed with HTTP ${response.status}.`)
+  const envelope = await response.json()
+  const choice = envelope?.choices?.[0]
+  const raw = String(choice?.message?.content ?? '').trim()
+  const json = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  const metrics = {
+    fixtureSha256: digest(text), cueSha256: digest(LOCAL_AUTHORING_DRAFT_SHAPE),
+    model: model.name, inputTokens: envelope?.usage?.prompt_tokens ?? null,
+    outputTokens: envelope?.usage?.completion_tokens ?? null,
+    requestBytes: Buffer.byteLength(JSON.stringify(body)), finishReason: choice?.finish_reason ?? null,
+    responseBytes: Buffer.byteLength(json),
+  }
+  if (choice?.finish_reason === 'length') throw new Error(`Model response was truncated; usage ${JSON.stringify(metrics)}.`)
+  let draft
+  try {
+    const argumentsObject = JSON.parse(json)
+    draft = JSON.parse(argumentsObject.draft_json)
+  } catch {
+    console.log(JSON.stringify({ ...metrics, parsed: false, checked: false }))
+    process.exitCode = 1
+  }
+  if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
+    console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, reason: 'draft_not_object' }))
+    process.exitCode = 1
+  } else if (draft !== undefined) {
+    const allowed = new Set(['program', 'caseContracts', 'citations', 'examples', 'questions', 'notes'])
+    const extraKeys = draft && typeof draft === 'object' && !Array.isArray(draft)
+      ? Object.keys(draft).filter(key => !allowed.has(key)).map(key => key.slice(0, 80)) : []
+    if (extraKeys.length) {
+      console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, reason: 'extra_top_level_keys', extraKeys }))
+      process.exitCode = 1
+    } else {
+      const root = await mkdtemp(join(tmpdir(), 'rulith-authoring-benchmark-'))
+      try {
+        const binding = materialIdentityFromFingerprints({
+          profile: 'a'.repeat(64), owner: 'b'.repeat(64), modelDestination: endpoint.origin, model: model.name,
+        })
+        const store = openMaterialStore(root, binding)
+        const material = store.put({ name: 'authoring-shipping-policy.md', mediaType: 'text/markdown', bytes: Buffer.from(text) })
+        const tool = builtinLocalAuthoringTools()['rulith.official_authoring.check_draft@2']
+        try {
+          const checked = await executeLocalAuthoring(tool, {
+            node: authoringNode(material.id, material.digest), task_id: material.id, draft_json: JSON.stringify(draft),
+          }, { materialRoot: root, binding })
+          const summary = JSON.parse(checked.rows[0].report)
+          const full = JSON.parse(store.read(checked.localArtifact.id, { modelDestination: endpoint.origin }).bytes.toString('utf8')).report
+          const results = Array.isArray(full.examples?.results) ? full.examples.results : null
+          const failingExampleIndexes = results === null || results.length !== summary.examples_total
+            ? null : results.flatMap((entry, index) => entry?.passed === false ? [index] : [])
+          const exampleDiagnosticsUnavailable = failingExampleIndexes === null && summary.examples_passed !== summary.examples_total
+          const openQuestions = Array.isArray(draft.questions) ? draft.questions.length : -1
+          console.log(JSON.stringify({ ...metrics, parsed: true, checked: true, ...summary, failingExampleIndexes, exampleDiagnosticsUnavailable, openQuestions }))
+          if (!summary.compiled || summary.examples_total === 0 || summary.examples_passed !== summary.examples_total
+            || summary.citations_total === 0 || summary.citations_verified !== summary.citations_total || openQuestions !== 0) process.exitCode = 1
+        } catch (error) {
+          const code = String(error?.message ?? '').split(':', 1)[0]
+          console.log(JSON.stringify({ ...metrics, parsed: true, checked: false, reason: /^[a-z_]+$/.test(code) ? code : 'checker_error' }))
+          process.exitCode = 1
+        }
+      } finally { await rm(root, { recursive: true, force: true }) }
+    }
+  }
+}

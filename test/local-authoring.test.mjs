@@ -13,8 +13,11 @@ test('an upgraded checker pin requires reviewing the Worker draft-shape cue', ()
   assert.equal(manifest.sourceCommit, '9e8733c7ea152935472eb7bc3006dba455c59e5a',
     'the local checker changed; compare its AuthoringPrompt.localDraftReference with the Worker ingest cue before releasing')
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /minimumGroundingFloor:"attested"/)
-  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program FIELD MUST be a JSON OBJECT, never a string/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program is a JSON OBJECT, never DSL\/Markdown\/code/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /vocabulary\.defines\[\]\.id MUST be a canonical namespaced predicate/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /atom args MUST be JSON objects keyed by field/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /program\.id is a lowercase package name of 2-32 characters/)
+  assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /Rules use declared aliases\/imports or built-ins/)
   assert.match(LOCAL_AUTHORING_DRAFT_SHAPE, /businessKey\.predicate and opening\.predicate name the same document INPUT predicate/)
 })
 test('local authoring tools are versioned file read tools with the fixed fact mappings', () => {
