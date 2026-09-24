@@ -295,7 +295,9 @@ test('material registration uses the device grant, preserves exact retry identit
     const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
       submissionId: 'sub_' + 'a'.repeat(32), requestId: 'click-request-1234', sessionKey: 'ctx-1', proofDigest: 'sha256:' + 'a'.repeat(64),
       selectionDigest: 'sha256:' + 'd'.repeat(64),
-      attachments: [{ selector: 'mat_' + 'b'.repeat(32), digest: 'sha256:' + 'c'.repeat(64), totalBytes: 9 }] }
+      attachments: [{ selector: 'mat_' + 'b'.repeat(32), digest: 'sha256:' + 'c'.repeat(64), totalBytes: 9 }],
+      custodyBindings: [{ selector: 'mat_' + 'b'.repeat(32), custodyId: 'mat_' + '0'.repeat(32),
+        digest: 'sha256:' + 'c'.repeat(64), totalBytes: 9 }] }
     const [first, second] = await Promise.all([
       manager.device.registerMaterialSubmission(body), manager.device.registerMaterialSubmission(body),
     ])
@@ -313,10 +315,11 @@ test('material registration uses the device grant, preserves exact retry identit
     assert.equal(gateway.materialSubmissions.size, 2)
     const sent = gateway.requests.filter(row => row.path === '/local-devices/material-submissions')
     assert.ok(sent.every(row => row.origin === undefined && row.query === ''))
-    assert.deepEqual(Object.keys(sent[0].body).sort(), ['agentId', 'attachments', 'proofDigest', 'requestId', 'selectionDigest', 'sessionKey', 'submissionId'])
+    assert.deepEqual(Object.keys(sent[0].body).sort(), ['agentId', 'attachments', 'custodyBindings', 'proofDigest', 'requestId', 'selectionDigest', 'sessionKey', 'submissionId'])
     assert.equal(sent[0].body.selectionDigest, body.selectionDigest)
     assert.notEqual(first.selectionDigest, first.proofDigest)
-    assert.doesNotMatch(JSON.stringify(sent), /custodyId|caseId|fileBytes|SECRET-CONTENT-MARKER/u)
+    assert.doesNotMatch(JSON.stringify(sent), /caseId|fileBytes|SECRET-CONTENT-MARKER/u)
+    assert.doesNotMatch(JSON.stringify(first), /custodyId|mat_00000000000000000000000000000000/u)
     const denied = await manager.device.registerMaterialSubmission({ ...body, agentId: 'agent-beta' }).catch(error => error)
     assert.ok(denied instanceof Error)
     assert.equal(manager.device.status().state, 'linked')

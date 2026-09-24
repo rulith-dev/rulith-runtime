@@ -595,12 +595,18 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       const attachments = records.map((record) => ({
         selector: record.selector, digest: record.digest, totalBytes: record.totalBytes,
       }))
+      // Host/Worker-only mapping. It is registered on the device channel, never passed to
+      // the Agent, model, browser, or an attachment event.
+      const custodyBindings = records.map((record) => ({
+        selector: record.selector, custodyId: record.id,
+        digest: record.digest, totalBytes: record.totalBytes,
+      }))
       const receiptPath = join(submissionsDir,
         `${fingerprint('rulith-material-submission', identity.agentId, requestId)}.json`)
-      const candidate = { version: 3, submissionId: `sub_${randomUUID().replace(/-/g, '')}`,
+      const candidate = { version: 4, submissionId: `sub_${randomUUID().replace(/-/g, '')}`,
         requestId, sessionKey, agent: identity.agentId,
         owner: { profile: identity.profile, owner: identity.owner },
-        attachments, proofSecret: randomBytes(32).toString('hex'),
+        attachments, custodyBindings, proofSecret: randomBytes(32).toString('hex'),
         selectionSecret: randomBytes(32).toString('hex'), recordedAt: new Date().toISOString() }
       const temporary = join(tempDir, `submission.${randomUUID()}`)
       let elected = false
@@ -619,14 +625,15 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       let receipt = candidate
       if (!elected) {
         try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) } catch { /* refused below */ }
-        if (![2, 3].includes(receipt?.version) || receipt.requestId !== requestId
+        if (receipt?.version !== 4 || receipt.requestId !== requestId
           || receipt.sessionKey !== sessionKey || receipt.agent !== identity.agentId
           || receipt.owner?.profile !== identity.profile || receipt.owner?.owner !== identity.owner
           || JSON.stringify(receipt.attachments) !== JSON.stringify(attachments)
+          || JSON.stringify(receipt.custodyBindings) !== JSON.stringify(custodyBindings)
           || !/^sub_[0-9a-f]{32}$/.test(receipt.submissionId ?? '')
           || !/^[0-9a-f]{64}$/.test(receipt.proofSecret ?? '')
-          || (receipt.version === 3 && (!/^[0-9a-f]{64}$/.test(receipt.selectionSecret ?? '')
-            || receipt.selectionSecret === receipt.proofSecret))) {
+          || !/^[0-9a-f]{64}$/.test(receipt.selectionSecret ?? '')
+          || receipt.selectionSecret === receipt.proofSecret) {
           throw new MaterialError('material_submission_mismatch',
             'This request id already names a different local material submission.')
         }

@@ -136,7 +136,7 @@ export function createDevicesGateway({
       return { deviceId: row.id, account: { id: row.accountId, name: accountName }, agents: grantedAgents(row), expiresAt: row.expiresAt }
     },
     'POST /local-devices/material-submissions': (body, { bearer }) => {
-      onlyFields(body, ['agentId', 'submissionId', 'requestId', 'sessionKey', 'attachments', 'proofDigest', 'selectionDigest'])
+      onlyFields(body, ['agentId', 'submissionId', 'requestId', 'sessionKey', 'attachments', 'proofDigest', 'selectionDigest', 'custodyBindings'])
       if (!/^sha256:[0-9a-f]{64}$/.test(body.proofDigest ?? '')) refuse(400, 'Invalid task proof digest.', 'bad_command')
       if (!/^sha256:[0-9a-f]{64}$/.test(body.selectionDigest ?? '')
         || body.selectionDigest === body.proofDigest) refuse(400, 'Invalid material selection digest.', 'bad_command')
@@ -151,6 +151,17 @@ export function createDevicesGateway({
             || !/^sha256:[0-9a-f]{64}$/.test(row.digest)
             || !Number.isSafeInteger(row.totalBytes) || row.totalBytes <= 0
         })) refuse(400, 'Invalid material submission.', 'bad_command')
+      if (body.custodyBindings !== undefined && (!Array.isArray(body.custodyBindings)
+        || body.custodyBindings.length !== body.attachments.length
+        || new Set(body.custodyBindings.map(row => row?.custodyId)).size !== body.custodyBindings.length
+        || body.custodyBindings.some((row, index) => {
+          onlyFields(row, ['selector', 'custodyId', 'digest', 'totalBytes'])
+          return row.selector !== body.attachments[index].selector
+            || row.digest !== body.attachments[index].digest
+            || row.totalBytes !== body.attachments[index].totalBytes
+            || !/^[A-Za-z0-9_.-]{1,128}$/.test(row.custodyId ?? '')
+            || row.custodyId === row.selector
+        }))) refuse(400, 'Invalid private material custody.', 'bad_command')
       const key = `${device.id}:${body.agentId}:${body.requestId}`
       const existing = materialSubmissions.get(key)
       if (existing !== undefined) {

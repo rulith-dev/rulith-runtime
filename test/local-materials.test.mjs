@@ -372,7 +372,8 @@ test('managed material registration blocks Agent forwarding until the durable cl
     assert.equal(seen[0].agent, AGENT_ID)
     assert.equal(seen[0].caseId, undefined)
     assert.deepEqual(Object.keys(seen[0].attachments[0]).sort(), ['digest', 'selector', 'totalBytes'])
-    assert.doesNotMatch(JSON.stringify(seen), /SECRET-CONTENT-MARKER|custodyId|proofSecret/u)
+    assert.doesNotMatch(JSON.stringify(seen), /SECRET-CONTENT-MARKER|proofSecret/u)
+    assert.match(seen[0].custodyBindings[0].custodyId, /^mat_[0-9a-f]{32}$/u)
     assert.match(seen[0].proofDigest, /^sha256:[0-9a-f]{64}$/u)
     assert.equal(accepted.submissionReceipt.submissionId, seen[0].submissionId)
   }, { withAgent: true, registerMaterialSubmission: async receipt => {
@@ -407,6 +408,10 @@ test('private proof crosses only the confirmed Host-to-Agent header and exact re
     assert.notEqual(registrations[0].selectionDigest, registrations[0].proofDigest)
     const { openMaterialStore } = await import('../worker/material-store.mjs')
     const privateRecord = openMaterialStore(materialRoot, identityOf(configFile)).list()[0]
+    assert.deepEqual(registrations[0].custodyBindings, [{
+      selector: registrations[0].attachments[0].selector, custodyId: privateRecord.id,
+      digest: privateRecord.digest, totalBytes: privateRecord.totalBytes,
+    }])
     const stored = (await import('node:fs')).readdirSync(join(materialRoot, 'submissions'))
       .filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(materialRoot, 'submissions', name), 'utf8')))
     assert.equal(stored.length, 1)
@@ -418,6 +423,9 @@ test('private proof crosses only the confirmed Host-to-Agent header and exact re
     for (const observed of [registrations, forwarded.map(row => row.body), host.events()]) {
       assert.doesNotMatch(JSON.stringify(observed), new RegExp(secret, 'u'))
       assert.doesNotMatch(JSON.stringify(observed), new RegExp(stored[0].selectionSecret, 'u'))
+    }
+    for (const observed of [forwarded.map(row => row.body), host.events()]) {
+      assert.doesNotMatch(JSON.stringify(observed), new RegExp(privateRecord.id, 'u'))
     }
     assert.doesNotMatch(JSON.stringify(forwarded), new RegExp(privateRecord.id, 'u'))
   }, { withAgent: true, registerMaterialSubmission: async receipt => {

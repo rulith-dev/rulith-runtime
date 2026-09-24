@@ -485,7 +485,7 @@ export function createDeviceClient({ root } = {}) {
       return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
     },
     /** Register one durable Host selection; the Agent and browser never receive this bearer. */
-    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, proofDigest, selectionDigest }) => {
+    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, custodyBindings, proofDigest, selectionDigest }) => {
       const current = linked()
       if (text(expectedAccountId) !== text(current.account?.id)
         || !current.agents?.some(row => row.id === agentId)) {
@@ -494,8 +494,21 @@ export function createDeviceClient({ root } = {}) {
       if (!/^sha256:[0-9a-f]{64}$/.test(proofDigest ?? '')) throw new Error('Material task proof digest is missing or malformed.')
       if (selectionDigest !== undefined && (!/^sha256:[0-9a-f]{64}$/.test(selectionDigest)
         || selectionDigest === proofDigest)) throw new Error('Material selection digest is invalid.')
+      if (custodyBindings !== undefined && (!Array.isArray(attachments)
+        || !Array.isArray(custodyBindings) || custodyBindings.length !== attachments.length
+        || new Set(custodyBindings.map(row => row?.custodyId)).size !== custodyBindings.length
+        || custodyBindings.some((row, index) => row?.selector !== attachments[index]?.selector
+          || row?.digest !== attachments[index]?.digest
+          || row?.totalBytes !== attachments[index]?.totalBytes
+          || !/^[A-Za-z0-9_.-]{1,128}$/.test(row?.custodyId ?? '')
+          || row.custodyId === '.' || row.custodyId === '..'
+          || row.custodyId === row.selector
+          || Object.keys(row).length !== 4))) {
+        throw new Error('Private material custody does not match the submitted selection.')
+      }
       const body = { agentId, submissionId, requestId, sessionKey, attachments, proofDigest,
-        ...(selectionDigest === undefined ? {} : { selectionDigest }) }
+        ...(selectionDigest === undefined ? {} : { selectionDigest }),
+        ...(custodyBindings === undefined ? {} : { custodyBindings }) }
       const reply = await call(current.origin, '/local-devices/material-submissions', {
         bearer: current.token, body,
       }).catch(operationRefusal)

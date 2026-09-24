@@ -640,6 +640,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       expectedAccountId: scope.accountId, agentId: scope.agentId,
       submissionId: receipt.submissionId, requestId: receipt.requestId,
       sessionKey: receipt.sessionKey, attachments: receipt.attachments,
+      custodyBindings: receipt.custodyBindings,
       proofDigest: receipt.proofDigest, selectionDigest: receipt.selectionDigest,
     })
     const latest = record(id), current = device.status()

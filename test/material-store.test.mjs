@@ -99,9 +99,12 @@ test('one click receipt survives restart and refuses a changed selection for the
     assert.equal(createHash('sha256').update(Buffer.from(initial.receipt.proofSecret, 'hex')).digest('hex').length, 64)
     assert.deepEqual(initial.receipt.attachments,
       [{ selector: a.selector, digest: a.digest, totalBytes: a.totalBytes }])
+    assert.deepEqual(initial.receipt.custodyBindings,
+      [{ selector: a.selector, custodyId: a.id, digest: a.digest, totalBytes: a.totalBytes }])
     assert.equal(initial.receipt.caseId, undefined)
     assert.equal(initial.receipt.sessionKey, 'untrusted-conversation')
-    assert.equal(JSON.stringify(initial.receipt).includes(a.id), false)
+    assert.equal(initial.receipt.version, 4)
+    assert.equal(JSON.stringify(initial.attachments).includes(a.id), false)
     const reopened = openMaterialStore(root, identityFor(), { create: false })
     assert.deepEqual(reopened.submitSelectedSet([a.uiHandle], context).receipt,
       initial.receipt)
