@@ -31,6 +31,7 @@ import { createDevicesGateway } from './support/local-devices-gateway.mjs'
 const sha256Hex = (value) => createHash('sha256').update(String(value)).digest('hex')
 
 const ECHO = resolve(import.meta.dirname, 'support', 'echo-role.mjs')
+const TASK_AGENT = resolve(import.meta.dirname, 'support', 'task-agent.mjs')
 const ORPHAN_PARENT = resolve(import.meta.dirname, 'support', 'orphan-parent.mjs')
 const KEY = 'manager-instance-key'
 const AGENTS = ['agent-alpha', 'agent-beta', 'agent-gamma']
@@ -90,6 +91,53 @@ async function addInstance(manager, name, { agentId, exit = false, mode = 'local
 
 const childEvents = (manager, id, src) => manager.instances.hosts.get(id).host.events().filter((row) => row.src === src)
 const observedEnv = (manager, id, src) => childEvents(manager, id, src).find((row) => row.observed !== undefined)?.observed
+
+test('managed attachment registers its durable selection with the device before Agent forwarding', async (t) => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const instance = await addInstance(manager, 'Material task', { agentId: 'agent-alpha' })
+    const taskLog = join(instance.directory, 'tasks.jsonl')
+    const config = loadInstanceConfig(instance.directory)
+    config.paths.agent = TASK_AGENT
+    config.agent.env = { ...config.agent.env, RULITH_TEST_AGENT_ID: 'agent-alpha',
+      RULITH_TEST_TASK_LOG: taskLog }
+    saveInstanceConfig(instance.directory, config)
+    assert.equal((await manager.instances.start(instance.id)).started, true)
+    const url = new URL((await manager.instances.open(instance.id)).url)
+    const call = async (path, body) => {
+      const response = await fetch(url.origin + path, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k'),
+          origin: url.origin }, body: JSON.stringify(body) })
+      return { status: response.status, body: await response.json() }
+    }
+    const added = await call('/materials', { name: 'private.txt', mediaType: 'text/plain',
+      bytes: Buffer.from('PRIVATE-BYTES').toString('base64') })
+    assert.equal(added.status, 200, JSON.stringify(added.body))
+    const submission = { text: 'read this', requestId: 'managed-click-1234', sessionKey: 'ctx-one',
+      caseId: 'model-hint-only', attachments: [added.body.material.id] }
+    gateway.failNext('/local-devices/material-submissions')
+    const blocked = await call('/cases', submission)
+    assert.equal(blocked.status, 503)
+    assert.equal(blocked.body.errorCode, 'material_registration_unconfirmed')
+    const tasks = () => existsSync(taskLog) ? readFileSync(taskLog, 'utf8').trim().split('\n')
+      .filter(Boolean).map(line => JSON.parse(line)).filter(row => row.kind === 'task') : []
+    assert.equal(tasks().length, 0, 'an unconfirmed registration cannot start an Agent task')
+    const accepted = await call('/cases', submission)
+    assert.equal(accepted.status, 202, JSON.stringify(accepted.body))
+    assert.equal(tasks().length, 1)
+    const sent = gateway.requests.filter(row => row.path === '/local-devices/material-submissions')
+    assert.equal(sent.length, 2)
+    assert.deepEqual(sent[0].body, sent[1].body, 'retry must use the elected Host receipt')
+    assert.equal(sent[1].body.agentId, 'agent-alpha')
+    assert.equal(sent[1].body.submissionId, accepted.body.submissionReceipt.submissionId)
+    assert.deepEqual(Object.keys(sent[1].body).sort(), ['agentId', 'attachments', 'requestId', 'sessionKey', 'submissionId'])
+    assert.doesNotMatch(JSON.stringify(sent), /PRIVATE-BYTES|model-hint-only|custodyId/u)
+    assert.doesNotMatch(JSON.stringify(tasks()), new RegExp(manager.device.peek().token, 'u'))
+    gateway.disableAgent('agent-alpha')
+    const denied = await call('/cases', { ...submission, requestId: 'managed-click-5678' })
+    assert.equal(denied.status, 503)
+    assert.equal(tasks().length, 1, 'a revoked Agent scope must not forward another task')
+  })
+})
 
 /** Raw request, so a hostile `Host` header can be sent; fetch forbids overriding it. */
 function rawGet(port, path, headers = {}) {

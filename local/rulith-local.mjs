@@ -235,6 +235,7 @@ export function createLocalHost({
   startConfirmMs = START_CONFIRM_MS, autoStart = true,
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
   materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
+  registerMaterialSubmission,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -997,6 +998,13 @@ export function createLocalHost({
         try {
           selected = materials.attachments(body.attachments, { sessionKey, requestId: body.requestId })
         } catch (error) { return materialFailure(res, error) }
+        if (selected.receipt && registerMaterialSubmission) {
+          try { await registerMaterialSubmission(selected.receipt) }
+          catch (error) {
+            return void json(res, 503, { ok: false, errorCode: 'material_registration_unconfirmed',
+              teaching: `The material submission was kept locally but not confirmed by the account service. Retry this exact request before starting the Agent task. ${String(error?.message ?? error)}` })
+          }
+        }
         // A person may attach files and write nothing. The host then says what was attached and
         // tells the model to go and find an authorized Action that reads it — it does not read
         // the files, and it puts no part of their content into the message.

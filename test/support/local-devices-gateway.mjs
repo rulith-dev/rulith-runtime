@@ -64,6 +64,7 @@ export function createDevicesGateway({
   /** Per-Agent Boards, so two instances drive genuinely separate state. */
   const boards = new Map()
   const sessions = new Map()
+  const materialSubmissions = new Map()
   const enabled = new Map(agents.map((row) => [row.id, { ...row, enabled: true }]))
   /** Paths whose next request answers 503, for the recoverable-delivery arms. */
   const faults = new Map()
@@ -133,6 +134,31 @@ export function createDevicesGateway({
     'GET /local-devices/context': (_body, { bearer }) => {
       const row = grantUsable(deviceByToken(bearer))
       return { deviceId: row.id, account: { id: row.accountId, name: accountName }, agents: grantedAgents(row), expiresAt: row.expiresAt }
+    },
+    'POST /local-devices/material-submissions': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'submissionId', 'requestId', 'sessionKey', 'attachments'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId) || !grantedAgents(device).some(row => row.id === body.agentId)) {
+        refuse(403, 'That Agent is outside this device authorization.', 'agent_out_of_scope')
+      }
+      if (!Array.isArray(body.attachments) || body.attachments.length === 0
+        || body.attachments.some(row => {
+          onlyFields(row, ['selector', 'digest', 'totalBytes'])
+          return !/^mat_[0-9a-f]{32}$/.test(row.selector)
+            || !/^sha256:[0-9a-f]{64}$/.test(row.digest)
+            || !Number.isSafeInteger(row.totalBytes) || row.totalBytes <= 0
+        })) refuse(400, 'Invalid material submission.', 'bad_command')
+      const key = `${device.id}:${body.agentId}:${body.requestId}`
+      const existing = materialSubmissions.get(key)
+      if (existing !== undefined) {
+        if (JSON.stringify(existing.body) !== JSON.stringify(body)) refuse(409, 'Submission identity changed.', 'request_conflict')
+        return existing.reply
+      }
+      const reply = { deviceId: device.id, agentId: body.agentId, submissionId: body.submissionId,
+        requestId: body.requestId, sessionKey: body.sessionKey, registeredAt: new Date().toISOString(), state: 'registered',
+        attachments: body.attachments.map(row => ({ ...row })) }
+      materialSubmissions.set(key, { body: structuredClone(body), reply })
+      return reply
     },
     'POST /local-devices/pair': (body, { bearer }) => {
       onlyFields(body, ['pairingId', 'deviceSecret', 'agentId', 'replaceAgentToken'])
@@ -364,6 +390,7 @@ export function createDevicesGateway({
 
   return {
     requests,
+    materialSubmissions,
     devices,
     pairings,
     agentTokens,

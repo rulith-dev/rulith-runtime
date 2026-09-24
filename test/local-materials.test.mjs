@@ -46,10 +46,11 @@ const freePort = () => new Promise((ready) => {
 
 // Another test process can claim the probed port before the child binds it. Retry only
 // that specific startup failure; every other failure should retain its original trace.
-async function startAgentHost(configFile, config, roles) {
+async function startAgentHost(configFile, config, roles, registerMaterialSubmission) {
   for (let attempt = 0; attempt < 3; attempt++) {
     config.agent.env.RULITH_SERVE_PORT = String(await freePort())
-    const host = createLocalHost({ configFile, config, roles, port: 0, key: KEY, autoStart: true, startConfirmMs: 8000 })
+    const host = createLocalHost({ configFile, config, roles, port: 0, key: KEY, autoStart: true,
+      startConfirmMs: 8000, registerMaterialSubmission })
     let handedOff = false
     try {
       await host.listen()
@@ -98,6 +99,7 @@ const raw = (port, path, { method = 'GET', headers = {}, body } = {}) => new Pro
  */
 async function withHost(run, {
   withAgent = false, custodyReply, modelUrl = REMOTE_MODEL, omitModelUrl = false, token = AGENT_TOKEN,
+  registerMaterialSubmission,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-materials-'))
   const configFile = join(dir, 'local.json')
@@ -125,7 +127,7 @@ async function withHost(run, {
   }
   let host
   try {
-    host = withAgent ? await startAgentHost(configFile, config, roles) : createLocalHost({
+    host = withAgent ? await startAgentHost(configFile, config, roles, registerMaterialSubmission) : createLocalHost({
       configFile, config, roles, port: 0, key: KEY, autoStart: withWorker, startConfirmMs: 8000,
     })
     if (!withAgent) await host.listen()
@@ -338,6 +340,38 @@ test('a /cases retry recovers its durable click receipt and a changed attachment
       assert.doesNotMatch(JSON.stringify(task.body), /first secret|second secret/u)
     }
   }, { withAgent: true })
+})
+
+test('managed material registration blocks Agent forwarding until the durable click is confirmed', async () => {
+  const seen = []
+  let available = false
+  await withHost(async ({ call, tasks, materialRoot }) => {
+    const added = (await (await add(call, { name: 'private.txt', mediaType: 'text/plain',
+      text: 'SECRET-CONTENT-MARKER' })).json()).material
+    const body = { text: 'read', requestId: 'registration-retry-1', sessionKey: 'ctx-1',
+      caseId: 'untrusted-case', attachments: [added.id] }
+    const send = () => call('/cases', { method: 'POST', body: JSON.stringify(body) })
+    const denied = await send()
+    assert.equal(denied.status, 503)
+    assert.equal((await denied.json()).errorCode, 'material_registration_unconfirmed')
+    assert.equal(tasks().filter(row => row.kind === 'task').length, 0)
+    assert.equal(seen.length, 1)
+    assert.equal(existsSync(join(materialRoot, 'submissions')), true)
+    available = true
+    const accepted = await (await send()).json()
+    assert.equal(accepted.ok, true)
+    assert.equal(tasks().filter(row => row.kind === 'task').length, 1)
+    assert.equal(seen.length, 2)
+    assert.deepEqual(seen[0], seen[1], 'retry must register the same durable submission')
+    assert.equal(seen[0].agent, AGENT_ID)
+    assert.equal(seen[0].caseId, undefined)
+    assert.deepEqual(Object.keys(seen[0].attachments[0]).sort(), ['digest', 'selector', 'totalBytes'])
+    assert.doesNotMatch(JSON.stringify(seen), /SECRET-CONTENT-MARKER|untrusted-case|custodyId/u)
+    assert.equal(accepted.submissionReceipt.submissionId, seen[0].submissionId)
+  }, { withAgent: true, registerMaterialSubmission: async receipt => {
+    seen.push(structuredClone(receipt))
+    if (!available) throw new Error('Registration unavailable')
+  } })
 })
 
 test('an attachment click needs the caller request id that the Agent will receive', async () => {

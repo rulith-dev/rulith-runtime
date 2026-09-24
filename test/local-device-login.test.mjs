@@ -289,6 +289,86 @@ test('one denied Agent does not sign this computer out', async (t) => {
   })
 })
 
+test('material registration uses the device grant, preserves exact retry identity, and refuses an Agent outside scope', async (t) => {
+  await withManager(t, async ({ gateway, call, manager }) => {
+    await signIn(gateway, call, ['agent-alpha'])
+    const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
+      submissionId: 'sub_' + 'a'.repeat(32), requestId: 'click-request-1234', sessionKey: 'ctx-1',
+      attachments: [{ selector: 'mat_' + 'b'.repeat(32), digest: 'sha256:' + 'c'.repeat(64), totalBytes: 9 }] }
+    const [first, second] = await Promise.all([
+      manager.device.registerMaterialSubmission(body), manager.device.registerMaterialSubmission(body),
+    ])
+    assert.deepEqual(first, second)
+    assert.equal(gateway.materialSubmissions.size, 1)
+    gateway.dropResponseAfterEffect('/local-devices/material-submissions')
+    const uncertain = await manager.device.registerMaterialSubmission({ ...body,
+      submissionId: 'sub_' + 'd'.repeat(32), requestId: 'another-click-1234' }).catch(error => error)
+    assert.ok(uncertain instanceof Error)
+    const repeated = await manager.device.registerMaterialSubmission({ ...body,
+      submissionId: 'sub_' + 'd'.repeat(32), requestId: 'another-click-1234' })
+    assert.equal(repeated.state, 'registered')
+    assert.equal(gateway.materialSubmissions.size, 2)
+    const sent = gateway.requests.filter(row => row.path === '/local-devices/material-submissions')
+    assert.ok(sent.every(row => row.origin === undefined && row.query === ''))
+    assert.deepEqual(Object.keys(sent[0].body).sort(), ['agentId', 'attachments', 'requestId', 'sessionKey', 'submissionId'])
+    assert.doesNotMatch(JSON.stringify(sent), /custodyId|caseId|fileBytes|SECRET-CONTENT-MARKER/u)
+    const denied = await manager.device.registerMaterialSubmission({ ...body, agentId: 'agent-beta' }).catch(error => error)
+    assert.ok(denied instanceof Error)
+    assert.equal(manager.device.status().state, 'linked')
+  })
+})
+
+test('a device account change while registration is in flight cannot confirm the old click', async (t) => {
+  await withManager(t, async ({ gateway, call, manager, root }) => {
+    await signIn(gateway, call, ['agent-alpha'])
+    const originalFetch = globalThis.fetch
+    let release, entered
+    const waiting = new Promise(resolve => { release = resolve })
+    const reached = new Promise(resolve => { entered = resolve })
+    globalThis.fetch = async (...args) => {
+      const response = await originalFetch(...args)
+      if (String(args[0]) === gateway.origin + '/local-devices/material-submissions') {
+        entered(); await waiting
+      }
+      return response
+    }
+    const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
+      submissionId: 'sub_' + 'e'.repeat(32), requestId: 'account-switch-1234', sessionKey: 'ctx-1',
+      attachments: [{ selector: 'mat_' + 'f'.repeat(32), digest: 'sha256:' + 'a'.repeat(64), totalBytes: 1 }] }
+    try {
+      const pending = manager.device.registerMaterialSubmission(body).catch(error => error)
+      await reached
+      const file = join(root, 'device.json')
+      const current = JSON.parse(readFileSync(file, 'utf8'))
+      writeFileSync(file, JSON.stringify({ ...current, account: { ...current.account, id: 'another-account' } }))
+      release()
+      assert.match((await pending).message, /account or Agent changed/i)
+    } finally { release(); globalThis.fetch = originalFetch }
+  })
+})
+
+test('material registration rejects a reply for another conversation', async (t) => {
+  await withManager(t, async ({ gateway, call, manager }) => {
+    await signIn(gateway, call, ['agent-alpha'])
+    const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
+      submissionId: 'sub_' + '1'.repeat(32), requestId: 'mismatched-session-1234', sessionKey: 'ctx-original',
+      attachments: [{ selector: 'mat_' + '2'.repeat(32), digest: 'sha256:' + '3'.repeat(64), totalBytes: 5 }] }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (...args) => {
+      const response = await originalFetch(...args)
+      if (String(args[0]) !== gateway.origin + '/local-devices/material-submissions') return response
+      const reply = await response.json()
+      return new Response(JSON.stringify({ ...reply, sessionKey: 'ctx-other' }), {
+        status: response.status, headers: { 'content-type': 'application/json' },
+      })
+    }
+    try {
+      const refused = await manager.device.registerMaterialSubmission(body).catch(error => error)
+      assert.match(refused.message, /did not confirm this exact material submission/i)
+    } finally { globalThis.fetch = originalFetch }
+  })
+})
+
 test('a device-level refusal of an operation does make the grant unusable', async (t) => {
   await withManager(t, async ({ gateway, call, manager }) => {
     const deviceId = await signIn(gateway, call, ['agent-alpha'])

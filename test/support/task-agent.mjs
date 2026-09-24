@@ -38,7 +38,8 @@ server.listen(PORT, '127.0.0.1', () => {
     kind: 'start',
     environment: Object.fromEntries(Object.entries(process.env).filter(([name]) => /^RULITH_/.test(name))),
   })
-  process.send?.({ protocol: 'rulith-local-event', event: { type: 'start', t: Date.now(), agentId: 'agent-test-1' } })
+  process.send?.({ protocol: 'rulith-local-event', event: { type: 'start', t: Date.now(),
+    agentId: process.env.RULITH_TEST_AGENT_ID ?? 'agent-test-1' } })
 })
 const beat = setInterval(() => {}, 1000)
 const leave = () => { clearInterval(beat); server.close(() => process.exit(0)) }

@@ -484,6 +484,38 @@ export function createDeviceClient({ root } = {}) {
       if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
       return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
     },
+    /** Register one durable Host selection; the Agent and browser never receive this bearer. */
+    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments }) => {
+      const current = linked()
+      if (text(expectedAccountId) !== text(current.account?.id)
+        || !current.agents?.some(row => row.id === agentId)) {
+        throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+      }
+      const body = { agentId, submissionId, requestId, sessionKey, attachments }
+      const reply = await call(current.origin, '/local-devices/material-submissions', {
+        bearer: current.token, body,
+      }).catch(operationRefusal)
+      const latest = linked()
+      if (latest.token !== current.token || latest.origin !== current.origin
+        || latest.deviceId !== current.deviceId || text(latest.account?.id) !== expectedAccountId
+        || !latest.agents?.some(row => row.id === agentId)) {
+        throw new Error('The device account or Agent changed before material registration was confirmed.')
+      }
+      if (reply.state !== 'registered' || reply.deviceId !== current.deviceId
+        || reply.agentId !== agentId || reply.submissionId !== submissionId
+        || reply.requestId !== requestId || reply.sessionKey !== sessionKey
+        || typeof reply.registeredAt !== 'string' || !Number.isFinite(Date.parse(reply.registeredAt))
+        || !Array.isArray(reply.attachments)
+        || reply.attachments.length !== attachments.length
+        || reply.attachments.some((row, index) => row === null || typeof row !== 'object'
+          || Array.isArray(row) || row.selector !== attachments[index]?.selector
+          || row?.digest !== attachments[index]?.digest
+          || row?.totalBytes !== attachments[index]?.totalBytes
+          || Object.keys(row).length !== 3)) {
+        throw new Error('The account service did not confirm this exact material submission.')
+      }
+      return reply
+    },
 
     /**
      * Remember what an instance's pairing produced, so a later revoke names the same thing.

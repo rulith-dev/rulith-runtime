@@ -625,6 +625,34 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     return { agentId }
   }
 
+  /** The manager alone spends its device grant for an exact, already durable Host click. */
+  const registerMaterialSubmissionFor = (id) => async (receipt) => {
+    if (phase !== 'ready') throw new Error(phaseTeaching())
+    const row = record(id), grant = device.status()
+    const refusal = grantRefusal(id, { requirePaired: true, grant, row })
+    if (refusal !== null || receipt?.agent !== row.agentId
+      || hosts.get(id)?.host.agentId !== row.agentId) {
+      throw new Error(refusal ?? 'The submitted material belongs to a different Agent or instance.')
+    }
+    const scope = { origin: row.origin, accountId: row.accountId, agentId: row.agentId,
+      connectionId: row.connectionId, deviceId: grant.deviceId }
+    const answer = await device.registerMaterialSubmission({
+      expectedAccountId: scope.accountId, agentId: scope.agentId,
+      submissionId: receipt.submissionId, requestId: receipt.requestId,
+      sessionKey: receipt.sessionKey, attachments: receipt.attachments,
+    })
+    const latest = record(id), current = device.status()
+    if (phase !== 'ready' || Object.entries(scope).some(([field, value]) =>
+      (field === 'deviceId' ? current.deviceId : field === 'accountId' ? latest.accountId
+        : latest[field]) !== value)
+      || current.origin !== scope.origin || text(current.account?.id) !== scope.accountId
+      || grantRefusal(id, { requirePaired: true, grant: current, row: latest }) !== null
+      || hosts.get(id)?.host.agentId !== scope.agentId) {
+      throw new Error('The instance, account, or Agent changed before material registration completed.')
+    }
+    return answer
+  }
+
   /**
    * Start this instance's loopback host, or return the one already running.
    *
@@ -670,6 +698,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       autoStart: false, isolateEnvironment: true,
       ...(row.origin && row.accountId && row.agentId ? { conversationOwner: { origin: row.origin, accountId: row.accountId, agentId: row.agentId } } : {}),
       setupApprover: device === undefined ? undefined : approverFor(id),
+      registerMaterialSubmission: registerMaterialSubmissionFor(id),
       managedPolicy: policyFor(id),
       managedCallToken,
       protectedPaths: [registry.root],

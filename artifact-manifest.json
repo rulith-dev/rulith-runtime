@@ -63,7 +63,7 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "54a195175b64889dd8edd1d23e1f983cabd1a327c9661ded7c869bcf8cb994ca"
+      "sha256": "370e69fd12464a7b6c39ececa899f5f39d0f5d433621975afe5d28c571091744"
     },
     "local/material-service.mjs": {
       "sha256": "c792c11005480860e1656fa49b257eedb55d453cc3574687a52a707f2479fa8c"
@@ -81,10 +81,10 @@
       "sha256": "463c14bd288350a5e85d8b0dfb5e213f9ff75976c5a536e2330a735e31bab859"
     },
     "local/device-client.mjs": {
-      "sha256": "7ee43fa8cb2a4b453358319b6841f51045cf80109f6eb97b27e2665c5c575b43"
+      "sha256": "f6d307d6a9ed3a8a4d74654fb5eb50bff96edf0a4b1f61891d2de2419f761c30"
     },
     "local/instance-manager.mjs": {
-      "sha256": "f7d818fbcf0edbfb370978e2dfb24418be5b40d3bded08c0ea51bc1e84af5fe6"
+      "sha256": "21e3374bad122b8f62e38a17e6cbc999e91adf01ec25a53ca96ae6d81e3137ff"
     },
     "local/manager-server.mjs": {
       "sha256": "c21690c45455a4450e4953c620bfbbf69c3b095a4f33545f2762a63740c0a25b"
