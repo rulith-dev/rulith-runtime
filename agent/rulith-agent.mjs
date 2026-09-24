@@ -1725,6 +1725,13 @@ async function callTool(ctx, name, input, { claim = false } = {}) {
       text: refusal('call_gate_open', teaching), authoritative: false, view: undefined, refusedLocally: true }
   }
   const identity = claim ? claimIdentity() : newSubmission(name, input)
+  // This Host proof is private to the current attached task and its first create-form
+  // OpenCase RPC. It is never an argument, result, event, transcript or durable call key.
+  let materialTaskProof
+  if (name === 'OpenCase' && !claim && !Object.hasOwn(input, 'caseId') && ctx.materialTaskProof) {
+    if (!ctx.materialTaskProofRequestId) ctx.materialTaskProofRequestId = identity.requestId
+    if (ctx.materialTaskProofRequestId === identity.requestId) materialTaskProof = ctx.materialTaskProof
+  }
   let result
   let text = ''
   let handoffText
@@ -1739,7 +1746,9 @@ async function callTool(ctx, name, input, { claim = false } = {}) {
     const answer = await mcpRpc('tools/call', { name, arguments: input }, {
       id: identity.requestId,
       ...(negotiate ? { headers: { [LOCAL_DELIVERY_HEADER]: LOCAL_DELIVERY_PROTOCOL,
-        'x-rulith-local-custodian': MATERIALS_CONNECTION } } : {}),
+        'x-rulith-local-custodian': MATERIALS_CONNECTION,
+        ...(materialTaskProof ? { 'x-rulith-material-task-proof': materialTaskProof } : {}) } }
+        : materialTaskProof ? { headers: { 'x-rulith-material-task-proof': materialTaskProof } } : {}),
     })
     // Host metadata and model content are two channels. The text is the authority's own
     // JSON; `_meta` never enters it.
@@ -3525,6 +3534,7 @@ if (SERVE) {
          * grants anything, and this Agent has not read these files and does not claim to.
          */
         let attachments = []
+        const materialTaskProof = req.headers['x-rulith-material-task-proof']
         try {
           const b = JSON.parse(raw || '{}')
           if (b.requestId !== undefined && (typeof b.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(b.requestId))) return deny('requestId must be a short opaque identifier (16–100 letters, digits, _ or -).', 400)
@@ -3558,6 +3568,11 @@ if (SERVE) {
         if (text === '') return deny('Missing text. Expected {"text":"process this task","caseType":"exploration"}.', 400)
         if (requestedCaseIdValue !== undefined && typeof requestedCaseIdValue !== 'string') return deny('caseId must be a string copied exactly from /runs or Console.', 400)
         requestedCaseId = String(requestedCaseIdValue ?? '').trim()
+        if (attachments.length > 0 && requestedCaseId !== '') return deny('Attachments can start a new Case only; caseId focus cannot carry a material task proof.', 400)
+        if (attachments.length > 0 && (typeof materialTaskProof !== 'string' || !/^[0-9a-f]{64}$/.test(materialTaskProof))) {
+          return deny('Attached tasks require one private material task proof from the Rulith host.', 400)
+        }
+        if (attachments.length === 0 && materialTaskProof !== undefined) return deny('A material task proof requires attachments.', 400)
         if (!/^[a-z][a-z0-9_-]{1,63}$/.test(caseType)) return deny('caseType must be a 2-64 character lowercase identifier from the Agent Case Type catalog.', 400)
         if (businessKey !== undefined && (businessKey === null || typeof businessKey !== 'object' || Array.isArray(businessKey)
           || Object.keys(businessKey).length === 0 || !Object.values(businessKey).every((v) => typeof v === 'string'
@@ -3566,7 +3581,12 @@ if (SERVE) {
         }
         // Missing keys start independent conversations. The caller receives the generated
         // key and must echo it on follow-ups; unrelated clients never share a default Case.
-        const fingerprint = createHash('sha256').update(JSON.stringify({ text, sessionKey, caseType, caseTypeGiven, businessKey, requestedCaseId, attachments })).digest('hex')
+        // Bind an exact request-id retry to the private proof without saving the proof itself.
+        // The fingerprint is stored, but neither its input nor a separate proof digest is a turn.
+        const proofDigest = materialTaskProof === undefined ? undefined
+          : createHash('sha256').update(Buffer.from(materialTaskProof, 'hex')).digest('hex')
+        const fingerprint = createHash('sha256').update(JSON.stringify({ text, sessionKey, caseType,
+          caseTypeGiven, businessKey, requestedCaseId, attachments, proofDigest })).digest('hex')
         try {
           const previous = conversationStore?.find(requestId, fingerprint)
           if (previous) { res.writeHead(previous.ok ? 202 : 409, { 'content-type': 'application/json' }); res.end(JSON.stringify(previous)); return }
@@ -3585,7 +3605,8 @@ if (SERVE) {
           return deny('Earlier messages were used with a different model service. Confirm the current destination before sending this conversation history.', 409, { state: 'model-confirmation', modelService: MODEL_DESTINATION })
         }
         const restoredMessages = !sessions.has(sessionKey) ? conversationStore?.messages(sessionKey, KEEP_MESSAGES) : undefined
-        const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments, modelService: MODEL_DESTINATION }
+        const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments, modelService: MODEL_DESTINATION,
+          ...(materialTaskProof ? { materialTaskProof } : {}) }
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0) + 1
         const receipt = { ok: true, id: item.id, queued: depth, sessionKey, teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }
         try { conversationStore?.accept(item, receipt, requestId, fingerprint) }
@@ -3655,6 +3676,8 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     let outcome = 'error'
     try {
       conversationStore?.start(item.id)
+      slot.materialTaskProof = item.materialTaskProof
+      slot.materialTaskProofRequestId = undefined
       const seg = await runCaseTurn(slot, item.text, {
         policy: 'return',
         caseType: item.caseType,
@@ -3693,6 +3716,8 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       }
       log(`✗ ${note}`)
     } finally {
+      delete slot.materialTaskProof
+      delete slot.materialTaskProofRequestId
       // Bookkeeping lives in `finally`: nothing above may pin this slot as busy forever.
       // That client could never be served again, and the symptom — "202 on submit, no
       // result ever" — has no log line that explains it.

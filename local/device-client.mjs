@@ -485,13 +485,14 @@ export function createDeviceClient({ root } = {}) {
       return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
     },
     /** Register one durable Host selection; the Agent and browser never receive this bearer. */
-    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments }) => {
+    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, proofDigest }) => {
       const current = linked()
       if (text(expectedAccountId) !== text(current.account?.id)
         || !current.agents?.some(row => row.id === agentId)) {
         throw new Error('The selected Agent is no longer enabled for this signed-in account.')
       }
-      const body = { agentId, submissionId, requestId, sessionKey, attachments }
+      if (!/^sha256:[0-9a-f]{64}$/.test(proofDigest ?? '')) throw new Error('Material task proof digest is missing or malformed.')
+      const body = { agentId, submissionId, requestId, sessionKey, attachments, proofDigest }
       const reply = await call(current.origin, '/local-devices/material-submissions', {
         bearer: current.token, body,
       }).catch(operationRefusal)
@@ -504,6 +505,7 @@ export function createDeviceClient({ root } = {}) {
       if (reply.state !== 'registered' || reply.deviceId !== current.deviceId
         || reply.agentId !== agentId || reply.submissionId !== submissionId
         || reply.requestId !== requestId || reply.sessionKey !== sessionKey
+        || reply.proofDigest !== proofDigest
         || typeof reply.registeredAt !== 'string' || !Number.isFinite(Date.parse(reply.registeredAt))
         || !Array.isArray(reply.attachments)
         || reply.attachments.length !== attachments.length

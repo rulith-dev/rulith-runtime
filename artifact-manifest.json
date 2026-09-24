@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "62f79904a6d69a51caac48e0f97a48f23ffa3d816a9629316669fe2595cb5e7d"
+      "sha256": "de5be4d461fbaa5e4d6d49f2b74f459d496cbe99b7167aff5af76e68ecc53eea"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -42,7 +42,7 @@
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "worker/material-store.mjs": {
-      "sha256": "b6ae567076feb5a780a8e577283efb14f648147c7f2ea731f7fa52f4a144b00b"
+      "sha256": "39c3583dbbe0b55c4acf14365016d6ddcbc7c491443cbe6fb2c0dede715a10e1"
     },
     "worker/material-transport.mjs": {
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
@@ -63,7 +63,7 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "370e69fd12464a7b6c39ececa899f5f39d0f5d433621975afe5d28c571091744"
+      "sha256": "d711a850990a96f13adf076e9541ced8cf471b72ac8244b9726825ef465b105b"
     },
     "local/material-service.mjs": {
       "sha256": "c792c11005480860e1656fa49b257eedb55d453cc3574687a52a707f2479fa8c"
@@ -81,10 +81,10 @@
       "sha256": "463c14bd288350a5e85d8b0dfb5e213f9ff75976c5a536e2330a735e31bab859"
     },
     "local/device-client.mjs": {
-      "sha256": "f6d307d6a9ed3a8a4d74654fb5eb50bff96edf0a4b1f61891d2de2419f761c30"
+      "sha256": "edda2ab514df58d31240c64cfed5c9657c429ed1a0a45fecf837a48383566278"
     },
     "local/instance-manager.mjs": {
-      "sha256": "21e3374bad122b8f62e38a17e6cbc999e91adf01ec25a53ca96ae6d81e3137ff"
+      "sha256": "1cde272366df161a291123411387d5548483dd0f78df03afd84f09e1356d8a31"
     },
     "local/manager-server.mjs": {
       "sha256": "c21690c45455a4450e4953c620bfbbf69c3b095a4f33545f2762a63740c0a25b"
@@ -96,7 +96,7 @@
       "sha256": "6a9c613514d4a59d97fecff52b54648454e9e89de9bd5fe9342815de08d16df3"
     },
     "docs/local-materials.md": {
-      "sha256": "85164d665c44c15f7be0d14056d4e90d7d5aff799b959e8f4474af4ac8d2c117"
+      "sha256": "78d834955f51ecf7db384408600ae42481b951a0a96704f7d284a8921fabba12"
     },
     "local/markdown.mjs": {
       "sha256": "dda52e94ccf9957fdb12538d0a29b7e2261826df4c55164de5a89c10a3f62b23"

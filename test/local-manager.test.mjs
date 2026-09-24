@@ -113,7 +113,7 @@ test('managed attachment registers its durable selection with the device before 
       bytes: Buffer.from('PRIVATE-BYTES').toString('base64') })
     assert.equal(added.status, 200, JSON.stringify(added.body))
     const submission = { text: 'read this', requestId: 'managed-click-1234', sessionKey: 'ctx-one',
-      caseId: 'model-hint-only', attachments: [added.body.material.id] }
+      attachments: [added.body.material.id] }
     gateway.failNext('/local-devices/material-submissions')
     const blocked = await call('/cases', submission)
     assert.equal(blocked.status, 503)
@@ -129,8 +129,9 @@ test('managed attachment registers its durable selection with the device before 
     assert.deepEqual(sent[0].body, sent[1].body, 'retry must use the elected Host receipt')
     assert.equal(sent[1].body.agentId, 'agent-alpha')
     assert.equal(sent[1].body.submissionId, accepted.body.submissionReceipt.submissionId)
-    assert.deepEqual(Object.keys(sent[1].body).sort(), ['agentId', 'attachments', 'requestId', 'sessionKey', 'submissionId'])
-    assert.doesNotMatch(JSON.stringify(sent), /PRIVATE-BYTES|model-hint-only|custodyId/u)
+    assert.deepEqual(Object.keys(sent[1].body).sort(), ['agentId', 'attachments', 'proofDigest', 'requestId', 'sessionKey', 'submissionId'])
+    assert.match(sent[1].body.proofDigest, /^sha256:[0-9a-f]{64}$/u)
+    assert.doesNotMatch(JSON.stringify(sent), /PRIVATE-BYTES|custodyId|proofSecret/u)
     assert.doesNotMatch(JSON.stringify(tasks()), new RegExp(manager.device.peek().token, 'u'))
     gateway.disableAgent('agent-alpha')
     const denied = await call('/cases', { ...submission, requestId: 'managed-click-5678' })

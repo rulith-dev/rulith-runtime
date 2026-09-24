@@ -416,7 +416,7 @@ export async function runAgent({
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
   protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, handoff, replaceAfter, conflictBody,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
-  serveTasks = [], waitForServeCompletion = false, waitForServeReady = false,
+  serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
   captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
 } = {}) {
   const board = gateway ?? defaultGateway()
@@ -844,12 +844,13 @@ export async function runAgent({
       await new Promise((ready) => setTimeout(ready, 25))
     }
     if (!/Task endpoint ready/.test(stdout)) throw new Error(`serve endpoint did not become ready:\n${stdout}\n${stderr}`)
-    for (const task of serveTasks) {
+    for (const [taskIndex, task] of serveTasks.entries()) {
       const resolvedTask = typeof task === 'function' ? task(serveResponses) : task
       const body = typeof resolvedTask === 'string' ? { text: resolvedTask } : resolvedTask
       const response = await fetch(`http://127.0.0.1:${env.RULITH_SERVE_PORT}/task`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-rulith-serve': String(env.RULITH_SERVE_KEY ?? '') },
+        headers: { 'content-type': 'application/json', 'x-rulith-serve': String(env.RULITH_SERVE_KEY ?? ''),
+          ...(typeof serveTaskHeaders === 'function' ? serveTaskHeaders(taskIndex) : serveTaskHeaders) },
         body: JSON.stringify(body),
       })
       serveStatuses.push(response.status)

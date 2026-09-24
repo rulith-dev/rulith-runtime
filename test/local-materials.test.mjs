@@ -15,6 +15,7 @@
  * `worker-material-delivery.test.mjs`.
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -99,7 +100,12 @@ const raw = (port, path, { method = 'GET', headers = {}, body } = {}) => new Pro
  */
 async function withHost(run, {
   withAgent = false, custodyReply, modelUrl = REMOTE_MODEL, omitModelUrl = false, token = AGENT_TOKEN,
-  registerMaterialSubmission,
+  registerMaterialSubmission = async receipt => ({
+    state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
+    requestId: receipt.requestId, sessionKey: receipt.sessionKey,
+    proofDigest: receipt.proofDigest, attachments: receipt.attachments,
+    registeredAt: new Date().toISOString(),
+  }),
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-materials-'))
   const configFile = join(dir, 'local.json')
@@ -312,8 +318,8 @@ test('a /cases retry recovers its durable click receipt and a changed attachment
   await withHost(async ({ call, tasks, materialRoot, configFile }) => {
     const a = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'first secret' })).json()).material
     const b = (await (await add(call, { name: 'b.txt', mediaType: 'text/plain', text: 'second secret' })).json()).material
-    const send = async (attachments, caseId = 'forged-case', sessionKey = 'ctx-1') => call('/cases', { method: 'POST',
-      body: JSON.stringify({ text: 'read', requestId: 'same-click-request-1', sessionKey, caseId, attachments }) })
+    const send = async (attachments, sessionKey = 'ctx-1') => call('/cases', { method: 'POST',
+      body: JSON.stringify({ text: 'read', requestId: 'same-click-request-1', sessionKey, attachments }) })
     const first = await (await send([a.id])).json()
     assert.equal(first.ok, true)
     assert.match(first.submissionReceipt.submissionId, /^sub_[0-9a-f]{32}$/u)
@@ -321,13 +327,13 @@ test('a /cases retry recovers its durable click receipt and a changed attachment
     assert.equal(first.submissionReceipt.owner, undefined)
     assert.equal(first.submissionReceipt.attachments.length, 1)
     assert.equal(first.submissionReceipt.attachments[0].digest, a.digest)
-    assert.doesNotMatch(JSON.stringify(first.submissionReceipt), /first secret|forged-case/u)
-    const retry = await (await send([a.id], 'a-different-forged-case')).json()
+    assert.doesNotMatch(JSON.stringify(first.submissionReceipt), /first secret/u)
+    const retry = await (await send([a.id])).json()
     assert.deepEqual(retry.submissionReceipt, first.submissionReceipt)
     const refused = await send([b.id])
     assert.equal(refused.status, 400)
     assert.equal((await refused.json()).errorCode, 'material_submission_mismatch')
-    const moved = await send([a.id], 'forged-case', 'another-conversation')
+    const moved = await send([a.id], 'another-conversation')
     assert.equal(moved.status, 400)
     assert.equal((await moved.json()).errorCode, 'material_submission_mismatch')
     assert.equal(tasks().filter((entry) => entry.kind === 'task').length, 2)
@@ -348,8 +354,7 @@ test('managed material registration blocks Agent forwarding until the durable cl
   await withHost(async ({ call, tasks, materialRoot }) => {
     const added = (await (await add(call, { name: 'private.txt', mediaType: 'text/plain',
       text: 'SECRET-CONTENT-MARKER' })).json()).material
-    const body = { text: 'read', requestId: 'registration-retry-1', sessionKey: 'ctx-1',
-      caseId: 'untrusted-case', attachments: [added.id] }
+    const body = { text: 'read', requestId: 'registration-retry-1', sessionKey: 'ctx-1', attachments: [added.id] }
     const send = () => call('/cases', { method: 'POST', body: JSON.stringify(body) })
     const denied = await send()
     assert.equal(denied.status, 503)
@@ -366,12 +371,90 @@ test('managed material registration blocks Agent forwarding until the durable cl
     assert.equal(seen[0].agent, AGENT_ID)
     assert.equal(seen[0].caseId, undefined)
     assert.deepEqual(Object.keys(seen[0].attachments[0]).sort(), ['digest', 'selector', 'totalBytes'])
-    assert.doesNotMatch(JSON.stringify(seen), /SECRET-CONTENT-MARKER|untrusted-case|custodyId/u)
+    assert.doesNotMatch(JSON.stringify(seen), /SECRET-CONTENT-MARKER|custodyId|proofSecret/u)
+    assert.match(seen[0].proofDigest, /^sha256:[0-9a-f]{64}$/u)
     assert.equal(accepted.submissionReceipt.submissionId, seen[0].submissionId)
   }, { withAgent: true, registerMaterialSubmission: async receipt => {
     seen.push(structuredClone(receipt))
     if (!available) throw new Error('Registration unavailable')
+    return { state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
+      requestId: receipt.requestId, sessionKey: receipt.sessionKey, proofDigest: receipt.proofDigest,
+      attachments: receipt.attachments, registeredAt: new Date().toISOString() }
   } })
+})
+
+test('private proof crosses only the confirmed Host-to-Agent header and exact retry reuses it', async () => {
+  const registrations = []
+  await withHost(async ({ call, tasks, materialRoot, configFile, host }) => {
+    const added = (await (await add(call, { name: 'private.txt', mediaType: 'text/plain', text: 'SECRET-CONTENT-MARKER' })).json()).material
+    const body = { text: 'read', requestId: 'proof-click-request-1', attachments: [added.id] }
+    for (let retry = 0; retry < 2; retry++) {
+      const response = await call('/cases', { method: 'POST', body: JSON.stringify(body) })
+      assert.equal(response.status, 202, await response.text())
+    }
+    const forwarded = tasks().filter(row => row.kind === 'task')
+    assert.equal(forwarded.length, 2)
+    const secret = forwarded[0].materialTaskProof
+    assert.match(secret, /^[0-9a-f]{64}$/u)
+    assert.equal(forwarded[1].materialTaskProof, secret)
+    assert.equal(registrations.length, 2)
+    assert.deepEqual(registrations[0], registrations[1])
+    assert.equal(registrations[0].proofDigest,
+      'sha256:' + createHash('sha256').update(Buffer.from(secret, 'hex')).digest('hex'))
+    const { openMaterialStore } = await import('../worker/material-store.mjs')
+    const privateRecord = openMaterialStore(materialRoot, identityOf(configFile)).list()[0]
+    const stored = (await import('node:fs')).readdirSync(join(materialRoot, 'submissions'))
+      .filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(materialRoot, 'submissions', name), 'utf8')))
+    assert.equal(stored.length, 1)
+    assert.equal(stored[0].proofSecret, secret)
+    for (const observed of [registrations, forwarded.map(row => row.body), host.events()]) {
+      assert.doesNotMatch(JSON.stringify(observed), new RegExp(secret, 'u'))
+    }
+    assert.doesNotMatch(JSON.stringify(forwarded), new RegExp(privateRecord.id, 'u'))
+  }, { withAgent: true, registerMaterialSubmission: async receipt => {
+    registrations.push(structuredClone(receipt))
+    return { state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
+      requestId: receipt.requestId, sessionKey: receipt.sessionKey, proofDigest: receipt.proofDigest,
+      attachments: receipt.attachments, registeredAt: new Date().toISOString() }
+  } })
+})
+
+test('missing or mismatched proof confirmation and existing case focus never reach the Agent', async () => {
+  let registerCalls = 0
+  await withHost(async ({ call, tasks }) => {
+    const added = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'secret' })).json()).material
+    const focused = await call('/cases', { method: 'POST', body: JSON.stringify({
+      text: 'read', requestId: 'focus-click-request-1', caseId: 'CASE_1', attachments: [added.id] }) })
+    assert.equal(focused.status, 400)
+    assert.equal((await focused.json()).errorCode, 'material_case_focus_unsupported')
+    assert.equal(registerCalls, 0)
+    const unconfirmed = await call('/cases', { method: 'POST', body: JSON.stringify({
+      text: 'read', requestId: 'unconfirmed-proof-1', attachments: [added.id] }) })
+    assert.equal(unconfirmed.status, 503)
+    assert.equal((await unconfirmed.json()).errorCode, 'material_registration_unconfirmed')
+    assert.equal(registerCalls, 1)
+    assert.deepEqual(tasks().filter(row => row.kind === 'task'), [])
+  }, { withAgent: true, registerMaterialSubmission: async receipt => {
+    registerCalls++
+    return { state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
+      requestId: receipt.requestId, sessionKey: receipt.sessionKey, attachments: receipt.attachments,
+      proofDigest: 'sha256:' + '0'.repeat(64), registeredAt: new Date().toISOString() }
+  } })
+})
+
+test('a standalone Host with no registration channel refuses attachments but still forwards text', async () => {
+  await withHost(async ({ call, tasks }) => {
+    const added = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'secret' })).json()).material
+    const refused = await call('/cases', { method: 'POST', body: JSON.stringify({
+      text: 'read', requestId: 'standalone-click-1', attachments: [added.id] }) })
+    assert.equal(refused.status, 503)
+    assert.equal((await refused.json()).errorCode, 'material_registration_unconfirmed')
+    assert.equal(tasks().filter(row => row.kind === 'task').length, 0)
+    const plain = await call('/cases', { method: 'POST', body: JSON.stringify({ text: 'plain task' }) })
+    assert.equal(plain.status, 202)
+    assert.equal(tasks().filter(row => row.kind === 'task').length, 1)
+    assert.equal(tasks().find(row => row.kind === 'task').materialTaskProof, undefined)
+  }, { withAgent: true, registerMaterialSubmission: null })
 })
 
 test('an attachment click needs the caller request id that the Agent will receive', async () => {

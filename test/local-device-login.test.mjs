@@ -293,7 +293,7 @@ test('material registration uses the device grant, preserves exact retry identit
   await withManager(t, async ({ gateway, call, manager }) => {
     await signIn(gateway, call, ['agent-alpha'])
     const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
-      submissionId: 'sub_' + 'a'.repeat(32), requestId: 'click-request-1234', sessionKey: 'ctx-1',
+      submissionId: 'sub_' + 'a'.repeat(32), requestId: 'click-request-1234', sessionKey: 'ctx-1', proofDigest: 'sha256:' + 'a'.repeat(64),
       attachments: [{ selector: 'mat_' + 'b'.repeat(32), digest: 'sha256:' + 'c'.repeat(64), totalBytes: 9 }] }
     const [first, second] = await Promise.all([
       manager.device.registerMaterialSubmission(body), manager.device.registerMaterialSubmission(body),
@@ -310,7 +310,7 @@ test('material registration uses the device grant, preserves exact retry identit
     assert.equal(gateway.materialSubmissions.size, 2)
     const sent = gateway.requests.filter(row => row.path === '/local-devices/material-submissions')
     assert.ok(sent.every(row => row.origin === undefined && row.query === ''))
-    assert.deepEqual(Object.keys(sent[0].body).sort(), ['agentId', 'attachments', 'requestId', 'sessionKey', 'submissionId'])
+    assert.deepEqual(Object.keys(sent[0].body).sort(), ['agentId', 'attachments', 'proofDigest', 'requestId', 'sessionKey', 'submissionId'])
     assert.doesNotMatch(JSON.stringify(sent), /custodyId|caseId|fileBytes|SECRET-CONTENT-MARKER/u)
     const denied = await manager.device.registerMaterialSubmission({ ...body, agentId: 'agent-beta' }).catch(error => error)
     assert.ok(denied instanceof Error)
@@ -333,7 +333,7 @@ test('a device account change while registration is in flight cannot confirm the
       return response
     }
     const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
-      submissionId: 'sub_' + 'e'.repeat(32), requestId: 'account-switch-1234', sessionKey: 'ctx-1',
+      submissionId: 'sub_' + 'e'.repeat(32), requestId: 'account-switch-1234', sessionKey: 'ctx-1', proofDigest: 'sha256:' + 'b'.repeat(64),
       attachments: [{ selector: 'mat_' + 'f'.repeat(32), digest: 'sha256:' + 'a'.repeat(64), totalBytes: 1 }] }
     try {
       const pending = manager.device.registerMaterialSubmission(body).catch(error => error)
@@ -351,7 +351,7 @@ test('material registration rejects a reply for another conversation', async (t)
   await withManager(t, async ({ gateway, call, manager }) => {
     await signIn(gateway, call, ['agent-alpha'])
     const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
-      submissionId: 'sub_' + '1'.repeat(32), requestId: 'mismatched-session-1234', sessionKey: 'ctx-original',
+      submissionId: 'sub_' + '1'.repeat(32), requestId: 'mismatched-session-1234', sessionKey: 'ctx-original', proofDigest: 'sha256:' + 'c'.repeat(64),
       attachments: [{ selector: 'mat_' + '2'.repeat(32), digest: 'sha256:' + '3'.repeat(64), totalBytes: 5 }] }
     const originalFetch = globalThis.fetch
     globalThis.fetch = async (...args) => {

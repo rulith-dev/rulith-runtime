@@ -25,7 +25,7 @@
  *     for any disclosure is the Gateway's, obtained per read — see `POST /work/artifact/claim`
  *     in the material wire. Nothing in this file mints or validates a capability.
  */
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import {
   closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
   realpathSync, renameSync, rmdirSync, rmSync, writeFileSync,
@@ -597,10 +597,10 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       }))
       const receiptPath = join(submissionsDir,
         `${fingerprint('rulith-material-submission', identity.agentId, requestId)}.json`)
-      const candidate = { version: 1, submissionId: `sub_${randomUUID().replace(/-/g, '')}`,
+      const candidate = { version: 2, submissionId: `sub_${randomUUID().replace(/-/g, '')}`,
         requestId, sessionKey, agent: identity.agentId,
         owner: { profile: identity.profile, owner: identity.owner },
-        attachments, recordedAt: new Date().toISOString() }
+        attachments, proofSecret: randomBytes(32).toString('hex'), recordedAt: new Date().toISOString() }
       const temporary = join(tempDir, `submission.${randomUUID()}`)
       let elected = false
       try {
@@ -618,11 +618,12 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       let receipt = candidate
       if (!elected) {
         try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) } catch { /* refused below */ }
-        if (receipt?.version !== 1 || receipt.requestId !== requestId
+        if (receipt?.version !== 2 || receipt.requestId !== requestId
           || receipt.sessionKey !== sessionKey || receipt.agent !== identity.agentId
           || receipt.owner?.profile !== identity.profile || receipt.owner?.owner !== identity.owner
           || JSON.stringify(receipt.attachments) !== JSON.stringify(attachments)
-          || !/^sub_[0-9a-f]{32}$/.test(receipt.submissionId ?? '')) {
+          || !/^sub_[0-9a-f]{32}$/.test(receipt.submissionId ?? '')
+          || !/^[0-9a-f]{64}$/.test(receipt.proofSecret ?? '')) {
           throw new MaterialError('material_submission_mismatch',
             'This request id already names a different local material submission.')
         }

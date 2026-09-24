@@ -13,6 +13,7 @@
  * pass against a store that refused everything.
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -92,6 +93,8 @@ test('one click receipt survives restart and refuses a changed selection for the
     const context = { requestId: 'exact-request', sessionKey: 'untrusted-conversation', caseId: 'forged-case' }
     const initial = first.submitSelectedSet([a.uiHandle], context)
     assert.match(initial.receipt.submissionId, /^sub_[0-9a-f]{32}$/u)
+    assert.match(initial.receipt.proofSecret, /^[0-9a-f]{64}$/u)
+    assert.equal(createHash('sha256').update(Buffer.from(initial.receipt.proofSecret, 'hex')).digest('hex').length, 64)
     assert.deepEqual(initial.receipt.attachments,
       [{ selector: a.selector, digest: a.digest, totalBytes: a.totalBytes }])
     assert.equal(initial.receipt.caseId, undefined)
@@ -112,6 +115,7 @@ test('one click receipt survives restart and refuses a changed selection for the
     assert.equal(reopened.resolveSubmitted(a.selector).id, a.id)
     const separate = reopened.submitSelectedSet([b.uiHandle], { requestId: 'another-request', sessionKey: 'x' })
     assert.notEqual(separate.receipt.submissionId, initial.receipt.submissionId)
+    assert.notEqual(separate.receipt.proofSecret, initial.receipt.proofSecret)
     assert.equal(readdirSync(join(root, 'submissions')).filter((name) => name.endsWith('.json')).length, 2)
   })
 })

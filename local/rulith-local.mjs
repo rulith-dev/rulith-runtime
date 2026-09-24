@@ -987,6 +987,10 @@ export function createLocalHost({
           return void json(res, 400, { ok: false, errorCode: 'material_submission_invalid',
             teaching: 'Submitting an attachment needs the request id for this click.' })
         }
+        if (Array.isArray(body.attachments) && body.attachments.length > 0 && body.caseId !== undefined) {
+          return void json(res, 400, { ok: false, errorCode: 'material_case_focus_unsupported',
+            teaching: 'Attachments can start a new Case only; an existing caseId cannot receive this task proof.' })
+        }
         const sessionKey = String(body.sessionKey ?? '').trim() || (body.requestId
           ? 'ctx-' + createHash('sha256').update(String(body.requestId)).digest('hex').slice(0, 32)
           : `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`)
@@ -998,11 +1002,33 @@ export function createLocalHost({
         try {
           selected = materials.attachments(body.attachments, { sessionKey, requestId: body.requestId })
         } catch (error) { return materialFailure(res, error) }
-        if (selected.receipt && registerMaterialSubmission) {
-          try { await registerMaterialSubmission(selected.receipt) }
-          catch (error) {
+        let taskProof
+        if (selected.receipt) {
+          try {
+            if (!registerMaterialSubmission) throw new Error('Registration is unavailable')
+            taskProof = selected.receipt.proofSecret
+            if (!/^[0-9a-f]{64}$/.test(taskProof ?? '')) throw new Error('Durable task proof is unavailable')
+            const proofDigest = 'sha256:' + createHash('sha256').update(Buffer.from(taskProof, 'hex')).digest('hex')
+            const { proofSecret: _privateProof, ...registration } = selected.receipt
+            const confirmed = await registerMaterialSubmission({ ...registration, proofDigest })
+            if (confirmed?.state !== 'registered' || confirmed.agentId !== registration.agent
+              || confirmed.submissionId !== registration.submissionId
+              || confirmed.requestId !== registration.requestId
+              || confirmed.sessionKey !== registration.sessionKey
+              || confirmed.proofDigest !== proofDigest
+              || !Array.isArray(confirmed.attachments)
+              || confirmed.attachments.length !== registration.attachments.length
+              || confirmed.attachments.some((row, index) => row === null || typeof row !== 'object'
+                || Array.isArray(row) || row.selector !== registration.attachments[index]?.selector
+                || row.digest !== registration.attachments[index]?.digest
+                || row.totalBytes !== registration.attachments[index]?.totalBytes
+                || Object.keys(row).length !== 3)
+              || typeof confirmed.registeredAt !== 'string' || !Number.isFinite(Date.parse(confirmed.registeredAt))) {
+              throw new Error('The account service did not confirm this exact material task proof')
+            }
+          } catch {
             return void json(res, 503, { ok: false, errorCode: 'material_registration_unconfirmed',
-              teaching: `The material submission was kept locally but not confirmed by the account service. Retry this exact request before starting the Agent task. ${String(error?.message ?? error)}` })
+              teaching: 'The material submission was kept locally but its task proof was not confirmed by the account service. Retry this exact request before starting the Agent task.' })
           }
         }
         // A person may attach files and write nothing. The host then says what was attached and
@@ -1013,7 +1039,8 @@ export function createLocalHost({
           return void json(res, 400, { ok: false, teaching: 'A case submission needs a message, an attachment, or both.' })
         }
         const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/task`, {
-          method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey },
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey,
+            ...(taskProof ? { 'x-rulith-material-task-proof': taskProof } : {}) },
           body: JSON.stringify({
             text: text.trim() === '' ? attachmentInstruction(selected.attachments) : text,
             sessionKey,

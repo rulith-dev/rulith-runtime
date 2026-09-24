@@ -6,6 +6,8 @@ Adding a file gives the page a local `ui_` selection handle. Sending a message i
 
 An attachment send requires the page's request ID. The Host durably records one receipt for that click, binding the request ID, current Agent and owner, conversation key, and exact selected versions. Retrying the same click recovers its submission ID; changing the conversation or selection under that request ID is refused. The conversation key is retry context, not an authoritative Rulith Case binding. If the Host stops after recording the receipt, an exact retry can finish the per-material ledger. A stranded per-material submission lock still refuses the retry until repaired; it is not silently discarded.
 
+For a new Case, the receipt also stores a private random task proof. The Host registers only its SHA-256 digest through the signed-in device and waits for an exact registration reply before passing the proof to the local Agent in a private task header. The Agent sends it only on the first create-form `OpenCase` MCP call; it is not model input, task body, event, or conversation history. A registration outage or mismatched reply leaves the durable click locally pending for an exact retry and sends nothing to the Agent. Attachments cannot currently target an existing `caseId`. A standalone Host without the signed-in device registration channel refuses attached tasks; text-only tasks still work. The Java Gateway/Core binding and material-read enforcement are separate integration work and are not implied by this local transport.
+
 The initial reader supports UTF-8 text and preserves other files as binary material. It does not extract text from PDF or DOCX containers. Adding those files does not mean their text has been extracted.
 
 ## Authorize the reader
