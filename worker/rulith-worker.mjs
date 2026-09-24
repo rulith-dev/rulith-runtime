@@ -870,6 +870,48 @@ function httpTerminalCompletion(raw) {
   return { stage: 'terminal', statuses: [...raw.statuses], json: { field: raw.json.field, equals: raw.json.equals } }
 }
 
+const HTTP_TEXT_WRITE_MAX_BYTES = 16_384
+/** Local-only request shape. This is not an Action v2 adoption claim. */
+function httpTextWriteProfile(raw, { entry, params, kind, method, sourceTypes, fence } = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || Object.keys(raw).sort().join(',') !== 'contentType,format,method,payloadParam,relativePath,targetParam'
+      || raw.format !== 'rulith-http-text-write/1' || raw.method !== 'PUT'
+      || raw.contentType !== 'text/plain; charset=utf-8'
+      || typeof raw.targetParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw.targetParam)
+      || typeof raw.payloadParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw.payloadParam)
+      || raw.targetParam === raw.payloadParam
+      || typeof raw.relativePath !== 'string' || !raw.relativePath.startsWith('/')
+      || raw.relativePath.startsWith('//') || /[?#\\%]/.test(raw.relativePath)
+      || raw.relativePath.split('/').slice(1).some(segment => segment === '' || segment === '.' || segment === '..'
+        || segment !== `{${raw.targetParam}}` && !/^[A-Za-z0-9._~-]+$/.test(segment))
+      || raw.relativePath.split('/').filter(segment => segment === `{${raw.targetParam}}`).length !== 1
+      || entry !== raw.relativePath || kind !== 'write' || method !== 'PUT'
+      || sourceTypes !== undefined && (sourceTypes.length !== 1 || sourceTypes[0] !== 'http')
+      || !params || Object.keys(params).sort().join(',') !== [raw.payloadParam, raw.targetParam].sort().join(',')
+      || params[raw.targetParam] !== 'string' || params[raw.payloadParam] !== 'string'
+      || !fence || Object.keys(fence).some(key => !['method', 'completion', 'timeoutMs', 'maxResponseBytes', 'textWrite'].includes(key))) {
+    throw new Error('HTTP text write requires a fixed PUT path with one complete target segment, exactly two required string params, and text/plain; charset=utf-8')
+  }
+  return { ...raw }
+}
+
+function httpTextWriteArgs(profile, raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || Object.keys(raw).sort().join(',') !== [profile.payloadParam, profile.targetParam].sort().join(',')) {
+    throw new Error('HTTP text write accepts only its target and payload arguments')
+  }
+  const target = raw[profile.targetParam], payload = raw[profile.payloadParam]
+  if (typeof target !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(target)
+      || target === '.' || target === '..') {
+    throw new Error('HTTP text write target must be one safe path segment')
+  }
+  if (typeof payload !== 'string' || Buffer.byteLength(payload, 'utf8') > HTTP_TEXT_WRITE_MAX_BYTES
+      || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(payload)) {
+    throw new Error(`HTTP text write payload must be valid UTF-8 text within ${HTTP_TEXT_WRITE_MAX_BYTES} bytes`)
+  }
+  return { path: profile.relativePath.replace(`{${profile.targetParam}}`, encodeURIComponent(target)), body: payload }
+}
+
 /**
  * 原语工具 http：共享包只带 source+相对路径，地址与凭据由 Worker 的来源库补齐。
  * 本机旧工具表仍可直写 url，但必须显式 allowHosts；来自 source 的地址本身就是治理边界。
@@ -881,8 +923,9 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT) {
   }
   const base = new URL(resolved.url)
   const vals = httpArgs(resolved.params, args)
+  const textWrite = t.textWrite ? httpTextWriteArgs(t.textWrite, vals) : undefined
   const used = new Set()
-  let path = resolved.path
+  let path = textWrite?.path ?? resolved.path
   if (typeof path === 'string') {
     path = path.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name) => {
       if (resolved.params?.[name] === undefined) throw new Error(`HTTP exec references undeclared parameter {${name}}`)
@@ -902,12 +945,17 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT) {
   // effect may have happened. A governed write may legitimately use GET.
   const effectful = t.kind !== 'read'
   const completion = effectful ? httpTerminalCompletion(t.completion) : undefined
-  if (!bodyMethod) {
+  if (!bodyMethod && !textWrite) {
     for (const [name, value] of Object.entries(vals)) if (!used.has(name)) {
       target.searchParams.set(name, typeof value === 'object' ? JSON.stringify(value) : String(value))
     }
   }
-  const headers = { ...(bodyMethod ? { 'content-type': 'application/json' } : {}), ...(resolved.headers ?? {}) }
+  const sourceHeaders = { ...(resolved.headers ?? {}) }
+  if (textWrite) for (const name of Object.keys(sourceHeaders)) {
+    if (name.toLowerCase() === 'content-type') delete sourceHeaders[name]
+  }
+  const headers = { ...(bodyMethod ? { 'content-type': 'application/json' } : {}), ...sourceHeaders,
+    ...(textWrite ? { 'content-type': t.textWrite.contentType } : {}) }
   const rawTimeoutMs = Number(resolved.timeoutMs ?? 30_000)
   if (!Number.isSafeInteger(rawTimeoutMs) || rawTimeoutMs < 1) throw new Error('HTTP timeoutMs must be a positive integer')
   const timeoutMs = Math.max(100, Math.min(rawTimeoutMs, 300_000))
@@ -915,7 +963,7 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT) {
   // boundary. Constructing a Request does not send it to the Source.
   const request = new Request(target, {
     method, headers, signal: AbortSignal.timeout(timeoutMs), redirect: 'manual',
-    ...(bodyMethod ? { body: JSON.stringify(vals) } : {}),
+    ...(bodyMethod ? { body: textWrite ? textWrite.body : JSON.stringify(vals) } : {}),
   })
   let r
   let text
@@ -3537,9 +3585,13 @@ function adapterToolFromSpec(specJson, argsJson) {
     const kind = spec.kind === 'read' ? 'read' : 'write'
     const completion = kind === 'write' ? httpTerminalCompletion(fence.completion) : undefined
     if (kind === 'read' && fence.completion !== undefined) throw new Error('HTTP read Tool cannot declare write completion evidence')
+    const textWrite = fence.textWrite === undefined ? undefined : httpTextWriteProfile(fence.textWrite, {
+      entry: spec.exec, params: spec.params, kind, method, sourceTypes: spec.sourceTypes, fence,
+    })
     return {
       impl: 'http', kind, source: spec.source, path: spec.exec, params: spec.params ?? {}, method,
       ...(completion ? { completion } : {}),
+      ...(textWrite ? { textWrite } : {}),
       ...(fence.timeoutMs !== undefined ? { timeoutMs: Number(fence.timeoutMs) } : {}),
       ...(fence.maxResponseBytes !== undefined ? { maxResponseBytes: Number(fence.maxResponseBytes) } : {}),
       ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}),
@@ -3776,6 +3828,12 @@ export function workerToolsOf(raw) {
         // execute a new write without this profile (the compiler refuses it).
         httpTerminalCompletion(value.fence.completion)
       }
+      if (value.fence?.textWrite !== undefined) httpTextWriteProfile(value.fence.textWrite, {
+        entry: value.entry, params: value.params, kind: toolKind(value),
+        method: String(value.fence.method ?? '').toUpperCase(), sourceTypes: value.sourceTypes, fence: value.fence,
+      })
+    } else if (value.fence?.textWrite !== undefined) {
+      throw new Error(`Worker Tool ${id} HTTP text write profile requires the HTTP adapter`)
     }
     // The opt-in environment allow-list. Declaring it replaces the deny-list for this
     // Tool: the Adapter then sees the basics plus exactly these names. It is refused on

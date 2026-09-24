@@ -78,6 +78,20 @@ existing HTTP write Tool without a terminal profile needs an operator-reviewed
 version and refreshed Connection pin before new execution; do not replay an
 already dispatched invocation to obtain a new result.
 
+The Worker also supports a local-only fixed text request shape in
+`fence.textWrite`: `{"format":"rulith-http-text-write/1","method":"PUT","relativePath":"/records/{target}","targetParam":"target","payloadParam":"payload","contentType":"text/plain; charset=utf-8"}`.
+The pinned Tool must declare exactly those two required string parameters, the
+same fixed path in `entry`, PUT in `fence.method`, and the terminal completion
+profile above. The target is one URL-safe path segment; the payload is valid
+UTF-8 text of at most 16,384 bytes and becomes the request body without JSON
+wrapping. The Worker rejects extra invocation controls, nested values,
+ambiguous paths and oversized text before HTTP egress. Source credentials may
+still supply static authorization headers. This local request shape does not
+advertise Action v2 input adoption or enable a production Tool; the cross-service
+descriptor and Source lock contract must be closed separately. Ordinary HTTP
+Tools retain their existing JSON argument transport and are not described as
+adopting this profile.
+
 `sourceNamesByExec` lists only local `db` records with nonempty DSNs. The Worker
 checks each v2 work item's Tool and Source against the frozen first-Poll list
 before ClaimWork, so a later Source refresh cannot extend that lease's scope.
