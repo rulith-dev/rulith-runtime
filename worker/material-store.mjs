@@ -28,7 +28,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
-  realpathSync, renameSync, rmSync, writeFileSync,
+  realpathSync, renameSync, rmdirSync, rmSync, writeFileSync,
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
@@ -291,6 +291,29 @@ function fsyncPath(path) {
 function writeFileDurably(path, data) {
   writeFileSync(path, data, { mode: 0o600, flag: 'wx' })
   fsyncPath(path)
+}
+
+const submissionLockWait = new Int32Array(new SharedArrayBuffer(4))
+
+/** Serialize one material's submission ledger across Host processes. A stranded lock refuses writes. */
+function withSubmissionLock(directory, work) {
+  const lock = join(directory, 'submission.lock')
+  const deadline = Date.now() + 10_000
+  while (true) {
+    try {
+      mkdirSync(lock, { mode: 0o700 })
+      break
+    } catch (error) {
+      // Windows may report EPERM while another process is removing the lock directory.
+      if (error?.code !== 'EEXIST' && error?.code !== 'EPERM') throw error
+      if (Date.now() >= deadline) {
+        throw new MaterialError('material_submission_busy', 'The material submission ledger is locked; no context was recorded.')
+      }
+      Atomics.wait(submissionLockWait, 0, 0, 10)
+    }
+  }
+  try { return work() }
+  finally { rmdirSync(lock) }
 }
 
 /** The chunk manifest of one object: fixed size, ascending order, last chunk short. */
@@ -568,28 +591,34 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       if (!MATERIAL_ID_PATTERN.test(record.selector ?? '') || record.selector === record.id) {
         throw new MaterialError('material_selection_unavailable', 'This material has no separate immutable selector.')
       }
-      if (existsSync(path)) {
-        let previous
-        try { previous = JSON.parse(readFileSync(path, 'utf8')) } catch { /* mismatch below */ }
-        if (Object.keys(binding).some((key) => JSON.stringify(previous?.[key]) !== JSON.stringify(binding[key]))) {
-          throw new MaterialError('material_submission_mismatch', 'The submitted material mapping changed.')
-        }
-        if (!Array.isArray(previous.submissions) || previous.submissions.length === 0
-          || previous.submissions.some((row) => typeof row?.sessionKey !== 'string' || row.sessionKey === '')) {
-          throw new MaterialError('material_submission_mismatch', 'The submitted material context is invalid.')
-        }
-        const submissions = previous.submissions
-        if (!submissions.some((row) => JSON.stringify(row) === JSON.stringify(submission))) {
+      withSubmissionLock(objectDir(record.id), () => {
+        if (existsSync(path)) {
+          let previous
+          try { previous = JSON.parse(readFileSync(path, 'utf8')) } catch { /* mismatch below */ }
+          if (Object.keys(binding).some((key) => JSON.stringify(previous?.[key]) !== JSON.stringify(binding[key]))) {
+            throw new MaterialError('material_submission_mismatch', 'The submitted material mapping changed.')
+          }
+          if (!Array.isArray(previous.submissions) || previous.submissions.length === 0
+            || previous.submissions.some((row) => typeof row?.sessionKey !== 'string' || row.sessionKey === '')) {
+            throw new MaterialError('material_submission_mismatch', 'The submitted material context is invalid.')
+          }
+          const submissions = previous.submissions
+          if (submissions.some((row) => JSON.stringify(row) === JSON.stringify(submission))) return
           const temporary = join(tempDir, `submission.${randomUUID()}`)
-          writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [...submissions, submission] })}\n`)
-          renameSync(temporary, path)
+          try {
+            writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [...submissions, submission] })}\n`)
+            renameSync(temporary, path)
+            fsyncPath(objectDir(record.id))
+          } finally { rmSync(temporary, { force: true }) }
+        } else {
+          const temporary = join(tempDir, `submission.${randomUUID()}`)
+          try {
+            writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [submission] })}\n`)
+            linkSync(temporary, path)
+            fsyncPath(objectDir(record.id))
+          } finally { rmSync(temporary, { force: true }) }
         }
-      } else {
-        const temporary = join(tempDir, `submission.${randomUUID()}`)
-        writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [submission] })}\n`)
-        try { linkSync(temporary, path); fsyncPath(objectDir(record.id)) }
-        finally { rmSync(temporary, { force: true }) }
-      }
+      })
       return { id: record.selector, name: record.name, mediaType: record.mediaType,
         totalBytes: record.totalBytes, digest: record.digest }
     },

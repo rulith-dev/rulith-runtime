@@ -13,6 +13,8 @@
  * pass against a store that refused everything.
  */
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -80,6 +82,43 @@ test('public selector is issued only on submission and survives restart with exa
     assert.equal(submitted.custodyId, record.id)
     assert.equal(submitted.digest, record.digest)
   })
+})
+
+test('separate Host processes retain every context submitted for one selector', { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-material-contention-'))
+  const configFile = join(dir, 'local.json')
+  const root = defaultMaterialRoot(configFile)
+  const identity = materialIdentity({ configFile, gatewayUrl: GATEWAY, connectionId: 'con-first',
+    agentId: 'ag_first', modelUrl: REMOTE_MODEL })
+  const store = openMaterialStore(root, identity)
+  const record = store.put({ name: 'shared.txt', mediaType: 'text/plain', bytes: Buffer.from('private') })
+  const children = []
+  try {
+    for (let number = 0; number < 12; number++) {
+      const child = spawn(process.execPath,
+        [join(import.meta.dirname, 'material-submission-child.mjs'), configFile, root, record.uiHandle, String(number)],
+        { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+      children.push(child)
+    }
+    const ready = await Promise.all(children.map(async (child) => (await once(child, 'message'))[0]))
+    assert.ok(ready.every((message) => message.ready === true))
+    const results = children.map(async (child) => {
+      const message = (await once(child, 'message'))[0]
+      const [code] = await once(child, 'exit')
+      assert.equal(code, 0)
+      assert.deepEqual(message, { done: true })
+    })
+    for (const child of children) child.send({ go: true })
+    await Promise.all(results)
+    const submitted = JSON.parse(readFileSync(join(root, 'objects', record.id, 'submission.json'), 'utf8'))
+    assert.deepEqual(submitted.submissions.map((row) => row.sessionKey).sort(),
+      Array.from({ length: children.length }, (_, number) => `session-${number}`).sort())
+    assert.equal(openMaterialStore(root, identity, { create: false }).resolveSubmitted(record.selector).id, record.id)
+    assert.equal(existsSync(join(root, 'objects', record.id, 'submission.lock')), false)
+  } finally {
+    for (const child of children) child.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('submitted selector refuses changed digest, Agent, Connection and stored bytes', () => {
