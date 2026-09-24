@@ -80,24 +80,105 @@ function eligible(def, kind) {
 export function toolContractFingerprint(descriptor) {
   const contract = { exec: descriptor.id, kind: descriptor.kind,
     sourceTypes: descriptor.sourceTypes, params: descriptor.params, returns: descriptor.returns }
+  if (httpTextWriteEligible(descriptor)) contract.fence = descriptor.fence
   return 'sha256:' + createHash('sha256').update(JSON.stringify(sort(contract))).digest('hex')
+}
+
+const HTTP_TEXT = 'rulith-http-text-write/1'
+function httpTextWriteEligible(tool) {
+  const fence = tool?.fence, profile = fence?.textWrite, completion = fence?.completion
+  if (tool?.adapter !== 'http' || tool.kind !== 'write' || !same(tool.sourceTypes, ['http'])
+      || !plain(fence) || Object.keys(fence).some(key => !['method', 'completion', 'timeoutMs', 'maxResponseBytes', 'textWrite'].includes(key))
+      || !plain(profile) || !same(Object.keys(profile).sort(), ['contentType', 'format', 'method', 'payloadParam', 'relativePath', 'targetParam'])
+      || profile.format !== HTTP_TEXT || profile.method !== 'PUT' || fence.method !== 'PUT'
+      || profile.contentType !== 'text/plain; charset=utf-8'
+      || typeof profile.targetParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile.targetParam)
+      || typeof profile.payloadParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile.payloadParam)
+      || profile.targetParam === profile.payloadParam || !plain(tool.params)
+      || !same(tool.params, { [profile.targetParam]: 'string', [profile.payloadParam]: 'string' })
+      || typeof profile.relativePath !== 'string' || profile.relativePath !== tool.entry
+      || !profile.relativePath.startsWith('/') || profile.relativePath.startsWith('//')
+      || /[?#\\%]/.test(profile.relativePath)) return false
+  const segments = profile.relativePath.slice(1).split('/')
+  if (segments.filter(segment => segment === `{${profile.targetParam}}`).length !== 1
+      || segments.some(segment => segment !== `{${profile.targetParam}}`
+        && (!/^[A-Za-z0-9._~-]+$/.test(segment) || segment === '.' || segment === '..'))) return false
+  if (['timeoutMs', 'maxResponseBytes'].some(key => fence[key] !== undefined
+      && (!Number.isSafeInteger(fence[key]) || fence[key] < 1))) return false
+  if (!plain(completion) || !same(Object.keys(completion).sort(), ['json', 'stage', 'statuses'])
+      || completion.stage !== 'terminal' || !Array.isArray(completion.statuses)
+      || completion.statuses.length < 1 || completion.statuses.length > 2
+      || completion.statuses.some(code => code !== 200 && code !== 201)
+      || new Set(completion.statuses).size !== completion.statuses.length
+      || !plain(completion.json) || !same(Object.keys(completion.json).sort(), ['equals', 'field'])
+      || typeof completion.json.field !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(completion.json.field)) return false
+  const equals = completion.json.equals
+  return typeof equals === 'boolean' || typeof equals === 'number' && Number.isFinite(equals)
+    || typeof equals === 'string' && equals.length > 0 && equals.length <= 128
+}
+
+export function validateHttpInputContract(spec, args, def, descriptor) {
+  if (!httpTextWriteEligible(descriptor)
+      || !same(spec.sourceTypes, ['http']) || spec.kind !== 'write'
+      || !same(spec.params, descriptor.params) || !same(spec.returns, descriptor.returns)
+      || !same(spec.fence, descriptor.fence) || !same(def.fence, descriptor.fence)
+      || spec.fence?.textWrite?.relativePath !== def.entry)
+    throw new Error('Action v2 has no matching pinned local HTTP text write Tool contract')
+  if (!plain(spec.inputRoles) || spec.guardCatalogDigest !== guardCatalogDigest
+      || Object.hasOwn(spec, 'inputPolicy') || Object.hasOwn(spec.execution ?? {}, 'inputRoles')
+      || Object.hasOwn(spec.execution ?? {}, 'guardCatalogDigest'))
+    throw new Error('Action v2 HTTP write requires exact roles and guard catalog digest')
+  const { targetParam, payloadParam } = def.fence.textWrite
+  const bindings = spec.bindings ?? {}
+  if (!plain(bindings) || Object.keys(bindings).some(name => name !== 'source' && name !== targetParam && name !== payloadParam)
+      || !same(Object.keys(spec.inputRoles).sort(), [targetParam, payloadParam].filter(name => !Object.hasOwn(bindings, name)).sort()))
+    throw new Error('Action v2 HTTP roles must cover the unbound target and payload')
+  const target = spec.inputRoles[targetParam], payload = spec.inputRoles[payloadParam]
+  if (Object.hasOwn(bindings, payloadParam) || !plain(payload)
+      || !same(Object.keys(payload).sort(), ['guard', 'guardConfig', 'role'])
+      || payload.role !== 'payload' || payload.guard !== TEXT || !plain(payload.guardConfig)
+      || !same(Object.keys(payload.guardConfig).sort(), ['maxBytes', 'mediaType'])
+      || !Number.isSafeInteger(payload.guardConfig.maxBytes) || payload.guardConfig.maxBytes < 1
+      || payload.guardConfig.maxBytes > 16_384 || payload.guardConfig.mediaType !== 'text/plain'
+      || !Object.hasOwn(bindings, targetParam) && (!plain(target) || !same(target, { role: 'grounded' })))
+    throw new Error('Action v2 HTTP target must be grounded and payload bounded text/plain')
+  if (!plain(args) || !same(Object.keys(args).sort(), ['source', targetParam, payloadParam].sort())
+      || typeof args.source !== 'string' || !args.source
+      || typeof args[targetParam] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(args[targetParam])
+      || args[targetParam] === '.' || args[targetParam] === '..'
+      || typeof args[payloadParam] !== 'string'
+      || Buffer.byteLength(args[payloadParam], 'utf8') > payload.guardConfig.maxBytes
+      || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(args[payloadParam]))
+    throw new Error('Action v2 HTTP arguments violate the fixed target or text body')
+  return true
 }
 
 export function inputAdoptionForTools(tools, sources, descriptors = []) {
   // A manifest alone cannot make a located Adapter executable. The local Source
   // table must have a db record and DSN. Gateway independently checks governance.
-  const readySources = Object.entries(sources ?? {})
+  const readyDbSources = Object.entries(sources ?? {})
     .filter(([, record]) => record?.type === 'db' && typeof record.dsn === 'string' && record.dsn !== '')
     .map(([name]) => name).sort()
-  if (readySources.length === 0) return undefined
+  const readyHttpSources = Object.entries(sources ?? {})
+    .filter(([, record]) => record?.type === 'http' && typeof record.url === 'string'
+      && (() => { try { const url = new URL(record.url); return ['http:', 'https:'].includes(url.protocol) && !!url.hostname } catch { return false } })())
+    .map(([name]) => name).sort()
+  if (readyDbSources.length === 0 && readyHttpSources.length === 0) return undefined
   const guardsByKind = {}
   const toolContractsByExec = {}
   const sourceNamesByExec = {}
   for (const descriptor of descriptors) {
     const def = tools[descriptor.id]
-    if (!def || !['read', 'write'].some(kind => eligible(def, kind) && descriptor.kind === kind)) continue
+    if (!def) continue
+    const db = ['read', 'write'].some(kind => eligible(def, kind) && descriptor.kind === kind)
+    const http = httpTextWriteEligible(descriptor) && httpTextWriteEligible({
+      ...def, kind: descriptor.kind, params: descriptor.params, returns: descriptor.returns })
+    if (!db && !http) continue
     if (!same(descriptor.sourceTypes, def.sourceTypes)
-        || !same(descriptor.params, def.params ?? {}) || !same(descriptor.returns, def.returns ?? [])) continue
+        || !same(descriptor.params, def.params ?? {}) || !same(descriptor.returns, def.returns ?? [])
+        || http && !same(descriptor.fence, def.fence)) continue
+    const readySources = http ? readyHttpSources : readyDbSources
+    if (readySources.length === 0) continue
     if (descriptor.kind === 'read') guardsByKind.read = [ENUM]
     else guardsByKind.write = [ENUM, TEXT]
     toolContractsByExec[descriptor.id] = toolContractFingerprint(descriptor)

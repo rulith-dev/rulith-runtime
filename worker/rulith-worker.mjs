@@ -78,7 +78,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { invokeMcp, closeMcpClients, McpExecutionUnknownError } from './mcp-client.mjs'
-import { inputAdoptionForTools, validateDbInputContract } from './action-input-db.mjs'
+import { inputAdoptionForTools, toolContractFingerprint, validateDbInputContract, validateHttpInputContract } from './action-input-db.mjs'
 import {
   MATERIAL_CHUNK_BYTES, MATERIAL_ID_PATTERN, MATERIAL_OBJECT_ID_PATTERN, MaterialError,
   materialIdentityFromFingerprints, materialTextOf, openMaterialStore,
@@ -612,6 +612,8 @@ export function workerToolDescriptor(id, definition) {
     // this order only matters for a definition assembled in code.
     params: { ...(contract?.params ?? definition.params ?? {}) },
     returns: (contract?.returns ?? definition.returns ?? []).map((row) => ({ predicate: row.predicate, args: { ...row.args } })),
+    ...(definition.adapter === 'http' && definition.fence?.textWrite !== undefined
+      ? { entry: definition.entry, fence: structuredClone(definition.fence) } : {}),
   }
 }
 
@@ -3302,6 +3304,10 @@ async function handleAction(w) {
     if (resolved.inputRolesV2 && !FROZEN_INPUT_ADOPTION?.sourceNamesByExec?.[resolved.toolContractId]?.includes(w.sourceRecordId)) {
       throw new Error('Action v2 Source was not ready in this Worker generation original Poll adoption')
     }
+    if (resolved.inputRolesV2 && FROZEN_INPUT_ADOPTION?.toolContractsByExec?.[resolved.toolContractId]
+        !== resolved.toolContractFingerprint) {
+      throw new Error('Action v2 Tool contract differs from this Worker generation original Poll adoption')
+    }
     if (w.completionRequirement?.stage === 'terminal'
         && !(resolved.impl === 'http' && resolved.kind === 'write' && resolved.completion?.stage === 'terminal')) {
       throw new Error('Frozen terminal completion requires a pinned local HTTP write Tool with terminal evidence')
@@ -3934,6 +3940,14 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
   if (typeof ref !== 'string' || !TOOL_ID_PATTERN.test(ref)) throw new Error('work item is missing a versioned Worker Tool reference')
   const def = tools[ref]
   if (!def) throw new Error(`Worker Tool ${ref} is not installed on this connection`)
+  // The fixed text-write profile exists only as an Action v2 execution family.
+  // An older frozen row must not borrow the new local implementation and skip
+  // the original Poll adoption and its per-Source Tool fingerprint.
+  if (def.adapter === 'http' && def.fence?.textWrite !== undefined
+      && (!Object.hasOwn(spec, 'inputRoles') || !Object.hasOwn(spec, 'guardCatalogDigest')
+        || !Object.hasOwn(spec, 'fence'))) {
+    throw new Error(`Worker Tool ${ref} fixed HTTP text write requires a complete Action v2 contract`)
+  }
   const dbCapable = (Array.isArray(def.sourceTypes) && def.sourceTypes.includes('db'))
     || (Array.isArray(spec.sourceTypes) && spec.sourceTypes.includes('db'))
   if (dbCapable && !['db-query', 'db-exec-fenced'].includes(def.adapter)) {
@@ -3959,11 +3973,16 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
     ...(def.fence && typeof def.fence === 'object' ? { fence: def.fence } : {}),
     ...(Array.isArray(def.env?.pass) ? { env: { pass: def.env.pass } } : {}),
   }
-  const inputRolesV2 = validateDbInputContract(spec, args, def, workerToolDescriptor(ref, def))
+  const descriptor = workerToolDescriptor(ref, def)
+  const hasV2 = Object.hasOwn(spec, 'inputRoles') || Object.hasOwn(spec, 'guardCatalogDigest')
+  const inputRolesV2 = hasV2 && (def.adapter === 'http' || Array.isArray(spec.sourceTypes) && spec.sourceTypes.includes('http'))
+    ? validateHttpInputContract(spec, { source, ...args }, def, descriptor)
+    : validateDbInputContract(spec, args, def, descriptor)
   const compiled = adapterToolFromSpec(JSON.stringify(local), JSON.stringify(args))
   if (inputRolesV2) {
     compiled.inputRolesV2 = true
     compiled.toolContractId = ref
+    compiled.toolContractFingerprint = toolContractFingerprint(descriptor)
   }
   return compiled
 }

@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import test from 'node:test'
 
 import { execute, toolDigest, toolFromSpec, workerToolsOf } from '../worker/rulith-worker.mjs'
+import { guardCatalogDigest } from '../worker/action-input-db.mjs'
 
 const ID = 'acme.store_text@1'
 const PROFILE = { format: 'rulith-http-text-write/1', method: 'PUT', relativePath: '/records/{target}',
@@ -13,7 +14,9 @@ const TOOL = { adapter: 'http', sourceTypes: ['http'], entry: PROFILE.relativePa
   fence: { method: 'PUT', textWrite: PROFILE,
     completion: { stage: 'terminal', statuses: [200], json: { field: 'state', equals: 'committed' } } } }
 const SPEC = { impl: 'worker-tool', exec: ID, kind: 'write', sourceTypes: ['http'],
-  params: TOOL.params, returns: [] }
+  params: TOOL.params, returns: [], fence: TOOL.fence, guardCatalogDigest,
+  inputRoles: { target: { role: 'grounded' }, payload: { role: 'payload',
+    guard: 'rulith.payload.bounded-text@1', guardConfig: { maxBytes: 16_384, mediaType: 'text/plain' } } } }
 
 test('fixed HTTP text write sends only UTF-8 body to one governed target segment', async () => {
   const calls = []
@@ -36,7 +39,7 @@ test('fixed HTTP text write sends only UTF-8 body to one governed target segment
     assert.equal(workerToolsOf({ format: 'rulith-worker-tools/1', tools: { [ID]: TOOL } })[ID].digest,
       toolDigest(TOOL))
     const good = compile({ target: 'note-42', payload: 'hello 世界\n' })
-    assert.equal(good.inputRolesV2, undefined, 'local text profile must not claim Action v2 adoption')
+    assert.equal(good.inputRolesV2, true, 'fixed text writes require Action v2 adoption')
     await execute('write', good._args, { write: good }, sources)
     assert.equal(calls.length, 1)
     assert.equal(calls[0].method, 'PUT')
