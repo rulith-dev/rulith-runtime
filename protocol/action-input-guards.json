@@ -1,0 +1,133 @@
+{
+  "format": "rulith-action-input-guards/1",
+  "$comment": "Proposed PSC 0.2.5 machine catalog. A Tool/Capability may reference only an id in this catalog; it cannot define guard code or semantics. Listing an id defines the target contract, not proof that every repository has implemented it. Adoption requires the Core, Gateway and Worker conformance mappings described by the Action Input Semantics annex.",
+  "jsonSchemaProfiles": [
+    {
+      "id": "rulith-action-payload-schema/1",
+      "dialect": "https://json-schema.org/draft/2020-12/schema",
+      "allowedKeywords": [
+        "type", "enum", "const", "required", "properties", "additionalProperties", "items",
+        "minItems", "maxItems", "uniqueItems", "minLength", "maxLength", "minimum", "maximum"
+      ],
+      "references": "forbidden",
+      "unknownKeywords": "reject"
+    }
+  ],
+  "guards": [
+    {
+      "id": "rulith.source.new-relative-path@1",
+      "roles": ["scoped"],
+      "kinds": ["write"],
+      "phasesByKind": {"write": ["core", "worker"]},
+      "context": ["source"],
+      "configSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "contract": "Core accepts only a normalized non-empty relative path with no absolute, parent, empty, dot, drive, device, separator-confusion, or NUL component. Worker resolves it beneath the selected Source root without following an escaping link and atomically rejects an already existing target."
+    },
+    {
+      "id": "rulith.payload.bounded-text@1",
+      "roles": ["payload"],
+      "kinds": ["write", "run", "board"],
+      "phasesByKind": {
+        "write": ["core", "gateway", "worker"],
+        "run": ["core", "gateway", "worker"],
+        "board": ["core"]
+      },
+      "context": [],
+      "configSchema": {
+        "type": "object",
+        "required": ["maxBytes", "mediaType"],
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {"type": "integer", "minimum": 1},
+          "mediaType": {"type": "string", "minLength": 1, "maxLength": 127}
+        }
+      },
+      "contract": "Every phase measures the same UTF-8 bytes before accepting the value, applies the declared maximum in addition to its own tighter budget, and treats the value only as data of the declared media type."
+    },
+    {
+      "id": "rulith.payload.bounded-json@1",
+      "roles": ["payload"],
+      "kinds": ["write", "run", "board"],
+      "phasesByKind": {
+        "write": ["core", "gateway", "worker"],
+        "run": ["core", "gateway", "worker"],
+        "board": ["core"]
+      },
+      "context": [],
+      "configSchema": {
+        "type": "object",
+        "required": ["maxBytes", "schemaProfile", "schema", "schemaDigest"],
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {"type": "integer", "minimum": 1},
+          "schemaProfile": {"enum": ["rulith-action-payload-schema/1"]},
+          "schema": {"type": "object"},
+          "schemaDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      },
+      "contract": "The schemaDigest must equal the execution-canonical JSON digest of schema. Every phase recursively rejects keywords outside schemaProfile, forbids every reference, validates the complete JSON value against that same profile and schema, measures the same canonical UTF-8 bytes, and applies maxBytes plus its own tighter budget."
+    },
+    {
+      "id": "rulith.payload.artifact@1",
+      "roles": ["payload"],
+      "kinds": ["write", "run", "board"],
+      "phasesByKind": {
+        "write": ["core", "gateway", "worker"],
+        "run": ["core", "gateway", "worker"],
+        "board": ["core"]
+      },
+      "context": ["agent", "board", "artifact"],
+      "conditionalContext": ["source-if-action-is-source-bound"],
+      "configSchema": {
+        "type": "object",
+        "required": ["maxBytes", "mediaTypes"],
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {"type": "integer", "minimum": 1},
+          "mediaTypes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 127}
+          }
+        }
+      },
+      "contract": "The value names one finalized immutable Artifact version and its content digest. Core verifies current Agent/Board ownership, media type, size, version and digest, and also verifies declared Source disclosure when the Action is Source-bound; a Source-free or board Action does not invent a Source. Delivery rechecks current permission; Worker consumes only the exact authorized bytes and digest. The reference grants no authority and does not attest content meaning."
+    },
+    {
+      "id": "rulith.value.enum@1",
+      "roles": ["scoped"],
+      "kinds": ["read", "write", "run", "board"],
+      "phasesByKind": {
+        "read": ["core", "gateway", "worker"],
+        "write": ["core", "gateway", "worker"],
+        "run": ["core", "gateway", "worker"],
+        "board": ["core"]
+      },
+      "context": [],
+      "configSchema": {
+        "type": "object",
+        "required": ["values"],
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "anyOf": [
+                {"type": "string"},
+                {"type": "number"},
+                {"type": "boolean"}
+              ]
+            }
+          }
+        }
+      },
+      "contract": "The supplied scalar must equal one listed value under the Action parameter's canonical type and exact-number rules; no string coercion or locale comparison is allowed."
+    }
+  ]
+}

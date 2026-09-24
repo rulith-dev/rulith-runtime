@@ -21,7 +21,10 @@ const files = [
   // Separately approved material amendment; the historical execution bundle keeps its pin.
   'protocol/worker-material.json',
   'protocol/worker-material-sha256.txt',
+  'protocol/action-input-guards.json',
+  'protocol/action-input-adoption.json',
   'worker/rulith-worker.mjs',
+  'worker/action-input-db.mjs',
   'worker/mcp-client.mjs',
   'worker/material-store.mjs',
   'worker/material-transport.mjs',

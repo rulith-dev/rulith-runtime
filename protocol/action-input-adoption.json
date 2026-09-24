@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://docs.rulith.ai/contracts/action-input-adoption-v1",
+  "title": "Worker Action input adoption",
+  "description": "Private execution compatibility, never an Agent argument or a grant of Tool authority. Poll may report this only for its authenticated Worker lease. Gateway checks its own adopted phases before fixing the same value on the Core Worker fence. Missing means legacy. One holder/generation cannot change a fixed value; a new generation must report again. Core checks compatibility before creating a v2 invocation and again before dispatch. Each guard must also occur in the catalog named by guardCatalogDigest and support the declared Action kind. External v2 additionally requires the exact per-exec Tool projection fingerprint and selected Source name; historical values without either scope remain readable but do not authorize external v2.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "rulith-action-inputs/1"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "rulith-action-inputs/2"
+        },
+        "guardCatalogDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "guardsByKind": {
+          "type": "object",
+          "not": {"const": {}},
+          "additionalProperties": false,
+          "properties": {
+            "read": {"$ref": "#/$defs/guards"},
+            "write": {"$ref": "#/$defs/guards"},
+            "run": {"$ref": "#/$defs/guards"}
+          }
+        },
+        "toolContractsByExec": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_.-]{1,95}@[1-9][0-9]*$"},
+          "additionalProperties": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        },
+        "sourceNamesByExec": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_.-]{1,95}@[1-9][0-9]*$"},
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "guardCatalogDigest",
+        "guardsByKind"
+      ]
+    }
+  ],
+  "$defs": {
+    "guards": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^rulith\\.[a-z0-9.-]+@[1-9][0-9]*$"}
+    }
+  }
+}

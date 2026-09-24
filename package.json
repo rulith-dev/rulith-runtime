@@ -21,6 +21,8 @@
     "protocol/worker-contract.json",
     "protocol/worker-material.json",
     "protocol/worker-material-sha256.txt",
+    "protocol/action-input-guards.json",
+    "protocol/action-input-adoption.json",
     "docs/local-manager.md",
     "docs/local-materials.md",
     "docs/local-authoring.md",

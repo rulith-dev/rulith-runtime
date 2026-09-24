@@ -18,7 +18,7 @@
       "sha256": "3b1b751bda705aba47e97b4ce8ea528e1a7d7a750b9db2c4ef9071c6a1e94249"
     },
     "protocol/worker-contract.json": {
-      "sha256": "bf239d11e6c7379e0be03fac3ef85d881e683de8e4f39e9e0fc5f27b852f8ae1"
+      "sha256": "9c0a62dcb1568ba174fc1d3ed95e1c051533e9967bb3df3da0e57b1e02fc0411"
     },
     "protocol/worker-material.json": {
       "sha256": "497c57d8b12fe7f2acefb22a9f27d00229158c2ccb144a47573fb09e3c0ef97c"
@@ -26,8 +26,17 @@
     "protocol/worker-material-sha256.txt": {
       "sha256": "182e7ca2a9d5442e43471b6a0240fd16796631fcf002f0f24f29950acaa515c8"
     },
+    "protocol/action-input-guards.json": {
+      "sha256": "55d92d40901868ac10ba2198f1778ec550899a51e218561c90b91b7816997f9f"
+    },
+    "protocol/action-input-adoption.json": {
+      "sha256": "0cc5081570904f761be70540bd2fa089edcfffdc1db9e79acb25de0b70a05c86"
+    },
     "worker/rulith-worker.mjs": {
-      "sha256": "968f7e7ba7cce9a2168a39472c2192cb587c3d5cf5c9d6b5836dd23a9debde6e"
+      "sha256": "b3ec93e945eed5f02d1cd2bacbe74eb112a3f12293de4838087189d981b75fca"
+    },
+    "worker/action-input-db.mjs": {
+      "sha256": "f1522bc279e9c137b198cebee84519f9bfb32f8578059ea48c3f1e46d0a9f2d4"
     },
     "worker/mcp-client.mjs": {
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"

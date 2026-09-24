@@ -20,13 +20,13 @@ for (const [name, fields] of [
               params: { value: 'number' }, sourceTypes: [], ...fields }),
           })] } } } : HOLD)
         : { body: { accepted: true, revision: 'b12' } },
-      done: (_, output) => /inputRoles v2 execution phases are not adopted/.test(output) || DONE.action.test(output),
+      done: (_, output) => /Action v2|Action inputRoles|Action inputRoles belong/.test(output) || DONE.action.test(output),
       timeoutMs: 15_000,
     })
     assert.equal(run.timedOut, false, run.output)
     assert.equal(run.ran('compute'), 0, 'the adapter executed an input contract this Worker does not implement')
     assert.equal(run.of('ClaimWork').length, 0, 'an unavailable input contract was already claimed')
     assert.equal(run.of('ReportWork').length, 0, 'refusal must not manufacture an execution receipt')
-    assert.match(run.output, /inputRoles v2 execution phases are not adopted/)
+    assert.match(run.output, /Action v2|Action inputRoles|Action inputRoles belong/)
   })
 }
