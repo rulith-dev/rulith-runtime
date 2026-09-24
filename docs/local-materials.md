@@ -2,7 +2,7 @@
 
 Use **+ → Add files**, or drop a file onto the conversation composer. A file is stored in this Agent profile's local material area before it appears as ready. You can remove it from the message before sending. A message may carry up to eight files, each at most 8 MiB.
 
-Sending a message carries attachment names and opaque material IDs. It does not upload their contents to the Gateway, grant a tool, or certify the document's statements. The Agent must discover and call an authorized material-reading Action before it can use the contents.
+Adding a file gives the page a local `ui_` selection handle. Sending a message is what exposes a separate immutable `mat_` selector and full digest to the Agent. Neither value is the private custody ID used to store bytes. Sending does not upload contents to the Gateway, grant a tool, or certify the document's statements. The Agent must discover and call an authorized material-reading Action before it can use the contents.
 
 The initial reader supports UTF-8 text and preserves other files as binary material. It does not extract text from PDF or DOCX containers. Adding those files does not mean their text has been extracted.
 
@@ -24,7 +24,7 @@ A material-only access mode uses no fact mapping:
 }
 ```
 
-The material ID is an input to this Action. It is not a file path or a credential. The Tool's result refers to an Artifact; the Agent reads that reference through the existing `ReadArtifact` tool. Reading the bytes does not create an attested business fact.
+The submitted `mat_` selector is an input to this Action. It is not a file path or a credential. The Tool's result refers to an Artifact; the Agent reads that reference through the existing `ReadArtifact` tool. Reading the bytes does not create an attested business fact. The current read Tool has no signed Case context, so this selector split alone does not enforce whether a later Case submitted the same attachment; that check belongs to the future local-material production guard.
 
 ## Delivery permissions
 
@@ -62,4 +62,6 @@ they are not silently granted disclosure to the default provider.
 
 The Worker retains immutable originals and their integrity metadata. Closing a conversation or Case does not delete referenced materials. Keep this area with the profile's backups if the original evidence must remain available. An offline Worker is temporarily unavailable; missing or damaged originals are reported as unavailable or corrupt. The Gateway cannot reconstruct an original from its hash.
 
-This material transport is the foundation for document workflows. The full document-to-capability assistant, including rule extraction, clarification and checking, still needs its own workflow and acceptance.
+The store format is `rulith-materials/3`. An older material area is refused with `materials_store_migration_required`; its files are left in place. Add the files again under a fresh profile area to use them with this release. There is no automatic migration.
+
+The document-to-capability assistant uses this transport for its local source document and checked result. The selector split is a prerequisite for the later Source-bound production guard; it does not itself authorize a new Artifact payload role.

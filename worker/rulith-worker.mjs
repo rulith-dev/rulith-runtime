@@ -229,6 +229,7 @@ const MATERIALS_ROOT = (process.env.RULITH_MATERIALS_ROOT ?? '').trim()
 const MATERIALS_BINDING = Object.freeze({
   profile: (process.env.RULITH_MATERIALS_PROFILE ?? '').trim(),
   owner: (process.env.RULITH_MATERIALS_OWNER ?? '').trim(),
+  agentFingerprint: (process.env.RULITH_MATERIALS_AGENT_FINGERPRINT ?? '').trim(),
   modelDestination: (process.env.RULITH_MATERIALS_MODEL_DESTINATION ?? '').trim(),
 })
 /**
@@ -2285,6 +2286,7 @@ async function handMaterial(t, args, sources = SOURCE_CONTEXT) {
       + ' It is an opaque token: it is not a path, and this Worker will not read a file because a work item named one.')
   }
   let record
+  let custodyId = ''
   let produced
   let readable
   try {
@@ -2295,15 +2297,19 @@ async function handMaterial(t, args, sources = SOURCE_CONTEXT) {
     // the manifest and the whole digest. A material edited, truncated or partly removed
     // underneath this process fails here, by name, rather than becoming a reference to bytes
     // nobody checked.
-    const { record: found, bytes } = store.read(id, { modelDestination: MATERIALS_BINDING.modelDestination })
+    const selected = store.resolveSubmitted(id)
+    custodyId = selected.id
+    const { record: found, bytes } = store.read(selected.id, { modelDestination: MATERIALS_BINDING.modelDestination })
     record = found
     // Whether the model could read this as text is decided from the bytes, not the label. It
     // becomes the registration's `encoding`, which the Gateway enforces at disclosure — so a
     // wrong answer here buys a visible failure there, never a substitution character.
     readable = materialTextOf(found, bytes) === undefined ? 'base64' : 'utf8'
-    produced = store.deriveResult(id, { mediaType: found.mediaType, encoding: readable })
+    produced = store.deriveResult(found.id, { mediaType: found.mediaType, encoding: readable })
   } catch (error) {
-    throw new Error(error instanceof MaterialError ? `${error.code}: ${error.message}` : String(error?.message ?? error))
+    const message = String(error?.message ?? error)
+    const detail = custodyId ? message.replaceAll(custodyId, id) : message
+    throw new Error(error instanceof MaterialError ? `${error.code}: ${detail}` : detail)
   }
   // The reported result is a sentence about an Artifact, never the Artifact. `prepareActionReport`
   // registers the produced object and attaches its reference; what the model reads is whatever a

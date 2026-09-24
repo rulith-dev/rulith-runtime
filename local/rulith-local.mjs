@@ -401,6 +401,7 @@ export function createLocalHost({
       RULITH_MATERIALS_ROOT: area,
       RULITH_MATERIALS_PROFILE: binding.profile,
       RULITH_MATERIALS_OWNER: binding.owner,
+      RULITH_MATERIALS_AGENT_FINGERPRINT: binding.agentFingerprint,
       RULITH_MATERIALS_MODEL_DESTINATION: binding.modelDestination,
     }
   }
@@ -986,7 +987,7 @@ export function createLocalHost({
         // were silently dropped.
         let selected
         try {
-          selected = materials.attachments(body.attachments)
+          selected = materials.attachments(body.attachments, { sessionKey, caseId: body.caseId, requestId: body.requestId })
         } catch (error) { return materialFailure(res, error) }
         // A person may attach files and write nothing. The host then says what was attached and
         // tells the model to go and find an authorized Action that reads it — it does not read

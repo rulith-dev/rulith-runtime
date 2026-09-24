@@ -48,6 +48,7 @@ const DOCX = store.put({
   mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 })
 const SPOILED = store.put({ name: 'spoiled.txt', mediaType: 'text/plain', bytes: Buffer.from('the original text') })
+for (const record of [TEXT, PNG, DOCX, SPOILED]) store.submitSelected(record.uiHandle, { sessionKey: 'worker-case' })
 writeFileSync(join(ROOT, 'objects', SPOILED.id, 'chunks', '000000.bin'), 'the REPLACED text')
 // A record of the same profile under a different owner: written straight into this area's
 // object directory, so it is present on disk and invisible to this Worker's binding. It cannot
@@ -64,6 +65,7 @@ writeFileSync(join(ROOT, 'objects', FOREIGN_ID, 'record.json'), JSON.stringify({
 process.env.RULITH_MATERIALS_ROOT = ROOT
 process.env.RULITH_MATERIALS_PROFILE = IDENTITY.profile
 process.env.RULITH_MATERIALS_OWNER = IDENTITY.owner
+process.env.RULITH_MATERIALS_AGENT_FINGERPRINT = IDENTITY.agentFingerprint
 process.env.RULITH_MATERIALS_MODEL_DESTINATION = IDENTITY.modelDestination
 const worker = await import('../worker/rulith-worker.mjs')
 
@@ -111,11 +113,11 @@ test('local authoring ingest reaches the actual adapter compiler, preserves work
   const resolved = worker.adapterToolFromSpec(JSON.stringify({
     name: AUTHORING_INGEST, kind: 'read', impl: 'local-authoring', source: 'materials', exec: 'ingest',
     params: definition.params, returns: definition.returns,
-  }), JSON.stringify({ material: TEXT.id }))
+  }), JSON.stringify({ material: TEXT.selector }))
   const executed = await worker.execute(AUTHORING_INGEST, resolved._args, { [AUTHORING_INGEST]: resolved }, SOURCES, {})
   assert.equal(executed.facts.length, 1)
   assert.equal(executed.facts[0].predicate, 'rulith.official_authoring.authoring_task')
-  assert.equal(executed.facts[0].args.task_id, TEXT.id)
+  assert.equal(executed.facts[0].args.task_id, TEXT.selector)
   assert.match(executed.facts[0].args.node, /^node_[a-f0-9]{32}$/u)
   assert.match(executed.localArtifact.id, /^res_[a-f0-9]{32}$/u)
   assert.equal(executed.localArtifact.producedFrom, TEXT.id)
@@ -156,7 +158,7 @@ test('the material adapter ships with this Worker and cannot be declared in a Ma
 })
 
 test('a material read produces a durable local object and reports a sentence, never the content', async () => {
-  const executed = await read(TEXT.id)
+  const executed = await read(TEXT.selector)
   assert.doesNotMatch(executed.result, /body text|Heading/u, 'the material text was copied into the reported result')
   assert.match(executed.result, /notes\.md \(text\/markdown; charset=utf-8, \d+ bytes\) is attached as an Artifact\./u)
   assert.equal(executed.facts, undefined, 'a material read landed facts')
@@ -180,8 +182,8 @@ test('a material read produces a durable local object and reports a sentence, ne
 })
 
 test('binary material is delivered as bytes, and no container is opened', async () => {
-  assert.equal((await read(PNG.id)).localArtifact.encoding, 'base64')
-  const document = (await read(DOCX.id)).localArtifact
+  assert.equal((await read(PNG.selector)).localArtifact.encoding, 'base64')
+  const document = (await read(DOCX.selector)).localArtifact
   assert.equal(document.encoding, 'base64',
     'this build declared a DOCX as text, which would put a partial reading in front of a model as the document')
   assert.equal(document.mediaType, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
@@ -217,7 +219,7 @@ test('a material id is opaque: a path, a wrong id, or another Agent\'s material 
 })
 
 test('a material whose stored bytes changed underneath the store is refused, not reported', async () => {
-  const message = await refusedWith(read(SPOILED.id))
+  const message = await refusedWith(read(SPOILED.selector))
   assert.match(message, /material_chunk_corrupt/u)
   assert.doesNotMatch(message, /REPLACED|original text/u, 'the refusal carried the bytes it was refusing')
   // Nothing was produced for it: a reference to bytes nobody could verify must not exist.
@@ -235,7 +237,7 @@ const accept = (record) => ({ accepted: true, payload: {
   totalBytes: record.totalBytes, digest: record.digest } })
 
 test('a material read is reported by reference whatever its size, and no byte is uploaded', async () => {
-  const executed = await read(TEXT.id)
+  const executed = await read(TEXT.selector)
   const localArtifact = worker.workerLocalArtifact(executed.localArtifact)
   assert.notEqual(localArtifact, undefined)
   // Far inside the inline budget: without the custody branch this result would simply be sent
@@ -285,7 +287,7 @@ test('an over-budget ordinary result takes custody locally and registers a manif
 })
 
 test('a reference the service does not confirm is not put in a receipt', async () => {
-  const executed = await read(TEXT.id)
+  const executed = await read(TEXT.selector)
   const localArtifact = worker.workerLocalArtifact(executed.localArtifact)
   for (const [label, register, expected] of [
     ['a reference for other bytes', async (record) => ({ ...accept(record), payload: { ...accept(record).payload, digest: `sha256:${'0'.repeat(64)}` } }), 'artifact_registration_unconfirmed'],

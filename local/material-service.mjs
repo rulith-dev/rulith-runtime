@@ -19,7 +19,7 @@
  * Connection and Agent this profile is — is exactly what the owner binding is about.
  */
 import {
-  MAX_ATTACHMENTS, MAX_MATERIAL_BYTES, MATERIAL_ID_PATTERN, MaterialError, decodeCanonicalBase64,
+  MAX_ATTACHMENTS, MAX_MATERIAL_BYTES, MaterialError, decodeCanonicalBase64,
   normalizeModelDestination, openMaterialStore,
 } from '../worker/material-store.mjs'
 
@@ -103,16 +103,11 @@ export function createMaterialService({ root, getIdentity, custodian, key }) {
           `This file is ${bytes.byteLength} bytes and the per-file limit is ${MAX_MATERIAL_BYTES}.`)
       }
       const record = store.put({ name: body?.name, mediaType: body?.mediaType, bytes })
-      return {
-        material: {
-          id: record.id, name: record.name, mediaType: record.mediaType,
-          totalBytes: record.totalBytes, digest: record.digest,
-        },
-      }
+      return { material: store.publicMaterial(record) }
     },
     /** Metadata for this exact profile and owner. */
     list() {
-      return { materials: open().list() }
+      return { materials: open().publicList() }
     },
     /**
      * Validate membership for a case submission, and produce what may be forwarded.
@@ -125,7 +120,7 @@ export function createMaterialService({ root, getIdentity, custodian, key }) {
      * What travels is metadata. There is no ticket to travel with it — the only ticket in this
      * protocol is the Gateway's, minted per read, and an attachment is not a read.
      */
-    attachments(ids) {
+    attachments(ids, context) {
       if (ids === undefined) return { attachments: [] }
       if (!Array.isArray(ids)) {
         throw new MaterialError('attachments_invalid', 'attachments must be an array of material ids.')
@@ -143,15 +138,7 @@ export function createMaterialService({ root, getIdentity, custodian, key }) {
       const rows = []
       for (const raw of ids) {
         const id = String(raw ?? '')
-        if (!MATERIAL_ID_PATTERN.test(id)) {
-          throw new MaterialError('material_id_invalid', `${JSON.stringify(id)} is not a material id issued by this host.`)
-        }
-        const record = store.record(id)
-        if (record === undefined) {
-          throw new MaterialError('material_not_found',
-            `${id} is not a material of this runtime profile. A material added under a different Gateway, Connection or`
-            + ' Agent is not re-attributed to the one configured now.')
-        }
+        const record = store.selected(id)
         if (record.disclosure?.modelDestination !== identity.modelDestination) {
           throw new MaterialError('material_disclosure_refused',
             `${record.name} was added while this profile was configured for`
@@ -163,12 +150,24 @@ export function createMaterialService({ root, getIdentity, custodian, key }) {
           throw new MaterialError('material_local_only',
             `${record.name} was added while this profile used a local model. It is not disclosed to a remote one.`)
         }
-        rows.push({
-          id: record.id, name: record.name, mediaType: record.mediaType,
-          totalBytes: record.totalBytes, digest: record.digest,
-        })
+        try { store.verify(record.id) }
+        catch (error) {
+          if (error instanceof MaterialError) {
+            throw new MaterialError(error.code, error.message.replaceAll(record.id, id))
+          }
+          throw new MaterialError('material_unavailable', 'The selected local material could not be verified.')
+        }
+        rows.push({ handle: id, record })
       }
-      return { attachments: rows }
+      return { attachments: rows.map(({ handle, record }) => {
+        try { return store.submitSelected(handle, context) }
+        catch (error) {
+          if (error instanceof MaterialError) {
+            throw new MaterialError(error.code, error.message.replaceAll(record.id, handle))
+          }
+          throw new MaterialError('material_submission_unavailable', 'The selected local material could not be submitted.')
+        }
+      }) }
     },
     /**
      * Route one locally delivered read to the custodian, and hand back what it produced.

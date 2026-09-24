@@ -21,7 +21,7 @@ import test from 'node:test'
 import {
   MATERIAL_CHUNK_BYTES, MATERIAL_ID_PATTERN, MATERIAL_STORE_VERSION, MaterialError, decodeCanonicalBase64,
   defaultMaterialRoot, isLoopbackDestination, materialDisplayName, materialIdentity,
-  materialIdentityFromFingerprints, materialTextOf, normalizeModelDestination, openMaterialStore,
+  materialAgentFingerprint, materialIdentityFromFingerprints, materialTextOf, normalizeModelDestination, openMaterialStore,
   trimToCodePoints,
 } from '../worker/material-store.mjs'
 
@@ -56,6 +56,54 @@ const refusal = (fn) => {
   }
   return assert.fail('the call was expected to refuse and returned instead')
 }
+
+test('public selector is issued only on submission and survives restart with exact private custody', () => {
+  area(({ root, identityFor, store }) => {
+    const first = store()
+    const record = first.put({ name: 'private.txt', mediaType: 'text/plain', bytes: Buffer.from('version one') })
+    const second = first.put({ name: 'unused.txt', mediaType: 'text/plain', bytes: Buffer.from('not submitted') })
+    const publicRow = first.publicMaterial(record)
+    assert.match(publicRow.id, /^ui_[0-9a-f]{32}$/u)
+    assert.notEqual(publicRow.id, record.selector)
+    assert.notEqual(record.selector, record.id)
+    assert.equal(refusal(() => first.resolveSubmitted(record.selector)), 'material_not_found')
+    assert.equal(refusal(() => first.resolveSubmitted(second.selector)), 'material_not_found')
+    assert.equal(refusal(() => first.resolveSubmitted(record.id)), 'material_not_found')
+    assert.equal(refusal(() => first.resolveSubmitted(`mat_${'0'.repeat(32)}`)), 'material_not_found')
+    assert.equal(first.submitSelected(publicRow.id, { sessionKey: 'case-a', caseId: 'case-a' }).id, record.selector)
+    const reopened = openMaterialStore(root, identityFor(), { create: false })
+    assert.equal(reopened.resolveSubmitted(record.selector).id, record.id)
+    assert.equal(reopened.read(record.id, { modelDestination: REMOTE_MODEL }).bytes.toString(), 'version one')
+    assert.equal(refusal(() => reopened.resolveSubmitted(second.selector)), 'material_not_found')
+    const submitted = JSON.parse(readFileSync(join(root, 'objects', record.id, 'submission.json'), 'utf8'))
+    assert.deepEqual(submitted.submissions, [{ sessionKey: 'case-a', caseId: 'case-a', requestId: '' }])
+    assert.equal(submitted.custodyId, record.id)
+    assert.equal(submitted.digest, record.digest)
+  })
+})
+
+test('submitted selector refuses changed digest, Agent, Connection and stored bytes', () => {
+  area(({ root, identityFor, store }) => {
+    const first = store()
+    const record = first.put({ name: 'version.txt', mediaType: 'text/plain', bytes: Buffer.from('original') })
+    first.submitSelected(record.uiHandle, { sessionKey: 'case-a' })
+    const file = join(root, 'objects', record.id, 'submission.json')
+    const original = readFileSync(file, 'utf8')
+    const mapping = JSON.parse(original)
+    writeFileSync(file, JSON.stringify({ ...mapping, digest: 'sha256:' + '0'.repeat(64) }))
+    assert.equal(refusal(() => store().resolveSubmitted(record.selector)), 'material_submission_mismatch')
+    writeFileSync(file, '{truncated')
+    assert.equal(refusal(() => store().resolveSubmitted(record.selector)), 'material_submission_mismatch')
+    writeFileSync(file, original)
+    assert.equal(refusal(() => openMaterialStore(root, identityFor({ agent: 'ag_other' }), { create: false })), 'materials_store_owner_mismatch')
+    assert.equal(refusal(() => openMaterialStore(root, identityFor({ connection: 'con-other' }), { create: false })), 'materials_store_owner_mismatch')
+    const wrongWorker = materialIdentityFromFingerprints({ profile: mapping.owner.profile,
+      owner: mapping.owner.owner, agentFingerprint: materialAgentFingerprint('ag_other'), modelDestination: REMOTE_MODEL })
+    assert.equal(refusal(() => openMaterialStore(root, wrongWorker, { create: false }).resolveSubmitted(record.selector)), 'material_submission_mismatch')
+    writeFileSync(join(root, 'objects', record.id, 'chunks', '000000.bin'), 'tampered')
+    assert.equal(refusal(() => store().resolveSubmitted(record.selector)), 'material_chunk_corrupt')
+  })
+})
 
 test('a stored material survives a restart, keeps its chunk manifest, and reads back byte for byte', () => {
   area(({ root, identityFor }) => {

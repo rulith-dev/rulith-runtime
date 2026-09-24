@@ -215,7 +215,8 @@ export function createManagerServer({
     const payload = JSON.parse(result.toString('utf8'))
     if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !payload.draft || !payload.report) throw new Error('The checked result has an invalid draft/report payload.')
     const checkedProposalDigest = proposalDigest(payload.draft)
-    const material = store.require(String(index.materialId))
+    const material = store.resolveSubmitted(String(index.materialId))
+    if (material.id !== index.custodyId) throw new Error('The checked result no longer names its original material custody.')
     const node = 'node_' + createHash('sha256').update(String(index.materialId) + '\u0000' + String(index.documentDigest), 'utf8').digest('hex').slice(0, 32)
     if (material.digest !== index.documentDigest || index.proposalDigest !== checkedProposalDigest || payload.report.proposalDigest !== checkedProposalDigest || index.node !== node) {
       throw new Error('The checked result no longer matches its immutable material and proposal.')

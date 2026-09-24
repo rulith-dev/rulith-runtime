@@ -52,6 +52,7 @@ async function withArea(run, { modelUrl = LOCAL_MODEL } = {}) {
         RULITH_MATERIALS_ROOT: root,
         RULITH_MATERIALS_PROFILE: identity.profile,
         RULITH_MATERIALS_OWNER: identity.owner,
+        RULITH_MATERIALS_AGENT_FINGERPRINT: identity.agentFingerprint,
         RULITH_MATERIALS_MODEL_DESTINATION: identity.modelDestination,
       },
     })
@@ -99,6 +100,7 @@ test('a material read registers a manifest and reports a reference; no payload b
       name: 'notes.md', mediaType: 'text/markdown; charset=utf-8',
       bytes: Buffer.from('# Heading\n\nSECRET-MATERIAL-BODY\n', 'utf8'),
     })
+    store.submitSelected(material.uiHandle, { sessionKey: 'delivery-case' })
     let dispatched = false
     const registrations = []
     const run = await driveWorker({
@@ -108,7 +110,7 @@ test('a material read registers a manifest and reports a reference; no payload b
         if (operation.kind !== 'Poll') return acceptOthers(operation)
         if (dispatched) return HOLD
         dispatched = true
-        return { body: { accepted: true, payload: { work: [materialActionRow(root, material.id)] } } }
+        return { body: { accepted: true, payload: { work: [materialActionRow(root, material.selector)] } } }
       },
       materialReply: (path, payload, entry) => {
         if (path !== '/artifact/register') return undefined

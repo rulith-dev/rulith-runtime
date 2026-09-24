@@ -77,13 +77,16 @@ export function builtinLocalAuthoringTools(root = process.env.RULITH_MATERIALS_R
 function material(root, binding, id) {
   if (!MATERIAL_ID_PATTERN.test(id)) throw new Error('local_authoring_material_invalid: material must be a host-issued mat_<32 hex> id.')
   const store = openMaterialStore(root, binding, { create: false })
-  const read = store.read(id, { modelDestination: binding.modelDestination })
+  const selected = store.resolveSubmitted(id)
+  let read
+  try { read = store.read(selected.id, { modelDestination: binding.modelDestination }) }
+  catch (error) { throw new Error(String(error?.message ?? error).replaceAll(selected.id, id)) }
   const media = String(read.record.mediaType).split(';', 1)[0].trim().toLowerCase()
   if (!/\.(txt|md)$/i.test(read.record.name) || (media !== 'text/plain' && media !== 'text/markdown')) throw new Error('local_authoring_media_unsupported: only immutable .txt and .md material is supported.')
   if (read.bytes.byteLength > LOCAL_AUTHORING_LIMITS.documentBytes) throw new Error('local_authoring_document_too_large: document exceeds 256 KiB.')
   const text = materialTextOf(read.record, read.bytes)
   if (text === undefined) throw new Error('local_authoring_utf8_invalid: document must be strict UTF-8.')
-  return { store, record: read.record, bytes: read.bytes, text }
+  return { store, selector: id, record: read.record, bytes: read.bytes, text }
 }
 // Node identity is stable for the exact immutable document version, never a path or a task alias.
 export const authoringNode = (materialId, digest) => `node_${createHash('sha256').update(`${materialId}\u0000${digest}`, 'utf8').digest('hex').slice(0, 32)}`
@@ -102,14 +105,14 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
   if (tool.entry === 'ingest') {
     const found = material(materialRoot, binding, String(input.material ?? ''))
-    const node = authoringNode(found.record.id, found.record.digest)
+    const node = authoringNode(found.selector, found.record.digest)
     const produced = found.store.deriveResult(found.record.id, { mediaType: found.record.mediaType, encoding: 'utf8' })
-    return { result: 'Document ingested locally.', localArtifact: produced, rows: [{ node, task_id: found.record.id, document_digest: found.record.digest, characters: [...found.text].length }] }
+    return { result: 'Document ingested locally.', localArtifact: produced, rows: [{ node, task_id: found.selector, document_digest: found.record.digest, characters: [...found.text].length }] }
   }
   const constructing = tool.entry === 'construct'
   if (!constructing && tool.entry !== 'check') throw new Error('local_authoring_tool_unknown')
   const found = material(materialRoot, binding, String(input.task_id ?? ''))
-  const node = authoringNode(found.record.id, found.record.digest)
+  const node = authoringNode(found.selector, found.record.digest)
   if (input.node !== node) throw new Error('local_authoring_node_mismatch: node does not name this immutable material version.')
   const inputName = constructing ? 'construction_json' : 'draft_json'
   const inputText = input[inputName]
@@ -138,8 +141,8 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
     if (!envelope.constructed) {
       if (envelope.draft !== undefined || envelope.report !== undefined || envelope.errors.length === 0) throw new Error('local_authoring_report_invalid: refused construction has an invalid envelope.')
       const summary = JSON.stringify({ constructed: false, errors: envelope.errors.map(row => String(row?.code ?? 'construction_invalid')) })
-      const result = found.store.putResult({ name: `authoring-construction-${found.record.id}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify({ construction_json: inputText, constructorVersion: envelope.constructorVersion, inputDigest, constructionDigest: construction_digest, errors: envelope.errors }), 'utf8') })
-      return { result: 'Local deterministic draft construction was refused.', localArtifact: result, safeInlineGuidance: createConstructionGuidance(envelope.errors), rows: [{ node, task_id: found.record.id, construction_digest, proposal_digest: '', constructed: false, compiled: false, examples_total: 0, examples_passed: 0, citations_total: 0, citations_verified: 0, external_actions: 0, report: summary }] }
+      const result = found.store.putResult({ name: `authoring-construction-${found.selector}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify({ construction_json: inputText, constructorVersion: envelope.constructorVersion, inputDigest, constructionDigest: construction_digest, errors: envelope.errors }), 'utf8') })
+      return { result: 'Local deterministic draft construction was refused.', localArtifact: result, safeInlineGuidance: createConstructionGuidance(envelope.errors), rows: [{ node, task_id: found.selector, construction_digest, proposal_digest: '', constructed: false, compiled: false, examples_total: 0, examples_passed: 0, citations_total: 0, citations_verified: 0, external_actions: 0, report: summary }] }
     }
     if (!envelope.draft || Array.isArray(envelope.draft) || typeof envelope.draft !== 'object' || !envelope.report || Array.isArray(envelope.report) || typeof envelope.report !== 'object' || envelope.errors.length !== 0) throw new Error('local_authoring_report_invalid: successful construction has an invalid envelope.')
   }
@@ -153,9 +156,9 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
   const summary = JSON.stringify({ compiled: report.compiled, ...counts, errors: authoringDiagnostics(report).errors })
   const construction_digest = constructing ? envelope.constructionDigest : undefined
   const artifact = constructing ? { construction_json: inputText, constructorVersion: envelope.constructorVersion, inputDigest: envelope.inputDigest, constructionDigest: construction_digest, draft, report } : { draft, report }
-  const result = found.store.putResult({ name: `${constructing ? 'authoring-construction' : 'authoring-check'}-${found.record.id}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify(artifact), 'utf8') })
-  await recordResult(materialRoot, { profile: binding.profile, owner: binding.owner, materialId: found.record.id, documentDigest: found.record.digest, node, proposalDigest: proposal_digest, resultId: result.id, resultDigest: result.digest, checkedAt: new Date().toISOString() })
-  return { result: constructing ? 'Local deterministic draft construction and mechanical check completed.' : 'Local mechanical authoring check completed.', localArtifact: result, safeInlineGuidance: createAuthoringGuidance(report), rows: [{ node, task_id: found.record.id, ...(constructing ? { construction_digest, constructed: true } : {}), proposal_digest, compiled: report.compiled, ...counts, report: summary }] }
+  const result = found.store.putResult({ name: `${constructing ? 'authoring-construction' : 'authoring-check'}-${found.selector}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify(artifact), 'utf8') })
+  await recordResult(materialRoot, { profile: binding.profile, owner: binding.owner, materialId: found.selector, custodyId: found.record.id, documentDigest: found.record.digest, node, proposalDigest: proposal_digest, resultId: result.id, resultDigest: result.digest, checkedAt: new Date().toISOString() })
+  return { result: constructing ? 'Local deterministic draft construction and mechanical check completed.' : 'Local mechanical authoring check completed.', localArtifact: result, safeInlineGuidance: createAuthoringGuidance(report), rows: [{ node, task_id: found.selector, ...(constructing ? { construction_digest, constructed: true } : {}), proposal_digest, compiled: report.compiled, ...counts, report: summary }] }
   } finally {
     checkerBusy = false
     const root = resolve(materialRoot, 'local-authoring')

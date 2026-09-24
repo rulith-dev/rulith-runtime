@@ -27,7 +27,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
+  closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
   realpathSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -40,7 +40,7 @@ import { dirname, join, resolve } from 'node:path'
  * happens to parse, and the failure mode of guessing is a file served under somebody else's
  * owner binding.
  */
-export const MATERIAL_STORE_VERSION = 'rulith-materials/2'
+export const MATERIAL_STORE_VERSION = 'rulith-materials/3'
 /** The deployment constant the material wire fixes. A per-object chunk size does not exist. */
 export const MATERIAL_CHUNK_BYTES = 65_536
 /** The documented per-file ceiling for something a person adds, in original bytes. */
@@ -52,6 +52,7 @@ export const MAX_MATERIAL_REQUEST_BYTES = 12 * 1024 * 1024
 /** How many materials one case submission may carry. */
 export const MAX_ATTACHMENTS = 8
 export const MATERIAL_ID_PATTERN = /^mat_[0-9a-f]{32}$/
+export const MATERIAL_UI_HANDLE_PATTERN = /^ui_[0-9a-f]{32}$/
 export const RESULT_ID_PATTERN = /^res_[0-9a-f]{32}$/
 export const MATERIAL_OBJECT_ID_PATTERN = /^(?:mat|res)_[0-9a-f]{32}$/
 export const MATERIAL_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/
@@ -69,6 +70,7 @@ export class MaterialError extends Error {
 
 const sha256 = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 const fingerprint = (...parts) => createHash('sha256').update(parts.join('\u0000')).digest('hex')
+export const materialAgentFingerprint = (agentId) => fingerprint('rulith-material-agent', String(agentId ?? ''))
 
 /**
  * Windows device names are not ordinary file names even when they are used as display text.
@@ -211,6 +213,7 @@ export function materialIdentity({ configFile, gatewayUrl = '', connectionId = '
     gateway,
     connection,
     agentId: agent,
+    agentFingerprint: agent ? materialAgentFingerprint(agent) : '',
     modelDestination,
     model: String(model ?? ''),
     localOnly: isLoopbackDestination(modelDestination),
@@ -226,7 +229,7 @@ export function materialIdentity({ configFile, gatewayUrl = '', connectionId = '
  * defaulted: an identity that fell back to a constant would make every profile's materials look
  * like every other profile's.
  */
-export function materialIdentityFromFingerprints({ profile, owner, modelDestination = '', model = '' } = {}) {
+export function materialIdentityFromFingerprints({ profile, owner, agentFingerprint = '', modelDestination = '', model = '' } = {}) {
   for (const [name, value] of [['profile', profile], ['owner', owner]]) {
     if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
       throw new MaterialError('material_identity_invalid',
@@ -234,13 +237,16 @@ export function materialIdentityFromFingerprints({ profile, owner, modelDestinat
         + ` ${JSON.stringify(String(value ?? ''))}, and an identity is not guessed at.`)
     }
   }
+  if (agentFingerprint !== '' && !/^[0-9a-f]{64}$/.test(agentFingerprint)) {
+    throw new MaterialError('material_identity_invalid', 'The Agent fingerprint must be lowercase sha256.')
+  }
   const destination = normalizeModelDestination(modelDestination)
   return {
     profile, owner,
     // Deliberately empty. A process holding only fingerprints is one that was never told which
     // Agent this profile is — the Worker is exactly that — and an empty Agent opens an area
     // under its recorded one rather than claiming to be it.
-    agentId: '',
+    agentId: '', agentFingerprint,
     modelDestination: destination, model: String(model ?? ''),
     localOnly: isLoopbackDestination(destination),
   }
@@ -489,6 +495,11 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
     return landObject(id, {
       version: MATERIAL_STORE_VERSION,
       id,
+      ...(kind === 'material' ? {
+        selector: `mat_${randomUUID().replace(/-/g, '')}`,
+        uiHandle: `ui_${randomUUID().replace(/-/g, '')}`,
+        agent: identity.agentId,
+      } : {}),
       kind,
       name: displayName,
       mediaType: type,
@@ -518,6 +529,101 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
     /** Store one file a person added, whole, before the caller is told it succeeded. */
     put({ name, mediaType, bytes }) {
       return store('material', { name, mediaType, bytes, ceiling: MAX_MATERIAL_BYTES, encoding: 'base64', origin: 'operator' })
+    },
+    /** The browser receives a local selection handle, never the custody id or model selector. */
+    publicMaterial(record) {
+      if (!MATERIAL_UI_HANDLE_PATTERN.test(record?.uiHandle ?? '')) {
+        throw new MaterialError('material_selection_unavailable', 'This material has no separate local selection handle.')
+      }
+      return { id: record.uiHandle, name: record.name, mediaType: record.mediaType,
+        totalBytes: record.totalBytes, digest: record.digest }
+    },
+    publicList() {
+      return this.list().map((row) => this.publicMaterial(this.require(row.id)))
+    },
+    /** Resolve only a handle issued for this store and the Agent currently bound to it. */
+    selected(handle) {
+      if (!MATERIAL_UI_HANDLE_PATTERN.test(String(handle ?? ''))) {
+        throw new MaterialError('material_id_invalid', 'The attachment must be a local selection handle issued by this host.')
+      }
+      for (const row of this.list()) {
+        const record = this.require(row.id)
+        if (record.uiHandle !== handle) continue
+        if (!identity.agentId || (record.agent && record.agent !== identity.agentId) || marker.agent !== identity.agentId) {
+          throw new MaterialError('materials_store_owner_mismatch', 'The selection belongs to another Agent.')
+        }
+        return record
+      }
+      throw new MaterialError('material_not_found', 'The selected material does not belong to this runtime profile.')
+    },
+    /** User submission freezes the private selector-to-custody/version mapping durably. */
+    submitSelected(handle, context = {}) {
+      const record = this.selected(handle)
+      const path = join(objectDir(record.id), 'submission.json')
+      const binding = { selector: record.selector, custodyId: record.id, digest: record.digest,
+        totalBytes: record.totalBytes, owner: record.owner, agent: identity.agentId }
+      const submission = { sessionKey: String(context.sessionKey ?? ''), caseId: String(context.caseId ?? ''),
+        requestId: String(context.requestId ?? '') }
+      if (!submission.sessionKey) throw new MaterialError('material_submission_invalid', 'A material submission needs its conversation identity.')
+      if (!MATERIAL_ID_PATTERN.test(record.selector ?? '') || record.selector === record.id) {
+        throw new MaterialError('material_selection_unavailable', 'This material has no separate immutable selector.')
+      }
+      if (existsSync(path)) {
+        let previous
+        try { previous = JSON.parse(readFileSync(path, 'utf8')) } catch { /* mismatch below */ }
+        if (Object.keys(binding).some((key) => JSON.stringify(previous?.[key]) !== JSON.stringify(binding[key]))) {
+          throw new MaterialError('material_submission_mismatch', 'The submitted material mapping changed.')
+        }
+        if (!Array.isArray(previous.submissions) || previous.submissions.length === 0
+          || previous.submissions.some((row) => typeof row?.sessionKey !== 'string' || row.sessionKey === '')) {
+          throw new MaterialError('material_submission_mismatch', 'The submitted material context is invalid.')
+        }
+        const submissions = previous.submissions
+        if (!submissions.some((row) => JSON.stringify(row) === JSON.stringify(submission))) {
+          const temporary = join(tempDir, `submission.${randomUUID()}`)
+          writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [...submissions, submission] })}\n`)
+          renameSync(temporary, path)
+        }
+      } else {
+        const temporary = join(tempDir, `submission.${randomUUID()}`)
+        writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [submission] })}\n`)
+        try { linkSync(temporary, path); fsyncPath(objectDir(record.id)) }
+        finally { rmSync(temporary, { force: true }) }
+      }
+      return { id: record.selector, name: record.name, mediaType: record.mediaType,
+        totalBytes: record.totalBytes, digest: record.digest }
+    },
+    /** Worker-only: never accept a custody id or an unsubmitted selector as a model argument. */
+    resolveSubmitted(selector) {
+      if (!MATERIAL_ID_PATTERN.test(String(selector ?? ''))) {
+        throw new MaterialError('material_id_invalid', 'A material selector must be mat_<32 hex>.')
+      }
+      for (const row of this.list()) {
+        const record = this.require(row.id)
+        if (record.selector !== selector) continue
+        const path = join(objectDir(record.id), 'submission.json')
+        if (!existsSync(path)) break
+        let submitted
+        try { submitted = JSON.parse(readFileSync(path, 'utf8')) } catch { /* mismatch below */ }
+        if (submitted?.selector !== selector || submitted?.custodyId !== record.id
+          || submitted?.digest !== record.digest || submitted?.totalBytes !== record.totalBytes
+          || submitted?.owner?.profile !== identity.profile || submitted?.owner?.owner !== identity.owner
+          || !submitted?.agent || (record.agent && submitted.agent !== record.agent)
+          || marker.agent !== submitted.agent || !Array.isArray(submitted?.submissions)
+          || submitted.submissions.length === 0
+          || submitted.submissions.some((row) => typeof row?.sessionKey !== 'string' || row.sessionKey === '')
+          || !identity.agentFingerprint || identity.agentFingerprint !== materialAgentFingerprint(submitted.agent)) {
+          throw new MaterialError('material_submission_mismatch', 'The submitted selector does not match its immutable custody, owner and version.')
+        }
+        try { this.verify(record.id) } catch (error) {
+          if (error instanceof MaterialError) {
+            throw new MaterialError(error.code, error.message.replaceAll(record.id, selector))
+          }
+          throw error
+        }
+        return record
+      }
+      throw new MaterialError('material_not_found', 'This selector has no submitted material in this runtime profile.')
     },
     /**
      * Store bytes an action produced, so a reference to them can be registered.

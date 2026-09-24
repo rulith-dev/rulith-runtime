@@ -185,18 +185,21 @@ test('file selection agrees with the actual default provider when the model URL 
 })
 
 test('POST /materials stores a file whole and answers with metadata, not content', async () => {
-  await withHost(async ({ call, materialRoot }) => {
+  await withHost(async ({ call, materialRoot, configFile }) => {
     const response = await add(call, { name: 'notes.txt', mediaType: 'text/plain; charset=utf-8', text: 'attached content\n' })
     assert.equal(response.status, 200)
     const body = await response.json()
     assert.equal(body.ok, true)
     assert.deepEqual(Object.keys(body.material).sort(), ['digest', 'id', 'mediaType', 'name', 'totalBytes'])
-    assert.match(body.material.id, /^mat_[0-9a-f]{32}$/u)
+    assert.match(body.material.id, /^ui_[0-9a-f]{32}$/u)
     assert.equal(body.material.totalBytes, Buffer.byteLength('attached content\n'))
     assert.doesNotMatch(JSON.stringify(body), /attached content/u, 'the answer carried the file content back')
 
     // The bytes are on disk before the response was written, under an opaque id.
-    assert.equal(existsSync(join(materialRoot, 'objects', body.material.id, 'record.json')), true)
+    const { openMaterialStore } = await import('../worker/material-store.mjs')
+    const custody = openMaterialStore(materialRoot, identityOf(configFile)).list()[0].id
+    assert.notEqual(custody, body.material.id)
+    assert.equal(existsSync(join(materialRoot, 'objects', custody, 'record.json')), true)
 
     const listed = await (await call('/materials')).json()
     assert.deepEqual(listed.materials.map((row) => [row.id, row.name, row.totalBytes]),
@@ -273,8 +276,13 @@ test('a material area redirected by a reparse point refuses the whole route rath
 })
 
 test('POST /cases forwards attachment metadata and nothing else at all', async () => {
-  await withHost(async ({ call, tasks }) => {
+  await withHost(async ({ call, tasks, materialRoot, configFile }) => {
     const added = (await (await add(call, { name: 'notes.txt', mediaType: 'text/plain', text: 'SECRET-CONTENT-MARKER' })).json()).material
+    assert.deepEqual(tasks().filter((entry) => entry.kind === 'task'), [], 'adding a file did not submit it')
+    const { openMaterialStore } = await import('../worker/material-store.mjs')
+    const privateRecord = openMaterialStore(materialRoot, identityOf(configFile)).list()[0]
+    assert.notEqual(added.id, privateRecord.id)
+    assert.equal(existsSync(join(materialRoot, 'objects', privateRecord.id, 'submission.json')), false)
     const response = await call('/cases', {
       method: 'POST', body: JSON.stringify({ text: 'have a look', sessionKey: 'ctx-1', attachments: [added.id] }),
     })
@@ -288,9 +296,30 @@ test('POST /cases forwards attachment metadata and nothing else at all', async (
     // Metadata, and only metadata. There is no capability to carry beside it: a read is
     // authorized by the Gateway, per read, and an attachment is not a read.
     assert.deepEqual(Object.keys(body.attachments[0]).sort(), ['digest', 'id', 'mediaType', 'name', 'totalBytes'])
-    assert.equal(body.attachments[0].id, added.id)
+    assert.match(body.attachments[0].id, /^mat_[0-9a-f]{32}$/u)
+    assert.notEqual(body.attachments[0].id, added.id)
+    assert.doesNotMatch(JSON.stringify(body), /ui_[0-9a-f]{32}/u)
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(privateRecord.id, 'u'))
+    assert.equal(existsSync(join(materialRoot, 'objects', privateRecord.id, 'submission.json')), true)
     assert.doesNotMatch(JSON.stringify(body), /SECRET-CONTENT-MARKER/u, 'the file content crossed the hop to the Agent')
     assert.doesNotMatch(JSON.stringify(body), new RegExp(KEY, 'u'), 'the host page key crossed the hop to the Agent')
+  }, { withAgent: true })
+})
+
+test('a damaged attachment is refused without exposing its private custody id', async () => {
+  await withHost(async ({ call, tasks, materialRoot, configFile }) => {
+    const added = (await (await add(call, { name: 'private.txt', mediaType: 'text/plain', text: 'private content' })).json()).material
+    const { openMaterialStore } = await import('../worker/material-store.mjs')
+    const privateRecord = openMaterialStore(materialRoot, identityOf(configFile)).list()[0]
+    writeFileSync(join(materialRoot, 'objects', privateRecord.id, 'chunks', '000000.bin'), 'corrupt')
+    const response = await call('/cases', {
+      method: 'POST', body: JSON.stringify({ text: 'inspect', sessionKey: 'ctx-damaged', attachments: [added.id] }),
+    })
+    assert.equal(response.status, 400)
+    const refusal = await response.json()
+    assert.equal(refusal.errorCode, 'material_chunk_corrupt')
+    assert.doesNotMatch(JSON.stringify(refusal), new RegExp(privateRecord.id, 'u'))
+    assert.deepEqual(tasks().filter((entry) => entry.kind === 'task'), [])
   }, { withAgent: true })
 })
 
@@ -328,7 +357,7 @@ test('a case submission naming a material this profile does not own fails whole'
   await withHost(async ({ call, tasks }) => {
     const added = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'a' })).json()).material
     for (const [attachments, status, code] of [
-      [[`mat_${'0'.repeat(32)}`], 400, 'material_not_found'],
+      [[`ui_${'0'.repeat(32)}`], 400, 'material_not_found'],
       [['/etc/passwd'], 400, 'material_id_invalid'],
       [[added.id, added.id], 400, 'attachments_repeated'],
       [Array.from({ length: 9 }, () => added.id), 400, 'attachments_too_many'],
@@ -412,7 +441,7 @@ test('a host whose model endpoint was re-pointed refuses an attachment selected 
       const attach = await fetch(`http://127.0.0.1:${host.port}/cases`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-rulith-local': KEY },
-        body: JSON.stringify({ text: 'read it', attachments: [record.id] }),
+        body: JSON.stringify({ text: 'read it', attachments: [record.uiHandle] }),
       })
       assert.equal(attach.status, 400)
       const refusal = await attach.json()

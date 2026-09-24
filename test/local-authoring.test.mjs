@@ -6,9 +6,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { builtinLocalAuthoringTools, authoringNode, executeLocalAuthoring, proposalDigest, LOCAL_AUTHORING_DRAFT_SHAPE } from '../worker/local-authoring.mjs'
 import { validateAuthoringCheckerManifest } from '../local/authoring-checker.mjs'
-import { materialIdentityFromFingerprints, openMaterialStore } from '../worker/material-store.mjs'
+import { materialAgentFingerprint, materialIdentityFromFingerprints, openMaterialStore } from '../worker/material-store.mjs'
 
-const binding = materialIdentityFromFingerprints({ profile: 'a'.repeat(64), owner: 'b'.repeat(64), modelDestination: 'http://127.0.0.1:11434' })
+const binding = materialIdentityFromFingerprints({ profile: 'a'.repeat(64), owner: 'b'.repeat(64), agentFingerprint: materialAgentFingerprint('ag-authoring'), modelDestination: 'http://127.0.0.1:11434' })
+const owner = { ...binding, agentId: 'ag-authoring' }
 test('the checker source revision and executable URLs are one release identity', () => {
   const commit = 'a'.repeat(40)
   const manifest = { format: 'rulith-local-authoring-checker/1', sourceCommit: commit, files: [
@@ -56,21 +57,24 @@ test("proposal digest follows Java's four-field authoring surface and treats omi
 test('ingest accepts only the profile-owned immutable text material and binds a stable node', async () => {
   const root = await mkdtemp(join(tmpdir(), 'rulith-authoring-'))
   try {
-    const store = openMaterialStore(root, binding)
+    const store = openMaterialStore(root, owner)
     const record = store.put({ name: 'rules.txt', mediaType: 'text/plain', bytes: Buffer.from('When x then y.', 'utf8') })
+    store.submitSelected(record.uiHandle, { sessionKey: 'authoring-case' })
     const tool = builtinLocalAuthoringTools()['rulith.official_authoring.ingest_document@2']
-    const result = await executeLocalAuthoring(tool, { material: record.id }, { materialRoot: root, binding })
-    assert.equal(result.rows[0].task_id, record.id)
-    assert.equal(result.rows[0].node, authoringNode(record.id, record.digest))
-    await assert.rejects(() => executeLocalAuthoring(tool, { material: record.id, node: 'not-used' }, { materialRoot: root, binding: materialIdentityFromFingerprints({ profile: 'c'.repeat(64), owner: 'd'.repeat(64) }) }), /different runtime profile/)
+    const result = await executeLocalAuthoring(tool, { material: record.selector }, { materialRoot: root, binding })
+    assert.equal(result.rows[0].task_id, record.selector)
+    assert.equal(result.rows[0].node, authoringNode(record.selector, record.digest))
+    await assert.rejects(() => executeLocalAuthoring(tool, { material: record.selector, node: 'not-used' }, { materialRoot: root, binding: materialIdentityFromFingerprints({ profile: 'c'.repeat(64), owner: 'd'.repeat(64) }) }), /different runtime profile/)
     await assert.rejects(() => executeLocalAuthoring(tool, { material: 'mat_' + '0'.repeat(32) }, { materialRoot: root, binding }), { code: 'material_not_found' })
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 test('ingest refuses non-UTF8 material even when its file Source label is text', async () => {
   const root = await mkdtemp(join(tmpdir(), 'rulith-authoring-'))
   try {
-    const record = openMaterialStore(root, binding).put({ name: 'bad.txt', mediaType: 'text/plain', bytes: Buffer.from([0xc3, 0x28]) })
+    const store = openMaterialStore(root, owner)
+    const record = store.put({ name: 'bad.txt', mediaType: 'text/plain', bytes: Buffer.from([0xc3, 0x28]) })
+    store.submitSelected(record.uiHandle, { sessionKey: 'authoring-case' })
     const tool = builtinLocalAuthoringTools()['rulith.official_authoring.ingest_document@2']
-    await assert.rejects(() => executeLocalAuthoring(tool, { material: record.id }, { materialRoot: root, binding }), /utf8_invalid/)
+    await assert.rejects(() => executeLocalAuthoring(tool, { material: record.selector }, { materialRoot: root, binding }), /utf8_invalid/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
