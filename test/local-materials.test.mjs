@@ -103,7 +103,8 @@ async function withHost(run, {
   registerMaterialSubmission = async receipt => ({
     state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
     requestId: receipt.requestId, sessionKey: receipt.sessionKey,
-    proofDigest: receipt.proofDigest, attachments: receipt.attachments,
+    proofDigest: receipt.proofDigest, selectionDigest: receipt.selectionDigest,
+    attachments: receipt.attachments,
     registeredAt: new Date().toISOString(),
   }),
 } = {}) {
@@ -379,6 +380,7 @@ test('managed material registration blocks Agent forwarding until the durable cl
     if (!available) throw new Error('Registration unavailable')
     return { state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
       requestId: receipt.requestId, sessionKey: receipt.sessionKey, proofDigest: receipt.proofDigest,
+      selectionDigest: receipt.selectionDigest,
       attachments: receipt.attachments, registeredAt: new Date().toISOString() }
   } })
 })
@@ -401,20 +403,28 @@ test('private proof crosses only the confirmed Host-to-Agent header and exact re
     assert.deepEqual(registrations[0], registrations[1])
     assert.equal(registrations[0].proofDigest,
       'sha256:' + createHash('sha256').update(Buffer.from(secret, 'hex')).digest('hex'))
+    assert.match(registrations[0].selectionDigest, /^sha256:[0-9a-f]{64}$/u)
+    assert.notEqual(registrations[0].selectionDigest, registrations[0].proofDigest)
     const { openMaterialStore } = await import('../worker/material-store.mjs')
     const privateRecord = openMaterialStore(materialRoot, identityOf(configFile)).list()[0]
     const stored = (await import('node:fs')).readdirSync(join(materialRoot, 'submissions'))
       .filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(materialRoot, 'submissions', name), 'utf8')))
     assert.equal(stored.length, 1)
     assert.equal(stored[0].proofSecret, secret)
+    assert.match(stored[0].selectionSecret, /^[0-9a-f]{64}$/u)
+    assert.notEqual(stored[0].selectionSecret, secret)
+    assert.equal(registrations[0].selectionDigest,
+      'sha256:' + createHash('sha256').update(Buffer.from(stored[0].selectionSecret, 'hex')).digest('hex'))
     for (const observed of [registrations, forwarded.map(row => row.body), host.events()]) {
       assert.doesNotMatch(JSON.stringify(observed), new RegExp(secret, 'u'))
+      assert.doesNotMatch(JSON.stringify(observed), new RegExp(stored[0].selectionSecret, 'u'))
     }
     assert.doesNotMatch(JSON.stringify(forwarded), new RegExp(privateRecord.id, 'u'))
   }, { withAgent: true, registerMaterialSubmission: async receipt => {
     registrations.push(structuredClone(receipt))
     return { state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
       requestId: receipt.requestId, sessionKey: receipt.sessionKey, proofDigest: receipt.proofDigest,
+      selectionDigest: receipt.selectionDigest,
       attachments: receipt.attachments, registeredAt: new Date().toISOString() }
   } })
 })

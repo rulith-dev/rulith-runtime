@@ -94,6 +94,8 @@ test('one click receipt survives restart and refuses a changed selection for the
     const initial = first.submitSelectedSet([a.uiHandle], context)
     assert.match(initial.receipt.submissionId, /^sub_[0-9a-f]{32}$/u)
     assert.match(initial.receipt.proofSecret, /^[0-9a-f]{64}$/u)
+    assert.match(initial.receipt.selectionSecret, /^[0-9a-f]{64}$/u)
+    assert.notEqual(initial.receipt.selectionSecret, initial.receipt.proofSecret)
     assert.equal(createHash('sha256').update(Buffer.from(initial.receipt.proofSecret, 'hex')).digest('hex').length, 64)
     assert.deepEqual(initial.receipt.attachments,
       [{ selector: a.selector, digest: a.digest, totalBytes: a.totalBytes }])
@@ -116,6 +118,7 @@ test('one click receipt survives restart and refuses a changed selection for the
     const separate = reopened.submitSelectedSet([b.uiHandle], { requestId: 'another-request', sessionKey: 'x' })
     assert.notEqual(separate.receipt.submissionId, initial.receipt.submissionId)
     assert.notEqual(separate.receipt.proofSecret, initial.receipt.proofSecret)
+    assert.notEqual(separate.receipt.selectionSecret, initial.receipt.selectionSecret)
     assert.equal(readdirSync(join(root, 'submissions')).filter((name) => name.endsWith('.json')).length, 2)
   })
 })

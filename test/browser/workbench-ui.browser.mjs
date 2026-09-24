@@ -150,6 +150,41 @@ arm('a new browser frame restores the recovery snapshot even without its origina
   }, { events: [{ src: 'local', type: 'runtime-recovery', recovery:
     projectRecovery([{ src: 'agent', type: 'pending-inherited', tool: 'ApplyAction' }]) }] })
 
+arm('an original call links to the bound Agent Runtime and disappears on account, Agent, or recovery change',
+  { width: 1440, height: 900 }, async ({ page, fixture }) => {
+    const child = await openAgent(page, 'inst-1')
+    const rail = child.locator('#recovery')
+    const link = rail.getByRole('link', { name: 'Open Agent Runtime in Console' })
+    await link.waitFor()
+    assert.equal(await link.getAttribute('href'),
+      'https://console.example/console/#/agents/agent%20%2Fone%3F?tab=runtime')
+    assert.match(await rail.innerText(), /Original call: call-original/)
+    assert.match(await child.locator('#stream').innerText(), /Original call: call-original/)
+    assert.equal(await rail.getByRole('link', { name: 'Open original Case in Console' }).count(), 0)
+    await child.evaluate(() => { mergeEvent({ src: 'agent', type: 'recovery', state: 'reconciliation_required',
+      tool: 'ApplyAction', callRef: 'call-original', caseId: 'CASE /1?', accountId: 'acct-1', agentId: 'agent /one?' }); render() })
+    assert.equal(await rail.getByRole('link', { name: 'Open original Case in Console' }).getAttribute('href'),
+      'https://console.example/console/#/cases/agent%20%2Fone%3F/CASE%20%2F1%3F')
+
+    fixture.control.runtimeConsole = { origin: 'https://console.example', accountId: 'acct-other', agentId: 'agent /one?' }
+    await child.waitForFunction(() => !document.querySelector('#recovery a'))
+    assert.match(await rail.innerText(), /Console destination unavailable/)
+    fixture.control.runtimeConsole = { origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent-other' }
+    await child.waitForTimeout(2700)
+    assert.equal(await link.count(), 0)
+    fixture.control.runtimeConsole = { origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent /one?' }
+    await link.waitFor()
+    await child.evaluate(() => { mergeEvent({ src: 'agent', type: 'exit' }); render() })
+    assert.match(await rail.innerText(), /status needs refreshing/)
+    assert.match(await rail.innerText(), /Original call: call-original/)
+    await child.evaluate(() => { mergeEvent({ src: 'agent', type: 'recovery', state: 'none' }); render() })
+    assert.match(await rail.innerText(), /No unresolved call/)
+    assert.equal(await link.count(), 0)
+  }, { instances: [{ id: 'inst-1', name: 'Research', mode: 'local_agent', directory: 'D:/instances/inst-1',
+    origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent /one?', agentName: 'One', paired: true }],
+  agents: [{ id: 'agent /one?', name: 'One' }], events: [{ src: 'agent', type: 'recovery', state: 'reconciliation_required',
+    tool: 'ApplyAction', callRef: 'call-original', accountId: 'acct-1', agentId: 'agent /one?' }] })
+
 arm('local authoring review shows the checked program and keeps Save disabled for questions',
   { width: 1400, height: 900 }, async ({ page }) => {
     await openAgent(page, 'inst-1')

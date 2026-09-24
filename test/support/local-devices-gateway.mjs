@@ -136,8 +136,10 @@ export function createDevicesGateway({
       return { deviceId: row.id, account: { id: row.accountId, name: accountName }, agents: grantedAgents(row), expiresAt: row.expiresAt }
     },
     'POST /local-devices/material-submissions': (body, { bearer }) => {
-      onlyFields(body, ['agentId', 'submissionId', 'requestId', 'sessionKey', 'attachments', 'proofDigest'])
+      onlyFields(body, ['agentId', 'submissionId', 'requestId', 'sessionKey', 'attachments', 'proofDigest', 'selectionDigest'])
       if (!/^sha256:[0-9a-f]{64}$/.test(body.proofDigest ?? '')) refuse(400, 'Invalid task proof digest.', 'bad_command')
+      if (!/^sha256:[0-9a-f]{64}$/.test(body.selectionDigest ?? '')
+        || body.selectionDigest === body.proofDigest) refuse(400, 'Invalid material selection digest.', 'bad_command')
       const device = grantUsable(deviceByToken(bearer))
       if (!device.agentIds.includes(body.agentId) || !grantedAgents(device).some(row => row.id === body.agentId)) {
         refuse(403, 'That Agent is outside this device authorization.', 'agent_out_of_scope')
@@ -157,7 +159,8 @@ export function createDevicesGateway({
       }
       const reply = { deviceId: device.id, agentId: body.agentId, submissionId: body.submissionId,
         requestId: body.requestId, sessionKey: body.sessionKey, registeredAt: new Date().toISOString(), state: 'registered',
-        attachments: body.attachments.map(row => ({ ...row })), proofDigest: body.proofDigest }
+        attachments: body.attachments.map(row => ({ ...row })), proofDigest: body.proofDigest,
+        selectionDigest: body.selectionDigest }
       materialSubmissions.set(key, { body: structuredClone(body), reply })
       return reply
     },

@@ -132,6 +132,8 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   const elements = new Map(['casecount', 'roots', 'recovery', 'frontier', 'workers'].map((id) => [id, { textContent: '', innerHTML: '' }]))
   const context = vm.createContext({ state: {}, $: (id) => elements.get(id), esc: String, timeOf: () => '', eventBody: () => '' })
   vm.runInContext(ui.localPage.slice(start, end), context)
+  const recoveryActions = ui.localPage.slice(ui.localPage.indexOf('function recoveryActions('), ui.localPage.indexOf('/* What a person', ui.localPage.indexOf('function recoveryActions(')))
+  vm.runInContext(recoveryActions, context)
   const renderer = ui.localPage.split('\n').find((line) => line.startsWith('function renderInspector('))
   assert.ok(renderer)
   vm.runInContext(renderer, context)

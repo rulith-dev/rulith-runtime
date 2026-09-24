@@ -88,6 +88,7 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       return void json(res, 200, { ok: true, mode: 'agent+worker', roles: ['agent', 'worker'],
         agent: row.agent === true, worker: row.worker === true,
         runtime: { configFile: 'D:/instances/inst-1/local.json',
+          console: control.runtimeConsole ?? { origin: row.origin, accountId: row.accountId, agentId: row.agentId },
           agent: { id: row.agentId, credentialConfigured: true, modelService: 'http://127.0.0.1:8080/v1', model: 'test-model', modelKeyConfigured: true, thinking: 'standard' },
           worker: { connection: 'conn-1', credentialConfigured: true, workspaceTools: 'read', toolsFile: '', sourcesFile: '' } } })
     }

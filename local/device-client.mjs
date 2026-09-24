@@ -485,14 +485,17 @@ export function createDeviceClient({ root } = {}) {
       return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
     },
     /** Register one durable Host selection; the Agent and browser never receive this bearer. */
-    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, proofDigest }) => {
+    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, proofDigest, selectionDigest }) => {
       const current = linked()
       if (text(expectedAccountId) !== text(current.account?.id)
         || !current.agents?.some(row => row.id === agentId)) {
         throw new Error('The selected Agent is no longer enabled for this signed-in account.')
       }
       if (!/^sha256:[0-9a-f]{64}$/.test(proofDigest ?? '')) throw new Error('Material task proof digest is missing or malformed.')
-      const body = { agentId, submissionId, requestId, sessionKey, attachments, proofDigest }
+      if (selectionDigest !== undefined && (!/^sha256:[0-9a-f]{64}$/.test(selectionDigest)
+        || selectionDigest === proofDigest)) throw new Error('Material selection digest is invalid.')
+      const body = { agentId, submissionId, requestId, sessionKey, attachments, proofDigest,
+        ...(selectionDigest === undefined ? {} : { selectionDigest }) }
       const reply = await call(current.origin, '/local-devices/material-submissions', {
         bearer: current.token, body,
       }).catch(operationRefusal)
@@ -506,6 +509,7 @@ export function createDeviceClient({ root } = {}) {
         || reply.agentId !== agentId || reply.submissionId !== submissionId
         || reply.requestId !== requestId || reply.sessionKey !== sessionKey
         || reply.proofDigest !== proofDigest
+        || reply.selectionDigest !== selectionDigest
         || typeof reply.registeredAt !== 'string' || !Number.isFinite(Date.parse(reply.registeredAt))
         || !Array.isArray(reply.attachments)
         || reply.attachments.length !== attachments.length
@@ -517,6 +521,42 @@ export function createDeviceClient({ root } = {}) {
         throw new Error('The account service did not confirm this exact material submission.')
       }
       return reply
+    },
+
+    /** Compare the accepted OpenCase against the private durable receipt after a restart. */
+    acceptedMaterialBinding: async ({ expectedAccountId, receipt }) => {
+      const current = linked()
+      const agentId = receipt?.agent
+      if (text(expectedAccountId) !== text(current.account?.id)
+        || !current.agents?.some(row => row.id === agentId)) {
+        throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+      }
+      if (!/^[0-9a-f]{64}$/.test(receipt?.selectionSecret ?? '')
+        || !/^[0-9a-f]{64}$/.test(receipt?.proofSecret ?? '')
+        || receipt.selectionSecret === receipt.proofSecret) {
+        throw new Error('This durable submission has no distinct selection secret.')
+      }
+      const selectionDigest = 'sha256:' + digest(Buffer.from(receipt.selectionSecret, 'hex'))
+      const proofDigest = 'sha256:' + digest(Buffer.from(receipt.proofSecret, 'hex'))
+      const reply = await call(current.origin, '/local-devices/material-submissions/accepted-binding', {
+        bearer: current.token,
+        body: { agentId, submissionId: receipt.submissionId, selectionDigest },
+      }).catch(operationRefusal)
+      const latest = linked()
+      if (latest.token !== current.token || latest.origin !== current.origin
+        || latest.deviceId !== current.deviceId || text(latest.account?.id) !== expectedAccountId
+        || !latest.agents?.some(row => row.id === agentId)) {
+        throw new Error('The device account or Agent changed before the material binding was confirmed.')
+      }
+      if (reply.deviceId !== current.deviceId || reply.agentId !== agentId
+        || reply.submissionId !== receipt.submissionId || reply.requestId !== receipt.requestId
+        || reply.sessionKey !== receipt.sessionKey || reply.proofDigest !== proofDigest
+        || reply.selectionDigest !== selectionDigest || !text(reply.callRef)
+        || !text(reply.caseId) || !text(reply.root)
+        || JSON.stringify(reply.attachments) !== JSON.stringify(receipt.attachments)) {
+        throw new Error('The accepted OpenCase binding does not match this durable Host receipt.')
+      }
+      return { callRef: reply.callRef, caseId: reply.caseId, root: reply.root }
     },
 
     /**

@@ -187,6 +187,14 @@ const safeUrl = (value) => {
     return url.toString()
   } catch { return String(value ?? '') }
 }
+const consoleOriginFor = (value) => {
+  try {
+    const origin = new URL(value)
+    if (!['http:', 'https:'].includes(origin.protocol)) return ''
+    if (origin.hostname === 'api.rulith.ai') origin.hostname = 'console.rulith.ai'
+    return origin.origin
+  } catch { return '' }
+}
 
 /**
  * What "this role started" means, and the event each role already sends to say it.
@@ -235,7 +243,7 @@ export function createLocalHost({
   startConfirmMs = START_CONFIRM_MS, autoStart = true,
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
   materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
-  registerMaterialSubmission,
+  registerMaterialSubmission, acceptedMaterialBinding,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -436,7 +444,9 @@ export function createLocalHost({
     },
   })
   const emit = (src, type, data = {}) => {
-    const event = { sequence: nextSequence++, t: Date.now(), src, type, ...data }
+    const recoveryEvent = src === 'agent' && ['pending-inherited', 'recovery'].includes(type)
+    const event = { sequence: nextSequence++, t: Date.now(), src, type, ...data,
+      ...(recoveryEvent ? { accountId: conversationOwner?.accountId || '', agentId: components.agent.agentId } : {}) }
     if (!event.historical) recoverySnapshot = projectRecovery([event], recoverySnapshot)
     events.push(event)
     if (events.length > 2000) events.splice(0, events.length - 1500)
@@ -841,10 +851,10 @@ export function createLocalHost({
           if (path === '/conversations') return void json(res, 200, { ok: true, available: true,
             ...await readHistory({ kind: 'list', archived: url.searchParams.get('archived') === 'true', offset: url.searchParams.get('offset') }) })
           const page = await readHistory({ kind: 'page', sessionKey: url.searchParams.get('sessionKey') ?? '', before: url.searchParams.get('before'), stopped: !running('agent') })
-          const origin = new URL(conversationOwner.origin)
-          if (origin.hostname === 'api.rulith.ai') origin.hostname = 'console.rulith.ai'
+          const consoleOrigin = consoleOriginFor(conversationOwner.origin)
+          if (!consoleOrigin) throw new Error('The Console origin is unavailable for this conversation.')
           return void json(res, 200, { ok: true, available: true, ...page,
-            caseBase: origin.origin + '/console/#/cases/' + encodeURIComponent(conversationOwner.agentId) + '/' })
+            caseBase: consoleOrigin + '/console/#/cases/' + encodeURIComponent(conversationOwner.agentId) + '/' })
         } catch (error) { return void json(res, 409, { ok: false, teaching: error.message }) }
       }
       if (path === '/conversation/archive' && req.method === 'POST') {
@@ -888,6 +898,7 @@ export function createLocalHost({
       if (path === '/status' && req.method === 'GET') {
         const agentEnv = agentEnvironment()
         const workerEnv = components.worker.roleEnv ?? effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
+        const consoleOrigin = conversationOwner?.origin ? consoleOriginFor(conversationOwner.origin) : ''
         return void json(res, 200, {
           ok: true, mode: modeOf(selectedRoles), roles: selectedRoles,
           agent: running('agent'), worker: running('worker'),
@@ -895,6 +906,10 @@ export function createLocalHost({
             running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])),
           runtime: {
             configFile,
+            ...(consoleOrigin && conversationOwner?.accountId
+              && conversationOwner.agentId === components.agent.agentId
+              ? { console: { origin: consoleOrigin,
+                accountId: conversationOwner.accountId, agentId: conversationOwner.agentId } } : {}),
             // No launcher address here, deliberately. The way back to a manager is a link the
             // operator navigates, built by the page from its own address; putting the
             // manager's browser key in a machine-readable status body would make every holder
@@ -1009,13 +1024,20 @@ export function createLocalHost({
             taskProof = selected.receipt.proofSecret
             if (!/^[0-9a-f]{64}$/.test(taskProof ?? '')) throw new Error('Durable task proof is unavailable')
             const proofDigest = 'sha256:' + createHash('sha256').update(Buffer.from(taskProof, 'hex')).digest('hex')
-            const { proofSecret: _privateProof, ...registration } = selected.receipt
-            const confirmed = await registerMaterialSubmission({ ...registration, proofDigest })
+            const selectionSecret = selected.receipt.selectionSecret
+            if (selectionSecret !== undefined && (!/^[0-9a-f]{64}$/.test(selectionSecret)
+              || selectionSecret === taskProof)) throw new Error('Durable selection secret is invalid')
+            const selectionDigest = selectionSecret === undefined ? undefined
+              : 'sha256:' + createHash('sha256').update(Buffer.from(selectionSecret, 'hex')).digest('hex')
+            const { proofSecret: _privateProof, selectionSecret: _privateSelection, ...registration } = selected.receipt
+            const confirmed = await registerMaterialSubmission({ ...registration, proofDigest, selectionDigest })
             if (confirmed?.state !== 'registered' || confirmed.agentId !== registration.agent
               || confirmed.submissionId !== registration.submissionId
               || confirmed.requestId !== registration.requestId
               || confirmed.sessionKey !== registration.sessionKey
               || confirmed.proofDigest !== proofDigest
+              || (selectionDigest === undefined ? confirmed.selectionDigest !== undefined
+                : confirmed.selectionDigest !== selectionDigest)
               || !Array.isArray(confirmed.attachments)
               || confirmed.attachments.length !== registration.attachments.length
               || confirmed.attachments.some((row, index) => row === null || typeof row !== 'object'
@@ -1074,6 +1096,11 @@ export function createLocalHost({
      */
     materialsKey: materials.key,
     get materialRoot() { return materials.root },
+    /** Manager-only recovery check. Never exposed on the page or forwarded to the Agent. */
+    acceptedMaterialBinding: async receipt => {
+      if (!acceptedMaterialBinding) throw new Error('Case binding lookup is unavailable')
+      return acceptedMaterialBinding(receipt)
+    },
     // The Agent identity this host's child reported for itself. A manager shows it beside
     // the instance, and a value it read from its own registry instead would be a second
     // claim about which Agent a running process is — exactly the claim that must come from

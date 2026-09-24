@@ -640,7 +640,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       expectedAccountId: scope.accountId, agentId: scope.agentId,
       submissionId: receipt.submissionId, requestId: receipt.requestId,
       sessionKey: receipt.sessionKey, attachments: receipt.attachments,
-      proofDigest: receipt.proofDigest,
+      proofDigest: receipt.proofDigest, selectionDigest: receipt.selectionDigest,
     })
     const latest = record(id), current = device.status()
     if (phase !== 'ready' || Object.entries(scope).some(([field, value]) =>
@@ -652,6 +652,26 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       throw new Error('The instance, account, or Agent changed before material registration completed.')
     }
     return answer
+  }
+
+  const acceptedMaterialBindingFor = (id) => async (receipt) => {
+    if (phase !== 'ready') throw new Error(phaseTeaching())
+    const row = record(id), grant = device.status()
+    const refusal = grantRefusal(id, { requirePaired: true, grant, row })
+    if (refusal !== null || receipt?.agent !== row.agentId
+      || hosts.get(id)?.host.agentId !== row.agentId) {
+      throw new Error(refusal ?? 'The durable submission belongs to a different Agent or instance.')
+    }
+    const binding = await device.acceptedMaterialBinding({ expectedAccountId: row.accountId, receipt })
+    const latest = record(id), current = device.status()
+    if (phase !== 'ready' || latest.accountId !== row.accountId || latest.agentId !== row.agentId
+      || latest.origin !== row.origin || current.deviceId !== grant.deviceId
+      || current.origin !== row.origin || text(current.account?.id) !== row.accountId
+      || grantRefusal(id, { requirePaired: true, grant: current, row: latest }) !== null
+      || hosts.get(id)?.host.agentId !== row.agentId) {
+      throw new Error('The instance, account, or Agent changed before the Case binding was confirmed.')
+    }
+    return binding
   }
 
   /**
@@ -700,6 +720,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       ...(row.origin && row.accountId && row.agentId ? { conversationOwner: { origin: row.origin, accountId: row.accountId, agentId: row.agentId } } : {}),
       setupApprover: device === undefined ? undefined : approverFor(id),
       registerMaterialSubmission: registerMaterialSubmissionFor(id),
+      acceptedMaterialBinding: acceptedMaterialBindingFor(id),
       managedPolicy: policyFor(id),
       managedCallToken,
       protectedPaths: [registry.root],

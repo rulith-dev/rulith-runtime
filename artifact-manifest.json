@@ -42,7 +42,7 @@
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "worker/material-store.mjs": {
-      "sha256": "39c3583dbbe0b55c4acf14365016d6ddcbc7c491443cbe6fb2c0dede715a10e1"
+      "sha256": "88929188ac1cb357ab036aa2fa480ab195239430cd3def73c978672be86a3355"
     },
     "worker/material-transport.mjs": {
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
@@ -63,13 +63,13 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "d711a850990a96f13adf076e9541ced8cf471b72ac8244b9726825ef465b105b"
+      "sha256": "e25e253ab850c41a6997e0dcc427f2514698f321832640055d6124e7f6289999"
     },
     "local/material-service.mjs": {
       "sha256": "c792c11005480860e1656fa49b257eedb55d453cc3574687a52a707f2479fa8c"
     },
     "local/local-ui.mjs": {
-      "sha256": "a102d0d0d75216edc6846a38addc560d00d6b6fd6621d9f08331fab4440129a8"
+      "sha256": "a795554a0bc06105e4d487cabac52ed19efbb4fef9d7cc1207461babede1c2eb"
     },
     "local/theme.mjs": {
       "sha256": "a0d692385464527706e0d12126970190a518c4b03077731473bdd58b6f2a141a"
@@ -81,10 +81,10 @@
       "sha256": "463c14bd288350a5e85d8b0dfb5e213f9ff75976c5a536e2330a735e31bab859"
     },
     "local/device-client.mjs": {
-      "sha256": "edda2ab514df58d31240c64cfed5c9657c429ed1a0a45fecf837a48383566278"
+      "sha256": "3964d7c29444cd4c3db134c4026fd5fb0ac7d8c369dad28519f3bf08997e5d2e"
     },
     "local/instance-manager.mjs": {
-      "sha256": "1cde272366df161a291123411387d5548483dd0f78df03afd84f09e1356d8a31"
+      "sha256": "f8355bcf47648a31d8deb2d887ed8cf76eb9a4b0d56584374c2fa13d6dde1fa3"
     },
     "local/manager-server.mjs": {
       "sha256": "c21690c45455a4450e4953c620bfbbf69c3b095a4f33545f2762a63740c0a25b"

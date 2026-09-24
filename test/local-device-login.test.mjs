@@ -294,23 +294,28 @@ test('material registration uses the device grant, preserves exact retry identit
     await signIn(gateway, call, ['agent-alpha'])
     const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
       submissionId: 'sub_' + 'a'.repeat(32), requestId: 'click-request-1234', sessionKey: 'ctx-1', proofDigest: 'sha256:' + 'a'.repeat(64),
+      selectionDigest: 'sha256:' + 'd'.repeat(64),
       attachments: [{ selector: 'mat_' + 'b'.repeat(32), digest: 'sha256:' + 'c'.repeat(64), totalBytes: 9 }] }
     const [first, second] = await Promise.all([
       manager.device.registerMaterialSubmission(body), manager.device.registerMaterialSubmission(body),
     ])
     assert.deepEqual(first, second)
     assert.equal(gateway.materialSubmissions.size, 1)
+    const nextBody = { ...body, submissionId: 'sub_' + 'd'.repeat(32), requestId: 'another-click-1234',
+      proofDigest: 'sha256:' + 'e'.repeat(64), selectionDigest: 'sha256:' + 'f'.repeat(64) }
     gateway.dropResponseAfterEffect('/local-devices/material-submissions')
-    const uncertain = await manager.device.registerMaterialSubmission({ ...body,
-      submissionId: 'sub_' + 'd'.repeat(32), requestId: 'another-click-1234' }).catch(error => error)
+    const uncertain = await manager.device.registerMaterialSubmission(nextBody).catch(error => error)
     assert.ok(uncertain instanceof Error)
-    const repeated = await manager.device.registerMaterialSubmission({ ...body,
-      submissionId: 'sub_' + 'd'.repeat(32), requestId: 'another-click-1234' })
+    const repeated = await manager.device.registerMaterialSubmission(nextBody)
     assert.equal(repeated.state, 'registered')
+    assert.equal(repeated.selectionDigest, nextBody.selectionDigest)
+    assert.notEqual(repeated.selectionDigest, first.selectionDigest)
     assert.equal(gateway.materialSubmissions.size, 2)
     const sent = gateway.requests.filter(row => row.path === '/local-devices/material-submissions')
     assert.ok(sent.every(row => row.origin === undefined && row.query === ''))
-    assert.deepEqual(Object.keys(sent[0].body).sort(), ['agentId', 'attachments', 'proofDigest', 'requestId', 'sessionKey', 'submissionId'])
+    assert.deepEqual(Object.keys(sent[0].body).sort(), ['agentId', 'attachments', 'proofDigest', 'requestId', 'selectionDigest', 'sessionKey', 'submissionId'])
+    assert.equal(sent[0].body.selectionDigest, body.selectionDigest)
+    assert.notEqual(first.selectionDigest, first.proofDigest)
     assert.doesNotMatch(JSON.stringify(sent), /custodyId|caseId|fileBytes|SECRET-CONTENT-MARKER/u)
     const denied = await manager.device.registerMaterialSubmission({ ...body, agentId: 'agent-beta' }).catch(error => error)
     assert.ok(denied instanceof Error)
@@ -334,6 +339,7 @@ test('a device account change while registration is in flight cannot confirm the
     }
     const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
       submissionId: 'sub_' + 'e'.repeat(32), requestId: 'account-switch-1234', sessionKey: 'ctx-1', proofDigest: 'sha256:' + 'b'.repeat(64),
+      selectionDigest: 'sha256:' + 'd'.repeat(64),
       attachments: [{ selector: 'mat_' + 'f'.repeat(32), digest: 'sha256:' + 'a'.repeat(64), totalBytes: 1 }] }
     try {
       const pending = manager.device.registerMaterialSubmission(body).catch(error => error)
@@ -352,6 +358,7 @@ test('material registration rejects a reply for another conversation', async (t)
     await signIn(gateway, call, ['agent-alpha'])
     const body = { expectedAccountId: manager.device.status().account.id, agentId: 'agent-alpha',
       submissionId: 'sub_' + '1'.repeat(32), requestId: 'mismatched-session-1234', sessionKey: 'ctx-original', proofDigest: 'sha256:' + 'c'.repeat(64),
+      selectionDigest: 'sha256:' + 'd'.repeat(64),
       attachments: [{ selector: 'mat_' + '2'.repeat(32), digest: 'sha256:' + '3'.repeat(64), totalBytes: 5 }] }
     const originalFetch = globalThis.fetch
     globalThis.fetch = async (...args) => {
