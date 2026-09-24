@@ -850,6 +850,25 @@ async function readHttpBody(r, maxBytes) {
   return Buffer.concat(chunks).toString('utf8')
 }
 
+/** A locally authored, digest-pinned terminal proof for a single HTTP write. */
+function httpTerminalCompletion(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || Object.keys(raw).some((key) => !['stage', 'statuses', 'json'].includes(key))
+      || raw.stage !== 'terminal'
+      || !Array.isArray(raw.statuses) || raw.statuses.length < 1 || raw.statuses.length > 2
+      || raw.statuses.some((status) => status !== 200 && status !== 201)
+      || new Set(raw.statuses).size !== raw.statuses.length
+      || !raw.json || typeof raw.json !== 'object' || Array.isArray(raw.json)
+      || Object.keys(raw.json).some((key) => !['field', 'equals'].includes(key))
+      || typeof raw.json.field !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(raw.json.field)
+      || !(typeof raw.json.equals === 'string' && raw.json.equals.length > 0 && raw.json.equals.length <= 128
+        || typeof raw.json.equals === 'boolean'
+        || typeof raw.json.equals === 'number' && Number.isFinite(raw.json.equals))) {
+    throw new Error('HTTP write Tool requires fence.completion {stage:"terminal",statuses:[200|201],json:{field,equals}}')
+  }
+  return { stage: 'terminal', statuses: [...raw.statuses], json: { field: raw.json.field, equals: raw.json.equals } }
+}
+
 /**
  * 原语工具 http：共享包只带 source+相对路径，地址与凭据由 Worker 的来源库补齐。
  * 本机旧工具表仍可直写 url，但必须显式 allowHosts；来自 source 的地址本身就是治理边界。
@@ -878,18 +897,50 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT) {
   if (!allow.includes(target.hostname)) throw new Error(`HTTP fence rejected host ${target.hostname}; allowed hosts: ${allow.join(',')}`)
   const method = String(resolved.method ?? 'GET').toUpperCase()
   const bodyMethod = !['GET', 'HEAD'].includes(method)
+  // The advertised Tool kind, not the transport verb, says whether a remote
+  // effect may have happened. A governed write may legitimately use GET.
+  const effectful = t.kind !== 'read'
+  const completion = effectful ? httpTerminalCompletion(t.completion) : undefined
   if (!bodyMethod) {
     for (const [name, value] of Object.entries(vals)) if (!used.has(name)) {
       target.searchParams.set(name, typeof value === 'object' ? JSON.stringify(value) : String(value))
     }
   }
   const headers = { ...(bodyMethod ? { 'content-type': 'application/json' } : {}), ...(resolved.headers ?? {}) }
-  const timeoutMs = Math.max(100, Math.min(Number(resolved.timeoutMs ?? 30_000), 300_000))
-  const r = await fetch(target, {
-    method, headers, signal: AbortSignal.timeout(timeoutMs),
+  const rawTimeoutMs = Number(resolved.timeoutMs ?? 30_000)
+  if (!Number.isSafeInteger(rawTimeoutMs) || rawTimeoutMs < 1) throw new Error('HTTP timeoutMs must be a positive integer')
+  const timeoutMs = Math.max(100, Math.min(rawTimeoutMs, 300_000))
+  // Reject malformed request configuration before the network uncertainty
+  // boundary. Constructing a Request does not send it to the Source.
+  const request = new Request(target, {
+    method, headers, signal: AbortSignal.timeout(timeoutMs), redirect: 'manual',
     ...(bodyMethod ? { body: JSON.stringify(vals) } : {}),
   })
-  const text = await readHttpBody(r, Number(resolved.maxResponseBytes ?? 16_384))
+  let r
+  let text
+  try {
+    r = await fetch(request)
+    text = await readHttpBody(r, Number(resolved.maxResponseBytes ?? 16_384))
+  } catch (error) {
+    // Once a write is sent, a lost response or unreadable body says nothing about
+    // whether the remote system already changed. Do not report known failure.
+    if (effectful) throw new ResultDeliveryError(`HTTP write outcome unknown after transport error: ${String(error?.message ?? error).slice(0, 160)}`)
+    throw error
+  }
+  if (effectful) {
+    // A transport status is not a business completion claim. Only the fixed
+    // terminal response evidence in the pinned local Tool may settle this call.
+    if (!completion.statuses.includes(r.status)) {
+      throw new ResultDeliveryError(`HTTP write terminal outcome unconfirmed: status=${r.status}`)
+    }
+    let envelope
+    try { envelope = JSON.parse(text) } catch { /* malformed terminal evidence stays unknown */ }
+    if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)
+        || !Object.hasOwn(envelope, completion.json.field)
+        || envelope[completion.json.field] !== completion.json.equals) {
+      throw new ResultDeliveryError(`HTTP write terminal outcome unconfirmed: status=${r.status}, terminal evidence absent`)
+    }
+  }
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`)
   return `HTTP ${r.status}: ${text}`
 }
@@ -2638,6 +2689,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
         ...(t.impl === 'local-authoring' && localArtifact ? { safeInlineGuidance: t.entry === 'ingest' ? LOCAL_AUTHORING_DRAFT_SHAPE : out.safeInlineGuidance } : {}) }
     } catch (error) {
       if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
+      if (t.impl === 'http' && t.kind !== 'read') throw new ResultDeliveryError(`HTTP write result cannot supply the declared facts (${error.message}); do not repeat the external action`)
       throw error
     }
   }
@@ -3449,8 +3501,19 @@ function adapterToolFromSpec(specJson, argsJson) {
     const fence = spec.fence && typeof spec.fence === 'object' && !Array.isArray(spec.fence) ? spec.fence : {}
     const method = String(fence.method ?? (spec.kind === 'read' ? 'GET' : 'POST')).toUpperCase()
     if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw new Error(`Unsupported HTTP method ${method}`)
+    if (spec.kind === 'read' && !['GET', 'HEAD'].includes(method)) throw new Error('HTTP read Tool method must be GET or HEAD')
+    if (fence.timeoutMs !== undefined && (!Number.isSafeInteger(Number(fence.timeoutMs)) || Number(fence.timeoutMs) < 1)) {
+      throw new Error('HTTP fence timeoutMs must be a positive integer')
+    }
+    if (fence.maxResponseBytes !== undefined && (!Number.isSafeInteger(Number(fence.maxResponseBytes)) || Number(fence.maxResponseBytes) < 1)) {
+      throw new Error('HTTP fence maxResponseBytes must be a positive integer')
+    }
+    const kind = spec.kind === 'read' ? 'read' : 'write'
+    const completion = kind === 'write' ? httpTerminalCompletion(fence.completion) : undefined
+    if (kind === 'read' && fence.completion !== undefined) throw new Error('HTTP read Tool cannot declare write completion evidence')
     return {
-      impl: 'http', source: spec.source, path: spec.exec, params: spec.params ?? {}, method,
+      impl: 'http', kind, source: spec.source, path: spec.exec, params: spec.params ?? {}, method,
+      ...(completion ? { completion } : {}),
       ...(fence.timeoutMs !== undefined ? { timeoutMs: Number(fence.timeoutMs) } : {}),
       ...(fence.maxResponseBytes !== undefined ? { maxResponseBytes: Number(fence.maxResponseBytes) } : {}),
       ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}),
@@ -3676,6 +3739,18 @@ export function workerToolsOf(raw) {
     if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {
       throw new Error(`Worker Tool ${id}.fence must be an object`)
     }
+    if (adapter === 'http') {
+      if (toolKind(value) === 'read') {
+        if (!['GET', 'HEAD'].includes(String(value.fence?.method ?? 'GET').toUpperCase())) {
+          throw new Error(`Worker Tool ${id} is an HTTP read Tool; its method must be GET or HEAD`)
+        }
+        if (value.fence?.completion !== undefined) throw new Error(`Worker Tool ${id} is an HTTP read Tool and cannot declare write completion evidence`)
+      } else if (value.fence?.completion !== undefined) {
+        // Older manifests remain loadable for an operator to edit, but cannot
+        // execute a new write without this profile (the compiler refuses it).
+        httpTerminalCompletion(value.fence.completion)
+      }
+    }
     // The opt-in environment allow-list. Declaring it replaces the deny-list for this
     // Tool: the Adapter then sees the basics plus exactly these names. It is refused on
     // the other Adapters rather than ignored, because a fence that silently does nothing
@@ -3780,7 +3855,7 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
   if (dbCapable && !['db-query', 'db-exec-fenced'].includes(def.adapter)) {
     throw new Error(`Worker Tool ${ref} cannot use a database Source without a fixed-SQL adapter`)
   }
-  if (dbCapable && spec.kind !== toolKind(def)) throw new Error(`Worker Tool ${ref} kind differs from its pinned local implementation`)
+  if ((dbCapable || def.adapter === 'http') && spec.kind !== toolKind(def)) throw new Error(`Worker Tool ${ref} kind differs from its pinned local implementation`)
   const digest = def.digest ?? toolDigest(def)
   // A pin that is present but unreadable is not "no pin stated": it is a pin that cannot be
   // compared, and letting it fall into the `undefined` branch would turn a malformed value

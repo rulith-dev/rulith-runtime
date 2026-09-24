@@ -56,7 +56,27 @@ Source-free v2 inputs. It does not establish an end-to-end Core/Gateway/Worker
 journey or prove a live database schema. The targeted tests exercise the real
 Worker Poll and pre-claim refusal path, fixed SQL compilation and mocked driver
 row-count outcomes. The original legacy execution path remains available under
-its existing Tool and Source controls.
+its existing Tool and Source controls, with the HTTP write safeguard below.
+
+An HTTP write now requires a locally configured, digest-pinned terminal response
+profile in its Tool's `fence.completion`, for example
+`{"stage":"terminal","statuses":[200],"json":{"field":"status","equals":"completed"}}`.
+The Worker refuses a write lacking this profile before ClaimWork. A configured
+write stays pending without an outcome report if the endpoint returns only
+acceptance (including `202`, or `200` with `status: accepted`), a partial/error
+status, an unreadable body, or a lost response after the request. The profile
+is checked against the bounded response body; the work item's own `toolSpec`
+cannot replace it. A post-execution return-mapping error is also unknown, not a
+known failed write. An HTTP Tool declared as a read may use only GET or HEAD;
+an operator-declared write remains a write even if its method is GET. The Worker
+never follows a redirect for a write.
+
+This is a fail-closed interim guard, not full B4 adoption. Submit-only Actions,
+partial-effect reports, a durable remote outcome reconciliation path, and
+completion-stage enforcement in Core and Case rules remain unavailable. An
+existing HTTP write Tool without a terminal profile needs an operator-reviewed
+version and refreshed Connection pin before new execution; do not replay an
+already dispatched invocation to obtain a new result.
 
 `sourceNamesByExec` lists only local `db` records with nonempty DSNs. The Worker
 checks each v2 work item's Tool and Source against the frozen first-Poll list

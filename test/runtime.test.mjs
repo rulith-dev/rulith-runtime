@@ -7,7 +7,7 @@ import { join, relative, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, protectedWorkerExecutables, toolFromSpec, workerToolManifest, workerToolsOf, workspaceWriteEnabled } from '../worker/rulith-worker.mjs'
+import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, protectedWorkerExecutables, toolDigest, toolFromSpec, workerToolManifest, workerToolsOf, workspaceWriteEnabled } from '../worker/rulith-worker.mjs'
 import { createLocalHost, defaultConfigPath, defaultLocalConfig, effectiveChildEnv, localInteger, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
@@ -1150,7 +1150,7 @@ test('HTTP Tools stay under the governed Source origin and preserve typed GET/wr
     for await (const chunk of req) chunks.push(chunk)
     requests.push({ method: req.method, url: req.url, body: Buffer.concat(chunks).toString() })
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ rows: req.method === 'GET'
+    res.end(JSON.stringify({ ...(req.method === 'GET' ? {} : { status: 'completed' }), rows: req.method === 'GET'
       ? [{ item_id: 'O-1', exists: true }]
       : [{ accepted: true }] }))
   })
@@ -1168,7 +1168,8 @@ test('HTTP Tools stay under the governed Source origin and preserve typed GET/wr
 
     const write = adapterToolFromSpec(JSON.stringify({
       name: 'webhook.post', kind: 'write', impl: 'http', source: 'api', exec: '/events',
-      params: { event: 'string' }, fence: { method: 'POST', maxResponseBytes: 4096 },
+      params: { event: 'string' }, fence: { method: 'POST', maxResponseBytes: 4096,
+        completion: { stage: 'terminal', statuses: [200], json: { field: 'status', equals: 'completed' } } },
       returns: [{ predicate: 'acme.webhook.accepted', args: { accepted: '$accepted' } }],
     }), JSON.stringify({ event: 'closed' }))
     const writeOut = await execute('webhook_post', { event: 'closed' }, { webhook_post: write }, sources)
@@ -1181,6 +1182,156 @@ test('HTTP Tools stay under the governed Source origin and preserve typed GET/wr
     await new Promise((resolve) => server.close(resolve))
     server.closeAllConnections()
   }
+})
+
+test('HTTP write acceptance and post-effect errors leave completion unknown', async () => {
+  let jobs = 'none'
+  let committed = 0
+  let followedRedirects = 0
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) { /* consume the complete submitted body */ }
+    if (req.url === '/accepted') {
+      jobs = 'accepted'
+      setTimeout(() => { jobs = 'failed' }, 10)
+      res.writeHead(202, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ jobId: 'job-1', status: 'accepted' }))
+    } else if (req.url === '/accepted-200') {
+      jobs = 'accepted'
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ jobId: 'job-3', status: 'accepted' }))
+    } else if (req.url === '/accepted-get') {
+      jobs = 'accepted'
+      res.writeHead(202, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ jobId: 'job-2', status: 'accepted' }))
+    } else if (req.url === '/committed-malformed') {
+      committed++
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ status: 'committed' }))
+    } else if (req.url === '/completed') {
+      committed++
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ status: 'completed', rows: [{ id: 'job-4' }] }))
+    } else if (req.url === '/redirect') {
+      res.writeHead(307, { location: '/redirected' })
+      res.end()
+    } else if (req.url === '/redirected') {
+      followedRedirects++
+      res.writeHead(200)
+      res.end('unexpected')
+    } else if (req.url === '/disconnect') {
+      committed++
+      req.socket.destroy()
+    } else {
+      committed++
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'later step failed' }))
+    }
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const sources = { api: { type: 'http', url: `http://127.0.0.1:${server.address().port}/` } }
+    const terminal = { stage: 'terminal', statuses: [200], json: { field: 'status', equals: 'completed' } }
+    const tool = (name, path) => adapterToolFromSpec(JSON.stringify({
+      name, kind: 'write', impl: 'http', source: 'api', exec: path,
+      params: {}, fence: { method: 'POST', maxResponseBytes: 4096, completion: terminal },
+    }), '{}')
+    await assert.rejects(
+      execute('submit_job', {}, { submit_job: tool('submit.job', '/accepted') }, sources),
+      (error) => error.constructor.name === 'ResultDeliveryError' && /202/.test(error.message),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(jobs, 'failed', 'acceptance was not the job completion')
+    await assert.rejects(
+      execute('accepted_200', {}, { accepted_200: tool('accepted.200', '/accepted-200') }, sources),
+      (error) => error.constructor.name === 'ResultDeliveryError' && /terminal evidence absent/.test(error.message),
+      'HTTP 200 with only job acceptance cannot settle a terminal Action',
+    )
+    const getWrite = adapterToolFromSpec(JSON.stringify({
+      name: 'submit.get', kind: 'write', impl: 'http', source: 'api', exec: '/accepted-get',
+      params: {}, fence: { method: 'GET', completion: terminal },
+    }), '{}')
+    await assert.rejects(
+      execute('submit_get', {}, { submit_get: getWrite }, sources),
+      (error) => error.constructor.name === 'ResultDeliveryError' && /202/.test(error.message),
+      'a write remains effectful even when its pinned HTTP method is GET',
+    )
+    const malformed = adapterToolFromSpec(JSON.stringify({
+      name: 'commit.malformed', kind: 'write', impl: 'http', source: 'api', exec: '/committed-malformed',
+      params: {}, fence: { method: 'POST', completion: { stage: 'terminal', statuses: [200], json: { field: 'status', equals: 'committed' } } },
+      returns: [{ predicate: 'acme.commit', args: { id: '$id' } }],
+    }), '{}')
+    await assert.rejects(
+      execute('commit_malformed', {}, { commit_malformed: malformed }, sources),
+      (error) => error.constructor.name === 'ResultDeliveryError' && /declared facts/.test(error.message),
+      'a committed write with an unreadable returns envelope is unknown, not a known failure',
+    )
+    assert.equal(committed, 1)
+    const complete = await execute('completed', {}, { completed: tool('completed', '/completed') }, sources)
+    assert.match(complete, /"status":"completed"/)
+    assert.equal(committed, 2)
+    assert.throws(() => adapterToolFromSpec(JSON.stringify({
+      name: 'no.proof', kind: 'write', impl: 'http', source: 'api', exec: '/completed',
+      params: {}, fence: { method: 'POST' },
+    }), '{}'), /fence\.completion/)
+    assert.throws(() => adapterToolFromSpec(JSON.stringify({
+      name: 'bad.timeout', kind: 'write', impl: 'http', source: 'api', exec: '/partial',
+      params: {}, fence: { method: 'POST', timeoutMs: 'bad' },
+    }), '{}'), /timeoutMs/)
+    await assert.rejects(
+      execute('write_two_steps', {}, { write_two_steps: tool('write.two_steps', '/partial') }, sources),
+      (error) => error.constructor.name === 'ResultDeliveryError' && /500/.test(error.message),
+    )
+    assert.equal(committed, 3, 'the first external effect was already applied before HTTP 500')
+    await assert.rejects(
+      execute('redirect_write', {}, { redirect_write: tool('redirect.write', '/redirect') }, sources),
+      (error) => error.constructor.name === 'ResultDeliveryError' && /307/.test(error.message),
+    )
+    assert.equal(followedRedirects, 0, 'Worker must not resend a write through a redirect')
+    await assert.rejects(
+      execute('disconnected_write', {}, { disconnected_write: tool('disconnected.write', '/disconnect') }, sources),
+      (error) => error.constructor.name === 'ResultDeliveryError' && /transport error/.test(error.message),
+    )
+    assert.equal(committed, 4, 'a dropped response did not undo the second external effect')
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('HTTP write completion proof comes only from the pinned local Tool', () => {
+  const id = 'acme.terminal@1'
+  const completion = { stage: 'terminal', statuses: [200], json: { field: 'status', equals: 'completed' } }
+  const def = { adapter: 'http', sourceTypes: ['http'], entry: '/jobs', kind: 'write',
+    fence: { method: 'POST', completion } }
+  const spec = { name: id, kind: 'write', impl: 'worker-tool', exec: id,
+    sourceTypes: ['http'], params: {}, returns: [] }
+  const sources = { api: { type: 'http', url: 'http://127.0.0.1:1/' } }
+  const args = JSON.stringify({ source: 'api' })
+  const compiled = toolFromSpec(JSON.stringify(spec), args, { [id]: def }, toolDigest(def), sources, 'api')
+  assert.deepEqual(compiled.completion, completion)
+  assert.throws(() => toolFromSpec(JSON.stringify({ ...spec, kind: 'read' }), args,
+    { [id]: def }, toolDigest(def), sources, 'api'), /kind differs/)
+  const spoofed = { ...spec, fence: { completion: { stage: 'submitted' } } }
+  assert.deepEqual(toolFromSpec(JSON.stringify(spoofed), args,
+    { [id]: def }, toolDigest(def), sources, 'api').completion, completion,
+  'the served work item cannot substitute a completion profile for the pinned local manifest')
+  assert.throws(() => toolFromSpec(JSON.stringify(spec), args,
+    { [id]: def }, toolDigest({ ...def, fence: { method: 'POST' } }), sources, 'api'), /pin/)
+  const withoutProof = { ...def, fence: { method: 'POST' } }
+  assert.throws(() => toolFromSpec(JSON.stringify(spec), args,
+    { [id]: withoutProof }, toolDigest(withoutProof), sources, 'api'), /fence\.completion/)
+  assert.throws(() => adapterToolFromSpec(JSON.stringify({
+    name: 'read.post', kind: 'read', impl: 'http', source: 'api', exec: '/jobs',
+    params: {}, fence: { method: 'POST' },
+  }), '{}'), /read Tool.*GET or HEAD/)
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.readpost@1': { adapter: 'http', sourceTypes: ['http'], entry: '/jobs',
+      kind: 'read', fence: { method: 'POST' } },
+  } }), /read Tool.*GET or HEAD/)
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.badproof@1': { adapter: 'http', sourceTypes: ['http'], entry: '/jobs',
+      kind: 'write', fence: { method: 'POST', completion: { stage: 'terminal', statuses: [200] } } },
+  } }), /fence\.completion/)
 })
 
 test('agent help is available before credentials and points automation at the service port', () => {
