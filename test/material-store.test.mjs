@@ -84,6 +84,90 @@ test('public selector is issued only on submission and survives restart with exa
   })
 })
 
+test('one click receipt survives restart and refuses a changed selection for the same request', () => {
+  area(({ root, identityFor, store }) => {
+    const first = store()
+    const a = first.put({ name: 'a.txt', mediaType: 'text/plain', bytes: Buffer.from('a') })
+    const b = first.put({ name: 'b.txt', mediaType: 'text/plain', bytes: Buffer.from('b') })
+    const context = { requestId: 'exact-request', sessionKey: 'untrusted-conversation', caseId: 'forged-case' }
+    const initial = first.submitSelectedSet([a.uiHandle], context)
+    assert.match(initial.receipt.submissionId, /^sub_[0-9a-f]{32}$/u)
+    assert.deepEqual(initial.receipt.attachments,
+      [{ selector: a.selector, digest: a.digest, totalBytes: a.totalBytes }])
+    assert.equal(initial.receipt.caseId, undefined)
+    assert.equal(initial.receipt.sessionKey, 'untrusted-conversation')
+    assert.equal(JSON.stringify(initial.receipt).includes(a.id), false)
+    const reopened = openMaterialStore(root, identityFor(), { create: false })
+    assert.deepEqual(reopened.submitSelectedSet([a.uiHandle], context).receipt,
+      initial.receipt)
+    assert.equal(refusal(() => reopened.submitSelectedSet([a.uiHandle],
+      { requestId: 'exact-request', sessionKey: 'changed' })), 'material_submission_mismatch')
+    assert.equal(refusal(() => reopened.submitSelectedSet([b.uiHandle], context)), 'material_submission_mismatch')
+    assert.equal(refusal(() => reopened.submitSelectedSet([a.uiHandle, b.uiHandle], context)), 'material_submission_mismatch')
+    assert.equal(refusal(() => reopened.resolveSubmitted(b.selector)), 'material_not_found')
+    // Simulate interruption after the central receipt lands but before its object ledger.
+    rmSync(join(root, 'objects', a.id, 'submission.json'))
+    assert.equal(reopened.submitSelectedSet([a.uiHandle], context).receipt.submissionId,
+      initial.receipt.submissionId)
+    assert.equal(reopened.resolveSubmitted(a.selector).id, a.id)
+    const separate = reopened.submitSelectedSet([b.uiHandle], { requestId: 'another-request', sessionKey: 'x' })
+    assert.notEqual(separate.receipt.submissionId, initial.receipt.submissionId)
+    assert.equal(readdirSync(join(root, 'submissions')).filter((name) => name.endsWith('.json')).length, 2)
+  })
+})
+
+test('competing Host clicks elect one immutable receipt without a stranded global lock', { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-receipt-contention-'))
+  const configFile = join(dir, 'local.json')
+  const root = defaultMaterialRoot(configFile)
+  const identity = materialIdentity({ configFile, gatewayUrl: GATEWAY, connectionId: 'con-first',
+    agentId: 'ag_first', modelUrl: REMOTE_MODEL })
+  const store = openMaterialStore(root, identity)
+  const a = store.put({ name: 'a.txt', mediaType: 'text/plain', bytes: Buffer.from('a') })
+  const b = store.put({ name: 'b.txt', mediaType: 'text/plain', bytes: Buffer.from('b') })
+  const children = [a, b].map((record, number) => spawn(process.execPath,
+    [join(import.meta.dirname, 'material-submission-child.mjs'), configFile, root, record.uiHandle,
+      String(number), 'receipt'], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] }))
+  try {
+    await Promise.all(children.map(async (child) => (await once(child, 'message'))[0]))
+    const results = children.map(async (child) => {
+      const result = (await once(child, 'message'))[0]
+      const [code] = await once(child, 'exit')
+      assert.equal(code, 0)
+      return result
+    })
+    for (const child of children) child.send({ go: true })
+    const settled = await Promise.all(results)
+    assert.equal(settled.filter((row) => row.done === true).length, 1)
+    assert.equal(settled.filter((row) => /^material_submission_mismatch:/u.test(row.error ?? '')).length, 1)
+    assert.equal(readdirSync(join(root, 'submissions')).filter((name) => name.endsWith('.json')).length, 1)
+    assert.equal(existsSync(join(root, 'submissions', 'submission.lock')), false)
+    const winner = settled.find((row) => row.done === true)
+    const record = JSON.parse(readFileSync(join(root, 'submissions',
+      readdirSync(join(root, 'submissions')).find((name) => name.endsWith('.json'))), 'utf8'))
+    assert.equal(record.submissionId, winner.submissionId)
+  } finally {
+    for (const child of children) child.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the same request id in another Agent area gets an independent receipt', () => {
+  let firstId
+  area(({ store }) => {
+    const current = store()
+    const record = current.put({ name: 'same.txt', mediaType: 'text/plain', bytes: Buffer.from('same') })
+    firstId = current.submitSelectedSet([record.uiHandle], { requestId: 'shared', sessionKey: 'x' }).receipt.submissionId
+  }, { agent: 'ag_first' })
+  area(({ store }) => {
+    const current = store()
+    const record = current.put({ name: 'same.txt', mediaType: 'text/plain', bytes: Buffer.from('same') })
+    const receipt = current.submitSelectedSet([record.uiHandle], { requestId: 'shared', sessionKey: 'x' }).receipt
+    assert.equal(receipt.agent, 'ag_second')
+    assert.notEqual(receipt.submissionId, firstId)
+  }, { agent: 'ag_second' })
+})
+
 test('separate Host processes retain every context submitted for one selector', { timeout: 60_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-material-contention-'))
   const configFile = join(dir, 'local.json')

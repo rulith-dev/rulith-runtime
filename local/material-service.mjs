@@ -159,15 +159,12 @@ export function createMaterialService({ root, getIdentity, custodian, key }) {
         }
         rows.push({ handle: id, record })
       }
-      return { attachments: rows.map(({ handle, record }) => {
-        try { return store.submitSelected(handle, context) }
-        catch (error) {
-          if (error instanceof MaterialError) {
-            throw new MaterialError(error.code, error.message.replaceAll(record.id, handle))
-          }
-          throw new MaterialError('material_submission_unavailable', 'The selected local material could not be submitted.')
-        }
-      }) }
+      try {
+        return store.submitSelectedSet(rows.map(({ handle }) => handle), context)
+      } catch (error) {
+        if (error instanceof MaterialError) throw error
+        throw new MaterialError('material_submission_unavailable', 'The selected local material could not be submitted.')
+      }
     },
     /**
      * Route one locally delivered read to the custodian, and hand back what it produced.

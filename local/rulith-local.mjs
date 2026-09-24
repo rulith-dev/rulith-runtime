@@ -978,6 +978,14 @@ export function createLocalHost({
       if (path === '/cases' && req.method === 'POST') {
         if (!running('agent')) return void json(res, 409, { ok: false, teaching: 'This Local runtime is not running the Agent role.' })
         const body = await readJson(req)
+        if (body.requestId !== undefined && (typeof body.requestId !== 'string'
+          || !/^[a-zA-Z0-9_-]{16,100}$/.test(body.requestId))) {
+          return void json(res, 400, { ok: false, teaching: 'requestId must be a short opaque identifier (16–100 letters, digits, _ or -).' })
+        }
+        if (Array.isArray(body.attachments) && body.attachments.length > 0 && body.requestId === undefined) {
+          return void json(res, 400, { ok: false, errorCode: 'material_submission_invalid',
+            teaching: 'Submitting an attachment needs the request id for this click.' })
+        }
         const sessionKey = String(body.sessionKey ?? '').trim() || (body.requestId
           ? 'ctx-' + createHash('sha256').update(String(body.requestId)).digest('hex').slice(0, 32)
           : `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`)
@@ -987,7 +995,7 @@ export function createLocalHost({
         // were silently dropped.
         let selected
         try {
-          selected = materials.attachments(body.attachments, { sessionKey, caseId: body.caseId, requestId: body.requestId })
+          selected = materials.attachments(body.attachments, { sessionKey, requestId: body.requestId })
         } catch (error) { return materialFailure(res, error) }
         // A person may attach files and write nothing. The host then says what was attached and
         // tells the model to go and find an authorized Action that reads it — it does not read
@@ -1009,7 +1017,12 @@ export function createLocalHost({
             ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) }),
         }).catch(() => undefined)
         if (response === undefined) return void json(res, 502, { ok: false, teaching: 'The Agent task endpoint did not respond.' })
-        return void json(res, response.status, await response.json().catch(() => ({ ok: response.ok })))
+        const answer = await response.json().catch(() => ({ ok: response.ok }))
+        return void json(res, response.status, selected.receipt
+          ? { ...answer, submissionReceipt: {
+            submissionId: selected.receipt.submissionId, requestId: selected.receipt.requestId,
+            agent: selected.receipt.agent, attachments: selected.receipt.attachments,
+          } } : answer)
       }
       json(res, 404, { ok: false, teaching: 'Endpoint not found.' })
     } catch (error) { json(res, 400, { ok: false, teaching: String(error?.message ?? error) }) }

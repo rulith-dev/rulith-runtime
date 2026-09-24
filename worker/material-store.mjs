@@ -391,7 +391,8 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
   }
   const objectsDir = join(base, 'objects')
   const tempDir = join(base, 'tmp')
-  for (const dir of [objectsDir, tempDir]) {
+  const submissionsDir = join(base, 'submissions')
+  for (const dir of [objectsDir, tempDir, submissionsDir]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
     assertRealDirectory(dir, 'The material storage directory')
   }
@@ -578,6 +579,59 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
         return record
       }
       throw new MaterialError('material_not_found', 'The selected material does not belong to this runtime profile.')
+    },
+    /** One Host click freezes the whole selection before any part reaches the Agent. */
+    submitSelectedSet(handles, { requestId, sessionKey } = {}) {
+      if (typeof requestId !== 'string' || requestId === '' || requestId.length > 256) {
+        throw new MaterialError('material_submission_invalid', 'A material submission needs a bounded request id.')
+      }
+      if (typeof sessionKey !== 'string' || sessionKey === '') {
+        throw new MaterialError('material_submission_invalid', 'A material submission needs its conversation identity.')
+      }
+      if (!identity.agentId || marker.agent !== identity.agentId) {
+        throw new MaterialError('materials_store_owner_mismatch', 'A material submission needs the confirmed current Agent.')
+      }
+      const records = handles.map((handle) => this.selected(handle))
+      const attachments = records.map((record) => ({
+        selector: record.selector, digest: record.digest, totalBytes: record.totalBytes,
+      }))
+      const receiptPath = join(submissionsDir,
+        `${fingerprint('rulith-material-submission', identity.agentId, requestId)}.json`)
+      const candidate = { version: 1, submissionId: `sub_${randomUUID().replace(/-/g, '')}`,
+        requestId, sessionKey, agent: identity.agentId,
+        owner: { profile: identity.profile, owner: identity.owner },
+        attachments, recordedAt: new Date().toISOString() }
+      const temporary = join(tempDir, `submission.${randomUUID()}`)
+      let elected = false
+      try {
+        writeFileDurably(temporary, `${JSON.stringify(candidate)}\n`)
+        try {
+          // The first Host wins without a persistent global lock. A competing Host compares
+          // against that exact durable receipt before it may append any selector submission.
+          linkSync(temporary, receiptPath)
+          elected = true
+          fsyncPath(submissionsDir)
+        } catch (error) {
+          if (error?.code !== 'EEXIST') throw error
+        }
+      } finally { rmSync(temporary, { force: true }) }
+      let receipt = candidate
+      if (!elected) {
+        try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) } catch { /* refused below */ }
+        if (receipt?.version !== 1 || receipt.requestId !== requestId
+          || receipt.sessionKey !== sessionKey || receipt.agent !== identity.agentId
+          || receipt.owner?.profile !== identity.profile || receipt.owner?.owner !== identity.owner
+          || JSON.stringify(receipt.attachments) !== JSON.stringify(attachments)
+          || !/^sub_[0-9a-f]{32}$/.test(receipt.submissionId ?? '')) {
+          throw new MaterialError('material_submission_mismatch',
+            'This request id already names a different local material submission.')
+        }
+      }
+      // A crash after receipt election may leave only the receipt. An exact retry finishes
+      // the per-material ledgers; their inherited stranded locks still fail closed.
+      const publicAttachments = handles.map((handle) => this.submitSelected(handle,
+        { sessionKey, requestId }))
+      return { receipt, attachments: publicAttachments }
     },
     /** User submission freezes the private selector-to-custody/version mapping durably. */
     submitSelected(handle, context = {}) {

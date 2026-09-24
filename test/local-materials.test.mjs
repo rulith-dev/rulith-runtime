@@ -284,7 +284,7 @@ test('POST /cases forwards attachment metadata and nothing else at all', async (
     assert.notEqual(added.id, privateRecord.id)
     assert.equal(existsSync(join(materialRoot, 'objects', privateRecord.id, 'submission.json')), false)
     const response = await call('/cases', {
-      method: 'POST', body: JSON.stringify({ text: 'have a look', sessionKey: 'ctx-1', attachments: [added.id] }),
+      method: 'POST', body: JSON.stringify({ text: 'have a look', requestId: 'forward-request-1', sessionKey: 'ctx-1', attachments: [added.id] }),
     })
     assert.equal(response.status, 202, await response.text())
     const forwarded = tasks().filter((entry) => entry.kind === 'task')
@@ -306,6 +306,55 @@ test('POST /cases forwards attachment metadata and nothing else at all', async (
   }, { withAgent: true })
 })
 
+test('a /cases retry recovers its durable click receipt and a changed attachment is refused', async () => {
+  await withHost(async ({ call, tasks, materialRoot, configFile }) => {
+    const a = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'first secret' })).json()).material
+    const b = (await (await add(call, { name: 'b.txt', mediaType: 'text/plain', text: 'second secret' })).json()).material
+    const send = async (attachments, caseId = 'forged-case', sessionKey = 'ctx-1') => call('/cases', { method: 'POST',
+      body: JSON.stringify({ text: 'read', requestId: 'same-click-request-1', sessionKey, caseId, attachments }) })
+    const first = await (await send([a.id])).json()
+    assert.equal(first.ok, true)
+    assert.match(first.submissionReceipt.submissionId, /^sub_[0-9a-f]{32}$/u)
+    assert.equal(first.submissionReceipt.caseId, undefined)
+    assert.equal(first.submissionReceipt.owner, undefined)
+    assert.equal(first.submissionReceipt.attachments.length, 1)
+    assert.equal(first.submissionReceipt.attachments[0].digest, a.digest)
+    assert.doesNotMatch(JSON.stringify(first.submissionReceipt), /first secret|forged-case/u)
+    const retry = await (await send([a.id], 'a-different-forged-case')).json()
+    assert.deepEqual(retry.submissionReceipt, first.submissionReceipt)
+    const refused = await send([b.id])
+    assert.equal(refused.status, 400)
+    assert.equal((await refused.json()).errorCode, 'material_submission_mismatch')
+    const moved = await send([a.id], 'forged-case', 'another-conversation')
+    assert.equal(moved.status, 400)
+    assert.equal((await moved.json()).errorCode, 'material_submission_mismatch')
+    assert.equal(tasks().filter((entry) => entry.kind === 'task').length, 2)
+    const { openMaterialStore } = await import('../worker/material-store.mjs')
+    const records = openMaterialStore(materialRoot, identityOf(configFile), { create: false }).list()
+    const second = records.find((row) => row.digest === b.digest)
+    assert.equal(existsSync(join(materialRoot, 'objects', second.id, 'submission.json')), false)
+    for (const task of tasks().filter((entry) => entry.kind === 'task')) {
+      assert.equal(task.body.submissionId, undefined)
+      assert.doesNotMatch(JSON.stringify(task.body), /first secret|second secret/u)
+    }
+  }, { withAgent: true })
+})
+
+test('an attachment click needs the caller request id that the Agent will receive', async () => {
+  await withHost(async ({ call, tasks, materialRoot }) => {
+    const added = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'secret' })).json()).material
+    for (const requestId of [undefined, 'too-short', 42]) {
+      const response = await call('/cases', { method: 'POST',
+        body: JSON.stringify({ text: 'read', sessionKey: 'ctx-1', attachments: [added.id], requestId }) })
+      assert.equal(response.status, 400)
+      if (requestId === undefined) assert.equal((await response.json()).errorCode, 'material_submission_invalid')
+    }
+    assert.deepEqual(tasks().filter((entry) => entry.kind === 'task'), [])
+    assert.deepEqual((await import('node:fs')).readdirSync(join(materialRoot, 'submissions'))
+      .filter((name) => name.endsWith('.json')), [])
+  }, { withAgent: true })
+})
+
 test('a damaged attachment is refused without exposing its private custody id', async () => {
   await withHost(async ({ call, tasks, materialRoot, configFile }) => {
     const added = (await (await add(call, { name: 'private.txt', mediaType: 'text/plain', text: 'private content' })).json()).material
@@ -313,7 +362,7 @@ test('a damaged attachment is refused without exposing its private custody id', 
     const privateRecord = openMaterialStore(materialRoot, identityOf(configFile)).list()[0]
     writeFileSync(join(materialRoot, 'objects', privateRecord.id, 'chunks', '000000.bin'), 'corrupt')
     const response = await call('/cases', {
-      method: 'POST', body: JSON.stringify({ text: 'inspect', sessionKey: 'ctx-damaged', attachments: [added.id] }),
+      method: 'POST', body: JSON.stringify({ text: 'inspect', requestId: 'damaged-request-1', sessionKey: 'ctx-damaged', attachments: [added.id] }),
     })
     assert.equal(response.status, 400)
     const refusal = await response.json()
@@ -326,7 +375,7 @@ test('a damaged attachment is refused without exposing its private custody id', 
 test('attachments with no message get a generated inspect instruction that reads nothing', async () => {
   await withHost(async ({ call, tasks }) => {
     const added = (await (await add(call, { name: 'q3.csv', mediaType: 'text/csv', text: 'a,b\nSECRET,2\n' })).json()).material
-    const response = await call('/cases', { method: 'POST', body: JSON.stringify({ text: '', attachments: [added.id] }) })
+    const response = await call('/cases', { method: 'POST', body: JSON.stringify({ text: '', requestId: 'inspect-request-1', attachments: [added.id] }) })
     assert.equal(response.status, 202, await response.text())
     const body = tasks().filter((entry) => entry.kind === 'task').at(-1).body
     assert.match(body.text, /attached 1 local material/u)
@@ -363,7 +412,7 @@ test('a case submission naming a material this profile does not own fails whole'
       [Array.from({ length: 9 }, () => added.id), 400, 'attachments_too_many'],
       ['not-an-array', 400, 'attachments_invalid'],
     ]) {
-      const response = await call('/cases', { method: 'POST', body: JSON.stringify({ text: 'go', attachments }) })
+      const response = await call('/cases', { method: 'POST', body: JSON.stringify({ text: 'go', requestId: 'invalid-selection-1', attachments }) })
       assert.equal(response.status, status, `${JSON.stringify(attachments)} was not refused`)
       assert.equal((await response.json()).errorCode, code)
     }
@@ -412,7 +461,7 @@ test('a material added under a local model attaches normally while that model is
   await withHost(async ({ call, tasks }) => {
     const added = (await (await add(call, { name: 'local.txt', mediaType: 'text/plain', text: 'local-only secret' })).json()).material
     assert.deepEqual((await (await call('/materials')).json()).materials.map((row) => row.id), [added.id])
-    const attach = await call('/cases', { method: 'POST', body: JSON.stringify({ text: 'read it', attachments: [added.id] }) })
+    const attach = await call('/cases', { method: 'POST', body: JSON.stringify({ text: 'read it', requestId: 'local-only-request-1', attachments: [added.id] }) })
     assert.equal(attach.status, 202, await attach.text())
     const forwarded = tasks().filter((entry) => entry.kind === 'task')
     assert.equal(forwarded.length, 1)
@@ -441,7 +490,7 @@ test('a host whose model endpoint was re-pointed refuses an attachment selected 
       const attach = await fetch(`http://127.0.0.1:${host.port}/cases`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-rulith-local': KEY },
-        body: JSON.stringify({ text: 'read it', attachments: [record.uiHandle] }),
+        body: JSON.stringify({ text: 'read it', requestId: 'changed-model-request-1', attachments: [record.uiHandle] }),
       })
       assert.equal(attach.status, 400)
       const refusal = await attach.json()
