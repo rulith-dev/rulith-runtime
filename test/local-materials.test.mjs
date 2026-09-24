@@ -44,6 +44,35 @@ const freePort = () => new Promise((ready) => {
   })
 })
 
+// Another test process can claim the probed port before the child binds it. Retry only
+// that specific startup failure; every other failure should retain its original trace.
+async function startAgentHost(configFile, config, roles) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    config.agent.env.RULITH_SERVE_PORT = String(await freePort())
+    const host = createLocalHost({ configFile, config, roles, port: 0, key: KEY, autoStart: true, startConfirmMs: 8000 })
+    let handedOff = false
+    try {
+      await host.listen()
+      const deadline = Date.now() + 8000
+      while (!host.status().ready.agent && host.status().agent && Date.now() < deadline) {
+        await new Promise((wait) => setTimeout(wait, 25))
+      }
+      // A historical start event is insufficient if the same child has since exited.
+      if (host.status().ready.agent) {
+        handedOff = true
+        return host
+      }
+      // Child stdio can flush after its exit event; give its diagnostic line time to arrive.
+      if (!host.status().agent) await new Promise((wait) => setTimeout(wait, 25))
+      const events = host.events()
+      if (attempt < 2 && events.some((event) => event.src === 'agent' && /EADDRINUSE/u.test(event.line ?? ''))) continue
+      assert.fail(`the Agent stand-in did not report readiness: ${JSON.stringify(events)}`)
+    } finally {
+      if (!handedOff) await host.close()
+    }
+  }
+}
+
 /**
  * A request whose `Host` header this test chooses.
  *
@@ -88,28 +117,18 @@ async function withHost(run, {
     worker: withWorker ? join(HERE, 'support', 'custodian-worker.mjs') : join(dir, 'absent-worker.mjs'),
   }
   if (withAgent) {
-    config.agent.env.RULITH_SERVE_PORT = String(await freePort())
     config.agent.env.RULITH_TEST_TASK_LOG = taskLog
   }
   if (withWorker) {
     config.worker.env.RULITH_TEST_TASK_LOG = taskLog
     config.worker.env.RULITH_TEST_CUSTODY_REPLY = JSON.stringify(custodyReply)
   }
-  const host = createLocalHost({
-    configFile, config, roles, port: 0, key: KEY, autoStart: withAgent || withWorker, startConfirmMs: 8000,
-  })
+  let host
   try {
-    await host.listen()
-    if (withAgent) {
-      // The child's own readiness event, not "a process exists". The stand-in sends `start`
-      // once its task endpoint is listening, which is the thing `/cases` forwards to.
-      const deadline = Date.now() + 8000
-      while (!host.events().some((event) => event.src === 'agent' && event.type === 'start') && Date.now() < deadline) {
-        await new Promise((wait) => setTimeout(wait, 25))
-      }
-      assert.equal(host.events().some((event) => event.src === 'agent' && event.type === 'start'), true,
-        `the Agent stand-in did not report readiness: ${JSON.stringify(host.events())}`)
-    }
+    host = withAgent ? await startAgentHost(configFile, config, roles) : createLocalHost({
+      configFile, config, roles, port: 0, key: KEY, autoStart: withWorker, startConfirmMs: 8000,
+    })
+    if (!withAgent) await host.listen()
     if (withWorker) {
       const deadline = Date.now() + 8000
       while (!host.events().some((event) => event.src === 'worker' && event.type === 'up') && Date.now() < deadline) {
@@ -132,7 +151,7 @@ async function withHost(run, {
       }),
     })
   } finally {
-    await host.close()
+    await host?.close()
     rmSync(dir, { recursive: true, force: true })
   }
 }
@@ -385,16 +404,11 @@ test('a host whose model endpoint was re-pointed refuses an attachment selected 
 
     const config = defaultLocalConfig()
     config.agent.env = { ...config.agent.env, RULITH_TOKEN: AGENT_TOKEN, RULITH_URL: GATEWAY, RULITH_MODEL_URL: REMOTE_MODEL,
-      RULITH_SERVE_PORT: String(await freePort()), RULITH_TEST_TASK_LOG: taskLog }
+      RULITH_TEST_TASK_LOG: taskLog }
     config.worker.env = { ...config.worker.env, RULITH_CONNECTION: CONNECTION, RULITH_CONNECTION_KEY: 'key-1' }
     config.paths = { agent: join(HERE, 'support', 'task-agent.mjs'), worker: join(dir, 'absent-worker.mjs') }
-    const host = createLocalHost({ configFile, config, roles: ['agent'], port: 0, key: KEY, autoStart: true, startConfirmMs: 8000 })
-    await host.listen()
+    const host = await startAgentHost(configFile, config, ['agent'])
     try {
-      const deadline = Date.now() + 8000
-      while (!host.events().some((event) => event.src === 'agent' && event.type === 'start') && Date.now() < deadline) {
-        await new Promise((wait) => setTimeout(wait, 25))
-      }
       const attach = await fetch(`http://127.0.0.1:${host.port}/cases`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-rulith-local': KEY },
