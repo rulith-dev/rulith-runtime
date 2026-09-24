@@ -347,12 +347,14 @@ test('RT-WKC-12 what this Worker advertises is a Manifest the contract accepts',
     assert.deepEqual(shapeFaults(descriptor, DEFS.WorkerToolDescriptor, DEFS), [],
       `the advertised descriptor for ${descriptor.id} is not one the contract accepts`)
   }
-  // The shipped workspace read Tool is the entry the fixture calibrates against: same
-  // declaration, only the pin differs, because a real pin belongs to one build.
+  // The fixture retains the historical non-DB descriptor without its optional adapter.
+  // Every remaining declaration field must match the shipped workspace Tool.
   const shipped = FIXTURE.boundaries.find((b) => b.id === 'tool-descriptor').valid[0]
   const mine = advertised.find((row) => row.id === shipped.id)
   assert.ok(mine, `the fixture calibrates against ${shipped.id}, which this Worker no longer advertises`)
-  assert.deepEqual({ ...mine, digest: shipped.digest }, shipped,
+  const { adapter, ...historical } = mine
+  assert.equal(adapter, 'workspace')
+  assert.deepEqual({ ...historical, digest: shipped.digest }, shipped,
     'the shipped Tool advertises something other than what the contract fixture pins')
 
   // And the whole Manifest is a legal `tools` array, ceiling and uniqueness included.

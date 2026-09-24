@@ -47,11 +47,14 @@ const DB_SOURCES = { orders: { type: 'db', dsn: ORDERS_DSN } }
  */
 function withRecordedDatabase(run) {
   const original = databaseDriver.run
+  const originalReadOnly = databaseDriver.runReadOnly
   const statements = []
-  databaseDriver.run = async (dsn, sql, values) => {
+  const record = async (dsn, sql, values) => {
     statements.push({ dsn, sql, values })
     return { rows: [], rowCount: 0, command: 'SELECT' }
   }
+  databaseDriver.run = record
+  databaseDriver.runReadOnly = record
   const previous = { db: process.env.RULITH_DB_URL, demo: process.env.DEMO_DB_URL }
   process.env.RULITH_DB_URL = AMBIENT_DSN
   process.env.DEMO_DB_URL = AMBIENT_DSN
@@ -62,6 +65,7 @@ function withRecordedDatabase(run) {
   return (async () => {
     try { return await run(statements) } finally {
       databaseDriver.run = original
+      databaseDriver.runReadOnly = originalReadOnly
       restore('RULITH_DB_URL', previous.db)
       restore('DEMO_DB_URL', previous.demo)
     }

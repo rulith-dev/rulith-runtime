@@ -18,7 +18,7 @@
       "sha256": "3b1b751bda705aba47e97b4ce8ea528e1a7d7a750b9db2c4ef9071c6a1e94249"
     },
     "protocol/worker-contract.json": {
-      "sha256": "9c0a62dcb1568ba174fc1d3ed95e1c051533e9967bb3df3da0e57b1e02fc0411"
+      "sha256": "f6f6c48afdbb7b73b0aae769e295bd376accf73b4ca5aff6a0d9bf1d250ecaa5"
     },
     "protocol/worker-material.json": {
       "sha256": "497c57d8b12fe7f2acefb22a9f27d00229158c2ccb144a47573fb09e3c0ef97c"
@@ -33,10 +33,10 @@
       "sha256": "0cc5081570904f761be70540bd2fa089edcfffdc1db9e79acb25de0b70a05c86"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "b3ec93e945eed5f02d1cd2bacbe74eb112a3f12293de4838087189d981b75fca"
+      "sha256": "58fc482ab4ca27aff583295e269248926055fad5d7d70207e28a7685d570f6c2"
     },
     "worker/action-input-db.mjs": {
-      "sha256": "f1522bc279e9c137b198cebee84519f9bfb32f8578059ea48c3f1e46d0a9f2d4"
+      "sha256": "01fde336571b02ab75c52c0e5e28c2e693feda7e637d0afd66513104095759f7"
     },
     "worker/mcp-client.mjs": {
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"

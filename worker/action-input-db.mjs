@@ -110,7 +110,14 @@ export function inputAdoptionForTools(tools, sources, descriptors = []) {
 export function validateDbInputContract(spec, args, def, descriptor) {
   if (spec.execution && (Object.hasOwn(spec.execution, 'inputRoles')
       || Object.hasOwn(spec.execution, 'guardCatalogDigest'))) throw new Error('Action inputRoles belong to the Action, not execution metadata')
-  if (!Object.hasOwn(spec, 'inputRoles') && !Object.hasOwn(spec, 'guardCatalogDigest')) return false
+  if (!Object.hasOwn(spec, 'inputRoles') && !Object.hasOwn(spec, 'guardCatalogDigest')) {
+    // A legacy DB write can commit its SQL change and then fail the v1 returns parser.
+    // The v2 fixed-SQL result and one-row phase must be present before any ClaimWork.
+    if (spec.kind === 'write' && Array.isArray(spec.sourceTypes) && spec.sourceTypes.includes('db')) {
+      throw new Error('Database write Action requires v2 input roles and guard catalog')
+    }
+    return false
+  }
   if (!plain(spec.inputRoles) || spec.guardCatalogDigest !== guardCatalogDigest || Object.hasOwn(spec, 'inputPolicy'))
     throw new Error('Action v2 requires exact roles and guard catalog digest')
   if (plain(spec.params) && Object.values(spec.params).some(type => typeof type === 'string' && type.endsWith('?')))

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { databaseDriver, execute, toolFromSpec, workerToolManifest, workerToolsOf } from '../worker/rulith-worker.mjs'
+import { databaseDriver, execute, pgRunReadOnlyWithClient, pgRunV2UpdateWithClient, toolFromSpec, workerToolManifest, workerToolsOf } from '../worker/rulith-worker.mjs'
 import { fixedUpdateShape, guardCatalogDigest, inputAdoptionForTools, toolContractFingerprint } from '../worker/action-input-db.mjs'
 import { actionRow, driveWorker, HOLD } from './support/worker-harness.mjs'
 
@@ -66,6 +66,56 @@ test('optional SQL slots are not advertised and are refused before v2 compilatio
   assert.throws(() => toolFromSpec(JSON.stringify(spec),
     JSON.stringify({ source: 'orders', id: 'r1', version: 'v1', body: 'ok' }), installed,
     installed['acme.optional@1'].digest, source, 'orders'), /required scalar/)
+})
+
+test('legacy database write is refused before ClaimWork and cannot leave an uncertain SQL effect', async () => {
+  const spec = { impl: 'worker-tool', exec: 'acme.write@1', kind: 'write',
+    params: write.params, sourceTypes: ['db'], returns: write.returns, inputPolicy: 'grounded' }
+  const args = { source: 'orders', id: 'r1', version: 'v1', body: 'ok' }
+  assert.throws(() => toolFromSpec(JSON.stringify(spec), JSON.stringify(args), tools,
+    tools['acme.write@1'].digest, source, 'orders'), /requires v2 input roles/)
+  let polls = 0
+  const row = actionRow({ tool: 'acme.write', toolContractId: 'acme.write@1',
+    sourceRecordId: 'orders', toolDigest: tools['acme.write@1'].digest,
+    args: JSON.stringify(args), toolSpec: JSON.stringify(spec) })
+  const run = await driveWorker({ extraTools: { 'acme.write@1': write },
+    sources: () => [{ name: 'orders', type: 'db', access: 'postgres://fixture' }],
+    reply: operation => operation.kind === 'Poll'
+      ? (++polls === 1 ? { body: { accepted: true, payload: { work: [row] } } } : HOLD)
+      : { body: { accepted: true } },
+    done: (_, output) => /requires v2 input roles/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.of('ClaimWork').length, 0)
+  assert.equal(run.of('ReportWork').length, 0)
+})
+
+test('a database mutation cannot advertise or execute under a read Tool kind', () => {
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.spoof@1': { ...write, kind: 'read' },
+  } }), /kind conflicts with the db-exec-fenced/)
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.spoof@1': { ...read, kind: 'write' },
+  } }), /kind conflicts with the db-query/)
+  const spec = { impl: 'worker-tool', exec: 'acme.write@1', kind: 'read',
+    params: write.params, sourceTypes: ['db'], returns: write.returns, inputPolicy: 'clue' }
+  assert.throws(() => toolFromSpec(JSON.stringify(spec), JSON.stringify({
+    source: 'orders', id: 'r1', version: 'v1', body: 'ok',
+  }), tools, tools['acme.write@1'].digest, source, 'orders'),
+  /kind differs from its pinned local implementation/)
+})
+
+test('a run or other process adapter cannot borrow a database Source under any Tool kind', () => {
+  const processTool = { adapter: 'run', sourceTypes: ['db'], kind: 'run',
+    entry: process.execPath, params: {}, returns: [] }
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.process@1': processTool,
+  } }), /database Sources require a fixed-SQL adapter/)
+  const spec = { impl: 'worker-tool', exec: 'acme.process@1', kind: 'run',
+    sourceTypes: ['db'], params: {}, returns: [] }
+  assert.throws(() => toolFromSpec(JSON.stringify(spec), JSON.stringify({ source: 'orders' }),
+    { 'acme.process@1': processTool }, undefined, source, 'orders'),
+  /cannot use a database Source without a fixed-SQL adapter/)
 })
 
 test('real Worker Poll advertises only the DB phases backed by its Source and manifest', async () => {
@@ -158,7 +208,7 @@ test('write v2 compiles only fixed SQL and exact typed payload bytes', () => {
   assert.equal(result.inputRolesV2, true)
   assert.throws(() => compiled(undefined, {}, { body: 'ééé' }), /UTF-8 byte limit/)
   assert.throws(() => compiled(undefined, { guardCatalogDigest: 'sha256:' + '0'.repeat(64) }), /catalog digest/)
-  assert.throws(() => compiled(undefined, { kind: 'run' }), /database Tool contract/)
+  assert.throws(() => compiled(undefined, { kind: 'run' }), /kind differs from its pinned local implementation/)
   assert.throws(() => compiled(undefined, { sourceTypes: ['file'] }), /database Tool contract|Source/)
   assert.throws(() => compiled(undefined, { params: { ...write.params, body: 'json' } }), /database Tool contract/)
   assert.throws(() => compiled(undefined, { inputRoles: { ...roles,
@@ -191,9 +241,9 @@ test('read v2 reports only the database row and keeps its exact enum argument', 
     guardCatalogDigest }
   const tool = toolFromSpec(JSON.stringify(spec), JSON.stringify({ source: 'orders', id: 'r1', status: '42' }),
     { 'acme.read@1': def }, def.digest, source, 'orders')
-  const original = databaseDriver.run
+  const original = databaseDriver.runReadOnly
   try {
-    databaseDriver.run = async (_dsn, sql, values) => {
+    databaseDriver.runReadOnly = async (_dsn, sql, values) => {
       assert.equal(sql, 'SELECT status FROM records WHERE id=$1 AND status=$2')
       assert.deepEqual(values, ['r1', '42'])
       return { rows: [{ status: 'closed' }], rowCount: 1, command: 'SELECT' }
@@ -201,25 +251,134 @@ test('read v2 reports only the database row and keeps its exact enum argument', 
     const result = await execute('acme.read@1', {}, { 'acme.read@1': tool }, source)
     assert.deepEqual(result.facts, [{ predicate: 'acme.status', args: { status: 'closed' } }])
     assert.match(result.result, /"status":"closed"/)
-  } finally { databaseDriver.run = original }
+  } finally { databaseDriver.runReadOnly = original }
 })
 
-test('v2 UPDATE reports zero as failure and multi or unknown outcome as undeliverable', async () => {
-  const tool = compiled()
-  const original = databaseDriver.run
+test('db-query starts a PostgreSQL read-only transaction before its SELECT', async () => {
+  const def = tools['acme.read@1']
+  const spec = { impl: 'worker-tool', exec: 'acme.read@1', kind: 'read', params: read.params,
+    sourceTypes: ['db'], returns: read.returns, inputRoles: { id: { role: 'grounded' },
+      status: { role: 'scoped', guard: 'rulith.value.enum@1', guardConfig: { values: ['open'] } } },
+    guardCatalogDigest }
+  const tool = toolFromSpec(JSON.stringify(spec), JSON.stringify({ source: 'orders', id: 'r1', status: 'open' }),
+    { 'acme.read@1': def }, def.digest, source, 'orders')
+  const original = databaseDriver.runReadOnly
   try {
-    for (const [rowCount, command, pattern] of [
-      [0, 'UPDATE', /matched zero rows/], [2, 'UPDATE', /affected multiple rows/],
-      [undefined, 'UPDATE', /effect is unknown/], [1, 'INSERT', /effect is unknown/],
-    ]) {
-      databaseDriver.run = async () => ({ rows: [{ id: 'r1', version: 'v1' }], rowCount, command })
-      await assert.rejects(execute('acme.write@1', {}, { 'acme.write@1': tool }, source), pattern)
+    const client = { calls: [],
+      async connect() { this.calls.push('connect') },
+      async query(query) {
+        const step = typeof query === 'string' ? query : query.text
+        this.calls.push(step)
+        if (step.startsWith('SELECT')) return { rows: [{ status: 'closed' }], rowCount: 1, command: 'SELECT' }
+        return {}
+      },
+      async end() { this.calls.push('end') },
     }
-    databaseDriver.run = async () => ({ rows: [{ id: 'r1', version: 'v2' }], rowCount: 1, command: 'UPDATE' })
+    databaseDriver.runReadOnly = async (dsn, sql, values) => {
+      assert.equal(dsn, 'postgres://fixture')
+      assert.deepEqual(values, ['r1', 'open'])
+      return pgRunReadOnlyWithClient(client, sql, values)
+    }
+    const result = await execute('acme.read@1', {}, { 'acme.read@1': tool }, source)
+    assert.deepEqual(result.facts, [{ predicate: 'acme.status', args: { status: 'closed' } }])
+    assert.deepEqual(client.calls, ['connect', 'BEGIN READ ONLY',
+      'SELECT status FROM records WHERE id=$1 AND status=$2', 'COMMIT', 'end'])
+  } finally { databaseDriver.runReadOnly = original }
+})
+
+test('a mutating SELECT is rejected by the read-only transaction and rolled back', async () => {
+  const client = { calls: [], readOnly: false,
+    async connect() { this.calls.push('connect') },
+    async query(query) {
+      const step = typeof query === 'string' ? query : query.text
+      this.calls.push(step)
+      if (step === 'BEGIN READ ONLY') this.readOnly = true
+      if (step === 'SELECT nextval($1)') {
+        assert.equal(this.readOnly, true)
+        throw new Error('cannot execute nextval() in a read-only transaction')
+      }
+      return {}
+    },
+    async end() { this.calls.push('end') },
+  }
+  await assert.rejects(pgRunReadOnlyWithClient(client, 'SELECT nextval($1)', ['orders_seq']),
+    /cannot execute nextval\(\) in a read-only transaction/)
+  assert.deepEqual(client.calls, ['connect', 'BEGIN READ ONLY', 'SELECT nextval($1)', 'ROLLBACK', 'end'])
+})
+
+function fakePgClient(updateResult, failures = {}) {
+  const calls = []
+  return { calls,
+    async connect() { calls.push('connect') },
+    async query(query) {
+      const step = typeof query === 'string' ? query : 'UPDATE'
+      calls.push(step)
+      if (failures[step]) throw new Error(failures[step])
+      return step === 'UPDATE' ? updateResult : {}
+    },
+    async end() { calls.push('end'); if (failures.end) throw new Error(failures.end) },
+  }
+}
+
+test('v2 UPDATE validates the effect and returned facts before COMMIT', async () => {
+  const tool = compiled()
+  const originalRun = databaseDriver.run
+  const originalV2 = databaseDriver.runV2Update
+  try {
+    databaseDriver.run = async () => { throw new Error('v2 must not use the autocommit driver') }
+    for (const [raw, pattern] of [
+      [{ rows: [], rowCount: 0, command: 'UPDATE' }, /matched zero rows/],
+      [{ rows: [{ id: 'r1', version: 'v2' }, { id: 'r2', version: 'v2' }], rowCount: 2, command: 'UPDATE' }, /exactly one UPDATE row/],
+      [{ rows: [{ id: 'r1', version: 'v2' }], rowCount: undefined, command: 'UPDATE' }, /exactly one UPDATE row/],
+      [{ rows: [{ id: 'r1', version: 'v2' }], rowCount: 1, command: 'INSERT' }, /exactly one UPDATE row/],
+      [{ rows: [], rowCount: 1, command: 'UPDATE' }, /exactly one result row/],
+      [{ rows: [{ id: 'r1' }], rowCount: 1, command: 'UPDATE' }, /missing scalar column version/],
+    ]) {
+      const client = fakePgClient(raw)
+      databaseDriver.runV2Update = async (dsn, sql, values, validate) => {
+        assert.equal(dsn, 'postgres://fixture')
+        assert.equal(sql, 'UPDATE records SET body=$1 WHERE id=$2 AND version=$3 RETURNING id, version')
+        assert.deepEqual(values, ['é', 'r1', 'v1'])
+        return pgRunV2UpdateWithClient(client, sql, values, validate)
+      }
+      await assert.rejects(execute('acme.write@1', {}, { 'acme.write@1': tool }, source), error => {
+        assert.match(error.message, pattern)
+        assert.equal(error.constructor.name, 'Error')
+        return true
+      })
+      assert.deepEqual(client.calls, ['connect', 'BEGIN', 'UPDATE', 'ROLLBACK', 'end'])
+    }
+    const client = fakePgClient({ rows: [{ id: 'r1', version: 'v2' }], rowCount: 1, command: 'UPDATE' })
+    databaseDriver.runV2Update = async (_dsn, sql, values, validate) => pgRunV2UpdateWithClient(client, sql, values, validate)
     assert.deepEqual(await execute('acme.write@1', {}, { 'acme.write@1': tool }, source),
       { result: 'sql:constructive update ok rows=1 UPDATE',
         facts: [{ predicate: 'acme.record', args: { id: 'r1', version: 'v2' } }] })
-    databaseDriver.run = async () => { throw new Error('connection closed after query submission') }
-    await assert.rejects(execute('acme.write@1', {}, { 'acme.write@1': tool }, source), /outcome is unknown/)
-  } finally { databaseDriver.run = original }
+    assert.deepEqual(client.calls, ['connect', 'BEGIN', 'UPDATE', 'COMMIT', 'end'])
+  } finally { databaseDriver.run = originalRun; databaseDriver.runV2Update = originalV2 }
+})
+
+test('v2 UPDATE distinguishes confirmed rollback from ambiguous database outcome', async () => {
+  const tool = compiled()
+  const originalV2 = databaseDriver.runV2Update
+  try {
+    for (const [raw, failures, pattern, errorType, calls] of [
+      [{ rows: [], rowCount: 0, command: 'UPDATE' }, { ROLLBACK: 'connection lost' }, /outcome is unknown because ROLLBACK was not confirmed/, 'ResultDeliveryError', ['connect', 'BEGIN', 'UPDATE', 'ROLLBACK', 'end']],
+      [{ rows: [{ id: 'r1', version: 'v2' }], rowCount: 1, command: 'UPDATE' }, { COMMIT: 'connection lost' }, /outcome is unknown after COMMIT/, 'ResultDeliveryError', ['connect', 'BEGIN', 'UPDATE', 'COMMIT', 'end']],
+      [undefined, { UPDATE: 'constraint failed' }, /constraint failed/, 'Error', ['connect', 'BEGIN', 'UPDATE', 'ROLLBACK', 'end']],
+    ]) {
+      const client = fakePgClient(raw, failures)
+      databaseDriver.runV2Update = async (_dsn, sql, values, validate) => pgRunV2UpdateWithClient(client, sql, values, validate)
+      await assert.rejects(execute('acme.write@1', {}, { 'acme.write@1': tool }, source), error => {
+        assert.match(error.message, pattern)
+        assert.equal(error.constructor.name, errorType)
+        return true
+      })
+      assert.deepEqual(client.calls, calls)
+    }
+    const client = fakePgClient({ rows: [{ id: 'r1', version: 'v2' }], rowCount: 1, command: 'UPDATE' }, { end: 'connection lost after COMMIT' })
+    databaseDriver.runV2Update = async (_dsn, sql, values, validate) => pgRunV2UpdateWithClient(client, sql, values, validate)
+    const result = await execute('acme.write@1', {}, { 'acme.write@1': tool }, source)
+    assert.equal(result.facts[0].args.version, 'v2')
+    assert.deepEqual(client.calls, ['connect', 'BEGIN', 'UPDATE', 'COMMIT', 'end'])
+  } finally { databaseDriver.runV2Update = originalV2 }
 })

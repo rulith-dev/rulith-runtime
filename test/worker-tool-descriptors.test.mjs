@@ -29,7 +29,7 @@ import {
   workerToolDescriptor, workerToolManifest, workerToolsOf,
 } from '../worker/rulith-worker.mjs'
 
-const DESCRIPTOR_FIELDS = ['digest', 'id', 'kind', 'params', 'returns', 'sourceTypes']
+const DESCRIPTOR_FIELDS = ['adapter', 'digest', 'id', 'kind', 'params', 'returns', 'sourceTypes']
 
 /** A manifest exercising every adapter, including one Tool no pack anywhere references. */
 const DECLARED = {
@@ -63,6 +63,7 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   for (const descriptor of advertised) {
     assert.deepEqual(Object.keys(descriptor).sort(), DESCRIPTOR_FIELDS,
       `${descriptor.id} is advertised in a different shape from the rest`)
+    assert.equal(typeof descriptor.adapter, 'string', `${descriptor.id} must expose its pinned local adapter`)
     assert.match(descriptor.id, /^[a-z][a-z0-9_.-]{1,95}@[1-9][0-9]*$/)
     assert.match(descriptor.digest, /^[a-f0-9]{64}$/)
     assert.ok(Array.isArray(descriptor.sourceTypes) && descriptor.sourceTypes.length > 0)
@@ -194,7 +195,7 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   } })
   assert.deepEqual(workerToolDescriptor('acme.calculate@1', sourceFree['acme.calculate@1']), {
     id: 'acme.calculate@1', digest: sourceFree['acme.calculate@1'].digest,
-    sourceTypes: [], kind: 'run', params: { value: 'number' }, returns: [],
+    adapter: 'run', sourceTypes: [], kind: 'run', params: { value: 'number' }, returns: [],
   }, 'a Source-free Tool must advertise an empty sourceTypes rather than borrow a type it does not read')
   // And the accredited seven are still the only ones nameable.
   assert.throws(declare({ sourceTypes: ['filesystem'] }), /accredited Source types/)

@@ -13,7 +13,8 @@
  *     $ref (local, into $defs)   type        required     properties
  *     additionalProperties       enum        const        pattern
  *     propertyNames              items       minLength    minimum / maximum
- *     maxItems                   uniqueItems anyOf
+ *     maxItems                   uniqueItems anyOf       allOf
+ *     oneOf                      contains    if / then / else / not
  *
  * An unknown keyword is a fault rather than a shrug: a validator that silently ignores what
  * it does not understand reports "valid" for a rule it never checked, which is the one
@@ -25,12 +26,38 @@
 const KNOWN = new Set([
   '$ref', 'type', 'required', 'properties', 'additionalProperties', 'propertyNames',
   'enum', 'const', 'pattern', 'items', 'minLength', 'minimum', 'maximum',
-  'maxItems', 'uniqueItems', 'anyOf', 'if', 'then', 'else', 'not',
+  'maxItems', 'uniqueItems', 'anyOf', 'allOf', 'oneOf', 'contains',
+  'if', 'then', 'else', 'not',
   // Prose, carried by the contract and not a constraint.
   'description', '$comment', 'title',
 ])
 
 const typeOf = (value) => (Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value)
+
+function unknownKeywordFaults(schema, at) {
+  if (schema === true || schema === false) return []
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    return [`${at || '(root)'}: is not a schema`]
+  }
+  const faults = []
+  for (const keyword of Object.keys(schema)) {
+    if (!KNOWN.has(keyword)) faults.push(`${at || '(root)'}: the checker does not read the keyword ${JSON.stringify(keyword)}`)
+  }
+  for (const key of ['properties']) {
+    for (const [name, branch] of Object.entries(schema[key] ?? {})) {
+      faults.push(...unknownKeywordFaults(branch, `${at}.${name}`))
+    }
+  }
+  for (const key of ['additionalProperties', 'propertyNames', 'items', 'contains', 'if', 'then', 'else', 'not']) {
+    if (schema[key] !== undefined) faults.push(...unknownKeywordFaults(schema[key], `${at}.${key}`))
+  }
+  for (const key of ['anyOf', 'allOf', 'oneOf']) {
+    if (schema[key] === undefined) continue
+    if (!Array.isArray(schema[key])) faults.push(`${at || '(root)'}: ${key} must be an array`)
+    else schema[key].forEach((branch, index) => faults.push(...unknownKeywordFaults(branch, `${at}.${key}[${index}]`)))
+  }
+  return faults
+}
 
 /** How a ref into a schema this bundle does not carry is reported, so callers can name it. */
 export const UNRESOLVED = 'unresolved $ref'
@@ -45,10 +72,9 @@ export function shapeFaults(value, schema, defs, at = '') {
   const faults = []
   const say = (message) => faults.push(`${at || '(root)'}: ${message}`)
   if (schema === undefined) return [`${at || '(root)'}: no schema`]
-
-  for (const keyword of Object.keys(schema)) {
-    if (!KNOWN.has(keyword)) say(`the checker does not read the keyword ${JSON.stringify(keyword)}`)
-  }
+  faults.push(...unknownKeywordFaults(schema, at))
+  if (schema === true || schema === false) return schema ? faults : [...faults, `${at || '(root)'}: forbidden by false schema`]
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) return faults
   if (typeof schema.$ref === 'string') {
     // A local `#/$defs/X` resolves by name. A ref that names another file resolves only if
     // the caller supplied that file's definitions under the fully qualified key: this
@@ -64,6 +90,14 @@ export function shapeFaults(value, schema, defs, at = '') {
   if (Array.isArray(schema.anyOf)) {
     const branches = schema.anyOf.map((branch) => shapeFaults(value, branch, defs, at))
     if (branches.every((branch) => branch.length > 0)) say(`matches none of ${branches.length} alternatives (${branches.flat().join('; ')})`)
+  }
+  if (Array.isArray(schema.allOf)) {
+    for (const branch of schema.allOf) faults.push(...shapeFaults(value, branch, defs, at))
+  }
+  if (Array.isArray(schema.oneOf)) {
+    const branches = schema.oneOf.map((branch) => shapeFaults(value, branch, defs, at))
+    const matches = branches.filter((branch) => branch.length === 0).length
+    if (matches !== 1) say(`matches ${matches} of ${branches.length} alternatives; exactly one is required`)
   }
   if (schema.if !== undefined) {
     const branch = shapeFaults(value, schema.if, defs, at).length === 0 ? schema.then : schema.else
@@ -93,6 +127,10 @@ export function shapeFaults(value, schema, defs, at = '') {
   }
 
   if (actual === 'array') {
+    if (schema.contains !== undefined && !value.some((item, index) =>
+      shapeFaults(item, schema.contains, defs, `${at}[${index}]`).length === 0)) {
+      say('contains no item matching the required shape')
+    }
     if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) say(`carries ${value.length} items, over the ${schema.maxItems} the contract allows`)
     if (schema.uniqueItems === true) {
       const seen = new Set()
