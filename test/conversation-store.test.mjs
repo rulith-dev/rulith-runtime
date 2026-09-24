@@ -87,7 +87,7 @@ test('starting the real Agent with an unfinished saved turn makes no model or Bo
   const dir = fixture(t), store = await openConversations(dir, owner)
   store.accept(item, { ok: true, id: item.id }, '', '')
   store.close()
-  const run = await runAgent({ argv: ['--serve'], env: { RULITH_CONVERSATION_DIR: dir, RULITH_CONVERSATION_OWNER: JSON.stringify(owner), RULITH_SERVE_KEY: 'no-replay', RULITH_SERVE_PORT: String(await freePort()) }, model: () => 'wrong', timeoutMs: 600 })
+  const run = await runAgent({ argv: ['--serve'], env: { RULITH_CONVERSATION_DIR: dir, RULITH_CONVERSATION_OWNER: JSON.stringify(owner), RULITH_SERVE_KEY: 'no-replay', RULITH_SERVE_PORT: String(await freePort()) }, model: () => 'wrong', waitForServeReady: true, timeoutMs: 600 })
   assert.equal(run.modelRequests.length, 0)
   assert.equal(run.toolCalls.length, 0)
   assert.equal(readConversations(store.file, owner).turns[0].state, 'interrupted')

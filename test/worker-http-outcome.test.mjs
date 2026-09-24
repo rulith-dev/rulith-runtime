@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
 
-import { DONE, HOLD, actionRow, driveWorker, toolDigest } from './support/worker-harness.mjs'
+import { DONE, HOLD, actionRow, driveWorker, sourceFreeActionRow, toolDigest } from './support/worker-harness.mjs'
+import { actionRowFaults } from '../worker/rulith-worker.mjs'
 
 const TOOL_ID = 'acme.http_write@1'
 const ACTION = 'acme.http_write'
@@ -22,6 +23,7 @@ function writeRow() {
     toolDigest: toolDigest(TOOL),
     args: JSON.stringify({ source: SOURCE }),
     toolSpec: JSON.stringify({ impl: 'worker-tool', exec: TOOL_ID, kind: 'write', params: {}, sourceTypes: ['http'] }),
+    completionRequirement: { stage: 'terminal' },
   })
 }
 
@@ -92,6 +94,45 @@ test('RT-WK-HTTP 200 with terminal evidence reports success once', async () => {
   assert.equal(reports.length, 1, run.output)
   assert.equal(reports[0].operation.workType, 'action')
   assert.equal(reports[0].operation.ok, true)
+  assert.equal(reports[0].operation.completionStage, 'terminal')
   assert.equal(reports[0].reply?.body?.accepted, true)
   assert.match(run.output, /receipt committed/)
+})
+
+test('RT-WK-HTTP frozen terminal requirement refuses a non-HTTP Tool before ClaimWork', async () => {
+  let polls = 0
+  const run = await driveWorker({
+    reply: operation => operation.kind === 'Poll'
+      ? (++polls === 1 ? { body: { accepted: true, payload: { work: [sourceFreeActionRow({
+          completionRequirement: { stage: 'terminal' },
+        })] } } } : HOLD)
+      : { body: { accepted: true, revision: 'b12' } },
+    done: (_, output) => /Frozen terminal completion requires/.test(output) || DONE.action.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.ran('compute'), 0)
+  assert.equal(run.of('ClaimWork').length, 0)
+  assert.equal(run.of('ReportWork').length, 0)
+})
+
+test('RT-WK-HTTP frozen terminal requirement refuses a changed local completion pin before ClaimWork', async () => {
+  let polls = 0
+  const changed = { ...TOOL, fence: { ...TOOL.fence,
+    completion: { ...COMPLETION, json: { field: 'status', equals: 'accepted' } } } }
+  const run = await driveWorker({
+    extraTools: { [TOOL_ID]: changed },
+    reply: operation => operation.kind === 'Poll'
+      ? (++polls === 1 ? { body: { accepted: true, payload: { work: [writeRow()] } } } : HOLD)
+      : { body: { accepted: true, revision: 'b12' } },
+    done: (_, output) => /digest does not match/.test(output) || DONE.action.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.of('ClaimWork').length, 0)
+  assert.equal(run.of('ReportWork').length, 0)
+})
+
+test('RT-WK-HTTP malformed completion requirement is rejected as a row fault', () => {
+  for (const completionRequirement of [null, { stage: 'accepted' }, { stage: 'terminal', other: true }]) {
+    assert.match(actionRowFaults({ ...writeRow(), completionRequirement }).join('; '), /completionRequirement/)
+  }
 })

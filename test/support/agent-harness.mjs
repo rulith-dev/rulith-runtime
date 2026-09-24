@@ -403,6 +403,7 @@ function renderModelAnswer(answer, provider) {
  * @param {number}   [options.listenPort]  Fixed endpoint port, so two runs share one endpoint identity.
  * @param {(string|object|function)[]} [options.serveTasks] Submit these task bodies after --serve is ready.
  * @param {boolean} [options.waitForServeCompletion] Wait for each accepted task's run record.
+ * @param {boolean} [options.waitForServeReady] Wait for the Agent endpoint even when no task is submitted.
  * @param {boolean} [options.captureLocalEvents] Capture the Agent's IPC event stream.
  * @param {string[]} [options.chatLines] Send these lines to interactive stdin.
  * @param {number}   [options.timeoutMs]
@@ -415,7 +416,8 @@ export async function runAgent({
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
   protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, handoff, replaceAfter, conflictBody,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
-  serveTasks = [], waitForServeCompletion = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
+  serveTasks = [], waitForServeCompletion = false, waitForServeReady = false,
+  captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
 } = {}) {
   const board = gateway ?? defaultGateway()
   /** Every `tools/call` the Agent made, in order: { name, args, meta, id, sessionId }. */
@@ -836,7 +838,7 @@ export async function runAgent({
   const serveStatuses = []
   const serveResponses = []
   let serveSnapshot
-  if (serveTasks.length > 0) {
+  if (serveTasks.length > 0 || waitForServeReady) {
     const deadline = Date.now() + 10_000
     while (!/Task endpoint ready/.test(stdout) && child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
       await new Promise((ready) => setTimeout(ready, 25))

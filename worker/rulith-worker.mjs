@@ -1629,9 +1629,10 @@ export function workerLocalArtifact(value) {
  * be exercised without a filesystem or a network.
  */
 export async function prepareActionReport(row, execution, { custody, register } = {}) {
-  const { ok, result = '', reason, facts = [], localArtifact, safeInlineGuidance } = execution
+  const { ok, result = '', reason, facts = [], localArtifact, safeInlineGuidance, completionStage } = execution
   const body = { kind: 'ReportWork', workType: 'action', id: row.work, executionGrant: row.executionGrant, ok,
-    ...(ok ? { result, ...(facts.length ? { facts } : {}) } : { result: '', reason }) }
+    ...(ok ? { result, ...(facts.length ? { facts } : {}),
+      ...(completionStage === 'terminal' ? { completionStage } : {}) } : { result: '', reason }) }
   const size = value => Buffer.byteLength(JSON.stringify(value), 'utf8')
   const data = { result: ok ? result : '', reason: reason ?? '', facts }
   // A material read is reported as a reference **whatever its size**. Its bytes are somebody's
@@ -1924,8 +1925,17 @@ function refuseShadowFields(row, where) {
 export function actionRowFaults(row, connectionId = CONNECTION_ID) {
   if (row === null || typeof row !== 'object' || Array.isArray(row)) return ['the work item is not an object']
   const faults = []
-  const unknown = Object.keys(row).filter((name) => ACTION_ROW_SHAPE[name] === undefined)
+  // B4c is an optional local extension to the pinned upstream bundle. The Gateway
+  // adds it to the live Worker contract without changing that bundle's source bytes.
+  const unknown = Object.keys(row).filter((name) => ACTION_ROW_SHAPE[name] === undefined && name !== 'completionRequirement')
   if (unknown.length > 0) faults.push(`carries ${unknown.sort().join(', ')}, which this action row shape does not define`)
+  if (Object.hasOwn(row, 'completionRequirement')) {
+    const requirement = row.completionRequirement
+    if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)
+        || Object.keys(requirement).length !== 1 || requirement.stage !== 'terminal') {
+      faults.push('completionRequirement does not state the supported frozen terminal stage')
+    }
+  }
   for (const [name, kind] of Object.entries(ACTION_ROW_SHAPE)) {
     const value = row[name]
     if (kind === 'sourceUpload' || kind === 'artifactPolicy') {
@@ -3244,6 +3254,10 @@ async function handleAction(w) {
     if (resolved.inputRolesV2 && !FROZEN_INPUT_ADOPTION?.sourceNamesByExec?.[resolved.toolContractId]?.includes(w.sourceRecordId)) {
       throw new Error('Action v2 Source was not ready in this Worker generation original Poll adoption')
     }
+    if (w.completionRequirement?.stage === 'terminal'
+        && !(resolved.impl === 'http' && resolved.kind === 'write' && resolved.completion?.stage === 'terminal')) {
+      throw new Error('Frozen terminal completion requires a pinned local HTTP write Tool with terminal evidence')
+    }
   } catch (e) {
     saySkipOnce(w.work, action, `tool_resolution:${String(e.message).slice(0, 60)}`,
       `· Skipping ${action}: ${String(e.message).slice(0, 200)}`)
@@ -3311,6 +3325,7 @@ async function handleAction(w) {
   let safeInlineGuidance
   let reason
   let undeliverable
+  let completionStage
   try {
     const executed = await execute(action, invocationArgs(resolved, w), { [action]: resolved }, SOURCE_CONTEXT,
       { boardId: requestVector.boardId, invocationId: invocation, resultBytes: w.artifactPolicy.objectBytes })
@@ -3331,6 +3346,11 @@ async function handleAction(w) {
       }
     } else {
       result = String(executed ?? '')
+    }
+    // handHttp returns only after the pinned status and JSON terminal marker
+    // both match. No other Adapter can make this completion claim.
+    if (resolved.impl === 'http' && resolved.kind === 'write' && resolved.completion?.stage === 'terminal') {
+      completionStage = 'terminal'
     }
   } catch (e) {
     if (e instanceof ResultDeliveryError || e instanceof McpExecutionUnknownError) undeliverable = e.message
@@ -3386,7 +3406,7 @@ async function handleAction(w) {
   const stopUploadRenewing = keepLeaseAlive()
   let prepared
   try {
-    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts, localArtifact, safeInlineGuidance }, {
+    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts, localArtifact, safeInlineGuidance, completionStage }, {
       custody: takeCustody,
       register: record => registerActionArtifact(record, dispatchedUnder, w.executionGrant),
     })

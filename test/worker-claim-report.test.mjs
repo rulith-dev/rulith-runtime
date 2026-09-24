@@ -61,6 +61,8 @@ test('RT-WK-WIRE-1 an action claim and its receipt are the shapes the contract s
   assertShape(report, 'ReportWorkAction', 'the action receipt')
   assert.equal(report.executionGrant, executionGrant,
     'the receipt carries a different licence from the claim, for one dispatch')
+  assert.equal(Object.hasOwn(report, 'completionStage'), false,
+    'a non-HTTP action must not claim terminal HTTP evidence')
 })
 
 test('RT-WK-WIRE-2 a claim for another work type carries no action grant', async () => {
