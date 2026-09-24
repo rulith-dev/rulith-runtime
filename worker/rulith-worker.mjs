@@ -3683,6 +3683,12 @@ export function assertAdvertisable(advertised) {
  */
 function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources = SOURCE_CONTEXT, sourceRecordId = '') {
   const spec = JSON.parse(specJson)
+  // Until this binary implements and advertises the required v2 phases, presence is a
+  // refusal, even for null or misplaced fields. A signed grant cannot add missing code.
+  if (['inputRoles', 'guardCatalogDigest'].some(key => Object.hasOwn(spec, key)
+      || (spec.execution && typeof spec.execution === 'object' && Object.hasOwn(spec.execution, key)))) {
+    throw new Error('Action inputRoles v2 execution phases are not adopted by this Worker. Nothing was claimed and nothing ran.')
+  }
   if (spec.impl !== 'worker-tool') throw new Error('work item must reference a Worker Tool; adapter implementation is not accepted from the board')
   const ref = spec.exec
   if (typeof ref !== 'string' || !TOOL_ID_PATTERN.test(ref)) throw new Error('work item is missing a versioned Worker Tool reference')
