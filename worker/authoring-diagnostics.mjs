@@ -11,9 +11,11 @@ const constructionCodes = new Set([
   'field_unknown', 'field_required', 'object_required', 'array_required', 'text_required',
   'predicate_name_invalid', 'predicate_symbol_invalid', 'predicate_symbol_reserved',
   'predicate_symbol_duplicate', 'predicate_id_duplicate', 'predicate_symbol_unknown',
-  'import_id_invalid', 'number_not_ecmascript_exact',
+  'import_id_invalid', 'number_not_ecmascript_exact', 'branches_required',
+  'validation_kind_unknown', 'validation_variable_invalid', 'reserved_variable',
+  'construction_expansion_limit',
 ])
-const constructionPath = /^\$(?:\.(?:format|namespace|program|caseContracts|citations|examples|questions|notes|id|title|summary|judges|predicates|imports|pins|rules|actions|acceptance|name|as|args|when|then|preconditions|effects|execution|returns|businessKey|opening|predicate|arguments|keyArguments|minimumGroundingFloor|label|facts|expect|forbid|forbidPredicates)(?:\[\d{1,6}\])?)*$/
+const constructionPath = /^\$(?:\.(?:format|namespace|program|caseContracts|citations|examples|questions|notes|id|title|summary|judges|predicates|imports|pins|rules|ruleGroups|commonWhen|validations|kind|value|branches|actions|acceptance|name|as|args|when|then|preconditions|effects|execution|returns|businessKey|opening|predicate|arguments|keyArguments|minimumGroundingFloor|label|facts|expect|forbid|forbidPredicates)(?:\[\d{1,6}\])?)*$/
 
 // An in-process carrier, minted only after the safe projection. Generic adapter
 // strings or copied objects cannot opt themselves into this inline exception.

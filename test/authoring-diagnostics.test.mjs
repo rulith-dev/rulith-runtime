@@ -30,6 +30,17 @@ test('constructor gives fixed field-declaration repair advice without copying su
   assert.ok(Buffer.byteLength(text) < 1600)
 })
 
+test('rule group failures retain safe coordinates for bounded model repair', () => {
+  const text = authoringGuidanceText(createConstructionGuidance([
+    { code: 'validation_kind_unknown', path: '$.program.ruleGroups[0].validations[1].kind' },
+    { code: 'construction_expansion_limit', path: '$.program.ruleGroups[0].branches[129]' },
+  ]))
+  assert.match(text, /validation_kind_unknown/)
+  assert.match(text, /\$\.program\.ruleGroups\[0\]\.validations\[1\]\.kind/)
+  assert.match(text, /construction_expansion_limit/)
+  assert.ok(Buffer.byteLength(text) <= 1200)
+})
+
 test('constructor explains invalid aliases without printing the submitted alias', () => {
   const secret = 'PRIVATE_DOCUMENT_SENTINEL'
   const text = authoringGuidanceText(createConstructionGuidance([

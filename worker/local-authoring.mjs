@@ -10,7 +10,7 @@ import { MATERIAL_ID_PATTERN, RESULT_ID_PATTERN, MaterialError, materialTextOf, 
 import { discoverLocalAuthoringJar as discoveredJar } from '../local/authoring-checker.mjs'
 import { runBounded } from '../local/process-tree.mjs'
 
-export const LOCAL_AUTHORING_RELEASE = '3.0.0'
+export const LOCAL_AUTHORING_RELEASE = '3.1.0'
 export const LOCAL_AUTHORING_LIMITS = Object.freeze({ documentBytes: 256 * 1024, draftBytes: 512 * 1024, outputBytes: 2 * 1024 * 1024, timeoutMs: 150_000, reportBytes: 32 * 1024 })
 let checkerBusy = false
 const IDS = Object.freeze({ ingest: 'rulith.official_authoring.ingest_document@2', check: 'rulith.official_authoring.check_draft@2', construct: 'rulith.official_authoring.construct_draft@3' })
@@ -20,18 +20,14 @@ const IDS = Object.freeze({ ingest: 'rulith.official_authoring.ingest_document@2
 // a document claim or Board fact. The checker remains the authority.
 export const LOCAL_AUTHORING_DRAFT_SHAPE = [
   'Guidance, not evidence: use construct_rule_draft with construction_json as a STRING containing one rulith-authoring-construction/1 object.',
-  'Exact fields: format, namespace, program, caseContracts, citations, examples, questions, notes.',
-  'program is a JSON OBJECT, never DSL/Markdown/code; only outer construction_json is a string.',
-  'program={id,title,summary,predicates:[{name,as,args}],imports:[],pins:[alias],rules:[{id,label,when:[{predicate,args}],then:[{predicate,args}]}],actions:[],acceptance:[]}.',
-  'program.id is a lowercase 2-32 character package name such as shipping_policy, with no dots.',
-  'namespace is explicit (e.g. acme.shipping); predicates[].name is the final name and predicates[].as its alias. Only those exact values are joined.',
-  'Rule/example atom args MUST be JSON objects keyed by field (e.g. {order_id:"?id",yuan:"?yuan"}), never arrays.',
-  'Rules use declared aliases/imports or built-ins eq, neq, lt, lte, gt, gte (NOT ge); comparison args={left:"?yuan",right:200}. Use forbidden-output examples and guard valid inputs.',
-  'caseContracts=[{caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:"attested"}}]. The constructor adds only the fixed certified terminal envelope.',
-  'businessKey.predicate and opening.predicate name the same document INPUT; acceptance.predicate names a distinct OUTPUT. Their key arrays use business field names, e.g. ["order_id"], not material task_id.',
-  'Each key field must exist in the INPUT and OUTPUT predicate args.',
-  'citations=[{ruleId,quote}], examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}], questions=[], notes="...". Use declared aliases in both rules and examples; Java expands example predicates to canonical ids.',
-  'The constructor chooses no predicates, keys, guards, examples, citations, questions, or evidence floors. The unchanged checker decides whether the expanded draft passes.',
+  'Fields: format, namespace, program, caseContracts, citations, examples, questions, notes. program is an object; only construction_json is a string.',
+  'program={id,title,summary,predicates:[{name,as,args}],imports:[],pins:[alias],rules:[],ruleGroups:[{commonWhen:[{predicate,args}],validations:[{kind:"nonnegative_integer",value:"?amount"}],branches:[{id,label,when:[{predicate,args}],then:[{predicate,args}]}]}],actions:[],acceptance:[]}.',
+  'program.id is lowercase 2-32 chars without dots; namespace has two lowercase segments like acme.shipping. Predicate name is final name, as is alias; predicates[].args is an array of field names. Atom args is an object keyed by field, not an array.',
+  'Rules name declared aliases/imports or built-ins eq, neq, lt, lte, gt, gte (not ge); comparisons use args={left:"?amount",right:200}. ruleGroups repeats commonWhen per branch; nonnegative_integer expands gte 0 and whole-number guards only when required by the document. Branch conditions and outputs remain explicit.',
+  'caseContracts=[{caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:"attested"}}]. The constructor adds the fixed certified terminal.',
+  'Business key and opening name the document INPUT; acceptance names a distinct OUTPUT. Key arrays contain field names, e.g. ["order_id"]; keys occur in both predicates, never material task_id.',
+  'citations=[{ruleId,quote}], examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}], questions=[], notes="...". Each citation.ruleId must equal a rules[].id or ruleGroups[].branches[].id. Quote exact document text; test invalid and forbidden outputs.',
+  'Only names/shared atoms/selected validations expand; the checker decides whether the draft passes.',
 ].join(' ')
 const orderedDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex')}`
 // Java OrderedJson preserves insertion order, including nested objects. Only the four

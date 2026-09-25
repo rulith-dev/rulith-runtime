@@ -33,6 +33,7 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
     'Create one mechanically checkable Rulith capability draft from the synthetic document below.',
     'Return exactly one JSON object and no Markdown, shaped as the current construct_draft tool arguments: {"construction_json":"<one serialized construction JSON object>"}. Keep questions empty only when the document supplies every needed business decision.',
     'Include boundary, missing, invalid and independent-key examples. Cite exact document substrings for each rule.',
+    'Prefer ruleGroups when the document describes repeated decision branches. Put genuinely shared conditions and any document-required validation in the common part; keep business conditions and outcomes explicit in each branch.',
     LOCAL_AUTHORING_DRAFT_SHAPE,
     'Document follows:\n' + text,
   ].join('\n\n')
@@ -138,6 +139,21 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
           if (!summary.compiled || summary.examples_passed !== summary.examples_total || summary.citations_verified !== summary.citations_total)
             repairFeedback = JSON.stringify(summary) + '\n' + (authoringGuidanceText(checked.safeInlineGuidance) ?? '')
           const full = payload.report
+          if (Array.isArray(full.citations?.unverified) && full.citations.unverified.length > 0) {
+            const citationIssues = full.citations.unverified.slice(0, 8).map(row => ({
+              ruleId: typeof row?.ruleId === 'string' ? row.ruleId.slice(0, 80) : '',
+              reason: ['rule_unknown', 'quote_not_found', 'locator_mismatch', 'ambiguous_quote', 'rule_uncited']
+                .includes(row?.reason) ? row.reason : 'citation_unverified',
+            }))
+            repairFeedback += '\nExact checker citation failures: ' + JSON.stringify(citationIssues)
+          }
+          const citationReasons = Object.entries((Array.isArray(full.citations?.unverified) ? full.citations.unverified : [])
+            .reduce((counts, row) => {
+              const reason = ['rule_unknown', 'quote_not_found', 'locator_mismatch', 'ambiguous_quote', 'rule_uncited']
+                .includes(row?.reason) ? row.reason : 'other'
+              counts[reason] = (counts[reason] ?? 0) + 1
+              return counts
+            }, {})).sort(([left], [right]) => left.localeCompare(right))
           const results = Array.isArray(full.examples?.results) ? full.examples.results : null
           const failingExampleIndexes = results === null || results.length !== summary.examples_total
             ? null : results.flatMap((entry, index) => entry?.passed === false ? [index] : [])
@@ -217,7 +233,7 @@ if (process.env.RULITH_AUTHORING_BENCHMARK !== '1') {
             || summary.citations_total === 0 || summary.citations_verified !== summary.citations_total || openQuestions !== 0
             || !independent.available || !independent.compiled || independent.examplesTotal !== 12 || independent.examplesPassed !== 12
             || !guards.available || guards.outputRules === 0 || guards.guardedRules !== guards.outputRules)
-          console.log(JSON.stringify({ ...metrics, parsed: true, checked: true, passed, ...summary, failedExamples, exampleDiagnosticsUnavailable, openQuestions, shape, independent, guards }))
+          console.log(JSON.stringify({ ...metrics, parsed: true, checked: true, passed, ...summary, citationReasons, failedExamples, exampleDiagnosticsUnavailable, openQuestions, shape, independent, guards }))
           process.exitCode = passed ? 0 : 1
           }
         } catch {

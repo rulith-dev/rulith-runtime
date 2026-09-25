@@ -1,6 +1,6 @@
 # Explicit draft construction
 
-Status: implemented as `construct_draft@3` in `official_authoring@3.0.0`. Existing
+Status: implemented as `construct_draft@3` in `official_authoring@3.1.0`. Existing
 `check_draft@2` continues to accept its exact canonical input. The new Tool changes
 no control-plane authority or evidence tier.
 
@@ -27,12 +27,14 @@ key, condition, output, ambiguity and requested evidence floor. The constructor 
 - Expand an explicitly supplied namespace and local symbol into its canonical ID.
 - Resolve explicit symbol references and map supplied arguments to declared names.
 - Emit fixed structural envelope fields and aliases according to the new format.
+- Repeat explicitly supplied shared premises across business branches and expand
+  an explicitly selected `nonnegative_integer` validation into numeric guards.
 - Preserve the declared order and compute the canonical proposal digest through
   the existing checker implementation after construction.
 
 It must reject unknown symbols, duplicate bindings, missing required construction
 fields and unsupported formats with a path and fixed diagnostic code. It must not
-invent predicates, infer Case keys, insert validity guards, fill missing examples,
+invent predicates, infer Case keys or validity requirements, fill missing examples,
 adjust citation text or choose a Source's floor. Deliberately incomplete inputs in
 negative test examples must remain incomplete; normalization must not repair them.
 
@@ -55,6 +57,7 @@ The v1 construction envelope is:
     "rules": [{"id": "rule_id", "label": "Reason",
                "when": [{"predicate": "input", "args": {"entity_id": "?id"}}],
                "then": [{"predicate": "output", "args": {"entity_id": "?id"}}]}],
+    "ruleGroups": [],
     "actions": [],
     "acceptance": []
   },
@@ -82,6 +85,15 @@ adds the fixed certified terminal. Rule references remain aliases for the existi
 symbol compiler. Numbers that cannot survive the ECMAScript Worker boundary exactly
 are refused before expansion. Unknown fields, symbols and unsupported input versions
 produce stable codes and paths; their submitted values stay in the local Artifact.
+
+`ruleGroups` is optional and can coexist with `rules`. Each group has `commonWhen`
+atoms, `validations` and `branches`; every branch has its own `id`, `label`, `when`
+atoms and `then` atoms. For example, `validations:[{"kind":"nonnegative_integer",
+"value":"?amount"}]` is valid only when the source document requires both
+non-negative and whole-number input. The constructor copies shared premises and
+expands that selected validation; it never chooses thresholds or outputs. Each
+generated branch ID still needs its own exact citation, and the unchanged compiler
+and checker decide whether the draft passes. Group and expansion counts are bounded.
 
 The implementation lives beside the Java authoring compiler, using its ordered JSON
 and exact number handling. The Node Worker invokes that implementation and verifies

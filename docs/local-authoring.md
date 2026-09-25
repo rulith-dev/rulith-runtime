@@ -6,14 +6,15 @@
    permission as well as local delivery when it reads a locally held document. Preparation
    with both permissions off is refused before installing the assistant: its ingest action
    would otherwise run without any permitted path to register its Artifact result. Preparation installs the ordinary
-   `official_authoring@3.0.0` Release on that Agent and binds its file Source to this
+   `official_authoring@3.1.0` Release on that Agent and binds its file Source to this
    profile's material area. It downloads two pinned public checker JARs once per computer.
    Java 25 is required. Existing conversations and credentials are retained.
 3. Attach a UTF-8 `.txt` or `.md` document (at most 256 KiB) in the conversation. Ask
    the Agent to prepare a capability from it, answer its questions, and let it run
    the mechanical checks and close the matching Case after they pass. The preferred
    `construct_rule_draft` Action accepts an explicit compact construction, expands only
-   repeated predicate namespaces/references and the fixed certified Case terminal, then
+   repeated predicate namespaces/references, explicitly selected shared validity guards,
+   decision branches and the fixed certified Case terminal, then
    sends that expanded draft through the same compiler, kernel example runner and exact
    citation checker used by `check_rule_draft`.
 4. Open **Document assistant → Review checked draft**. Review its rules, examples,
