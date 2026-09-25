@@ -91,6 +91,55 @@ test('RT-CONN-2 a 409 that is not connection_replaced is not read as a takeover'
     'a conflict this client cannot interpret leaves the outcome unknown, which is what it is')
 })
 
+test('a correlated pre-admission material refusal is final; an unproven conflict stays unknown', async () => {
+  const refusal = input => ({ jsonrpc: '2.0', id: input.id,
+    error: { code: -32000, message: 'The Host proof was not available for this call.',
+      data: { reason: 'material_proof_unavailable', requestExecuted: false } } })
+  const sound = await runAgent({
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
+    replaceAfter: 4, conflictBody: refusal,
+    model: round => round === 1 ? callTool('OpenCase', {}) : 'The proof was refused before execution.',
+    timeoutMs: 20_000,
+  })
+  assert.notEqual(sound.code, 'timeout', `${sound.stdout}\n${sound.stderr}`)
+  assert.match(sound.stdout, /Board rejected OpenCase: The Host proof was not available/)
+  assert.doesNotMatch(sound.stdout, /Board outcome unknown for OpenCase/)
+  assert.equal(sound.requests.filter(row => row.method === 'tools/call').length, 1,
+    'an authority refusal must not be retried by the transport')
+
+  const unproven = await runAgent({
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    replaceAfter: 4,
+    conflictBody: input => ({ ...refusal(input), error: { ...refusal(input).error,
+      data: { reason: 'material_proof_unavailable' } } }),
+    model: round => round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.',
+    timeoutMs: 25_000,
+  })
+  assert.notEqual(unproven.code, 'timeout', `${unproven.stdout}\n${unproven.stderr}`)
+  assert.match(unproven.stdout, /Board outcome unknown for OpenCase/,
+    'the reason alone cannot prove that no operation executed')
+
+  const wrongSession = await runAgent({
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    replaceAfter: 4, conflictBody: refusal, conflictSessionId: 'a-different-mcp-session',
+    model: round => round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.',
+    timeoutMs: 25_000,
+  })
+  assert.notEqual(wrongSession.code, 'timeout', `${wrongSession.stdout}\n${wrongSession.stderr}`)
+  assert.match(wrongSession.stdout, /Board outcome unknown for OpenCase/,
+    'a correlated id under another session is not a receipt for this connection')
+
+  const wrongId = await runAgent({
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    replaceAfter: 4, conflictBody: input => ({ ...refusal(input), id: 'another-request' }),
+    model: round => round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.',
+    timeoutMs: 25_000,
+  })
+  assert.notEqual(wrongId.code, 'timeout', `${wrongId.stdout}\n${wrongId.stderr}`)
+  assert.match(wrongId.stdout, /Board outcome unknown for OpenCase/,
+    'an error for another JSON-RPC request cannot clear this operation')
+})
+
 test('RT-CONN-3 an expired session is re-established rather than treated as a takeover', async () => {
   // 404 says the transport session is gone, and the base protocol answer is to initialize a
   // new one. What it does not say is whether the call made under the old session executed,

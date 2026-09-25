@@ -388,8 +388,10 @@ function renderModelAnswer(answer, provider) {
  *   `__operationTarget` overrides the private target selected by the read before delivery.
  * @param {number}   [options.replaceAfter] Answer this and every later request with HTTP 409
  *   `connection_replaced`, as the Gateway does once another client has taken over.
- * @param {object}   [options.conflictBody] Replace the 409 body, for the arms that prove the
+ * @param {object|function} [options.conflictBody] Replace the 409 body, for the arms that prove the
  *   reason string — not the bare -32000 — is what stops a host reconnecting.
+ * @param {string|null} [options.conflictSessionId] Override the echoed session header on that 409;
+ *   null omits it, and undefined echoes the request as the real Gateway does.
  * @param {number}   [options.expireSessionAfter] Answer exactly this request with HTTP 404, as a
  *   server whose session has gone does. One request only, so the client can re-initialize.
  * @param {number}   [options.breakStreamOnCall] Cut the response stream of this tools/call after a
@@ -413,7 +415,7 @@ export async function runAgent({
   dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
   protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, readRecord,
-  serverBoardObservation = false, replaceAfter, conflictBody,
+  serverBoardObservation = false, replaceAfter, conflictBody, conflictSessionId,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
   captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
@@ -529,8 +531,12 @@ export async function runAgent({
       }))
     }
     if (Number.isInteger(replaceAfter) && requests.length >= replaceAfter) {
-      response.writeHead(409, { 'content-type': 'application/json' })
-      return void response.end(JSON.stringify(conflictBody ?? {
+      const echoedSession = conflictSessionId === undefined
+        ? request.headers['mcp-session-id'] : conflictSessionId
+      response.writeHead(409, { 'content-type': 'application/json',
+        ...(echoedSession === null || echoedSession === undefined ? {} : { 'mcp-session-id': echoedSession }) })
+      return void response.end(JSON.stringify((typeof conflictBody === 'function'
+        ? conflictBody(input) : conflictBody) ?? {
         jsonrpc: '2.0',
         id: input.id ?? null,
         error: {

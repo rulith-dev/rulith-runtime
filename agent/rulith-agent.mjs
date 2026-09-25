@@ -488,6 +488,10 @@ class McpSurfaceError extends Error {}
  * over one Agent, and the fight looks like flapping rather than like a fault.
  */
 class McpConnectionReplacedError extends Error {}
+/** A correlated Gateway refusal that explicitly proves this new request never executed. */
+class McpAdmissionRefusalError extends Error {
+  constructor(reason, message) { super(message); this.reason = reason }
+}
 /**
  * The MCP session this client presented no longer exists on the server (HTTP 404).
  *
@@ -685,7 +689,7 @@ async function resumeSseResponse(id, budgetMs) {
  * ordinary conflict this code has no licence to reinterpret. Guessing here would make
  * every future 409 stop the host permanently.
  */
-async function connectionReplacement(response, method) {
+async function connectionReplacement(response, method, rpcId, presentedSession) {
   let parsed
   try { parsed = JSON.parse(await readWholeBody(response)) } catch { parsed = undefined }
   const error = parsed?.error
@@ -693,6 +697,17 @@ async function connectionReplacement(response, method) {
   if (error?.code === -32000 && reason === 'connection_replaced') {
     return new McpConnectionReplacedError(String(error.message ?? '').trim()
       || 'This Agent connection was replaced by a newer authenticated client.')
+  }
+  // Only this Gateway reason is currently proved to originate before a call is
+  // committed or dispatched. Require the original JSON-RPC id and the explicit
+  // no-effect assertion; a generic conflict, an unreadable body, or a mismatched
+  // response remains unknown and must use original-operation recovery.
+  if (method === 'tools/call' && typeof presentedSession === 'string' && presentedSession !== ''
+    && response.headers.get('mcp-session-id') === presentedSession
+    && rpcResponseFor(parsed, rpcId) === parsed
+    && error?.code === -32000 && reason === 'material_proof_unavailable'
+    && error.data?.requestExecuted === false) {
+    return new McpAdmissionRefusalError(reason, String(error.message ?? reason).slice(0, 320))
   }
   return new Error(`MCP ${method} failed (HTTP 409)${reason === '' ? '' : `, reason ${JSON.stringify(reason)}`}:`
     + ` ${String(error?.message ?? 'conflict').slice(0, 240)}`)
@@ -805,7 +820,7 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000, id, notificatio
     // Connection control and session lifetime are decided on the status line, before any
     // body is interpreted as an answer.
     if (response.status === 409) {
-      const replacement = await connectionReplacement(response, method)
+      const replacement = await connectionReplacement(response, method, rpcId, presented)
       if (replacement instanceof McpConnectionReplacedError && session !== undefined) session.replaced = true
       throw replacement
     }
@@ -862,7 +877,8 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000, id, notificatio
     }
   } catch (error) {
     if (error instanceof McpResponseLimitError || error instanceof McpCorrelationError) throw error
-    if (error instanceof McpConnectionReplacedError || error instanceof McpSessionExpiredError) throw error
+    if (error instanceof McpConnectionReplacedError || error instanceof McpSessionExpiredError
+      || error instanceof McpAdmissionRefusalError) throw error
     throw new Error(`Cannot reach the public MCP endpoint ${MCP_URL}: ${error?.cause?.code ?? error?.message ?? error}`)
   } finally {
     clearTimeout(timeout)
@@ -1955,19 +1971,25 @@ async function callTool(ctx, name, input, { claim = false, expectedRecovery, obs
     if (error instanceof AgentCredentialRejectedError) throw error
     if (error instanceof McpSurfaceError) throw error
     if (error instanceof McpConnectionReplacedError) throw error
-    authoritative = false
-    // Four different unknowns, said as four different things. All of them leave the
-    // outcome unknown and the identity held, but a reader debugging "the write vanished"
-    // needs to know whether the hop failed, whether this client refused to read the
-    // answer, whether the peer answered something else entirely, or whether the transport
-    // session ended underneath it.
-    result = {
-      accepted: false,
-      errorCode: error instanceof McpResponseLimitError ? 'response_too_large'
-        : error instanceof McpCorrelationError ? 'response_not_correlated'
-          : error instanceof McpSessionExpiredError ? 'session_expired'
-            : 'upstream_unavailable',
-      teaching: String(error?.message ?? error).slice(0, 320),
+    if (error instanceof McpAdmissionRefusalError) {
+      result = { accepted: false, errorCode: error.reason, requestExecuted: false,
+        teaching: error.message }
+      text = JSON.stringify(result)
+    } else {
+      authoritative = false
+      // Four different unknowns, said as four different things. All of them leave the
+      // outcome unknown and the identity held, but a reader debugging "the write vanished"
+      // needs to know whether the hop failed, whether this client refused to read the
+      // answer, whether the peer answered something else entirely, or whether the transport
+      // session ended underneath it.
+      result = {
+        accepted: false,
+        errorCode: error instanceof McpResponseLimitError ? 'response_too_large'
+          : error instanceof McpCorrelationError ? 'response_not_correlated'
+            : error instanceof McpSessionExpiredError ? 'session_expired'
+              : 'upstream_unavailable',
+        teaching: String(error?.message ?? error).slice(0, 320),
+      }
     }
     if (error instanceof McpSessionExpiredError) {
       // The session is gone, so the next contact must initialize a new one. That is a
@@ -3146,6 +3168,10 @@ async function executeToolCall(ctx, call, options) {
     text: answer.text,
     accepted,
     view: answer.view,
+    materialBindingRefused: name === 'OpenCase' && ctx.materialTaskProof !== undefined
+      && answer.result?.errorCode === 'material_proof_unavailable'
+      && answer.result?.requestExecuted === false && answer.authoritative === true,
+    materialBindingTeaching: answer.result?.teaching,
     // The call reached the wire and its outcome is not known. Everything downstream —
     // the rest of this turn's queue, the next model turn — stops until it is settled.
     unresolved: name !== 'QueryBoard' && answer.refusedLocally !== true && answer.authoritative !== true,
@@ -3405,6 +3431,8 @@ async function runCaseTurn(ctx, userText, {
       && !readRecoveryMayAdvance(connection.recovery)
     let notSent = 0
     let observedInBatch = false
+    let materialBindingRefused = false
+    let materialBindingTeaching = ''
     for (const call of reply.toolCalls) {
       const permittedObservation = observationOnly && !observedInBatch && String(call.name ?? '') === 'QueryBoard'
         && connection.boardObservation && ['waiting', 'reconciliation_required'].includes(connection.recovery?.state)
@@ -3426,6 +3454,10 @@ async function runCaseTurn(ctx, userText, {
       const executed = await executeToolCall(ctx, call, { caseType, caseTypePinned: caseTypePinnedForTurn,
         businessKey, observationOnly })
       results.push({ id: call.id, name: String(call.name ?? ''), text: executed.text })
+      if (executed.materialBindingRefused) {
+        materialBindingRefused = true
+        materialBindingTeaching = String(executed.materialBindingTeaching ?? '')
+      }
       if (permittedObservation) observedInBatch = true
       if (board.roots.length > 0) { opened = true; lastCaseId = board.roots[0].caseId }
       for (const closed of executed.closedCases ?? []) {
@@ -3433,12 +3465,16 @@ async function runCaseTurn(ctx, userText, {
         lastCaseId = closed.caseId
       }
       // A write proposed beside a model-chosen read was chosen before the model saw it.
-      if (executed.unresolved || executed.readUnavailable || permittedObservation
+      if (materialBindingRefused || executed.unresolved || executed.readUnavailable || permittedObservation
         || String(call.name ?? '') === 'ReadOperation'
         || (connection.recovery !== undefined && connection.recovery.state !== 'none'
           && !readRecoveryMayAdvance(connection.recovery))) suspended = true
     }
     messages.push(resultsEntry(results))
+
+    if (materialBindingRefused) return blockedTurn({ state: 'material_binding_refused',
+      teaching: `The selected material was refused before Case admission: ${materialBindingTeaching}`
+        + ' No Case was opened for these files. Submit the files again after correcting this computer\'s Agent connection.' })
 
     if (suspended) {
       if (notSent > 0) {

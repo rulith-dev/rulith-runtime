@@ -39,6 +39,29 @@ test('real Agent sends private proof only on create-form OpenCase MCP header and
   assert.equal(saved.turns.length, 1)
 })
 
+test('an explicit pre-admission proof refusal stops the attached task before another model decision', async () => {
+  const run = await runAgent({ argv: ['--serve'], captureLocalEvents: true,
+    env: { RULITH_SERVE_PORT: String(await freePort()), RULITH_SERVE_KEY: 'task-proof-key',
+      RULITH_MAX_ROUNDS: '4' },
+    serveTaskHeaders: { 'x-rulith-material-task-proof': PROOF },
+    serveTasks: [{ text: 'Open a Case and use this attachment.', requestId: 'proof-denied-task-1',
+      sessionKey: 'proof-denied-session', attachments: [ATTACHMENT] }],
+    waitForServeCompletion: true, replaceAfter: 4,
+    conflictBody: input => ({ jsonrpc: '2.0', id: input.id,
+      error: { code: -32000, message: 'The proof was not registered for this Agent credential.',
+        data: { reason: 'material_proof_unavailable', requestExecuted: false } } }),
+    model: round => round === 1 ? callTool('OpenCase', { caseType: 'exploration' })
+      : callTool('OpenCase', { caseType: 'exploration' }),
+    timeoutMs: 1200,
+  })
+  assert.deepEqual(run.serveStatuses, [202], run.stdout + '\n' + run.stderr)
+  assert.equal(run.modelRequests.length, 1, 'no second model decision may create an unbound Case')
+  assert.equal(run.requests.filter(row => row.method === 'tools/call').length, 1)
+  assert.ok(run.localEvents.some(event => event.type === 'blocked'
+    && event.reason === 'material_binding_refused'), 'Local receives a definite material refusal')
+  assert.doesNotMatch(run.stdout, /Board outcome unknown for OpenCase/)
+})
+
 test('real Agent refuses attached tasks without a valid Host proof before MCP egress', async () => {
   for (const [name, proof] of [
     ['missing proof', undefined], ['malformed proof', 'not-a-proof'],
