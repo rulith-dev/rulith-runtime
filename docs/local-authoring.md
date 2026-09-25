@@ -24,6 +24,10 @@
    result shows its saved receipt, including after restarting Local. Publication remains
    a separate Console action.
 
+Each newly checked result has its own immutable, Agent-scoped local index entry. The
+version selector shows the 200 most recent entries; an older result remains readable by
+its exact result ID. Checks by different local Workers no longer rewrite one shared list.
+
 If Save receives no reply, Rulith reads that same immutable checked version again before showing an
 outcome. When the private draft was committed, its receipt appears without another
 save. When the outcome cannot be checked, Save stays disabled; use **Review checked

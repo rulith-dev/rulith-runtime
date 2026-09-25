@@ -2,11 +2,11 @@
 /** Local-only implementation of the versioned official-authoring Tools. */
 import { createHash, randomUUID } from 'node:crypto'
 import { authoringDiagnostics, createAuthoringGuidance, createConstructionGuidance } from './authoring-diagnostics.mjs'
-import { existsSync } from 'node:fs'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { link, mkdir, open, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { MATERIAL_ID_PATTERN, MaterialError, materialTextOf, openMaterialStore } from './material-store.mjs'
+import { MATERIAL_ID_PATTERN, RESULT_ID_PATTERN, MaterialError, materialTextOf, openMaterialStore } from './material-store.mjs'
 import { discoverLocalAuthoringJar as discoveredJar } from '../local/authoring-checker.mjs'
 import { runBounded } from '../local/process-tree.mjs'
 
@@ -90,16 +90,56 @@ function material(root, binding, id) {
 }
 // Node identity is stable for the exact immutable document version, never a path or a task alias.
 export const authoringNode = (materialId, digest) => `node_${createHash('sha256').update(`${materialId}\u0000${digest}`, 'utf8').digest('hex').slice(0, 32)}`
-async function recordResult(root, row) {
-  const directory = join(root, 'local-authoring')
+export function localAuthoringIndexDirectory(root, identity) {
+  const scope = createHash('sha256').update(JSON.stringify([identity.profile, identity.owner])).digest('hex')
+  return join(root, 'local-authoring', 'checks', scope)
+}
+
+/** Read only this Agent's per-result records, plus the bounded pre-migration index. */
+export function readLocalAuthoringResults(root, identity) {
+  const old = join(root, 'local-authoring', 'results.json')
+  const legacy = existsSync(old) ? JSON.parse(readFileSync(old, 'utf8')) : []
+  if (!Array.isArray(legacy)) throw new Error('local_authoring_result_index_invalid: legacy index is not an array.')
+  const directory = localAuthoringIndexDirectory(root, identity)
+  if (!existsSync(directory)) return legacy
+  const current = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^res_[0-9a-f]{32}\.json$/.test(entry.name)) continue
+    const file = join(directory, entry.name)
+    if (statSync(file).size > 8192) throw new Error('local_authoring_result_index_invalid: result entry exceeds its metadata limit.')
+    const row = JSON.parse(readFileSync(file, 'utf8'))
+    if (!row || Array.isArray(row) || typeof row !== 'object' || `${row.resultId}.json` !== entry.name
+      || row.profile !== identity.profile || row.owner !== identity.owner)
+      throw new Error('local_authoring_result_index_invalid: result entry differs from its Agent scope or filename.')
+    current.push(row)
+  }
+  return [...legacy, ...current]
+}
+
+/** One immutable index entry per checked result; simultaneous Workers never rewrite a shared array. */
+export async function recordLocalAuthoringResult(root, row) {
+  if (!RESULT_ID_PATTERN.test(row?.resultId ?? '') || typeof row.profile !== 'string' || typeof row.owner !== 'string')
+    throw new Error('local_authoring_result_index_invalid: checked result has no immutable identity.')
+  const directory = localAuthoringIndexDirectory(root, row)
   await mkdir(directory, { recursive: true, mode: 0o700 })
-  const file = join(directory, 'results.json')
-  let rows = []
-  try { rows = JSON.parse(await readFile(file, 'utf8')) } catch (error) { if (error.code !== 'ENOENT') throw error }
-  if (!Array.isArray(rows)) throw new Error('local_authoring_result_index_invalid: results index is not an array.')
-  rows.push(row); if (rows.length > 200) rows = rows.slice(-200)
-  const temporary = join(directory, `.results-${randomUUID()}.json`)
-  await writeFile(temporary, `${JSON.stringify(rows)}\n`, { mode: 0o600, flag: 'wx' }); await rename(temporary, file)
+  const file = join(directory, `${row.resultId}.json`)
+  const content = `${JSON.stringify(row)}\n`
+  const temporary = join(directory, `.result-${randomUUID()}.json`)
+  try {
+    const handle = await open(temporary, 'wx', 0o600)
+    try { await handle.writeFile(content); await handle.sync() } finally { await handle.close() }
+    try { await link(temporary, file) }
+    catch (error) {
+      if (error.code !== 'EEXIST' || readFileSync(file, 'utf8') !== content)
+        throw new Error('local_authoring_result_index_conflict: checked result identity changed or could not be published.')
+    }
+  } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error }) }
+  // Like the material store, file sync is mandatory and directory sync is best effort:
+  // Windows does not support syncing every directory handle. No mutable list is rewritten.
+  try {
+    const handle = await open(directory, 'r')
+    try { await handle.sync() } finally { await handle.close() }
+  } catch { /* Filesystem does not expose a syncable directory handle. */ }
 }
 export async function executeLocalAuthoring(tool, args, { materialRoot, binding }) {
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
@@ -157,7 +197,7 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
   const construction_digest = constructing ? envelope.constructionDigest : undefined
   const artifact = constructing ? { construction_json: inputText, constructorVersion: envelope.constructorVersion, inputDigest: envelope.inputDigest, constructionDigest: construction_digest, draft, report } : { draft, report }
   const result = found.store.putResult({ name: `${constructing ? 'authoring-construction' : 'authoring-check'}-${found.selector}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify(artifact), 'utf8') })
-  await recordResult(materialRoot, { profile: binding.profile, owner: binding.owner, materialId: found.selector, custodyId: found.record.id, documentDigest: found.record.digest, node, proposalDigest: proposal_digest, resultId: result.id, resultDigest: result.digest, checkedAt: new Date().toISOString() })
+  await recordLocalAuthoringResult(materialRoot, { profile: binding.profile, owner: binding.owner, materialId: found.selector, custodyId: found.record.id, documentDigest: found.record.digest, node, proposalDigest: proposal_digest, resultId: result.id, resultDigest: result.digest, checkedAt: new Date().toISOString() })
   return { result: constructing ? 'Local deterministic draft construction and mechanical check completed.' : 'Local mechanical authoring check completed.', localArtifact: result, safeInlineGuidance: createAuthoringGuidance(report), rows: [{ node, task_id: found.selector, ...(constructing ? { construction_digest, constructed: true } : {}), proposal_digest, compiled: report.compiled, ...counts, report: summary }] }
   } finally {
     checkerBusy = false

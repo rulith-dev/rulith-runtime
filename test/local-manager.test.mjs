@@ -26,7 +26,8 @@ import { createManagerServer, localAuthoringSaveRequestId, localAuthoringResultV
 import { processAlive } from '../local/manager-registry.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { isolatedEnvironmentBase } from '../local/rulith-local.mjs'
-import { materialDeviceFingerprint } from '../worker/material-store.mjs'
+import { materialDeviceFingerprint, materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
+import { authoringNode, proposalDigest, recordLocalAuthoringResult } from '../worker/local-authoring.mjs'
 import { createDevicesGateway } from './support/local-devices-gateway.mjs'
 
 const sha256Hex = (value) => createHash('sha256').update(String(value)).digest('hex')
@@ -51,15 +52,73 @@ test('private-save request identity survives a retry and changes with the certif
 test('checked authoring versions are ordered, deduplicated and scoped to the selected Agent', () => {
   const identity = { profile: 'agent-one-profile', owner: 'agent-one-owner' }
   const first = { ...identity, resultId: 'res_' + '1'.repeat(32), materialId: 'mat_' + 'a'.repeat(32),
-    proposalDigest: 'sha256:' + 'b'.repeat(64), checkedAt: '2026-09-25T10:00:00Z' }
+    custodyId: 'mat_' + 'a'.repeat(32), documentDigest: 'sha256:' + 'a'.repeat(64), node: 'node_' + 'a'.repeat(32),
+    resultDigest: 'sha256:' + 'a'.repeat(64), proposalDigest: 'sha256:' + 'b'.repeat(64), checkedAt: '2026-09-25T10:00:00Z' }
   const second = { ...identity, resultId: 'res_' + '2'.repeat(32), materialId: 'mat_' + 'c'.repeat(32),
-    proposalDigest: 'sha256:' + 'd'.repeat(64), checkedAt: '2026-09-25T11:00:00Z' }
+    custodyId: 'mat_' + 'c'.repeat(32), documentDigest: 'sha256:' + 'c'.repeat(64), node: 'node_' + 'c'.repeat(32),
+    resultDigest: 'sha256:' + 'c'.repeat(64), proposalDigest: 'sha256:' + 'd'.repeat(64), checkedAt: '2026-09-25T11:00:00Z' }
   const { owned, availableResults } = localAuthoringResultVersions([first,
     { ...first, owner: 'another-agent', resultId: 'res_' + '3'.repeat(32) },
-    { ...first, resultId: 'invalid' }, { ...first, resultId: 'res_' + '4'.repeat(32), materialId: 42 }, second, first], identity)
-  assert.equal(owned.length, 5)
-  assert.deepEqual(availableResults.map(row => row.resultId), [first.resultId, second.resultId])
+    { ...first, resultId: 'invalid', checkedAt: '2026-09-26T00:00:00Z' },
+    { ...first, resultId: 'res_' + '4'.repeat(32), materialId: 42, checkedAt: '2026-09-26T00:00:00Z' },
+    { ...first, resultId: 'res_' + '5'.repeat(32), resultDigest: undefined, checkedAt: '2026-09-27T00:00:00Z' }, second, first], identity)
+  assert.equal(owned.length, 3, 'malformed same-Agent rows cannot become the default selected result')
+  assert.deepEqual(availableResults.map(row => row.resultId), [second.resultId, first.resultId])
   assert.equal(JSON.stringify(availableResults).includes('another-agent'), false)
+  const revisions = Array.from({ length: 205 }, (_, i) => ({ ...first,
+    resultId: `res_${i.toString(16).padStart(32, '0')}`,
+    checkedAt: new Date(Date.UTC(2026, 8, 25) + i * 1000).toISOString() }))
+  const recent = localAuthoringResultVersions(revisions, identity)
+  assert.equal(recent.availableResults.length, 200)
+  assert.equal(recent.availableResults[0].resultId, revisions.at(-1).resultId)
+  const restored = localAuthoringResultVersions(revisions, identity, revisions[0].resultId)
+  assert.equal(restored.availableResults.length, 201)
+  assert.equal(restored.availableResults.at(-1).resultId, revisions[0].resultId,
+    'an explicitly named older result remains reviewable after more than 200 checks')
+})
+
+test('manager reopens an older checked result after newer checks without changing its material or proposal', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const instance = await addInstance(manager, 'Document versions', { agentId: 'agent-alpha' })
+    const identity = materialIdentity({ configFile: join(instance.directory, 'local.json'),
+      gatewayUrl: gateway.origin, connectionId: manager.instances.overview().find(row => row.id === instance.id).connectionId,
+      agentId: 'agent-alpha', modelUrl: 'http://127.0.0.1:11434/v1' })
+    const root = join(instance.directory, 'materials')
+    const store = openMaterialStore(root, identity)
+    const material = store.put({ name: 'rules.txt', mediaType: 'text/plain', bytes: Buffer.from('Original policy text') })
+    store.submitSelected(material.uiHandle, { sessionKey: 'version-case' })
+    const drafts = Array.from({ length: 205 }, (_, i) => ({ program: { id: `p${i}`, title: `Version ${i}` },
+      caseContracts: [], citations: [], examples: [] }))
+    const records = await Promise.all(drafts.map(async (draft, i) => {
+      const candidate = proposalDigest(draft)
+      const result = store.putResult({ name: `check-${i}.json`, mediaType: 'application/json', encoding: 'utf8',
+        bytes: Buffer.from(JSON.stringify({ draft, report: { proposalDigest: candidate, compiled: true } })) })
+      await recordLocalAuthoringResult(root, { profile: identity.profile, owner: identity.owner,
+        materialId: material.selector, custodyId: material.id, documentDigest: material.digest,
+        node: authoringNode(material.selector, material.digest), proposalDigest: candidate,
+        resultId: result.id, resultDigest: result.digest,
+        checkedAt: new Date(Date.UTC(2026, 8, 25) + i * 1000).toISOString() })
+      return result
+    }))
+    const review = async resultId => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/review`, {
+        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({ instanceId: instance.id, ...(resultId ? { resultId } : {}) }) })
+      return { status: response.status, body: await response.json() }
+    }
+    const latest = await review('')
+    assert.equal(latest.status, 200, JSON.stringify(latest.body))
+    assert.equal(latest.body.resultId, records.at(-1).id)
+    assert.equal(latest.body.availableResults.length, 200)
+    const older = await review(records[0].id)
+    assert.equal(older.status, 200, JSON.stringify(older.body))
+    assert.equal(older.body.resultId, records[0].id)
+    assert.equal(older.body.draft.program.title, 'Version 0')
+    assert.equal(older.body.availableResults.length, 201)
+    assert.equal(older.body.availableResults.at(-1).resultId, records[0].id)
+    assert.equal(older.body.materialId, material.selector)
+    assert.equal(older.body.proposalDigest, proposalDigest(drafts[0]))
+  })
 })
 
 /** A manager and a Gateway on real sockets, signed in unless a scenario asks otherwise. */

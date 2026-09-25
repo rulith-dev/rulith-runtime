@@ -15,7 +15,7 @@
  */
 import http from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { acquireWorkbenchLease, createManagerRegistry, defaultManagerRoot } from './manager-registry.mjs'
@@ -24,7 +24,7 @@ import { createInstanceManager } from './instance-manager.mjs'
 import { managerPage } from './manager-ui.mjs'
 import { installAuthoringChecker } from './authoring-checker.mjs'
 import { materialIdentity, openMaterialStore, MATERIAL_ID_PATTERN, RESULT_ID_PATTERN } from '../worker/material-store.mjs'
-import { proposalDigest } from '../worker/local-authoring.mjs'
+import { proposalDigest, readLocalAuthoringResults } from '../worker/local-authoring.mjs'
 
 /** One checked proposal and certified Case are one logical private save, even after a browser retry or manager restart. */
 export function localAuthoringSaveRequestId({ accountId, agentId, caseId, materialId, documentDigest, proposalDigest }) {
@@ -34,17 +34,27 @@ export function localAuthoringSaveRequestId({ accountId, agentId, caseId, materi
 }
 
 /** Only the selected Agent's recent immutable checks are offered as review choices. */
-export function localAuthoringResultVersions(rows, identity) {
-  const owned = rows.filter((entry) => entry?.profile === identity.profile && entry?.owner === identity.owner)
-  const seen = new Set()
+export function localAuthoringResultVersions(rows, identity, selectedId = '') {
+  const owned = rows.filter((entry) => entry?.profile === identity.profile && entry?.owner === identity.owner
+      && RESULT_ID_PATTERN.test(entry.resultId ?? '') && MATERIAL_ID_PATTERN.test(entry.materialId ?? '')
+      && MATERIAL_ID_PATTERN.test(entry.custodyId ?? '') && /^node_[0-9a-f]{32}$/.test(entry.node ?? '')
+      && /^sha256:[0-9a-f]{64}$/.test(entry.documentDigest ?? '')
+      && /^sha256:[0-9a-f]{64}$/.test(entry.proposalDigest ?? '')
+      && /^sha256:[0-9a-f]{64}$/.test(entry.resultDigest ?? '')
+      && typeof entry.checkedAt === 'string' && entry.checkedAt.length > 0 && entry.checkedAt.length <= 40)
+    .sort((a, b) => String(a.checkedAt ?? '').localeCompare(String(b.checkedAt ?? ''))
+      || String(a.resultId ?? '').localeCompare(String(b.resultId ?? '')))
+  const seen = new Map()
   const availableResults = []
   for (const entry of [...owned].reverse()) {
-    if (!RESULT_ID_PATTERN.test(entry.resultId ?? '') || !MATERIAL_ID_PATTERN.test(entry.materialId ?? '')
-      || !/^sha256:[0-9a-f]{64}$/.test(entry.proposalDigest ?? '')
-      || typeof entry.checkedAt !== 'string' || entry.checkedAt.length > 40 || seen.has(entry.resultId)) continue
-    seen.add(entry.resultId)
-    availableResults.push({ resultId: entry.resultId, materialId: entry.materialId,
-      proposalDigest: entry.proposalDigest, checkedAt: entry.checkedAt })
+    const previous = seen.get(entry.resultId)
+    if (previous && JSON.stringify(previous) !== JSON.stringify(entry))
+      throw new Error('The checked result index contains conflicting versions of one result.')
+    if (previous) continue
+    seen.set(entry.resultId, entry)
+    if (availableResults.length < 200 || entry.resultId === selectedId)
+      availableResults.push({ resultId: entry.resultId, materialId: entry.materialId,
+        proposalDigest: entry.proposalDigest, checkedAt: entry.checkedAt })
   }
   return { owned, availableResults }
 }
@@ -221,9 +231,8 @@ export function createManagerServer({
     const identity = materialIdentity({ configFile: join(row.directory, 'local.json'), gatewayUrl: row.origin,
       connectionId: row.connectionId, agentId: row.agentId })
     const store = openMaterialStore(target.materialRoot, identity, { create: false })
-    const rows = JSON.parse(readFileSync(join(target.materialRoot, 'local-authoring', 'results.json'), 'utf8'))
-    if (!Array.isArray(rows)) throw new Error('The local authoring result index is invalid.')
-    const { owned, availableResults } = localAuthoringResultVersions(rows, identity)
+    const { owned, availableResults } = localAuthoringResultVersions(
+      readLocalAuthoringResults(target.materialRoot, identity), identity, resultId)
     // A revision is a new immutable result, not an update to the previous draft. Give the
     // operator exact result identities so review and retry never silently jump to a newer one.
     const index = owned.filter((entry) => resultId === '' || entry.resultId === resultId).at(-1)

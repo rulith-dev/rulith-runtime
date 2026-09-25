@@ -1,15 +1,42 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { builtinLocalAuthoringTools, authoringNode, executeLocalAuthoring, proposalDigest, LOCAL_AUTHORING_DRAFT_SHAPE } from '../worker/local-authoring.mjs'
+import { builtinLocalAuthoringTools, authoringNode, executeLocalAuthoring, proposalDigest, LOCAL_AUTHORING_DRAFT_SHAPE, localAuthoringIndexDirectory, recordLocalAuthoringResult, readLocalAuthoringResults } from '../worker/local-authoring.mjs'
 import { validateAuthoringCheckerManifest } from '../local/authoring-checker.mjs'
 import { materialAgentFingerprint, materialIdentityFromFingerprints, openMaterialStore } from '../worker/material-store.mjs'
 
 const binding = materialIdentityFromFingerprints({ profile: 'a'.repeat(64), owner: 'b'.repeat(64), agentFingerprint: materialAgentFingerprint('ag-authoring'), modelDestination: 'http://127.0.0.1:11434' })
 const owner = { ...binding, agentId: 'ag-authoring' }
+test('concurrent checked versions remain separately durable beyond the old 200-row index', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'rulith-authoring-index-'))
+  try {
+    const rows = Array.from({ length: 205 }, (_, i) => ({ profile: binding.profile, owner: binding.owner,
+      resultId: `res_${i.toString(16).padStart(32, '0')}`, materialId: 'mat_' + 'a'.repeat(32),
+      proposalDigest: 'sha256:' + 'b'.repeat(64), checkedAt: new Date(Date.UTC(2026, 8, 25) + i * 1000).toISOString() }))
+    await Promise.all(rows.map(row => recordLocalAuthoringResult(root, row)))
+    const reopened = readLocalAuthoringResults(root, binding)
+    assert.equal(reopened.length, 205)
+    assert.deepEqual(new Set(reopened.map(row => row.resultId)), new Set(rows.map(row => row.resultId)))
+    assert.deepEqual(readLocalAuthoringResults(root, { profile: 'other', owner: binding.owner }), [],
+      'another Agent must not even enumerate this profile\'s result entries')
+    await recordLocalAuthoringResult(root, rows[0])
+    await assert.rejects(() => recordLocalAuthoringResult(root, { ...rows[0], proposalDigest: 'sha256:' + 'c'.repeat(64) }),
+      /result_index_conflict/)
+    assert.deepEqual(readLocalAuthoringResults(root, binding).find(row => row.resultId === rows[0].resultId), rows[0])
+    await mkdir(join(root, 'local-authoring'), { recursive: true })
+    const legacy = { ...rows[0], resultId: 'res_' + 'f'.repeat(32) }
+    await writeFile(join(root, 'local-authoring', 'results.json'), JSON.stringify([legacy]))
+    assert.equal(readLocalAuthoringResults(root, binding).length, 206,
+      'existing checked results remain readable without rewriting the old bounded index')
+    await writeFile(join(localAuthoringIndexDirectory(root, binding), `${rows[1].resultId}.json`),
+      JSON.stringify({ ...rows[1], owner: 'another-agent' }))
+    assert.throws(() => readLocalAuthoringResults(root, binding), /differs from its Agent scope/,
+      'a corrupted per-result entry must not be silently skipped as another Agent\'s work')
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
 test('the checker source revision and executable URLs are one release identity', () => {
   const commit = 'a'.repeat(40)
   const manifest = { format: 'rulith-local-authoring-checker/1', sourceCommit: commit, files: [

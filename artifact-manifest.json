@@ -69,7 +69,7 @@
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
     },
     "worker/local-authoring.mjs": {
-      "sha256": "a23fe2df41aa61b5c40c8f67e6635a5d8008dda0bbf6e6442438c0e00ff9d6c7"
+      "sha256": "1b49a10ca220a5545c84c76320350c8349c7299f653ef5b5e9a8d5a72fc36066"
     },
     "worker/authoring-diagnostics.mjs": {
       "sha256": "3b6fd764914fa20ab10bc916bbf4285aa8bbc621f8cd1eaad98b73f432d27d54"
@@ -108,7 +108,7 @@
       "sha256": "d4e5fbcb3896a191e8801eb28ed5432f40e0514c153c8bdfa04addbff428a4bc"
     },
     "local/manager-server.mjs": {
-      "sha256": "c2b46b98790bd77148930dd64e2dec9b610637186f5be410bb6736cdb196b50e"
+      "sha256": "679f6f622acb1a85a1160b8dcd0c4de0688e65c1dd1f3ed4f581ea012e18f702"
     },
     "local/manager-ui.mjs": {
       "sha256": "11aef0d60491de73eaffc3e5b9cf5e19ebd919c58023f28558b1b44856f46b22"

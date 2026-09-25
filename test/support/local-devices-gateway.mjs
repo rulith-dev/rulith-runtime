@@ -175,6 +175,13 @@ export function createDevicesGateway({
       materialSubmissions.set(key, { body: structuredClone(body), reply })
       return reply
     },
+    'POST /local-devices/authoring/cases': (body, { bearer }) => {
+      onlyFields(body, ['expectedAccountId', 'agentId', 'materialId', 'documentDigest', 'proposalDigest'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (body.expectedAccountId !== device.accountId || !device.agentIds.includes(body.agentId))
+        refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
+      return { cases: [] }
+    },
     'POST /local-devices/pair': (body, { bearer }) => {
       onlyFields(body, ['pairingId', 'deviceSecret', 'agentId', 'replaceAgentToken'])
       const device = grantUsable(deviceByToken(bearer))
