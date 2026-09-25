@@ -140,13 +140,18 @@ For a cheaper first-draft diagnostic before another full browser run, execute
 from the Runtime source tree. This is an **opt-in paid model call**: it reads the
 signed-in account's local default model credential in memory, sends only the
 synthetic fixture and fixed draft-shape cue, makes one Chat Completions request,
-and checks the returned `draft_json` with the installed local checker in a
+and passes the returned `construction_json` through the current deterministic
+`construct_draft@3` Tool and checker in a
 temporary material area. It prints token counts, content hashes and bounded
 checker diagnostics, not the credential, prompt, draft or document. It creates
 no Gateway task, Case or private draft. Exit 0 requires compiled=true, nonzero
-examples and citations all passing, and no open questions. A green result is
+examples and citations all passing, no open questions, and an independent
+12-example boundary check (including a fractional amount above the free threshold).
+A green result is
 only a shape diagnostic; it cannot replace the browser run, Case closure or the
-separate fixture boundary review above. This diagnostic supports configured
+separate fixture boundary review above. Invalid-input examples only assert the
+absence of a fee; a caller-visible input-error result remains unverified even
+when `passed` is true. This diagnostic supports configured
 OpenAI-compatible Chat Completions endpoints; it does not call Anthropic
 Messages endpoints.
 
@@ -171,6 +176,33 @@ but caching did not solve the first-draft correctness problem. The provider
 defines the hit/miss breakdown in its [Chat Completions usage fields](https://api-docs.deepseek.com/api/create-chat-completion/).
 This measured cost distinction is specific to this DeepSeek OpenAI-compatible
 wire; another provider may report cache usage differently or not at all.
+
+On 2026-09-25 the benchmark itself was found stale: it had paired the v3
+constructor cue with the old `check_draft@2` argument and could reject a correct
+construction before exercising the current Tool. The diagnostic now submits the
+synthetic material under a real local Agent binding, preflights the Java checker
+before paying for a model call, invokes `construct_draft@3`, and separately audits
+its expanded draft. The old-shape rejection was a harness failure, not a product
+first-draft measurement. With a matching constructor cue, three independent
+DeepSeek Flash samples compiled but all three produced fees for invalid negative
+or fractional amounts. The subsequent generic integer-guard cue yielded one
+sample passing eleven independent fee examples, but only one of its two output
+rules had the required guard; two other samples failed construction or compilation.
+After a twelfth held-out example was added and the pin shape clarified, one of
+three samples passed its own checks, all 12 independent examples and both rule
+guards; the other two were refused for unknown pin aliases. A later alias/pin
+wording change still produced a constructor refusal in one single-call diagnostic.
+These small, nonidentical cue
+samples establish remaining first-draft instability, not a pass-rate improvement
+or a complete document-to-release workflow.
+The candidate cue edits were not adopted. Repeating three one-call samples with
+the unchanged production cue (`sha256:20bce3b20192fae8c3d74a0f2e8f5b7b614ebe2f5a0d4b783ef6f9e96cfe0147`)
+and the corrected current constructor path gave 0/3 diagnostic passes: two
+constructor refusals at `program.predicates[].args`, then one compiled proposal
+whose own examples passed 4/6 and independent fee examples passed 6/12. Each
+request used 694 input tokens and 1,260–1,488 output tokens. This is the
+comparable synthetic first-call baseline; it does not exercise the browser,
+Case closure, private save, visible input-error result or capability adoption.
 
 The next isolated one-call diagnostic exposed a concrete chain of first-check
 failures on the same synthetic shipping document: an invalid Case Type,
@@ -223,7 +255,7 @@ one stochastic synthetic check, not a measured production success rate. Later
 samples exposed more invalid predicate and Case-key shapes, so the candidate
 was not accepted as reliably green.
 
-The current diagnostic uses eleven independently authored boundary examples,
+The current diagnostic uses twelve independently authored boundary examples,
 checks that each contracted key field exists in both defined input and output
 predicates, and checks numeric guards on every direct output rule. These are
 fixture-specific assertions, not a general proof of business correctness.
