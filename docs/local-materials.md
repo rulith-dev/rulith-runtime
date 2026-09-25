@@ -16,6 +16,8 @@ The initial reader supports UTF-8 text and preserves other files as binary mater
 
 The Worker advertises `rulith.materials.read@1` when its profile has a material area. Configure a `file` Source whose access location is that exact area, then explicitly authorize this Tool on the Source's Connection. The material area belongs to the selected Agent profile; it is not a shared filesystem root for all Agents.
 
+For a managed instance, the Local Host takes the current device ID only from a linked, scope-checked account registration when it launches the Worker. It passes that ID in the private child environment and binds its fingerprint to the material area. A later selected-effect grant can require `materialInput.deviceId` to match both the Worker's launch identity and the stored binding; a missing or different ID is refused. This comparison is present locally but selected-effect execution is not enabled by it. Existing `rulith.materials.read@1` reads retain their current behavior.
+
 A material-only access mode uses no fact mapping:
 
 ```json

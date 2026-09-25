@@ -788,16 +788,21 @@ test('the Worker child is given the material area and fingerprints, never the Ag
     config.worker.env = { ...config.worker.env, RULITH_CONNECTION: CONNECTION, RULITH_CONNECTION_KEY: 'key-1',
       RULITH_TEST_TASK_LOG: taskLog }
     config.paths = { agent: join(dir, 'absent-agent.mjs'), worker: join(import.meta.dirname, 'support', 'worker-probe.mjs') }
-    const host = createLocalHost({ configFile, config, roles: ['worker'], port: 0, key: KEY, autoStart: true, startConfirmMs: 8000 })
+    const host = createLocalHost({ configFile, config, roles: ['worker'], port: 0, key: KEY, autoStart: true,
+      startConfirmMs: 8000, getApprovedDeviceId: () => 'dev-confirmed' })
     await host.listen()
     try {
       const deadline = Date.now() + 8000
       while (!existsSync(taskLog) && Date.now() < deadline) await new Promise((wait) => setTimeout(wait, 25))
       const environment = JSON.parse(readFileSync(taskLog, 'utf8').trim().split('\n')[0]).environment
-      const expected = identityOf(configFile)
+      const expected = materialIdentity({ configFile, gatewayUrl: GATEWAY, connectionId: CONNECTION,
+        agentId: AGENT_ID, deviceId: 'dev-confirmed', modelUrl: REMOTE_MODEL })
       assert.equal(environment.RULITH_MATERIALS_ROOT, resolve(defaultMaterialRoot(configFile)))
       assert.equal(environment.RULITH_MATERIALS_PROFILE, expected.profile)
       assert.equal(environment.RULITH_MATERIALS_OWNER, expected.owner)
+      assert.equal(environment.RULITH_MATERIALS_DEVICE_ID, 'dev-confirmed')
+      assert.equal(JSON.parse(readFileSync(join(defaultMaterialRoot(configFile), 'store.json'), 'utf8')).deviceFingerprint,
+        expected.deviceFingerprint)
       assert.equal(environment.RULITH_MATERIALS_MODEL_DESTINATION, expected.modelDestination)
       assert.equal(Object.values(environment).includes(AGENT_TOKEN), false,
         'the Worker was handed the Agent credential it is deliberately never given')

@@ -81,7 +81,7 @@ import { invokeMcp, closeMcpClients, McpExecutionUnknownError } from './mcp-clie
 import { inputAdoptionForTools, toolContractFingerprint, validateDbInputContract, validateHttpInputContract } from './action-input-db.mjs'
 import {
   MATERIAL_CHUNK_BYTES, MATERIAL_ID_PATTERN, MATERIAL_OBJECT_ID_PATTERN, MaterialError,
-  materialIdentityFromFingerprints, materialTextOf, openMaterialStore,
+  materialDeviceFingerprint, materialIdentityFromFingerprints, materialTextOf, openMaterialStore,
 } from './material-store.mjs'
 import {
   LOCAL_DELIVERY_PROTOCOL, MATERIAL_CLAIM_PATH, MATERIAL_DELIVERY_PATH, MATERIAL_DELIVERY_RESULT_PATH,
@@ -230,6 +230,8 @@ const MATERIALS_BINDING = Object.freeze({
   profile: (process.env.RULITH_MATERIALS_PROFILE ?? '').trim(),
   owner: (process.env.RULITH_MATERIALS_OWNER ?? '').trim(),
   agentFingerprint: (process.env.RULITH_MATERIALS_AGENT_FINGERPRINT ?? '').trim(),
+  deviceFingerprint: (process.env.RULITH_MATERIALS_DEVICE_ID ?? '').trim()
+    ? materialDeviceFingerprint((process.env.RULITH_MATERIALS_DEVICE_ID ?? '').trim()) : '',
   modelDestination: (process.env.RULITH_MATERIALS_MODEL_DESTINATION ?? '').trim(),
 })
 /**

@@ -26,6 +26,7 @@ import { createManagerServer, localAuthoringSaveRequestId } from '../local/manag
 import { processAlive } from '../local/manager-registry.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { isolatedEnvironmentBase } from '../local/rulith-local.mjs'
+import { materialDeviceFingerprint } from '../worker/material-store.mjs'
 import { createDevicesGateway } from './support/local-devices-gateway.mjs'
 
 const sha256Hex = (value) => createHash('sha256').update(String(value)).digest('hex')
@@ -93,7 +94,7 @@ const childEvents = (manager, id, src) => manager.instances.hosts.get(id).host.e
 const observedEnv = (manager, id, src) => childEvents(manager, id, src).find((row) => row.observed !== undefined)?.observed
 
 test('managed attachment registers its durable selection with the device before Agent forwarding', async (t) => {
-  await withManager(t, async ({ manager, gateway }) => {
+  await withManager(t, async ({ manager, gateway, deviceId }) => {
     const instance = await addInstance(manager, 'Material task', { agentId: 'agent-alpha' })
     const taskLog = join(instance.directory, 'tasks.jsonl')
     const config = loadInstanceConfig(instance.directory)
@@ -102,6 +103,9 @@ test('managed attachment registers its durable selection with the device before 
       RULITH_TEST_TASK_LOG: taskLog }
     saveInstanceConfig(instance.directory, config)
     assert.equal((await manager.instances.start(instance.id)).started, true)
+    assert.equal(observedEnv(manager, instance.id, 'worker')?.RULITH_MATERIALS_DEVICE_ID, deviceId)
+    assert.equal(JSON.parse(readFileSync(join(instance.directory, 'materials', 'store.json'), 'utf8')).deviceFingerprint,
+      materialDeviceFingerprint(deviceId))
     const url = new URL((await manager.instances.open(instance.id)).url)
     const call = async (path, body) => {
       const response = await fetch(url.origin + path, { method: 'POST',

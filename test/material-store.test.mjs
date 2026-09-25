@@ -25,6 +25,7 @@ import {
   MATERIAL_CHUNK_BYTES, MATERIAL_ID_PATTERN, MATERIAL_STORE_VERSION, MaterialError, decodeCanonicalBase64,
   defaultMaterialRoot, isLoopbackDestination, materialDisplayName, materialIdentity,
   materialAgentFingerprint, materialIdentityFromFingerprints, materialTextOf, normalizeModelDestination, openMaterialStore,
+  materialDeviceFingerprint,
   trimToCodePoints,
 } from '../worker/material-store.mjs'
 
@@ -41,6 +42,7 @@ function area(run, { connection = 'con-first', agent = 'ag_first', gateway = GAT
     gatewayUrl: options.gateway ?? gateway,
     connectionId: options.connection ?? connection,
     agentId: options.agent ?? agent,
+    deviceId: options.deviceId ?? '',
     modelUrl: options.modelUrl ?? modelUrl,
   })
   try {
@@ -59,6 +61,64 @@ const refusal = (fn) => {
   }
   return assert.fail('the call was expected to refuse and returned instead')
 }
+
+test('confirmed device binds a legacy material area and selected device comparison fails closed', () => {
+  area(({ root, identityFor, store }) => {
+    const legacy = store()
+    const record = legacy.put({ name: 'legacy.txt', bytes: Buffer.from('existing read') })
+    const deviceA = identityFor({ deviceId: 'dev-A' })
+    // Existing objects remain readable after the Host binds its confirmed device.
+    const host = openMaterialStore(root, deviceA)
+    assert.equal(host.read(record.id, { modelDestination: REMOTE_MODEL }).bytes.toString(), 'existing read')
+    assert.equal(JSON.parse(readFileSync(join(root, 'store.json'), 'utf8')).deviceFingerprint,
+      materialDeviceFingerprint('dev-A'))
+    const worker = openMaterialStore(root, materialIdentityFromFingerprints(deviceA), { create: false })
+    assert.doesNotThrow(() => worker.assertSelectedDeviceId('dev-A'))
+    const legacyWorker = openMaterialStore(root, materialIdentityFromFingerprints(identityFor()), { create: false })
+    assert.equal(legacyWorker.read(record.id, { modelDestination: REMOTE_MODEL }).bytes.toString(), 'existing read')
+    assert.equal(refusal(() => legacyWorker.assertSelectedDeviceId('dev-A')), 'material_device_mismatch')
+    assert.equal(refusal(() => worker.assertSelectedDeviceId('dev-B')), 'material_device_mismatch')
+    assert.equal(refusal(() => worker.assertSelectedDeviceId('')), 'material_device_mismatch')
+    assert.equal(refusal(() => legacy.assertSelectedDeviceId('dev-A')), 'material_device_mismatch')
+    assert.equal(refusal(() => openMaterialStore(root, identityFor({ deviceId: 'dev-B' }))),
+      'materials_store_device_mismatch')
+  })
+})
+
+test('two devices cannot both bind one legacy area across Host processes', { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-device-contention-'))
+  const configFile = join(dir, 'local.json')
+  const root = defaultMaterialRoot(configFile)
+  const legacy = materialIdentity({ configFile, gatewayUrl: GATEWAY, connectionId: 'con-first',
+    agentId: 'ag_first', modelUrl: REMOTE_MODEL })
+  const record = openMaterialStore(root, legacy).put({ name: 'before.txt', bytes: Buffer.from('before') })
+  const children = ['dev-A', 'dev-B'].map((deviceId) => spawn(process.execPath,
+    [join(import.meta.dirname, 'material-binding-child.mjs'), configFile, root, deviceId],
+    { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] }))
+  try {
+    assert.ok((await Promise.all(children.map(async (child) => (await once(child, 'message'))[0])))
+      .every((message) => message.ready === true))
+    const results = children.map(async (child) => {
+      const result = (await once(child, 'message'))[0]
+      assert.equal((await once(child, 'exit'))[0], 0)
+      return result
+    })
+    for (const child of children) child.send({ go: true })
+    const settled = await Promise.all(results)
+    assert.equal(settled.filter((row) => row.done === true).length, 1)
+    assert.equal(settled.filter((row) => row.error === 'materials_store_device_mismatch').length, 1)
+    const winner = settled.find((row) => row.done === true).deviceId
+    assert.equal(JSON.parse(readFileSync(join(root, 'store.json'), 'utf8')).deviceFingerprint,
+      materialDeviceFingerprint(winner))
+    assert.equal(openMaterialStore(root, materialIdentity({ configFile, gatewayUrl: GATEWAY,
+      connectionId: 'con-first', agentId: 'ag_first', deviceId: winner, modelUrl: REMOTE_MODEL }))
+      .read(record.id, { modelDestination: REMOTE_MODEL }).bytes.toString(), 'before')
+    assert.equal(existsSync(join(root, 'store.lock')), false)
+  } finally {
+    for (const child of children) child.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('public selector is issued only on submission and survives restart with exact private custody', () => {
   area(({ root, identityFor, store }) => {

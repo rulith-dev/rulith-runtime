@@ -23,7 +23,7 @@ import { createSetupService } from './setup-service.mjs'
 import { setupPage } from './setup-ui.mjs'
 import { attachmentInstruction, createMaterialService } from './material-service.mjs'
 import {
-  MAX_MATERIAL_REQUEST_BYTES, MaterialError, defaultMaterialRoot, materialIdentity,
+  MAX_MATERIAL_REQUEST_BYTES, MaterialError, defaultMaterialRoot, materialIdentity, materialDeviceFingerprint,
 } from '../worker/material-store.mjs'
 
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
@@ -244,6 +244,7 @@ export function createLocalHost({
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
   materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
   registerMaterialSubmission, acceptedMaterialBinding,
+  getApprovedDeviceId,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -346,6 +347,7 @@ export function createLocalHost({
       gatewayUrl: String(agentEnv.RULITH_URL ?? ''),
       connectionId: String(workerEnv.RULITH_CONNECTION ?? ''),
       agentId: components.agent.agentId,
+      deviceId: getApprovedDeviceId?.() ?? '',
       modelUrl: String(agentEnv.RULITH_MODEL_URL ?? DEFAULT_MODEL_URL),
       model: String(agentEnv.RULITH_MODEL ?? ''),
     })
@@ -406,11 +408,14 @@ export function createLocalHost({
     // same refusal said again, because two callers reading one identity must not disagree about
     // whether it exists.
     try { binding = materialIdentityNow() } catch { return {} }
+    const deviceId = getApprovedDeviceId?.() ?? ''
+    if ((deviceId ? materialDeviceFingerprint(deviceId) : '') !== binding.deviceFingerprint) return {}
     return {
       RULITH_MATERIALS_ROOT: area,
       RULITH_MATERIALS_PROFILE: binding.profile,
       RULITH_MATERIALS_OWNER: binding.owner,
       RULITH_MATERIALS_AGENT_FINGERPRINT: binding.agentFingerprint,
+      RULITH_MATERIALS_DEVICE_ID: deviceId,
       RULITH_MATERIALS_MODEL_DESTINATION: binding.modelDestination,
     }
   }

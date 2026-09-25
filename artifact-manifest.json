@@ -33,7 +33,7 @@
       "sha256": "0cc5081570904f761be70540bd2fa089edcfffdc1db9e79acb25de0b70a05c86"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "cdf6b08018d49ed555bf9ce4b055d077ec0b44fc004051fcd44e205918fd4893"
+      "sha256": "23a77112e76f30aa9cdecfbcfea595a74451c128cc5a26c253f103c7e9e513fb"
     },
     "worker/action-input-db.mjs": {
       "sha256": "efb64d9dc038595d44219f82cce261b539fa2f9e3ca06d10ea1128bfa68fa616"
@@ -42,7 +42,7 @@
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "worker/material-store.mjs": {
-      "sha256": "cdc287aef7aaca293a8c91d65f460c86071cc66eec3af0884fcbf10520269145"
+      "sha256": "912ea94bdcde7e3c847ff78c484c33e028d48db7206de1f5fe2ee608361f4d3a"
     },
     "worker/material-transport.mjs": {
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
@@ -63,7 +63,7 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "8c4eb602102755be310809112cc3ffd3b44f09d5279d2d8273926ecd9d76aa5f"
+      "sha256": "b49ed0eb3894994b4b2e7c8d06cf19d32d64a138f6a9789ecaabff64e83a4060"
     },
     "local/material-service.mjs": {
       "sha256": "c792c11005480860e1656fa49b257eedb55d453cc3574687a52a707f2479fa8c"
@@ -84,7 +84,7 @@
       "sha256": "20853bfdcfa4b554fac3ad120ecfa32b44f37186e6f40e1798e501e22a961142"
     },
     "local/instance-manager.mjs": {
-      "sha256": "0e7cb9aa916fac12a5101394f21f6313abd49f8c725016c194edf8daa5c5975e"
+      "sha256": "d4e5fbcb3896a191e8801eb28ed5432f40e0514c153c8bdfa04addbff428a4bc"
     },
     "local/manager-server.mjs": {
       "sha256": "c21690c45455a4450e4953c620bfbbf69c3b095a4f33545f2762a63740c0a25b"
@@ -96,7 +96,7 @@
       "sha256": "6a9c613514d4a59d97fecff52b54648454e9e89de9bd5fe9342815de08d16df3"
     },
     "docs/local-materials.md": {
-      "sha256": "4bd9e73230cb488c2261253a3e3a6ea26f34e2344a9ba03eda9dbd2bfeec7be7"
+      "sha256": "70be70cdc4a443d30cf780512c5a1dbeb3798e0ea9f3c266562fa0e546b13474"
     },
     "local/markdown.mjs": {
       "sha256": "dda52e94ccf9957fdb12538d0a29b7e2261826df4c55164de5a89c10a3f62b23"

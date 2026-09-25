@@ -71,6 +71,19 @@ export class MaterialError extends Error {
 const sha256 = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 const fingerprint = (...parts) => createHash('sha256').update(parts.join('\u0000')).digest('hex')
 export const materialAgentFingerprint = (agentId) => fingerprint('rulith-material-agent', String(agentId ?? ''))
+export const materialDeviceFingerprint = (deviceId) => fingerprint('rulith-material-device', String(deviceId ?? ''))
+
+/** Future selected-effect gate. All three identities must be present and identical. */
+export function assertSelectedMaterialDevice(deviceId, currentFingerprint, storedFingerprint) {
+  const presented = typeof deviceId === 'string' && deviceId.trim() === deviceId && deviceId !== ''
+    ? materialDeviceFingerprint(deviceId) : ''
+  if (!presented || !/^[0-9a-f]{64}$/.test(String(currentFingerprint ?? ''))
+    || !/^[0-9a-f]{64}$/.test(String(storedFingerprint ?? ''))
+    || presented !== currentFingerprint || presented !== storedFingerprint) {
+    throw new MaterialError('material_device_mismatch',
+      'Selected material requires the current registered device and the material area to match the grant device.')
+  }
+}
 
 /**
  * Windows device names are not ordinary file names even when they are used as display text.
@@ -191,7 +204,7 @@ export function isLoopbackDestination(destination) {
  * fallback would make every unconfigured profile on a machine look like one owner, which is the
  * opposite of what an owner binding is for.
  */
-export function materialIdentity({ configFile, gatewayUrl = '', connectionId = '', agentId = '', modelUrl = '', model = '' } = {}) {
+export function materialIdentity({ configFile, gatewayUrl = '', connectionId = '', agentId = '', deviceId = '', modelUrl = '', model = '' } = {}) {
   const gateway = normalizeModelDestination(gatewayUrl)
   const connection = String(connectionId ?? '').trim()
   const agent = String(agentId ?? '').trim() === 'unconfigured' ? '' : String(agentId ?? '').trim()
@@ -214,6 +227,7 @@ export function materialIdentity({ configFile, gatewayUrl = '', connectionId = '
     connection,
     agentId: agent,
     agentFingerprint: agent ? materialAgentFingerprint(agent) : '',
+    deviceFingerprint: deviceId ? materialDeviceFingerprint(deviceId) : '',
     modelDestination,
     model: String(model ?? ''),
     localOnly: isLoopbackDestination(modelDestination),
@@ -229,7 +243,7 @@ export function materialIdentity({ configFile, gatewayUrl = '', connectionId = '
  * defaulted: an identity that fell back to a constant would make every profile's materials look
  * like every other profile's.
  */
-export function materialIdentityFromFingerprints({ profile, owner, agentFingerprint = '', modelDestination = '', model = '' } = {}) {
+export function materialIdentityFromFingerprints({ profile, owner, agentFingerprint = '', deviceFingerprint = '', modelDestination = '', model = '' } = {}) {
   for (const [name, value] of [['profile', profile], ['owner', owner]]) {
     if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
       throw new MaterialError('material_identity_invalid',
@@ -240,13 +254,16 @@ export function materialIdentityFromFingerprints({ profile, owner, agentFingerpr
   if (agentFingerprint !== '' && !/^[0-9a-f]{64}$/.test(agentFingerprint)) {
     throw new MaterialError('material_identity_invalid', 'The Agent fingerprint must be lowercase sha256.')
   }
+  if (deviceFingerprint !== '' && !/^[0-9a-f]{64}$/.test(deviceFingerprint)) {
+    throw new MaterialError('material_identity_invalid', 'The device fingerprint must be lowercase sha256.')
+  }
   const destination = normalizeModelDestination(modelDestination)
   return {
     profile, owner,
     // Deliberately empty. A process holding only fingerprints is one that was never told which
     // Agent this profile is — the Worker is exactly that — and an empty Agent opens an area
     // under its recorded one rather than claiming to be it.
-    agentId: '', agentFingerprint,
+    agentId: '', agentFingerprint, deviceFingerprint,
     modelDestination: destination, model: String(model ?? ''),
     localOnly: isLoopbackDestination(destination),
   }
@@ -275,14 +292,15 @@ function assertRealDirectory(path, what) {
   }
 }
 
-function fsyncPath(path) {
+function fsyncPath(path, { directory = false } = {}) {
   let fd
   try {
-    fd = openSync(path, 'r')
+    fd = openSync(path, directory ? 'r' : 'r+')
     fsyncSync(fd)
-  } catch {
-    // Directory fsync is not available on every platform; the rename below is still the atomic
-    // step, and a host that cannot flush is not a host that may silently skip the rename.
+  } catch (error) {
+    // Windows does not support syncing every directory handle. File sync failures, including
+    // the temporary marker, must be visible before a binding is reported durable.
+    if (!directory) throw error
   } finally {
     if (fd !== undefined) try { closeSync(fd) } catch { /* nothing further to do */ }
   }
@@ -293,7 +311,35 @@ function writeFileDurably(path, data) {
   fsyncPath(path)
 }
 
+function replaceMaterialMarker(markerFile, marker) {
+  const temporary = `${markerFile}.${randomUUID()}.tmp`
+  try {
+    writeFileDurably(temporary, `${JSON.stringify(marker, null, 2)}\n`)
+    renameSync(temporary, markerFile)
+    fsyncPath(dirname(markerFile), { directory: true })
+  } finally { rmSync(temporary, { force: true }) }
+}
+
 const submissionLockWait = new Int32Array(new SharedArrayBuffer(4))
+
+function withMaterialMarkerLock(base, work) {
+  const lock = join(base, 'store.lock')
+  const deadline = Date.now() + 10_000
+  while (true) {
+    try {
+      mkdirSync(lock, { mode: 0o700 })
+      break
+    } catch (error) {
+      if (error?.code !== 'EEXIST' && error?.code !== 'EPERM') throw error
+      if (Date.now() >= deadline) {
+        throw new MaterialError('materials_store_busy', 'The material binding is locked; no identity was changed.')
+      }
+      Atomics.wait(submissionLockWait, 0, 0, 10)
+    }
+  }
+  try { return work() }
+  finally { rmdirSync(lock) }
+}
 
 /** Serialize one material's submission ledger across Host processes. A stranded lock refuses writes. */
 function withSubmissionLock(directory, work) {
@@ -342,8 +388,9 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
   }
   assertRealDirectory(base, 'The material area')
   const markerFile = join(base, 'store.json')
-  let marker
-  if (existsSync(markerFile)) {
+  const openMarker = () => {
+    let marker
+    if (existsSync(markerFile)) {
     try {
       marker = JSON.parse(readFileSync(markerFile, 'utf8'))
     } catch {
@@ -366,6 +413,14 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
         + ' Rotating a credential keeps the same owner; changing which Gateway or Connection this profile *is* does'
         + ' not, and the existing material is not re-attributed to the new one.')
     }
+    // Older areas have no device binding. A confirmed Host may bind them once; a Worker
+    // opens read-only and cannot silently claim an unbound area for a selected effect.
+    const boundDevice = typeof marker.deviceFingerprint === 'string' ? marker.deviceFingerprint : ''
+    if (boundDevice && identity.deviceFingerprint && boundDevice !== identity.deviceFingerprint) {
+      throw new MaterialError('materials_store_device_mismatch',
+        'The material area belongs to a different registered local device.')
+    }
+    const bindDevice = !boundDevice && identity.deviceFingerprint && create
     // The Agent is bound on first sighting, because a host only learns it from its running
     // Agent. An area created before the Agent reported records an empty one and adopts the
     // first identity it is told; a *different* one afterwards is a different Agent and fails
@@ -377,18 +432,27 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
         `The material area at ${base} belongs to Agent ${JSON.stringify(bound)} and this profile now runs`
         + ` ${JSON.stringify(identity.agentId)}. Material is not re-attributed to whoever is configured next.`)
     }
-    if (bound === '' && identity.agentId !== '' && create) {
-      marker = { ...marker, agent: identity.agentId }
-      writeFileSync(markerFile, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 })
+    const bindAgent = bound === '' && identity.agentId !== '' && create
+    if (bindDevice || bindAgent) {
+      marker = {
+        ...marker,
+        ...(bindDevice ? { deviceFingerprint: identity.deviceFingerprint } : {}),
+        ...(bindAgent ? { agent: identity.agentId } : {}),
+      }
+      replaceMaterialMarker(markerFile, marker)
     }
-  } else {
-    if (!create) throw new MaterialError('materials_store_absent', `No material area at ${base}.`)
-    marker = {
-      version: MATERIAL_STORE_VERSION, profile: identity.profile, owner: identity.owner,
-      agent: identity.agentId, createdAt: new Date().toISOString(),
+    } else {
+      if (!create) throw new MaterialError('materials_store_absent', `No material area at ${base}.`)
+      marker = {
+        version: MATERIAL_STORE_VERSION, profile: identity.profile, owner: identity.owner,
+        agent: identity.agentId, deviceFingerprint: identity.deviceFingerprint ?? '', createdAt: new Date().toISOString(),
+      }
+      writeFileDurably(markerFile, `${JSON.stringify(marker, null, 2)}\n`)
+      fsyncPath(base, { directory: true })
     }
-    writeFileSync(markerFile, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 })
+    return marker
   }
+  const marker = create ? withMaterialMarkerLock(base, openMarker) : openMarker()
   const objectsDir = join(base, 'objects')
   const tempDir = join(base, 'tmp')
   const submissionsDir = join(base, 'submissions')
@@ -475,7 +539,7 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
         writeFileDurably(join(staging, 'chunks', `${String(index).padStart(6, '0')}.bin`), chunk)
       }
       writeFileDurably(join(staging, 'record.json'), `${JSON.stringify(record, null, 2)}\n`)
-      fsyncPath(staging)
+      fsyncPath(staging, { directory: true })
       // The whole object appears in one step. Until this returns there is nothing under
       // `objects/` for any reader to find, which is what makes a half-written write invisible
       // rather than partially readable.
@@ -542,6 +606,8 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
   return {
     root: base,
     identity,
+    assertSelectedDeviceId: (deviceId) => assertSelectedMaterialDevice(
+      deviceId, identity.deviceFingerprint, marker.deviceFingerprint),
     /**
      * The Agent identity this area is bound to, or `''` if none has ever been confirmed.
      *
@@ -617,7 +683,7 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
           // against that exact durable receipt before it may append any selector submission.
           linkSync(temporary, receiptPath)
           elected = true
-          fsyncPath(submissionsDir)
+          fsyncPath(submissionsDir, { directory: true })
         } catch (error) {
           if (error?.code !== 'EEXIST') throw error
         }
@@ -673,14 +739,14 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
           try {
             writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [...submissions, submission] })}\n`)
             renameSync(temporary, path)
-            fsyncPath(objectDir(record.id))
+            fsyncPath(objectDir(record.id), { directory: true })
           } finally { rmSync(temporary, { force: true }) }
         } else {
           const temporary = join(tempDir, `submission.${randomUUID()}`)
           try {
             writeFileDurably(temporary, `${JSON.stringify({ ...binding, submissions: [submission] })}\n`)
             linkSync(temporary, path)
-            fsyncPath(objectDir(record.id))
+            fsyncPath(objectDir(record.id), { directory: true })
           } finally { rmSync(temporary, { force: true }) }
         }
       })
@@ -794,7 +860,7 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       mkdirSync(staging, { recursive: true, mode: 0o700 })
       try {
         writeFileDurably(join(staging, 'record.json'), `${JSON.stringify(record, null, 2)}\n`)
-        fsyncPath(staging)
+        fsyncPath(staging, { directory: true })
         renameSync(staging, objectDir(id))
       } catch (error) {
         rmSync(staging, { recursive: true, force: true })

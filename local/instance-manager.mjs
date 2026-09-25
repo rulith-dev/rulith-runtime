@@ -722,6 +722,14 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       setupApprover: device === undefined ? undefined : approverFor(id),
       registerMaterialSubmission: registerMaterialSubmissionFor(id),
       acceptedMaterialBinding: acceptedMaterialBindingFor(id),
+      // This is a private launch input, derived from the live, confirmed device record.
+      // It is never copied into local.json or served by the instance page.
+      getApprovedDeviceId: () => {
+        const current = device.status(), latest = record(id)
+        if (phase !== 'ready' || current.state !== 'linked' || !text(current.deviceId)
+          || grantRefusal(id, { requirePaired: true, grant: current, row: latest }) !== null) return ''
+        return current.deviceId
+      },
       managedPolicy: policyFor(id),
       managedCallToken,
       protectedPaths: [registry.root],
