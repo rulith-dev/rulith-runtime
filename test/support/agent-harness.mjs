@@ -793,10 +793,12 @@ export async function runAgent({
           ...(admitted.state === 'none' ? {} : { originalTool: admitted.tool }),
         } } }
       : core
+    const wireIsError = explicit && scripted.__isError === true
     const hostMeta = explicit ? scripted.__meta : board.meta(session)
     const withRecovery = hostMeta === undefined ? recoveryNow() : { ...hostMeta, ...recoveryNow() }
     const { ['rulith/local-delivery/v1']: localDelivery, ...ordinaryMeta } = withRecovery ?? {}
     return send({
+      ...(wireIsError ? { isError: true } : {}),
       content: [{ type: 'text', text: JSON.stringify(publicCore) }],
       ...(withRecovery === undefined ? {} : { _meta: { [RULITH_META]: ordinaryMeta,
         ...(localDelivery === undefined ? {} : { 'rulith/local-delivery/v1': localDelivery }) } }),

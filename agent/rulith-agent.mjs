@@ -1415,6 +1415,34 @@ function publicOriginalResult(value) {
     isError: value.isError }
 }
 
+/** A terminal Action disposition is surfaced only from a coherent public result. */
+function publicActionOutcome(publicResult, expectedAction) {
+  const outcome = publicResult?.result ?? {}, status = outcome.status, action = outcome.action
+  if (publicResult?.accepted !== true || publicResult.errorCode !== undefined
+    || outcome.done !== true || typeof action !== 'string' || action === ''
+    || (expectedAction !== undefined && action !== expectedAction)) return undefined
+  if (!((status === 'confirmed' && outcome.ok === true)
+    || ((status === 'failed' || status === 'refused') && outcome.ok === false)
+    || (status === 'unknown' && outcome.ok === undefined))) return undefined
+  return { action, status, ...(status === 'unknown' ? {} : { ok: outcome.ok }) }
+}
+
+/** ReadOperation contains the original public MCP envelope, not the parsed tool JSON. */
+function publicActionOutcomeFromMcp(original) {
+  if (original?.isError !== false || original.structuredContent !== undefined
+    || !Array.isArray(original.content) || original.content.length !== 1
+    || original.content[0]?.type !== 'text' || typeof original.content[0].text !== 'string')
+    return undefined
+  try { return publicActionOutcome(JSON.parse(original.content[0].text)) }
+  catch { return undefined }
+}
+
+function reportActionOutcome(ctx, outcome, { callId, recovered = false } = {}) {
+  emitOn(ctx, 'action-outcome', { ...outcome, ...(recovered ? { recovered: true } : {}),
+    ...(callId ? { callId } : {}) })
+  log(`${recovered ? 'Recovered original ' : ''}Action ${outcome.action}: ${outcome.status}.`)
+}
+
 function operationReadOf(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)
     || !RECOVERY_STATES.has(value.state)) return undefined
@@ -1599,7 +1627,7 @@ function reportLoss(ctx, name, view) {
  *  the shape of the answer — the errorCode says which. */
 const refusal = (errorCode, teaching) => JSON.stringify({ accepted: false, errorCode, teaching })
 
-const AMBIGUOUS_OUTCOMES = new Set(['upstream_unavailable', 'response_too_large', 'response_not_correlated', 'session_expired'])
+const AMBIGUOUS_OUTCOMES = new Set(['upstream_unavailable', 'response_too_large', 'response_not_correlated', 'session_expired', 'mcp_envelope_inconsistent'])
 const transportAmbiguous = (value) => AMBIGUOUS_OUTCOMES.has(String(value?.errorCode ?? ''))
 const AMBIGUITY_CAUSE = {
   upstream_unavailable: 'The hop to the authority failed, so no receipt was returned.',
@@ -1608,6 +1636,7 @@ const AMBIGUITY_CAUSE = {
   response_not_correlated: 'The hop succeeded, but what came back was not the answer to this request, so it was discarded.'
     + ' The command may well have been applied.',
   session_expired: 'The transport session ended before the answer arrived. The command may well have been applied.',
+  mcp_envelope_inconsistent: 'The MCP envelope contradicted its inner verdict, so this client cannot accept either as the outcome.',
 }
 /**
  * What the model is told about an unknown outcome — and what it is *not* told.
@@ -2012,6 +2041,13 @@ async function callTool(ctx, name, input, { claim = false, expectedRecovery, obs
     authoritative = false
     result = { accepted: false, errorCode: 'upstream_unavailable', teaching: `${name} returned no authoritative receipt.` }
   }
+  // A successful inner verdict inside an MCP error envelope is not a determined result.
+  // The original request may have run; preserve its transport identity for recovery.
+  if (result?.accepted === true && isError) {
+    authoritative = false
+    result = { accepted: false, errorCode: 'mcp_envelope_inconsistent',
+      teaching: `${name} returned a success verdict inside an MCP error envelope.` }
+  }
   // The Gateway can return an MCP result with an ambiguity code after losing the Core
   // response: a successful HTTP/MCP hop is not itself a Board receipt.
   if (transportAmbiguous(result)) authoritative = false
@@ -2200,6 +2236,10 @@ async function claimOperation(ctx, recovery) {
   const tool = record.originalTool
   log(`◎ Recovered the public result of an earlier ${tool} call through ReadOperation; the model decides again.`)
   emitOn(ctx, 'operation-read', { tool, ...(recovery.callRef === undefined ? {} : { callRef: recovery.callRef }) })
+  if (tool === 'ApplyAction') {
+    const outcome = publicActionOutcomeFromMcp(record.originalResult)
+    if (outcome) reportActionOutcome(ctx, outcome, { recovered: true })
+  }
   return { tool, result: record.originalResult }
 }
 
@@ -2991,18 +3031,11 @@ const hostFieldTeaching = (name, fields) => `${name} carried the host-owned fiel
 /**
  * Report one Board answer to the terminal and to Local.
  *
- * It reports `accepted` and the authority's own teaching, and nothing else. The earlier
- * version also read `receipt.invocation`, `payload.done` and `payload.ok` and printed
- * "completed" or "completed with failure" from them. Those fields are not in Core's
- * published result envelope or Board View — `receipts` is an operator/internal include —
- * so against the real authority they were always absent, every dispatched Action printed
- * the same word, and a guessed shape was standing in for an interface that has not been
- * agreed. Reading a field the authority never promised is how a false "done" gets printed
- * the day the authority starts sending a different one.
- *
- * The Worker-activity gap this leaves is deliberate and visible: see `workerActivityGap`.
+ * The Gateway's bounded, public ApplyAction result can report a terminal disposition.
+ * Never read the internal receipt or infer an invocation id from a Board View. A missing,
+ * mismatched or future result shape still leaves the Worker-activity gap visible.
  */
-function emitVerdict(ctx, name, answer, callId) {
+function emitVerdict(ctx, name, answer, callId, expectedAction) {
   const result = answer.result ?? {}
   if (name === 'ReadOperation') {
     if (answer.readReady) log(`Data: ReadOperation returned the original public ${result.originalTool} result.`)
@@ -3032,10 +3065,14 @@ function emitVerdict(ctx, name, answer, callId) {
     })
     return
   }
-  if (result.accepted === true) {
+  if (answer.authoritative === true && result.accepted === true) {
     emitOn(ctx, 'verdict', { accepted: true, cmd: name, ...(callId ? { callId } : {}) })
     log(`Board: ${name} accepted.`)
-    if (name === 'ApplyAction') workerActivityGap(ctx)
+    if (name === 'ApplyAction') {
+      const outcome = publicActionOutcome(result, expectedAction)
+      if (outcome) reportActionOutcome(ctx, outcome, { callId })
+      else workerActivityGap(ctx)
+    }
     return
   }
   const code = String(result.errorCode ?? '')
@@ -3053,7 +3090,8 @@ function emitVerdict(ctx, name, answer, callId) {
 }
 
 /**
- * An accepted Action dispatched work whose progress this client cannot yet report.
+ * An accepted Action without a recognized public terminal result has progress this client
+ * cannot yet report.
  *
  * Core has not published where a dispatched invocation's identity appears in the Agent
  * Profile result — receipts are an operator/internal include — so this runtime has no
@@ -3145,7 +3183,7 @@ async function executeToolCall(ctx, call, options) {
     readUnavailable: answer.readUnavailable === true,
     output: localToolSnapshot(answer.result ?? { teaching: answer.text ?? 'No result was returned.' }) })
   // A refusal the host already announced is not announced again as though the Board had spoken.
-  if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer, localCallId)
+  if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer, localCallId, input.action)
   const accepted = answer.result?.accepted === true
   if (name === 'OpenCase' && accepted) {
     for (const row of board.roots) {

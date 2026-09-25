@@ -1086,6 +1086,91 @@ test('RT-GUESS-2 an accepted Action reports the invocation gap instead of a fals
   assert.doesNotMatch(run.stdout, /completed with failure|ApplyAction completed/)
 })
 
+test('a bounded public Action result reports its own terminal state without inventing an invocation', async () => {
+  const shapes = [
+    { status: 'confirmed', ok: true },
+    { status: 'failed', ok: false },
+    { status: 'refused', ok: false },
+    { status: 'unknown' },
+  ]
+  for (const shape of shapes) {
+    const run = await runAgent({
+      argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '4' },
+      chatLines: ['Try the declared Action.'],
+      tool: (name, args, board, session, meta) => {
+        if (name !== 'ApplyAction') return undefined
+        const core = board.tool(name, args, session, meta)
+        return withMeta({ ...core, result: { action: args.action, done: true, ...shape } }, board.meta(session))
+      },
+      model: (round) => round === 1 ? callTool('OpenCase', {})
+        : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
+    })
+    assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+    const outcomes = run.localEvents.filter(event => event.type === 'action-outcome')
+    assert.equal(outcomes.length, 1, `${shape.status}: no public terminal event`)
+    assert.equal(outcomes[0].action, 'acme.ship')
+    assert.equal(outcomes[0].status, shape.status)
+    assert.equal(outcomes[0].ok, shape.ok)
+    assert.equal(Object.hasOwn(outcomes[0], 'invocation'), false)
+    assert.equal(run.localEvents.some(event => event.type === 'worker-activity-unavailable'), false)
+  }
+  const mismatched = await runAgent({
+    argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '4' },
+    chatLines: ['Try the declared Action.'],
+    tool: (name, args, board, session, meta) => name !== 'ApplyAction' ? undefined
+      : withMeta({ ...board.tool(name, args, session, meta),
+        result: { action: 'another.action', done: true, status: 'confirmed', ok: true } }, board.meta(session)),
+    model: round => round === 1 ? callTool('OpenCase', {})
+      : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
+  })
+  assert.equal(mismatched.code, 0, `${mismatched.stdout}\n${mismatched.stderr}`)
+  assert.equal(mismatched.localEvents.some(event => event.type === 'action-outcome'), false)
+  assert.equal(mismatched.localEvents.filter(event => event.type === 'worker-activity-unavailable').length, 1)
+})
+
+test('a contradictory Action envelope keeps the original outcome unknown', async () => {
+  for (const contradiction of ['ambiguous-code', 'mcp-error']) {
+    const run = await runAgent({
+      argv: [], captureLocalEvents: true,
+      env: { RULITH_MAX_ROUNDS: '4', RULITH_RECOVERY_WAIT_MS: '500' },
+      chatLines: ['Try the declared Action.'],
+      tool: (name, args, board, session, meta) => {
+        if (name !== 'ApplyAction') return undefined
+        const result = { ...board.tool(name, args, session, meta),
+          result: { action: args.action, done: true, ok: true, status: 'confirmed' },
+          ...(contradiction === 'ambiguous-code' ? { errorCode: 'upstream_unavailable' } : {}) }
+        return { ...withMeta(result, board.meta(session)),
+          ...(contradiction === 'mcp-error' ? { __isError: true } : {}) }
+      },
+      model: round => round === 1 ? callTool('OpenCase', {})
+        : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
+      timeoutMs: 8_000,
+    })
+    assert.notEqual(run.code, 'timeout', `${contradiction}: ${run.stdout}\n${run.stderr}`)
+    assert.equal(run.localEvents.some(event => event.type === 'action-outcome'), false,
+      `${contradiction}: a contradictory envelope was shown as confirmed`)
+    assert.equal(run.localEvents.some(event => event.type === 'verdict'
+      && event.cmd === 'ApplyAction' && event.accepted === true), false,
+    `${contradiction}: the contradictory reply was shown as accepted by Board`)
+  }
+})
+
+test('a normal MCP envelope can carry an authoritative business refusal', async () => {
+  const run = await runAgent({
+    argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '4' },
+    chatLines: ['Try the declared Action.'],
+    tool: (name, args, board, session, meta) => name !== 'ApplyAction' ? undefined
+      : withMeta({ accepted: false, errorCode: 'not_authorized', teaching: 'Action refused by policy.' },
+        board.meta(session)),
+    model: round => round === 1 ? callTool('OpenCase', {})
+      : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'The action was refused.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.localEvents.some(event => event.type === 'verdict' && event.cmd === 'ApplyAction'
+    && event.accepted === false && event.transportAmbiguous !== true), true)
+  assert.equal(run.localEvents.some(event => event.type === 'action-outcome'), false)
+})
+
 test('opening exploration does not invent a permission grant or Case-local lifetime', async () => {
   const run = await runAgent({
     argv: ['--case-type', 'exploration'],

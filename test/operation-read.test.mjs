@@ -31,6 +31,36 @@ test('RT-READ-1 Host collects the original public result with ReadOperation befo
   assert.equal(messages.some(message => message.role === 'assistant' && message.tool_calls !== undefined), false)
 })
 
+test('the recovered original Action result reaches Local without replaying its effect', async () => {
+  const original = { isError: false, content: [{ type: 'text', text: JSON.stringify({
+    accepted: true, result: { action: 'acme.ship', done: true, ok: true, status: 'confirmed' },
+  }) }] }
+  const run = await runAgent({
+    argv: [], chatLines: ['Carry on.'], captureLocalEvents: true,
+    recovery: ({ readsDelivered }) => readsDelivered === 0
+      ? { state: 'result_ready', callRef: 'call-9', tool: 'ApplyAction' } : { state: 'none' },
+    readRecord: { state: 'result_ready', originalTool: 'ApplyAction', originalResult: original },
+    model: () => 'The original result was collected.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.deepEqual(run.verbs, ['ReadOperation'], 'the Action must not execute again')
+  const outcomes = run.localEvents.filter(event => event.type === 'action-outcome')
+  assert.equal(outcomes.length, 1)
+  assert.deepEqual([outcomes[0].action, outcomes[0].status, outcomes[0].ok, outcomes[0].recovered],
+    ['acme.ship', 'confirmed', true, true])
+  assert.equal(Object.hasOwn(outcomes[0], 'invocation'), false)
+  const noProof = await runAgent({
+    argv: [], chatLines: ['Carry on.'], captureLocalEvents: true,
+    recovery: ({ readsDelivered }) => readsDelivered === 0
+      ? { state: 'result_ready', callRef: 'call-9', tool: 'ApplyAction' } : { state: 'none' },
+    readRecord: { state: 'result_ready', originalTool: 'ApplyAction',
+      originalResult: { ...original, isError: true } },
+    model: () => 'The earlier result is unavailable.',
+  })
+  assert.equal(noProof.localEvents.some(event => event.type === 'action-outcome'), false,
+    'an MCP error envelope must not be relabelled as a successful Action')
+})
+
 test('RT-READ-2 model can call ReadOperation; original error remains nested and read succeeds', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Read the prior operation.'], recovery: { state: 'none' },
