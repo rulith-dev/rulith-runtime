@@ -38,5 +38,5 @@ test('a malformed reasoning/tool conversation is not retried by disabling native
   assert.notEqual(run.code, 0)
   assert.equal(run.modelRequests.length, 1)
   assert.ok(run.modelRequests[0].tools.length)
-  assert.doesNotMatch(run.stdout, /same six tools are now described/)
+  assert.doesNotMatch(run.stdout, /same seven tools are now described/)
 })

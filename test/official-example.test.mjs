@@ -449,7 +449,7 @@ test('RT-EXAMPLE-7 every tool call the guide prints matches the vendored tool co
 
   for (const { tool, input } of printed) {
     const schema = schemas[tool]
-    assert.ok(schema, `${tool} is not one of the six tools this Runtime serves`)
+    assert.ok(schema, `${tool} is not one of the seven tools this Runtime serves`)
     assert.ok(input !== null && typeof input === 'object' && !Array.isArray(input), `${tool} must be printed with an object input`)
     // `oneOf` (OpenCase) states alternative shapes; the branch that names every key present is
     // the one this call means, and at least one branch must accept it.

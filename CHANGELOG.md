@@ -2,6 +2,21 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Adopt the seven-tool `rulith/v2` MCP contract. `ReadOperation({})` retrieves the
+  current Agent's original public tool result as an independent read. The Host can
+  collect a ready result without `QueryBoard`, including after reconnecting to a new
+  MCP session, and keeps the original result's `isError` separate from the read's status.
+- Preserve local artifact custody when a recovered `ReadArtifact` result carries a
+  private delivery ticket. The model sees only the authorized completed fragment or
+  a visible local-delivery refusal.
+- Render recovered original content as labelled, untrusted assistant-role data so text
+  from an earlier tool result cannot enter system, developer or user messages.
+- Let a terminal `ReadArtifact` or `QueryBoard` whose content current disclosure refuses
+  produce an explicit unavailable recovery note so the model can choose new work. Write
+  outcomes, pending reads and untrusted recovery metadata keep the strict recovery gate.
+
 ## 0.8.17 - 2026-09-24
 
 - Bind every local authoring executable URL to the manifest's exact source commit

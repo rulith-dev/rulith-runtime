@@ -185,9 +185,17 @@ test('the shipped inspector separates lifecycle, focus and detached observations
 
   context.events = [
     { src: 'agent', type: 'recovery', state: 'result_ready', tool: 'ApplyBatch' },
-    { src: 'agent', type: 'handoff', tool: 'ApplyBatch', callRef: 'call-1' },
+    { src: 'agent', type: 'operation-read', tool: 'ApplyBatch', callRef: 'call-1' },
   ]
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('recovery').innerHTML, /No unresolved call/)
-  assert.match(elements.get('recovery').innerHTML, /handed to the model, which decides again/)
+  assert.match(elements.get('recovery').innerHTML, /read for the model, which decides again/)
+
+  context.events = [
+    { src: 'agent', type: 'recovery', state: 'result_ready', tool: 'ReadArtifact' },
+    { src: 'agent', type: 'operation-read', state: 'unavailable', tool: 'ReadArtifact' },
+  ]
+  vm.runInContext('renderInspector(events)', context)
+  assert.match(elements.get('recovery').innerHTML, /Earlier ReadArtifact content is unavailable/)
+  assert.match(elements.get('recovery').innerHTML, /No original result was supplied/)
 })

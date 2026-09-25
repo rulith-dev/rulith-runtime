@@ -6,19 +6,19 @@
  * Everything under test here is a decision the Agent makes about what to put on the wire,
  * so the assertions are on what the endpoint received — not on a return value the Agent
  * computed and could compute correctly while sending something else. The endpoint records
- * every `initialize` and every `tools/call` in order, with the `_meta["rulith/v1"]` block
+ * every `initialize` and every `tools/call` in order, with the `_meta["rulith/v2"]` block
  * each call carried, including the calls the Agent decided not to make, by their absence.
  *
  * There is exactly one path: `/mcp`. The gateway speaks the MCP 2025-11-25 lifecycle
  * (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`, plus `ping`
- * and a resumable GET stream), mints a session id per initialize, and answers the six
- * tools — `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard` and the
- * artifact read `ReadArtifact`. Each answers with a single JSON text carrying the result,
+ * and a resumable GET stream), mints a session id per initialize, and answers the seven
+ * tools — `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard`,
+ * `ReadArtifact`, and `ReadOperation`. Each answers with JSON text carrying the result,
  * and carries host metadata beside it in `_meta`, never inside the text.
  *
  * The recovery half of the contract is scriptable because it is where the interesting
- * defects live: `recovery` drives what `ping` and `initialize` publish, `handoff` makes the
- * next `tools/call` a delivery of an earlier call's outcome, `replaceAfter` produces the
+ * defects live: `recovery` drives what `ping` and `initialize` publish, `readRecord` makes
+ * ReadOperation return the original public result, `replaceAfter` produces the
  * 409 that means another client took over, and `breakStreamOnCall` cuts a response stream
  * so the answer has to be recovered with `Last-Event-ID` rather than re-decided.
  */
@@ -32,7 +32,7 @@ import { loadContractBundle } from '../../scripts/verify-mcp-contract.mjs'
 
 export const ROOT = resolve(import.meta.dirname, '..', '..')
 export const TEST_TOKEN = `rlt_agt_${'a'.repeat(43)}`
-export const RULITH_META = 'rulith/v1'
+export const RULITH_META = 'rulith/v2'
 export const TEST_AGENT_ID = 'agent-public-1'
 
 /**
@@ -65,7 +65,7 @@ export const HOP_FAILURE = Symbol('hop-failure')
  * Answer with an explicit host metadata block instead of the gateway's own.
  *
  * The recovery record is filled in when the scenario does not state one: the contract makes
- * it required of every `rulith/v1` block, so a fixture that omitted it would be modelling a
+ * it required of every `rulith/v2` block, so a fixture that omitted it would be modelling a
  * non-conforming endpoint by accident. A scenario that wants that endpoint says so, by
  * passing `recovery: undefined` explicitly.
  */
@@ -383,11 +383,9 @@ function renderModelAnswer(answer, provider) {
  *   Defaults to `{state:'none'}`, because a conforming Gateway always publishes one — pass
  *   `null` to model an endpoint that omits it, which a host must refuse to read as "nothing
  *   outstanding".
- * @param {object}   [options.handoff]  `{tool, callRef, result, afterCall?}`: the first tools/call
- *   past `afterCall` (default 0) is answered as an error tool result delivering that earlier call's
- *   outcome, and executes nothing. `afterCall` is what keeps a scenario's own unresolved call from
- *   being answered as its own handoff; `withoutIsError` drops the protocol-level marker so the
- *   two channels disagree.
+ * @param {object|function} [options.readRecord] Public ReadOperation state/result. Its optional
+ *   `__localDelivery` fixture field travels only in the private local delivery metadata namespace.
+ *   `__operationTarget` overrides the private target selected by the read before delivery.
  * @param {number}   [options.replaceAfter] Answer this and every later request with HTTP 409
  *   `connection_replaced`, as the Gateway does once another client has taken over.
  * @param {object}   [options.conflictBody] Replace the 409 body, for the arms that prove the
@@ -414,7 +412,7 @@ export async function runAgent({
   omitAgentId = false, sseResults = false, corruptResponse, swapSessionOnCall,
   dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
-  protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, handoff, replaceAfter, conflictBody,
+  protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, readRecord, replaceAfter, conflictBody,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
   captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
@@ -441,7 +439,7 @@ export async function runAgent({
   let activeSession
   const replaced = new Set()
   let pings = 0
-  let handoffsDelivered = 0
+  let readsDelivered = 0
   const storeDir = sessionFile === undefined ? mkdtempSync(join(tmpdir(), 'rulith-session-')) : undefined
   const store = sessionFile ?? join(storeDir, 'agent-sessions.json')
 
@@ -471,7 +469,8 @@ export async function runAgent({
   }
   /** The recovery record this endpoint publishes right now, or nothing. */
   const recoveryNow = () => {
-    const value = typeof recovery === 'function' ? recovery({ pings, toolCalls: toolCalls.length, handoffsDelivered }) : recovery
+    const value = typeof recovery === 'function'
+      ? recovery({ pings, requests: requests.length, toolCalls: toolCalls.length, readsDelivered }) : recovery
     return value === undefined || value === null ? undefined : { recovery: value }
   }
 
@@ -664,7 +663,7 @@ export async function runAgent({
         capabilities: { tools: {} },
         serverInfo: { name: 'rulith-gateway-test', version: '0' },
         ...(omitAgentId && recoveryNow() === undefined ? {} : {
-          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), ...recoveryNow() } },
+          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...recoveryNow() } },
         }),
       })
     }
@@ -674,7 +673,8 @@ export async function runAgent({
       // model turn or reading anything it is not entitled to.
       pings += 1
       const meta = recoveryNow()
-      return send(meta === undefined ? {} : { _meta: { [RULITH_META]: meta } })
+      return send(meta === undefined ? {} : { _meta: { [RULITH_META]: {
+        agentId: TEST_AGENT_ID, focusedRoots: [], ...meta } } })
     }
     if (input.method === 'notifications/initialized') {
       response.writeHead(202, sessionHeaders)
@@ -699,14 +699,14 @@ export async function runAgent({
           tools: page,
           ...(next < all.length ? { nextCursor: String(next) } : {}),
           ...(omitAgentId && recoveryNow() === undefined ? {} : {
-            _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), ...recoveryNow() } },
+            _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...recoveryNow() } },
           }),
         })
       }
       return send({
         tools: all,
         ...(omitAgentId && recoveryNow() === undefined ? {} : {
-          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), ...recoveryNow() } },
+          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...recoveryNow() } },
         }),
       })
     }
@@ -723,13 +723,38 @@ export async function runAgent({
       response.writeHead(401, { 'content-type': 'application/json', ...sessionHeaders })
       return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
     }
+    // A read record is a separate public operation. It does not consume the pending
+    // business slot or ask the Board to execute anything. A scripted transport failure
+    // leaves the same read RPC available for a retry under its original identity.
+    if (name === 'ReadOperation') {
+      const scripted = tool?.(name, args, board, session, meta)
+      if (scripted === HOP_FAILURE) {
+        response.writeHead(502, { 'content-type': 'text/plain', ...sessionHeaders })
+        return void response.end('upstream unavailable')
+      }
+      const value = typeof readRecord === 'function'
+        ? readRecord({ pings, toolCalls: toolCalls.length, readsDelivered }) : readRecord ?? { state: 'none' }
+      const { __localDelivery: localDelivery, __isError: readIsError = false,
+        __omitHostMeta: omitHostMeta = false, __recovery: readRecovery,
+        __operationTarget: targetOverride, ...publicRecord } = value
+      const selected = recoveryNow()?.recovery
+      const operationTarget = targetOverride === undefined
+        ? (selected?.state !== 'none' && selected?.callRef !== undefined && selected?.tool !== undefined
+          ? { callRef: selected.callRef, tool: selected.tool } : undefined)
+        : targetOverride
+      if (!readIsError) readsDelivered += 1
+      return send({ isError: readIsError, content: [{ type: 'text', text: JSON.stringify(publicRecord) }],
+        _meta: { ...(omitHostMeta ? {} : { [RULITH_META]: {
+          agentId: TEST_AGENT_ID, focusedRoots: [], ...(readRecovery === undefined ? recoveryNow() : { recovery: readRecovery }),
+          ...(operationTarget === null || operationTarget === undefined ? {} : { operationTarget }) } }),
+        ...(localDelivery === undefined ? {} : { 'rulith/local-delivery/v1': localDelivery }) } }, { sse: sseResults })
+    }
     // The serial gate, on the server side. While the authority says a call is still
     // executing, a new `tools/call` does not run: it is refused with the state, exactly as
     // §5.2 requires. A host that sent one anyway gets an error rather than an execution,
     // which is what makes "the host must not send it" testable at all.
     const pendingState = recoveryNow()?.recovery?.state
-    const deliverable = handoff !== undefined && handoffsDelivered === 0 && toolCalls.length > (handoff.afterCall ?? 0)
-    if (pendingState === 'waiting' && !deliverable) {
+    if (pendingState === 'waiting') {
       return send({
         isError: true,
         content: [{ type: 'text', text: JSON.stringify({
@@ -738,29 +763,7 @@ export async function runAgent({
           requestExecuted: false,
           teaching: 'This Agent has a call in flight; nothing further runs until it settles.',
         }) }],
-        _meta: { [RULITH_META]: { agentId: TEST_AGENT_ID, ...recoveryNow() } },
-      }, { sse: sseResults })
-    }
-    if (deliverable) {
-      // The handoff: this request executes nothing and carries the outcome of the earlier
-      // call instead. It is an ordinary tool result with `isError: true` — the marker that
-      // says which call it belongs to lives in the metadata, and the business projection
-      // lives in the content where every other result's does.
-      //
-      // `withoutIsError` models the server contradicting itself: the marker says the
-      // request did not run, the protocol says it was served. A client may not pick a side.
-      handoffsDelivered += 1
-      return send({
-        ...(handoff.withoutIsError === true ? {} : { isError: true }),
-        content: [{ type: 'text', text: JSON.stringify(handoff.result) }],
-        _meta: {
-          ...(handoff.localDelivery ? { 'rulith/local-delivery/v1': handoff.localDelivery } : {}),
-          [RULITH_META]: {
-            agentId: TEST_AGENT_ID,
-            handoff: { callRef: handoff.callRef ?? 'call-1', tool: handoff.tool ?? 'ApplyAction', requestExecuted: false },
-            ...recoveryNow(),
-          },
-        },
+        _meta: { [RULITH_META]: { agentId: TEST_AGENT_ID, focusedRoots: [], ...recoveryNow() } },
       }, { sse: sseResults })
     }
     const scripted = tool?.(name, args, board, session, meta)
@@ -887,7 +890,7 @@ export async function runAgent({
     pings,
     /** Model-facing tool names actually called, in order. */
     verbs: toolCalls.map((call) => call.name),
-    /** The `_meta["rulith/v1"]` block each tool call carried, in order. */
+    /** The `_meta["rulith/v2"]` block each tool call carried, in order. */
     sentMeta: toolCalls.map((call) => call.meta),
   }
   } finally {

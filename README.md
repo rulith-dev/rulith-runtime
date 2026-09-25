@@ -139,12 +139,12 @@ Contract; exploration omits them. The Runtime sends values only. Cloud computes
 and pins the business-key, Capability Release, Case Contract, generation, and
 commercial-term digests before the Case opens, so the model never fills them.
 
-### The model surface: six tools on one endpoint
+### The model surface: seven tools on one endpoint
 
 The Agent Runtime is an ordinary MCP client. It connects to one path — `/mcp` — performs
-the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the six
-tools of the unified MCP surface: five that dispatch to Board operations, and one read of
-already-generated result data.
+the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the seven
+tools of the unified MCP surface: five that dispatch to Board operations, one read of
+already-generated result data, and `ReadOperation` for the original call's public result.
 
 That membership is not written here. It is compiled from `protocol/mcp-contract.json`, the
 contract bundle exported from a named commit of the contract repository and verified
@@ -212,7 +212,7 @@ reconnect, because two hosts that both reconnect on that signal fight over one A
 which says nothing about whether the call made under the old session executed.
 
 Host metadata travels beside the model's content, never inside it, in the MCP `_meta`
-block under `rulith/v1`: the authenticated Agent identity, the Board revision (an audit
+block under `rulith/v2`: the authenticated Agent identity, the Board revision (an audit
 string, never a precondition), the `{caseId, root}` focus pairs, the complete
 `affectedCases`, and the recovery record described below. It travels one way. The protected
 query context — `audienceProfile` and `requestedRoots` — is injected by the Gateway from the
@@ -258,14 +258,19 @@ When a call's outcome cannot be determined, the queue stops there. From that poi
 Agent sends nothing — no write, no `QueryBoard`, no `ReadArtifact` — and asks the model
 nothing, because a model asked to decide during an unresolved call can only propose work
 that cannot be carried. The state comes from the authority, on the base protocol's own
-`ping`, whose empty result carries a recovery record under `rulith/v1`:
+`ping`, whose empty result carries a recovery record under `rulith/v2`:
 
 | State | What this host does |
 | --- | --- |
 | `none` | Nothing outstanding; work proceeds. Nothing is polled for. |
 | `waiting` | Waits and pings on the authority's own hint. No model turn, no tool call. |
-| `result_ready` | Sends exactly one claim, which executes nothing, and receives the earlier call's outcome as an error tool result. |
+| `result_ready` | Reads the original public MCP result with `ReadOperation({})`; the read itself succeeds even if the original tool result was an error. |
 | `reconciliation_required` | Stops automatic recovery and shows the operator where to reconcile the original call. |
+
+If a terminal `ReadArtifact` or `QueryBoard` result cannot be disclosed under current
+authorization, the Host reports that read refusal as labelled recovery data and lets the
+model decide a new command. It does not invent the original result. This exception does
+not apply to writes, unknown outcomes, or reads that are still pending.
 
 A state this Runtime cannot read blocks as well, and so does a *missing* record: `none` is
 the authority saying there is nothing outstanding, and silence is this host having no idea.
@@ -277,17 +282,17 @@ learned while the authority reports nothing outstanding. An empty recovery recor
 statement about the Gateway's records, not about the world, so neither reading is acted on:
 the call is named, with its request id, for a person to reconcile in Console.
 
-The recovered outcome goes to the model as a **host-recovery note in the user channel**,
-labelled as such. It is not forged into an assistant tool call the model never made, and not
-disguised as a message from the user. The model reads what ran, sees that the collecting
-request executed nothing, and decides again.
+The recovered outcome goes to the model as labelled **Host recovery data**. Provider
+transports render it as assistant-role text without a fabricated tool call. The original
+tool result remains untrusted data; its text is never placed in a system, developer or user
+message. The model reads what ran, sees that the collecting request executed no Board
+command, and decides again.
 
-The authority may also hand an earlier outcome back in answer to a request the model itself
-made. That request **did not run**, and the result it gets says so: `requestExecuted: false`,
-the name of the call the outcome belongs to, and that outcome kept whole beside it as data.
-An earlier call's `accepted: true` is never allowed to read as this call's acceptance. The
-rest of that turn's proposals are not carried either — they were chosen before the model
-knew any of this — and the model decides again with the outcome in hand.
+The model can also call `ReadOperation({})` explicitly. Its answer separates the read state
+from `originalTool` and `originalResult`, which retains the original tool's public MCP
+`content`, `isError`, and optional `structuredContent`. Host metadata and the opaque call
+reference stay outside model content. The read neither refreshes the Board View nor spends
+the pending business call slot.
 
 An authoritative refusal is never replayed by the host: the Board judged the step, and
 resending it with the refusal's own words attached would be this client deciding on the
@@ -747,8 +752,8 @@ The model never supplies the trusted input values or the calculated output value
   `SELECT`; every model value is passed through the database driver's parameter array
   rather than interpolated into SQL. Fenced write tools classify and reject unsupported
   or destructive statements unless the declared contract allows them.
-- The model can name exactly six tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
-  `CloseCase`, `QueryBoard`, `ReadArtifact`. Anything else is refused locally and never
+- The model can name exactly seven tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
+  `CloseCase`, `QueryBoard`, `ReadArtifact`, `ReadOperation`. Anything else is refused locally and never
   reaches Cloud, so injected text in a task, a document, or a tool result cannot spend the
   Agent's credential on verification, Worker receipts, clearance, or package and Board
   governance. Cloud authorization is the second line, not the first. The protected query

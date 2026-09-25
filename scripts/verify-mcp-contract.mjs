@@ -43,7 +43,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 export const BUNDLE_SCHEMA = 'rulith-mcp-contract-bundle/v1'
-export const SURFACE_SCHEMA = 'rulith-mcp-surface/v1'
+export const SURFACE_SCHEMA = 'rulith-mcp-surface/v2'
 export const BUNDLE_PATH = 'protocol/mcp-contract.json'
 export const SURFACE_FILE = 'protocol/mcp-surface.json'
 
@@ -155,7 +155,7 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
       throw new ContractError(`${path}: materialized tool ${JSON.stringify(tool?.name)} does not match the declared`
         + ` ${JSON.stringify(entry?.name)} (${JSON.stringify(entry?.target)}/${JSON.stringify(entry?.operation ?? null)}).`)
     }
-    if (entry.target !== 'core' && entry.target !== 'artifact') {
+    if (entry.target !== 'core' && entry.target !== 'artifact' && entry.target !== 'operation') {
       throw new ContractError(`${path}: ${entry.name} declares dispatch target ${JSON.stringify(entry.target)}.`)
     }
     if (!isObject(tool.inputSchema)) throw new ContractError(`${path}: ${entry.name} carries no materialized inputSchema.`)

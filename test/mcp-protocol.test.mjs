@@ -46,7 +46,7 @@ test('RT-PROTO-2 the negotiated version and the declared capability travel on ev
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.initializes[0].protocolVersion, MCP_PROTOCOL_VERSION)
-  assert.deepEqual(run.initializes[0].capabilities?.experimental?.['rulith/v1'], { serialRecovery: 1 })
+  assert.deepEqual(run.initializes[0].capabilities?.experimental?.['rulith/v2'], { operationRecovery: 1 })
   for (const request of run.requests) {
     assert.equal(request.protocolHeader, MCP_PROTOCOL_VERSION,
       `a ${request.httpMethod} ${request.method} request carried protocol version ${request.protocolHeader}`)
@@ -243,7 +243,7 @@ test('RT-SURFACE-1 an extra advertised tool is a refused protocol mismatch, not 
   assert.equal(run.modelRequests.length, 0,
     `an incompatible advertised surface was filtered into a valid one and the run continued:\n${run.stdout}\n${run.stderr}`)
   assert.match(run.stderr, /advertises a tool surface this Runtime cannot speak/)
-  assert.match(run.stderr, /advertises UnexpectedTool, which is not part of the approved six-tool surface/)
+  assert.match(run.stderr, /advertises UnexpectedTool, which is not part of the approved seven-tool surface/)
   assert.match(run.stderr, /This is a protocol mismatch, not a filtering decision/)
   // The refusal names both sides, so a reader can see which one to move.
   assert.match(run.stderr, new RegExp(`Contract:\\s+${MODEL_TOOLS.join(', ')}`))
@@ -295,7 +295,7 @@ test('RT-SURFACE-4 a missing approved tool is refused and named', async () => {
   assert.match(run.stderr, /does not advertise QueryBoard/)
 })
 
-test('RT-SURFACE-5 the approved five, exactly, reach the model (calibration)', async () => {
+test('RT-SURFACE-5 the approved seven, exactly, reach the model (calibration)', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.', timeoutMs: 20_000 })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
@@ -340,7 +340,7 @@ test('RT-SURFACE-6 a paged tools/list is read to the end before membership is ju
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const pages = run.requests.filter((request) => request.method === 'tools/list')
-  assert.equal(pages.length, 3, `six tools in pages of two is three pages: ${pages.length}`)
+  assert.equal(pages.length, 4, `seven tools in pages of two is four pages: ${pages.length}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
   assert.deepEqual([...offered].sort(), [...MODEL_TOOLS].sort())
   assert.doesNotMatch(run.stderr, /does not advertise/)

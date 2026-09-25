@@ -255,21 +255,45 @@ test('a failed local read never silently changes the next read to a proxy', asyn
   }, { answer: () => ({ status: 400, body: { ok: false, errorCode: 'local_ticket_expired', teaching: 'gone' } }) })
 })
 
-test('an earlier locally delivered read keeps its handoff identity and receives the actual bytes', async () => {
+test('an earlier locally delivered read is completed through ReadOperation without exposing its ticket', async () => {
   await withDeliveryEndpoint(async ({env,claims}) => {
     const response=negotiated()('ReadArtifact',{ref:GATEWAY_REF})
     const run=await runAgent({argv:[],env:{RULITH_MAX_ROUNDS:'4',...env},chatLines:['Continue.'],
-      gateway:defaultGateway(),handoff:{tool:'ReadArtifact',callRef:'call-9',result:response.__core,
-        localDelivery:response.__meta['rulith/local-delivery/v1']},
-      model:round=>round===1?callTool('QueryBoard',{}):'Received earlier material.'})
+      gateway:defaultGateway(),
+      recovery: ({readsDelivered}) => readsDelivered === 0
+        ? {state:'result_ready',callRef:'call-9',tool:'ReadArtifact'} : {state:'none'},
+      readRecord: {state:'result_ready',originalTool:'ReadArtifact',originalResult:{
+        content:[{type:'text',text:JSON.stringify(response.__core)}],isError:false},
+        __localDelivery:response.__meta['rulith/local-delivery/v1']},
+      model:()=> 'Received earlier material.'})
     assert.equal(run.code,0,run.stdout+'\n'+run.stderr)
+    assert.deepEqual(run.verbs,['ReadOperation'])
     assert.equal(claims.length,1)
-    const read=fragments(run).at(-1)
-    assert.equal(read.requestExecuted,false)
-    assert.equal(read.handedOverFrom,'ReadArtifact')
-    assert.equal(read.earlierResult.accepted,true)
-    assert.equal(read.earlierResult.result.data,SECRET)
+    const note=run.modelRequests[0].messages.find(message=>String(message.content??'').includes('[Host recovery'))
+    assert.ok(note)
+    assert.match(note.content,/ReadArtifact/)
+    assert.match(note.content,new RegExp(SECRET))
     assert.doesNotMatch(modelText(run),new RegExp(TICKET))
     assert.equal(run.requests.find(row=>row.method==='tools/call').headers[LOCAL_DELIVERY_HEADER],'rulith-local-delivery/1')
   })
+})
+
+test('an earlier ReadArtifact ticket failure stays a visible refusal after ReadOperation', async () => {
+  await withDeliveryEndpoint(async ({env,claims}) => {
+    const response=negotiated()('ReadArtifact',{ref:GATEWAY_REF})
+    const run=await runAgent({argv:[],env:{RULITH_MAX_ROUNDS:'3',...env},chatLines:['Continue.'],
+      recovery: ({readsDelivered}) => readsDelivered === 0
+        ? {state:'result_ready',callRef:'call-9',tool:'ReadArtifact'} : {state:'none'},
+      readRecord: {state:'result_ready',originalTool:'ReadArtifact',originalResult:{
+        content:[{type:'text',text:JSON.stringify(response.__core)}],isError:false},
+        __localDelivery:response.__meta['rulith/local-delivery/v1']},
+      model:()=> 'The local read failed.'})
+    assert.equal(run.code,0,run.stdout+'\n'+run.stderr)
+    assert.deepEqual(run.verbs,['ReadOperation'])
+    assert.equal(claims.length,1)
+    const note=run.modelRequests[0].messages.find(message=>String(message.content??'').includes('[Host recovery'))
+    assert.match(note?.content??'',/local_ticket_expired/)
+    assert.doesNotMatch(modelText(run),new RegExp(TICKET))
+    assert.doesNotMatch(modelText(run),new RegExp(SECRET))
+  }, {answer:()=>({status:400,body:{ok:false,errorCode:'local_ticket_expired',teaching:'expired'}})})
 })

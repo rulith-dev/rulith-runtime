@@ -13,7 +13,7 @@ for (const settled of [false, true]) test(`new SSE clients receive recovery afte
     const send = event => new Promise(resolve => process.send({ protocol: 'rulith-local-event', event }, resolve));
     await send({ type: 'start', agentId: 'test-recovery' });
     await send({ type: 'pending-inherited', tool: 'ApplyAction', requestId: 'prior' });
-    ${settled ? "await send({ type: 'handoff', tool: 'ApplyAction' });" : ''}
+    ${settled ? "await send({ type: 'operation-read', tool: 'ApplyAction' });" : ''}
     for (let i = 0; i < 2100; i++) await send({ type: 'log', note: 'unrelated event ' + i });
     await send({ type: 'recovery', state: 'none', historical: true });
     await send({ type: 'snapshot-test-ready' });
@@ -34,7 +34,7 @@ for (const settled of [false, true]) test(`new SSE clients receive recovery afte
     const status = await fetch(`http://127.0.0.1:${host.port}/status?k=recovery-test`).then(r => r.json())
     assert.deepEqual(status.runtime.console,
       { origin: 'https://console.rulith.ai', accountId: 'acct-1', agentId: 'test-recovery' })
-    assert.ok(!host.events().some(e => ['pending-inherited', 'handoff'].includes(e.type)), 'fixture did not evict the original event')
+    assert.ok(!host.events().some(e => ['pending-inherited', 'operation-read'].includes(e.type)), 'fixture did not evict the original event')
     const response = await fetch(`http://127.0.0.1:${host.port}/events?k=recovery-test&history=paged`, { signal: AbortSignal.timeout(5000) })
     assert.equal(response.status, 200)
     const reader = response.body.getReader()

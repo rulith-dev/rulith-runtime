@@ -149,7 +149,7 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('the model surface is the six tools of the unified list, and no second grammar survives', () => {
+test('the model surface is the seven tools of the unified list, and no second grammar survives', () => {
   const whole = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   // The runtime names the retired surfaces once, in the constant it refuses them by. That
   // single declaration is the allow-list; the scan below runs over everything else, so a
@@ -163,6 +163,7 @@ test('the model surface is the six tools of the unified list, and no second gram
   assert.match(source, /const RULITH_MCP_SURFACE = Object\.freeze\(\[/)
   assert.match(source, /const MODEL_TOOLS = RULITH_MCP_SURFACE\.map\(\(entry\) => entry\.name\)/)
   assert.match(source, /name: 'ReadArtifact', target: 'artifact'/)
+  assert.match(source, /name: 'ReadOperation', target: 'operation'/)
   assert.match(source, /const BOARD_TOOLS = new Set\(RULITH_MCP_SURFACE\.filter\(\(entry\) => entry\.target === 'core'\)/)
   assert.doesNotMatch(source, /agentVerb|agentRead/)
   // The retired fenced-JSON dialect, the retired host tool split, and the client-side
@@ -309,11 +310,11 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
         // A conforming endpoint always publishes the recovery record. `none` is the
         // authority saying there is nothing outstanding — which is why this run never has
         // to ping for it.
-        _meta: { 'rulith/v1': { agentId: 'agent-public-1', recovery: { state: 'none' } } },
+        _meta: { 'rulith/v2': { agentId: 'agent-public-1', focusedRoots: [], recovery: { state: 'none' } } },
       })
     }
     if (input.method === 'ping') {
-      return void reply({ _meta: { 'rulith/v1': { recovery: { state: 'none' } } } })
+      return void reply({ _meta: { 'rulith/v2': { agentId: 'agent-public-1', focusedRoots: [], recovery: { state: 'none' } } } })
     }
     if (input.method === 'tools/list') {
       assert.equal(String(req.headers['mcp-session-id']), sessionId, 'the session header was not carried after initialize')
@@ -325,14 +326,15 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
           { name: 'CloseCase', inputSchema: { type: 'object', properties: { disposition: { type: 'string' }, case: { type: 'object' } } } },
           { name: 'QueryBoard', inputSchema: { type: 'object', properties: { include: { type: 'array' } } } },
           { name: 'ReadArtifact', inputSchema: { type: 'object', required: ['ref'], properties: { ref: { type: 'string' }, offset: { type: 'integer' }, maxBytes: { type: 'integer' } } } },
+          { name: 'ReadOperation', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
         ],
-        _meta: { 'rulith/v1': { agentId: 'agent-public-1' } },
+        _meta: { 'rulith/v2': { agentId: 'agent-public-1', focusedRoots: [], recovery: { state: 'none' } } },
       })
     }
     assert.equal(input.method, 'tools/call')
     const name = String(input.params?.name ?? '')
     toolNames.push(name)
-    sentMeta.push(input.params?._meta?.['rulith/v1'])
+    sentMeta.push(input.params?._meta?.['rulith/v2'])
     if (name === 'CloseCase') closed = true
     const core = {
       accepted: true, revision: `r${toolNames.length}`, payload: boardView(!closed),
@@ -340,8 +342,9 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
     }
     reply({
       content: [{ type: 'text', text: JSON.stringify(core) }],
-      _meta: { 'rulith/v1': {
+      _meta: { 'rulith/v2': {
         agentId: 'agent-public-1',
+        recovery: { state: 'none' },
         boardRevision: `r${toolNames.length}`,
         focusedRoots: closed ? [] : [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE' }],
         ...(closed ? { affectedCases: ['CASE_LIVE'] } : {}),

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * The model surface is six tools called over one `/mcp` endpoint.
+ * The model surface is seven tools called over one `/mcp` endpoint.
  *
  * `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard` dispatch to Board
  * operations, and `ReadArtifact` reads already-generated result data from the Gateway's
@@ -51,7 +51,7 @@ function vendoredRuntimeSurface() {
   const source = readFileSync(new URL('../agent/rulith-agent.mjs', import.meta.url), 'utf8')
   const block = /const RULITH_MCP_SURFACE = Object\.freeze\(\[(?<body>[\s\S]*?)\]\)/u.exec(source)
   assert.ok(block, 'the Runtime no longer declares a vendored MCP surface list; this guard has lost its subject')
-  return [...block.groups.body.matchAll(/name: '(?<name>[A-Za-z]+)', target: '(?<target>core|artifact)'/gu)]
+  return [...block.groups.body.matchAll(/name: '(?<name>[A-Za-z]+)', target: '(?<target>core|artifact|operation)'/gu)]
     .map((entry) => ({ name: entry.groups.name, target: entry.groups.target }))
 }
 
@@ -70,6 +70,7 @@ test('RT-TOOLS-1 the model-facing tools are exactly the unified MCP surface list
   assert.deepEqual(runtime.map((entry) => entry.name), MODEL_TOOLS)
   assert.deepEqual(runtime.filter((entry) => entry.target === 'artifact').map((entry) => entry.name), ['ReadArtifact'],
     'the artifact read is the one tool served by the data plane rather than by a Board operation')
+  assert.deepEqual(runtime.filter((entry) => entry.target === 'operation').map((entry) => entry.name), ['ReadOperation'])
   // The retired host split, by name. These were reachable from the first-party client
   // alone, which is exactly why they had to go.
   for (const retired of ['GetCompletion', 'agent_protocol', 'RunDischarge', 'GetBoardManifest', 'PauseCase', 'ResumeCase', 'GetProjection']) {
@@ -124,7 +125,7 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
 test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.' })
   const tools = declaredToolsOf(run.modelRequests[0])
-  assert.equal(tools.length, 6)
+  assert.equal(tools.length, 7)
   // Top level only, because that is the scope host metadata lives on. The envelope is the
   // boundary; a property one level down inside a business object is business data, and
   // RT-TOOLS-3c asserts that such a property survives.
@@ -138,7 +139,11 @@ test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', 
     const branches = ['oneOf', 'anyOf', 'allOf'].flatMap((key) => (Array.isArray(tool.schema?.[key]) ? tool.schema[key] : []))
     const properties = [...Object.keys(tool.schema?.properties ?? {}),
       ...branches.flatMap((branch) => Object.keys(branch?.properties ?? {}))]
-    assert.ok(properties.length > 0, `${tool.name} lost its schema entirely rather than one property`)
+    if (tool.name === 'ReadOperation') {
+      assert.equal(tool.schema?.type, 'object')
+      assert.equal(tool.schema?.additionalProperties, false)
+      assert.deepEqual(properties, [], 'ReadOperation must take exactly {}')
+    } else assert.ok(properties.length > 0, `${tool.name} lost its schema entirely rather than one property`)
     for (const field of owned) {
       assert.equal(properties.includes(field), false, `${tool.name} still shows the host-owned ${field} argument`)
     }
@@ -215,7 +220,7 @@ test('RT-TOOLS-3d a schema that makes host metadata required is refused, not qui
   assert.equal(run.modelRequests.length, 0, 'the model was asked to work against a contract no call could satisfy')
 })
 
-test('RT-TOOLS-4 a tool that is not one of the six is refused locally and never forwarded', async () => {
+test('RT-TOOLS-4 a tool that is not one of the seven is refused locally and never forwarded', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['remove the pack'],
@@ -320,8 +325,8 @@ test('RT-META-1b the client declares the recovery capability it actually impleme
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const [handshake] = run.initializes
   assert.equal(handshake.protocolVersion, '2025-11-25', 'the client offered a protocol version it does not implement')
-  assert.deepEqual(handshake.capabilities?.experimental?.['rulith/v1'], { serialRecovery: 1 },
-    'the serial-recovery declaration is how a Gateway knows this host waits on one call and collects the result;'
+  assert.deepEqual(handshake.capabilities?.experimental?.['rulith/v2'], { operationRecovery: 1 },
+    'the operation-recovery declaration is how a Gateway knows this host waits on one call and collects the result;'
     + ' without it the Gateway must refuse the host before any business runs')
   assert.equal(handshake.presentedSession, undefined, 'a fresh process presented a session identity it does not hold')
 })

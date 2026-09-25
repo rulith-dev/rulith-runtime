@@ -52,7 +52,7 @@ for (const forbidden of [
   })
 }
 
-test('the five tools the tool list advertises are still forwarded (calibration)', async () => {
+test('the five Board tools the tool list advertises are still forwarded (calibration)', async () => {
   // Without this arm, an allow-list that refused everything would make every assertion
   // above green while breaking the runtime.
   const run = await runAgent({
@@ -291,7 +291,7 @@ test('the runtime uploads no trace and opens no second cloud channel', async () 
     model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  // Every request the endpoint saw was either the model service or one of the five tools
+  // Every request the endpoint saw was either the model service or an approved tool
   // over the MCP handshake. A client-side trace uploader would appear here as a method or
   // a tool name that is neither.
   assert.deepEqual([...new Set(run.methods)].sort(),

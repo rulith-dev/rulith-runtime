@@ -39,7 +39,7 @@ test('RT-CONTRACT-1 the vendored bundle is what this Runtime speaks', () => {
   assert.equal(typeof bundle.protocolVersion, 'string')
   assert.equal(typeof bundle.metadataNamespace, 'string')
   assert.ok(bundle.recoveryStates.includes('none') && bundle.recoveryStates.includes('waiting'))
-  assert.equal(bundle.clientCapabilities.serialRecovery, 1)
+  assert.equal(bundle.clientCapabilities.operationRecovery, 1)
   for (const { inputSchema } of bundle.schemas) {
     assert.equal(inputSchema.$schema, 'http://json-schema.org/draft-07/schema#',
       'a served schema does not declare its dialect explicitly')
