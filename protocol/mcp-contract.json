@@ -1,6 +1,6 @@
 {
   "schema": "rulith-mcp-contract-bundle/v1",
-  "sourceCommit": "a37d70e85fa19c7c6c4070cf7e091f59688ab0af",
+  "sourceCommit": "304ce5e98961dfdc2e92e8ae2009a9f0a5ebba15",
   "surface": {
     "schema": "rulith-mcp-surface/v2",
     "protocolVersion": "2025-11-25",
@@ -38,7 +38,8 @@
         "name": "QueryBoard",
         "target": "core",
         "operation": "QueryBoard",
-        "inputSchemaRef": "docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentQueryBoard"
+        "inputSchemaRef": "docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentQueryBoard",
+        "resultSchemaRef": "docs/specs/schemas/rulith-board-observation-v1.schema.json#/$defs/QueryBoardResult"
       },
       {
         "name": "ReadArtifact",
@@ -645,6 +646,7 @@
       "target": "core",
       "operation": "QueryBoard",
       "inputSchemaRef": "docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentQueryBoard",
+      "resultSchemaRef": "docs/specs/schemas/rulith-board-observation-v1.schema.json#/$defs/QueryBoardResult",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -729,6 +731,142 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 1000
+          }
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "accepted"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "view": {
+            "type": "object"
+          },
+          "observation": {
+            "$ref": "#/$defs/d_40c9b0e4cfb6343d0075bdae"
+          },
+          "errorCode": {
+            "type": "string",
+            "minLength": 1
+          },
+          "teaching": {
+            "type": "string"
+          },
+          "requestExecuted": {
+            "const": false
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "accepted": {
+                  "const": true
+                }
+              },
+              "required": [
+                "accepted"
+              ]
+            },
+            "then": {
+              "required": [
+                "view",
+                "observation"
+              ],
+              "not": {
+                "required": [
+                  "requestExecuted"
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "errorCode"
+              ],
+              "not": {
+                "required": [
+                  "view"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "view retains the existing authorized Agent QueryBoard projection and bounds. This schema is not an authorization filter. A denied or unavailable read has no snapshot contents; no error implies anything about the original business effect.",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$defs": {
+          "d_40c9b0e4cfb6343d0075bdae": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "consistency",
+              "operationAtAdmission"
+            ],
+            "properties": {
+              "consistency": {
+                "const": "committed"
+              },
+              "operationAtAdmission": {
+                "$ref": "#/$defs/d_673c69177dde03b559a5fded"
+              }
+            }
+          },
+          "d_673c69177dde03b559a5fded": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "enum": [
+                  "none",
+                  "waiting",
+                  "result_ready",
+                  "reconciliation_required"
+                ]
+              },
+              "originalTool": {
+                "enum": [
+                  "OpenCase",
+                  "ApplyBatch",
+                  "ApplyAction",
+                  "CloseCase",
+                  "QueryBoard",
+                  "ReadArtifact"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "state": {
+                      "const": "none"
+                    }
+                  },
+                  "required": [
+                    "state"
+                  ]
+                },
+                "then": {
+                  "not": {
+                    "required": [
+                      "originalTool"
+                    ]
+                  }
+                },
+                "else": {
+                  "required": [
+                    "originalTool"
+                  ]
+                }
+              }
+            ]
           }
         }
       }
@@ -889,6 +1027,23 @@
           }
         },
         "description": "Optional declaration in initialize.capabilities.experimental[\"rulith/v2\"]. It identifies this recovery contract but grants no right to execute, observe or claim a result. An explicit legacy rulith/v1 serialRecovery:1 declaration is incompatible with v2 adoption and must be refused rather than silently upgraded."
+      },
+      "ServerCapabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operationRecovery",
+          "boardObservation"
+        ],
+        "properties": {
+          "operationRecovery": {
+            "const": 1
+          },
+          "boardObservation": {
+            "const": 1
+          }
+        },
+        "description": "Server-advertised initialize capabilities.experimental[\"rulith/v2\"]. boardObservation:1 promises that new QueryBoard requests have an independent durable read binding and cannot consume or release the business execution slot. It is implementation support, not permission. A client need not echo either value; ordinary tools-only clients discover the same public tools."
       },
       "OperationTarget": {
         "type": "object",
@@ -1301,14 +1456,19 @@
   },
   "files": {
     "docs/specs/schemas/rulith-agent-mcp-meta-v2.schema.json": {
-      "sha256": "f0035c81ef8ae93ae265c6e8600ea52dcecab465be5f9bd5f2f45cea31d7f144",
-      "gitBlobOid": "03ff7e6ae462b804c15667052ca88260618f0bba",
-      "content": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"$id\": \"rulith-agent-mcp-meta-v2.schema.json\",\n  \"title\": \"Rulith Host-only MCP metadata (rulith/v2)\",\n  \"description\": \"Gateway output only, never a model tool input or transcript. Session identity comes from the authenticated Mcp-Session-Id header. The optional client declaration is a compatibility signal, not authority; ordinary tools-only MCP Hosts can use ReadOperation without a private capability.\",\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\"agentId\", \"focusedRoots\", \"recovery\"],\n  \"properties\": {\n    \"agentId\": { \"type\": \"string\", \"minLength\": 1 },\n    \"focusedRoots\": { \"type\": \"array\", \"items\": { \"$ref\": \"#/$defs/FocusPair\" } },\n    \"boardRevision\": { \"type\": \"string\", \"minLength\": 1 },\n    \"affectedCases\": {\n      \"type\": \"array\",\n      \"uniqueItems\": true,\n      \"items\": { \"type\": \"string\", \"minLength\": 1 },\n      \"description\": \"Complete authoritative Case ids, not acceptance-root ids; absent for results that do not report a graph write. Never truncate silently.\"\n    },\n    \"recovery\": { \"$ref\": \"#/$defs/Recovery\" },\n    \"operationTarget\": { \"$ref\": \"#/$defs/OperationTarget\" }\n  },\n  \"$defs\": {\n    \"ToolName\": {\n      \"type\": \"string\",\n      \"enum\": [\"OpenCase\", \"ApplyBatch\", \"ApplyAction\", \"CloseCase\", \"QueryBoard\", \"ReadArtifact\", \"ReadOperation\"]\n    },\n    \"OriginalTool\": {\n      \"type\": \"string\",\n      \"enum\": [\"OpenCase\", \"ApplyBatch\", \"ApplyAction\", \"CloseCase\", \"QueryBoard\", \"ReadArtifact\"]\n    },\n    \"RecoveryState\": {\n      \"type\": \"string\",\n      \"enum\": [\"none\", \"waiting\", \"result_ready\", \"reconciliation_required\"]\n    },\n    \"FocusPair\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"caseId\", \"root\"],\n      \"properties\": {\n        \"caseId\": { \"type\": \"string\", \"minLength\": 1 },\n        \"root\": { \"type\": \"string\", \"minLength\": 1 }\n      }\n    },\n    \"ClientCapabilities\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"operationRecovery\"],\n      \"properties\": { \"operationRecovery\": { \"const\": 1 } },\n      \"description\": \"Optional declaration in initialize.capabilities.experimental[\\\"rulith/v2\\\"]. It identifies this recovery contract but grants no right to execute, observe or claim a result. An explicit legacy rulith/v1 serialRecovery:1 declaration is incompatible with v2 adoption and must be refused rather than silently upgraded.\"\n    },\n    \"OperationTarget\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"callRef\", \"tool\"],\n      \"properties\": {\n        \"callRef\": { \"type\": \"string\", \"minLength\": 1 },\n        \"tool\": { \"$ref\": \"#/$defs/OriginalTool\" }\n      },\n      \"description\": \"Only on ReadOperation responses whose immutable observation selected an original call, including a current disclosure refusal. Echoes that read's fixed target, not the current pending slot. Omitted for an observation of none. Hosts compare it to their expected original identity before attributing recovered content; it is not authority and never enters model content or tool arguments.\"\n    },\n    \"Recovery\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"state\"],\n      \"properties\": {\n        \"state\": { \"$ref\": \"#/$defs/RecoveryState\" },\n        \"callRef\": { \"type\": \"string\", \"minLength\": 1 },\n        \"tool\": { \"$ref\": \"#/$defs/OriginalTool\" },\n        \"since\": { \"type\": \"string\", \"minLength\": 1 },\n        \"retryAfterMs\": { \"type\": \"integer\", \"minimum\": 0, \"maximum\": 9007199254740991 },\n        \"teaching\": { \"type\": \"string\" }\n      },\n      \"allOf\": [\n        {\n          \"if\": { \"properties\": { \"state\": { \"const\": \"none\" } }, \"required\": [\"state\"] },\n          \"then\": {\n            \"not\": {\n              \"anyOf\": [\n                { \"required\": [\"callRef\"] },\n                { \"required\": [\"tool\"] },\n                { \"required\": [\"since\"] },\n                { \"required\": [\"retryAfterMs\"] },\n                { \"required\": [\"teaching\"] }\n              ]\n            }\n          },\n          \"else\": { \"required\": [\"callRef\", \"tool\"] }\n        }\n      ],\n      \"description\": \"Host-only progress and opaque callRef for the original call. ReadOperation selects it from authenticated state; the model never submits this reference. No handoff flag is needed because a separate public read always answers its own request.\"\n    }\n  }\n}\n"
+      "sha256": "02e8e6b6b31284d2aceac7dbc3ac56f27eb5c3816ce7a344d73dcf6fa23eafe4",
+      "gitBlobOid": "e405210fa8bd70baa3e3d6655aa1d244e094cc4b",
+      "content": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"$id\": \"rulith-agent-mcp-meta-v2.schema.json\",\n  \"title\": \"Rulith Host-only MCP metadata (rulith/v2)\",\n  \"description\": \"Gateway output only, never a model tool input or transcript. Session identity comes from the authenticated Mcp-Session-Id header. The optional client declaration is a compatibility signal, not authority; ordinary tools-only MCP Hosts can use ReadOperation without a private capability.\",\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\"agentId\", \"focusedRoots\", \"recovery\"],\n  \"properties\": {\n    \"agentId\": { \"type\": \"string\", \"minLength\": 1 },\n    \"focusedRoots\": { \"type\": \"array\", \"items\": { \"$ref\": \"#/$defs/FocusPair\" } },\n    \"boardRevision\": { \"type\": \"string\", \"minLength\": 1 },\n    \"affectedCases\": {\n      \"type\": \"array\",\n      \"uniqueItems\": true,\n      \"items\": { \"type\": \"string\", \"minLength\": 1 },\n      \"description\": \"Complete authoritative Case ids, not acceptance-root ids; absent for results that do not report a graph write. Never truncate silently.\"\n    },\n    \"recovery\": { \"$ref\": \"#/$defs/Recovery\" },\n    \"operationTarget\": { \"$ref\": \"#/$defs/OperationTarget\" }\n  },\n  \"$defs\": {\n    \"ToolName\": {\n      \"type\": \"string\",\n      \"enum\": [\"OpenCase\", \"ApplyBatch\", \"ApplyAction\", \"CloseCase\", \"QueryBoard\", \"ReadArtifact\", \"ReadOperation\"]\n    },\n    \"OriginalTool\": {\n      \"type\": \"string\",\n      \"enum\": [\"OpenCase\", \"ApplyBatch\", \"ApplyAction\", \"CloseCase\", \"QueryBoard\", \"ReadArtifact\"]\n    },\n    \"RecoveryState\": {\n      \"type\": \"string\",\n      \"enum\": [\"none\", \"waiting\", \"result_ready\", \"reconciliation_required\"]\n    },\n    \"FocusPair\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"caseId\", \"root\"],\n      \"properties\": {\n        \"caseId\": { \"type\": \"string\", \"minLength\": 1 },\n        \"root\": { \"type\": \"string\", \"minLength\": 1 }\n      }\n    },\n    \"ClientCapabilities\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"operationRecovery\"],\n      \"properties\": { \"operationRecovery\": { \"const\": 1 } },\n      \"description\": \"Optional declaration in initialize.capabilities.experimental[\\\"rulith/v2\\\"]. It identifies this recovery contract but grants no right to execute, observe or claim a result. An explicit legacy rulith/v1 serialRecovery:1 declaration is incompatible with v2 adoption and must be refused rather than silently upgraded.\"\n    },\n    \"ServerCapabilities\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"operationRecovery\", \"boardObservation\"],\n      \"properties\": {\n        \"operationRecovery\": { \"const\": 1 },\n        \"boardObservation\": { \"const\": 1 }\n      },\n      \"description\": \"Server-advertised initialize capabilities.experimental[\\\"rulith/v2\\\"]. boardObservation:1 promises that new QueryBoard requests have an independent durable read binding and cannot consume or release the business execution slot. It is implementation support, not permission. A client need not echo either value; ordinary tools-only clients discover the same public tools.\"\n    },\n    \"OperationTarget\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"callRef\", \"tool\"],\n      \"properties\": {\n        \"callRef\": { \"type\": \"string\", \"minLength\": 1 },\n        \"tool\": { \"$ref\": \"#/$defs/OriginalTool\" }\n      },\n      \"description\": \"Only on ReadOperation responses whose immutable observation selected an original call, including a current disclosure refusal. Echoes that read's fixed target, not the current pending slot. Omitted for an observation of none. Hosts compare it to their expected original identity before attributing recovered content; it is not authority and never enters model content or tool arguments.\"\n    },\n    \"Recovery\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"state\"],\n      \"properties\": {\n        \"state\": { \"$ref\": \"#/$defs/RecoveryState\" },\n        \"callRef\": { \"type\": \"string\", \"minLength\": 1 },\n        \"tool\": { \"$ref\": \"#/$defs/OriginalTool\" },\n        \"since\": { \"type\": \"string\", \"minLength\": 1 },\n        \"retryAfterMs\": { \"type\": \"integer\", \"minimum\": 0, \"maximum\": 9007199254740991 },\n        \"teaching\": { \"type\": \"string\" }\n      },\n      \"allOf\": [\n        {\n          \"if\": { \"properties\": { \"state\": { \"const\": \"none\" } }, \"required\": [\"state\"] },\n          \"then\": {\n            \"not\": {\n              \"anyOf\": [\n                { \"required\": [\"callRef\"] },\n                { \"required\": [\"tool\"] },\n                { \"required\": [\"since\"] },\n                { \"required\": [\"retryAfterMs\"] },\n                { \"required\": [\"teaching\"] }\n              ]\n            }\n          },\n          \"else\": { \"required\": [\"callRef\", \"tool\"] }\n        }\n      ],\n      \"description\": \"Host-only progress and opaque callRef for the original call. ReadOperation selects it from authenticated state; the model never submits this reference. No handoff flag is needed because a separate public read always answers its own request.\"\n    }\n  }\n}\n"
     },
     "docs/specs/schemas/rulith-artifact-read-v1.schema.json": {
       "sha256": "da82c278917042714857d4d9eaeca76cdf470f450f62564860a24231e6e10539",
       "gitBlobOid": "bd766a140f05722e816b710e48c75cabb307f9bf",
       "content": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"$id\": \"rulith-artifact-read-v1.schema.json\",\n  \"title\": \"Immutable generated-result Artifact read contract\",\n  \"description\": \"Gateway data-plane contract. Production ownership, Source off-machine/storage permission, current disclosure authorization and durable retention are checked separately; reading never creates a Case or changes Board state.\",\n  \"$ref\": \"#/$defs/ReadArtifact\",\n  \"$defs\": {\n    \"ArtifactRef\": {\n      \"type\": \"string\",\n      \"pattern\": \"^art_[a-f0-9]{32}$\",\n      \"description\": \"Service-minted opaque reference. Knowledge of it does not grant access; never a URL or filesystem path.\"\n    },\n    \"ReadArtifact\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\n        \"ref\"\n      ],\n      \"properties\": {\n        \"ref\": {\n          \"$ref\": \"#/$defs/ArtifactRef\"\n        },\n        \"offset\": {\n          \"type\": \"integer\",\n          \"minimum\": 0,\n          \"maximum\": 9007199254740991,\n          \"default\": 0\n        },\n        \"maxBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991,\n          \"description\": \"Requested upper bound; omission uses the configured read budget, larger requests are rejected rather than enlarging that budget.\"\n        }\n      }\n    },\n    \"ReadArtifactResult\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\n        \"ref\",\n        \"mediaType\",\n        \"encoding\",\n        \"data\",\n        \"offset\",\n        \"nextOffset\",\n        \"totalBytes\",\n        \"complete\",\n        \"truncated\"\n      ],\n      \"properties\": {\n        \"ref\": {\n          \"$ref\": \"#/$defs/ArtifactRef\"\n        },\n        \"mediaType\": {\n          \"type\": \"string\",\n          \"minLength\": 1\n        },\n        \"encoding\": {\n          \"enum\": [\n            \"utf8\",\n            \"base64\"\n          ]\n        },\n        \"data\": {\n          \"type\": \"string\"\n        },\n        \"offset\": {\n          \"type\": \"integer\",\n          \"minimum\": 0,\n          \"maximum\": 9007199254740991\n        },\n        \"nextOffset\": {\n          \"anyOf\": [\n            {\n              \"type\": \"integer\",\n              \"minimum\": 0,\n              \"maximum\": 9007199254740991\n            },\n            {\n              \"type\": \"null\"\n            }\n          ]\n        },\n        \"totalBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 0,\n          \"maximum\": 9007199254740991\n        },\n        \"complete\": {\n          \"type\": \"boolean\"\n        },\n        \"truncated\": {\n          \"type\": \"boolean\"\n        }\n      },\n      \"allOf\": [\n        {\n          \"if\": {\n            \"properties\": {\n              \"complete\": {\n                \"const\": true\n              }\n            },\n            \"required\": [\n              \"complete\"\n            ]\n          },\n          \"then\": {\n            \"properties\": {\n              \"nextOffset\": {\n                \"type\": \"null\"\n              },\n              \"truncated\": {\n                \"const\": false\n              }\n            }\n          },\n          \"else\": {\n            \"properties\": {\n              \"nextOffset\": {\n                \"type\": \"integer\",\n                \"minimum\": 0,\n                \"maximum\": 9007199254740991\n              },\n              \"truncated\": {\n                \"const\": true\n              }\n            }\n          }\n        }\n      ],\n      \"description\": \"Offsets and totalBytes count the original immutable bytes; utf8 chunks never split a code point, binary data is base64. Completion means this read reached object EOF, not Case completion. The server also checks offset advancement and byte counts.\"\n    },\n    \"ArtifactPolicy\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\n        \"inlineBytes\",\n        \"readBytes\",\n        \"objectBytes\",\n        \"totalBytes\",\n        \"temporaryRetentionMs\"\n      ],\n      \"properties\": {\n        \"inlineBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991\n        },\n        \"readBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991\n        },\n        \"objectBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991\n        },\n        \"totalBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991\n        },\n        \"temporaryRetentionMs\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991\n        }\n      },\n      \"description\": \"Values are supplied by existing deployment/operator configuration. Source permission is independent; quotas do not grant off-machine storage or release retained data.\"\n    },\n    \"ArtifactUpload\": {\n      \"type\": \"object\",\n      \"required\": [\n        \"executionGrant\",\n        \"mediaType\",\n        \"digest\",\n        \"payloadEncoding\",\n        \"bytes\"\n      ],\n      \"additionalProperties\": false,\n      \"description\": \"Private Worker upload on /work/artifact. bytes is canonical base64 transport encoding; digest covers decoded original bytes. Gateway derives ownership and actual Source from the current granted invocation, computes length, checks effective retention permission and budgets, and durably retains before returning a reference. No worker-supplied owner, Source, totalBytes or retained flag. Retry of the same producing invocation and digest returns the same immutable object reference; different bytes require a distinct reference under the same existing storage budgets. Empty/small results remain inline under policy. Producer wiring constraint: before any object byte leaves the producing machine the Worker must already hold an explicit authenticated off-machine permission from the actual Source record. Holding the bytes, knowing a Source name, or having reached the server is not that permission, and bytes already received are never treated as authorization. Gateway rechecks the current permission and the current lease before accepting and retaining, and refuses a missing permission by name rather than by a default policy lookup miss. The grant is signed with the authenticated Connection key, which the Worker also holds, so a valid signature proves only that this Connection wrote the token and is never on its own evidence that Core dispatched the invocation. Admission therefore starts from Core's own trusted dispatched record for that invocation, recomputes the request identity from the Source, Tool pin and lease in force now, requires it to equal the identity the grant states, and hashes the bytes actually received rather than trusting the declared digest. A mismatch is a named artifact_digest_mismatch refusal before deduplication, finalization, retention or reference return. The deduplication key uses the verified content digest, so a retry carrying different bytes cannot retrieve a prior reference by claiming its digest.\",\n      \"properties\": {\n        \"executionGrant\": {\n          \"type\": \"string\",\n          \"minLength\": 1\n        },\n        \"mediaType\": {\n          \"type\": \"string\",\n          \"minLength\": 1\n        },\n        \"digest\": {\n          \"$ref\": \"#/$defs/Digest\"\n        },\n        \"payloadEncoding\": {\n          \"const\": \"base64\"\n        },\n        \"bytes\": {\n          \"type\": \"string\",\n          \"pattern\": \"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$\",\n          \"minLength\": 4\n        }\n      }\n    },\n    \"ArtifactUploadResult\": {\n      \"type\": \"object\",\n      \"required\": [\n        \"ref\",\n        \"mediaType\",\n        \"encoding\",\n        \"totalBytes\",\n        \"digest\"\n      ],\n      \"additionalProperties\": false,\n      \"description\": \"Gateway-computed immutable object metadata. Reading encoding is separate from upload transport encoding. Invalid UTF8 must never be silently replaced; serve original bytes as base64 or reject visibly.\",\n      \"properties\": {\n        \"ref\": {\n          \"$ref\": \"#/$defs/ArtifactRef\"\n        },\n        \"mediaType\": {\n          \"type\": \"string\",\n          \"minLength\": 1\n        },\n        \"encoding\": {\n          \"enum\": [\n            \"utf8\",\n            \"base64\"\n          ]\n        },\n        \"totalBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991\n        },\n        \"digest\": {\n          \"$ref\": \"#/$defs/Digest\"\n        }\n      }\n    },\n    \"WorkerArtifactReference\": {\n      \"type\": \"object\",\n      \"required\": [\n        \"ref\"\n      ],\n      \"additionalProperties\": false,\n      \"description\": \"A Worker report may supply only a service-issued ref for that same granted invocation. Gateway resolves and replaces metadata before the Core report; a reference alone grants no permission.\",\n      \"properties\": {\n        \"ref\": {\n          \"$ref\": \"#/$defs/ArtifactRef\"\n        }\n      }\n    },\n    \"SourceUploadPermission\": {\n      \"type\": \"object\",\n      \"required\": [\n        \"sourceRecordId\",\n        \"permission\",\n        \"upload\"\n      ],\n      \"additionalProperties\": false,\n      \"description\": \"One off-machine upload decision for one actual Source record. Only an explicit granted permission admits Artifact object bytes. Ordinary bounded inline results and facts still leave the machine under the existing Tool and Source disclosure rules; this object-storage permission is neither their authorization nor a bypass of it. denied is a recorded refusal; absent means no permission record was found, including the Source-free case where sourceRecordId is empty, and it must be refused under its own name so that adding, renaming or normalizing a policy key can never turn the refusal into a silent allow. quota and budget are separate and grant nothing.\",\n      \"properties\": {\n        \"sourceRecordId\": {\n          \"type\": \"string\"\n        },\n        \"permission\": {\n          \"enum\": [\n            \"granted\",\n            \"denied\",\n            \"absent\"\n          ]\n        },\n        \"upload\": {\n          \"type\": \"boolean\"\n        },\n        \"refusal\": {\n          \"anyOf\": [\n            {\n              \"type\": \"string\",\n              \"minLength\": 1\n            },\n            {\n              \"type\": \"null\"\n            }\n          ],\n          \"description\": \"The refusal identity the producing implementation must return when upload is false, and null when it is true. Naming the refusal is the point; a refusal that reads as an unconfigured lookup cannot be told apart from a missing rule.\"\n        }\n      }\n    },\n    \"ReceiptArtifact\": {\n      \"type\": \"object\",\n      \"required\": [\n        \"ref\",\n        \"mediaType\",\n        \"totalBytes\",\n        \"digest\"\n      ],\n      \"additionalProperties\": false,\n      \"description\": \"Protected Gateway-to-Core report metadata, resolved from an already durably retained object. Core commits the reference with its execution receipt; ExecutionResultVector carries this array into resultDigest. Worker self-authored metadata or cross-invocation/Source reuse is refused, and refusing a forged cross-invocation report never releases the retain the producing invocation legitimately holds. Because this shape has four fields, an array uniqueItems constraint over it only bars two identical objects: the same ref carrying two different sets of metadata satisfies uniqueItems and would still change the receipt digest, so uniqueness by ref belongs to the Gateway resolution step and must be refused there by name. An object the Core still references is not collectable, and an object that has not entered a proof may still carry an execution audit reference; return to temporary retention is allowed only once the authority confirms no reference and no pending retain request remains. Physical collection stays deferred, so nothing here starts an automatic sweep.\",\n      \"properties\": {\n        \"ref\": {\n          \"$ref\": \"#/$defs/ArtifactRef\"\n        },\n        \"mediaType\": {\n          \"type\": \"string\",\n          \"minLength\": 1\n        },\n        \"totalBytes\": {\n          \"type\": \"integer\",\n          \"minimum\": 1,\n          \"maximum\": 9007199254740991\n        },\n        \"digest\": {\n          \"$ref\": \"#/$defs/Digest\"\n        }\n      }\n    },\n    \"Digest\": {\n      \"type\": \"string\",\n      \"pattern\": \"^sha256:[a-f0-9]{64}$\"\n    }\n  }\n}\n"
+    },
+    "docs/specs/schemas/rulith-board-observation-v1.schema.json": {
+      "sha256": "0a8d7c11aec890192fd05e06a2bda729c7700df58759eff12be8f3e0e30ada4d",
+      "gitBlobOid": "96c51865f383a6c34a7600792bb3a5e9fbd6145b",
+      "content": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"$id\": \"rulith-board-observation-v1.schema.json\",\n  \"title\": \"Public committed Board observation\",\n  \"description\": \"The decoded JSON text of a new QueryBoard tool result, not a Core command or MCP structuredContent declaration. The Gateway preserves the first durably captured result under the authenticated session and RPC identity. A retry reprojects that snapshot under current disclosure permission. It never acknowledges, replaces or completes the pending business operation. operationAtAdmission was recorded before the Core read and is not an atomic observation of external effects at the snapshot's revision.\",\n  \"$ref\": \"#/$defs/QueryBoardResult\",\n  \"$defs\": {\n    \"OperationAtAdmission\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"state\"],\n      \"properties\": {\n        \"state\": { \"enum\": [\"none\", \"waiting\", \"result_ready\", \"reconciliation_required\"] },\n        \"originalTool\": { \"enum\": [\"OpenCase\", \"ApplyBatch\", \"ApplyAction\", \"CloseCase\", \"QueryBoard\", \"ReadArtifact\"] }\n      },\n      \"allOf\": [\n        {\n          \"if\": { \"properties\": { \"state\": { \"const\": \"none\" } }, \"required\": [\"state\"] },\n          \"then\": { \"not\": { \"required\": [\"originalTool\"] } },\n          \"else\": { \"required\": [\"originalTool\"] }\n        }\n      ]\n    },\n    \"BoardObservation\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"consistency\", \"operationAtAdmission\"],\n      \"properties\": {\n        \"consistency\": { \"const\": \"committed\" },\n        \"operationAtAdmission\": { \"$ref\": \"#/$defs/OperationAtAdmission\" }\n      }\n    },\n    \"QueryBoardResult\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"accepted\"],\n      \"properties\": {\n        \"accepted\": { \"type\": \"boolean\" },\n        \"view\": { \"type\": \"object\" },\n        \"observation\": { \"$ref\": \"#/$defs/BoardObservation\" },\n        \"errorCode\": { \"type\": \"string\", \"minLength\": 1 },\n        \"teaching\": { \"type\": \"string\" },\n        \"requestExecuted\": { \"const\": false }\n      },\n      \"allOf\": [\n        {\n          \"if\": { \"properties\": { \"accepted\": { \"const\": true } }, \"required\": [\"accepted\"] },\n          \"then\": { \"required\": [\"view\", \"observation\"], \"not\": { \"required\": [\"requestExecuted\"] } },\n          \"else\": { \"required\": [\"errorCode\"], \"not\": { \"required\": [\"view\"] } }\n        }\n      ],\n      \"description\": \"view retains the existing authorized Agent QueryBoard projection and bounds. This schema is not an authorization filter. A denied or unavailable read has no snapshot contents; no error implies anything about the original business effect.\"\n    }\n  }\n}\n"
     },
     "docs/specs/schemas/rulith-board-query-context-v1.schema.json": {
       "sha256": "9d186fe5de167a4f9319af6017bcd05bf20c09c8fcf44c46454c6ee10d9732f9",
@@ -1326,9 +1486,9 @@
       "content": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"$id\": \"rulith-operation-read-v1.schema.json\",\n  \"title\": \"Public original-operation read contract\",\n  \"description\": \"ReadOperation locates the current Agent's original call from authenticated Host state. The caller supplies no call reference, request identity, tool name, authority claim or new business command. The first RPC binds its own transport identity to the original target and observed state; retrying that RPC repeats the same observation rather than selecting a later target. ReadOperation never becomes or replaces the pending business call. Current disclosure authorization is checked again for every result delivery. A successful ReadOperation has isError:false even when originalResult.isError is true; only an invalid or unauthorized ReadOperation itself is an error. A ready result is delivered and acknowledged only after the authorized projection of the terminal original call is available. Waiting and reconciliation never release the pending call. The Host can mechanically claim a ready result without QueryBoard.\",\n  \"$ref\": \"#/$defs/ReadOperation\",\n  \"$defs\": {\n    \"ReadOperation\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"properties\": {},\n      \"description\": \"Empty public input; the opaque callRef remains Host-only metadata.\"\n    },\n    \"RecoveryState\": {\n      \"type\": \"string\",\n      \"enum\": [\"none\", \"waiting\", \"result_ready\", \"reconciliation_required\"]\n    },\n    \"OriginalTool\": {\n      \"type\": \"string\",\n      \"enum\": [\"OpenCase\", \"ApplyBatch\", \"ApplyAction\", \"CloseCase\", \"QueryBoard\", \"ReadArtifact\"]\n    },\n    \"PublicToolResult\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"content\", \"isError\"],\n      \"properties\": {\n        \"content\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"additionalProperties\": false,\n            \"required\": [\"type\", \"text\"],\n            \"properties\": {\n              \"type\": { \"const\": \"text\" },\n              \"text\": { \"type\": \"string\" }\n            }\n          }\n        },\n        \"structuredContent\": {\n          \"type\": \"object\",\n          \"not\": {\n            \"anyOf\": [\n              { \"required\": [\"_meta\"] },\n              { \"required\": [\"rawReceipt\"] },\n              { \"required\": [\"agentId\"] },\n              { \"required\": [\"boardId\"] }\n            ]\n          },\n          \"description\": \"Present only when the original public result already disclosed this content. The Gateway must project nested content under the same current disclosure rules; this shallow exclusion is not an authorization filter or a second Board result schema.\"\n        },\n        \"isError\": { \"type\": \"boolean\" }\n      },\n      \"description\": \"The original tool's existing authorized public MCP result projection, not a deep copy of the original response. Never include original _meta, raw Core/Worker receipts, agentId, boardId or undisclosed business data. The original refusal stays nested here; it does not turn a successful ReadOperation into an error.\"\n    },\n    \"ReadOperationResult\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"state\"],\n      \"properties\": {\n        \"state\": { \"$ref\": \"#/$defs/RecoveryState\" },\n        \"originalTool\": { \"$ref\": \"#/$defs/OriginalTool\" },\n        \"originalResult\": { \"$ref\": \"#/$defs/PublicToolResult\" },\n        \"teaching\": { \"type\": \"string\", \"minLength\": 1 }\n      },\n      \"oneOf\": [\n        {\n          \"properties\": { \"state\": { \"const\": \"none\" } },\n          \"not\": { \"anyOf\": [ { \"required\": [\"originalTool\"] }, { \"required\": [\"originalResult\"] } ] }\n        },\n        {\n          \"properties\": { \"state\": { \"const\": \"waiting\" } },\n          \"required\": [\"originalTool\"],\n          \"not\": { \"required\": [\"originalResult\"] }\n        },\n        {\n          \"properties\": { \"state\": { \"const\": \"result_ready\" } },\n          \"required\": [\"originalTool\", \"originalResult\"]\n        },\n        {\n          \"properties\": { \"state\": { \"const\": \"reconciliation_required\" } },\n          \"required\": [\"originalTool\", \"teaching\"],\n          \"not\": { \"required\": [\"originalResult\"] }\n        }\n      ],\n      \"description\": \"Read status is separate from the original tool result. none has no original call; waiting and reconciliation preserve it without inventing a terminal result. result_ready contains the exact current authorized public projection of a terminal original call.\"\n    }\n  }\n}\n"
     },
     "protocol/mcp-surface.json": {
-      "sha256": "26ca6bf5808c0cda2ef40d5b53c1509ca65614a94ab1e9f047cb6758b37f1abf",
-      "gitBlobOid": "42ee28d450a7c1968cfc333628975a94a43398b8",
-      "content": "{\n  \"schema\": \"rulith-mcp-surface/v2\",\n  \"protocolVersion\": \"2025-11-25\",\n  \"description\": \"Public Agent tool membership and dispatch for operation recovery. Its existence does not attest that a running server has adopted it. Historical v1 bundles remain verifiable but cannot be adopted as this v2 surface. schemaRef values identify files from the Core repository root; vendors verify a source-path-to-bytes map against the named Git commit and resolve it without network access. Adopting Gateways serve each inputSchema directly from the verified rulith-mcp-contract-bundle/v1 tools entry, including its generated definition names and explicit dialect. Object key order and JSON whitespace are immaterial; independently regenerated schema shapes are not the delivered contract.\",\n  \"metadata\": {\n    \"namespace\": \"rulith/v2\",\n    \"schemaRef\": \"docs/specs/schemas/rulith-agent-mcp-meta-v2.schema.json\"\n  },\n  \"tools\": [\n    {\n      \"name\": \"OpenCase\",\n      \"target\": \"core\",\n      \"operation\": \"OpenCase\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentOpenCase\"\n    },\n    {\n      \"name\": \"ApplyBatch\",\n      \"target\": \"core\",\n      \"operation\": \"ApplyBatch\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentApplyBatch\"\n    },\n    {\n      \"name\": \"ApplyAction\",\n      \"target\": \"core\",\n      \"operation\": \"ApplyAction\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentApplyAction\"\n    },\n    {\n      \"name\": \"CloseCase\",\n      \"target\": \"core\",\n      \"operation\": \"CloseCase\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentCloseCase\"\n    },\n    {\n      \"name\": \"QueryBoard\",\n      \"target\": \"core\",\n      \"operation\": \"QueryBoard\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentQueryBoard\"\n    },\n    {\n      \"name\": \"ReadArtifact\",\n      \"target\": \"artifact\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-artifact-read-v1.schema.json#/$defs/ReadArtifact\"\n    },\n    {\n      \"name\": \"ReadOperation\",\n      \"target\": \"operation\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-operation-read-v1.schema.json#/$defs/ReadOperation\"\n    }\n  ]\n}\n"
+      "sha256": "0cfbf39501ddb8f9a3cadf44efdcd3c0fe7cca2e4e4473c40e3d0a43d23d110b",
+      "gitBlobOid": "33f9ef3cd2d4abfb0c1f4f6d7a4be28912982c13",
+      "content": "{\n  \"schema\": \"rulith-mcp-surface/v2\",\n  \"protocolVersion\": \"2025-11-25\",\n  \"description\": \"Public Agent tool membership and dispatch for operation recovery. Its existence does not attest that a running server has adopted it. Historical v1 bundles remain verifiable but cannot be adopted as this v2 surface. schemaRef values identify files from the Core repository root; vendors verify a source-path-to-bytes map against the named Git commit and resolve it without network access. Adopting Gateways serve each inputSchema directly from the verified rulith-mcp-contract-bundle/v1 tools entry, including its generated definition names and explicit dialect. Object key order and JSON whitespace are immaterial; independently regenerated schema shapes are not the delivered contract.\",\n  \"metadata\": {\n    \"namespace\": \"rulith/v2\",\n    \"schemaRef\": \"docs/specs/schemas/rulith-agent-mcp-meta-v2.schema.json\"\n  },\n  \"tools\": [\n    {\n      \"name\": \"OpenCase\",\n      \"target\": \"core\",\n      \"operation\": \"OpenCase\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentOpenCase\"\n    },\n    {\n      \"name\": \"ApplyBatch\",\n      \"target\": \"core\",\n      \"operation\": \"ApplyBatch\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentApplyBatch\"\n    },\n    {\n      \"name\": \"ApplyAction\",\n      \"target\": \"core\",\n      \"operation\": \"ApplyAction\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentApplyAction\"\n    },\n    {\n      \"name\": \"CloseCase\",\n      \"target\": \"core\",\n      \"operation\": \"CloseCase\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentCloseCase\"\n    },\n    {\n      \"name\": \"QueryBoard\",\n      \"target\": \"core\",\n      \"operation\": \"QueryBoard\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-board-v1.schema.json#/$defs/AgentQueryBoard\",\n      \"resultSchemaRef\": \"docs/specs/schemas/rulith-board-observation-v1.schema.json#/$defs/QueryBoardResult\"\n    },\n    {\n      \"name\": \"ReadArtifact\",\n      \"target\": \"artifact\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-artifact-read-v1.schema.json#/$defs/ReadArtifact\"\n    },\n    {\n      \"name\": \"ReadOperation\",\n      \"target\": \"operation\",\n      \"inputSchemaRef\": \"docs/specs/schemas/rulith-operation-read-v1.schema.json#/$defs/ReadOperation\"\n    }\n  ]\n}\n"
     },
     "protocol/operations.json": {
       "sha256": "232c1d0ac07b56bb38579763812a9ad60723b3b6a12a8d6de078073eac9009e3",

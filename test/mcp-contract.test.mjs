@@ -40,6 +40,11 @@ test('RT-CONTRACT-1 the vendored bundle is what this Runtime speaks', () => {
   assert.equal(typeof bundle.metadataNamespace, 'string')
   assert.ok(bundle.recoveryStates.includes('none') && bundle.recoveryStates.includes('waiting'))
   assert.equal(bundle.clientCapabilities.operationRecovery, 1)
+  const observation = bundle.tools.find((tool) => tool.name === 'QueryBoard')
+  assert.equal(observation.resultSchemaRef,
+    'docs/specs/schemas/rulith-board-observation-v1.schema.json#/$defs/QueryBoardResult')
+  assert.ok(bundle.schemas.find((schema) => schema.name === 'QueryBoard')?.resultSchema,
+    'the committed Board observation result schema was dropped from the verified bundle')
   for (const { inputSchema } of bundle.schemas) {
     assert.equal(inputSchema.$schema, 'http://json-schema.org/draft-07/schema#',
       'a served schema does not declare its dialect explicitly')
@@ -117,6 +122,15 @@ test('RT-CONTRACT-6 a rewritten tool projection cannot ride along on unchanged f
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
     bundle.tools.find((tool) => tool.name === 'CloseCase').inputSchema.required = []
   })), /materialized schema no longer matches/)
+})
+
+test('RT-CONTRACT-6b a rewritten QueryBoard result projection cannot ride on unchanged source digests', () => {
+  assert.throws(() => readContractBundle(bundleWith((bundle) => {
+    bundle.tools.find((tool) => tool.name === 'QueryBoard').resultSchema.required = []
+  })), /materialized result schema no longer matches/)
+  assert.throws(() => readContractBundle(bundleWith((bundle) => {
+    delete bundle.tools.find((tool) => tool.name === 'QueryBoard').resultSchema
+  })), /carries no draft-07 materialized resultSchema/)
 })
 
 test('RT-CONTRACT-7 a tool the surface does not declare, or a moved target, is refused', () => {

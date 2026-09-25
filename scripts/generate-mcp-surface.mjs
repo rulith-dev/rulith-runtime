@@ -27,7 +27,8 @@ export const END = '// ── END GENERATED CONTRACT PROJECTION ─────�
 /** The block, exactly as it must appear in the Agent. */
 export function projectionBlock(bundle) {
   const tools = bundle.tools.map((tool) => `  Object.freeze({ name: '${tool.name}', target: '${tool.target}'`
-    + `${tool.operation === undefined ? '' : `, operation: '${tool.operation}'`} }),`).join('\n')
+    + `${tool.operation === undefined ? '' : `, operation: '${tool.operation}'`}`
+    + `${tool.resultSchemaRef === undefined ? '' : `, resultSchemaRef: '${tool.resultSchemaRef}'`} }),`).join('\n')
   const capabilities = Object.entries(bundle.clientCapabilities)
     .map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join(', ')
   const states = bundle.recoveryStates.map((state) => `'${state}'`).join(', ')

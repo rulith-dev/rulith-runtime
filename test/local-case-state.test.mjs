@@ -174,14 +174,16 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   context.events = [{ src: 'agent', type: 'recovery', state: 'waiting', tool: 'ApplyAction', callRef: 'call-9' }]
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('recovery').innerHTML, /Waiting for an earlier ApplyAction call/)
-  assert.match(elements.get('recovery').innerHTML, /No model turn and no further call are sent/)
+  assert.match(elements.get('recovery').innerHTML,
+    /A new user message may request an independent Board observation when the server supports it/)
+  assert.match(elements.get('recovery').innerHTML, /earlier call remains pending/)
 
   context.events = [
     { src: 'agent', type: 'recovery', state: 'reconciliation_required', tool: 'ApplyAction' },
   ]
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('recovery').innerHTML, /needs operator reconciliation/)
-  assert.match(elements.get('recovery').innerHTML, /waiting does not undo an effect that may have happened/)
+  assert.match(elements.get('recovery').innerHTML, /cannot settle the earlier effect/)
 
   context.events = [
     { src: 'agent', type: 'recovery', state: 'result_ready', tool: 'ApplyBatch' },

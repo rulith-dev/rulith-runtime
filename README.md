@@ -254,18 +254,26 @@ whose outcome is unknown is never re-presented after the session that carried it
 This host holds at most one such call — it is serial, so there is only ever one — and
 remembers it durably until the authority says what became of it.
 
-When a call's outcome cannot be determined, the queue stops there. From that point this
-Agent sends nothing — no write, no `QueryBoard`, no `ReadArtifact` — and asks the model
-nothing, because a model asked to decide during an unresolved call can only propose work
-that cannot be carried. The state comes from the authority, on the base protocol's own
+When a call's outcome cannot be determined, the business queue stops there. Mechanical
+recovery does not ask the model to poll. If the server explicitly advertises independent
+Board observation, a new user message can ask the model for `QueryBoard` while the earlier
+operation remains waiting or needs reconciliation. Writes, `ReadArtifact`, and Case focus
+stay blocked. The state comes from the authority, on the base protocol's own
 `ping`, whose empty result carries a recovery record under `rulith/v2`:
 
 | State | What this host does |
 | --- | --- |
 | `none` | Nothing outstanding; work proceeds. Nothing is polled for. |
-| `waiting` | Waits and pings on the authority's own hint. No model turn, no tool call. |
+| `waiting` | Mechanical recovery waits and pings without a model turn. A new user message may request an independent `QueryBoard` observation if the server advertises it. |
 | `result_ready` | Reads the original public MCP result with `ReadOperation({})`; the read itself succeeds even if the original tool result was an error. |
-| `reconciliation_required` | Stops automatic recovery and shows the operator where to reconcile the original call. |
+| `reconciliation_required` | Stops automatic recovery and shows the operator where to reconcile the original call; a new user message may still request an independent Board observation on an advertising server. |
+
+A successful `QueryBoard` now reports a committed, bounded `view` and an `observation`
+whose `operationAtAdmission` describes the original call when the read was admitted. The
+snapshot and admission state are from different moments; neither proves whether that
+call had an effect. An unavailable observation never replaces or clears the original
+unresolved call. Servers without the explicit `boardObservation:1` capability retain the
+strict recovery gate.
 
 If a terminal `ReadArtifact` or `QueryBoard` result cannot be disclosed under current
 authorization, the Host reports that read refusal as labelled recovery data and lets the

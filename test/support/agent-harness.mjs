@@ -172,7 +172,7 @@ export const requiredHostFieldTools = () => advertisedTools().map((tool) => (too
  */
 export function defaultGateway({
   cases = [], caseType = 'exploration', settleAfterBatch = true, actionSettles = true,
-  artifacts = {},
+  artifacts = {}, queryIndependent = false,
 } = {}) {
   const state = {
     cases: new Map(cases.map((row) => [String(row.caseId), {
@@ -270,7 +270,7 @@ export function defaultGateway({
           return accept(session, { receipt: { disposition, completedAt: '2026-09-06T00:00:00Z' } })
         }
         case 'QueryBoard': {
-          if (state.pending > 0 && actionSettles) { state.pending = 0; state.gaps = [] }
+          if (!queryIndependent && state.pending > 0 && actionSettles) { state.pending = 0; state.gaps = [] }
           return accept(session)
         }
         case 'ReadArtifact': {
@@ -412,12 +412,13 @@ export async function runAgent({
   omitAgentId = false, sseResults = false, corruptResponse, swapSessionOnCall,
   dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
-  protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, readRecord, replaceAfter, conflictBody,
+  protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, readRecord,
+  serverBoardObservation = false, replaceAfter, conflictBody,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
   captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
 } = {}) {
-  const board = gateway ?? defaultGateway()
+  const board = gateway ?? defaultGateway({ queryIndependent: serverBoardObservation })
   /** Every `tools/call` the Agent made, in order: { name, args, meta, id, sessionId }. */
   const toolCalls = []
   /** Every `initialize` the Agent made: { meta, capabilities, protocolVersion, presentedSession, issuedSession }. */
@@ -660,7 +661,9 @@ export async function runAgent({
       })
       return send({
         protocolVersion,
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, ...(serverBoardObservation ? { experimental: {
+          [RULITH_META]: { operationRecovery: 1, boardObservation: 1 },
+        } } : {}) },
         serverInfo: { name: 'rulith-gateway-test', version: '0' },
         ...(omitAgentId && recoveryNow() === undefined ? {} : {
           _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...recoveryNow() } },
@@ -754,7 +757,7 @@ export async function runAgent({
     // §5.2 requires. A host that sent one anyway gets an error rather than an execution,
     // which is what makes "the host must not send it" testable at all.
     const pendingState = recoveryNow()?.recovery?.state
-    if (pendingState === 'waiting') {
+    if (pendingState === 'waiting' && !(serverBoardObservation && name === 'QueryBoard')) {
       return send({
         isError: true,
         content: [{ type: 'text', text: JSON.stringify({
@@ -772,12 +775,23 @@ export async function runAgent({
       return void response.end('upstream unavailable')
     }
     const explicit = scripted !== null && typeof scripted === 'object' && Object.hasOwn(scripted, '__core')
+    const admitted = recoveryNow()?.recovery ?? { state: 'none' }
     const core = explicit ? scripted.__core : (scripted === undefined ? board.tool(name, args, session, meta) : scripted)
+    // Default fixture responses follow the new decoded-result contract. A scripted
+    // QueryBoard response is served verbatim so negative arms can test a nonconforming
+    // endpoint rather than having this fixture silently repair its disclosure mistake.
+    const publicCore = serverBoardObservation && name === 'QueryBoard' && scripted === undefined && core?.accepted === true
+      ? { accepted: true, view: core.view ?? core.payload,
+        observation: { consistency: 'committed', operationAtAdmission: {
+          state: admitted.state,
+          ...(admitted.state === 'none' ? {} : { originalTool: admitted.tool }),
+        } } }
+      : core
     const hostMeta = explicit ? scripted.__meta : board.meta(session)
     const withRecovery = hostMeta === undefined ? recoveryNow() : { ...hostMeta, ...recoveryNow() }
     const { ['rulith/local-delivery/v1']: localDelivery, ...ordinaryMeta } = withRecovery ?? {}
     return send({
-      content: [{ type: 'text', text: JSON.stringify(core) }],
+      content: [{ type: 'text', text: JSON.stringify(publicCore) }],
       ...(withRecovery === undefined ? {} : { _meta: { [RULITH_META]: ordinaryMeta,
         ...(localDelivery === undefined ? {} : { 'rulith/local-delivery/v1': localDelivery }) } }),
     }, { sse: sseResults })

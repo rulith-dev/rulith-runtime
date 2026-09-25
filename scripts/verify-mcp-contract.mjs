@@ -21,8 +21,8 @@
  *   · `surface` is the parsed content of the carried `protocol/mcp-surface.json`, so the
  *     membership list is the hashed bytes rather than a second copy beside them;
  *   · every materialized `tools[]` entry corresponds to a `surface.tools[]` entry with the
- *     same target and operation, and its `inputSchemaRef` resolves inside the carried
- *     schema file it names;
+ *     same target and operation, and its input/result schema references resolve inside
+ *     the carried schema files they name;
  *   · each materialized schema still agrees with that resolved definition on the skeleton a
  *     materializer does not touch — type, required, additionalProperties, and the set of
  *     property names — so a rewritten tool projection cannot ride along on intact file
@@ -87,7 +87,7 @@ const skeletonOf = (schema) => JSON.stringify({
  *
  * Returns `{ sourceCommit, protocolVersion, metadataNamespace, tools, schemas,
  * recoveryStates, clientCapabilities, queryProfiles, queryContext, files }`. `tools` is the
- * `[{name, target, operation}]` membership in the order the contract gives it.
+ * `[{name, target, operation, resultSchemaRef?}]` membership in contract order.
  */
 export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
   if (!isObject(bundle)) throw new ContractError(`${path} is not an object.`)
@@ -151,7 +151,8 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
   const schemas = []
   for (const [index, tool] of materialized.entries()) {
     const entry = declared[index]
-    if (tool?.name !== entry?.name || tool?.target !== entry?.target || (tool?.operation ?? null) !== (entry?.operation ?? null)) {
+    if (tool?.name !== entry?.name || tool?.target !== entry?.target || (tool?.operation ?? null) !== (entry?.operation ?? null)
+      || (tool?.resultSchemaRef ?? null) !== (entry?.resultSchemaRef ?? null)) {
       throw new ContractError(`${path}: materialized tool ${JSON.stringify(tool?.name)} does not match the declared`
         + ` ${JSON.stringify(entry?.name)} (${JSON.stringify(entry?.target)}/${JSON.stringify(entry?.operation ?? null)}).`)
     }
@@ -173,7 +174,19 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
         + ` (source ${skeletonOf(source)} against materialized ${skeletonOf(tool.inputSchema)}).`
         + ' A rewritten tool projection may not ride along on unchanged file digests.')
     }
-    schemas.push({ name: entry.name, inputSchema: tool.inputSchema })
+    if (entry.resultSchemaRef !== undefined) {
+      if (!isObject(tool.resultSchema) || tool.resultSchema.$schema !== 'http://json-schema.org/draft-07/schema#') {
+        throw new ContractError(`${path}: ${entry.name} carries no draft-07 materialized resultSchema.`)
+      }
+      const resultSource = resolveRef(entry.resultSchemaRef, parsedFiles, path)
+      if (skeletonOf(resultSource) !== skeletonOf(tool.resultSchema)) {
+        throw new ContractError(`${path}: ${entry.name}'s materialized result schema no longer matches ${entry.resultSchemaRef}.`)
+      }
+    } else if (tool.resultSchema !== undefined) {
+      throw new ContractError(`${path}: ${entry.name} carries an undeclared materialized resultSchema.`)
+    }
+    schemas.push({ name: entry.name, inputSchema: tool.inputSchema,
+      ...(entry.resultSchemaRef === undefined ? {} : { resultSchema: tool.resultSchema }) })
   }
 
   // 4. The metadata schema, and the membership it repeats.
@@ -218,6 +231,7 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
       name: entry.name,
       target: entry.target,
       ...(entry.operation === undefined ? {} : { operation: entry.operation }),
+      ...(entry.resultSchemaRef === undefined ? {} : { resultSchemaRef: entry.resultSchemaRef }),
     })),
     schemas,
     recoveryStates: [...recoveryStates],

@@ -95,13 +95,13 @@ export function projectRecovery(events, initial) {
           detail: 'The authority reports a determined result but ReadOperation did not return that original result. It is being retried.' }
       } else if (event.state === 'waiting') {
         current = { state: 'waiting', tool, label: 'Waiting for an earlier ' + (tool || 'tool') + ' call',
-          detail: 'The authority is still executing it. No model turn and no further call are sent until it settles.' }
+          detail: 'The authority is still executing it. A new user message may request an independent Board observation when the server supports it; the earlier call remains pending.' }
       } else if (event.state === 'result_ready') {
         current = { state: 'result_ready', tool, label: 'Collecting an earlier ' + (tool || 'tool') + ' result',
           detail: 'The outcome is determined and ReadOperation is collecting its public result without a Board command.' }
       } else if (event.state === 'reconciliation_required') {
         current = { state: 'reconciliation_required', tool, label: 'An earlier ' + (tool || 'tool') + ' call needs operator reconciliation',
-          detail: 'Automatic recovery has stopped. Reconcile the original call in Console; waiting does not undo an effect that may have happened.' }
+          detail: 'Reconcile the original call in Console. An independent Board observation can show committed state, but cannot settle the earlier effect.' }
       } else {
         current = { state: 'unreadable', tool: '', label: 'The authority published an unknown recovery state',
           detail: 'This host cannot confirm the original call or its current state. Inspect this Agent in Console before further work.' }
@@ -132,10 +132,7 @@ export function projectRecovery(events, initial) {
       current = { state: 'blocked', tool, label: 'Turn stopped: ' + String(event.reason || 'unresolved call'),
         detail: String(event.teaching || '') }
     }
-    // A turn that got going again is the clearest possible statement that the gate opened.
-    if (event.type === 'propose' && (current.state === 'blocked' || current.state === 'waiting')) {
-      current = { state: 'none', tool: '', label: 'No unresolved call', detail: '' }
-    }
+    // A model proposal or QueryBoard verdict is no evidence that the original call settled.
   }
   return current
 }
@@ -143,7 +140,7 @@ export function projectRecovery(events, initial) {
 /** An actual request/result pair; accepted means admission, never Case certification. */
 export function renderToolCall(event, result) {
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
-  const status = !result ? 'Waiting for result' : result.handedOver ? 'Earlier result returned; this request did not run' : result.refusedLocally ? 'Not sent' : !result.authoritative ? 'Outcome unknown' : result.accepted === false ? 'Rejected' : result.accepted === true ? 'Accepted' : 'Result returned'
+  const status = !result ? 'Waiting for result' : result.handedOver ? 'Earlier result returned; this request did not run' : result.refusedLocally ? 'Not sent' : result.readUnavailable ? 'Observation unavailable' : !result.authoritative ? 'Outcome unknown' : result.accepted === false ? 'Rejected' : result.accepted === true ? 'Accepted' : 'Result returned'
   const snapshot = (name, value) => value ? '<div class="call-part"><b>' + name + '</b>' + (value.truncated ? '<p>Display truncated · ' + esc(value.totalBytes) + ' bytes in the original result. This preview is incomplete.</p>' : '') + '<pre>' + esc(value.text) + '</pre></div>' : ''
   // A call is one line of activity — what was asked for, and how it ended — that opens onto
   // the request and the result it actually carried. The status word is the only place colour
@@ -356,6 +353,7 @@ function eventBody(e){if(e.type==='model-usage'||e.type==='model-summary')return
 /* The words each event gets. A label a person can read is the whole of what most events
    need to contribute; the rest of the transcript is the conversation itself. */
 const EVENT_LABELS={'pending-inherited':'Earlier call awaiting recovery','case-state':'Case lifecycle','focus':'Cases in focus','case-unfocused':'Case released from focus','affected':'Affected Cases','loss':'Bounded view','recovery':'Unresolved call','handoff':'Earlier outcome handed over','operation-read':'Original operation read','blocked':'Turn stopped','model-error':'Model response failed','queue-suspended':'Remaining calls not sent','artifact-read':'Artifact fragment read','worker-activity-unavailable':'Invocation reporting unavailable','case-open':'Rulith Case opened','case-closed':'Rulith Case closed','case-pending':'Rulith Case pending','session-detached':'Conversation detached','source-plan':'Source route','verdict':'Board decision','claimed':'Worker claimed','reported':'Worker receipt','task-done':'Agent turn finished','task-start':'Message','task-queued':'Message queued','slot-open':'Capacity available','up':'Runtime online','spawn':'Process started','exit':'Process exited','round':'Agent turn','log':'Runtime log','error':'Runtime error'}
+EVENT_LABELS['board-observation-unavailable'] = 'Board observation unavailable'
 /* Which events are allowed to raise their voice. A refusal, a stopped turn, a Case waiting on
    evidence and a conversation that was detached are the states a person has to act on; a
    lease, an accepted call and a finished turn are not, however many of them arrive. */

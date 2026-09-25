@@ -4,6 +4,10 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Let a new user turn request a committed `QueryBoard` observation while an earlier
+  operation is waiting or needs reconciliation, only when the server explicitly supports
+  independent observation. Keep the original call pending, block other business tools,
+  and report a failed query as an unavailable read rather than an unknown business effect.
 - Adopt the seven-tool `rulith/v2` MCP contract. `ReadOperation({})` retrieves the
   current Agent's original public tool result as an independent read. The Host can
   collect a ready result without `QueryBoard`, including after reconnecting to a new
