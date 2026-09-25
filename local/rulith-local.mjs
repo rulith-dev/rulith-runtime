@@ -1018,13 +1018,14 @@ export function createLocalHost({
           selected = materials.attachments(body.attachments, { sessionKey, requestId: body.requestId })
         } catch (error) { return materialFailure(res, error) }
         let taskProof
+        let selectionSecret
         if (selected.receipt) {
           try {
             if (!registerMaterialSubmission) throw new Error('Registration is unavailable')
             taskProof = selected.receipt.proofSecret
             if (!/^[0-9a-f]{64}$/.test(taskProof ?? '')) throw new Error('Durable task proof is unavailable')
             const proofDigest = 'sha256:' + createHash('sha256').update(Buffer.from(taskProof, 'hex')).digest('hex')
-            const selectionSecret = selected.receipt.selectionSecret
+            selectionSecret = selected.receipt.selectionSecret
             if (selectionSecret !== undefined && (!/^[0-9a-f]{64}$/.test(selectionSecret)
               || selectionSecret === taskProof)) throw new Error('Durable selection secret is invalid')
             const selectionDigest = selectionSecret === undefined ? undefined
@@ -1062,7 +1063,8 @@ export function createLocalHost({
         }
         const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/task`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey,
-            ...(taskProof ? { 'x-rulith-material-task-proof': taskProof } : {}) },
+            ...(taskProof ? { 'x-rulith-material-task-proof': taskProof } : {}),
+            ...(selectionSecret ? { 'x-rulith-material-selection-key': selectionSecret } : {}) },
           body: JSON.stringify({
             text: text.trim() === '' ? attachmentInstruction(selected.attachments) : text,
             sessionKey,

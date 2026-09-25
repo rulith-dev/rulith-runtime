@@ -1699,9 +1699,10 @@ async function deliverMaterialLocally(delivery) {
 /**
  * Call one advertised tool the way any MCP client would.
  *
- * Nothing of this host's own travels in the arguments and nothing travels beside them: the
- * protected query context is the Gateway's to inject from the authenticated principal, the
- * session is a transport header, and the request identity is the JSON-RPC id. A client
+ * Nothing of this host's own travels in the arguments. Private material keys travel only
+ * on their narrowly bound calls; protected query context is the Gateway's to inject from
+ * the authenticated principal, the session is a transport header, and the request identity
+ * is the JSON-RPC id. A client
  * that supplied `audienceProfile` would be asking to be read as somebody else.
  *
  * Nothing is fetched first either. A write never begins with a read: the authority judges
@@ -1732,6 +1733,31 @@ async function callTool(ctx, name, input, { claim = false } = {}) {
     if (!ctx.materialTaskProofRequestId) ctx.materialTaskProofRequestId = identity.requestId
     if (ctx.materialTaskProofRequestId === identity.requestId) materialTaskProof = ctx.materialTaskProof
   }
+  // The selection key is scoped to this task's public attachments and a single exact
+  // top-level material reference. It is not a general MCP credential or a model argument.
+  const actionArgs = input !== null && typeof input === 'object' && !Array.isArray(input)
+    ? input.args : undefined
+  const materialReferences = []
+  const collectMaterialReferences = value => {
+    if (value === null || typeof value !== 'object') return
+    if (!Array.isArray(value) && (Object.hasOwn(value, 'ref') || Object.hasOwn(value, 'digest'))) {
+      materialReferences.push(value)
+    }
+    for (const child of Object.values(value)) collectMaterialReferences(child)
+  }
+  if (actionArgs !== null && typeof actionArgs === 'object' && !Array.isArray(actionArgs)) {
+    collectMaterialReferences(actionArgs)
+  }
+  const materialArgs = name === 'ApplyAction' && !claim && ctx.materialSelectionKey
+    && actionArgs !== null && typeof actionArgs === 'object' && !Array.isArray(actionArgs)
+    ? Object.values(actionArgs).filter(value => value !== null && typeof value === 'object'
+      && !Array.isArray(value) && (Object.hasOwn(value, 'ref') || Object.hasOwn(value, 'digest')))
+    : []
+  const materialSelectionKey = materialArgs.length === 1 && materialReferences.length === 1
+    && Object.keys(materialArgs[0]).length === 2
+    && Object.hasOwn(materialArgs[0], 'ref') && Object.hasOwn(materialArgs[0], 'digest')
+    && ctx.materialAttachments?.some(material => material.id === materialArgs[0].ref
+      && material.digest === materialArgs[0].digest) ? ctx.materialSelectionKey : undefined
   let result
   let text = ''
   let handoffText
@@ -1747,8 +1773,11 @@ async function callTool(ctx, name, input, { claim = false } = {}) {
       id: identity.requestId,
       ...(negotiate ? { headers: { [LOCAL_DELIVERY_HEADER]: LOCAL_DELIVERY_PROTOCOL,
         'x-rulith-local-custodian': MATERIALS_CONNECTION,
-        ...(materialTaskProof ? { 'x-rulith-material-task-proof': materialTaskProof } : {}) } }
-        : materialTaskProof ? { headers: { 'x-rulith-material-task-proof': materialTaskProof } } : {}),
+        ...(materialTaskProof ? { 'x-rulith-material-task-proof': materialTaskProof } : {}),
+        ...(materialSelectionKey ? { 'x-rulith-material-selection-key': materialSelectionKey } : {}) } }
+        : materialTaskProof || materialSelectionKey ? { headers: {
+          ...(materialTaskProof ? { 'x-rulith-material-task-proof': materialTaskProof } : {}),
+          ...(materialSelectionKey ? { 'x-rulith-material-selection-key': materialSelectionKey } : {}) } } : {}),
     })
     // Host metadata and model content are two channels. The text is the authority's own
     // JSON; `_meta` never enters it.
@@ -3535,6 +3564,7 @@ if (SERVE) {
          */
         let attachments = []
         const materialTaskProof = req.headers['x-rulith-material-task-proof']
+        const materialSelectionKey = req.headers['x-rulith-material-selection-key']
         try {
           const b = JSON.parse(raw || '{}')
           if (b.requestId !== undefined && (typeof b.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(b.requestId))) return deny('requestId must be a short opaque identifier (16–100 letters, digits, _ or -).', 400)
@@ -3573,6 +3603,12 @@ if (SERVE) {
           return deny('Attached tasks require one private material task proof from the Rulith host.', 400)
         }
         if (attachments.length === 0 && materialTaskProof !== undefined) return deny('A material task proof requires attachments.', 400)
+        if (materialSelectionKey !== undefined && (typeof materialSelectionKey !== 'string'
+          || !/^[0-9a-f]{64}$/.test(materialSelectionKey)
+          || materialSelectionKey === materialTaskProof || attachments.length === 0
+          || attachments.some(material => !/^sha256:[0-9a-f]{64}$/.test(material.digest ?? '')))) {
+          return deny('A private material selection key requires distinct valid proof and digested attachments.', 400)
+        }
         if (!/^[a-z][a-z0-9_-]{1,63}$/.test(caseType)) return deny('caseType must be a 2-64 character lowercase identifier from the Agent Case Type catalog.', 400)
         if (businessKey !== undefined && (businessKey === null || typeof businessKey !== 'object' || Array.isArray(businessKey)
           || Object.keys(businessKey).length === 0 || !Object.values(businessKey).every((v) => typeof v === 'string'
@@ -3585,8 +3621,10 @@ if (SERVE) {
         // The fingerprint is stored, but neither its input nor a separate proof digest is a turn.
         const proofDigest = materialTaskProof === undefined ? undefined
           : createHash('sha256').update(Buffer.from(materialTaskProof, 'hex')).digest('hex')
+        const selectionDigest = materialSelectionKey === undefined ? undefined
+          : createHash('sha256').update(Buffer.from(materialSelectionKey, 'hex')).digest('hex')
         const fingerprint = createHash('sha256').update(JSON.stringify({ text, sessionKey, caseType,
-          caseTypeGiven, businessKey, requestedCaseId, attachments, proofDigest })).digest('hex')
+          caseTypeGiven, businessKey, requestedCaseId, attachments, proofDigest, selectionDigest })).digest('hex')
         try {
           const previous = conversationStore?.find(requestId, fingerprint)
           if (previous) { res.writeHead(previous.ok ? 202 : 409, { 'content-type': 'application/json' }); res.end(JSON.stringify(previous)); return }
@@ -3606,7 +3644,8 @@ if (SERVE) {
         }
         const restoredMessages = !sessions.has(sessionKey) ? conversationStore?.messages(sessionKey, KEEP_MESSAGES) : undefined
         const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments, modelService: MODEL_DESTINATION,
-          ...(materialTaskProof ? { materialTaskProof } : {}) }
+          ...(materialTaskProof ? { materialTaskProof } : {}),
+          ...(materialSelectionKey ? { materialSelectionKey } : {}) }
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0) + 1
         const receipt = { ok: true, id: item.id, queued: depth, sessionKey, teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }
         try { conversationStore?.accept(item, receipt, requestId, fingerprint) }
@@ -3678,6 +3717,8 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       conversationStore?.start(item.id)
       slot.materialTaskProof = item.materialTaskProof
       slot.materialTaskProofRequestId = undefined
+      slot.materialSelectionKey = item.materialSelectionKey
+      slot.materialAttachments = item.attachments
       const seg = await runCaseTurn(slot, item.text, {
         policy: 'return',
         caseType: item.caseType,
@@ -3718,6 +3759,10 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     } finally {
       delete slot.materialTaskProof
       delete slot.materialTaskProofRequestId
+      delete slot.materialSelectionKey
+      delete slot.materialAttachments
+      // A later /task must obtain a fresh, explicitly Case-bound selection from the Host.
+      // Never infer its authority from this conversation slot or persist this key here.
       // Bookkeeping lives in `finally`: nothing above may pin this slot as busy forever.
       // That client could never be served again, and the symptom — "202 on submit, no
       // result ever" — has no log line that explains it.

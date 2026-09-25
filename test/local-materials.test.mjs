@@ -400,6 +400,9 @@ test('private proof crosses only the confirmed Host-to-Agent header and exact re
     const secret = forwarded[0].materialTaskProof
     assert.match(secret, /^[0-9a-f]{64}$/u)
     assert.equal(forwarded[1].materialTaskProof, secret)
+    assert.match(forwarded[0].materialSelectionKey, /^[0-9a-f]{64}$/u)
+    assert.equal(forwarded[1].materialSelectionKey, forwarded[0].materialSelectionKey)
+    assert.notEqual(forwarded[0].materialSelectionKey, secret)
     assert.equal(registrations.length, 2)
     assert.deepEqual(registrations[0], registrations[1])
     assert.equal(registrations[0].proofDigest,
@@ -418,6 +421,7 @@ test('private proof crosses only the confirmed Host-to-Agent header and exact re
     assert.equal(stored[0].proofSecret, secret)
     assert.match(stored[0].selectionSecret, /^[0-9a-f]{64}$/u)
     assert.notEqual(stored[0].selectionSecret, secret)
+    assert.equal(forwarded[0].materialSelectionKey, stored[0].selectionSecret)
     assert.equal(registrations[0].selectionDigest,
       'sha256:' + createHash('sha256').update(Buffer.from(stored[0].selectionSecret, 'hex')).digest('hex'))
     for (const observed of [registrations, forwarded.map(row => row.body), host.events()]) {
@@ -472,6 +476,7 @@ test('a standalone Host with no registration channel refuses attachments but sti
     assert.equal(plain.status, 202)
     assert.equal(tasks().filter(row => row.kind === 'task').length, 1)
     assert.equal(tasks().find(row => row.kind === 'task').materialTaskProof, undefined)
+    assert.equal(tasks().find(row => row.kind === 'task').materialSelectionKey, undefined)
   }, { withAgent: true, registerMaterialSubmission: null })
 })
 

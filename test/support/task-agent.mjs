@@ -28,7 +28,8 @@ const server = createServer((request, response) => {
     let body
     try { body = JSON.parse(raw || '{}') } catch { body = { unparsed: raw } }
     record({ kind: 'task', path: request.url, authorized: request.headers['x-rulith-serve'] === KEY,
-      materialTaskProof: request.headers['x-rulith-material-task-proof'], body })
+      materialTaskProof: request.headers['x-rulith-material-task-proof'],
+      materialSelectionKey: request.headers['x-rulith-material-selection-key'], body })
     response.writeHead(202, { 'content-type': 'application/json; charset=utf-8' })
     response.end(JSON.stringify({ ok: true, id: 'task-1', queued: 1, sessionKey: String(body.sessionKey ?? '') }))
   })
