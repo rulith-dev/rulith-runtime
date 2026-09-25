@@ -5,12 +5,37 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { actionRowFaults, readExecutionGrant, selectedMaterialInputFault, selectedMaterialMismatch } from '../worker/rulith-worker.mjs'
+import { actionRowFaults, readExecutionGrant, selectedMaterialInputFault, selectedMaterialMismatch, selectedResultProductionMatches } from '../worker/rulith-worker.mjs'
 import { materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
 import { CONNECTION_KEY, HOLD, actionRow, driveWorker, grantFor, signGrant } from './support/worker-harness.mjs'
 
 const bindingDigest = `sha256:${'a'.repeat(64)}`
 const v3 = row => ({ ...grantFor(row, { workerId: 'wkr_selected_material' }), version: 3, materialBindingDigest: bindingDigest })
+
+test('selected effect result keeps its exact private input and Tool pin across local reopen', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-selected-result-'))
+  try {
+    const root = join(dir, 'materials')
+    const identity = materialIdentity({ configFile: join(dir, 'local.json'), gatewayUrl: 'https://api.rulith.ai',
+      connectionId: 'connection', agentId: 'agent', deviceId: 'device-one', modelUrl: 'http://127.0.0.1:1234' })
+    const production = { inputSelector: `mat_${'a'.repeat(32)}`, inputDigest: `sha256:${'b'.repeat(64)}`,
+      inputCustodyId: `mat_${'c'.repeat(32)}`, toolContractId: 'fixed-http-write',
+      adapterDigest: `sha256:${'d'.repeat(64)}`, requestDigest: `sha256:${'e'.repeat(64)}`,
+      relation: 'selected-material-effect-response/1' }
+    const store = openMaterialStore(root, identity)
+    const result = store.putResult({ mediaType: 'text/plain', encoding: 'utf8',
+      bytes: Buffer.from('HTTP 200: {"done":true}'), production })
+    assert.ok(selectedResultProductionMatches(result, production))
+    assert.deepEqual(openMaterialStore(root, identity, { create: false }).verify(result.id).production, production)
+    assert.equal(selectedResultProductionMatches(result, { ...production, inputSelector: `mat_${'f'.repeat(32)}` }), false)
+    assert.equal(selectedResultProductionMatches(result, undefined), false)
+    assert.equal(openMaterialStore(root, identity).putResult({ mediaType: 'text/plain', encoding: 'utf8',
+      bytes: Buffer.from('legacy result') }).production, undefined)
+    assert.throws(() => store.putResult({ mediaType: 'text/plain', encoding: 'utf8',
+      bytes: Buffer.from('bad'), production: { ...production, inputCustodyId: production.inputSelector } }),
+    error => error?.code === 'artifact_production_invalid')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
 
 test('v3 grant has its exact overlay shape and v2 cannot carry the selected commitment', () => {
   const row = actionRow()

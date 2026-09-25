@@ -54,7 +54,7 @@
       "sha256": "616cbe6b498bcd2e7fecdddc1dcd015779b9c3ff3c7469fc92e821100b48640f"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "25f9ea021ca37e943dd991a4b58991eabfd3f9169230dd6418a0c2d407bc3b97"
+      "sha256": "790a96220b564a6054ddb2c89ade4b510754e3c543d881ffaa6efd14715e63d1"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -63,7 +63,7 @@
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "worker/material-store.mjs": {
-      "sha256": "912ea94bdcde7e3c847ff78c484c33e028d48db7206de1f5fe2ee608361f4d3a"
+      "sha256": "b05d1bc8b71b43a3763d38ad89f37435fb35e12da731454dc455ad7f9a9838c1"
     },
     "worker/material-transport.mjs": {
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"

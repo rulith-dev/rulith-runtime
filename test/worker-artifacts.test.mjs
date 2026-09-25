@@ -169,6 +169,32 @@ test('ART-WK-2: required facts never become refs, and an unconfirmed reference n
   })
 })
 
+test('a selected effect can settle with fixed status when optional response registration is refused', async () => {
+  await withArea(async ({ store }) => {
+    const response = store.putResult({ mediaType: 'application/json', encoding: 'utf8',
+      bytes: Buffer.from('{"done":true,"echo":"private bytes"}') })
+    const safe = 'HTTP 200: terminal response confirmed.'
+    const prepared = await prepareActionReport(actionRow(), { ok: true, result: safe,
+      localArtifact: response, completionStage: 'terminal', optionalArtifact: true }, {
+      register: async () => { throw new Error('source_material_denied') },
+    })
+    assert.equal(prepared.unavailable, undefined)
+    assert.equal(prepared.body.result, safe)
+    assert.equal(prepared.body.completionStage, 'terminal')
+    assert.equal(prepared.body.artifacts, undefined)
+    assert.equal(JSON.stringify(prepared.body).includes('private bytes'), false)
+    const mismatched = await prepareActionReport(actionRow(), { ok: true, result: safe,
+      localArtifact: response, completionStage: 'terminal', optionalArtifact: true }, {
+      register: async () => ({ payload: { ref: `art_${'a'.repeat(32)}`,
+        digest: `sha256:${'f'.repeat(64)}`, totalBytes: response.totalBytes,
+        mediaType: response.mediaType, encoding: response.encoding } }),
+    })
+    assert.equal(mismatched.unavailable, undefined)
+    assert.equal(mismatched.body.result, safe)
+    assert.equal(mismatched.body.artifacts, undefined)
+  })
+})
+
 test('ART-WK-3: nested policy and permission shapes are checked from the committed contract', () => {
   const boundary = contract.fixture.boundaries.find(row => row.id === 'worker-action-item')
   for (const row of boundary.valid) assert.deepEqual(actionRowFaults(row, row.connectionId), [])

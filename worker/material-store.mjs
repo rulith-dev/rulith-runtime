@@ -565,7 +565,7 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
    *
    * A result derived from a material inherits `operator`, because it is that person's file.
    */
-  const store = (kind, { name, mediaType, encoding = 'base64', bytes, ceiling, origin }) => {
+  const store = (kind, { name, mediaType, encoding = 'base64', bytes, ceiling, origin, production }) => {
     const displayName = materialDisplayName(name)
     const type = materialMediaType(mediaType)
     if (!Buffer.isBuffer(bytes)) throw new MaterialError('material_bytes_invalid', 'Material bytes must be a Buffer.')
@@ -576,6 +576,19 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
     }
     if (encoding !== 'utf8' && encoding !== 'base64') {
       throw new MaterialError('material_encoding_invalid', 'A stored object declares utf8 or base64 encoding.')
+    }
+    if (production !== undefined && (kind !== 'result' || !production
+      || typeof production !== 'object' || Array.isArray(production)
+      || Object.keys(production).sort().join(',') !== 'adapterDigest,inputCustodyId,inputDigest,inputSelector,relation,requestDigest,toolContractId'
+      || !/^mat_[a-f0-9]{32}$/.test(production.inputSelector)
+      || !/^mat_[a-f0-9]{32}$/.test(production.inputCustodyId)
+      || production.inputSelector === production.inputCustodyId
+      || !MATERIAL_DIGEST_PATTERN.test(production.inputDigest)
+      || !MATERIAL_DIGEST_PATTERN.test(production.adapterDigest)
+      || !MATERIAL_DIGEST_PATTERN.test(production.requestDigest)
+      || typeof production.toolContractId !== 'string' || production.toolContractId === ''
+      || production.relation !== 'selected-material-effect-response/1')) {
+      throw new MaterialError('artifact_production_invalid', 'Result production must name an exact signed selected-material input and implementation.')
     }
     const chunks = chunkManifest(bytes)
     const id = `${kind === 'material' ? 'mat' : 'res'}_${randomUUID().replace(/-/g, '')}`
@@ -598,6 +611,7 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       chunks: chunks.map((chunk) => sha256(chunk)),
       owner: { profile: identity.profile, owner: identity.owner },
       disclosure: { modelDestination: identity.modelDestination, localOnly: identity.localOnly, origin },
+      ...(production === undefined ? {} : { production: { ...production } }),
       addedAt: now,
       retention: { policy: 'profile-lifetime', immutable: true, recordedAt: now },
     }, chunks)
@@ -822,8 +836,8 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
      * inferred: the Gateway cannot check it and enforces it at disclosure instead, so a Worker
      * that declared `utf8` for bytes that are not UTF-8 buys a visible failure there.
      */
-    putResult({ name = 'result', mediaType, encoding, bytes }) {
-      return store('result', { name, mediaType, encoding, bytes, ceiling: MAX_OBJECT_BYTES, origin: 'execution' })
+    putResult({ name = 'result', mediaType, encoding, bytes, production }) {
+      return store('result', { name, mediaType, encoding, bytes, ceiling: MAX_OBJECT_BYTES, origin: 'execution', production })
     },
     /**
      * A result object that references an existing material's chunks.

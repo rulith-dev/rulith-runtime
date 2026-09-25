@@ -99,6 +99,19 @@ test('selected /2 action sends exact verified bytes once after Claim and reports
   assert.equal(run.of('ReportWork')[0].operation.ok, true)
 })
 
+test('selected /2 terminal response cannot echo submitted bytes into the Board result', async () => {
+  const bytes = Buffer.from('private selected note')
+  const { run, requests } = await selectedRun({ bytes,
+    sourceResponse: JSON.stringify({ done: true, echo: bytes.toString('utf8') }) })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(requests.length, 1, run.output)
+  const report = run.of('ReportWork')[0]?.operation
+  assert.equal(report?.ok, true, run.output)
+  assert.equal(report?.completionStage, 'terminal')
+  assert.equal(String(report.result).includes(bytes.toString('utf8')), false)
+  assert.equal(JSON.stringify(report).includes(bytes.toString('utf8')), false)
+})
+
 test('a local Source URL override cannot redirect selected bytes to another HTTP host', async () => {
   let redirected = 0
   const other = createServer((_, response) => { redirected++; response.end('{"done":true}') })

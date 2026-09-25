@@ -1105,6 +1105,25 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT, context = {}) {
     }
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`)
+  if (context.selectedMaterial) {
+    // The Source may echo the submitted document. A terminal marker authorizes a status
+    // statement, not publication of its response body on the Board. Large responses may be
+    // held locally as optional evidence only when this Source permits material registration.
+    const summary = `HTTP ${r.status}: terminal response confirmed.`
+    if (context.captureSelectedResponse === true
+        && Buffer.byteLength(text, 'utf8') > context.selectedResponseInlineBytes) {
+      try {
+        return { result: summary, localArtifact: materialStore().putResult({
+          name: 'selected-effect-response', mediaType: 'application/json', encoding: 'utf8',
+          bytes: Buffer.from(text, 'utf8'), production: context.selectedResponseProduction,
+        }) }
+      } catch (error) {
+        wev('material', { channel: 'result-custody', state: 'unavailable',
+          why: String(error?.code ?? error?.message ?? '').slice(0, 80) })
+      }
+    }
+    return { result: summary }
+  }
   return `HTTP ${r.status}: ${text}`
 }
 
@@ -1803,7 +1822,8 @@ export function workerLocalArtifact(value) {
  * be exercised without a filesystem or a network.
  */
 export async function prepareActionReport(row, execution, { custody, register } = {}) {
-  const { ok, result = '', reason, facts = [], localArtifact, safeInlineGuidance, completionStage } = execution
+  const { ok, result = '', reason, facts = [], localArtifact, safeInlineGuidance, completionStage,
+    optionalArtifact = false } = execution
   const body = { kind: 'ReportWork', workType: 'action', id: row.work, executionGrant: row.executionGrant, ok,
     ...(ok ? { result, ...(facts.length ? { facts } : {}),
       ...(completionStage === 'terminal' ? { completionStage } : {}) } : { result: '', reason }) }
@@ -1829,16 +1849,24 @@ export async function prepareActionReport(row, execution, { custody, register } 
       return { unavailable: error instanceof MaterialError ? error.code : 'material_custody_unavailable' }
     }
   }
-  if (record.totalBytes > row.artifactPolicy.objectBytes) return { unavailable: 'artifact_object_limit' }
+  if (record.totalBytes > row.artifactPolicy.objectBytes) {
+    return optionalArtifact && ok ? { body } : { unavailable: 'artifact_object_limit' }
+  }
   let object
   try {
     object = await register(record)
   } catch (error) {
     if (error instanceof CredentialRejectedError) throw error
+    // A selected HTTP /2 Tool has no declared result facts. Its fixed terminal status is
+    // sufficient to settle the effect; an optional response object losing material permission
+    // must not strand an already executed effect or fall back to an inline echo.
+    if (optionalArtifact && ok) return { body }
     return { unavailable: error instanceof MaterialError ? error.code : 'artifact_registration_unknown' }
   }
   const ref = workerArtifactReference(registrationResult(object, record))
-  if (ref === undefined) return { unavailable: 'artifact_registration_unconfirmed' }
+  if (ref === undefined) {
+    return optionalArtifact && ok ? { body } : { unavailable: 'artifact_registration_unconfirmed' }
+  }
   if (ok) body.result = ''
   else body.reason = 'Diagnostic data is available through the attached Artifact.'
   body.artifacts = [ref]
@@ -1882,8 +1910,24 @@ async function materialCall(path, payload, identity) {
 }
 
 /** Make a produced result durable in this machine's material area, before anything references it. */
-async function takeCustody({ bytes, mediaType, encoding }) {
-  return materialStore().putResult({ name: 'action-result', mediaType, encoding, bytes })
+async function takeCustody({ bytes, mediaType, encoding, production }) {
+  return materialStore().putResult({ name: 'action-result', mediaType, encoding, bytes, production })
+}
+
+function selectedResultProduction(grant, input) {
+  return {
+    inputSelector: input.selector, inputDigest: input.digest,
+    inputCustodyId: input.custodyId, toolContractId: grant.toolContractId,
+    adapterDigest: grant.adapterDigest, requestDigest: grant.requestDigest,
+    relation: 'selected-material-effect-response/1',
+  }
+}
+
+export function selectedResultProductionMatches(record, expected) {
+  return expected === undefined ? record?.production === undefined
+    : record?.production !== undefined
+      && Object.keys(record.production).length === Object.keys(expected).length
+      && Object.entries(expected).every(([key, value]) => record.production[key] === value)
 }
 
 /** Exchange one durable object's manifest for a Gateway reference. No byte travels. */
@@ -3548,7 +3592,10 @@ async function handleAction(w) {
     const executed = await execute(action, invocationArgs(resolved, w), { [action]: resolved },
       selectedSource ? { [w.sourceRecordId]: selectedSource } : SOURCE_CONTEXT,
       { boardId: requestVector.boardId, invocationId: invocation, resultBytes: w.artifactPolicy.objectBytes,
-        ...(selectedMaterial ? { selectedMaterial, selectedSourceAccess: selectedSource.url } : {}) })
+        ...(selectedMaterial ? { selectedMaterial, selectedSourceAccess: selectedSource.url,
+          captureSelectedResponse: w.sourceUpload?.upload === true,
+          selectedResponseInlineBytes: w.artifactPolicy.inlineBytes,
+          selectedResponseProduction: selectedResultProduction(grant, selectedMaterial.input) } : {}) })
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
@@ -3626,9 +3673,18 @@ async function handleAction(w) {
   const stopUploadRenewing = keepLeaseAlive()
   let prepared
   try {
-    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts, localArtifact, safeInlineGuidance, completionStage }, {
-      custody: takeCustody,
-      register: record => registerActionArtifact(record, dispatchedUnder, w.executionGrant),
+    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts,
+      localArtifact, safeInlineGuidance, completionStage, optionalArtifact: Boolean(selectedMaterial) }, {
+      custody: data => takeCustody({ ...data,
+        ...(selectedMaterial ? { production: selectedResultProduction(grant, selectedMaterial.input) } : {}) }),
+      register: record => {
+        const expected = selectedMaterial ? selectedResultProduction(grant, selectedMaterial.input) : undefined
+        if (!selectedResultProductionMatches(record, expected)) {
+          throw new MaterialError('artifact_production_mismatch',
+            'The durable result does not carry this selected invocation and material version.')
+        }
+        return registerActionArtifact(record, dispatchedUnder, w.executionGrant)
+      },
     })
   } finally { await stopUploadRenewing() }
   if (prepared.unavailable) {
