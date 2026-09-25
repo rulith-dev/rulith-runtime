@@ -234,11 +234,22 @@ const MATERIALS_BINDING = Object.freeze({
     ? materialDeviceFingerprint((process.env.RULITH_MATERIALS_DEVICE_ID ?? '').trim()) : '',
   modelDestination: (process.env.RULITH_MATERIALS_MODEL_DESTINATION ?? '').trim(),
 })
-// Pinned to docs/specs/schemas/rulith-worker-selected-material-v1.schema.json
-// (sha256:4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e).
+// Pinned to docs/specs/schemas/rulith-worker-selected-material-v3.schema.json
+// (sha256:9b2a4f87d7cd0ce18520bcd06606e7896ba3f919b5b25186db43baf7a1b0f2e5).
 // The v2 generated projection above remains untouched. See the overlay pin check.
 const SELECTED_MATERIAL_FIELDS = Object.freeze(['selector', 'digest', 'custodyId', 'totalBytes', 'deviceId', 'bindingDigest'])
 const SELECTED_MATERIAL_MAX_BYTES = 8 * 1024 * 1024
+const SOURCE_BINDING_FIELDS = Object.freeze(['version', 'sourceRecordId', 'connectionId', 'access'])
+
+function selectedSourceBindingFault(binding, sourceRecordId, connectionId = CONNECTION_ID) {
+  if (binding === null || typeof binding !== 'object' || Array.isArray(binding)
+      || Object.keys(binding).length !== SOURCE_BINDING_FIELDS.length
+      || Object.keys(binding).some(name => !SOURCE_BINDING_FIELDS.includes(name))) return 'selected HTTP Source binding has missing or unknown fields'
+  if (binding.version !== 'rulith-http-source-binding/1'
+      || binding.sourceRecordId !== sourceRecordId || binding.connectionId !== connectionId
+      || typeof binding.access !== 'string' || !/^https?:\/\//.test(binding.access)) return 'selected HTTP Source binding differs from this Source or Connection'
+  return undefined
+}
 
 export function selectedMaterialInputFault(input) {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return 'materialInput is not an object'
@@ -255,19 +266,33 @@ export function selectedMaterialInputFault(input) {
 }
 
 export function selectedMaterialMismatch(grant, input, { root = MATERIALS_ROOT, binding = MATERIALS_BINDING } = {}) {
-  if (grant?.version !== 3) return 'selected material requires a version 3 grant'
+  return selectedMaterialPreparation(grant, input, { root, binding }).fault
+}
+
+function selectedMaterialPreparation(grant, input, { root = MATERIALS_ROOT, binding = MATERIALS_BINDING,
+  forHttpEffect = false } = {}) {
+  if (grant?.version !== 3 && grant?.version !== 4) return { fault: 'selected material requires a selected execution grant' }
   const fault = selectedMaterialInputFault(input)
-  if (fault) return fault
-  if (grant.materialBindingDigest !== input.bindingDigest) return 'selected material binding differs from the signed grant'
+  if (fault) return { fault }
+  if (grant.materialBindingDigest !== input.bindingDigest) return { fault: 'selected material binding differs from the signed grant' }
   try {
     const identity = materialIdentityFromFingerprints(binding)
     const store = openMaterialStore(root, identity, { create: false })
     store.assertSelectedDeviceId(input.deviceId)
-    store.readSubmittedEffectInput(input)
+    const { record, bytes } = store.readSubmittedEffectInput(input)
+    if (forHttpEffect && (record.disclosure?.origin !== 'operator' || record.disclosure?.localOnly !== false)) {
+      return { fault: 'selected material is local-only or has no off-machine permission for an HTTP Source' }
+    }
+    // Validate the bytes but never decode and re-encode the effect body. The Source
+    // receives the exact verified Buffer returned by the immutable material store.
+    if (forHttpEffect && (record.totalBytes < 1 || record.totalBytes > SELECTED_MATERIAL_MAX_BYTES
+        || !Buffer.from(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), 'utf8').equals(bytes))) {
+      return { fault: 'selected material is not strict UTF-8 text' }
+    }
+    return { bytes }
   } catch (error) {
-    return `selected material is unavailable: ${error?.code ?? error?.message ?? String(error)}`
+    return { fault: `selected material is unavailable: ${error?.code ?? error?.message ?? String(error)}` }
   }
-  return undefined
 }
 /**
  * The material area, opened under this Worker's binding — or a named refusal.
@@ -340,6 +365,41 @@ async function refreshSourceDefinitions() {
         if (e instanceof CredentialRejectedError) throw e
         console.error(`· Could not reach Rulith Cloud for source definitions (${e.message}). Continuing with local secrets.`)
       })
+}
+
+/** A selected HTTP write needs a fresh governed destination, not the startup
+ * merge where local secrets may replace Source.access. Freeze that address and
+ * local credentials before Claim; the same object is passed to the executor. */
+async function selectedHttpSourceSnapshot(sourceRecordId, expectedAccess) {
+  const response = await fetch(`${WORK_URL}/sources`, {
+    headers: { 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY },
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (response.status === 401) throw new CredentialRejectedError()
+  if (!response.ok) throw new Error(`current Gateway Source read failed (HTTP ${response.status})`)
+  const body = await response.json()
+  if (!Array.isArray(body?.sources)) throw new Error('current Gateway Source list is unreadable')
+  const matches = body.sources.filter(source => source?.name === sourceRecordId)
+  if (matches.length !== 1 || matches[0].type !== 'http' || typeof matches[0].access !== 'string') {
+    throw new Error('selected HTTP Source is missing, duplicated, or no longer HTTP')
+  }
+  const access = matches[0].access
+  if (access !== expectedAccess) throw new Error('current Gateway Source endpoint differs from the signed selected binding')
+  let url
+  try { url = new URL(access) } catch { throw new Error('selected HTTP Source has no valid Gateway endpoint') }
+  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) {
+    throw new Error('selected HTTP Source has no valid Gateway endpoint')
+  }
+  const local = LOCAL_SOURCE_CONTEXT[sourceRecordId] ?? {}
+  if (local.type !== undefined && local.type !== 'http'
+      || local.url !== undefined && local.url !== access
+      || local.access !== undefined && local.access !== access) {
+    throw new Error('local Source endpoint differs from the current Gateway Source')
+  }
+  if (Array.isArray(local.allowHosts) && !local.allowHosts.includes(url.hostname)) {
+    throw new Error('local HTTP allowHosts excludes the current Gateway Source')
+  }
+  return Object.freeze({ ...local, type: 'http', access, url: access })
 }
 
 /** 审查员(清关工人的"判卷"那一席): OpenAI 兼容 chat 端点。不配=这台不是清关工人,review 案卷不领。 */
@@ -914,7 +974,7 @@ const HTTP_TEXT_WRITE_MAX_BYTES = 16_384
 function httpTextWriteProfile(raw, { entry, params, kind, method, sourceTypes, fence } = {}) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)
       || Object.keys(raw).sort().join(',') !== 'contentType,format,method,payloadParam,relativePath,targetParam'
-      || raw.format !== 'rulith-http-text-write/1' || raw.method !== 'PUT'
+      || !['rulith-http-text-write/1', 'rulith-http-text-write/2'].includes(raw.format) || raw.method !== 'PUT'
       || raw.contentType !== 'text/plain; charset=utf-8'
       || typeof raw.targetParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw.targetParam)
       || typeof raw.payloadParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw.payloadParam)
@@ -927,14 +987,15 @@ function httpTextWriteProfile(raw, { entry, params, kind, method, sourceTypes, f
       || entry !== raw.relativePath || kind !== 'write' || method !== 'PUT'
       || sourceTypes !== undefined && (sourceTypes.length !== 1 || sourceTypes[0] !== 'http')
       || !params || Object.keys(params).sort().join(',') !== [raw.payloadParam, raw.targetParam].sort().join(',')
-      || params[raw.targetParam] !== 'string' || params[raw.payloadParam] !== 'string'
+      || params[raw.targetParam] !== 'string'
+      || params[raw.payloadParam] !== (raw.format === 'rulith-http-text-write/2' ? 'json' : 'string')
       || !fence || Object.keys(fence).some(key => !['method', 'completion', 'timeoutMs', 'maxResponseBytes', 'textWrite'].includes(key))) {
     throw new Error('HTTP text write requires a fixed PUT path with one complete target segment, exactly two required string params, and text/plain; charset=utf-8')
   }
   return { ...raw }
 }
 
-function httpTextWriteArgs(profile, raw) {
+function httpTextWriteArgs(profile, raw, selected) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)
       || Object.keys(raw).sort().join(',') !== [profile.payloadParam, profile.targetParam].sort().join(',')) {
     throw new Error('HTTP text write accepts only its target and payload arguments')
@@ -943,6 +1004,15 @@ function httpTextWriteArgs(profile, raw) {
   if (typeof target !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(target)
       || target === '.' || target === '..') {
     throw new Error('HTTP text write target must be one safe path segment')
+  }
+  if (profile.format === 'rulith-http-text-write/2') {
+    if (!selected || !Buffer.isBuffer(selected.bytes) || !selected.input
+        || !payload || typeof payload !== 'object' || Array.isArray(payload)
+        || Object.keys(payload).sort().join(',') !== 'digest,ref'
+        || payload.ref !== selected.input.selector || payload.digest !== selected.input.digest) {
+      throw new Error('HTTP selected text write requires the exact verified local-material reference and bytes')
+    }
+    return { path: profile.relativePath.replace(`{${profile.targetParam}}`, encodeURIComponent(target)), body: selected.bytes }
   }
   if (typeof payload !== 'string' || Buffer.byteLength(payload, 'utf8') > HTTP_TEXT_WRITE_MAX_BYTES
       || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(payload)) {
@@ -955,14 +1025,19 @@ function httpTextWriteArgs(profile, raw) {
  * 原语工具 http：共享包只带 source+相对路径，地址与凭据由 Worker 的来源库补齐。
  * 本机旧工具表仍可直写 url，但必须显式 allowHosts；来自 source 的地址本身就是治理边界。
  */
-async function handHttp(t, args, sources = SOURCE_CONTEXT) {
+async function handHttp(t, args, sources = SOURCE_CONTEXT, context = {}) {
   const resolved = resolveSourceCreds(t, sources)
+  if (t.textWrite?.format === 'rulith-http-text-write/2'
+      && (typeof context.selectedSourceAccess !== 'string'
+        || resolved.url !== context.selectedSourceAccess)) {
+    throw new Error('selected HTTP destination differs from its pre-Claim Gateway Source snapshot')
+  }
   if (typeof resolved.url !== 'string' || resolved.url === '') {
     throw new Error('HTTP tools require a source endpoint: declare source in the tool, configure access on that source, and keep credentials in the matching local secret entry')
   }
   const base = new URL(resolved.url)
   const vals = httpArgs(resolved.params, args)
-  const textWrite = t.textWrite ? httpTextWriteArgs(t.textWrite, vals) : undefined
+  const textWrite = t.textWrite ? httpTextWriteArgs(t.textWrite, vals, context.selectedMaterial) : undefined
   const used = new Set()
   let path = textWrite?.path ?? resolved.path
   if (typeof path === 'string') {
@@ -1587,8 +1662,10 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
   if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
     return { fault: 'the execution grant payload is not an object.' }
   }
-  const selected = decoded.version === 3
-  const expectedKeys = [...Object.keys(EXECUTION_GRANT_SHAPE), ...(selected ? ['materialBindingDigest'] : [])]
+  const selected = decoded.version === 3 || decoded.version === 4
+  const sourceBound = decoded.version === 4
+  const expectedKeys = [...Object.keys(EXECUTION_GRANT_SHAPE), ...(selected ? ['materialBindingDigest'] : []),
+    ...(sourceBound ? ['sourceBindingDigest'] : [])]
   const extra = Object.keys(decoded).filter((name) => !expectedKeys.includes(name))
   if (extra.length > 0) {
     return { fault: `the execution grant carries ${extra.join(', ')}, which the contract does not define.` }
@@ -1598,7 +1675,7 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
     // Per field name, like the action row. Comparing every `const` field against the version
     // was right only while `version` was the only one; a second would have been checked
     // against the first's value while reading as though it had a rule of its own.
-    const bad = kind === 'const' ? (value !== (selected && name === 'version' ? 3 : EXECUTION_GRANT_CONST[name])
+    const bad = kind === 'const' ? (value !== (selected && name === 'version' ? decoded.version : EXECUTION_GRANT_CONST[name])
       ? `is ${JSON.stringify(value)} and this Worker executes under ${JSON.stringify(EXECUTION_GRANT_CONST[name])}` : undefined)
       : kind === 'workerId' ? (typeof value !== 'string' || !WORKER_ID_PATTERN.test(value) ? 'is not a Worker instance id' : undefined)
         : kind === 'generation' ? (!Number.isSafeInteger(value) || value < 1 || value > GENERATION_MAXIMUM
@@ -1612,6 +1689,10 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
       || !DIGEST_PATTERN.test(decoded.materialBindingDigest)
       || typeof decoded.sourceRecordId !== 'string' || decoded.sourceRecordId === '')) {
     return { fault: 'the selected material grant lacks a binding digest or Source record.' }
+  }
+  if (sourceBound && (typeof decoded.sourceBindingDigest !== 'string'
+      || !DIGEST_PATTERN.test(decoded.sourceBindingDigest))) {
+    return { fault: 'the selected HTTP grant lacks its Source binding digest.' }
   }
   return { grant: decoded }
 }
@@ -2021,13 +2102,17 @@ export function actionRowFaults(row, connectionId = CONNECTION_ID) {
   // B4c is an optional local extension to the pinned upstream bundle. The Gateway
   // adds it to the live Worker contract without changing that bundle's source bytes.
   const unknown = Object.keys(row).filter((name) => ACTION_ROW_SHAPE[name] === undefined
-    && name !== 'completionRequirement' && name !== 'materialInput')
+    && name !== 'completionRequirement' && name !== 'materialInput' && name !== 'sourceBinding')
   if (unknown.length > 0) faults.push(`carries ${unknown.sort().join(', ')}, which this action row shape does not define`)
   if (Object.hasOwn(row, 'materialInput')) {
     const fault = selectedMaterialInputFault(row.materialInput)
     if (fault) faults.push(fault)
     if (typeof row.sourceRecordId !== 'string' || row.sourceRecordId === '') faults.push('selected material requires a Source record')
-    if (Object.hasOwn(row, 'completionRequirement')) faults.push('selected material row carries completionRequirement outside its pinned overlay')
+    if (!Object.hasOwn(row, 'completionRequirement')) faults.push('selected material row lacks frozen terminal completion')
+    const sourceFault = selectedSourceBindingFault(row.sourceBinding, row.sourceRecordId, connectionId)
+    if (sourceFault) faults.push(sourceFault)
+  } else if (Object.hasOwn(row, 'sourceBinding')) {
+    faults.push('Source binding is only defined for selected material')
   }
   if (Object.hasOwn(row, 'completionRequirement')) {
     const requirement = row.completionRequirement
@@ -2756,7 +2841,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   const toolStarted = performance.now()
   let adapterReturned = false
   try {
-  if (t.impl === 'http') out = await handHttp(t, args, sources)
+  if (t.impl === 'http') out = await handHttp(t, args, sources, context)
   else if (t.impl === 'run') out = await handRun(t, args, context, sources)
   else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
   else if (t.impl === 'material') out = await handMaterial(t, args, sources)
@@ -3406,20 +3491,34 @@ async function handleAction(w) {
     wev('skip', { kind: 'action', id: action, why: 'grant_mismatch' })
     return
   }
-  if (grant.version === 3 || Object.hasOwn(w, 'materialInput')) {
-    const materialFault = grant.version === 3 && Object.hasOwn(w, 'materialInput')
-      ? selectedMaterialMismatch(grant, w.materialInput)
-      : 'selected material row and grant versions differ'
+  let selectedMaterial
+  let selectedSource
+  if (grant.version === 3 || grant.version === 4 || Object.hasOwn(w, 'materialInput')
+      || resolved.textWrite?.format === 'rulith-http-text-write/2') {
+    const selected = grant.version === 4 && Object.hasOwn(w, 'materialInput')
+      && resolved.impl === 'http' && resolved.kind === 'write'
+      && resolved.textWrite?.format === 'rulith-http-text-write/2'
+      && w.completionRequirement?.stage === 'terminal'
+      && selectedSourceBindingFault(w.sourceBinding, w.sourceRecordId) === undefined
+      && grant.sourceBindingDigest === executionDigest(w.sourceBinding)
+      ? selectedMaterialPreparation(grant, w.materialInput, { forHttpEffect: true })
+      : { fault: 'selected material requires a v4 Source-bound grant, fixed HTTP /2 Tool, and frozen terminal completion' }
+    let materialFault = selected.fault
+    if (!materialFault) {
+      try {
+        httpTextWriteArgs(resolved.textWrite, invocationArgs(resolved, w), { input: w.materialInput, bytes: selected.bytes })
+      } catch (error) { materialFault = String(error?.message ?? error) }
+    }
+    if (!materialFault) {
+      try { selectedSource = await selectedHttpSourceSnapshot(w.sourceRecordId, w.sourceBinding.access) }
+      catch (error) { materialFault = String(error?.message ?? error) }
+    }
     if (materialFault) {
       saySkipOnce(w.work, action, `selected_material:${materialFault.slice(0, 50)}`,
         `· Not claiming ${action}: ${materialFault}. Nothing was claimed and no Tool ran.`)
       return
     }
-    // No Gateway selected Claim/offer is available yet. Local byte integrity alone cannot
-    // authorize a selected effect or make its custody available to the pinned Tool.
-    saySkipOnce(w.work, action, 'selected_material_offer_unavailable',
-      `· Not claiming ${action}: selected material Claim/offer is not available yet.`)
-    return
+    selectedMaterial = { input: w.materialInput, bytes: selected.bytes }
   }
   const claim = await work({ kind: 'ClaimWork', workType: 'action', id: invocation, executionGrant: w.executionGrant }, grantedUnder)
   if (claim.accepted !== true) {
@@ -3446,8 +3545,10 @@ async function handleAction(w) {
   let undeliverable
   let completionStage
   try {
-    const executed = await execute(action, invocationArgs(resolved, w), { [action]: resolved }, SOURCE_CONTEXT,
-      { boardId: requestVector.boardId, invocationId: invocation, resultBytes: w.artifactPolicy.objectBytes })
+    const executed = await execute(action, invocationArgs(resolved, w), { [action]: resolved },
+      selectedSource ? { [w.sourceRecordId]: selectedSource } : SOURCE_CONTEXT,
+      { boardId: requestVector.boardId, invocationId: invocation, resultBytes: w.artifactPolicy.objectBytes,
+        ...(selectedMaterial ? { selectedMaterial, selectedSourceAccess: selectedSource.url } : {}) })
     if (executed && typeof executed === 'object' && !Array.isArray(executed)) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
@@ -4231,7 +4332,15 @@ if (IS_MAIN) {
   // The adoption claim belongs to this holder/generation. Do not change it after
   // a later Source refresh; a fresh generation is required to negotiate again.
   const advertised = workerToolManifest(TOOLS)
-  const inputAdoption = inputAdoptionForTools(TOOLS, SOURCE_CONTEXT, advertised)
+  let selectedMaterialReady = false
+  const selectedDeviceId = (process.env.RULITH_MATERIALS_DEVICE_ID ?? '').trim()
+  if (MATERIALS_ROOT !== '' && selectedDeviceId !== '' && MATERIALS_BINDING.deviceFingerprint !== '') {
+    try {
+      materialStore().assertSelectedDeviceId(selectedDeviceId)
+      selectedMaterialReady = true
+    } catch { /* An absent or differently bound area cannot adopt selected input. */ }
+  }
+  const inputAdoption = inputAdoptionForTools(TOOLS, SOURCE_CONTEXT, advertised, { selectedMaterialReady })
   FROZEN_INPUT_ADOPTION = inputAdoption
   if (running) {
     // The banner says exactly what the first poll will advertise, read from the same

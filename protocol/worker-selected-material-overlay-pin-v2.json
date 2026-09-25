@@ -1,0 +1,8 @@
+{
+  "version": "rulith-worker-selected-material-overlay-pin/2",
+  "schemaPath": "docs/specs/schemas/rulith-worker-selected-material-v2.schema.json",
+  "schemaSha256": "sha256:f7a0e3ea90f8d94d1698b469d9bc7c75a956c51000399a7876d9506782e173f6",
+  "baseSchemaPath": "docs/specs/schemas/rulith-worker-protocol-v2.schema.json",
+  "baseSchemaSha256": "sha256:7419793b427750f74a959b4978c3d229a6eb16480d858cafc1add2609f98c986",
+  "productionAdopted": false
+}

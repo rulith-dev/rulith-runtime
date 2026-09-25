@@ -374,7 +374,7 @@ export function evidenceRow(overrides = {}) {
  * than the default `orders`.
  */
 export async function driveWorker({
-  reply, artifactReply, materialReply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {},
+  reply, artifactReply, materialReply, sourceReply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {},
   extraTools = {}, env = {}, ipc = false,
   leaseGeneration = 7, lease: leaseOverride, sources = (root) => [{ name: 'orders', type: 'file', access: root }],
 }) {
@@ -443,8 +443,9 @@ export async function driveWorker({
   }
   const server = createServer((request, response) => {
     if ((request.method ?? 'GET') === 'GET') {
-      response.writeHead(200, { 'content-type': 'application/json' })
-      return void response.end(JSON.stringify({ sources: sourceRows }))
+      const out = sourceReply?.(request, sourceRows) ?? { status: 200, body: { sources: sourceRows } }
+      response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify(out.body ?? {}))
     }
     let raw = ''
     request.setEncoding('utf8')

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'node:http'
 import { execute, toolFromSpec, workerToolManifest, workerToolsOf } from '../worker/rulith-worker.mjs'
-import { guardCatalogDigest, inputAdoptionForTools, toolContractFingerprint } from '../worker/action-input-db.mjs'
+import { guardCatalogDigest, legacyGuardCatalogDigest, inputAdoptionForTools, toolContractFingerprint } from '../worker/action-input-db.mjs'
 import { actionRow, driveWorker, HOLD } from './support/worker-harness.mjs'
 
 const ID = 'qa.note@1'
@@ -35,6 +35,11 @@ test('HTTP Poll adoption includes fixed entry and fence in the Java-compatible f
   assert.equal(inputAdoptionForTools(tools, { notes: { type: 'http', url: 'file:///tmp/notes' } }, [descriptor]), undefined)
   assert.equal(inputAdoptionForTools(tools, sources, [{ ...descriptor, fence: { ...fence, method: 'POST' } }]), undefined)
   assert.equal(inputAdoptionForTools(tools, sources, [{ ...descriptor, entry: '/other/{target}' }]), undefined)
+})
+
+test('historical /1 HTTP text Action retains its frozen old catalog digest', () => {
+  assert.notEqual(legacyGuardCatalogDigest, guardCatalogDigest)
+  assert.equal(compile({ ...spec, guardCatalogDigest: legacyGuardCatalogDigest }).inputRolesV2, true)
 })
 
 test('real Worker Poll states the HTTP fence and refuses altered frozen work before ClaimWork', async () => {

@@ -5,10 +5,17 @@ import { createHash } from 'node:crypto'
 const catalogBytes = readFileSync(new URL('../protocol/action-input-guards.json', import.meta.url))
 export const guardCatalogDigest = 'sha256:' + createHash('sha256').update(catalogBytes).digest('hex')
 const catalog = JSON.parse(catalogBytes)
+const oldCatalogBytes = readFileSync(new URL('../protocol/action-input-guards-v1.json', import.meta.url))
+export const legacyGuardCatalogDigest = 'sha256:' + createHash('sha256').update(oldCatalogBytes).digest('hex')
+const oldCatalog = JSON.parse(oldCatalogBytes)
 const ENUM = 'rulith.value.enum@1'
 const TEXT = 'rulith.payload.bounded-text@1'
+const LOCAL_MATERIAL = 'rulith.payload.local-material@1'
 if (catalog.format !== 'rulith-action-input-guards/1'
-    || ![ENUM, TEXT].every(id => catalog.guards.some(guard => guard.id === id))) {
+    || ![ENUM, TEXT, LOCAL_MATERIAL].every(id => catalog.guards.some(guard => guard.id === id))
+    || legacyGuardCatalogDigest !== 'sha256:55d92d40901868ac10ba2198f1778ec550899a51e218561c90b91b7816997f9f'
+    || ![ENUM, TEXT].every(id => JSON.stringify(oldCatalog.guards.find(guard => guard.id === id))
+      === JSON.stringify(catalog.guards.find(guard => guard.id === id)))) {
   throw new Error('The vendored Action input guard catalog is unreadable')
 }
 
@@ -85,17 +92,19 @@ export function toolContractFingerprint(descriptor) {
 }
 
 const HTTP_TEXT = 'rulith-http-text-write/1'
+const HTTP_SELECTED_TEXT = 'rulith-http-text-write/2'
 function httpTextWriteEligible(tool) {
   const fence = tool?.fence, profile = fence?.textWrite, completion = fence?.completion
   if (tool?.adapter !== 'http' || tool.kind !== 'write' || !same(tool.sourceTypes, ['http'])
       || !plain(fence) || Object.keys(fence).some(key => !['method', 'completion', 'timeoutMs', 'maxResponseBytes', 'textWrite'].includes(key))
       || !plain(profile) || !same(Object.keys(profile).sort(), ['contentType', 'format', 'method', 'payloadParam', 'relativePath', 'targetParam'])
-      || profile.format !== HTTP_TEXT || profile.method !== 'PUT' || fence.method !== 'PUT'
+      || ![HTTP_TEXT, HTTP_SELECTED_TEXT].includes(profile.format) || profile.method !== 'PUT' || fence.method !== 'PUT'
       || profile.contentType !== 'text/plain; charset=utf-8'
       || typeof profile.targetParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile.targetParam)
       || typeof profile.payloadParam !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile.payloadParam)
       || profile.targetParam === profile.payloadParam || !plain(tool.params)
-      || !same(tool.params, { [profile.targetParam]: 'string', [profile.payloadParam]: 'string' })
+      || !same(tool.params, { [profile.targetParam]: 'string',
+        [profile.payloadParam]: profile.format === HTTP_SELECTED_TEXT ? 'json' : 'string' })
       || typeof profile.relativePath !== 'string' || profile.relativePath !== tool.entry
       || !profile.relativePath.startsWith('/') || profile.relativePath.startsWith('//')
       || /[?#\\%]/.test(profile.relativePath)) return false
@@ -118,13 +127,16 @@ function httpTextWriteEligible(tool) {
 }
 
 export function validateHttpInputContract(spec, args, def, descriptor) {
+  const selected = def.fence?.textWrite?.format === HTTP_SELECTED_TEXT
   if (!httpTextWriteEligible(descriptor)
       || !same(spec.sourceTypes, ['http']) || spec.kind !== 'write'
       || !same(spec.params, descriptor.params) || !same(spec.returns, descriptor.returns)
       || !same(spec.fence, descriptor.fence) || !same(def.fence, descriptor.fence)
       || spec.fence?.textWrite?.relativePath !== def.entry)
     throw new Error('Action v2 has no matching pinned local HTTP text write Tool contract')
-  if (!plain(spec.inputRoles) || spec.guardCatalogDigest !== guardCatalogDigest
+  if (!plain(spec.inputRoles)
+      || !(selected ? spec.guardCatalogDigest === guardCatalogDigest
+        : [guardCatalogDigest, legacyGuardCatalogDigest].includes(spec.guardCatalogDigest))
       || Object.hasOwn(spec, 'inputPolicy') || Object.hasOwn(spec.execution ?? {}, 'inputRoles')
       || Object.hasOwn(spec.execution ?? {}, 'guardCatalogDigest'))
     throw new Error('Action v2 HTTP write requires exact roles and guard catalog digest')
@@ -136,24 +148,30 @@ export function validateHttpInputContract(spec, args, def, descriptor) {
   const target = spec.inputRoles[targetParam], payload = spec.inputRoles[payloadParam]
   if (Object.hasOwn(bindings, payloadParam) || !plain(payload)
       || !same(Object.keys(payload).sort(), ['guard', 'guardConfig', 'role'])
-      || payload.role !== 'payload' || payload.guard !== TEXT || !plain(payload.guardConfig)
-      || !same(Object.keys(payload.guardConfig).sort(), ['maxBytes', 'mediaType'])
-      || !Number.isSafeInteger(payload.guardConfig.maxBytes) || payload.guardConfig.maxBytes < 1
-      || payload.guardConfig.maxBytes > 16_384 || payload.guardConfig.mediaType !== 'text/plain'
+      || payload.role !== 'payload' || payload.guard !== (selected ? LOCAL_MATERIAL : TEXT)
+      || !plain(payload.guardConfig)
+      || (selected ? !same(payload.guardConfig, {})
+        : !same(Object.keys(payload.guardConfig).sort(), ['maxBytes', 'mediaType'])
+          || !Number.isSafeInteger(payload.guardConfig.maxBytes) || payload.guardConfig.maxBytes < 1
+          || payload.guardConfig.maxBytes > 16_384 || payload.guardConfig.mediaType !== 'text/plain')
       || !Object.hasOwn(bindings, targetParam) && (!plain(target) || !same(target, { role: 'grounded' })))
     throw new Error('Action v2 HTTP target must be grounded and payload bounded text/plain')
   if (!plain(args) || !same(Object.keys(args).sort(), ['source', targetParam, payloadParam].sort())
       || typeof args.source !== 'string' || !args.source
       || typeof args[targetParam] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(args[targetParam])
       || args[targetParam] === '.' || args[targetParam] === '..'
-      || typeof args[payloadParam] !== 'string'
-      || Buffer.byteLength(args[payloadParam], 'utf8') > payload.guardConfig.maxBytes
-      || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(args[payloadParam]))
+      || (selected ? !plain(args[payloadParam])
+        || !same(Object.keys(args[payloadParam]).sort(), ['digest', 'ref'])
+        || !/^mat_[0-9a-f]{32}$/.test(args[payloadParam].ref)
+        || !/^sha256:[0-9a-f]{64}$/.test(args[payloadParam].digest)
+        : typeof args[payloadParam] !== 'string'
+          || Buffer.byteLength(args[payloadParam], 'utf8') > payload.guardConfig.maxBytes
+          || /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(args[payloadParam])))
     throw new Error('Action v2 HTTP arguments violate the fixed target or text body')
   return true
 }
 
-export function inputAdoptionForTools(tools, sources, descriptors = []) {
+export function inputAdoptionForTools(tools, sources, descriptors = [], { selectedMaterialReady = false } = {}) {
   // A manifest alone cannot make a located Adapter executable. The local Source
   // table must have a db record and DSN. Gateway independently checks governance.
   const readyDbSources = Object.entries(sources ?? {})
@@ -173,6 +191,7 @@ export function inputAdoptionForTools(tools, sources, descriptors = []) {
     const db = ['read', 'write'].some(kind => eligible(def, kind) && descriptor.kind === kind)
     const http = httpTextWriteEligible(descriptor) && httpTextWriteEligible({
       ...def, kind: descriptor.kind, params: descriptor.params, returns: descriptor.returns })
+      && (descriptor.fence.textWrite.format !== HTTP_SELECTED_TEXT || selectedMaterialReady && catalog.guards.some(guard => guard.id === LOCAL_MATERIAL))
     if (!db && !http) continue
     if (!same(descriptor.sourceTypes, def.sourceTypes)
         || !same(descriptor.params, def.params ?? {}) || !same(descriptor.returns, def.returns ?? [])
@@ -180,7 +199,8 @@ export function inputAdoptionForTools(tools, sources, descriptors = []) {
     const readySources = http ? readyHttpSources : readyDbSources
     if (readySources.length === 0) continue
     if (descriptor.kind === 'read') guardsByKind.read = [ENUM]
-    else guardsByKind.write = [ENUM, TEXT]
+    else guardsByKind.write = [...new Set([...(guardsByKind.write ?? [ENUM]), http && descriptor.fence.textWrite.format === HTTP_SELECTED_TEXT
+      ? LOCAL_MATERIAL : TEXT])]
     toolContractsByExec[descriptor.id] = toolContractFingerprint(descriptor)
     sourceNamesByExec[descriptor.id] = readySources
   }
@@ -199,7 +219,8 @@ export function validateDbInputContract(spec, args, def, descriptor) {
     }
     return false
   }
-  if (!plain(spec.inputRoles) || spec.guardCatalogDigest !== guardCatalogDigest || Object.hasOwn(spec, 'inputPolicy'))
+  if (!plain(spec.inputRoles) || ![guardCatalogDigest, legacyGuardCatalogDigest].includes(spec.guardCatalogDigest)
+      || Object.hasOwn(spec, 'inputPolicy'))
     throw new Error('Action v2 requires exact roles and guard catalog digest')
   if (plain(spec.params) && Object.values(spec.params).some(type => typeof type === 'string' && type.endsWith('?')))
     throw new Error('Action v2 database Tool requires required scalar parameters; optional SQL slots are unsupported')

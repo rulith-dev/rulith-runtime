@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rulith-worker-selected-material-v1.schema.json",
+  "description": "Separately pinned, production-unadopted B2 selected-material overlay. It does not change the v2 Worker protocol or authorize execution.",
+  "$defs": {
+    "SelectedMaterialBindingPreimage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "boardId", "invocationId", "actionRequestId", "caseId", "root", "openCallRef", "selector", "digest", "ownerId", "agentId", "deviceId", "custodyId", "totalBytes", "sourceRecordId", "connectionId", "workerId", "workerGeneration"],
+      "description": "Gateway-private, immutable preimage. Core supplies the frozen invocation, action request and Case selection; Gateway supplies the authenticated custody and dispatch identity. Never project this object to a Worker or model. Compute materialBindingDigest as sha256: plus lowercase SHA-256 of its RFC 8785/JCS UTF-8 serialization. Reject duplicate JSON members, unknown fields and noncanonical values before hashing; no mutable lookup may replace a frozen field on replay.",
+      "properties": {
+        "version": { "const": "rulith-selected-material-binding/1" },
+        "boardId": { "type": "string", "minLength": 1 },
+        "invocationId": { "type": "string", "minLength": 1 },
+        "actionRequestId": { "type": "string", "minLength": 1 },
+        "caseId": { "type": "string", "minLength": 1 },
+        "root": { "type": "string", "minLength": 1 },
+        "openCallRef": { "type": "string", "minLength": 1 },
+        "selector": { "type": "string", "pattern": "^mat_[a-f0-9]{32}$" },
+        "digest": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/Digest" },
+        "ownerId": { "type": "string", "minLength": 1 },
+        "agentId": { "type": "string", "minLength": 1 },
+        "deviceId": { "type": "string", "minLength": 1 },
+        "custodyId": { "type": "string", "pattern": "^mat_[a-f0-9]{32}$" },
+        "totalBytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+        "sourceRecordId": { "type": "string", "minLength": 1 },
+        "connectionId": { "type": "string", "minLength": 1 },
+        "workerId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerId" },
+        "workerGeneration": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/Generation" }
+      }
+    },
+    "SelectedMaterialExecutionGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "boardId", "invocationId", "actionId", "toolContractId", "sourceRecordId", "connectionId", "workerId", "workerGeneration", "adapterDigest", "requestDigest", "materialBindingDigest"],
+      "description": "Version 3 uses every v2 execution identity field, replacing only version:2 with version:3 and requiring a Gateway-private selected-material commitment. The signed token envelope remains the v2 HMAC envelope; consumers must recognize version 3 explicitly.",
+      "properties": {
+        "version": { "const": 3 },
+        "boardId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/boardId" },
+        "invocationId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/invocationId" },
+        "actionId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/actionId" },
+        "toolContractId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/toolContractId" },
+        "sourceRecordId": { "type": "string", "minLength": 1 },
+        "connectionId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/connectionId" },
+        "workerId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/workerId" },
+        "workerGeneration": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/workerGeneration" },
+        "adapterDigest": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/adapterDigest" },
+        "requestDigest": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/requestDigest" },
+        "materialBindingDigest": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/Digest" }
+      }
+    },
+    "SelectedMaterialInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector", "digest", "custodyId", "totalBytes", "deviceId", "bindingDigest"],
+      "description": "The only selected-material projection to the Worker. No Case, owner or Agent identity, original request, open call reference, path, URL or bytes.",
+      "properties": {
+        "selector": { "$ref": "#/$defs/SelectedMaterialBindingPreimage/properties/selector" },
+        "digest": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/Digest" },
+        "custodyId": { "$ref": "#/$defs/SelectedMaterialBindingPreimage/properties/custodyId" },
+        "totalBytes": { "$ref": "#/$defs/SelectedMaterialBindingPreimage/properties/totalBytes" },
+        "deviceId": { "type": "string", "minLength": 1 },
+        "bindingDigest": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/Digest" }
+      }
+    },
+    "SelectedMaterialActionWorkItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workType", "work", "tool", "boardId", "toolContractId", "sourceRecordId", "connectionId", "toolDigest", "executionGrant", "args", "target", "toolSpec", "sourceUpload", "artifactPolicy", "materialInput"],
+      "description": "The v2 action row plus one mandatory selected input. The signed grant must decode as SelectedMaterialExecutionGrant and its materialBindingDigest must equal materialInput.bindingDigest. Schema alone cannot compare the two or validate the private preimage.",
+      "properties": {
+        "workType": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/workType" },
+        "work": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/work" },
+        "tool": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/tool" },
+        "boardId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/boardId" },
+        "toolContractId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/toolContractId" },
+        "sourceRecordId": { "type": "string", "minLength": 1 },
+        "connectionId": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/connectionId" },
+        "toolDigest": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/toolDigest" },
+        "executionGrant": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/executionGrant" },
+        "args": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/args" },
+        "target": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/target" },
+        "toolSpec": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/toolSpec" },
+        "sourceUpload": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/sourceUpload" },
+        "artifactPolicy": { "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/artifactPolicy" },
+        "materialInput": { "$ref": "#/$defs/SelectedMaterialInput" }
+      }
+    }
+  }
+}

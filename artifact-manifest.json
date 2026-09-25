@@ -27,22 +27,37 @@
       "sha256": "182e7ca2a9d5442e43471b6a0240fd16796631fcf002f0f24f29950acaa515c8"
     },
     "protocol/action-input-guards.json": {
+      "sha256": "6011c9618bb7d9caeb3ad9cd075dd451176d6abaac998eb188cce5dac3f5f6d1"
+    },
+    "protocol/action-input-guards-v1.json": {
       "sha256": "55d92d40901868ac10ba2198f1778ec550899a51e218561c90b91b7816997f9f"
     },
     "protocol/action-input-adoption.json": {
       "sha256": "0cc5081570904f761be70540bd2fa089edcfffdc1db9e79acb25de0b70a05c86"
     },
     "protocol/worker-selected-material.schema.json": {
+      "sha256": "9b2a4f87d7cd0ce18520bcd06606e7896ba3f919b5b25186db43baf7a1b0f2e5"
+    },
+    "protocol/worker-selected-material-v1.schema.json": {
       "sha256": "4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e"
     },
+    "protocol/worker-selected-material-v2.schema.json": {
+      "sha256": "f7a0e3ea90f8d94d1698b469d9bc7c75a956c51000399a7876d9506782e173f6"
+    },
     "protocol/worker-selected-material-overlay-pin.json": {
+      "sha256": "26c5a5cab666b73f88dddd2c8d57f076d1d637ab7642e6eecca80064b9583108"
+    },
+    "protocol/worker-selected-material-overlay-pin-v1.json": {
       "sha256": "65445c66b1f94cb4770186cbde9e83387abbb5d11b8f14e85f6001274880bfab"
     },
+    "protocol/worker-selected-material-overlay-pin-v2.json": {
+      "sha256": "616cbe6b498bcd2e7fecdddc1dcd015779b9c3ff3c7469fc92e821100b48640f"
+    },
     "worker/rulith-worker.mjs": {
-      "sha256": "8c8233f045e54a4b68852bc86d24988f7c6512de24a68d55d336bf2de4b69eca"
+      "sha256": "25f9ea021ca37e943dd991a4b58991eabfd3f9169230dd6418a0c2d407bc3b97"
     },
     "worker/action-input-db.mjs": {
-      "sha256": "efb64d9dc038595d44219f82cce261b539fa2f9e3ca06d10ea1128bfa68fa616"
+      "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
     },
     "worker/mcp-client.mjs": {
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"

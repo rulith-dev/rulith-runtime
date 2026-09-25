@@ -27,10 +27,12 @@ test('selected row is closed and requires a Source; ordinary v2 row remains vali
   assert.deepEqual(actionRowFaults(row, row.connectionId), [])
   const input = { selector: `mat_${'a'.repeat(32)}`, digest: `sha256:${'b'.repeat(64)}`,
     custodyId: `mat_${'c'.repeat(32)}`, totalBytes: 3, deviceId: 'device-one', bindingDigest }
-  assert.deepEqual(actionRowFaults({ ...row, materialInput: input }, row.connectionId), [])
-  assert.ok(actionRowFaults({ ...row, materialInput: { ...input, extra: true } }, row.connectionId).length)
+  const sourceBinding = { version: 'rulith-http-source-binding/1', sourceRecordId: row.sourceRecordId,
+    connectionId: row.connectionId, access: 'https://example.com/' }
+  assert.deepEqual(actionRowFaults({ ...row, materialInput: input, sourceBinding, completionRequirement: { stage: 'terminal' } }, row.connectionId), [])
+  assert.ok(actionRowFaults({ ...row, materialInput: { ...input, extra: true }, sourceBinding, completionRequirement: { stage: 'terminal' } }, row.connectionId).length)
   assert.ok(actionRowFaults({ ...row, sourceRecordId: '', materialInput: input }, row.connectionId).length)
-  assert.ok(actionRowFaults({ ...row, materialInput: input, completionRequirement: { stage: 'terminal' } }, row.connectionId).length)
+  assert.ok(actionRowFaults({ ...row, materialInput: input }, row.connectionId).length)
   assert.match(selectedMaterialInputFault({ ...input, totalBytes: 0 }), /byte count/)
 })
 
@@ -65,7 +67,7 @@ test('selected bytes require signed binding, same device, exact submitted custod
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('a valid v3 row stays before Claim and Tool until Gateway selected offer exists', async () => {
+test('a selected v3 row cannot borrow a non-selected Tool', async () => {
   let polls = 0
   const dir = mkdtempSync(join(tmpdir(), 'rulith-selected-wire-'))
   try {
@@ -84,14 +86,16 @@ test('a valid v3 row stays before Claim and Tool until Gateway selected offer ex
       reply: operation => {
         if (operation.kind !== 'Poll') return undefined
         if (++polls !== 1) return HOLD
-        const row = actionRow({ materialInput: input })
+        const row = actionRow({ materialInput: input,
+          sourceBinding: { version: 'rulith-http-source-binding/1', sourceRecordId: 'orders',
+            connectionId: 'conn-p2', access: 'https://example.com/' }, completionRequirement: { stage: 'terminal' } })
         row.executionGrant = signGrant({ ...v3(row), workerId: operation.workerId, workerGeneration: 7 })
         return { body: { accepted: true, payload: { work: [row] } } }
       },
-      done: (seen, output) => /selected material Claim\/offer is not available yet/.test(output),
+      done: (seen, output) => /Frozen terminal completion requires a pinned local HTTP write Tool/.test(output),
     })
     assert.equal(run.timedOut, false, run.output)
-    assert.match(run.output, /selected material Claim\/offer is not available yet/)
+    assert.match(run.output, /Frozen terminal completion requires a pinned local HTTP write Tool/)
     assert.doesNotMatch(run.output, /selected material is unavailable/)
     assert.equal(run.of('ClaimWork').length, 0)
     assert.equal(run.ran('ship'), 0)

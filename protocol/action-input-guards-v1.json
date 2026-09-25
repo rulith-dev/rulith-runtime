@@ -98,22 +98,6 @@
       "contract": "The value names one finalized immutable Artifact version and its content digest. Core verifies current Agent/Board ownership, media type, size, version and digest, and also verifies declared Source disclosure when the Action is Source-bound; a Source-free or board Action does not invent a Source. Delivery rechecks current permission; Worker consumes only the exact authorized bytes and digest. The reference grants no authority and does not attest content meaning."
     },
     {
-      "id": "rulith.payload.local-material@1",
-      "roles": ["payload"],
-      "kinds": ["write", "run"],
-      "phasesByKind": {
-        "write": ["core", "gateway", "worker"],
-        "run": ["core", "gateway", "worker"]
-      },
-      "context": ["agent", "board", "source", "case", "gateway-selection"],
-      "configSchema": {
-        "type": "object",
-        "required": [],
-        "additionalProperties": false
-      },
-      "contract": "A Gateway-authenticated selection of one already submitted local material version. Public payload is exactly ref and digest; Core freezes the Case-bound selector and digest, while private custody and byte validation remain outside Core."
-    },
-    {
       "id": "rulith.value.enum@1",
       "roles": ["scoped"],
       "kinds": ["read", "write", "run", "board"],

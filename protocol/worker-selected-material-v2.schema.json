@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "rulith-worker-selected-material-v3.schema.json",
-  "description": "Separately pinned selected-material terminal HTTP write overlay. A v4 execution grant binds both selected material and the effective Source destination; archived earlier versions are not widened.",
+  "$id": "rulith-worker-selected-material-v2.schema.json",
+  "description": "Separately pinned B2 selected-material overlay for fixed terminal writes. It does not alter ordinary v2 Worker grants or confer execution authority; production adoption is tracked separately.",
   "$defs": {
     "SelectedMaterialBindingPreimage": {
       "type": "object",
@@ -114,13 +114,12 @@
         "workerGeneration",
         "adapterDigest",
         "requestDigest",
-        "materialBindingDigest",
-        "sourceBindingDigest"
+        "materialBindingDigest"
       ],
-      "description": "Version 4 adds a Source destination commitment to the unchanged v3 material commitment. Compute sourceBindingDigest over the closed SourceBinding object using RFC 8785/JCS UTF-8 and SHA-256. Consumers must recognize v4 explicitly; v3 cannot authorize this destination-bound profile.",
+      "description": "Version 3 uses every v2 execution identity field, replacing only version:2 with version:3 and requiring a Gateway-private selected-material commitment. The signed token envelope remains the v2 HMAC envelope; consumers must recognize version 3 explicitly.",
       "properties": {
         "version": {
-          "const": 4
+          "const": 3
         },
         "boardId": {
           "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/boardId"
@@ -154,9 +153,6 @@
           "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/ExecutionGrant/properties/requestDigest"
         },
         "materialBindingDigest": {
-          "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/Digest"
-        },
-        "sourceBindingDigest": {
           "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/Digest"
         }
       }
@@ -214,10 +210,9 @@
         "sourceUpload",
         "artifactPolicy",
         "materialInput",
-        "completionRequirement",
-        "sourceBinding"
+        "completionRequirement"
       ],
-      "description": "Selected terminal action with materialInput and a closed sourceBinding. The v4 signed grant must bind materialInput and the canonical digest of sourceBinding. Source and Connection IDs must match the row and grant. Current Source authorization is checked at Claim; subsequent configuration changes must not redirect an already dispatched effect or reconstruct its report.",
+      "description": "The v2 action row plus one mandatory selected input. The signed grant must decode as SelectedMaterialExecutionGrant and its materialBindingDigest must equal materialInput.bindingDigest. Schema alone cannot compare the two or validate the private preimage. Version 2 requires the original Core terminal completion requirement; consumers must also verify that it matches the frozen Tool contract. Version 1 bytes remain unchanged.",
       "properties": {
         "workType": {
           "$ref": "rulith-worker-protocol-v2.schema.json#/$defs/WorkerActionWorkItem/properties/workType"
@@ -276,38 +271,6 @@
               "const": "terminal"
             }
           }
-        },
-        "sourceBinding": {
-          "$ref": "#/$defs/SourceBinding"
-        }
-      }
-    },
-    "SourceBinding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "version",
-        "sourceRecordId",
-        "connectionId",
-        "access"
-      ],
-      "description": "Effective HTTP Source destination captured by Gateway at Poll. Claim must revalidate this exact binding against the currently executable Source and Tool; successful Claim authorizes this frozen destination for the original dispatch, including result replay. No local override may replace access.",
-      "properties": {
-        "version": {
-          "const": "rulith-http-source-binding/1"
-        },
-        "sourceRecordId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "connectionId": {
-          "type": "string",
-          "minLength": 1
-        },
-        "access": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^https?://"
         }
       }
     }
