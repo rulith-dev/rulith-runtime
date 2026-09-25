@@ -720,6 +720,36 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       throw new MaterialError('material_not_found', 'This selector has no submitted material in this runtime profile.')
     },
     /**
+     * Worker-only byte preparation for a selected effect input. This checks integrity, not
+     * authority: the caller must first verify the signed current execution grant, Source and
+     * Connection binding, and Worker lease. Never call this for model disclosure or accept a
+     * path, UI handle, or model-supplied custody id in place of this private binding.
+     */
+    readSubmittedEffectInput({ custodyId, selector, digest, totalBytes } = {}) {
+      if (!MATERIAL_ID_PATTERN.test(String(custodyId ?? ''))
+        || !MATERIAL_ID_PATTERN.test(String(selector ?? ''))
+        || !/^sha256:[0-9a-f]{64}$/.test(String(digest ?? ''))
+        || !Number.isSafeInteger(totalBytes) || totalBytes <= 0 || totalBytes > MAX_MATERIAL_BYTES) {
+        throw new MaterialError('material_effect_input_invalid',
+          'A selected effect input needs an exact private custody id, selector, digest and byte count.')
+      }
+      const record = this.require(custodyId)
+      if (record.kind !== 'material' || record.selector !== selector || record.id === selector
+        || record.digest !== digest || record.totalBytes !== totalBytes) {
+        throw new MaterialError('material_effect_input_mismatch',
+          'The selected effect input does not match its immutable material metadata.')
+      }
+      // The durable submission ledger binds this model-visible selector to owned custody.
+      // resolveSubmitted also checks the owner, Agent and the complete chunk manifest.
+      if (this.resolveSubmitted(selector).id !== custodyId) {
+        throw new MaterialError('material_effect_input_mismatch',
+          'The submitted selector does not name the selected private custody object.')
+      }
+      // Read once more as the final step: a changed byte between ledger lookup and return
+      // cannot be handed to the effect without passing every chunk and whole-object digest.
+      return { record, bytes: readBytes(record) }
+    },
+    /**
      * Store bytes an action produced, so a reference to them can be registered.
      *
      * `encoding` is the declaration the registration will carry. It is recorded rather than

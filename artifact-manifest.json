@@ -42,7 +42,7 @@
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "worker/material-store.mjs": {
-      "sha256": "27bfa68930f282e2e2d1c3052cd9a76f5ccafc3ebc81ab5158bcef33fc450f83"
+      "sha256": "cdc287aef7aaca293a8c91d65f460c86071cc66eec3af0884fcbf10520269145"
     },
     "worker/material-transport.mjs": {
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"

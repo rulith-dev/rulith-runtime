@@ -238,6 +238,44 @@ test('submitted selector refuses changed digest, Agent, Connection and stored by
   })
 })
 
+test('Worker selected effect read requires exact owned submitted custody and intact whole bytes', () => {
+  area(({ root, identityFor, store }) => {
+    const current = store()
+    const bytes = Buffer.concat([Buffer.alloc(MATERIAL_CHUNK_BYTES, 0x41), Buffer.from('last chunk')])
+    const selected = current.put({ name: 'input.bin', mediaType: 'application/octet-stream', bytes })
+    const unsubmitted = current.put({ name: 'other.bin', mediaType: 'application/octet-stream', bytes: Buffer.from('other') })
+    const binding = { custodyId: selected.id, selector: selected.selector,
+      digest: selected.digest, totalBytes: selected.totalBytes }
+    assert.equal(refusal(() => current.readSubmittedEffectInput(binding)), 'material_not_found')
+    assert.equal(refusal(() => current.readSubmittedEffectInput({ custodyId: unsubmitted.id,
+      selector: unsubmitted.selector, digest: unsubmitted.digest, totalBytes: unsubmitted.totalBytes })), 'material_not_found')
+    current.submitSelected(selected.uiHandle, { sessionKey: 'case-a' })
+    const reopened = openMaterialStore(root, identityFor(), { create: false })
+    assert.ok(reopened.readSubmittedEffectInput(binding).bytes.equals(bytes))
+    assert.equal(refusal(() => reopened.readSubmittedEffectInput({ ...binding, custodyId: unsubmitted.id })),
+      'material_effect_input_mismatch')
+    assert.equal(refusal(() => reopened.readSubmittedEffectInput({ ...binding, selector: unsubmitted.selector })),
+      'material_effect_input_mismatch')
+    assert.equal(refusal(() => reopened.readSubmittedEffectInput({ ...binding, digest: `sha256:${'0'.repeat(64)}` })),
+      'material_effect_input_mismatch')
+    assert.equal(refusal(() => reopened.readSubmittedEffectInput({ ...binding, totalBytes: bytes.length - 1 })),
+      'material_effect_input_mismatch')
+    assert.equal(refusal(() => reopened.readSubmittedEffectInput({ ...binding, custodyId: `../${selected.id}` })),
+      'material_effect_input_invalid')
+    assert.equal(refusal(() => reopened.readSubmittedEffectInput({ ...binding, custodyId: selected.uiHandle })),
+      'material_effect_input_invalid')
+    assert.equal(refusal(() => openMaterialStore(root, identityFor({ connection: 'other' }), { create: false })),
+      'materials_store_owner_mismatch')
+    const otherAgent = materialIdentityFromFingerprints({ profile: reopened.identity.profile,
+      owner: reopened.identity.owner, agentFingerprint: materialAgentFingerprint('ag_other'), modelDestination: REMOTE_MODEL })
+    assert.equal(refusal(() => openMaterialStore(root, otherAgent, { create: false }).readSubmittedEffectInput(binding)),
+      'material_submission_mismatch')
+    const tail = join(root, 'objects', selected.id, 'chunks', '000001.bin')
+    writeFileSync(tail, 'corrupt tail')
+    assert.equal(refusal(() => reopened.readSubmittedEffectInput(binding)), 'material_chunk_corrupt')
+  })
+})
+
 test('a stored material survives a restart, keeps its chunk manifest, and reads back byte for byte', () => {
   area(({ root, identityFor }) => {
     // Larger than one chunk on purpose: a manifest that only ever sees one chunk proves
