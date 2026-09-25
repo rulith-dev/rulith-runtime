@@ -67,19 +67,33 @@ test('selected bytes require signed binding, same device, exact submitted custod
 
 test('a valid v3 row stays before Claim and Tool until Gateway selected offer exists', async () => {
   let polls = 0
-  const input = { selector: `mat_${'a'.repeat(32)}`, digest: `sha256:${'b'.repeat(64)}`,
-    custodyId: `mat_${'c'.repeat(32)}`, totalBytes: 3, deviceId: 'device-one', bindingDigest }
-  const run = await driveWorker({
-    reply: operation => {
-      if (operation.kind !== 'Poll') return undefined
-      if (++polls !== 1) return HOLD
-      const row = actionRow({ materialInput: input })
-      row.executionGrant = signGrant({ ...v3(row), workerId: operation.workerId, workerGeneration: 7 })
-      return { body: { accepted: true, payload: { work: [row] } } }
-    },
-    done: (seen, output) => /selected material is unavailable|Claim\/offer is not available/.test(output),
-  })
-  assert.equal(run.timedOut, false, run.output)
-  assert.equal(run.of('ClaimWork').length, 0)
-  assert.equal(run.ran('ship'), 0)
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-selected-wire-'))
+  try {
+    const root = join(dir, 'materials')
+    const identity = materialIdentity({ configFile: join(dir, 'local.json'), gatewayUrl: 'https://api.rulith.ai',
+      connectionId: 'conn-p2', agentId: 'agent', deviceId: 'device-one', modelUrl: 'http://127.0.0.1:1234' })
+    const store = openMaterialStore(root, identity)
+    const record = store.put({ name: 'selected.txt', mediaType: 'text/plain', bytes: Buffer.from('real selected bytes') })
+    store.submitSelected(record.uiHandle, { sessionKey: 's', caseId: 'c' })
+    const input = { selector: record.selector, digest: record.digest, custodyId: record.id,
+      totalBytes: record.totalBytes, deviceId: 'device-one', bindingDigest }
+    const run = await driveWorker({
+      env: { RULITH_MATERIALS_ROOT: root, RULITH_MATERIALS_PROFILE: identity.profile,
+        RULITH_MATERIALS_OWNER: identity.owner, RULITH_MATERIALS_AGENT_FINGERPRINT: identity.agentFingerprint,
+        RULITH_MATERIALS_DEVICE_ID: 'device-one', RULITH_MATERIALS_MODEL_DESTINATION: identity.modelDestination },
+      reply: operation => {
+        if (operation.kind !== 'Poll') return undefined
+        if (++polls !== 1) return HOLD
+        const row = actionRow({ materialInput: input })
+        row.executionGrant = signGrant({ ...v3(row), workerId: operation.workerId, workerGeneration: 7 })
+        return { body: { accepted: true, payload: { work: [row] } } }
+      },
+      done: (seen, output) => /selected material Claim\/offer is not available yet/.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.match(run.output, /selected material Claim\/offer is not available yet/)
+    assert.doesNotMatch(run.output, /selected material is unavailable/)
+    assert.equal(run.of('ClaimWork').length, 0)
+    assert.equal(run.ran('ship'), 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

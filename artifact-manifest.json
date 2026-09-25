@@ -32,6 +32,12 @@
     "protocol/action-input-adoption.json": {
       "sha256": "0cc5081570904f761be70540bd2fa089edcfffdc1db9e79acb25de0b70a05c86"
     },
+    "protocol/worker-selected-material.schema.json": {
+      "sha256": "4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e"
+    },
+    "protocol/worker-selected-material-overlay-pin.json": {
+      "sha256": "65445c66b1f94cb4770186cbde9e83387abbb5d11b8f14e85f6001274880bfab"
+    },
     "worker/rulith-worker.mjs": {
       "sha256": "8c8233f045e54a4b68852bc86d24988f7c6512de24a68d55d336bf2de4b69eca"
     },

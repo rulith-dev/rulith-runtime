@@ -11,11 +11,15 @@ const schema = JSON.parse(schemaBytes)
 const base = JSON.parse(read('protocol/worker-contract.json'))
 const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 const fail = message => { throw new Error(`selected material overlay: ${message}`) }
+const CANONICAL_OVERLAY_SHA256 = 'sha256:4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e'
+const CANONICAL_BASE_SHA256 = 'sha256:7419793b427750f74a959b4978c3d229a6eb16480d858cafc1add2609f98c986'
 
 if (pin.version !== 'rulith-worker-selected-material-overlay-pin/1'
     || pin.schemaPath !== 'docs/specs/schemas/rulith-worker-selected-material-v1.schema.json'
     || pin.baseSchemaPath !== 'docs/specs/schemas/rulith-worker-protocol-v2.schema.json'
     || pin.productionAdopted !== false) fail('unexpected pin metadata')
+if (pin.schemaSha256 !== CANONICAL_OVERLAY_SHA256
+    || pin.baseSchemaSha256 !== CANONICAL_BASE_SHA256) fail('pin differs from immutable canonical digest')
 if (digest(schemaBytes) !== pin.schemaSha256) fail('schema bytes differ from canonical pin')
 if (base.files[pin.baseSchemaPath]?.sha256 !== pin.baseSchemaSha256) fail('base Worker contract differs from overlay pin')
 const defs = schema.$defs

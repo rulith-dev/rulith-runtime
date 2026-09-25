@@ -23,6 +23,8 @@ const files = [
   'protocol/worker-material-sha256.txt',
   'protocol/action-input-guards.json',
   'protocol/action-input-adoption.json',
+  'protocol/worker-selected-material.schema.json',
+  'protocol/worker-selected-material-overlay-pin.json',
   'worker/rulith-worker.mjs',
   'worker/action-input-db.mjs',
   'worker/mcp-client.mjs',
