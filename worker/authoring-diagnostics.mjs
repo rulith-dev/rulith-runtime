@@ -13,7 +13,7 @@ const constructionCodes = new Set([
   'predicate_symbol_duplicate', 'predicate_id_duplicate', 'predicate_symbol_unknown',
   'import_id_invalid', 'number_not_ecmascript_exact',
 ])
-const constructionPath = /^\$(?:\.(?:format|namespace|program|caseContracts|citations|examples|questions|notes|id|title|summary|judges|predicates|imports|pins|rules|actions|acceptance|name|as|args|when|then|preconditions|effects|execution|returns|businessKey|opening|predicate|arguments|keyArguments|minimumGroundingFloor|label|facts|expect|forbid|forbidPredicates)(?:\[\d+\])?)*$/
+const constructionPath = /^\$(?:\.(?:format|namespace|program|caseContracts|citations|examples|questions|notes|id|title|summary|judges|predicates|imports|pins|rules|actions|acceptance|name|as|args|when|then|preconditions|effects|execution|returns|businessKey|opening|predicate|arguments|keyArguments|minimumGroundingFloor|label|facts|expect|forbid|forbidPredicates)(?:\[\d{1,6}\])?)*$/
 
 // An in-process carrier, minted only after the safe projection. Generic adapter
 // strings or copied objects cannot opt themselves into this inline exception.
@@ -26,13 +26,32 @@ export function createConstructionGuidance(errors) {
   const rows = Array.isArray(errors) ? errors : []
   const safe = rows.slice(0, 8).map(row => ({
     code: constructionCodes.has(row?.code) ? row.code : 'construction_invalid',
-    ...(constructionPath.test(row?.path) ? { path: row.path } : {}),
+    ...(typeof row?.path === 'string' && row.path.length <= 128 && constructionPath.test(row.path) ? { path: row.path } : {}),
   }))
+  const predicateArgsNeedNames = rows.some(row => row?.code === 'array_required'
+    && /^\$\.program\.predicates\[\d+\]\.args$/.test(row?.path))
+  const predicateAliasInvalid = rows.some(row => row?.code === 'predicate_symbol_invalid'
+    && /^\$\.program\.predicates\[\d+\]\.as$/.test(row?.path))
+  const formatGuidance = [
+    ...(predicateArgsNeedNames
+      ? ['program.predicates[].args declares field names as a JSON array of strings, for example ["entity_id","amount"]. A rule or example atom uses a separate args JSON object keyed by those field names.']
+      : []),
+    ...(predicateAliasInvalid
+      ? ['program.predicates[].as is a local alias matching [a-z][a-z0-9_]*; omit the namespace and dots. The separate name field is the final predicate name.']
+      : []),
+  ]
   const carrier = Object.freeze({})
-  guidance.set(carrier, 'Local constructor diagnostics (guidance, not additional evidence): ' + JSON.stringify({
+  const projection = {
     errors: safe, errorCount: rows.length, diagnosticsTruncated: rows.length > safe.length,
+    ...(formatGuidance.length ? { formatGuidance } : {}),
     details: 'Read the attached immutable construction Artifact for the complete submitted input and diagnostics.',
-  }))
+  }
+  const render = () => 'Local constructor diagnostics (guidance, not additional evidence): ' + JSON.stringify(projection)
+  while (Buffer.byteLength(render()) > 1200 && projection.errors.length > 0) {
+    projection.errors.pop()
+    projection.diagnosticsTruncated = true
+  }
+  guidance.set(carrier, render())
   return carrier
 }
 export function authoringGuidanceText(carrier) {

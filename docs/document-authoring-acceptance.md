@@ -204,6 +204,19 @@ request used 694 input tokens and 1,260–1,488 output tokens. This is the
 comparable synthetic first-call baseline; it does not exercise the browser,
 Case closure, private save, visible input-error result or capability adoption.
 
+The Worker now adds fixed, source-independent repair advice when the constructor
+rejects a predicate field-name array or a local alias. It names the required
+shapes without echoing the submitted names or document. Two opt-in, two-call
+DeepSeek Flash diagnostics still ended in failure. In both, constructor feedback
+let the second submission compile, but the independent fee audit passed only
+8/12 and 6/12 respectively, and neither proposal guarded its output rules.
+The second run exercised the final field-array advice: first call failed on
+three `program.predicates[].args` declarations; the next compiled, passed
+4/6 self-selected examples and 6/12 held-out boundaries. Cumulative provider
+usage was 3,263 input and 3,347 output tokens. These small stochastic runs
+demonstrate a usable format-repair path, not business correctness, lower total
+cost, a visible input-error result or an automatic product retry.
+
 The next isolated one-call diagnostic exposed a concrete chain of first-check
 failures on the same synthetic shipping document: an invalid Case Type,
 unbound conclusion variables, then output rules that still inferred a fee for

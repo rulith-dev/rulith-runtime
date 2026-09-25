@@ -7,6 +7,7 @@ test('construction guidance keeps fixed codes and schema paths but drops free-fo
   const carrier = createConstructionGuidance([
     { code: 'predicate_symbol_unknown', path: '$.program.rules[3].when[1].predicate' },
     { code: 'field_unknown', path: `$.program.${secret}` },
+    { code: 'array_required', path: `$.program.predicates[${'7'.repeat(150)}].args` },
     { code: secret, path: `$.${secret}` },
   ])
   const text = authoringGuidanceText(carrier)
@@ -14,6 +15,41 @@ test('construction guidance keeps fixed codes and schema paths but drops free-fo
   assert.match(text, /\$\.program\.rules\[3\]\.when\[1\]\.predicate/)
   assert.match(text, /construction_invalid/)
   assert.doesNotMatch(text, new RegExp(secret))
+  assert.doesNotMatch(text, /7{20}/)
+})
+
+test('constructor gives fixed field-declaration repair advice without copying submitted names', () => {
+  const secret = 'PRIVATE_DOCUMENT_SENTINEL'
+  const text = authoringGuidanceText(createConstructionGuidance([
+    { code: 'array_required', path: '$.program.predicates[2].args', detail: secret },
+    { code: 'array_required', path: `$.program.predicates[${secret}].args` },
+  ]))
+  assert.match(text, /program\.predicates\[\]\.args declares field names as a JSON array of strings/)
+  assert.match(text, /rule or example atom uses a separate args JSON object/)
+  assert.doesNotMatch(text, new RegExp(secret))
+  assert.ok(Buffer.byteLength(text) < 1600)
+})
+
+test('constructor explains invalid aliases without printing the submitted alias', () => {
+  const secret = 'PRIVATE_DOCUMENT_SENTINEL'
+  const text = authoringGuidanceText(createConstructionGuidance([
+    { code: 'predicate_symbol_invalid', path: '$.program.predicates[0].as', submitted: secret },
+  ]))
+  assert.match(text, /local alias matching \[a-z\]\[a-z0-9_\]\*/)
+  assert.match(text, /omit the namespace and dots/)
+  assert.doesNotMatch(text, new RegExp(secret))
+})
+
+test('constructor advice fits an inline receipt even with many long schema coordinates', () => {
+  const rows = Array.from({ length: 30 }, (_, index) => ({
+    code: index % 2 ? 'predicate_symbol_invalid' : 'array_required',
+    path: `$.program.predicates[${String(index).padStart(6, '0')}].${index % 2 ? 'as' : 'args'}`,
+  }))
+  const text = authoringGuidanceText(createConstructionGuidance(rows))
+  assert.ok(Buffer.byteLength(text) <= 1200)
+  assert.match(text, /"diagnosticsTruncated":true/)
+  assert.match(text, /formatGuidance/)
+  assert.match(text, /"errorCount":30/)
 })
 
 test('inline diagnostics expose indexes and fixed codes without copying any free-form material', () => {
