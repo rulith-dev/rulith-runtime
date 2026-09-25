@@ -3,8 +3,20 @@
 // report stays in its immutable Artifact behind the existing material permissions.
 const citationReasons = new Set(['rule_unknown', 'quote_not_found', 'locator_mismatch', 'ambiguous_quote', 'rule_uncited'])
 const count = value => Array.isArray(value) ? value.length : null
-const compileCode = value => value === 'Invalid Case Type' ? 'invalid_case_type'
-  : value.includes('Every definition needs an argument-name array.') ? 'definition_args_required' : 'compile_error'
+const compileIssue = value => {
+  if (value === 'Invalid Case Type') return { code: 'invalid_case_type' }
+  if (value === 'Every definition needs an argument-name array.') return { code: 'definition_args_required' }
+  const row = /^(rules|acceptance)\[(\d{1,3})\] (.+)$/.exec(value)
+  if (!row) return { code: 'compile_error' }
+  const detail = row[3]
+  const code = detail === 'uses an undeclared predicate.' ? 'undeclared_predicate'
+    : /^conclusion variable \?[A-Za-z0-9_]{1,128} has no positive premise binding\.$/.test(detail) ? 'unbound_conclusion_variable'
+      : detail === 'atom args must be an object.' ? 'atom_args_invalid'
+        : detail === 'cannot derive a built-in predicate.' ? 'builtin_in_conclusion'
+          : detail === 'requires id.' ? 'rule_id_required'
+            : detail === 'requires a human-readable label.' ? 'rule_label_required' : 'compile_error'
+  return code === 'compile_error' ? { code } : { code, section: row[1], index: Number(row[2]) }
+}
 const guidance = new WeakMap()
 const constructionCodes = new Set([
   'construction_object_required', 'construction_format_unsupported', 'namespace_invalid',
@@ -65,17 +77,20 @@ export function authoringDiagnostics(report) {
   const results = Array.isArray(report.examples?.results) ? report.examples.results : []
   const failed = results.flatMap((row, index) => row?.passed === false ? [{ row, index }] : [])
   const unverified = Array.isArray(report.citations?.unverified) ? report.citations.unverified : []
-  const codes = [...new Set(errors.map(compileCode))]
+  const issues = errors.map(compileIssue)
+  const codes = [...new Set(issues.map(row => row.code))]
   const out = {
     errors: codes,
     diagnosticCounts: { compileErrors: errors.length, failedExamples: failed.length, unverifiedCitations: unverified.length },
+    compileIssues: issues.filter(row => row.code !== 'compile_error').slice(0, 6),
     failedExamples: failed.slice(0, 3).map(({ row, index }) => ({ index,
       missingCount: count(row.missing), unexpectedCount: count(row.unexpected), copiedIntoInputsCount: count(row.copiedIntoInputs) })),
     // This is the index in report.citations.unverified, not an inferred draft index.
     unverifiedCitations: unverified.slice(0, 3).map((row, unverifiedIndex) => ({ unverifiedIndex,
       reason: citationReasons.has(row?.reason) ? row.reason : 'citation_unverified' })),
     exampleDetailsComplete: Array.isArray(report.examples?.results) && results.length === report.examples?.total,
-    diagnosticsTruncated: errors.length > codes.length || failed.length > 3 || unverified.length > 3,
+    diagnosticsTruncated: issues.filter(row => row.code !== 'compile_error').length > 6
+      || errors.length > codes.length || failed.length > 3 || unverified.length > 3,
     details: 'Indexes are zero-based. Read the attached immutable check Artifact for the complete draft and checker report; material permissions apply.',
   }
   // Static advice is separate from checker evidence. No rule, key or citation is
@@ -84,5 +99,9 @@ export function authoringDiagnostics(report) {
     'caseContracts[].caseType must match [a-z][a-z0-9_]{0,63}: 1–64 characters, starting with a lowercase letter; no dots or hyphens.'
   else if (codes.includes('definition_args_required')) out.formatGuidance =
     'program.vocabulary.defines[].args is an array of field names, for example ["entity_id","amount"]. Atom args are objects keyed by those names.'
+  else if (codes.includes('undeclared_predicate')) out.formatGuidance =
+    'A rule atom must name a declared local predicate alias, an explicit import alias, or a built-in; compare it with program.predicates[].as.'
+  else if (codes.includes('unbound_conclusion_variable')) out.formatGuidance =
+    'Every conclusion variable must be bound by a positive premise in the same rule; keep the input and output field variables consistent.'
   return out
 }

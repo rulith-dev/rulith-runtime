@@ -80,6 +80,26 @@ test('inline diagnostics expose indexes and fixed codes without copying any free
   assert.equal(JSON.stringify(report), before, 'the immutable report is not rewritten')
 })
 
+test('compiler diagnostics identify fixed rule failures without copying submitted values', () => {
+  const secret = 'PRIVATE_DOCUMENT_SENTINEL'
+  const result = authoringDiagnostics({ compileErrors: [
+    'rules[12] uses an undeclared predicate.',
+    'rules[3] conclusion variable ?amount has no positive premise binding.',
+    `rules[9] conclusion variable ?${secret} has no positive premise binding.`,
+    'acceptance[0] atom args must be an object.',
+    `rules[4] uses an undeclared predicate. ${secret}`,
+  ] })
+  assert.deepEqual(result.compileIssues, [
+    { code: 'undeclared_predicate', section: 'rules', index: 12 },
+    { code: 'unbound_conclusion_variable', section: 'rules', index: 3 },
+    { code: 'unbound_conclusion_variable', section: 'rules', index: 9 },
+    { code: 'atom_args_invalid', section: 'acceptance', index: 0 },
+  ])
+  assert.ok(result.errors.includes('compile_error'))
+  assert.match(result.formatGuidance, /declared local predicate alias/)
+  assert.ok(!JSON.stringify(result).includes(secret))
+})
+
 test('format repair advice is distinct from the original refusal and adds no draft or success', () => {
   const report = { compileErrors: ['Invalid Case Type'], examples: { total: 0, results: [] } }
   const result = authoringDiagnostics(report)
