@@ -441,23 +441,26 @@ test('private proof crosses only the confirmed Host-to-Agent header and exact re
   } })
 })
 
-test('missing or mismatched proof confirmation and existing case focus never reach the Agent', async () => {
+test('missing or mismatched proof confirmation blocks both supplemental and new Case material', async () => {
   let registerCalls = 0
+  const targets = []
   await withHost(async ({ call, tasks }) => {
     const added = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'secret' })).json()).material
     const focused = await call('/cases', { method: 'POST', body: JSON.stringify({
       text: 'read', requestId: 'focus-click-request-1', caseId: 'CASE_1', attachments: [added.id] }) })
-    assert.equal(focused.status, 400)
-    assert.equal((await focused.json()).errorCode, 'material_case_focus_unsupported')
-    assert.equal(registerCalls, 0)
+    assert.equal(focused.status, 503)
+    assert.equal((await focused.json()).errorCode, 'material_registration_unconfirmed')
+    assert.equal(registerCalls, 1)
+    assert.deepEqual(targets, ['CASE_1'])
     const unconfirmed = await call('/cases', { method: 'POST', body: JSON.stringify({
       text: 'read', requestId: 'unconfirmed-proof-1', attachments: [added.id] }) })
     assert.equal(unconfirmed.status, 503)
     assert.equal((await unconfirmed.json()).errorCode, 'material_registration_unconfirmed')
-    assert.equal(registerCalls, 1)
+    assert.equal(registerCalls, 2)
     assert.deepEqual(tasks().filter(row => row.kind === 'task'), [])
   }, { withAgent: true, registerMaterialSubmission: async receipt => {
     registerCalls++
+    targets.push(receipt.targetCaseId || '')
     return { state: 'registered', agentId: receipt.agent, submissionId: receipt.submissionId,
       requestId: receipt.requestId, sessionKey: receipt.sessionKey, attachments: receipt.attachments,
       proofDigest: 'sha256:' + '0'.repeat(64), registeredAt: new Date().toISOString() }

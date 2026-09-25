@@ -71,7 +71,9 @@ const readBody = (req) => new Promise((accept) => {
 async function startHost() {
   const KEY = 'host-browser-key-0001'
   const stored = []
-  const control = { materialDelay: 0, materialStatus: 200, casesDelay: 0, cases: { ok: true, sessionKey: 's-1' }, sends: [] }
+  const streams = new Set()
+  const control = { materialDelay: 0, materialStatus: 200, casesDelay: 0, cases: { ok: true, sessionKey: 's-1' }, sends: [], extraEvents: [],
+    emit(event) { this.extraEvents.push(event);for (const stream of streams) stream.write('data: ' + JSON.stringify(event) + '\n\n') } }
   /** Two conversations the sidebar knows about, replayed as the real host replays its buffer. */
   const REPLAY = ['s-alpha', 's-beta'].map((session, at) => ({ src: 'agent', type: 'task-start', session,
     at: '2026-09-20T15:3' + at + ':00.000Z', text: 'Working in ' + session }))
@@ -91,7 +93,9 @@ async function startHost() {
     if (path === '/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
       res.write(': open\n\n')
+      streams.add(res);res.on('close', () => streams.delete(res))
       for (const event of REPLAY) res.write('data: ' + JSON.stringify(event) + '\n\n')
+      for (const event of control.extraEvents) res.write('data: ' + JSON.stringify(event) + '\n\n')
       return
     }
     if (path === '/materials' && req.method === 'POST') {
@@ -146,6 +150,59 @@ const arm = (name, body) => test(name, { skip: SKIP }, async () => {
 
 /** A real file for the real input, without touching the disk this test runs on. */
 const upload = (name, mimeType, text) => ({ name, mimeType, buffer: Buffer.from(text, 'utf8') })
+
+arm('a file in an existing conversation is sent to its one observed running Case', async ({ page, host }) => {
+  host.control.emit({ src: 'agent', type: 'focus', session: 's-alpha',
+    roots: [{ caseId: 'CASE-A', status: 'running', contact: 'observed', root: 'ROOT-A' }] })
+  await page.click('[data-case="s-alpha"]')
+  await page.click('#caseoptions');await page.click('#attachfiles')
+  await page.setInputFiles('#fileinput', [upload('supplement.txt', 'text/plain', 'new fact')])
+  await page.waitForFunction(() => document.querySelector('#attachlist .chip-state')?.textContent === 'Ready')
+  await page.click('#filesclose')
+  assert.equal(await page.inputValue('#materialtarget'), 'CASE-A')
+  await page.fill('#prompt', 'Use this additional file')
+  await page.click('#send')
+  await page.waitForFunction(() => document.getElementById('prompt').value === '')
+  assert.equal(host.control.sends[0].caseId, 'CASE-A')
+  assert.deepEqual(host.control.sends[0].attachments, ['mat-1'])
+})
+
+arm('several focused Cases require choosing the exact material target', async ({ page, host }) => {
+  host.control.emit({ src: 'agent', type: 'focus', session: 's-alpha',
+    roots: [{ caseId: 'CASE-A', status: 'running', contact: 'observed', root: 'ROOT-A' },
+      { caseId: 'CASE-B', status: 'running', contact: 'observed', root: 'ROOT-B' }] })
+  await page.click('[data-case="s-alpha"]')
+  await page.click('#caseoptions');await page.click('#attachfiles')
+  await page.setInputFiles('#fileinput', [upload('supplement.txt', 'text/plain', 'new fact')])
+  await page.waitForFunction(() => document.querySelector('#attachlist .chip-state')?.textContent === 'Ready')
+  await page.click('#filesclose')
+  await page.fill('#prompt', 'Use this additional file')
+  await page.click('#send')
+  assert.equal(host.control.sends.length, 0)
+  assert.match(await page.textContent('#composererr'), /Choose which Case/)
+  await page.selectOption('#materialtarget', 'CASE-B')
+  await page.click('#send')
+  await page.waitForFunction(() => document.getElementById('prompt').value === '')
+  assert.equal(host.control.sends[0].caseId, 'CASE-B')
+})
+
+arm('a Case whose running status was not refreshed is never preselected for files', async ({ page, host }) => {
+  host.control.emit({ src: 'agent', type: 'focus', session: 's-alpha',
+    roots: [{ caseId: 'CASE-A', status: 'running', contact: 'not-refreshed', root: 'ROOT-A' }] })
+  await page.click('[data-case="s-alpha"]')
+  await page.click('#caseoptions');await page.click('#attachfiles')
+  await page.setInputFiles('#fileinput', [upload('supplement.txt', 'text/plain', 'new fact')])
+  await page.waitForFunction(() => document.querySelector('#attachlist .chip-state')?.textContent === 'Ready')
+  await page.click('#filesclose')
+  assert.equal(await page.inputValue('#materialtarget'), '__choose__')
+  await page.fill('#prompt', 'Use this file')
+  await page.click('#send')
+  assert.equal(host.control.sends.length, 0)
+  await page.selectOption('#materialtarget', 'CASE-A')
+  await page.click('#send')
+  await page.waitForFunction(() => document.getElementById('prompt').value === '')
+  assert.equal(host.control.sends[0].caseId, 'CASE-A')
+})
 
 arm('files chosen in the dialog arrive byte for byte, and the message carries only their ids',
   async ({ page, host }) => {

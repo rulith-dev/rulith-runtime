@@ -339,7 +339,7 @@ test('RT-META-2 the identity, revision and focus the host tracks come only from 
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
-  assert.deepEqual(focus.roots, [{ caseId: 'CASE_1', root: 'ROOT_1', status: 'running' }],
+  assert.deepEqual(focus.roots, [{ caseId: 'CASE_1', root: 'ROOT_1', status: 'running', contact: 'observed' }],
     'focus pairs must be the ones Core returned, never derived locally')
   const observed = run.localEvents.filter((event) => event.type === 'case-state').at(-1)
   assert.equal(observed.caseId, 'CASE_1')

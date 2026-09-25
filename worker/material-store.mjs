@@ -661,12 +661,17 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       throw new MaterialError('material_not_found', 'The selected material does not belong to this runtime profile.')
     },
     /** One Host click freezes the whole selection before any part reaches the Agent. */
-    submitSelectedSet(handles, { requestId, sessionKey } = {}) {
+    submitSelectedSet(handles, { requestId, sessionKey, targetCaseId = '' } = {}) {
       if (typeof requestId !== 'string' || requestId === '' || requestId.length > 256) {
         throw new MaterialError('material_submission_invalid', 'A material submission needs a bounded request id.')
       }
       if (typeof sessionKey !== 'string' || sessionKey === '') {
         throw new MaterialError('material_submission_invalid', 'A material submission needs its conversation identity.')
+      }
+      if (typeof targetCaseId !== 'string' || (targetCaseId !== ''
+        && (targetCaseId.length > 256 || targetCaseId.trim() !== targetCaseId
+          || !/^[A-Za-z0-9:_-]+$/.test(targetCaseId)))) {
+        throw new MaterialError('material_submission_invalid', 'A supplemental submission needs one exact Case id.')
       }
       if (!identity.agentId || marker.agent !== identity.agentId) {
         throw new MaterialError('materials_store_owner_mismatch', 'A material submission needs the confirmed current Agent.')
@@ -683,8 +688,8 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       }))
       const receiptPath = join(submissionsDir,
         `${fingerprint('rulith-material-submission', identity.agentId, requestId)}.json`)
-      const candidate = { version: 4, submissionId: `sub_${randomUUID().replace(/-/g, '')}`,
-        requestId, sessionKey, agent: identity.agentId,
+      const candidate = { version: 5, submissionId: `sub_${randomUUID().replace(/-/g, '')}`,
+        requestId, sessionKey, agent: identity.agentId, targetCaseId,
         owner: { profile: identity.profile, owner: identity.owner },
         attachments, custodyBindings, proofSecret: randomBytes(32).toString('hex'),
         selectionSecret: randomBytes(32).toString('hex'), recordedAt: new Date().toISOString() }
@@ -705,8 +710,9 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       let receipt = candidate
       if (!elected) {
         try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) } catch { /* refused below */ }
-        if (receipt?.version !== 4 || receipt.requestId !== requestId
+        if (![4, 5].includes(receipt?.version) || receipt.requestId !== requestId
           || receipt.sessionKey !== sessionKey || receipt.agent !== identity.agentId
+          || (receipt.version === 4 ? targetCaseId !== '' : receipt.targetCaseId !== targetCaseId)
           || receipt.owner?.profile !== identity.profile || receipt.owner?.owner !== identity.owner
           || JSON.stringify(receipt.attachments) !== JSON.stringify(attachments)
           || JSON.stringify(receipt.custodyBindings) !== JSON.stringify(custodyBindings)
@@ -721,7 +727,7 @@ export function openMaterialStore(root, identity, { create = true } = {}) {
       // A crash after receipt election may leave only the receipt. An exact retry finishes
       // the per-material ledgers; their inherited stranded locks still fail closed.
       const publicAttachments = handles.map((handle) => this.submitSelected(handle,
-        { sessionKey, requestId }))
+        { sessionKey, requestId, caseId: targetCaseId }))
       return { receipt, attachments: publicAttachments }
     },
     /** User submission freezes the private selector-to-custody/version mapping durably. */

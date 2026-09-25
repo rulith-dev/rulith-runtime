@@ -642,6 +642,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       sessionKey: receipt.sessionKey, attachments: receipt.attachments,
       custodyBindings: receipt.custodyBindings,
       proofDigest: receipt.proofDigest, selectionDigest: receipt.selectionDigest,
+      ...(receipt.targetCaseId ? { targetCaseId: receipt.targetCaseId } : {}),
     })
     const latest = record(id), current = device.status()
     if (phase !== 'ready' || Object.entries(scope).some(([field, value]) =>

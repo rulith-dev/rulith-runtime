@@ -39,20 +39,35 @@ test('real Agent sends private proof only on create-form OpenCase MCP header and
   assert.equal(saved.turns.length, 1)
 })
 
-test('real Agent refuses attached tasks without proof or with case focus before MCP egress', async () => {
-  for (const [name, proof, caseId] of [
-    ['missing proof', undefined, undefined], ['focused case', PROOF, 'CASE_1'],
-    ['malformed proof', 'not-a-proof', undefined],
+test('real Agent refuses attached tasks without a valid Host proof before MCP egress', async () => {
+  for (const [name, proof] of [
+    ['missing proof', undefined], ['malformed proof', 'not-a-proof'],
   ]) {
     const run = await runAgent({ argv: ['--serve'],
       env: { RULITH_SERVE_PORT: String(await freePort()), RULITH_SERVE_KEY: 'task-proof-key' },
       serveTaskHeaders: proof ? { 'x-rulith-material-task-proof': proof } : {},
-      serveTasks: [{ text: 'Open', requestId: 'refused-proof-task-1', attachments: [ATTACHMENT],
-        ...(caseId ? { caseId } : {}) }], timeoutMs: 150 })
+      serveTasks: [{ text: 'Open', requestId: 'refused-proof-task-1', attachments: [ATTACHMENT] }], timeoutMs: 150 })
     assert.deepEqual(run.serveStatuses, [400], `${name}: ${run.stdout}\n${run.stderr}`)
     assert.equal(run.requests.filter(row => row.method === 'tools/call').length, 0, name)
     assert.equal(run.modelRequests.length, 0, name)
   }
+})
+
+test('a supplement focuses its exact Case with the Host proof before asking the model', async () => {
+  const run = await runAgent({ argv: ['--serve'],
+    env: { RULITH_SERVE_PORT: String(await freePort()), RULITH_SERVE_KEY: 'task-proof-key' },
+    serveTaskHeaders: { 'x-rulith-material-task-proof': PROOF },
+    serveTasks: [{ text: 'Add these notes to the selected Case.', requestId: 'supplement-proof-task-1',
+      sessionKey: 'supplement-session', caseId: 'CASE_1', attachments: [ATTACHMENT] }],
+    waitForServeCompletion: true, timeoutMs: 800,
+  })
+  assert.deepEqual(run.serveStatuses, [202], run.stdout + '\n' + run.stderr)
+  const calls = run.requests.filter(row => row.method === 'tools/call')
+  assert.equal(calls.length, 1)
+  assert.equal(run.toolCalls[0].name, 'OpenCase')
+  assert.deepEqual(run.toolCalls[0].args, { caseId: 'CASE_1' })
+  assert.equal(calls[0].headers['x-rulith-material-task-proof'], PROOF)
+  assert.equal(run.modelRequests.length, 0, 'unconfirmed Case binding stops before material enters the model')
 })
 
 test('same task request accepts the same proof once and refuses a changed proof without egress', async t => {

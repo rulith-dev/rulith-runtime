@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "b233c7087310172f85820b0065b3a5837c62a8deae6f755203de1865fbc03348"
+      "sha256": "ef4f382a6e1735d33ec5c76e2d6373a1e6e68bf3bef816eaeba89ba57bebeb1a"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -63,7 +63,7 @@
       "sha256": "489694938a5518cf06671e6cbe47562a1e2b0fe21c94c62a17b57c035caf9b46"
     },
     "worker/material-store.mjs": {
-      "sha256": "b05d1bc8b71b43a3763d38ad89f37435fb35e12da731454dc455ad7f9a9838c1"
+      "sha256": "75dc67a460b963f0814d057365f9f0f3bd487e7354d2c83bb024bb50ba64074b"
     },
     "worker/material-transport.mjs": {
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
@@ -84,13 +84,13 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "b49ed0eb3894994b4b2e7c8d06cf19d32d64a138f6a9789ecaabff64e83a4060"
+      "sha256": "b8b251d5850980d7be677d64ccbe8a098a28f1bfe9a08fc0596ce015f5ac7a3e"
     },
     "local/material-service.mjs": {
       "sha256": "c792c11005480860e1656fa49b257eedb55d453cc3574687a52a707f2479fa8c"
     },
     "local/local-ui.mjs": {
-      "sha256": "ca12cb2e75298d5bef66761a2e5a05e184ae2334957334017e5febbe72bce2b0"
+      "sha256": "cf2726570a6a743023e02427ee369a66df48a55b4499fb93dfc54a0a17947e1e"
     },
     "local/theme.mjs": {
       "sha256": "a0d692385464527706e0d12126970190a518c4b03077731473bdd58b6f2a141a"
@@ -102,10 +102,10 @@
       "sha256": "463c14bd288350a5e85d8b0dfb5e213f9ff75976c5a536e2330a735e31bab859"
     },
     "local/device-client.mjs": {
-      "sha256": "20853bfdcfa4b554fac3ad120ecfa32b44f37186e6f40e1798e501e22a961142"
+      "sha256": "c363b57bb1920e6f32e4caf557fe829aac79ae9eaedb4eea90550c1924ab080b"
     },
     "local/instance-manager.mjs": {
-      "sha256": "d4e5fbcb3896a191e8801eb28ed5432f40e0514c153c8bdfa04addbff428a4bc"
+      "sha256": "6c8a926f7101df43161fc7ec2fadbd505efdbb83b5c57627da9d8bae10e802bf"
     },
     "local/manager-server.mjs": {
       "sha256": "679f6f622acb1a85a1160b8dcd0c4de0688e65c1dd1f3ed4f581ea012e18f702"

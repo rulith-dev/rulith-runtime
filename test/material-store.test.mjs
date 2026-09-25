@@ -161,9 +161,9 @@ test('one click receipt survives restart and refuses a changed selection for the
       [{ selector: a.selector, digest: a.digest, totalBytes: a.totalBytes }])
     assert.deepEqual(initial.receipt.custodyBindings,
       [{ selector: a.selector, custodyId: a.id, digest: a.digest, totalBytes: a.totalBytes }])
-    assert.equal(initial.receipt.caseId, undefined)
+    assert.equal(initial.receipt.targetCaseId, '')
     assert.equal(initial.receipt.sessionKey, 'untrusted-conversation')
-    assert.equal(initial.receipt.version, 4)
+    assert.equal(initial.receipt.version, 5)
     assert.equal(JSON.stringify(initial.attachments).includes(a.id), false)
     const reopened = openMaterialStore(root, identityFor(), { create: false })
     assert.deepEqual(reopened.submitSelectedSet([a.uiHandle], context).receipt,
@@ -171,6 +171,8 @@ test('one click receipt survives restart and refuses a changed selection for the
     assert.equal(refusal(() => reopened.submitSelectedSet([a.uiHandle],
       { requestId: 'exact-request', sessionKey: 'changed' })), 'material_submission_mismatch')
     assert.equal(refusal(() => reopened.submitSelectedSet([b.uiHandle], context)), 'material_submission_mismatch')
+    assert.equal(refusal(() => reopened.submitSelectedSet([a.uiHandle],
+      { ...context, targetCaseId: 'case_other' })), 'material_submission_mismatch')
     assert.equal(refusal(() => reopened.submitSelectedSet([a.uiHandle, b.uiHandle], context)), 'material_submission_mismatch')
     assert.equal(refusal(() => reopened.resolveSubmitted(b.selector)), 'material_not_found')
     // Simulate interruption after the central receipt lands but before its object ledger.
@@ -183,6 +185,22 @@ test('one click receipt survives restart and refuses a changed selection for the
     assert.notEqual(separate.receipt.proofSecret, initial.receipt.proofSecret)
     assert.notEqual(separate.receipt.selectionSecret, initial.receipt.selectionSecret)
     assert.equal(readdirSync(join(root, 'submissions')).filter((name) => name.endsWith('.json')).length, 2)
+  })
+})
+
+test('supplement freezes the selected existing Case separately from its material selector', () => {
+  area(({ store }) => {
+    const current = store()
+    const record = current.put({ name: 'supplement.txt', mediaType: 'text/plain', bytes: Buffer.from('new facts') })
+    const context = { requestId: 'supplement-click', sessionKey: 'same-conversation', targetCaseId: 'case_real' }
+    const first = current.submitSelectedSet([record.uiHandle], context)
+    assert.equal(first.receipt.targetCaseId, 'case_real')
+    assert.equal(first.receipt.attachments[0].selector, record.selector)
+    assert.deepEqual(current.submitSelectedSet([record.uiHandle], context).receipt, first.receipt)
+    assert.equal(refusal(() => current.submitSelectedSet([record.uiHandle],
+      { ...context, targetCaseId: 'case_other' })), 'material_submission_mismatch')
+    assert.equal(refusal(() => current.submitSelectedSet([record.uiHandle],
+      { ...context, targetCaseId: '' })), 'material_submission_mismatch')
   })
 })
 

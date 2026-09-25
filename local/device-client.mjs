@@ -485,7 +485,7 @@ export function createDeviceClient({ root } = {}) {
       return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
     },
     /** Register one durable Host selection; the Agent and browser never receive this bearer. */
-    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, custodyBindings, proofDigest, selectionDigest }) => {
+    registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, custodyBindings, proofDigest, selectionDigest, targetCaseId }) => {
       const current = linked()
       if (text(expectedAccountId) !== text(current.account?.id)
         || !current.agents?.some(row => row.id === agentId)) {
@@ -494,6 +494,8 @@ export function createDeviceClient({ root } = {}) {
       if (!/^sha256:[0-9a-f]{64}$/.test(proofDigest ?? '')) throw new Error('Material task proof digest is missing or malformed.')
       if (selectionDigest !== undefined && (!/^sha256:[0-9a-f]{64}$/.test(selectionDigest)
         || selectionDigest === proofDigest)) throw new Error('Material selection digest is invalid.')
+      if (targetCaseId !== undefined && (typeof targetCaseId !== 'string'
+        || !/^[A-Za-z0-9:_-]{1,256}$/.test(targetCaseId))) throw new Error('Material target Case is invalid.')
       if (custodyBindings !== undefined && (!Array.isArray(attachments)
         || !Array.isArray(custodyBindings) || custodyBindings.length !== attachments.length
         || new Set(custodyBindings.map(row => row?.custodyId)).size !== custodyBindings.length
@@ -507,6 +509,7 @@ export function createDeviceClient({ root } = {}) {
         throw new Error('Private material custody does not match the submitted selection.')
       }
       const body = { agentId, submissionId, requestId, sessionKey, attachments, proofDigest,
+        ...(targetCaseId === undefined ? {} : { targetCaseId }),
         ...(selectionDigest === undefined ? {} : { selectionDigest }),
         ...(custodyBindings === undefined ? {} : { custodyBindings }) }
       const reply = await call(current.origin, '/local-devices/material-submissions', {
@@ -521,6 +524,7 @@ export function createDeviceClient({ root } = {}) {
       if (reply.state !== 'registered' || reply.deviceId !== current.deviceId
         || reply.agentId !== agentId || reply.submissionId !== submissionId
         || reply.requestId !== requestId || reply.sessionKey !== sessionKey
+        || reply.targetCaseId !== targetCaseId
         || reply.proofDigest !== proofDigest
         || reply.selectionDigest !== selectionDigest
         || typeof reply.registeredAt !== 'string' || !Number.isFinite(Date.parse(reply.registeredAt))

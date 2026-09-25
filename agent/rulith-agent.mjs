@@ -1469,7 +1469,8 @@ function publishFocus(ctx) {
   const identity = JSON.stringify(board.roots)
   if (board.lastFocusPublished === identity) return
   board.lastFocusPublished = identity
-  emitOn(ctx, 'focus', { roots: board.roots.map((row) => ({ caseId: row.caseId, root: row.root, status: row.status })) })
+  emitOn(ctx, 'focus', { roots: board.roots.map((row) => ({ caseId: row.caseId, root: row.root,
+    status: row.status, contact: row.contact ?? 'not-refreshed' })) })
 }
 
 /**
@@ -1889,7 +1890,10 @@ async function callTool(ctx, name, input, { claim = false, expectedRecovery, obs
   // This Host proof is private to the current attached task and its first create-form
   // OpenCase RPC. It is never an argument, result, event, transcript or durable call key.
   let materialTaskProof
-  if (name === 'OpenCase' && !claim && !Object.hasOwn(input, 'caseId') && ctx.materialTaskProof) {
+  if (name === 'OpenCase' && !claim && ctx.materialTaskProof
+    && (ctx.materialTargetCaseId
+      ? input.caseId === ctx.materialTargetCaseId
+      : !Object.hasOwn(input, 'caseId'))) {
     if (!ctx.materialTaskProofRequestId) ctx.materialTaskProofRequestId = identity.requestId
     if (ctx.materialTaskProofRequestId === identity.requestId) materialTaskProof = ctx.materialTaskProof
   }
@@ -3240,6 +3244,9 @@ async function runCaseTurn(ctx, userText, {
     observationOnly = settled.observationOnly === true
     if (settled.note !== undefined) carried.push(settled.note)
   }
+  if (observationOnly && attachments.length > 0 && ctx.materialTargetCaseId)
+    return blockedTurn({ state: 'material_binding_waiting',
+      teaching: 'An earlier operation is still unresolved. These files were not bound to the selected Case; wait for recovery and submit them again.' })
 
   // Bringing a Case into focus is a host feature, reached through `--case` and the Local
   // UI. Which Cases this conversation is on is not a decision a model turn may make on
@@ -3247,7 +3254,8 @@ async function runCaseTurn(ctx, userText, {
   if (explicitResume !== '' && observationOnly) {
     selectionNotice = `The requested Case ${JSON.stringify(explicitResume)} was not brought into focus while an earlier operation remains unresolved.`
   } else if (explicitResume !== '') {
-    if (board.roots.some((row) => row.caseId === explicitResume)) {
+    if (board.roots.some((row) => row.caseId === explicitResume)
+      && !(attachments.length > 0 && ctx.materialTargetCaseId === explicitResume)) {
       selectionNotice = `Rulith Case ${JSON.stringify(explicitResume)} is already in this conversation's focus.`
     } else {
       const focused = await focusExistingCase(ctx, explicitResume)
@@ -3255,6 +3263,15 @@ async function runCaseTurn(ctx, userText, {
         opened = true
         lastCaseId = explicitResume
         ctx.detachedCase = undefined
+      } else if (attachments.length > 0 && ctx.materialTargetCaseId === explicitResume) {
+        // The model must not read or reason from a supplement whose original
+        // Case binding was refused or has an unknown outcome.
+        if (focused.unresolved) {
+          const settled = await settleRecovery(ctx, { force: true })
+          if (!settled.ok) return blockedTurn(settled)
+        }
+        return blockedTurn({ state: focused.unresolved ? 'material_binding_unknown' : 'material_binding_refused',
+          teaching: `The selected material was not confirmed bound to Case ${JSON.stringify(explicitResume)}: ${focused.teaching}. Submit the files again after resolving this call.` })
       } else if (focused.unresolved) {
         // The focus request reached the wire and its outcome is unknown. It is a Board call
         // like any other, so the Agent is now held: settle it before the model is asked, and
@@ -3761,7 +3778,6 @@ if (SERVE) {
         if (text === '') return deny('Missing text. Expected {"text":"process this task","caseType":"exploration"}.', 400)
         if (requestedCaseIdValue !== undefined && typeof requestedCaseIdValue !== 'string') return deny('caseId must be a string copied exactly from /runs or Console.', 400)
         requestedCaseId = String(requestedCaseIdValue ?? '').trim()
-        if (attachments.length > 0 && requestedCaseId !== '') return deny('Attachments can start a new Case only; caseId focus cannot carry a material task proof.', 400)
         if (attachments.length > 0 && (typeof materialTaskProof !== 'string' || !/^[0-9a-f]{64}$/.test(materialTaskProof))) {
           return deny('Attached tasks require one private material task proof from the Rulith host.', 400)
         }
@@ -3807,7 +3823,8 @@ if (SERVE) {
         }
         const restoredMessages = !sessions.has(sessionKey) ? conversationStore?.messages(sessionKey, KEEP_MESSAGES) : undefined
         const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments, modelService: MODEL_DESTINATION,
-          ...(materialTaskProof ? { materialTaskProof } : {}),
+          ...(materialTaskProof ? { materialTaskProof,
+            materialTargetCaseId: requestedCaseId } : {}),
           ...(materialSelectionKey ? { materialSelectionKey } : {}) }
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0) + 1
         const receipt = { ok: true, id: item.id, queued: depth, sessionKey, teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }
@@ -3879,6 +3896,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     try {
       conversationStore?.start(item.id)
       slot.materialTaskProof = item.materialTaskProof
+      slot.materialTargetCaseId = item.materialTargetCaseId
       slot.materialTaskProofRequestId = undefined
       slot.materialSelectionKey = item.materialSelectionKey
       slot.materialAttachments = item.attachments
@@ -3921,6 +3939,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       log(`✗ ${note}`)
     } finally {
       delete slot.materialTaskProof
+      delete slot.materialTargetCaseId
       delete slot.materialTaskProofRequestId
       delete slot.materialSelectionKey
       delete slot.materialAttachments

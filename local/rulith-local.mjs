@@ -1007,9 +1007,10 @@ export function createLocalHost({
           return void json(res, 400, { ok: false, errorCode: 'material_submission_invalid',
             teaching: 'Submitting an attachment needs the request id for this click.' })
         }
-        if (Array.isArray(body.attachments) && body.attachments.length > 0 && body.caseId !== undefined) {
-          return void json(res, 400, { ok: false, errorCode: 'material_case_focus_unsupported',
-            teaching: 'Attachments can start a new Case only; an existing caseId cannot receive this task proof.' })
+        if (body.caseId !== undefined && (typeof body.caseId !== 'string'
+          || body.caseId.length > 256 || !/^[A-Za-z0-9:_-]+$/.test(body.caseId))) {
+          return void json(res, 400, { ok: false, errorCode: 'material_case_invalid',
+            teaching: 'An existing Case selection must be one exact Case id.' })
         }
         const sessionKey = String(body.sessionKey ?? '').trim() || (body.requestId
           ? 'ctx-' + createHash('sha256').update(String(body.requestId)).digest('hex').slice(0, 32)
@@ -1020,7 +1021,8 @@ export function createLocalHost({
         // were silently dropped.
         let selected
         try {
-          selected = materials.attachments(body.attachments, { sessionKey, requestId: body.requestId })
+          selected = materials.attachments(body.attachments, {
+            sessionKey, requestId: body.requestId, targetCaseId: body.caseId ?? '' })
         } catch (error) { return materialFailure(res, error) }
         let taskProof
         let selectionSecret
@@ -1035,12 +1037,15 @@ export function createLocalHost({
               || selectionSecret === taskProof)) throw new Error('Durable selection secret is invalid')
             const selectionDigest = selectionSecret === undefined ? undefined
               : 'sha256:' + createHash('sha256').update(Buffer.from(selectionSecret, 'hex')).digest('hex')
-            const { proofSecret: _privateProof, selectionSecret: _privateSelection, ...registration } = selected.receipt
-            const confirmed = await registerMaterialSubmission({ ...registration, proofDigest, selectionDigest })
+            const { proofSecret: _privateProof, selectionSecret: _privateSelection,
+              targetCaseId, ...registration } = selected.receipt
+            const confirmed = await registerMaterialSubmission({ ...registration,
+              ...(targetCaseId ? { targetCaseId } : {}), proofDigest, selectionDigest })
             if (confirmed?.state !== 'registered' || confirmed.agentId !== registration.agent
               || confirmed.submissionId !== registration.submissionId
               || confirmed.requestId !== registration.requestId
               || confirmed.sessionKey !== registration.sessionKey
+              || confirmed.targetCaseId !== (targetCaseId || undefined)
               || confirmed.proofDigest !== proofDigest
               || (selectionDigest === undefined ? confirmed.selectionDigest !== undefined
                 : confirmed.selectionDigest !== selectionDigest)
@@ -1086,6 +1091,7 @@ export function createLocalHost({
           ? { ...answer, submissionReceipt: {
             submissionId: selected.receipt.submissionId, requestId: selected.receipt.requestId,
             agent: selected.receipt.agent, attachments: selected.receipt.attachments,
+            ...(selected.receipt.targetCaseId ? { targetCaseId: selected.receipt.targetCaseId } : {}),
           } } : answer)
       }
       json(res, 404, { ok: false, teaching: 'Endpoint not found.' })
