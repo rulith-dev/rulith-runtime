@@ -234,6 +234,41 @@ const MATERIALS_BINDING = Object.freeze({
     ? materialDeviceFingerprint((process.env.RULITH_MATERIALS_DEVICE_ID ?? '').trim()) : '',
   modelDestination: (process.env.RULITH_MATERIALS_MODEL_DESTINATION ?? '').trim(),
 })
+// Pinned to docs/specs/schemas/rulith-worker-selected-material-v1.schema.json
+// (sha256:4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e).
+// The v2 generated projection above remains untouched. See the overlay pin check.
+const SELECTED_MATERIAL_FIELDS = Object.freeze(['selector', 'digest', 'custodyId', 'totalBytes', 'deviceId', 'bindingDigest'])
+const SELECTED_MATERIAL_MAX_BYTES = 8 * 1024 * 1024
+
+export function selectedMaterialInputFault(input) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return 'materialInput is not an object'
+  const fields = Object.keys(input)
+  if (fields.length !== SELECTED_MATERIAL_FIELDS.length
+      || fields.some(name => !SELECTED_MATERIAL_FIELDS.includes(name))) return 'materialInput has missing or unknown fields'
+  if (typeof input.selector !== 'string' || !MATERIAL_ID_PATTERN.test(input.selector)
+      || typeof input.custodyId !== 'string' || !MATERIAL_ID_PATTERN.test(input.custodyId)) return 'materialInput has an invalid selector or custody id'
+  if (typeof input.digest !== 'string' || !DIGEST_PATTERN.test(input.digest)
+      || typeof input.bindingDigest !== 'string' || !DIGEST_PATTERN.test(input.bindingDigest)) return 'materialInput has an invalid digest'
+  if (!Number.isSafeInteger(input.totalBytes) || input.totalBytes < 1 || input.totalBytes > SELECTED_MATERIAL_MAX_BYTES) return 'materialInput has an invalid byte count'
+  if (typeof input.deviceId !== 'string' || input.deviceId === '') return 'materialInput has no device id'
+  return undefined
+}
+
+export function selectedMaterialMismatch(grant, input, { root = MATERIALS_ROOT, binding = MATERIALS_BINDING } = {}) {
+  if (grant?.version !== 3) return 'selected material requires a version 3 grant'
+  const fault = selectedMaterialInputFault(input)
+  if (fault) return fault
+  if (grant.materialBindingDigest !== input.bindingDigest) return 'selected material binding differs from the signed grant'
+  try {
+    const identity = materialIdentityFromFingerprints(binding)
+    const store = openMaterialStore(root, identity, { create: false })
+    store.assertSelectedDeviceId(input.deviceId)
+    store.readSubmittedEffectInput(input)
+  } catch (error) {
+    return `selected material is unavailable: ${error?.code ?? error?.message ?? String(error)}`
+  }
+  return undefined
+}
 /**
  * The material area, opened under this Worker's binding — or a named refusal.
  *
@@ -1552,7 +1587,8 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
   if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
     return { fault: 'the execution grant payload is not an object.' }
   }
-  const expectedKeys = Object.keys(EXECUTION_GRANT_SHAPE)
+  const selected = decoded.version === 3
+  const expectedKeys = [...Object.keys(EXECUTION_GRANT_SHAPE), ...(selected ? ['materialBindingDigest'] : [])]
   const extra = Object.keys(decoded).filter((name) => !expectedKeys.includes(name))
   if (extra.length > 0) {
     return { fault: `the execution grant carries ${extra.join(', ')}, which the contract does not define.` }
@@ -1562,7 +1598,7 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
     // Per field name, like the action row. Comparing every `const` field against the version
     // was right only while `version` was the only one; a second would have been checked
     // against the first's value while reading as though it had a rule of its own.
-    const bad = kind === 'const' ? (value !== EXECUTION_GRANT_CONST[name]
+    const bad = kind === 'const' ? (value !== (selected && name === 'version' ? 3 : EXECUTION_GRANT_CONST[name])
       ? `is ${JSON.stringify(value)} and this Worker executes under ${JSON.stringify(EXECUTION_GRANT_CONST[name])}` : undefined)
       : kind === 'workerId' ? (typeof value !== 'string' || !WORKER_ID_PATTERN.test(value) ? 'is not a Worker instance id' : undefined)
         : kind === 'generation' ? (!Number.isSafeInteger(value) || value < 1 || value > GENERATION_MAXIMUM
@@ -1571,6 +1607,11 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
             : kind === 'text' ? (typeof value !== 'string' || value === '' ? 'is missing or empty' : undefined)
               : (typeof value !== 'string' ? 'is missing' : undefined)
     if (bad !== undefined) return { fault: `the execution grant field ${name} ${bad}.` }
+  }
+  if (selected && (typeof decoded.materialBindingDigest !== 'string'
+      || !DIGEST_PATTERN.test(decoded.materialBindingDigest)
+      || typeof decoded.sourceRecordId !== 'string' || decoded.sourceRecordId === '')) {
+    return { fault: 'the selected material grant lacks a binding digest or Source record.' }
   }
   return { grant: decoded }
 }
@@ -1979,8 +2020,15 @@ export function actionRowFaults(row, connectionId = CONNECTION_ID) {
   const faults = []
   // B4c is an optional local extension to the pinned upstream bundle. The Gateway
   // adds it to the live Worker contract without changing that bundle's source bytes.
-  const unknown = Object.keys(row).filter((name) => ACTION_ROW_SHAPE[name] === undefined && name !== 'completionRequirement')
+  const unknown = Object.keys(row).filter((name) => ACTION_ROW_SHAPE[name] === undefined
+    && name !== 'completionRequirement' && name !== 'materialInput')
   if (unknown.length > 0) faults.push(`carries ${unknown.sort().join(', ')}, which this action row shape does not define`)
+  if (Object.hasOwn(row, 'materialInput')) {
+    const fault = selectedMaterialInputFault(row.materialInput)
+    if (fault) faults.push(fault)
+    if (typeof row.sourceRecordId !== 'string' || row.sourceRecordId === '') faults.push('selected material requires a Source record')
+    if (Object.hasOwn(row, 'completionRequirement')) faults.push('selected material row carries completionRequirement outside its pinned overlay')
+  }
   if (Object.hasOwn(row, 'completionRequirement')) {
     const requirement = row.completionRequirement
     if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)
@@ -3356,6 +3404,21 @@ async function handleAction(w) {
       + ' Nothing external has changed and no dispatch was recorded. This Worker does not act under a grant it cannot'
       + ' match to its own lease, its own Connection, this invocation and the bytes it was served.')
     wev('skip', { kind: 'action', id: action, why: 'grant_mismatch' })
+    return
+  }
+  if (grant.version === 3 || Object.hasOwn(w, 'materialInput')) {
+    const materialFault = grant.version === 3 && Object.hasOwn(w, 'materialInput')
+      ? selectedMaterialMismatch(grant, w.materialInput)
+      : 'selected material row and grant versions differ'
+    if (materialFault) {
+      saySkipOnce(w.work, action, `selected_material:${materialFault.slice(0, 50)}`,
+        `· Not claiming ${action}: ${materialFault}. Nothing was claimed and no Tool ran.`)
+      return
+    }
+    // No Gateway selected Claim/offer is available yet. Local byte integrity alone cannot
+    // authorize a selected effect or make its custody available to the pinned Tool.
+    saySkipOnce(w.work, action, 'selected_material_offer_unavailable',
+      `· Not claiming ${action}: selected material Claim/offer is not available yet.`)
     return
   }
   const claim = await work({ kind: 'ClaimWork', workType: 'action', id: invocation, executionGrant: w.executionGrant }, grantedUnder)
