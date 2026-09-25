@@ -22,7 +22,7 @@ import { Socket, createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { createManagerServer, localAuthoringSaveRequestId } from '../local/manager-server.mjs'
+import { createManagerServer, localAuthoringSaveRequestId, localAuthoringResultVersions } from '../local/manager-server.mjs'
 import { processAlive } from '../local/manager-registry.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { isolatedEnvironmentBase } from '../local/rulith-local.mjs'
@@ -46,6 +46,20 @@ test('private-save request identity survives a retry and changes with the certif
   for (const field of Object.keys(proposal)) {
     assert.notEqual(localAuthoringSaveRequestId({ ...proposal, [field]: proposal[field] + '-different' }), first, field)
   }
+})
+
+test('checked authoring versions are ordered, deduplicated and scoped to the selected Agent', () => {
+  const identity = { profile: 'agent-one-profile', owner: 'agent-one-owner' }
+  const first = { ...identity, resultId: 'res_' + '1'.repeat(32), materialId: 'mat_' + 'a'.repeat(32),
+    proposalDigest: 'sha256:' + 'b'.repeat(64), checkedAt: '2026-09-25T10:00:00Z' }
+  const second = { ...identity, resultId: 'res_' + '2'.repeat(32), materialId: 'mat_' + 'c'.repeat(32),
+    proposalDigest: 'sha256:' + 'd'.repeat(64), checkedAt: '2026-09-25T11:00:00Z' }
+  const { owned, availableResults } = localAuthoringResultVersions([first,
+    { ...first, owner: 'another-agent', resultId: 'res_' + '3'.repeat(32) },
+    { ...first, resultId: 'invalid' }, { ...first, resultId: 'res_' + '4'.repeat(32), materialId: 42 }, second, first], identity)
+  assert.equal(owned.length, 5)
+  assert.deepEqual(availableResults.map(row => row.resultId), [first.resultId, second.resultId])
+  assert.equal(JSON.stringify(availableResults).includes('another-agent'), false)
 })
 
 /** A manager and a Gateway on real sockets, signed in unless a scenario asks otherwise. */

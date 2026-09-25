@@ -401,7 +401,7 @@ export const managerPage = String.raw`<!doctype html>
     <button id="authoring-worker-start" hidden>Start Worker</button>
     <label class="checkline"><input id="authoring-local-read" type="checkbox" checked> Allow local material delivery to this Agent</label><label class="checkline"><input id="authoring-off-machine" type="checkbox"> Allow document text to reach a remote model or an authorized Gateway proxy</label>
     <div class="actions"><button class="btn" id="authoring-prepare">Prepare local assistant</button><button id="authoring-review-open">Review checked draft</button><a class="btn" id="authoring-configure" target="_blank" rel="noopener noreferrer" hidden>Manage installed capabilities</a></div>
-    <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
+    <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><label id="authoring-result-row" hidden>Checked version<select id="authoring-result-choice"></select></label><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
   </div>
 </div></div>
 <script>
@@ -535,6 +535,7 @@ function controlSpec(){
     'authoring-local-read':['authoring:'+selected,authoringPermissionsReady],
     'authoring-off-machine':['authoring:'+selected,authoringPermissionsReady],
     'authoring-review-open':['authoring:'+selected,Boolean(row)&&row.paired&&!row.blocked&&!row.orphaned],
+    'authoring-result-choice':['authoring:'+selected,Boolean(row)&&authoringResult&&Array.isArray(authoringResult.availableResults)&&authoringResult.availableResults.length>1],
     'authoring-case':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId],
     // program.id is the private pack identity: one checked result can be saved only once.
     // The Case choice names that pack's certification, not a way to mint several packs.
@@ -1029,6 +1030,8 @@ function renderAuthoring(){
     :row.model?.workerRestartRequired?'Stop and start this Worker to apply the model service change before preparing the assistant.'
     :'Worker is initialized. Preparation will verify its tools.';
   const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
+  const versions=ready&&Array.isArray(authoringResult.availableResults)?authoringResult.availableResults:[];
+  $('authoring-result-row').hidden=versions.length<2;
   $('authoring-publication').hidden=!(ready&&authoringResult.savedPackId);
   if(ready&&authoringResult.savedPackId){
     const currentEntry=authoringResult.savedEntryCurrent!==false;
@@ -1041,6 +1044,9 @@ function renderAuthoring(){
   // would collapse the rule/example disclosures while somebody is reading them.
   if(authoringRenderedFor===authoringResult)return;
   authoringRenderedFor=authoringResult;
+  $('authoring-result-choice').innerHTML=versions.map(v=>'<option value="'+esc(v.resultId||'')+'">'
+    +esc((v.checkedAt||'Checked version')+' · '+(v.materialId||'').slice(0,20)+' · '+(v.proposalDigest||'').slice(0,22))+'</option>').join('');
+  if(versions.some(v=>v.resultId===authoringResult.resultId))$('authoring-result-choice').value=authoringResult.resultId;
   const report=authoringResult.report||{},checks=[report.compiled===true?'Compiled':'Not compiled','Examples: '+(report.examples?.passed??0)+'/'+(report.examples?.total??0),'Citations: '+(report.citations?.verified??0)+'/'+(report.citations?.total??0)],questions=Array.isArray(authoringResult.draft?.questions)?authoringResult.draft.questions:[];
   const compileErrors=Array.isArray(report.compileErrors)?report.compileErrors.filter(e=>typeof e==='string'&&e.trim()).slice(0,20):[];
   const program=authoringResult.draft?.program||{},rules=Array.isArray(program.rules)?program.rules:[],citations=Array.isArray(authoringResult.draft?.citations)?authoringResult.draft.citations:[],examples=Array.isArray(authoringResult.draft?.examples)?authoringResult.draft.examples:[];
@@ -1502,7 +1508,25 @@ $('authoring-open').onclick=()=>{
 $('authoring-prepare').onclick=()=>{const id=selected,localRead=$('authoring-local-read').checked,offMachine=$('authoring-off-machine').checked;
   if(!localRead&&!offMachine){say('authoring-notice','Choose local material delivery or authorized remote delivery before preparing the assistant.',true);return;}
   run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead,offMachine}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
-$('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/review',{instanceId:id}).then(v=>{authoringResult=v;renderAuthoring();say('authoring-notice',v.savedPackId?(v.savedEntryCurrent===false?'This result was saved before, but its private draft has changed or been removed. Inspect it in Console; saving it again is unavailable.':'This checked result is already saved as '+v.savedPackId+'.'):'Read and verified the immutable local check result.');}));};
+function loadAuthoringReview(id,resultId){return api('/manager/authoring/review',{instanceId:id,...(resultId?{resultId}:{})}).then(v=>{
+  if(selected!==id||authoringFor!==id)return;
+  if(resultId&&v.resultId!==resultId)throw Error('The checked version changed during review. Reopen the review before saving.');
+  authoringResult=v;renderAuthoring();applyControls();
+  say('authoring-notice',v.savedPackId?(v.savedEntryCurrent===false?'This result was saved before, but its private draft has changed or been removed. Inspect it in Console; saving it again is unavailable.':'This checked result is already saved as '+v.savedPackId+'.'):'Read and verified the selected immutable local check result.');
+});}
+$('authoring-review-open').onclick=()=>{const id=selected;run('authoring:'+id,'authoring-notice',()=>loadAuthoringReview(id));};
+$('authoring-result-choice').onchange=()=>{const id=selected,resultId=$('authoring-result-choice').value;
+  if(!authoringResult)return;
+  if(!authoringResult.availableResults?.some(v=>v.resultId===resultId)){
+    $('authoring-result-choice').value=authoringResult.resultId;return;
+  }
+  const previous=authoringResult;
+  run('authoring:'+id,'authoring-notice',()=>loadAuthoringReview(id,resultId).catch(error=>{
+    // A failed read cannot leave the new selection painted above the previous draft.
+    // Save remains bound to the previous immutable result after the failure.
+    if(selected===id&&authoringResult===previous)$('authoring-result-choice').value=previous.resultId;
+    throw error;
+  }));};
 $('authoring-case').onchange=()=>applyControls();
 $('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('authoring-case').value;if(!v||v.savedPackId||v.saveOutcomeUnknown)return;run('authoring:'+id,'authoring-notice',async()=>{
   v.saveOutcomeUnknown=true;applyControls();
@@ -1512,7 +1536,7 @@ $('authoring-save').onclick=()=>{const id=selected,v=authoringResult,caseId=$('a
     if(selected===id&&authoringResult===v){v.savedPackId=saved.packId;v.savedCaseId=saved.caseId;v.savedEntryCurrent=true;v.saveOutcomeUnknown=false;renderAuthoring();say('authoring-notice','Private draft saved: '+saved.packId+'. Review publication in Console when ready.');}
   }catch(error){
     let latest;
-    try{latest=await api('/manager/authoring/review',{instanceId:id});}
+    try{latest=await api('/manager/authoring/review',{instanceId:id,resultId:v.resultId});}
     catch{
       if(selected===id&&authoringResult===v)renderAuthoring();
       throw Error('Save outcome is unknown. Reopen Review checked draft after the connection returns; do not send the save again yet.');

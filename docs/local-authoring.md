@@ -17,11 +17,14 @@
    sends that expanded draft through the same compiler, kernel example runner and exact
    citation checker used by `check_rule_draft`.
 4. Open **Document assistant → Review checked draft**. Review its rules, examples,
-   citations and unresolved questions. Choose **Save private draft** after the exact
-   proposal has a certified completed Case. Reopening the same checked result shows its
-   saved receipt, including after restarting Local. Publication remains a separate Console action.
+   citations and unresolved questions. If several recent checks exist, choose the exact
+   **Checked version**; each revision has its own local result and must match a certified Case.
+   A failed version read returns the choice to the draft still shown. Choose **Save private
+   draft** after the exact proposal has a certified completed Case. Reopening that checked
+   result shows its saved receipt, including after restarting Local. Publication remains
+   a separate Console action.
 
-If Save receives no reply, Rulith reads the checked result again before showing an
+If Save receives no reply, Rulith reads that same immutable checked version again before showing an
 outcome. When the private draft was committed, its receipt appears without another
 save. When the outcome cannot be checked, Save stays disabled; use **Review checked
 draft** after the connection returns. A definite refusal keeps the selected Case

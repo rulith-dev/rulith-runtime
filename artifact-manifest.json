@@ -108,10 +108,10 @@
       "sha256": "d4e5fbcb3896a191e8801eb28ed5432f40e0514c153c8bdfa04addbff428a4bc"
     },
     "local/manager-server.mjs": {
-      "sha256": "c21690c45455a4450e4953c620bfbbf69c3b095a4f33545f2762a63740c0a25b"
+      "sha256": "c2b46b98790bd77148930dd64e2dec9b610637186f5be410bb6736cdb196b50e"
     },
     "local/manager-ui.mjs": {
-      "sha256": "725a8255c569f9548fff54d51356898228d4539cc447803fbad20fa242199598"
+      "sha256": "11aef0d60491de73eaffc3e5b9cf5e19ebd919c58023f28558b1b44856f46b22"
     },
     "docs/local-manager.md": {
       "sha256": "6a9c613514d4a59d97fecff52b54648454e9e89de9bd5fe9342815de08d16df3"

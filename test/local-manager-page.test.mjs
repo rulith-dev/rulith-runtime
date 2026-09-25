@@ -1383,6 +1383,55 @@ test('the private-draft review exposes premises, source quotes, examples and Cas
   assert.match(page.$('authoring-publication').href, /qa\.shipping_fee/)
 })
 
+test('document revisions stay selectable and a save retry rechecks the exact selected version', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
+  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
+  const first = 'res_' + '1'.repeat(32), second = 'res_' + '2'.repeat(32)
+  const versions = [second, first].map((resultId, i) => ({ resultId,
+    materialId: 'mat_' + String(i + 1).repeat(32), proposalDigest: 'sha256:' + String(i + 1).repeat(64),
+    checkedAt: `2026-09-25T10:0${i}:00Z` }))
+  const review = resultId => ({ resultId, availableResults: versions,
+    draft: { program: { id: 'qa.revision', title: resultId === first ? 'First' : 'Second' }, questions: [] },
+    report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } },
+    cases: [{ caseId: 'case-revision', title: 'Certified' }] })
+  let refuseFirst = true
+  const page = await runPageScript(managerPage, { respond: async (path, { body }) => {
+    if (path === '/manager/authoring/status') return { body: { ok: true, bindingMatches: true,
+      configured: true, materialPermissions: { localRead: true, offMachine: false } } }
+    if (path === '/manager/authoring/review') return body.resultId === first && refuseFirst
+      ? { status: 503, body: { teaching: 'Earlier result temporarily unreadable' } }
+      : { body: review(body.resultId || second) }
+    if (path === '/manager/authoring/save') return { status: 503, body: { teaching: 'Response lost' } }
+    return { body: snapshot }
+  } })
+  await page.choose('a'); await settle()
+  await page.$('authoring-open').onclick(); await settle()
+  await page.$('authoring-review-open').onclick(); await settle()
+  assert.equal(page.$('authoring-result-row').hidden, false)
+  assert.equal(page.$('authoring-result-choice').value, second)
+  page.$('authoring-result-choice').value = first
+  await page.$('authoring-result-choice').onchange(); await settle()
+  assert.equal(page.$('authoring-result-choice').value, second,
+    'a failed switch cannot label the old draft with the new result identity')
+  assert.match(page.$('authoring-result').innerHTML, /Second/)
+  refuseFirst = false
+  page.$('authoring-result-choice').value = first
+  await page.$('authoring-result-choice').onchange(); await settle()
+  assert.equal(page.$('authoring-result-choice').value, first)
+  assert.match(page.$('authoring-result').innerHTML, /First/)
+  page.$('authoring-case').value = 'case-revision'
+  page.applyControls()
+  assert.equal(page.$('authoring-save').disabled, false)
+  await page.$('authoring-save').onclick(); await settle()
+  const reads = page.calls.filter(c => c.path === '/manager/authoring/review')
+  assert.deepEqual(reads.map(c => c.body.resultId ?? ''), ['', first, first, first],
+    'the uncertain save must inspect its own immutable version, even when a newer check exists')
+  assert.deepEqual(page.calls.find(c => c.path === '/manager/authoring/save').body,
+    { instanceId: 'a', resultId: first, caseId: 'case-revision' })
+  assert.equal(page.$('authoring-save').disabled, true)
+  assert.equal(page.$('authoring-save').textContent, 'Check save outcome')
+})
+
 test('reopening a saved document check shows its durable receipt and never offers Save again', async () => {
   const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
   const snapshot = stateOf({ device: linkedDevice(), instances: [row] })

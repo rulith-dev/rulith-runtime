@@ -204,6 +204,38 @@ arm('local authoring review shows the checked program and keeps Save disabled fo
     assert.equal(await page.locator('#authoring-review').isHidden(), true)
   })
 
+arm('document revisions keep the chosen immutable result through refresh and save that version',
+  { width: 1400, height: 900 }, async ({ page, fixture }) => {
+    const first = 'res_' + '1'.repeat(32), second = 'res_' + '2'.repeat(32)
+    fixture.control.authoringQuestions = false
+    fixture.control.authoringVersions = [
+      { resultId: second, materialId: 'mat_' + 'b'.repeat(32), proposalDigest: 'sha256:' + '2'.repeat(64), checkedAt: '2026-09-25T12:00:00Z', title: 'Revised policy' },
+      { resultId: first, materialId: 'mat_' + 'a'.repeat(32), proposalDigest: 'sha256:' + '1'.repeat(64), checkedAt: '2026-09-25T11:00:00Z', title: 'Earlier policy' },
+    ]
+    await openAgent(page, 'inst-1')
+    await page.click('#authoring-open')
+    await page.click('#authoring-review-open')
+    await page.locator('#authoring-result-row').waitFor({ state: 'visible' })
+    assert.equal(await page.inputValue('#authoring-result-choice'), second)
+    await page.selectOption('#authoring-result-choice', first)
+    await page.getByText('Earlier policy', { exact: true }).waitFor()
+    await page.selectOption('#authoring-case', 'CASE-SECOND')
+    await page.waitForTimeout(3200)
+    assert.equal(await page.inputValue('#authoring-result-choice'), first)
+    assert.equal(await page.inputValue('#authoring-case'), 'CASE-SECOND')
+    fixture.control.authoringReviewRefusal = 'This version is temporarily unavailable.'
+    await page.selectOption('#authoring-result-choice', second)
+    await page.locator('#authoring-notice').filter({ hasText: fixture.control.authoringReviewRefusal }).waitFor()
+    assert.equal(await page.inputValue('#authoring-result-choice'), first,
+      'a failed version read must restore the identity of the draft still on screen')
+    await page.getByText('Earlier policy', { exact: true }).waitFor()
+    fixture.control.authoringReviewRefusal = ''
+    await page.click('#authoring-save')
+    await page.locator('#authoring-save').filter({ hasText: 'Private draft saved' }).waitFor()
+    assert.deepEqual(fixture.control.authoringReviewRequests.map(row => row.resultId ?? ''), ['', first])
+    assert.equal(fixture.control.authoringSaveRequests[0].resultId, first)
+  })
+
 arm('local authoring review explains compilation failures without interpreting checker text as HTML',
   { width: 1400, height: 900 }, async ({ page, fixture }) => {
     fixture.control.authoringQuestions = false

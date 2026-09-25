@@ -23,7 +23,7 @@ import { createDeviceClient } from './device-client.mjs'
 import { createInstanceManager } from './instance-manager.mjs'
 import { managerPage } from './manager-ui.mjs'
 import { installAuthoringChecker } from './authoring-checker.mjs'
-import { materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
+import { materialIdentity, openMaterialStore, MATERIAL_ID_PATTERN, RESULT_ID_PATTERN } from '../worker/material-store.mjs'
 import { proposalDigest } from '../worker/local-authoring.mjs'
 
 /** One checked proposal and certified Case are one logical private save, even after a browser retry or manager restart. */
@@ -31,6 +31,22 @@ export function localAuthoringSaveRequestId({ accountId, agentId, caseId, materi
   return 'local-save:' + createHash('sha256').update(JSON.stringify([
     accountId, agentId, caseId, materialId, documentDigest, proposalDigest,
   ])).digest('hex')
+}
+
+/** Only the selected Agent's recent immutable checks are offered as review choices. */
+export function localAuthoringResultVersions(rows, identity) {
+  const owned = rows.filter((entry) => entry?.profile === identity.profile && entry?.owner === identity.owner)
+  const seen = new Set()
+  const availableResults = []
+  for (const entry of [...owned].reverse()) {
+    if (!RESULT_ID_PATTERN.test(entry.resultId ?? '') || !MATERIAL_ID_PATTERN.test(entry.materialId ?? '')
+      || !/^sha256:[0-9a-f]{64}$/.test(entry.proposalDigest ?? '')
+      || typeof entry.checkedAt !== 'string' || entry.checkedAt.length > 40 || seen.has(entry.resultId)) continue
+    seen.add(entry.resultId)
+    availableResults.push({ resultId: entry.resultId, materialId: entry.materialId,
+      proposalDigest: entry.proposalDigest, checkedAt: entry.checkedAt })
+  }
+  return { owned, availableResults }
 }
 
 const MAX_BODY = 64 * 1024
@@ -207,8 +223,10 @@ export function createManagerServer({
     const store = openMaterialStore(target.materialRoot, identity, { create: false })
     const rows = JSON.parse(readFileSync(join(target.materialRoot, 'local-authoring', 'results.json'), 'utf8'))
     if (!Array.isArray(rows)) throw new Error('The local authoring result index is invalid.')
-    const index = rows.filter((entry) => entry.profile === identity.profile && entry.owner === identity.owner
-      && (resultId === '' || entry.resultId === resultId)).at(-1)
+    const { owned, availableResults } = localAuthoringResultVersions(rows, identity)
+    // A revision is a new immutable result, not an update to the previous draft. Give the
+    // operator exact result identities so review and retry never silently jump to a newer one.
+    const index = owned.filter((entry) => resultId === '' || entry.resultId === resultId).at(-1)
     if (!index) throw new Error('No checked local authoring result belongs to this selected Agent.')
     const result = store.read(String(index.resultId)).bytes
     if (digest(result) !== index.resultDigest) throw new Error('The checked result bytes no longer match their immutable digest.')
@@ -222,6 +240,7 @@ export function createManagerServer({
       throw new Error('The checked result no longer matches its immutable material and proposal.')
     }
     return { taskId: index.materialId, materialId: index.materialId, documentDigest: index.documentDigest,
+      availableResults,
       proposalDigest: checkedProposalDigest, resultId: index.resultId, checkedAt: index.checkedAt, draft: payload.draft, report: payload.report }
   }
 

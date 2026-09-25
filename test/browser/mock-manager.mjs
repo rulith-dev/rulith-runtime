@@ -59,7 +59,7 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   /** The account and Console this device is signed in to; the directory joins on both. */
   const CONSOLE = 'https://console.example', ACCOUNT = 'acct-1'
   /** Flipped by a test: what the conversation host answers when a message is sent. */
-  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringCompileErrors: [], authoringPrepareRefusal: '', authoringPrepareRequests: [], authoringReviewRefusal: '', authoringSaveRefusal: '', authoringSaveDropResponse: false, authoringSaveRequests: [], authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
+  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringCompileErrors: [], authoringPrepareRefusal: '', authoringPrepareRequests: [], authoringReviewRefusal: '', authoringReviewRequests: [], authoringVersions: null, authoringSaveRefusal: '', authoringSaveDropResponse: false, authoringSaveRequests: [], authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
 
   // Configured Agents, as the manager reports them once pairing has completed: the directory
   // joins a profile to an Agent by account, Console origin and Agent id together.
@@ -170,12 +170,18 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       return void json(res, 200, { ok: true, stage: 'ready', teaching: 'Local assistant prepared for this Agent.' })
     }
     if (path === '/manager/authoring/review' && control.authoringReviewRefusal) return void json(res, 503, { ok: false, teaching: control.authoringReviewRefusal })
-    if (path === '/manager/authoring/review') return void json(res, 200, { ok: true, resultId: 'res_' + '1'.repeat(32),
+    if (path === '/manager/authoring/review') {
+      control.authoringReviewRequests.push(body)
+      const selectedVersion = control.authoringVersions?.find(v => v.resultId === body.resultId)
+        ?? control.authoringVersions?.[0]
+      return void json(res, 200, { ok: true, resultId: selectedVersion?.resultId ?? 'res_' + '1'.repeat(32),
+      ...(control.authoringVersions ? { availableResults: control.authoringVersions } : {}),
       report: { compiled: control.authoringCompileErrors.length === 0, compileErrors: control.authoringCompileErrors, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } },
-      draft: { program: { id: 'local-policy', title: 'Local policy', rules: [{ id: 'rule-1', label: 'Check invoices' }] }, citations: [{}], examples: [{}], questions: control.authoringQuestions ? [{ question: 'Which exception applies?' }] : [] },
+      draft: { program: { id: 'local-policy', title: selectedVersion?.title ?? 'Local policy', rules: [{ id: 'rule-1', label: 'Check invoices' }] }, citations: [{}], examples: [{}], questions: control.authoringQuestions ? [{ question: 'Which exception applies?' }] : [] },
       cases: [{ caseId: 'CASE-LOCAL', title: 'Local authoring Case' }, { caseId: 'CASE-SECOND', title: 'Second certified Case' }],
       ...(control.authoringSaves.length ? { savedPackId: 'local_policy', savedCaseId: control.authoringSaves.at(-1).caseId, savedEntryCurrent: true } : {}),
     })
+    }
     if (path === '/manager/authoring/save') {
       control.authoringSaveRequests.push(body)
       if (control.authoringSaveRefusal) return void json(res, 409, { ok: false, teaching: control.authoringSaveRefusal })
