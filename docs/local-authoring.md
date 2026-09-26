@@ -61,7 +61,18 @@ fixed citation failure reasons and separately labelled format guidance. Free-for
 example labels, exception details and quoted text are not copied into this inline
 guidance. A smaller receipt budget omits the optional guidance; it does not discard
 required facts or turn a failed check into a pass. Reading the full report still
-requires the current material delivery permission.
+requires the current material delivery permission. Independent compiler error categories
+are returned together; optional locations and repair advice can be truncated, with
+an explicit marker, while category codes and counts remain. Construction guidance
+is capped at 1,200 UTF-8 bytes; the compiler diagnostic JSON is capped at 1,500.
+Advice is fixed schema guidance, never a rewritten proposal or evidence of success.
+
+Predicate references use the exact declared `as` alias; using the same `name` and
+`as` avoids unnecessary translation. `caseType` is a lowercase business name, not
+a contract version. The default pinned checker remains on contract `/1`; a checker
+rejecting a `format` field does not imply support for a newer contract. Explicit
+`/2` construction is being verified with matching adoption-build checker JARs and
+is not enabled by these diagnostic changes.
 
 Preparation grants material access only to the selected Agent and its current
 Source/Connection/material-root binding. Deployment denials take precedence.

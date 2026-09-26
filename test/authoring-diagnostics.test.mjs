@@ -130,3 +130,83 @@ test('missing result arrays remain explicitly incomplete instead of claiming tha
   assert.match(result.details, /complete draft and checker report/)
   assert.deepEqual(result.failedExamples, [])
 })
+
+test('unknown constructor symbols teach declared aliases without exposing proposal names', () => {
+  const privateName = 'PRIVATE_PREDICATE_FROM_DOCUMENT'
+  const errors = Array.from({ length: 22 }, (_, index) => ({
+    code: 'predicate_symbol_unknown', path: '$.program.rules[' + index + '].then[0].predicate',
+    submitted: privateName, message: privateName,
+  }))
+  const before = JSON.stringify(errors)
+  const text = authoringGuidanceText(createConstructionGuidance(errors))
+  assert.match(text, /Use the exact declared as value/)
+  assert.match(text, /name and as may be identical/)
+  assert.match(text, /rules, contracts, pins and examples/)
+  assert.match(text, /"errorCount":22/)
+  assert.doesNotMatch(text, new RegExp(privateName))
+  assert.equal(JSON.stringify(errors), before, 'diagnostics do not rewrite the submitted proposal')
+  assert.ok(Buffer.byteLength(text) <= 1200)
+})
+
+test('contract format failures retain a fixed code and explain the separate business name', () => {
+  const text = authoringGuidanceText(createConstructionGuidance([
+    { code: 'case_contract_format_unsupported', path: '$.caseContracts[0].format', submitted: 'PRIVATE_FORMAT' },
+  ]))
+  assert.match(text, /case_contract_format_unsupported/)
+  assert.match(text, /caseContracts\[\]\.format/)
+  assert.match(text, /separate from caseType/)
+  assert.doesNotMatch(text, /PRIVATE_FORMAT/)
+  const report = authoringDiagnostics({ compileErrors: ['Invalid Case Type'] })
+  assert.match(report.formatGuidance, /no dots or hyphens/)
+  assert.match(report.formatGuidance, /format field.*not caseType/)
+  assert.equal(Object.hasOwn(report, 'draft'), false)
+})
+
+test('all constructor repair categories together stay within the receipt byte budget', () => {
+  const errors = [
+    {code:'array_required',path:'$.program.predicates[123456].args'},
+    {code:'predicate_symbol_invalid',path:'$.program.predicates[123456].as'},
+    {code:'predicate_symbol_unknown',path:'$.caseContracts[123456].acceptance.predicate'},
+    {code:'case_contract_format_unsupported',path:'$.caseContracts[123456].format'},
+  ]
+  const text=authoringGuidanceText(createConstructionGuidance(errors))
+  assert.ok(Buffer.byteLength(text)<=1200)
+  assert.match(text,/"errorCount":4/)
+  assert.match(text,/"diagnosticsTruncated":true/)
+  assert.doesNotMatch(text,/PRIVATE/)
+})
+
+test('an older checker rejecting the format field is not interpreted as version support', () => {
+  const text=authoringGuidanceText(createConstructionGuidance([
+    {code:'field_unknown',path:'$.caseContracts[0].format',detail:'rulith-case-contract/2'},
+  ]))
+  assert.match(text,/field_unknown/)
+  assert.doesNotMatch(text,/case_contract_format_unsupported|rulith-case-contract\/2|formatGuidance/)
+})
+
+test('independent contract and binding refusals both carry repair guidance in one result', () => {
+  const result=authoringDiagnostics({compileErrors:[
+    'rules[0] conclusion variable ?private_name has no positive premise binding.',
+    'Invalid Case Type',
+  ]})
+  assert.deepEqual(result.errors,['unbound_conclusion_variable','invalid_case_type'])
+  assert.match(result.formatGuidance,/format field/)
+  assert.match(result.formatGuidance,/positive premise in the same rule/)
+  assert.doesNotMatch(JSON.stringify(result),/private_name/)
+})
+
+test('all supported compiler refusals give bounded static advice without losing error counts', () => {
+  const errors=['Invalid Case Type','Every definition needs an argument-name array.',
+    'rules[0] uses an undeclared predicate.',
+    'rules[1] conclusion variable ?secret_name has no positive premise binding.',
+    'rules[2] requires a human-readable label.', 'rules[3] requires id.',
+    'rules[4] atom args must be an object.', 'rules[5] cannot derive a built-in predicate.']
+  const result=authoringDiagnostics({compileErrors:errors})
+  assert.equal(result.diagnosticCounts.compileErrors,8)
+  assert.equal(result.errors.length,8)
+  assert.ok(Buffer.byteLength(JSON.stringify(result))<=1500)
+  assert.equal(result.diagnosticsTruncated,true)
+  assert.doesNotMatch(JSON.stringify(result),/secret_name/)
+  const labels=authoringDiagnostics({compileErrors:['rules[2] requires a human-readable label.']})
+  assert.match(labels.formatGuidance,/put the label on each branch/)
+})

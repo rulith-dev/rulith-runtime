@@ -25,7 +25,7 @@ const constructionCodes = new Set([
   'predicate_symbol_duplicate', 'predicate_id_duplicate', 'predicate_symbol_unknown',
   'import_id_invalid', 'number_not_ecmascript_exact', 'branches_required',
   'validation_kind_unknown', 'validation_variable_invalid', 'reserved_variable',
-  'construction_expansion_limit',
+  'construction_expansion_limit', 'case_contract_format_unsupported',
 ])
 const constructionPath = /^\$(?:\.(?:format|namespace|program|caseContracts|citations|examples|questions|notes|id|title|summary|judges|predicates|imports|pins|rules|ruleGroups|commonWhen|validations|kind|value|branches|actions|acceptance|name|as|args|when|then|preconditions|effects|execution|returns|businessKey|opening|predicate|arguments|keyArguments|minimumGroundingFloor|label|facts|expect|forbid|forbidPredicates)(?:\[\d{1,6}\])?)*$/
 
@@ -46,7 +46,15 @@ export function createConstructionGuidance(errors) {
     && /^\$\.program\.predicates\[\d+\]\.args$/.test(row?.path))
   const predicateAliasInvalid = rows.some(row => row?.code === 'predicate_symbol_invalid'
     && /^\$\.program\.predicates\[\d+\]\.as$/.test(row?.path))
+  const predicateReferenceUnknown = rows.some(row => row?.code === 'predicate_symbol_unknown')
+  const contractFormatUnsupported = rows.some(row => row?.code === 'case_contract_format_unsupported')
   const formatGuidance = [
+    ...(predicateReferenceUnknown
+      ? ['Use the exact declared as value in rules, contracts, pins and examples. Example: {name:"charge",as:"charge",args:["amount"]} is referenced as predicate:"charge"; name and as may be identical. Do not substitute the final name or namespace for a different as value.']
+      : []),
+    ...(contractFormatUnsupported
+      ? ['caseContracts[].format selects the supported contract format, separate from caseType. Keep caseType a lowercase business name; do not encode a version suffix there or infer a different format from it.']
+      : []),
     ...(predicateArgsNeedNames
       ? ['program.predicates[].args declares field names as a JSON array of strings, for example ["entity_id","amount"]. A rule or example atom uses a separate args JSON object keyed by those field names.']
       : []),
@@ -63,6 +71,10 @@ export function createConstructionGuidance(errors) {
   const render = () => 'Local constructor diagnostics (guidance, not additional evidence): ' + JSON.stringify(projection)
   while (Buffer.byteLength(render()) > 1200 && projection.errors.length > 0) {
     projection.errors.pop()
+    projection.diagnosticsTruncated = true
+  }
+  while (Buffer.byteLength(render()) > 1200 && projection.formatGuidance?.length > 0) {
+    projection.formatGuidance.pop()
     projection.diagnosticsTruncated = true
   }
   guidance.set(carrier, render())
@@ -95,13 +107,30 @@ export function authoringDiagnostics(report) {
   }
   // Static advice is separate from checker evidence. No rule, key or citation is
   // synthesized. Never copy free-form errors, example labels/details or rule IDs.
-  if (codes.includes('invalid_case_type')) out.formatGuidance =
-    'caseContracts[].caseType must match [a-z][a-z0-9_]{0,63}: 1–64 characters, starting with a lowercase letter; no dots or hyphens.'
-  else if (codes.includes('definition_args_required')) out.formatGuidance =
-    'program.vocabulary.defines[].args is an array of field names, for example ["entity_id","amount"]. Atom args are objects keyed by those names.'
-  else if (codes.includes('undeclared_predicate')) out.formatGuidance =
-    'A rule atom must name a declared local predicate alias, an explicit import alias, or a built-in; compare it with program.predicates[].as.'
-  else if (codes.includes('unbound_conclusion_variable')) out.formatGuidance =
-    'Every conclusion variable must be bound by a positive premise in the same rule; keep the input and output field variables consistent.'
+  const advice = {
+    invalid_case_type: 'caseContracts[].caseType must match [a-z][a-z0-9_]{0,63}: 1–64 characters, starting with a lowercase letter; no dots or hyphens. Use the separate format field for a supported contract version, not caseType; a version suffix does not select a format.',
+    definition_args_required: 'program.vocabulary.defines[].args is an array of field names, for example ["entity_id","amount"]. Atom args are objects keyed by those names.',
+    undeclared_predicate: 'A rule atom must name a declared local predicate alias, an explicit import alias, or a built-in; compare it with program.predicates[].as.',
+    unbound_conclusion_variable: 'Every conclusion variable must be bound by a positive premise in the same rule; keep the input and output field variables consistent.',
+    rule_label_required: 'Each rule needs a nonempty human-readable label explaining its business condition and outcome. In a construction ruleGroup, put the label on each branch.',
+    rule_id_required: 'Each rule needs its own nonempty id; in a construction ruleGroup, give each branch its own id.',
+    atom_args_invalid: 'Every rule atom args value is a JSON object keyed by declared field names, not an array.',
+    builtin_in_conclusion: 'Built-ins test or calculate in rule premises; conclusions must name declared output predicates.',
+  }
+  const selectedAdvice = codes.flatMap(code => advice[code] ? [advice[code]] : [])
+  if (selectedAdvice.length) out.formatGuidance = selectedAdvice.join(' ')
+  // Preserve every error category code and count. Optional locations and advice may
+  // be truncated to fit; the immutable Artifact retains the complete diagnostics.
+  for (const field of ['compileIssues', 'failedExamples', 'unverifiedCitations']) {
+    while (Buffer.byteLength(JSON.stringify(out)) > 1500 && out[field].length) {
+      out[field].pop()
+      out.diagnosticsTruncated = true
+    }
+  }
+  while (Buffer.byteLength(JSON.stringify(out)) > 1500 && selectedAdvice.length) {
+    selectedAdvice.pop()
+    out.formatGuidance = selectedAdvice.join(' ')
+    out.diagnosticsTruncated = true
+  }
   return out
 }
