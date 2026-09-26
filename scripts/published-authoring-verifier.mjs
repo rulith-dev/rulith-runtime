@@ -4,10 +4,11 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 const MAXIMUM_MANIFEST_BYTES = 16 * 1024
+const REFERENCE_FORMAT = 'rulith-local-authoring-reference/1'
 const PROBE_DOCUMENT = 'Every submitted request is accepted for this release probe.'
 const PROBE_CONSTRUCTION = {
   format: 'rulith-authoring-construction/1',
@@ -39,10 +40,26 @@ const PROBE_CONSTRUCTION = {
   questions: [], notes: 'Release compatibility only.',
 }
 
+function versionedProbeConstruction() {
+  const probe = structuredClone(PROBE_CONSTRUCTION)
+  for (const predicate of probe.program.predicates) predicate.args.push('input_version')
+  probe.program.rules[0].when[0].args.input_version = '?input_version'
+  probe.program.rules[0].then[0].args.input_version = '?input_version'
+  const contract = probe.caseContracts[0]
+  contract.format = 'rulith-case-contract/2'
+  contract.businessKey.arguments.push('input_version')
+  contract.opening.keyArguments.push('input_version')
+  contract.acceptance.keyArguments.push('input_version')
+  probe.examples[0].facts[0].args.input_version = 'probe-version-1'
+  probe.examples[0].expect[0].args.input_version = 'probe-version-1'
+  return probe
+}
+
 function manifestProjection(manifest) {
   return {
     format: manifest.format,
     sourceCommit: manifest.sourceCommit,
+    referenceFormat: manifest.referenceFormat,
     files: [...manifest.files].sort((a, b) => a.name.localeCompare(b.name))
       .map(({ name, bytes, sha256, url }) => ({ name, bytes, sha256, url })),
   }
@@ -86,8 +103,8 @@ export function defaultAuthoringJavaCommand() {
   return executable
 }
 
-function requireCompatibleJava(javaCommand) {
-  const run = spawnSync(javaCommand, ['-version'], {
+function requireCompatibleJava(javaCommand, runJava) {
+  const run = runJava(javaCommand, ['-version'], {
     windowsHide: true, encoding: 'utf8', maxBuffer: 128 * 1024, timeout: 10_000,
   })
   if (run.error) throw run.error
@@ -133,11 +150,14 @@ export async function downloadAndProbePublishedAuthoring(manifest, directory, {
   validate = value => value,
   fetchImpl = fetch,
   javaCommand = defaultAuthoringJavaCommand(),
+  runJava = spawnSync,
   signal = AbortSignal.timeout(30 * 60_000),
 } = {}) {
   if (typeof downloadFile !== 'function') throw new Error('The published checker downloader is unavailable.')
   const pinned = validate(structuredClone(manifest))
-  const javaMajor = requireCompatibleJava(javaCommand)
+  if (pinned.referenceFormat !== undefined && pinned.referenceFormat !== REFERENCE_FORMAT)
+    throw new Error('The published authoring manifest declares an unsupported reference format.')
+  const javaMajor = requireCompatibleJava(javaCommand, runJava)
   await mkdir(directory, { recursive: true })
   let transferred = 0
   for (const file of pinned.files) {
@@ -151,9 +171,27 @@ export async function downloadAndProbePublishedAuthoring(manifest, directory, {
   const construction = join(directory, 'construction.json')
   const document = join(directory, 'document.txt')
   const output = join(directory, 'result.json')
-  await writeFile(construction, JSON.stringify(PROBE_CONSTRUCTION), { flag: 'wx' })
+  if (pinned.referenceFormat === REFERENCE_FORMAT) {
+    const referenceOutput = join(directory, 'reference.json')
+    const referenceRun = runJava(javaCommand,
+      ['-jar', join(directory, 'local-authoring.jar'), '--reference', referenceOutput],
+      { windowsHide: true, encoding: 'utf8', maxBuffer: 128 * 1024, timeout: 30_000 })
+    if (referenceRun.error) throw referenceRun.error
+    if (referenceRun.status !== 0)
+      throw new Error(`The published authoring reference probe failed: ${(referenceRun.stderr || referenceRun.stdout).slice(0, 800)}`)
+    if ((await stat(referenceOutput)).size > 64 * 1024)
+      throw new Error('The published authoring reference exceeds its byte limit.')
+    const reference = JSON.parse(await readFile(referenceOutput, 'utf8'))
+    if (reference?.format !== pinned.referenceFormat || reference.guidanceOnly !== true
+      || !/^sha256:[a-f0-9]{64}$/.test(reference.authoringContractDigest)
+      || Object.keys(reference).sort().join(',') !== 'authoringContractDigest,construction,draft,format,guidanceOnly'
+      || !['construction', 'draft'].every(key => typeof reference[key] === 'string' && reference[key].trim()))
+      throw new Error('The published checker returned an invalid public reference.')
+  }
+  await writeFile(construction, JSON.stringify(pinned.referenceFormat === REFERENCE_FORMAT
+    ? versionedProbeConstruction() : PROBE_CONSTRUCTION), { flag: 'wx' })
   await writeFile(document, PROBE_DOCUMENT, { flag: 'wx' })
-  const run = spawnSync(javaCommand,
+  const run = runJava(javaCommand,
     ['-jar', join(directory, 'local-authoring.jar'), '--construct-check', construction, document, output],
     { windowsHide: true, encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 60_000 })
   if (run.error) throw run.error
@@ -167,5 +205,13 @@ export async function downloadAndProbePublishedAuthoring(manifest, directory, {
   assert.equal(result.report?.examples?.passed, 1, diagnostic)
   assert.equal(result.report?.citations?.total, 1, diagnostic)
   assert.equal(result.report?.citations?.verified, 1, diagnostic)
+  if (pinned.referenceFormat === REFERENCE_FORMAT) {
+    assert.equal(result.draft?.caseContracts?.[0]?.format, 'rulith-case-contract/2', diagnostic)
+    assert.equal(result.draft?.program?.acceptance?.length, 1, diagnostic)
+    const accepted = result.draft.caseContracts[0].acceptance.predicate
+    const definitions = result.draft.program.vocabulary?.defines?.filter(row => row.id === accepted) ?? []
+    assert.equal(definitions.length, 1, diagnostic)
+    assert.ok(result.draft.program.pins?.includes(definitions[0].as), diagnostic)
+  }
   return { sourceCommit: pinned.sourceCommit, files: pinned.files.length, transferred, javaMajor }
 }
