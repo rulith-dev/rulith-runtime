@@ -4,6 +4,7 @@
 const citationReasons = new Set(['rule_unknown', 'quote_not_found', 'locator_mismatch', 'ambiguous_quote', 'rule_uncited'])
 const count = value => Array.isArray(value) ? value.length : null
 const compileIssue = value => {
+  if (value.startsWith('case_acceptance_bridge_missing:')) return { code: 'case_acceptance_bridge_missing' }
   if (value === 'Invalid Case Type') return { code: 'invalid_case_type' }
   if (value === 'Every definition needs an argument-name array.') return { code: 'definition_args_required' }
   if (value === 'Acceptance bridge must conclude one acceptance_met atom') return { code: 'acceptance_bridge_output_invalid' }
@@ -125,6 +126,7 @@ export function authoringDiagnostics(report) {
   // Static advice is separate from checker evidence. No rule, key or citation is
   // synthesized. Never copy free-form errors, example labels/details or rule IDs.
   const advice = {
+    case_acceptance_bridge_missing: 'This certified /1 proposal lacks its own program.acceptance bridge. Business examples alone cannot certify a Case. For one attested Sensor input, explicitly construct /2 with input_version throughout related keys and atoms; otherwise provide a supported root-bound bridge. Do not borrow another Case outcome or silently upgrade /1.',
     invalid_case_type: 'caseContracts[].caseType must match [a-z][a-z0-9_]{0,63}: 1–64 characters, starting with a lowercase letter; no dots or hyphens. Use the separate format field for a supported contract version, not caseType; a version suffix does not select a format.',
     definition_args_required: 'program.vocabulary.defines[].args is an array of field names, for example ["entity_id","amount"]. Atom args are objects keyed by those names.',
     undeclared_predicate: 'A rule atom must name a declared local predicate alias, an explicit import alias, or a built-in; compare it with program.predicates[].as.',

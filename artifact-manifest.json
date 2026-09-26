@@ -72,7 +72,7 @@
       "sha256": "4e720e187082b371961e544136fa9e2aab68969b12a56dde3ef399a19c550b72"
     },
     "worker/authoring-diagnostics.mjs": {
-      "sha256": "49ce1022f22d1cbb01e4a33bc781f13026f979b5103956098924f9856b569294"
+      "sha256": "ad65e350929e3bdf0e9261581a88a9c4b668295c08fbb95cde5593cea1ea89c9"
     },
     "local/authoring-checker.mjs": {
       "sha256": "9b7fea8944a706e86a5f3741ea5b22dac6899422d9631e366afceee47aee2348"

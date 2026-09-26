@@ -262,3 +262,15 @@ test('actual empty conclusions and Case bridge failures have bounded source-inde
   assert.deepEqual(unknown.errors,['compile_error'])
   assert.doesNotMatch(JSON.stringify(unknown),/secret_customer|PRIVATE|acceptance_bridge_output_invalid/)
 })
+
+
+test('missing certified bridge guidance is bounded and never copies private checker details', () => {
+  const result = authoringDiagnostics({compileErrors:[
+    'case_acceptance_bridge_missing: private-policy-and-customer-identifier',
+  ]})
+  assert.deepEqual(result.errors, ['case_acceptance_bridge_missing'])
+  assert.match(result.formatGuidance, /explicitly construct \/2/)
+  assert.match(result.formatGuidance, /Do not borrow another Case outcome/)
+  assert.doesNotMatch(JSON.stringify(result), /private-policy-and-customer-identifier/)
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 1500)
+})
