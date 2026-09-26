@@ -119,6 +119,28 @@ const openAgent = async (page, id) => {
   return page.frames().find((frame) => frame.url() === src)
 }
 
+arm('historical reads show closure observations without acquiring Case focus or leaking across Agents',
+  { width: 1440, height: 900 }, async ({ page }) => {
+    const child = await openAgent(page, 'inst-1')
+    await child.locator('#roots').getByText('History viewed', { exact: true }).waitFor()
+    assert.equal(await child.locator('#casecount').innerText(), '0 in focus · 2 histories read')
+    const roots = await child.locator('#roots').innerText()
+    assert.match(roots, /CASE-HISTORY — completed/)
+    assert.match(roots, /At closure · certified/)
+    assert.match(roots, /Last page: 4 fact\(s\) · more pages available/)
+    assert.match(roots, /History unavailable/)
+    assert.doesNotMatch(roots, /released from focus|has not been used/)
+    assert.match(await child.locator('#frontier').innerText(), /No current Case frontier was reported by this read/)
+    const other = await openAgent(page, 'inst-2')
+    assert.doesNotMatch(await other.locator('#roots').innerText(), /CASE-HISTORY|History viewed/)
+  }, { events: { 'inst-1': [
+    { src: 'agent', type: 'tool-result', cmd: 'QueryBoard', authoritative: true, accepted: true,
+      boardRead: { observed: true, history: { root: 'ROOT-HISTORY', caseId: 'CASE-HISTORY',
+        status: 'available', disposition: 'completed', certified: true, factsOnPage: 4, morePages: true } } },
+    { src: 'agent', type: 'operation-read', tool: 'QueryBoard',
+      boardRead: { observed: true, history: { root: 'ROOT-UNAVAILABLE', status: 'unavailable' } } },
+  ], 'inst-2': [] } })
+
 arm('an inherited unresolved call survives conversation changes and clear view without leaking to another Agent',
   { width: 1440, height: 900 }, async ({ page }) => {
     const child = await openAgent(page, 'inst-1')

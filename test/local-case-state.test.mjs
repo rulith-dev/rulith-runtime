@@ -200,4 +200,24 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('recovery').innerHTML, /Earlier ReadArtifact content is unavailable/)
   assert.match(elements.get('recovery').innerHTML, /No original result was supplied/)
+
+  // Looking at a closed Case is an observation, not focus or a new lifecycle transition.
+  context.events = [{ src: 'agent', type: 'tool-result', cmd: 'QueryBoard', authoritative: true,
+    accepted: true, boardRead: { observed: true, history: { root: 'ROOT-OLD', caseId: 'CASE<OLD>',
+      status: 'available', disposition: 'completed', certified: true, factsOnPage: 7, morePages: true } } }]
+  vm.runInContext('renderInspector(events)', context)
+  assert.equal(elements.get('casecount').textContent, '0 in focus · 1 histories read')
+  assert.match(elements.get('roots').innerHTML, /History viewed/)
+  assert.match(elements.get('roots').innerHTML, /CASE&lt;OLD&gt; — completed/)
+  assert.match(elements.get('roots').innerHTML, /At closure · certified/)
+  assert.match(elements.get('roots').innerHTML, /Last page: 7 fact\(s\) · more pages available/)
+  assert.doesNotMatch(elements.get('roots').innerHTML, /released from focus|has not been used/)
+  assert.match(elements.get('frontier').innerHTML, /No current Case frontier was reported by this read/)
+  assert.equal(vm.runInContext('projectCaseRoots(events).length', context), 0)
+
+  context.events.push({ ...context.events[0], boardRead: { observed: true,
+    history: { root: 'ROOT-OLD', status: 'unavailable' } } })
+  vm.runInContext('renderInspector(events)', context)
+  assert.match(elements.get('roots').innerHTML, /History unavailable/)
+  assert.doesNotMatch(elements.get('roots').innerHTML, /CASE&lt;OLD&gt;|certified|completed/)
 })

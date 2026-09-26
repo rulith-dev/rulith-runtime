@@ -4,6 +4,9 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Show historical Case reads and their observed closure status separately from current
+  focus in the inspector, including recovered original reads and unavailable histories.
+  A returned page is not labelled as a complete proof or a newly running Case.
 - Adopt bounded public `QueryBoard` history for closed Cases, with explicit history
   pagination and disclosure-version checks. Preserve advertised tool guidance in full
   instead of silently cutting it at 1024 characters; reject supplied non-text or over

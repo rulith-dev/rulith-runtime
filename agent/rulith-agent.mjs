@@ -1444,6 +1444,29 @@ function publicActionOutcomeFromMcp(original) {
   catch { return undefined }
 }
 
+/** Display-only summary of an authorized public read, never Case focus or proof. */
+function publicBoardRead(result) {
+  if (result?.accepted !== true || !result.view || typeof result.view !== 'object') return undefined
+  const history = result.view.caseHistory
+  if (!history || typeof history.root !== 'string' || !history.root) return { observed: true }
+  if (history.status === 'unavailable') return { observed: true, history: { root: history.root, status: 'unavailable' } }
+  if (history.status !== 'available' || history.asOf !== 'case_close'
+    || typeof history.caseId !== 'string' || !history.caseId
+    || typeof history.disposition !== 'string' || typeof history.certified !== 'boolean'
+    || !Array.isArray(history.facts) || typeof history.truncated !== 'boolean') return { observed: true }
+  return { observed: true, history: { root: history.root, caseId: history.caseId,
+    status: 'available', disposition: history.disposition, certified: history.certified,
+    factsOnPage: history.facts.length, morePages: history.truncated } }
+}
+
+function publicBoardReadFromMcp(original) {
+  if (original?.isError !== false || original.structuredContent !== undefined
+    || !Array.isArray(original.content) || original.content.length !== 1
+    || original.content[0]?.type !== 'text' || typeof original.content[0].text !== 'string') return undefined
+  try { return publicBoardRead(JSON.parse(original.content[0].text)) }
+  catch { return undefined }
+}
+
 function reportActionOutcome(ctx, outcome, { callId, recovered = false } = {}) {
   emitOn(ctx, 'action-outcome', { ...outcome, ...(recovered ? { recovered: true } : {}),
     ...(callId ? { callId } : {}) })
@@ -2242,7 +2265,8 @@ async function claimOperation(ctx, recovery) {
   releaseUnresolved()
   const tool = record.originalTool
   log(`◎ Recovered the public result of an earlier ${tool} call through ReadOperation; the model decides again.`)
-  emitOn(ctx, 'operation-read', { tool, ...(recovery.callRef === undefined ? {} : { callRef: recovery.callRef }) })
+  emitOn(ctx, 'operation-read', { tool, ...(recovery.callRef === undefined ? {} : { callRef: recovery.callRef }),
+    ...(tool === 'QueryBoard' ? { boardRead: publicBoardReadFromMcp(record.originalResult) } : {}) })
   if (tool === 'ApplyAction') {
     const outcome = publicActionOutcomeFromMcp(record.originalResult)
     if (outcome) reportActionOutcome(ctx, outcome, { recovered: true })
@@ -3058,7 +3082,9 @@ function emitVerdict(ctx, name, answer, callId, expectedAction) {
     if (answer.readReady) log(`Data: ReadOperation returned the original public ${result.originalTool} result.`)
     else log(`Data: ReadOperation returned ${result.state ?? result.errorCode ?? 'an unreadable result'}.`)
     emitOn(ctx, 'operation-read', { state: result.state ?? 'unavailable',
-      ...(result.originalTool === undefined ? {} : { tool: result.originalTool }) })
+      ...(result.originalTool === undefined ? {} : { tool: result.originalTool }),
+      ...(answer.readReady && result.originalTool === 'QueryBoard'
+        ? { boardRead: publicBoardReadFromMcp(result.originalResult) } : {}) })
     return
   }
   if (name === 'QueryBoard' && answer.readUnavailable) {
@@ -3198,6 +3224,8 @@ async function executeToolCall(ctx, call, options) {
     accepted: answer.result?.accepted, authoritative: answer.authoritative === true,
     refusedLocally: answer.refusedLocally === true,
     readUnavailable: answer.readUnavailable === true,
+    ...(name === 'QueryBoard' && answer.authoritative === true
+      ? { boardRead: publicBoardRead(answer.result) } : {}),
     output: localToolSnapshot(answer.result ?? { teaching: answer.text ?? 'No result was returned.' }) })
   // A refusal the host already announced is not announced again as though the Board had spoken.
   if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer, localCallId, input.action)
