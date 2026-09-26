@@ -77,7 +77,7 @@ const MCP_URL = `${URL_BASE}/mcp`
 // and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = '304ce5e98961dfdc2e92e8ae2009a9f0a5ebba15'
+const RULITH_CONTRACT_SOURCE_COMMIT = '04cb3b78ebd47de373ca25a19bd8a982d5e2d15b'
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v2'
@@ -1111,6 +1111,7 @@ function projectToolSchema(name, schema) {
 // `tools/list` may answer in pages; this bounds how many will be read before the endpoint
 // is judged to be looping rather than paging.
 const TOOLS_LIST_PAGES_MAX = 32
+const TOOL_DESCRIPTION_MAX_BYTES = 16 * 1024
 let mcpSurfacePromise
 /** The seven model-facing tools, in the order the authority names them. */
 let modelTools = []
@@ -1193,7 +1194,12 @@ async function requirePublicMcpSurface() {
         console.error(`⚠ ${name}: the advertised schema offered the host-owned argument(s) ${stripped.join(', ')};`
           + ' they were not shown to the model. Host metadata belongs in the envelope, not in a tool schema.')
       }
-      return { name, description: String(tool.description ?? `Rulith Board ${name}`).slice(0, 1024), schema }
+      const description = tool.description === undefined ? `Rulith Board ${name}` : tool.description
+      if (typeof description !== 'string' || Buffer.byteLength(description, 'utf8') > TOOL_DESCRIPTION_MAX_BYTES) {
+        throw new McpSurfaceError(`${name}: the advertised description must be text within this Runtime's ${TOOL_DESCRIPTION_MAX_BYTES}-byte UTF-8 limit.`
+          + ' The tool guidance cannot be passed intact, so this Runtime stops before asking the model rather than silently shortening it.')
+      }
+      return { name, description, schema }
     })
     if (schemaConflicts.length > 0) {
       throw new McpSurfaceError('The public MCP endpoint advertises tool schemas this Runtime cannot satisfy:\n'

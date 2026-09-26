@@ -4,6 +4,10 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Adopt bounded public `QueryBoard` history for closed Cases, with explicit history
+  pagination and disclosure-version checks. Preserve advertised tool guidance in full
+  instead of silently cutting it at 1024 characters; reject supplied non-text or over
+  16 KiB UTF-8 descriptions before asking the model.
 - Let a new user turn request a committed `QueryBoard` observation while an earlier
   operation is waiting or needs reconciliation, only when the server explicitly supports
   independent observation. Keep the original call pending, block other business tools,

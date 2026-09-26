@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { MCP_PROTOCOL_VERSION, MODEL_TOOLS, callTool, runAgent } from './support/agent-harness.mjs'
+import { MCP_PROTOCOL_VERSION, MODEL_TOOLS, advertisedTools, callTool, runAgent } from './support/agent-harness.mjs'
 
 // ── Protocol baseline: the version is a contract, not a greeting ─────────────
 
@@ -353,6 +353,45 @@ test('RT-SURFACE-5 the approved seven, exactly, reach the model (calibration)', 
 })
 
 // ── A local read limit is not the same as no answer ──────────────────────────
+
+test('tool guidance beyond 1024 characters reaches the model unchanged at the local byte limit', async () => {
+  const tail = '\nRead all historical pages before concluding that an earlier input is absent.'
+  const description = '证'.repeat(5000) + 'x'.repeat(16384 - 15000 - Buffer.byteLength(tail)) + tail
+  const run = await runAgent({
+    argv: [], chatLines: ['Review prior work.'], model: () => 'Reviewed.', timeoutMs: 20_000,
+    toolSchemas: advertisedTools().map(tool => tool.name === 'QueryBoard' ? { ...tool, description } : tool),
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.modelRequests.length, 1)
+  const offered = run.modelRequests[0].tools.find(tool => (tool.function?.name ?? tool.name) === 'QueryBoard')
+  assert.equal((offered.function ?? offered).description, description)
+})
+
+test('oversized or non-text tool guidance stops before any model or business call', async () => {
+  for (const description of ['证'.repeat(5462), { text: 'not an MCP description' }, null]) {
+    const run = await runAgent({
+      argv: ['Review prior work.'], model: () => 'Must not run.', timeoutMs: 20_000,
+      toolSchemas: advertisedTools().map(tool => tool.name === 'QueryBoard' ? { ...tool, description } : tool),
+    })
+    assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+    assert.notEqual(run.code, 0)
+    assert.equal(run.modelRequests.length, 0)
+    assert.equal(run.requests.filter(request => request.method === 'tools/call').length, 0)
+    assert.match(run.stderr, /QueryBoard.*16384-byte UTF-8 limit/)
+  }
+})
+
+test('optional tool descriptions remain optional without replacing explicitly empty text', async () => {
+  const run = await runAgent({
+    argv: [], chatLines: ['hello'], model: () => 'Hello.', timeoutMs: 20_000,
+    toolSchemas: advertisedTools().map(tool => ({ ...tool, description: tool.name === 'QueryBoard' ? '' : undefined })),
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  for (const offered of run.modelRequests[0].tools) {
+    const tool = offered.function ?? offered
+    assert.equal(tool.description, tool.name === 'QueryBoard' ? '' : `Rulith Board ${tool.name}`)
+  }
+})
 
 test('RT-RPC-5 a response too large to read is an unknown outcome that says which unknown it is', async () => {
   const oversized = 'x'.repeat(9 * 1_048_576)
