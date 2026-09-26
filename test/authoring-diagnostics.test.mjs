@@ -200,13 +200,31 @@ test('all supported compiler refusals give bounded static advice without losing 
     'rules[0] uses an undeclared predicate.',
     'rules[1] conclusion variable ?secret_name has no positive premise binding.',
     'rules[2] requires a human-readable label.', 'rules[3] requires id.',
-    'rules[4] atom args must be an object.', 'rules[5] cannot derive a built-in predicate.']
+    'rules[4] atom args must be an object.', 'rules[5] cannot derive a built-in predicate.',
+    'rules[6].then must be a nonempty atom array.',
+    'Acceptance bridge must conclude one acceptance_met atom']
   const result=authoringDiagnostics({compileErrors:errors})
-  assert.equal(result.diagnosticCounts.compileErrors,8)
-  assert.equal(result.errors.length,8)
+  assert.equal(result.diagnosticCounts.compileErrors,10)
+  assert.equal(result.errors.length,10)
   assert.ok(Buffer.byteLength(JSON.stringify(result))<=1500)
   assert.equal(result.diagnosticsTruncated,true)
   assert.doesNotMatch(JSON.stringify(result),/secret_name/)
   const labels=authoringDiagnostics({compileErrors:['rules[2] requires a human-readable label.']})
   assert.match(labels.formatGuidance,/put the label on each branch/)
+})
+
+
+test('actual empty conclusions and Case bridge failures have bounded source-independent repair advice', () => {
+  const result=authoringDiagnostics({compileErrors:[
+    'rules[6].then must be a nonempty atom array.',
+    'Acceptance bridge must conclude one acceptance_met atom',
+  ]})
+  assert.deepEqual(result.errors,['rule_conclusion_required','acceptance_bridge_output_invalid'])
+  assert.deepEqual(result.compileIssues[0],{code:'rule_conclusion_required',section:'rules',index:6})
+  assert.match(result.formatGuidance,/program.rules/)
+  assert.match(result.formatGuidance,/acceptance_met/)
+  assert.ok(Buffer.byteLength(JSON.stringify(result))<=1500)
+  const unknown=authoringDiagnostics({compileErrors:['Acceptance bridge secret_customer PRIVATE value']})
+  assert.deepEqual(unknown.errors,['compile_error'])
+  assert.doesNotMatch(JSON.stringify(unknown),/secret_customer|PRIVATE|acceptance_bridge_output_invalid/)
 })

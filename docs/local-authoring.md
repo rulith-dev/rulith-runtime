@@ -104,3 +104,13 @@ stops before sending the setup command. A model endpoint change requires restart
 Worker before new attachments or preparation, as indicated in the selected workspace.
 Signing out can stop the local roles and revoke the device while the public checker
 download continues; completing that download cannot resume setup under a different login.
+
+Arithmetic built-ins bind their `result` variable in a rule premise (`when`); later
+premises and conclusions (`then`) can use it. The initial construction cue includes
+the shared argument shape for addition, subtraction, multiplication, division, minimum
+and maximum. Business outcome rules belong in `program.rules`; `program.acceptance`
+is for Case-root bridges. Empty conclusions and malformed bridge outputs receive
+fixed diagnostic codes and static advice, without copying a complete proposal inline.
+Negation-as-failure (`naf:true`) tests the current closure, not the outside world;
+variables must be positively bound, and input-validity rules must use the exact input
+version. These syntax explanations do not attest that a business rule is correct.

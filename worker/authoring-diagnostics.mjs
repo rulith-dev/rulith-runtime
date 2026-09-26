@@ -6,6 +6,9 @@ const count = value => Array.isArray(value) ? value.length : null
 const compileIssue = value => {
   if (value === 'Invalid Case Type') return { code: 'invalid_case_type' }
   if (value === 'Every definition needs an argument-name array.') return { code: 'definition_args_required' }
+  if (value === 'Acceptance bridge must conclude one acceptance_met atom') return { code: 'acceptance_bridge_output_invalid' }
+  const emptyConclusion = /^(rules|acceptance)\[(\d{1,3})\]\.then must be a nonempty atom array\.$/.exec(value)
+  if (emptyConclusion) return { code: 'rule_conclusion_required', section: emptyConclusion[1], index: Number(emptyConclusion[2]) }
   const row = /^(rules|acceptance)\[(\d{1,3})\] (.+)$/.exec(value)
   if (!row) return { code: 'compile_error' }
   const detail = row[3]
@@ -116,6 +119,8 @@ export function authoringDiagnostics(report) {
     rule_id_required: 'Each rule needs its own nonempty id; in a construction ruleGroup, give each branch its own id.',
     atom_args_invalid: 'Every rule atom args value is a JSON object keyed by declared field names, not an array.',
     builtin_in_conclusion: 'Built-ins test or calculate in rule premises; conclusions must name declared output predicates.',
+    rule_conclusion_required: 'Each rule then array must contain at least one declared output atom. A placeholder rule with no outcome is incomplete; implement its requirement explicitly or keep that unresolved requirement visible.',
+    acceptance_bridge_output_invalid: 'program.acceptance contains Case-root acceptance bridges, not business output rules. A bridge then array contains exactly one acceptance_met atom. Put ordinary business outcomes in program.rules; do not write a partial bridge to repeat an outcome.',
   }
   const selectedAdvice = codes.flatMap(code => advice[code] ? [advice[code]] : [])
   if (selectedAdvice.length) out.formatGuidance = selectedAdvice.join(' ')

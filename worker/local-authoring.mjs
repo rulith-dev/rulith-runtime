@@ -19,14 +19,19 @@ const IDS = Object.freeze({ ingest: 'rulith.official_authoring.ingest_document@2
 // it never sends material bytes or a file name in that result. This is guidance, not
 // a document claim or Board fact. The checker remains the authority.
 export const LOCAL_AUTHORING_DRAFT_SHAPE = [
-  'Guidance, not evidence: use construct_rule_draft with construction_json as a STRING containing one rulith-authoring-construction/1 object.',
-  'Fields: format, namespace, program, caseContracts, citations, examples, questions, notes. program is an object; only construction_json is a string.',
-  'program={id,title,summary,predicates:[{name,as,args}],imports:[],pins:[alias],rules:[],ruleGroups:[{commonWhen:[{predicate,args}],validations:[{kind:"nonnegative_integer",value:"?amount"}],branches:[{id,label,when:[{predicate,args}],then:[{predicate,args}]}]}],actions:[],acceptance:[]}.',
-  'program.id is lowercase 2-32 chars without dots; namespace has two lowercase segments like acme.shipping. Predicate name is final name, as is alias. Prefer identical name/as, e.g. {name:"charge",as:"charge",args:["amount"]}; reference the exact as value "charge" in every atom, contract and pin. predicates[].args is an array of field names. Atom args is an object keyed by field, not an array.',
-  'Rules name declared aliases/imports or built-ins eq, neq, lt, lte, gt, gte (not ge); comparisons use args={left:"?amount",right:200}. ruleGroups repeats commonWhen per branch; nonnegative_integer expands gte 0 and whole-number guards only when required by the document.',
-  'caseContracts=[{caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:"attested"}}]. The constructor adds the fixed certified terminal. caseType is a business name matching [a-z][a-z0-9_]{0,63}, never a version or format.',
-  'Business key and opening name the document INPUT; acceptance names a distinct OUTPUT. Key arrays contain field names, e.g. ["order_id"]; keys occur in both predicates, never material task_id.',
-  'citations=[{ruleId,quote}], examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}], questions=[], notes="...". Each citation.ruleId must equal a rules[].id or ruleGroups[].branches[].id. Quote exact document text; test invalid and forbidden outputs.',
+  "Guidance, not evidence: use construct_rule_draft with construction_json as a STRING containing one rulith-authoring-construction/1 object. Fields:",
+  "format,namespace,program,caseContracts,citations,examples,questions,notes. program is an object; only construction_json is a string.",
+  "program={id,title,summary,predicates:[{name,as,args}],imports:[],pins:[alias],rules:[],ruleGroups:[{commonWhen:[{predicate,args}],validations:[{kind:\"nonnegative_integer\",value:\"?x\"}],branches:[{id,label,when:[{predicate,args}],then:[{predicate,args}]}]}],actions:[],acceptance:[]}.",
+  "program.id is lowercase 2-32 chars without dots; namespace: acme.shipping. Predicate name is final name, as is alias; prefer {name:\"charge\",as:\"charge\",args:[\"amount\"]}; reference",
+  "the exact as value. Atom args is an object keyed by field, not an array. Rules name declared aliases/imports or built-ins including eq,neq,lt,lte,gt,gte with",
+  "args={left:\"?x\",right:200}. Calculations go in when: {predicate:\"add\",args:{left:\"?x\",right:1,result:\"?y\"}}; then can use ?y. sub,mul,div,min,max use the same keys. commonWhen",
+  "repeats per branch; nonnegative_integer adds gte 0 and integer guards when required.",
+  "caseContracts=[{caseType,title,businessKey:{predicate,arguments},opening:{predicate,keyArguments},acceptance:{predicate,keyArguments,minimumGroundingFloor:\"attested\"}}]. The",
+  "constructor adds the certified terminal. caseType is a business name [a-z][a-z0-9_]{0,63}, not a version. Business key and opening name the document INPUT; acceptance names a",
+  "distinct OUTPUT. Key arrays are field names; keys occur in both predicates, never material task_id.",
+  "citations=[{ruleId,quote}],examples=[{label,facts:[{predicate,args}],expect:[{predicate,args}],forbid:[],forbidPredicates:[]}],questions=[],notes=\"...\". Each citation.ruleId must",
+  "equal a rules[].id or ruleGroups[].branches[].id. Quote exactly; test invalid inputs too. naf:true tests absence in the current closure, not absence in the outside world. Bind",
+  "variables positively; preserve observed versions on version-keyed inputs.",
 ].join(' ')
 const orderedDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex')}`
 // Java OrderedJson preserves insertion order, including nested objects. Only the four

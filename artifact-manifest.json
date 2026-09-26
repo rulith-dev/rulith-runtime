@@ -69,10 +69,10 @@
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
     },
     "worker/local-authoring.mjs": {
-      "sha256": "3da53369383b8cd69636ac97477be54bc74ffd76bea9507b764c870c65f7eb1d"
+      "sha256": "14243359486e077087c5461af315ee5bfd6f507c64f442061dc53c4888f73753"
     },
     "worker/authoring-diagnostics.mjs": {
-      "sha256": "a4bbf37e2af5ce46eeeef19d943ce6ba566165385a80c19b4a08c6b4813f361f"
+      "sha256": "f09e3669d46e42d7949e3cd42e21d3dc3abe11f4b1a970d364fd0c70ae294b37"
     },
     "local/authoring-checker.mjs": {
       "sha256": "506e4fd8418ce6a28e4d84526dda4901f7c2a65a1b460b6eb6755c781e1c6b44"
