@@ -33,7 +33,16 @@ export const LOCAL_AUTHORING_DRAFT_SHAPE = [
   "equal a rules[].id or ruleGroups[].branches[].id. Quote exactly; test invalid inputs too. naf:true tests absence in the current closure, not absence in the outside world. Bind",
   "variables positively; preserve observed versions on version-keyed inputs.",
 ].join(' ')
+// 仅在同一回执确有已安装检查器的参考 Artifact 时使用。这里不给第二份 JSON 模板：
+// 构造语法归 reference.construction，业务键、证据档和规则仍由作者明确选择。
+export const LOCAL_AUTHORING_MODERN_CUE = [
+  'The first Artifact is the document; the second is the installed checker public reference. When bytes are identical, one Artifact serves both. Read both, starting with reference.construction before calling construct_rule_draft.',
+  'For new work opened from one attested Sensor input, explicitly choose rulith-case-contract/2. Include input_version in the same ordered businessKey.arguments, opening.keyArguments and acceptance.keyArguments, and carry that exact version through related input, intermediate and output atoms.',
+  'The constructor generates the version-bound acceptance bridge and certified terminal only for explicit /2. Use minimumGroundingFloor attested only for an attested opening. Do not invent a real input_version, assert host case_input facts or treat the reference as evidence.',
+].join(' ')
 export const LOCAL_AUTHORING_REFERENCE_CUE = 'The first Artifact is the document or check result; the second is the installed checker public authoring reference. Read both before writing or repairing rules. The reference is guidance, not evidence. When bytes are identical, one Artifact serves both.'
+export const localAuthoringIngestCue = companionArtifacts => companionArtifacts?.length === 1
+  ? LOCAL_AUTHORING_MODERN_CUE : LOCAL_AUTHORING_DRAFT_SHAPE
 let referenceCache
 
 /** Read static guidance from the exact operator-selected or release-pinned executable, never material text. */

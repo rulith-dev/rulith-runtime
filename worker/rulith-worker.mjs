@@ -89,7 +89,7 @@ import {
   deliveryChunks, deliveryRequestOf, localReadResult, localTicketOf, registrationBody,
   registrationResult, uploadDecision,
 } from './material-transport.mjs'
-import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, LOCAL_AUTHORING_DRAFT_SHAPE, LOCAL_AUTHORING_REFERENCE_CUE } from './local-authoring.mjs'
+import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, localAuthoringIngestCue, LOCAL_AUTHORING_DRAFT_SHAPE, LOCAL_AUTHORING_MODERN_CUE, LOCAL_AUTHORING_REFERENCE_CUE } from './local-authoring.mjs'
 import { authoringGuidanceText } from './authoring-diagnostics.mjs'
 // The off-machine permission reading travels with the Worker surface it has always been part
 // of, so the committed cross-repository permission rows keep one importable answer to compare
@@ -1874,9 +1874,13 @@ export async function prepareActionReport(row, execution, { custody, register } 
   if (ok) body.result = ''
   else body.reason = 'Diagnostic data is available through the attached Artifact.'
   body.artifacts = refs
-  const baseGuide = safeInlineGuidance === LOCAL_AUTHORING_DRAFT_SHAPE ? safeInlineGuidance : authoringGuidanceText(safeInlineGuidance)
+  const modernGuide = companionArtifacts.length && safeInlineGuidance === LOCAL_AUTHORING_MODERN_CUE
+  const baseGuide = safeInlineGuidance === LOCAL_AUTHORING_DRAFT_SHAPE || modernGuide
+    ? safeInlineGuidance : authoringGuidanceText(safeInlineGuidance)
   const referenceGuide = companionArtifacts.length ? LOCAL_AUTHORING_REFERENCE_CUE : undefined
-  const guidance = referenceGuide ? [referenceGuide, baseGuide === LOCAL_AUTHORING_DRAFT_SHAPE ? undefined : baseGuide].filter(Boolean).join('\n') : baseGuide
+  const guidance = referenceGuide
+    ? modernGuide ? baseGuide : [referenceGuide, baseGuide === LOCAL_AUTHORING_DRAFT_SHAPE ? undefined : baseGuide].filter(Boolean).join('\n')
+    : baseGuide
   const fits = result => size({result,reason:body.reason??'',facts,artifacts:body.artifacts}) <= row.artifactPolicy.inlineBytes
   if (ok && guidance !== undefined && fits(guidance)) body.result = guidance
   else if (ok && referenceGuide !== undefined) {
@@ -2938,7 +2942,8 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
         || companionArtifacts.some(record=>!workerLocalArtifact(record)))) throw new Error('The local executor returned invalid companion custody')
       return { result: text, facts: resultFactsFromRows(t, rows), ...(localArtifact ? { localArtifact } : {}),
         ...(companionArtifacts ? {companionArtifacts} : {}),
-        ...(t.impl === 'local-authoring' && localArtifact ? { safeInlineGuidance: t.entry === 'ingest' ? LOCAL_AUTHORING_DRAFT_SHAPE : out.safeInlineGuidance } : {}) }
+        ...(t.impl === 'local-authoring' && localArtifact ? { safeInlineGuidance: t.entry === 'ingest'
+          ? localAuthoringIngestCue(companionArtifacts) : out.safeInlineGuidance } : {}) }
     } catch (error) {
       if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
       if (t.impl === 'http' && t.kind !== 'read') throw new ResultDeliveryError(`HTTP write result cannot supply the declared facts (${error.message}); do not repeat the external action`)

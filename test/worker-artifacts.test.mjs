@@ -26,6 +26,7 @@ import { defaultMaterialRoot, materialIdentity, openMaterialStore } from '../wor
 import { loadWorkerContract } from '../scripts/verify-worker-contract.mjs'
 import { actionRow, CONNECTION, HOLD, driveWorker } from './support/worker-harness.mjs'
 import { authoringDiagnostics, createAuthoringGuidance, authoringGuidanceText } from '../worker/authoring-diagnostics.mjs'
+import { LOCAL_AUTHORING_MODERN_CUE, LOCAL_AUTHORING_REFERENCE_CUE } from '../worker/local-authoring.mjs'
 
 const contract = loadWorkerContract()
 const ref = `art_${'a'.repeat(32)}`
@@ -312,6 +313,30 @@ test('a document and public reference retain order, bytes and one immutable repo
   })
 })
 
+test('installed reference carries the modern cue; a narrow receipt retains only the read instruction', async () => {
+  await withArea(async ({store}) => {
+    const doc = store.putResult({bytes:Buffer.from('PRIVATE document'),mediaType:'text/plain',encoding:'utf8'})
+    const guide = store.putResult({bytes:Buffer.from('PUBLIC reference'),mediaType:'application/json',encoding:'utf8'})
+    const second = {ref:'art_'+'b'.repeat(32)}
+    const register = async record => ({...confirm(record),payload:{...confirm(record).payload,
+      ref:record.digest===doc.digest?ref:second.ref}})
+    const full = await prepareActionReport(actionRow(),
+      {ok:true,localArtifact:doc,companionArtifacts:[guide],safeInlineGuidance:LOCAL_AUTHORING_MODERN_CUE}, {register})
+    assert.equal(full.body.result, LOCAL_AUTHORING_MODERN_CUE)
+    assert.deepEqual(full.body.artifacts,[{ref},second])
+    assert.doesNotMatch(JSON.stringify(full.body), /PRIVATE document|PUBLIC reference/)
+    const fallbackBytes = Buffer.byteLength(JSON.stringify({result:LOCAL_AUTHORING_REFERENCE_CUE,
+      reason:'',facts:[],artifacts:[{ref},second]}))
+    const narrow = await prepareActionReport({...actionRow(),artifactPolicy:{...actionRow().artifactPolicy,
+      inlineBytes:fallbackBytes}},
+    {ok:true,localArtifact:doc,companionArtifacts:[guide],safeInlineGuidance:LOCAL_AUTHORING_MODERN_CUE}, {register})
+    assert.equal(narrow.body.result, LOCAL_AUTHORING_REFERENCE_CUE)
+    const forged = await prepareActionReport(actionRow(),
+      {ok:true,localArtifact:doc,safeInlineGuidance:LOCAL_AUTHORING_MODERN_CUE}, {register})
+    assert.equal(forged.body.result, '', 'without the reference Artifact no modern cue is admitted')
+  })
+})
+
 test('a failed companion registration or insufficient guide budget never reports partial success', async () => {
   await withArea(async ({store}) => {
     const doc=store.putResult({bytes:Buffer.from('doc'),mediaType:'text/plain',encoding:'utf8'})
@@ -335,12 +360,14 @@ test('identical document and reference bytes register once rather than duplicati
   await withArea(async ({store}) => {
     const doc=store.putResult({bytes:Buffer.from('same bytes'),mediaType:'text/plain',encoding:'utf8'})
     const guide=store.putResult({bytes:Buffer.from('same bytes'),mediaType:'text/plain',encoding:'utf8'})
-    let calls=0
-    const result=await prepareActionReport(actionRow(),{ok:true,localArtifact:doc,companionArtifacts:[guide]}, {
-      register:async record=>{calls++;return confirm(record)},
-    })
-    assert.equal(calls,1)
-    assert.deepEqual(result.body.artifacts,[{ref}])
-    assert.match(result.body.result,/identical/)
+    for (const safeInlineGuidance of [undefined, LOCAL_AUTHORING_MODERN_CUE]) {
+      let calls=0
+      const result=await prepareActionReport(actionRow(),{ok:true,localArtifact:doc,companionArtifacts:[guide],safeInlineGuidance}, {
+        register:async record=>{calls++;return confirm(record)},
+      })
+      assert.equal(calls,1)
+      assert.deepEqual(result.body.artifacts,[{ref}])
+      assert.match(result.body.result,/When bytes are identical, one Artifact serves both/)
+    }
   })
 })

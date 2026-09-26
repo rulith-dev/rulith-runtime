@@ -54,7 +54,7 @@
       "sha256": "616cbe6b498bcd2e7fecdddc1dcd015779b9c3ff3c7469fc92e821100b48640f"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "da55cb51c916b2524bb1b71fb53b7f080fcca45e4b7ec14921ee2c9e48bbf207"
+      "sha256": "53ec766db4e2d5972c40a1d5ffdd5b6ffd2406aa422e70b24f510745181754e5"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -69,7 +69,7 @@
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
     },
     "worker/local-authoring.mjs": {
-      "sha256": "4e720e187082b371961e544136fa9e2aab68969b12a56dde3ef399a19c550b72"
+      "sha256": "e683732ea733e550e3fd903fbda7e42682bfa601454895e28175a9048ceab8b4"
     },
     "worker/authoring-diagnostics.mjs": {
       "sha256": "ad65e350929e3bdf0e9261581a88a9c4b668295c08fbb95cde5593cea1ea89c9"

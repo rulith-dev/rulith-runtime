@@ -4,12 +4,22 @@ import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { builtinLocalAuthoringTools, authoringNode, executeLocalAuthoring, proposalDigest, LOCAL_AUTHORING_DRAFT_SHAPE, localAuthoringIndexDirectory, recordLocalAuthoringResult, readLocalAuthoringResults } from '../worker/local-authoring.mjs'
+import { builtinLocalAuthoringTools, authoringNode, executeLocalAuthoring, proposalDigest, LOCAL_AUTHORING_DRAFT_SHAPE, LOCAL_AUTHORING_MODERN_CUE, localAuthoringIngestCue, localAuthoringIndexDirectory, recordLocalAuthoringResult, readLocalAuthoringResults } from '../worker/local-authoring.mjs'
 import { validateAuthoringCheckerManifest } from '../local/authoring-checker.mjs'
 import { materialAgentFingerprint, materialIdentityFromFingerprints, openMaterialStore } from '../worker/material-store.mjs'
 
 const binding = materialIdentityFromFingerprints({ profile: 'a'.repeat(64), owner: 'b'.repeat(64), agentFingerprint: materialAgentFingerprint('ag-authoring'), modelDestination: 'http://127.0.0.1:11434' })
 const owner = { ...binding, agentId: 'ag-authoring' }
+test('only a returned installed reference selects the bounded construction cue', () => {
+  assert.equal(localAuthoringIngestCue(undefined), LOCAL_AUTHORING_DRAFT_SHAPE)
+  assert.equal(localAuthoringIngestCue([]), LOCAL_AUTHORING_DRAFT_SHAPE)
+  assert.equal(localAuthoringIngestCue([{}]), LOCAL_AUTHORING_MODERN_CUE)
+  assert.ok(Buffer.byteLength(LOCAL_AUTHORING_MODERN_CUE, 'utf8') < 1_024)
+  for (const phrase of ['reference.construction', 'rulith-case-contract/2', 'input_version',
+    'minimumGroundingFloor attested', 'version-bound acceptance bridge'])
+    assert.match(LOCAL_AUTHORING_MODERN_CUE, new RegExp(phrase.replace('.', '\\.')))
+  assert.doesNotMatch(LOCAL_AUTHORING_MODERN_CUE, /[{}]|caseContracts=|telecom|usage_mb|9900/)
+})
 test('concurrent checked versions remain separately durable beyond the old 200-row index', async () => {
   const root = await mkdtemp(join(tmpdir(), 'rulith-authoring-index-'))
   try {
