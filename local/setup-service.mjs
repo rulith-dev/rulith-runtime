@@ -4,11 +4,12 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdir
 import { dirname, join, resolve } from 'node:path'
 import { hostname } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { checkedModelInput, resolvedKey } from './model-settings.mjs'
+import { checkedModelInput, maxOutputTokens, resolvedKey } from './model-settings.mjs'
 
 const read = (path, fallback) => existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : fallback
 const digest = value => createHash('sha256').update(value).digest('hex')
 const text = value => typeof value === 'string' ? value : ''
+const displayedOutputTokens = value => { try { return maxOutputTokens(value) } catch { return null } }
 const fields = (value, allowed) => { if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !allowed.includes(key))) throw new Error('Unexpected setup fields.') }
 function atomic(path, data) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -71,7 +72,9 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       return { linked: configured(), machineName: hostname(), clientMode: current.clientMode || (cfg.roles?.includes('agent') ? 'local_agent' : 'existing_agent'),
         consoleUrl: current.base || connection().base || 'https://console.rulith.ai', code: current.code, expiresAt: current.expiresAt,
         agentId: current.agentId, connectionId: connection().id, resources: current.resources || [],
-        model: { url: text(cfg.agent?.env?.RULITH_MODEL_URL), name: text(cfg.agent?.env?.RULITH_MODEL), keyConfigured: !!text(cfg.agent?.env?.RULITH_MODEL_KEY) },
+        model: { url: text(cfg.agent?.env?.RULITH_MODEL_URL), name: text(cfg.agent?.env?.RULITH_MODEL),
+          keyConfigured: !!text(cfg.agent?.env?.RULITH_MODEL_KEY),
+          maxOutputTokens: displayedOutputTokens(cfg.agent?.env?.RULITH_MODEL_MAX_OUTPUT_TOKENS) },
         services: mcpServices.overview().services.map(service => ({ name: service.name, tools: service.definition.accessModes.map(mode => ({ name: mode.title, kind: mode.operation })) })), busy }
     },
     context,
@@ -239,13 +242,15 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
     }),
     model: body => exclusive(async () => {
       // thinking 是可选的既有模型设置；沿用同一次写入，避免出现第二条改模型的路径。
-      fields(body, ['url', 'name', 'key', 'clearKey', 'thinking'])
+      fields(body, ['url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'])
       const input = checkedModelInput(body)
       const previous = getConfig().agent?.env ?? {}
       const key = resolvedKey({ url: previous.RULITH_MODEL_URL, key: previous.RULITH_MODEL_KEY }, input.url, input)
       persistConfiguration(next => {
         next.agent = { ...next.agent, env: { ...next.agent?.env, RULITH_MODEL_URL: input.url, RULITH_MODEL: input.name,
           RULITH_MODEL_KEY: key,
+          RULITH_MODEL_MAX_OUTPUT_TOKENS: String(body.maxOutputTokens === undefined
+            ? maxOutputTokens(previous.RULITH_MODEL_MAX_OUTPUT_TOKENS) : input.maxOutputTokens),
           ...(body.thinking === undefined ? {} : { RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(input.thinking) ? input.thinking : '' }) } }
       }, 'agent')
       await onModelConfigured?.()

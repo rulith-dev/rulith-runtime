@@ -379,7 +379,7 @@ export const managerPage = String.raw`<!doctype html>
       <label>API key<input id="model-key" type="password" autocomplete="new-password" maxlength="4096"></label>
       <p class="muted" id="model-key-hint"></p>
       <label class="checkline" id="model-clear-label"><input id="model-clear-key" type="checkbox">Remove the saved API key</label>
-      <details><summary>Model options</summary><label>Thinking (OpenAI-compatible endpoints)<select id="model-thinking"><option value="standard">Provider default</option><option value="disabled">Off</option><option value="enabled">On</option></select></label></details>
+      <details><summary>Model options</summary><label>Thinking (OpenAI-compatible endpoints)<select id="model-thinking"><option value="standard">Provider default</option><option value="disabled">Off</option><option value="enabled">On</option></select></label><label>Maximum output tokens per response<input id="model-max-output-tokens" type="number" min="256" max="65536" step="1" value="6000"></label><p class="muted">A higher limit may cost more. The model service may set a lower limit.</p></details>
     </div>
     <p class="muted" id="model-effect"></p>
     <div class="actions"><button class="btn" id="model-save">Save</button><button id="model-save-start">Save and start Agent</button></div>
@@ -612,6 +612,7 @@ function fillModelFields(model){
   $('model-url').value=model?.url||'';$('model-name').value=model?.name||'';
   $('model-key').value='';$('model-clear-key').checked=false;
   $('model-thinking').value=['enabled','disabled'].includes(model?.thinking)?model.thinking:'standard';
+  $('model-max-output-tokens').value=model?.maxOutputTokens===null?'':String(model?.maxOutputTokens??6000);
   modelOriginal=model||{};
 }
 function openModel(instanceId=''){
@@ -678,13 +679,17 @@ function renderModel(){
   $('model-blocked').textContent=!valid?'The account or Agent changed. Close and reopen these settings.'
     :running?'Stop this Agent before changing its model.':'';
   if(!valid){modelTarget.invalidated=true;$('model-key').value='';}
-  for(const id of ['model-url','model-name','model-key','model-clear-key','model-thinking'])$(id).disabled=!valid||running||busy.has('model-settings');
+  for(const id of ['model-url','model-name','model-key','model-clear-key','model-thinking','model-max-output-tokens'])$(id).disabled=!valid||running||busy.has('model-settings');
 }
 async function saveModel(startAfter){
   const target=modelTarget;if(!target||!modelTargetValid())return;
   const source=$('model-source').value,editingDefault=modelEditsDefault();
+  const budgetText=$('model-max-output-tokens').value;
+  if(!/^[0-9]+$/.test(budgetText)||Number(budgetText)<256||Number(budgetText)>65536){
+    say('model-notice','Maximum output tokens must be an integer from 256 to 65536.');return;
+  }
   const values={url:$('model-url').value.trim(),name:$('model-name').value.trim(),key:$('model-key').value,
-    clearKey:$('model-clear-key').checked,thinking:$('model-thinking').value};
+    clearKey:$('model-clear-key').checked,thinking:$('model-thinking').value,maxOutputTokens:Number(budgetText)};
   return run('model-settings','model-notice',async()=>{
     if(modelTarget!==target||!modelTargetValid())throw Error('The account or Agent changed. Reopen model settings.');
     const scope={expectedOrigin:target.origin,expectedAccountId:target.accountId};

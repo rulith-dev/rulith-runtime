@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { managerPage } from '../local/manager-ui.mjs'
+import { checkedModelInput, modelView } from '../local/model-settings.mjs'
 import { runPageScript } from './support/mini-dom.mjs'
 
 const origin = 'https://console.example', accountId = 'account-a'
@@ -16,14 +17,32 @@ const snapshot = (extra = {}) => ({ device: { state: 'linked', origin, account: 
   agents: [{ id: 'agent-one', name: 'Research' }] }, instances: [instance()], modelDefaults: defaults(), ...extra })
 const settle = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)) }
 
+test('model settings reject malformed and persisted output budgets visibly', () => {
+  for (const value of [true, [], 255, 65537, 12000.5]) {
+    assert.throws(() => checkedModelInput({ url: 'http://localhost:8080/v1', name: 'model', maxOutputTokens: value }),
+      /Maximum output tokens/)
+    const view = modelView({ url: 'http://localhost:8080/v1', name: 'model', maxOutputTokens: value })
+    assert.equal(view.ready, false)
+    assert.equal(view.maxOutputTokens, null)
+    assert.match(view.reason, /Maximum output tokens/)
+  }
+  assert.throws(() => checkedModelInput({ url: 'http://localhost:8080/v1', name: 'model', maxOutputTokens: '12000' }),
+    /Maximum output tokens/)
+  assert.equal(modelView({ url: 'http://localhost:8080/v1', name: 'model', maxOutputTokens: '12000' }).maxOutputTokens,
+    12000, 'the persisted Agent environment uses a decimal string')
+  assert.equal(modelView({ url: 'http://localhost:8080/v1', name: 'model' }).maxOutputTokens, 6000)
+})
+
 test('model form preserves and submits explicit thinking off', async () => {
-  const state = snapshot({ modelDefaults: defaults({ url: 'https://model.example/v1', name: 'model', thinking: 'disabled', keyConfigured: true, configured: true }) })
+  const state = snapshot({ modelDefaults: defaults({ url: 'https://model.example/v1', name: 'model', thinking: 'disabled', maxOutputTokens: 12000, keyConfigured: true, configured: true }) })
   const page = await runPageScript(managerPage, { respond: async () => ({ body: state }) })
   page.$('default-model-open').onclick()
   assert.equal(page.$('model-thinking').value, 'disabled')
+  assert.equal(page.$('model-max-output-tokens').value, '12000')
   await page.$('model-save').onclick(); await settle()
   const write = page.calls.find(call => call.path === '/manager/model/default')
   assert.equal(write.body.thinking, 'disabled')
+  assert.equal(write.body.maxOutputTokens, 12000)
 })
 
 test('missing model opens a bound settings form instead of attempting to start a child', async () => {
@@ -53,7 +72,8 @@ test('default model edits survive refresh and send only the captured account sco
   assert.equal(writes.length, 1)
   assert.equal(writes[0].path, '/manager/model/default')
   assert.deepEqual(writes[0].body, { expectedOrigin: origin, expectedAccountId: accountId,
-    url: 'https://model.example/v1', name: 'chosen-model', key: 'user-entered-secret', clearKey: false, thinking: 'standard' })
+    url: 'https://model.example/v1', name: 'chosen-model', key: 'user-entered-secret', clearKey: false,
+    thinking: 'standard', maxOutputTokens: 6000 })
   assert.equal(page.$('model-key').value, '', 'closing the editor forgets the entered key')
 })
 

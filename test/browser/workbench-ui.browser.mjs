@@ -1155,11 +1155,48 @@ arm('a local profile the directory does not claim stays in the account settings,
   ] })
 
 const modelFixture = { modelDefaults: { available: true, origin: 'https://console.example', accountId: 'acct-1',
-  configured: false, url: '', name: '', thinking: 'standard', keyConfigured: false },
+  configured: false, url: '', name: '', thinking: 'standard', maxOutputTokens: 6000, keyConfigured: false },
   instances: [{ id: 'inst-1', name: 'Research', mode: 'local_agent', directory: 'D:/instances/inst-1',
     origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent-alpha', agentName: 'Alpha', paired: true,
     agent: false, worker: false,
-    model: { source: 'default', configured: false, ready: false, url: '', name: '', keyConfigured: false } }] }
+    model: { source: 'default', configured: false, ready: false, url: '', name: '', maxOutputTokens: 6000, keyConfigured: false } }] }
+
+arm('default and custom model output budgets save explicitly and invalid input stays visible',
+  { width: 1440, height: 960 }, async ({ page, fixture }) => {
+    const writes = writesTo(page)
+    await page.click('#account-open')
+    await page.click('#default-model-open')
+    await page.locator('#model-fields details > summary').click()
+    assert.equal(await page.locator('#model-max-output-tokens').inputValue(), '6000')
+    await page.fill('#model-url', 'https://model.example/v1')
+    await page.fill('#model-name', 'default-model')
+    await page.fill('#model-key', 'fixture-only-key')
+    await page.fill('#model-max-output-tokens', '12000')
+    await page.click('#model-save')
+    await page.locator('#dlg-model').waitFor({ state: 'hidden' })
+    assert.equal(writes.find(row => row.path === '/manager/model/default')?.body.maxOutputTokens, 12000)
+
+    await page.click('#account-close')
+    await page.click('[data-instance="inst-1"]')
+    await page.click('#details-open')
+    await page.click('#agent-model-open')
+    await page.selectOption('#model-source', 'custom')
+    await page.fill('#model-url', 'https://model.example/v1')
+    await page.fill('#model-name', 'custom-model')
+    await page.fill('#model-key', 'fixture-only-key')
+    await page.fill('#model-max-output-tokens', '16000')
+    await page.click('#model-save')
+    await page.locator('#dlg-model').waitFor({ state: 'hidden' })
+    assert.equal(writes.find(row => row.path === '/manager/instances/model')?.body.maxOutputTokens, 16000)
+
+    await page.click('#agent-model-open')
+    await page.fill('#model-max-output-tokens', '255')
+    const before = writes.length
+    await page.click('#model-save')
+    await page.locator('#model-notice').filter({ hasText: 'integer from 256 to 65536' }).waitFor()
+    assert.equal(writes.length, before, 'an invalid budget must not submit model settings')
+    assert.equal(await page.locator('#dlg-model').isVisible(), true)
+  }, modelFixture)
 
 arm('missing model leads directly to default setup, then the explicit start action',
   { width: 1440, height: 960 }, async ({ page, fixture }) => {

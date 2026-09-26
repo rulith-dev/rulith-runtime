@@ -89,7 +89,7 @@ import {
   deliveryChunks, deliveryRequestOf, localReadResult, localTicketOf, registrationBody,
   registrationResult, uploadDecision,
 } from './material-transport.mjs'
-import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, LOCAL_AUTHORING_DRAFT_SHAPE } from './local-authoring.mjs'
+import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, LOCAL_AUTHORING_DRAFT_SHAPE, LOCAL_AUTHORING_REFERENCE_CUE } from './local-authoring.mjs'
 import { authoringGuidanceText } from './authoring-diagnostics.mjs'
 // The off-machine permission reading travels with the Worker surface it has always been part
 // of, so the committed cross-repository permission rows keep one importable answer to compare
@@ -1822,8 +1822,10 @@ export function workerLocalArtifact(value) {
  * be exercised without a filesystem or a network.
  */
 export async function prepareActionReport(row, execution, { custody, register } = {}) {
-  const { ok, result = '', reason, facts = [], localArtifact, safeInlineGuidance, completionStage,
+  const { ok, result = '', reason, facts = [], localArtifact, companionArtifacts = [], safeInlineGuidance, completionStage,
     optionalArtifact = false } = execution
+  if (!Array.isArray(companionArtifacts) || companionArtifacts.length > 1
+    || (companionArtifacts.length && localArtifact === undefined)) return {unavailable:'material_custody_record_unreadable'}
   const body = { kind: 'ReportWork', workType: 'action', id: row.work, executionGrant: row.executionGrant, ok,
     ...(ok ? { result, ...(facts.length ? { facts } : {}),
       ...(completionStage === 'terminal' ? { completionStage } : {}) } : { result: '', reason }) }
@@ -1849,38 +1851,39 @@ export async function prepareActionReport(row, execution, { custody, register } 
       return { unavailable: error instanceof MaterialError ? error.code : 'material_custody_unavailable' }
     }
   }
-  if (record.totalBytes > row.artifactPolicy.objectBytes) {
-    return optionalArtifact && ok ? { body } : { unavailable: 'artifact_object_limit' }
-  }
-  let object
-  try {
-    object = await register(record)
-  } catch (error) {
-    if (error instanceof CredentialRejectedError) throw error
-    // A selected HTTP /2 Tool has no declared result facts. Its fixed terminal status is
-    // sufficient to settle the effect; an optional response object losing material permission
-    // must not strand an already executed effect or fall back to an inline echo.
-    if (optionalArtifact && ok) return { body }
-    return { unavailable: error instanceof MaterialError ? error.code : 'artifact_registration_unknown' }
-  }
-  const ref = workerArtifactReference(registrationResult(object, record))
-  if (ref === undefined) {
-    return optionalArtifact && ok ? { body } : { unavailable: 'artifact_registration_unconfirmed' }
+  const records = [record, ...companionArtifacts]
+  if (records.some(item => !workerLocalArtifact(item))) return {unavailable:'material_custody_record_unreadable'}
+  const unique = [...new Map(records.map(item => [item.digest, item])).keys()].map(digest => records.find(item=>item.digest===digest))
+  const refs = []
+  for (const item of unique) {
+    if (item.totalBytes > row.artifactPolicy.objectBytes)
+      return optionalArtifact && ok && !companionArtifacts.length ? {body} : {unavailable:'artifact_object_limit'}
+    let object
+    try {object = await register(item)} catch (error) {
+      if (error instanceof CredentialRejectedError) throw error
+      if (optionalArtifact && ok && !companionArtifacts.length) return {body}
+      return {unavailable:error instanceof MaterialError ? error.code : 'artifact_registration_unknown'}
+    }
+    const ref = workerArtifactReference(registrationResult(object, item))
+    if (ref === undefined || refs.some(existing=>existing.ref===ref.ref)) {
+      if (optionalArtifact && ok && !companionArtifacts.length) return {body}
+      return {unavailable:'artifact_registration_unconfirmed'}
+    }
+    refs.push(ref)
   }
   if (ok) body.result = ''
   else body.reason = 'Diagnostic data is available through the attached Artifact.'
-  body.artifacts = [ref]
-  // The Artifact's result may contain material bytes and must never be reported inline.
-  // Only source-independent authoring guidance may accompany its reference: the
-  // fixed ingest cue or a carrier minted by the safe checker projection.
-  // A smaller negotiated inline budget simply omits the cue; it must not lose the receipt.
-  const guidance = safeInlineGuidance === LOCAL_AUTHORING_DRAFT_SHAPE ? safeInlineGuidance : authoringGuidanceText(safeInlineGuidance)
-  if (ok && guidance !== undefined
-    && size({ result: guidance, reason: body.reason ?? '', facts, artifacts: body.artifacts }) <= row.artifactPolicy.inlineBytes)
-    body.result = guidance
-  if (size({ result: body.result, reason: body.reason ?? '', facts, artifacts: body.artifacts }) > row.artifactPolicy.inlineBytes) {
-    return { unavailable: 'artifact_reference_exceeds_inline_budget' }
+  body.artifacts = refs
+  const baseGuide = safeInlineGuidance === LOCAL_AUTHORING_DRAFT_SHAPE ? safeInlineGuidance : authoringGuidanceText(safeInlineGuidance)
+  const referenceGuide = companionArtifacts.length ? LOCAL_AUTHORING_REFERENCE_CUE : undefined
+  const guidance = referenceGuide ? [referenceGuide, baseGuide === LOCAL_AUTHORING_DRAFT_SHAPE ? undefined : baseGuide].filter(Boolean).join('\n') : baseGuide
+  const fits = result => size({result,reason:body.reason??'',facts,artifacts:body.artifacts}) <= row.artifactPolicy.inlineBytes
+  if (ok && guidance !== undefined && fits(guidance)) body.result = guidance
+  else if (ok && referenceGuide !== undefined) {
+    if (!fits(referenceGuide)) return {unavailable:'artifact_reference_exceeds_inline_budget'}
+    body.result = referenceGuide
   }
+  if (!fits(body.result)) return {unavailable:'artifact_reference_exceeds_inline_budget'}
   return { body }
 }
 
@@ -2930,7 +2933,11 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
       }
       const localArtifact = workerLocalArtifact(out?.localArtifact)
       if (out?.localArtifact !== undefined && localArtifact === undefined) throw new Error('The local executor returned an invalid Artifact custody record')
+      const companionArtifacts = t.impl === 'local-authoring' ? out?.companionArtifacts : undefined
+      if (companionArtifacts !== undefined && (!Array.isArray(companionArtifacts) || companionArtifacts.length > 1
+        || companionArtifacts.some(record=>!workerLocalArtifact(record)))) throw new Error('The local executor returned invalid companion custody')
       return { result: text, facts: resultFactsFromRows(t, rows), ...(localArtifact ? { localArtifact } : {}),
+        ...(companionArtifacts ? {companionArtifacts} : {}),
         ...(t.impl === 'local-authoring' && localArtifact ? { safeInlineGuidance: t.entry === 'ingest' ? LOCAL_AUTHORING_DRAFT_SHAPE : out.safeInlineGuidance } : {}) }
     } catch (error) {
       if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
@@ -3584,6 +3591,7 @@ async function handleAction(w) {
   let result = ''
   let resultFacts = []
   let localArtifact
+  let companionArtifacts
   let safeInlineGuidance
   let reason
   let undeliverable
@@ -3600,6 +3608,7 @@ async function handleAction(w) {
       result = String(executed.result ?? '')
       resultFacts = Array.isArray(executed.facts) ? executed.facts : []
       safeInlineGuidance = executed.safeInlineGuidance
+      companionArtifacts = executed.companionArtifacts
       // The durable local object this executor produced, if it produced one. It travels to the
       // report path because it selects custody over an inline result — see `prepareActionReport`.
       //
@@ -3674,7 +3683,7 @@ async function handleAction(w) {
   let prepared
   try {
     prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts,
-      localArtifact, safeInlineGuidance, completionStage, optionalArtifact: Boolean(selectedMaterial) }, {
+      localArtifact, companionArtifacts, safeInlineGuidance, completionStage, optionalArtifact: Boolean(selectedMaterial) }, {
       custody: data => takeCustody({ ...data,
         ...(selectedMaterial ? { production: selectedResultProduction(grant, selectedMaterial.input) } : {}) }),
       register: record => {

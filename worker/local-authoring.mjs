@@ -7,7 +7,7 @@ import { link, mkdir, open, readFile, rm, unlink, writeFile } from 'node:fs/prom
 import { execFile } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { MATERIAL_ID_PATTERN, RESULT_ID_PATTERN, MaterialError, materialTextOf, openMaterialStore } from './material-store.mjs'
-import { discoverLocalAuthoringJar as discoveredJar } from '../local/authoring-checker.mjs'
+import { discoverLocalAuthoringJar as discoveredJar, authoringCheckerReferenceFormat } from '../local/authoring-checker.mjs'
 import { runBounded } from '../local/process-tree.mjs'
 
 export const LOCAL_AUTHORING_RELEASE = '3.1.0'
@@ -33,6 +33,44 @@ export const LOCAL_AUTHORING_DRAFT_SHAPE = [
   "equal a rules[].id or ruleGroups[].branches[].id. Quote exactly; test invalid inputs too. naf:true tests absence in the current closure, not absence in the outside world. Bind",
   "variables positively; preserve observed versions on version-keyed inputs.",
 ].join(' ')
+export const LOCAL_AUTHORING_REFERENCE_CUE = 'The first Artifact is the document or check result; the second is the installed checker public authoring reference. Read both before writing or repairing rules. The reference is guidance, not evidence. When bytes are identical, one Artifact serves both.'
+let referenceCache
+
+/** Read static guidance from the exact operator-selected or release-pinned executable, never material text. */
+async function localReference(materialRoot) {
+  // Old released checker pins do not advertise this CLI. They keep their original single-object contract.
+  const advertised = await authoringCheckerReferenceFormat()
+  if (!String(process.env.RULITH_AUTHORING_JAR ?? '').trim() && advertised === undefined) return undefined
+  const [java, jar] = await Promise.all([discoverLocalAuthoringJava(), discoverLocalAuthoringJar()])
+  const key = `${java}:${jar}:${sha(readFileSync(jar))}`
+  if (!referenceCache || referenceCache.key !== key) {
+    const promise = (async () => {
+      const directory = join(materialRoot, 'local-authoring', `reference-${randomUUID()}`)
+      try {
+        await mkdir(directory, {recursive:true, mode:0o700})
+        const output = join(directory, 'reference.json')
+        await runBounded(java, ['-Xmx64m', '-XX:MaxMetaspaceSize=64m', '-jar', jar, '--reference', output],
+          {timeoutMs:15_000, maxBytes:4096, env:checkerEnv(), cwd:directory})
+        if (statSync(output).size > 64 * 1024) throw new Error('public reference exceeds its byte limit')
+        const bytes = await readFile(output), value = JSON.parse(bytes.toString('utf8'))
+        if (value?.format !== 'rulith-local-authoring-reference/1' || value.guidanceOnly !== true
+          || !/^sha256:[a-f0-9]{64}$/.test(value.authoringContractDigest)
+          || Object.keys(value).sort().join(',') !== 'authoringContractDigest,construction,draft,format,guidanceOnly'
+          || !['construction','draft'].every(k=>typeof value[k]==='string' && value[k].trim()))
+          throw new Error('installed checker returned an invalid public reference')
+        return bytes
+      } catch (error) {
+        throw new Error(`local_authoring_reference_unavailable: Install the matching checker before authoring (${error.message}).`)
+      } finally {
+        const root = resolve(materialRoot, 'local-authoring')
+        if (dirname(resolve(directory)) === root) await rm(directory, {recursive:true, force:true})
+      }
+    })()
+    referenceCache = {key, promise}
+  }
+  const current = referenceCache
+  try {return await current.promise} catch (error) {if(referenceCache===current)referenceCache=undefined;throw error}
+}
 const orderedDigest = value => `sha256:${createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex')}`
 // Java OrderedJson preserves insertion order, including nested objects. Only the four
 // top-level proposal fields are selected in this fixed order; missing values are null.
@@ -143,11 +181,15 @@ export async function recordLocalAuthoringResult(root, row) {
 }
 export async function executeLocalAuthoring(tool, args, { materialRoot, binding }) {
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+  const reference = async store => {
+    const bytes = await localReference(materialRoot)
+    return bytes ? {companionArtifacts:[store.putResult({name:'authoring-reference.json', mediaType:'application/json', encoding:'utf8', bytes})]} : {}
+  }
   if (tool.entry === 'ingest') {
     const found = material(materialRoot, binding, String(input.material ?? ''))
     const node = authoringNode(found.selector, found.record.digest)
     const produced = found.store.deriveResult(found.record.id, { mediaType: found.record.mediaType, encoding: 'utf8' })
-    return { result: 'Document ingested locally.', localArtifact: produced, rows: [{ node, task_id: found.selector, document_digest: found.record.digest, characters: [...found.text].length }] }
+    return { result: 'Document ingested locally.', localArtifact: produced, ...await reference(found.store), rows: [{ node, task_id: found.selector, document_digest: found.record.digest, characters: [...found.text].length }] }
   }
   const constructing = tool.entry === 'construct'
   if (!constructing && tool.entry !== 'check') throw new Error('local_authoring_tool_unknown')
@@ -182,7 +224,7 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
       if (envelope.draft !== undefined || envelope.report !== undefined || envelope.errors.length === 0) throw new Error('local_authoring_report_invalid: refused construction has an invalid envelope.')
       const summary = JSON.stringify({ constructed: false, errors: envelope.errors.map(row => String(row?.code ?? 'construction_invalid')) })
       const result = found.store.putResult({ name: `authoring-construction-${found.selector}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify({ construction_json: inputText, constructorVersion: envelope.constructorVersion, inputDigest, constructionDigest: construction_digest, errors: envelope.errors }), 'utf8') })
-      return { result: 'Local deterministic draft construction was refused.', localArtifact: result, safeInlineGuidance: createConstructionGuidance(envelope.errors), rows: [{ node, task_id: found.selector, construction_digest, proposal_digest: '', constructed: false, compiled: false, examples_total: 0, examples_passed: 0, citations_total: 0, citations_verified: 0, external_actions: 0, report: summary }] }
+      return { result: 'Local deterministic draft construction was refused.', localArtifact: result, ...await reference(found.store), safeInlineGuidance: createConstructionGuidance(envelope.errors), rows: [{ node, task_id: found.selector, construction_digest, proposal_digest: '', constructed: false, compiled: false, examples_total: 0, examples_passed: 0, citations_total: 0, citations_verified: 0, external_actions: 0, report: summary }] }
     }
     if (!envelope.draft || Array.isArray(envelope.draft) || typeof envelope.draft !== 'object' || !envelope.report || Array.isArray(envelope.report) || typeof envelope.report !== 'object' || envelope.errors.length !== 0) throw new Error('local_authoring_report_invalid: successful construction has an invalid envelope.')
   }
@@ -198,7 +240,7 @@ export async function executeLocalAuthoring(tool, args, { materialRoot, binding 
   const artifact = constructing ? { construction_json: inputText, constructorVersion: envelope.constructorVersion, inputDigest: envelope.inputDigest, constructionDigest: construction_digest, draft, report } : { draft, report }
   const result = found.store.putResult({ name: `${constructing ? 'authoring-construction' : 'authoring-check'}-${found.selector}.json`, mediaType: 'application/json', encoding: 'utf8', bytes: Buffer.from(JSON.stringify(artifact), 'utf8') })
   await recordLocalAuthoringResult(materialRoot, { profile: binding.profile, owner: binding.owner, materialId: found.selector, custodyId: found.record.id, documentDigest: found.record.digest, node, proposalDigest: proposal_digest, resultId: result.id, resultDigest: result.digest, checkedAt: new Date().toISOString() })
-  return { result: constructing ? 'Local deterministic draft construction and mechanical check completed.' : 'Local mechanical authoring check completed.', localArtifact: result, safeInlineGuidance: createAuthoringGuidance(report), rows: [{ node, task_id: found.selector, ...(constructing ? { construction_digest, constructed: true } : {}), proposal_digest, compiled: report.compiled, ...counts, report: summary }] }
+  return { result: constructing ? 'Local deterministic draft construction and mechanical check completed.' : 'Local mechanical authoring check completed.', localArtifact: result, ...await reference(found.store), safeInlineGuidance: createAuthoringGuidance(report), rows: [{ node, task_id: found.selector, ...(constructing ? { construction_digest, constructed: true } : {}), proposal_digest, compiled: report.compiled, ...counts, report: summary }] }
   } finally {
     checkerBusy = false
     const root = resolve(materialRoot, 'local-authoring')

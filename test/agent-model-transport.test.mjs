@@ -19,6 +19,21 @@ for (const thinking of ['enabled', 'disabled', '']) test(`OpenAI model thinking 
   assert.deepEqual(run.modelRequests[0].thinking, thinking ? { type: thinking } : undefined)
 })
 
+for (const provider of ['openai', 'anthropic']) test(`${provider} requests use the configured output token budget`, async () => {
+  const run = await runAgent({ argv: [], chatLines: ['Hello'], provider,
+    env: { RULITH_MODEL_MAX_OUTPUT_TOKENS: '12000' }, model: () => 'Hello' })
+  assert.equal(run.code, 0, run.stderr)
+  assert.equal(run.modelRequests[0].max_tokens, 12000)
+})
+
+for (const value of ['255', '65537', '12000.5', 'wrong']) test(`invalid model output token budget fails before MCP: ${value}`, async () => {
+  const run = await runAgent({ argv: ['Hello'], env: { RULITH_MODEL_MAX_OUTPUT_TOKENS: value }, model: () => 'Must not run' })
+  assert.notEqual(run.code, 0)
+  assert.equal(run.modelRequests.length, 0)
+  assert.equal(run.initializes.length, 0)
+  assert.match(run.stderr, /RULITH_MODEL_MAX_OUTPUT_TOKENS/)
+})
+
 test('provider reasoning continuation survives tool results and later conversation turns without entering user output or Board requests', async () => {
   const first = 'opaque-provider-continuation-α', second = 'opaque-provider-continuation-β'
   const run = await runAgent({ argv: [], provider: 'openai', captureLocalEvents: true, chatLines: ['Check the board.', 'Thanks.'],

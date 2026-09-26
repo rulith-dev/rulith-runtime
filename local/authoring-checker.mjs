@@ -30,6 +30,8 @@ export function validateAuthoringCheckerManifest(manifest) {
       || manifest.files.map(f => f.name).sort().join(',') !== 'local-authoring.jar,rule-check.jar') {
     throw new Error('This Rulith release has no valid pinned authoring checker manifest.')
   }
+  if (manifest.referenceFormat !== undefined && manifest.referenceFormat !== 'rulith-local-authoring-reference/1')
+    throw new Error('The authoring checker manifest declares an unsupported reference format.')
   for (const file of manifest.files) {
     const expectedUrl = `https://console.rulith.ai/downloads/authoring/${manifest.sourceCommit}/${file.name}`
     if (!pinnedFile(file) || file.url !== expectedUrl) {
@@ -53,6 +55,10 @@ async function valid(directory, manifest) {
     } catch { return false }
   }
   return true
+}
+
+export async function authoringCheckerReferenceFormat() {
+  return (await settings()).manifest.referenceFormat
 }
 
 export async function authoringCheckerStatus() {

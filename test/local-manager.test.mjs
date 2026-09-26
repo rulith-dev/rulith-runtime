@@ -1246,7 +1246,7 @@ test('model settings can be reused between instances, and nothing else travels w
     const configured = loadInstanceConfig(source.directory)
     configured.agent.env = { ...configured.agent.env,
       RULITH_MODEL_URL: 'http://127.0.0.1:8080/v1/messages', RULITH_MODEL: 'shared-model',
-      RULITH_MODEL_KEY: 'provider-key', RULITH_MODEL_THINKING: 'enabled' }
+      RULITH_MODEL_KEY: 'provider-key', RULITH_MODEL_THINKING: 'enabled', RULITH_MODEL_MAX_OUTPUT_TOKENS: '12000' }
     saveInstanceConfig(source.directory, configured)
 
     const result = await manager.instances.copyModelSettings(target.id, source.id)
@@ -1258,6 +1258,7 @@ test('model settings can be reused between instances, and nothing else travels w
     assert.equal(applied.RULITH_MODEL_URL, 'http://127.0.0.1:8080/v1/messages')
     assert.equal(applied.RULITH_MODEL_KEY, 'provider-key')
     assert.equal(applied.RULITH_MODEL_THINKING, 'enabled')
+    assert.equal(applied.RULITH_MODEL_MAX_OUTPUT_TOKENS, '12000')
     // The identity of each instance is untouched.
     assert.notEqual(applied.RULITH_TOKEN, configured.agent.env.RULITH_TOKEN)
     assert.match(applied.RULITH_TOKEN, /^rlt_agt_/)
@@ -1318,18 +1319,22 @@ test('disabled thinking survives account inheritance, overrides, copying, and an
     const source = await addInstance(manager, 'Source', { agentId: 'agent-alpha' })
     const target = await addInstance(manager, 'Target', { agentId: 'agent-beta' })
     const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
-    await manager.instances.setDefaultModel({ ...scope, url: 'http://127.0.0.1:8080/v1', name: 'model', thinking: 'disabled' })
+    await manager.instances.setDefaultModel({ ...scope, url: 'http://127.0.0.1:8080/v1', name: 'model', thinking: 'disabled', maxOutputTokens: 12000 })
     await manager.instances.setInstanceModel(source.id, { ...scope, source: 'default' })
     assert.equal(manager.instances.overview().find(row => row.id === source.id).model.thinking, 'disabled')
+    assert.equal(manager.instances.overview().find(row => row.id === source.id).model.maxOutputTokens, 12000)
     for (const open of [false, true]) {
       if (open) await manager.instances.open(target.id, '/setup')
       await manager.instances.setInstanceModel(target.id, { ...scope, source: 'custom', url: 'http://127.0.0.1:8080/v1', name: 'other', thinking: 'enabled' })
       await manager.instances.copyModelSettings(target.id, source.id)
       assert.equal(loadInstanceConfig(target.directory).agent.env.RULITH_MODEL_THINKING, 'disabled')
+      assert.equal(loadInstanceConfig(target.directory).agent.env.RULITH_MODEL_MAX_OUTPUT_TOKENS, '12000')
       assert.equal(manager.instances.overview().find(row => row.id === target.id).model.thinking, 'disabled')
     }
     await manager.instances.setDefaultModel({ ...scope, url: 'http://127.0.0.1:8080/v1', name: 'model' })
     assert.equal(manager.instances.overview().find(row => row.id === source.id).model.thinking, 'disabled', 'omitting thinking preserves the choice')
+    assert.equal(manager.instances.overview().find(row => row.id === source.id).model.maxOutputTokens, 12000,
+      'omitting the output budget preserves the choice')
   })
 })
 
@@ -1688,7 +1693,8 @@ test('account defaults are scoped, inherited at the next Agent start, and never 
     const defaulted = await manager.instances.create({ name: 'Inherited', mode: 'local_agent',
       setupTarget: { origin: gateway.origin, accountId: scope.expectedAccountId, agentId: AGENTS[0] } })
     assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.source, 'default')
-    const saved = await call('/manager/model/default', { ...scope, url: 'https://provider.example/v1', name: 'remote-default', key: 'default-key-must-not-leak' })
+    const saved = await call('/manager/model/default', { ...scope, url: 'https://provider.example/v1', name: 'remote-default',
+      key: 'default-key-must-not-leak', maxOutputTokens: 12000 })
     assert.equal(saved.response.status, 200)
     assert.equal(saved.body.modelDefaults.configured, true, 'a remote model with a key is configured')
     assert.equal(JSON.stringify(saved.body).includes('default-key-must-not-leak'), false)
@@ -1699,12 +1705,14 @@ test('account defaults are scoped, inherited at the next Agent start, and never 
     saveInstanceConfig(defaulted.directory, config)
     assert.equal((await manager.instances.start(defaulted.id)).started, true)
     assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL, 'remote-default', 'the actual child received the inherited model')
+    assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL_MAX_OUTPUT_TOKENS, '12000')
     assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL_KEY, 'default-key-must-not-leak')
     assert.equal(observedEnv(manager, defaulted.id, 'worker').RULITH_MODEL_KEY, undefined, 'the Worker never receives the Agent model key')
     assert.equal(loadInstanceConfig(defaulted.directory).agent.env.RULITH_MODEL_KEY, '', 'an inherited key was not persisted in the profile')
     assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, false)
 
-    const changed = await call('/manager/model/default', { ...scope, url: 'http://127.0.0.1:11434/v1', name: 'second-local', key: '' })
+    const changed = await call('/manager/model/default', { ...scope, url: 'http://127.0.0.1:11434/v1',
+      name: 'second-local', key: '', maxOutputTokens: 16000 })
     assert.equal(changed.response.status, 200)
     assert.equal(changed.body.modelDefaults.configured, true, 'loopback models may omit a provider key')
     assert.equal(changed.body.instances.find(row => row.id === defaulted.id).model.restartRequired, true)
@@ -1713,6 +1721,8 @@ test('account defaults are scoped, inherited at the next Agent start, and never 
     assert.equal((await manager.instances.control(defaulted.id, { role: 'agent', operation: 'start' })).started, true)
     assert.equal(childEvents(manager, defaulted.id, 'agent').filter(row => row.observed !== undefined).at(-1).observed.RULITH_MODEL,
       'second-local', 'a default change applies on the next Agent start')
+    assert.equal(childEvents(manager, defaulted.id, 'agent').filter(row => row.observed !== undefined).at(-1).observed.RULITH_MODEL_MAX_OUTPUT_TOKENS,
+      '16000', 'the changed budget applies on the next Agent start')
     assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, true,
       'a Worker still bound to the old endpoint must be named as needing restart for new attachments')
     await manager.instances.control(defaulted.id, { role: 'worker', operation: 'stop' })

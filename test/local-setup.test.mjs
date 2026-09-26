@@ -37,7 +37,10 @@ for (const mode of ['existing_agent', 'local_agent']) test('setup pairs '+mode+'
   assert.equal(readFileSync(configFile+'.setup.json','utf8').includes('PRIVATE KEY'),false);
   const state=JSON.stringify((await call('/setup/state')).body);for(const secret of ['private-worker-key','private-agent-key','deviceSecret','PRIVATE KEY'])assert.equal(state.includes(secret),false);
   assert.equal((await call('/setup/pair/start',{consoleUrl:base,name:'different',clientMode:mode})).status,400,'linked identity cannot be retargeted');
-  assert.equal((await call('/setup/model',{url:'http://localhost:8080/v1',name:'local-model',key:'private-model-key'})).status,200);
+  assert.equal((await call('/setup/model',{url:'http://localhost:8080/v1',name:'local-model',key:'private-model-key',maxOutputTokens:12000})).status,200);
+  assert.equal(JSON.parse(readFileSync(configFile,'utf8')).agent.env.RULITH_MODEL_MAX_OUTPUT_TOKENS,'12000');
+  assert.equal((await call('/setup/model',{url:'http://localhost:8080/v1',name:'local-model',maxOutputTokens:255})).status,400);
+  assert.equal(JSON.parse(readFileSync(configFile,'utf8')).agent.env.RULITH_MODEL_MAX_OUTPUT_TOKENS,'12000');
   assert.equal(JSON.stringify(requests).includes('private-model-key'),false,'model credentials never reach Cloud');
   assert.equal(JSON.stringify((await call('/setup/state')).body).includes('private-model-key'),false);
   assert.equal((await call('/setup/resources',{resources:[],services:[]})).body.state,'awaiting_authorization');

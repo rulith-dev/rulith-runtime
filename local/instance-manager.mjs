@@ -30,7 +30,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createLocalHost, defaultLocalConfig, normalizeLocalConfig } from './rulith-local.mjs'
 import { newInstanceId, processAlive, writeJsonAtomic } from './manager-registry.mjs'
-import { checkedModelInput, createModelSettings, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
+import { checkedModelInput, createModelSettings, maxOutputTokens, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const RUNTIME_ROOT = resolve(HERE, '..')
@@ -411,7 +411,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     if (source === 'default') return { source, ...(defaultFor(row, grant) ?? {}) }
     const env = loadInstanceConfig(resolve(row.directory)).agent?.env ?? {}
     return { source, url: text(env.RULITH_MODEL_URL), name: text(env.RULITH_MODEL), key: text(env.RULITH_MODEL_KEY),
-      thinking: ['enabled', 'disabled'].includes(env.RULITH_MODEL_THINKING) ? env.RULITH_MODEL_THINKING : 'standard' }
+      thinking: ['enabled', 'disabled'].includes(env.RULITH_MODEL_THINKING) ? env.RULITH_MODEL_THINKING : 'standard',
+      maxOutputTokens: env.RULITH_MODEL_MAX_OUTPUT_TOKENS }
   }
   const publicModel = (row, grant = device.status()) => {
     const result = modelView(modelFor(row, grant))
@@ -423,7 +424,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     const value = grant.state === 'linked' ? modelSettings.read(scope.origin, scope.accountId) : undefined
     const view = modelView({ source: 'default', ...(value ?? {}) })
     return { available: grant.state === 'linked', origin: scope.origin, accountId: scope.accountId,
-      url: view.url, name: view.name, thinking: view.thinking, keyConfigured: view.keyConfigured, configured: view.configured }
+      url: view.url, name: view.name, thinking: view.thinking, maxOutputTokens: view.maxOutputTokens,
+      keyConfigured: view.keyConfigured, configured: view.configured, reason: view.reason }
   }
   const assertExpectedScope = ({ expectedOrigin, expectedAccountId }) => {
     const grant = device.status(), current = currentScope(grant)
@@ -444,7 +446,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     const live = hosts.get(id)
     if (live === undefined) return
     const inherited = defaultFor(row, grant)
-    live.host.setAgentModel({ url: text(inherited?.url), name: text(inherited?.name), key: text(inherited?.key), thinking: inherited?.thinking })
+    live.host.setAgentModel({ url: text(inherited?.url), name: text(inherited?.name), key: text(inherited?.key),
+      thinking: inherited?.thinking, maxOutputTokens: inherited?.maxOutputTokens })
     live.inheritedModelSignature = modelSignature(inherited ?? {})
   }
 
@@ -750,6 +753,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       modelOverlay: modelSource(row) === 'default' ? {
         RULITH_MODEL_URL: text(inherited?.url), RULITH_MODEL: text(inherited?.name),
         RULITH_MODEL_KEY: text(inherited?.key), RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(inherited?.thinking) ? inherited.thinking : '',
+        RULITH_MODEL_MAX_OUTPUT_TOKENS: String(inherited?.maxOutputTokens ?? 6000),
       } : undefined,
       ...(startConfirmMs === undefined ? {} : { startConfirmMs }),
     })
@@ -1038,6 +1042,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         url: input.url, name: input.name,
         key: resolvedKey(previous, input.url, input),
         thinking: body.thinking === undefined ? (['enabled', 'disabled'].includes(previous?.thinking) ? previous.thinking : 'standard') : input.thinking,
+        maxOutputTokens: body.maxOutputTokens === undefined ? maxOutputTokens(previous?.maxOutputTokens) : input.maxOutputTokens,
       })
       // A Worker may remain up while its Agent is stopped. Update that open host's in-memory
       // inherited values so the *next* Agent start uses the new default without closing the
@@ -1097,7 +1102,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const busy = runningRoles(id)
       if (busy.includes('agent')) throw new Error(`Instance ${row.name} is running its Agent. Stop Agent before changing its model configuration.`)
       if (body.source === 'default') {
-        if (['url', 'name', 'key', 'clearKey', 'thinking'].some(field => body[field] !== undefined)) {
+        if (['url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'].some(field => body[field] !== undefined)) {
           throw new Error('A default model selection does not accept custom model fields.')
         }
         await registry.patchInstance(id, () => ({ modelSource: 'default' }))
@@ -1115,11 +1120,13 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       // edit. A new custom remote endpoint therefore needs an explicitly entered key.
       const previous = modelSource(row) === 'custom' ? modelFor(row, scope.grant) : undefined
       const key = resolvedKey(previous, input.url, input)
+      const budget = body.maxOutputTokens === undefined ? maxOutputTokens(previous?.maxOutputTokens) : input.maxOutputTokens
       const live = hosts.get(id)
       if (live === undefined) {
         const directory = resolve(row.directory), config = loadInstanceConfig(directory)
         config.agent = { ...config.agent, env: { ...config.agent.env, RULITH_MODEL_URL: input.url, RULITH_MODEL: input.name,
           RULITH_MODEL_KEY: key, RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(input.thinking) ? input.thinking : '' } }
+        config.agent.env.RULITH_MODEL_MAX_OUTPUT_TOKENS = String(budget)
         saveInstanceConfig(directory, config)
         await registry.patchInstance(id, () => ({ modelSource: 'custom' }))
       } else {
@@ -1127,7 +1134,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
           // `key` is resolved above from the persistent source selected by this operation.
           // Tell Setup that empty is final: letting its live host resolve an empty value again
           // would retain an old custom key after default → custom switched this profile away.
-          key, clearKey: key === '', thinking: input.thinking })
+          key, clearKey: key === '', thinking: input.thinking, maxOutputTokens: budget })
         if (answer.status !== 200 || answer.body.ok === false) throw new Error(text(answer.body.teaching) || `Instance ${row.name} did not accept the model configuration.`)
       }
       return { instanceId: id, model: publicModel(record(id)) }
@@ -1576,7 +1583,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       // Copy the resolved model even when the source inherits it. Empty fields also replace
       // the target: an absent source key must never retain the target's previous provider key.
       const applied = { RULITH_MODEL_URL: from.url, RULITH_MODEL: from.name,
-        RULITH_MODEL_KEY: text(from.key), RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(from.thinking) ? from.thinking : '' }
+        RULITH_MODEL_KEY: text(from.key), RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(from.thinking) ? from.thinking : '',
+        RULITH_MODEL_MAX_OUTPUT_TOKENS: String(maxOutputTokens(from.maxOutputTokens)) }
       const live = hosts.get(id)
       if (live === undefined) {
         const directory = resolve(target.directory)
@@ -1590,6 +1598,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
           key: applied.RULITH_MODEL_KEY ?? '',
           clearKey: !text(applied.RULITH_MODEL_KEY).trim(),
           thinking: ['enabled', 'disabled'].includes(applied.RULITH_MODEL_THINKING) ? applied.RULITH_MODEL_THINKING : 'standard',
+          maxOutputTokens: Number(applied.RULITH_MODEL_MAX_OUTPUT_TOKENS),
         })
         if (answer.status !== 200 || answer.body.ok === false) {
           throw new Error(text(answer.body.teaching) || `Instance ${target.name} did not accept the model configuration.`)

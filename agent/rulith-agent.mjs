@@ -143,6 +143,7 @@ Common optional environment:
   RULITH_MODEL       Model identifier
   RULITH_MODEL_URL   Model API endpoint
   RULITH_MODEL_KEY   Provider key (optional only for a loopback model endpoint)
+  RULITH_MODEL_MAX_OUTPUT_TOKENS  Output tokens per model response (256–65536; default: 6000)
   RULITH_MAX_ROUNDS  Maximum model/tool turns per user message (default: 12)
   RULITH_MODEL_TOOLS emulated = describe the same tools in the prompt, for an endpoint
                      that rejects tool definitions (also auto-detected on HTTP 400)
@@ -2389,11 +2390,21 @@ async function settleRecovery(ctx, { force = false, allowObservation = false } =
 // that rejects `tools` outright gets the emulated transport: the same schemas rendered
 // into the system prompt, one JSON object read back as one call. That is a transport,
 // not a second surface — the names, the schemas and the refusals are identical.
-const MAIN_CFG = { url: MODEL_URL, key: MODEL_KEY, model: MODEL }
+const outputTokens = (name) => {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return 6000
+  if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) < 256 || Number(raw) > 65536) {
+    die(`${name} must be an integer from 256 to 65536.`)
+  }
+  return Number(raw)
+}
+const MAIN_CFG = { url: MODEL_URL, key: MODEL_KEY, model: MODEL,
+  maxOutputTokens: outputTokens('RULITH_MODEL_MAX_OUTPUT_TOKENS') }
 const SHADOW_CFG = {
   url: process.env.RULITH_SHADOW_URL ?? MODEL_URL,
   key: process.env.RULITH_SHADOW_KEY ?? MODEL_KEY,
   model: process.env.RULITH_SHADOW_MODEL ?? MODEL,
+  maxOutputTokens: 6000,
 }
 const openaiStyle = (cfg) => /\/chat\/completions\/?$/.test(cfg.url)
 /** Emulation is sticky once chosen: a mixed transcript is a malformed one. */
@@ -2705,14 +2716,14 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
   const { entries: suppliedEntries, compactedViews, compactedTranscriptBytes } = requestEntries(entries)
   const body = wire === 'openai'
     ? {
-        model: cfg.model, max_tokens: 6000,
+        model: cfg.model, max_tokens: cfg.maxOutputTokens,
         // Omission uses the provider default. An explicit disable must reach providers that default to thinking.
         ...(['enabled', 'disabled'].includes(thinking) ? { thinking: { type: thinking } } : {}),
         messages: [{ role: 'system', content: systemText }, ...renderMessages(suppliedEntries, style)],
         ...(declared ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: openAIParameters(tool.schema) } })) } : {}),
       }
     : {
-        model: cfg.model, max_tokens: 6000, system: systemText, messages: mergeAdjacent(renderMessages(suppliedEntries, style)),
+        model: cfg.model, max_tokens: cfg.maxOutputTokens, system: systemText, messages: mergeAdjacent(renderMessages(suppliedEntries, style)),
         ...(declared ? { tools: tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: tool.schema })) } : {}),
       }
   // Report sizes, never prompt text. Provider token counts alone say how expensive a
@@ -2767,7 +2778,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
   // Refuse the entire truncated turn so even a syntactically valid partial call cannot run.
   const finishReason = wire === 'openai' ? payload?.choices?.[0]?.finish_reason : payload?.stop_reason
   if (finishReason === 'length' || finishReason === 'max_tokens') {
-    return { text: '', toolCalls: [], failure: 'The model reached its output token limit before finishing this response. No tools from this response were executed. Reduce the thinking level or ask for a smaller step, then continue the same conversation.' }
+    return { text: '', toolCalls: [], failure: 'The model reached its output token limit before finishing this response. No tools from this response were executed. Increase the output token limit in model settings if the provider supports it, then continue the same conversation.' }
   }
   const spokenText = wire === 'openai'
     ? payload?.choices?.[0]?.message?.content

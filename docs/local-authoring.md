@@ -112,5 +112,18 @@ and maximum. Business outcome rules belong in `program.rules`; `program.acceptan
 is for Case-root bridges. Empty conclusions and malformed bridge outputs receive
 fixed diagnostic codes and static advice, without copying a complete proposal inline.
 Negation-as-failure (`naf:true`) tests the current closure, not the outside world;
-variables must be positively bound, and input-validity rules must use the exact input
-version. These syntax explanations do not attest that a business rule is correct.
+variables must be positively bound, and inputs with a version key must preserve their
+observed version. These syntax explanations do not attest that a business rule is correct.
+
+
+A checker manifest can declare `referenceFormat: "rulith-local-authoring-reference/1"`.
+Only that matching checker (or an explicitly selected `RULITH_AUTHORING_JAR` implementing
+`--reference`) supplies the full public reference. The Worker caches it by executable
+content digest, stores it locally, and registers it as a second Artifact under the same
+invocation and Source as the original document or report. The original bytes stay intact.
+Every read still uses the current Source permissions, including through a third-party MCP
+client. Registration or receipt-budget failures do not produce a partial success.
+
+The currently pinned older checker has no reference declaration and retains its original
+single-Artifact cue. Enabling the default path requires publishing the matching immutable
+checker pair and updating its manifest in the same release.

@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "d6f097774d608a869ead209f0a3b017db05396d7de4bde2ae2352c74f3e02d11"
+      "sha256": "ce8c39c58fe6bc810407079f1cd252f6c04cdeb6d332ef214a0d8857bfda2b5a"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -54,7 +54,7 @@
       "sha256": "616cbe6b498bcd2e7fecdddc1dcd015779b9c3ff3c7469fc92e821100b48640f"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "790a96220b564a6054ddb2c89ade4b510754e3c543d881ffaa6efd14715e63d1"
+      "sha256": "da55cb51c916b2524bb1b71fb53b7f080fcca45e4b7ec14921ee2c9e48bbf207"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -69,13 +69,13 @@
       "sha256": "e73026461ae3b9a31e5c03f447ebfec792ad93ab1949dfb3a5d5d04eea227d79"
     },
     "worker/local-authoring.mjs": {
-      "sha256": "14243359486e077087c5461af315ee5bfd6f507c64f442061dc53c4888f73753"
+      "sha256": "4e720e187082b371961e544136fa9e2aab68969b12a56dde3ef399a19c550b72"
     },
     "worker/authoring-diagnostics.mjs": {
       "sha256": "f09e3669d46e42d7949e3cd42e21d3dc3abe11f4b1a970d364fd0c70ae294b37"
     },
     "local/authoring-checker.mjs": {
-      "sha256": "506e4fd8418ce6a28e4d84526dda4901f7c2a65a1b460b6eb6755c781e1c6b44"
+      "sha256": "9b7fea8944a706e86a5f3741ea5b22dac6899422d9631e366afceee47aee2348"
     },
     "local/authoring-checker.json": {
       "sha256": "cc43bffb07796f3e56bdf555c955ccaf46114355a9245eff5c73f5cfcbd2a2f5"
@@ -84,7 +84,7 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "b8b251d5850980d7be677d64ccbe8a098a28f1bfe9a08fc0596ce015f5ac7a3e"
+      "sha256": "30b01ec9c1e80dbf6df779e194d21782397c8cc9114ae61ace583772c6ad76a3"
     },
     "local/material-service.mjs": {
       "sha256": "c792c11005480860e1656fa49b257eedb55d453cc3574687a52a707f2479fa8c"
@@ -99,22 +99,22 @@
       "sha256": "724754c1bf514ce063796232af11f05cd2b8dfbb878dc9431d2b796c3879637d"
     },
     "local/model-settings.mjs": {
-      "sha256": "463c14bd288350a5e85d8b0dfb5e213f9ff75976c5a536e2330a735e31bab859"
+      "sha256": "d4af81e6663d5b19c32da69c5550ac52afdad021c3ef774a5f27d7f83f4f8236"
     },
     "local/device-client.mjs": {
       "sha256": "c363b57bb1920e6f32e4caf557fe829aac79ae9eaedb4eea90550c1924ab080b"
     },
     "local/instance-manager.mjs": {
-      "sha256": "6c8a926f7101df43161fc7ec2fadbd505efdbb83b5c57627da9d8bae10e802bf"
+      "sha256": "a5b2d31c8b735ab35bfb7d101aef9d611a60157d864808834e1d899f8684e3e2"
     },
     "local/manager-server.mjs": {
-      "sha256": "679f6f622acb1a85a1160b8dcd0c4de0688e65c1dd1f3ed4f581ea012e18f702"
+      "sha256": "54fd2ba0254606b7a1f37a1accdcfddea0aa0dcaab45101c23a811640d84505e"
     },
     "local/manager-ui.mjs": {
-      "sha256": "11aef0d60491de73eaffc3e5b9cf5e19ebd919c58023f28558b1b44856f46b22"
+      "sha256": "f375e83f880e2be9558dcfd181f4a4285ba26b6d1b5f6b51b9df50e1ded240fe"
     },
     "docs/local-manager.md": {
-      "sha256": "6a9c613514d4a59d97fecff52b54648454e9e89de9bd5fe9342815de08d16df3"
+      "sha256": "d1105921b108ac977c5813df964c99e551bc49d33a61f027606f1dfaa05a4df6"
     },
     "docs/local-materials.md": {
       "sha256": "70be70cdc4a443d30cf780512c5a1dbeb3798e0ea9f3c266562fa0e546b13474"
@@ -123,10 +123,10 @@
       "sha256": "dda52e94ccf9957fdb12538d0a29b7e2261826df4c55164de5a89c10a3f62b23"
     },
     "local/setup-service.mjs": {
-      "sha256": "e587bbd9105e8372448958c977fec6f0d0cfd765243aafc72a99e093f0c9f495"
+      "sha256": "162738de9ddbe2a44409a44cc152d227adaaf49c7d1fa4b4ff91aa63c26074fc"
     },
     "local/setup-ui.mjs": {
-      "sha256": "e54c02a1a8a9ce62eba84a899e22f22983696a0ab87f7f6e9aece1dd48bdc4a8"
+      "sha256": "2df861acfa0766650429c019a9028380031158727866f8d5dbd49fde6abc164c"
     },
     "local/mcp-services.mjs": {
       "sha256": "a3b6dce8a85ecb3c21750d489662816f719cbe319ad4b1b33d4d0055aee15808"

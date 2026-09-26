@@ -1534,12 +1534,14 @@ for (const provider of ['openai', 'anthropic']) {
           : [{ type: 'thinking', thinking: 'Reasoning alone is not a response.' }] }
       const run = await runAgent({
         argv: ['--serve'], provider,
-        env: { RULITH_SERVE_PORT: String(port), RULITH_SERVE_KEY: 'provider-response-test' },
+        env: { RULITH_SERVE_PORT: String(port), RULITH_SERVE_KEY: 'provider-response-test',
+          RULITH_MODEL_MAX_OUTPUT_TOKENS: truncated ? '12000' : '' },
         serveTasks: ['first turn', 'continue'], waitForServeCompletion: true,
         model: n => n === 1 ? { status: 200, body } : 'The next turn works.',
         timeoutMs: 6000,
       })
       assert.equal(run.modelRequests.length, 2, 'there must be no automatic paid retry')
+      assert.equal(run.modelRequests[0].max_tokens, truncated ? 12000 : 6000)
       assert.equal(run.verbs.includes('OpenCase'), false, 'a truncated tool call must never execute')
       assert.equal(run.serveSnapshot.runs[0].outcome, 'model-error')
       assert.match(run.serveSnapshot.runs[0].note, truncated ? /output token limit/ : /no answer or tool call/)
@@ -1572,11 +1574,13 @@ test('one-shot reports a recoverable model failure with its open Case', async ()
 
 test('an empty shadow review is unavailable and preserves the Case report', async () => {
   const run = await runAgent({ argv: ['Open a Case.', '--shadow'], captureLocalEvents: true,
-    env: { RULITH_MODEL_THINKING: 'disabled' },
+    env: { RULITH_MODEL_THINKING: 'disabled', RULITH_MODEL_MAX_OUTPUT_TOKENS: '12000' },
     model: (n, request) => systemTextOf(request).includes('adversarial shadow reviewer') ? ''
       : n === 1 ? callTool('OpenCase', {}) : 'Waiting for more information.' })
   assert.equal(run.code, 0, run.stdout + run.stderr)
   assert.equal(run.localEvents.find(event => event.type === 'end').pendingCaseId, 'CASE_1')
+  assert.equal(run.modelRequests[0].max_tokens, 12000)
+  assert.equal(run.modelRequests.at(-1).max_tokens, 6000, 'the shadow has its own output budget')
   assert.equal(run.localEvents.find(event => event.type === 'shadow').unavailable, true)
   assert.equal(run.modelRequests.at(-1).thinking, undefined, 'main model settings must not leak to a separately configured shadow')
   assert.doesNotMatch(run.stdout, /Shadow review: PASS/)

@@ -925,6 +925,8 @@ export function createLocalHost({
               modelService: safeUrl(agentEnv.RULITH_MODEL_URL ?? DEFAULT_MODEL_URL), model: String(agentEnv.RULITH_MODEL ?? ''),
               modelKeyConfigured: String(agentEnv.RULITH_MODEL_KEY ?? baseEnv().ANTHROPIC_API_KEY ?? '') !== '',
               thinking: agentEnv.RULITH_MODEL_THINKING === 'disabled' ? 'disabled' : agentEnv.RULITH_MODEL_THINKING === 'enabled' ? 'extended' : 'standard',
+              maxOutputTokens: agentEnv.RULITH_MODEL_MAX_OUTPUT_TOKENS === undefined || agentEnv.RULITH_MODEL_MAX_OUTPUT_TOKENS === ''
+                ? 6000 : Number(agentEnv.RULITH_MODEL_MAX_OUTPUT_TOKENS),
             },
             worker: {
               connection: String(workerEnv.RULITH_CONNECTION ?? ''), credentialConfigured: String(workerEnv.RULITH_CONNECTION_KEY ?? '') !== '',
@@ -1129,11 +1131,12 @@ export function createLocalHost({
     /** Manager-only in-memory model replacement for an inherited account default.
      * It intentionally does not write local.json: an inherited key must not become a
      * per-instance credential just because this host happened to be open. */
-    setAgentModel: ({ url = '', name = '', key: modelKey = '', thinking = 'standard' } = {}) => {
+    setAgentModel: ({ url = '', name = '', key: modelKey = '', thinking = 'standard', maxOutputTokens = 6000 } = {}) => {
       if (running('agent')) throw new Error('Stop Agent before changing its model.')
       activeModelOverlay = {
         RULITH_MODEL_URL: String(url), RULITH_MODEL: String(name), RULITH_MODEL_KEY: String(modelKey),
-        RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(thinking) ? thinking : '' }
+        RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(thinking) ? thinking : '',
+        RULITH_MODEL_MAX_OUTPUT_TOKENS: String(maxOutputTokens) }
     },
     /**
      * The operating-system processes this host currently owns.

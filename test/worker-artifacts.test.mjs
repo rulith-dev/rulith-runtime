@@ -292,3 +292,55 @@ test('ART-WK-6: a Worker with no custody has no fallback that sends the bytes in
   assert.equal(run.of('ArtifactUpload').length, 0)
   assert.equal(run.seen.some((entry) => String(entry.path ?? '').startsWith('/artifact/')), false)
 })
+
+
+test('a document and public reference retain order, bytes and one immutable report identity', async () => {
+  await withArea(async ({store}) => {
+    const doc = store.putResult({bytes:Buffer.from('PRIVATE original document'),mediaType:'text/plain',encoding:'utf8'})
+    const guide = store.putResult({bytes:Buffer.from('Public checker reference'),mediaType:'text/plain',encoding:'utf8'})
+    const registrations = []
+    const result = await prepareActionReport(actionRow(), {ok:true, localArtifact:doc, companionArtifacts:[guide]}, {
+      register:async record => {registrations.push(record); return {...confirm(record),payload:{...confirm(record).payload,
+        ref:'art_' + (record.digest === doc.digest ? 'a':'b').repeat(32)}}},
+    })
+    assert.deepEqual(registrations.map(x=>x.digest), [doc.digest,guide.digest])
+    assert.deepEqual(result.body.artifacts, [{ref}, {ref:'art_'+'b'.repeat(32)}])
+    assert.match(result.body.result, /public authoring reference/)
+    assert.doesNotMatch(JSON.stringify(result.body), /PRIVATE original document|Public checker reference/)
+    assert.equal(store.read(doc.id,{modelDestination:'http://127.0.0.1:1234'}).bytes.toString(), 'PRIVATE original document')
+    assert.equal(result.body.executionGrant, actionRow().executionGrant)
+  })
+})
+
+test('a failed companion registration or insufficient guide budget never reports partial success', async () => {
+  await withArea(async ({store}) => {
+    const doc=store.putResult({bytes:Buffer.from('doc'),mediaType:'text/plain',encoding:'utf8'})
+    const guide=store.putResult({bytes:Buffer.from('guide'),mediaType:'text/plain',encoding:'utf8'})
+    let calls=0
+    const failed=await prepareActionReport(actionRow(),{ok:true,localArtifact:doc,companionArtifacts:[guide]}, {
+      register:async record=>{if(++calls===2) throw new Error('source changed'); return confirm(record)},
+    })
+    assert.equal(calls,2)
+    assert.equal(failed.body,undefined)
+    assert.equal(failed.unavailable,'artifact_registration_unknown')
+    const narrow=await prepareActionReport({...actionRow(),artifactPolicy:{...actionRow().artifactPolicy,inlineBytes:170}},
+      {ok:true,localArtifact:doc,companionArtifacts:[guide]}, {register:async record=>({...confirm(record),payload:{...confirm(record).payload,
+        ref:'art_'+(record.digest===doc.digest?'a':'b').repeat(32)}})})
+    assert.equal(narrow.body,undefined)
+    assert.ok(narrow.unavailable)
+  })
+})
+
+test('identical document and reference bytes register once rather than duplicating an invocation digest', async () => {
+  await withArea(async ({store}) => {
+    const doc=store.putResult({bytes:Buffer.from('same bytes'),mediaType:'text/plain',encoding:'utf8'})
+    const guide=store.putResult({bytes:Buffer.from('same bytes'),mediaType:'text/plain',encoding:'utf8'})
+    let calls=0
+    const result=await prepareActionReport(actionRow(),{ok:true,localArtifact:doc,companionArtifacts:[guide]}, {
+      register:async record=>{calls++;return confirm(record)},
+    })
+    assert.equal(calls,1)
+    assert.deepEqual(result.body.artifacts,[{ref}])
+    assert.match(result.body.result,/identical/)
+  })
+})

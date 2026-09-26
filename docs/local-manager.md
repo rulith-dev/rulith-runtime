@@ -78,9 +78,15 @@ scoped to the signed-in account and Console origin on this computer. They are no
 The **Thinking** option distinguishes **Provider default**, **Off**, and **On**. Provider
 default omits the setting; it can still enable reasoning when that is the service's default.
 Off and On send an explicit `thinking.type` to OpenAI-compatible services that support it.
+**Maximum output tokens per response** defaults to 6000 and accepts an integer from 256 to
+65536. It is sent as `max_tokens` to either supported provider shape. A larger setting may
+cost more, and the provider may reject a limit it does not support; Rulith does not silently
+lower it. Default-model followers inherit this setting, while copied and custom models keep
+their own value. A changed setting takes effect when the Agent next starts.
 An empty response or a response cut off at its output limit is reported as a recoverable
 model failure, without executing partial tool calls. Continue the same conversation after
-adjusting the setting or asking for a smaller step; Rulith does not retry paid calls automatically.
+raising the output limit in model settings if the provider supports it; Rulith does not retry
+paid calls automatically.
 
 Open the account menu at the bottom left and choose **Default model** to configure the model
 once. New local Agent profiles follow this default. For one Agent, open its gear menu and

@@ -49,6 +49,9 @@ test('the checker source revision and executable URLs are one release identity',
   const mixed = structuredClone(manifest)
   mixed.files[1].url = `https://console.rulith.ai/downloads/authoring/${'d'.repeat(40)}/rule-check.jar`
   assert.throws(() => validateAuthoringCheckerManifest(mixed), /invalid executable pin/)
+  assert.equal(validateAuthoringCheckerManifest({...manifest,referenceFormat:'rulith-local-authoring-reference/1'}).referenceFormat,
+    'rulith-local-authoring-reference/1')
+  assert.throws(()=>validateAuthoringCheckerManifest({...manifest,referenceFormat:'unpublished-format'}),/unsupported reference format/)
   const renamed = structuredClone(manifest)
   renamed.files[0].url = `https://console.rulith.ai/downloads/authoring/${commit}/rule-check.jar`
   assert.throws(() => validateAuthoringCheckerManifest(renamed), /invalid executable pin/)

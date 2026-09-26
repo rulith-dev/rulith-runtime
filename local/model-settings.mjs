@@ -13,6 +13,18 @@ import { writeJsonAtomic } from './manager-registry.mjs'
 const text = value => typeof value === 'string' ? value : ''
 const clean = value => text(value).trim()
 export const DEFAULT_MODEL_URL = 'https://api.anthropic.com/v1/messages'
+export const DEFAULT_MAX_OUTPUT_TOKENS = 6000
+const MIN_OUTPUT_TOKENS = 256
+const MAX_OUTPUT_TOKENS = 65536
+export function maxOutputTokens(value) {
+  if (value === undefined || value === '') return DEFAULT_MAX_OUTPUT_TOKENS
+  const digits = typeof value === 'string' && /^[0-9]+$/.test(value)
+  if (!(typeof value === 'number' || digits) || !Number.isSafeInteger(Number(value))
+    || Number(value) < MIN_OUTPUT_TOKENS || Number(value) > MAX_OUTPUT_TOKENS) {
+    throw new Error('Maximum output tokens must be an integer from 256 to 65536.')
+  }
+  return Number(value)
+}
 
 export const modelDefaultsFile = root => join(root, 'model-defaults.json')
 
@@ -38,22 +50,27 @@ export function modelReady({ url, name, key } = {}) {
 }
 
 /** Public view: never put a key, digest, or an opaque proxy for a key on a status route. */
-export function modelView({ source = 'custom', url = '', name = '', key = '', thinking = 'standard' } = {}) {
-  const configured = modelReady({ url, name, key })
+export function modelView({ source = 'custom', url = '', name = '', key = '', thinking = 'standard', maxOutputTokens: budget } = {}) {
+  let outputBudget, budgetError = ''
+  try { outputBudget = maxOutputTokens(budget) } catch (error) { budgetError = error.message }
+  const configured = modelReady({ url, name, key }) && !budgetError
   return {
     source,
     url: clean(url),
     name: clean(name),
     thinking: ['enabled', 'disabled'].includes(thinking) ? thinking : 'standard',
+    maxOutputTokens: outputBudget ?? null,
     keyConfigured: clean(key) !== '',
     configured,
     ready: configured,
-    reason: configured ? '' : 'Provide a model endpoint, name, and key (a local loopback endpoint may omit the key).',
+    reason: configured ? '' : budgetError || 'Provide a model endpoint, name, and key (a local loopback endpoint may omit the key).',
   }
 }
 
-export function modelSignature({ url = '', name = '', key = '', thinking = 'standard' } = {}) {
-  return createHash('sha256').update(`${clean(url)}\u0000${clean(name)}\u0000${clean(key)}\u0000${['enabled', 'disabled'].includes(thinking) ? thinking : 'standard'}`).digest('hex')
+export function modelSignature({ url = '', name = '', key = '', thinking = 'standard', maxOutputTokens: budget } = {}) {
+  let outputBudget
+  try { outputBudget = maxOutputTokens(budget) } catch { outputBudget = `invalid:${typeof budget}:${String(budget)}` }
+  return createHash('sha256').update(`${clean(url)}\u0000${clean(name)}\u0000${clean(key)}\u0000${['enabled', 'disabled'].includes(thinking) ? thinking : 'standard'}\u0000${outputBudget}`).digest('hex')
 }
 
 function load(file) {
@@ -99,11 +116,16 @@ export function checkedModelInput(body, { requireUrlAndName = true } = {}) {
   if (body.thinking !== undefined && !['enabled', 'disabled', 'standard', ''].includes(text(body.thinking))) {
     throw new Error('Thinking must be enabled, disabled, or standard.')
   }
+  if (body.maxOutputTokens !== undefined && (!Number.isInteger(body.maxOutputTokens)
+    || body.maxOutputTokens < MIN_OUTPUT_TOKENS || body.maxOutputTokens > MAX_OUTPUT_TOKENS)) {
+    throw new Error('Maximum output tokens must be an integer from 256 to 65536.')
+  }
   if (url?.pathname.replace(/\/+$/, '').endsWith('/messages') && ['enabled', 'disabled'].includes(body.thinking)) {
     throw new Error('Choose Provider default for a Messages endpoint. Explicit thinking controls require an OpenAI-compatible Chat Completions endpoint.')
   }
   return { url: url?.href ?? '', name, key: body.key, clearKey: body.clearKey === true,
-    thinking: ['enabled', 'disabled'].includes(body.thinking) ? body.thinking : 'standard' }
+    thinking: ['enabled', 'disabled'].includes(body.thinking) ? body.thinking : 'standard',
+    maxOutputTokens: body.maxOutputTokens }
 }
 
 /** A blank key preserves only a credential for the same provider origin. */

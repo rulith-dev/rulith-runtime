@@ -259,7 +259,7 @@ export function createManagerServer({
     '/manager/device/refresh': (body) => { onlyFields(body, []); return refreshDirectory() },
     '/manager/device/signout': (body) => { onlyFields(body, []); return instances.signOut() },
     '/manager/device/forget': (body) => { onlyFields(body, []); return instances.forgetDevice() },
-    '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking'])),
+    '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'])),
     '/manager/instances/create': (body) => instances.create(onlyFields(body, ['name', 'mode', 'setupTarget'])),
     '/manager/instances/import': (body) => instances.import(onlyFields(body, ['sourceConfigFile', 'name', 'mode'])),
     '/manager/instances/pair': (body) => {
@@ -273,7 +273,7 @@ export function createManagerServer({
       return instances.copyModelSettings(String(fields.instanceId ?? ''), String(fields.fromInstanceId ?? ''))
     },
     '/manager/instances/model': (body) => {
-      const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'source', 'url', 'name', 'key', 'clearKey', 'thinking'])
+      const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'source', 'url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'])
       return instances.setInstanceModel(String(fields.instanceId ?? ''), fields)
     },
     '/manager/instances/connection-key': (body) => {

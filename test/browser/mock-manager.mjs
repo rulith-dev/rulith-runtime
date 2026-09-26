@@ -139,13 +139,15 @@ export async function startMockWorkbench({ instances, agents, events = [], model
         return void json(res, 409, { ...state(), ok: false, teaching: 'Account changed.' })
       if (path === '/manager/model/default') {
         modelDefaults = { available: true, origin: device.origin, accountId: device.account.id,
-          url: body.url, name: body.name, thinking: body.thinking, keyConfigured: Boolean(body.key), configured: true }
+          url: body.url, name: body.name, thinking: body.thinking, maxOutputTokens: body.maxOutputTokens,
+          keyConfigured: Boolean(body.key), configured: true }
         for (const entry of rows) if (entry.model?.source === 'default')
           entry.model = { ...modelDefaults, source: 'default', ready: true, reason: '' }
       } else {
         row.model = body.source === 'default' ? { ...modelDefaults, source: 'default', ready: true, reason: '' }
           : { source: 'custom', configured: true, ready: true, url: body.url, name: body.name,
-            thinking: body.thinking, keyConfigured: Boolean(body.key), reason: '' }
+            thinking: body.thinking, maxOutputTokens: body.maxOutputTokens,
+            keyConfigured: Boolean(body.key), reason: '' }
       }
       return void json(res, 200, state())
     }
