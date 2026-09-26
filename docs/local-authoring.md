@@ -57,7 +57,12 @@ draft and the checker report so Review checked draft always shows what actually 
 Check receipts carry mechanical counts and fixed error codes. The complete draft
 and detailed checker report remain in the local immutable Artifact. When space
 permits, the model also receives failing example indexes (zero-based), counts,
-fixed citation failure reasons and separately labelled format guidance. Free-form
+fixed citation failure reasons and separately labelled format guidance. A checker report
+also names the zero-based indexes of passing examples that only forbid outcomes and
+expect no positive conclusion. This describes the scope of those tests: they do not
+establish a named error or alternative result, and they remain valid negative tests.
+Whether the Source requires an additional positive expectation is the author's decision.
+Older reports without this field have unknown assertion scope, not zero such examples. Free-form
 example labels, exception details and quoted text are not copied into this inline
 guidance. A smaller receipt budget omits the optional guidance; it does not discard
 required facts or turn a failed check into a pass. Reading the full report still

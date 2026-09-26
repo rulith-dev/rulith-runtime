@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { authoringDiagnostics, authoringGuidanceText, createConstructionGuidance } from '../worker/authoring-diagnostics.mjs'
+import { authoringDiagnostics, authoringGuidanceText, createAuthoringGuidance,
+  createConstructionGuidance } from '../worker/authoring-diagnostics.mjs'
 
 test('construction guidance keeps fixed codes and schema paths but drops free-form names', () => {
   const secret = 'PRIVATE_DOCUMENT_SENTINEL'
@@ -78,6 +79,39 @@ test('inline diagnostics expose indexes and fixed codes without copying any free
   assert.equal(result.diagnosticsTruncated, false)
   assert.ok(!JSON.stringify(result).includes(secret))
   assert.equal(JSON.stringify(report), before, 'the immutable report is not rewritten')
+})
+
+test('passing absence-only assertions are named by index, never by a private label', () => {
+  const secret = 'PRIVATE_DOCUMENT_SENTINEL'
+  const report = { compileErrors: [], examples: { total: 9, passed: 9,
+    passedAbsenceOnlyCount: 1, passedAbsenceOnlyIndexes: [8],
+    results: Array.from({ length: 9 }, (_, index) => ({ passed: true, label: index === 8 ? secret : 'positive' })),
+  }, citations: { unverified: [] } }
+  const result = authoringDiagnostics(report)
+  assert.deepEqual(result.passedAbsenceOnly, { known: true, count: 1, indexes: [8] })
+  assert.match(result.assertionScopeGuidance, /no positive outcome was asserted/)
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(secret))
+  const inline = authoringGuidanceText(createAuthoringGuidance(report))
+  assert.match(inline, /"indexes":\[8\]/)
+  assert.doesNotMatch(inline, new RegExp(secret))
+  const old = structuredClone(report)
+  delete old.examples.passedAbsenceOnlyCount
+  delete old.examples.passedAbsenceOnlyIndexes
+  assert.deepEqual(authoringDiagnostics(old).passedAbsenceOnly, { known: false })
+  assert.equal(authoringDiagnostics({ ...report, examples: { ...report.examples,
+    passedAbsenceOnlyIndexes: ['PRIVATE_DOCUMENT_SENTINEL'] } }).passedAbsenceOnly.known, false)
+})
+
+test('absence-only detail is bounded while its complete count remains visible', () => {
+  const report = { compileErrors: [], examples: { total: 20, passed: 20,
+    passedAbsenceOnlyCount: 20, passedAbsenceOnlyIndexes: Array.from({ length: 20 }, (_, index) => index),
+    results: Array.from({ length: 20 }, () => ({ passed: true })),
+  }, citations: { unverified: [] } }
+  const result = authoringDiagnostics(report)
+  assert.equal(result.passedAbsenceOnly.count, 20)
+  assert.ok(result.passedAbsenceOnly.indexes.length < 20)
+  assert.equal(result.diagnosticsTruncated, true)
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 1500)
 })
 
 test('compiler diagnostics identify fixed rule failures without copying submitted values', () => {

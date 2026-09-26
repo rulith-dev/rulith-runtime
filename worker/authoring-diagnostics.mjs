@@ -94,9 +94,22 @@ export function authoringDiagnostics(report) {
   const unverified = Array.isArray(report.citations?.unverified) ? report.citations.unverified : []
   const issues = errors.map(compileIssue)
   const codes = [...new Set(issues.map(row => row.code))]
+  const absenceCount = report.examples?.passedAbsenceOnlyCount
+  const absenceIndexes = report.examples?.passedAbsenceOnlyIndexes
+  const totalExamples = report.examples?.total
+  const absenceKnown = Number.isSafeInteger(totalExamples) && totalExamples >= 0
+    && Number.isSafeInteger(absenceCount) && absenceCount >= 0 && absenceCount <= totalExamples
+    && Array.isArray(absenceIndexes) && absenceIndexes.length <= absenceCount
+    && absenceIndexes.every((index, at) => Number.isSafeInteger(index) && index >= 0
+      && index < totalExamples && (at === 0 || absenceIndexes[at - 1] < index))
+  const passedAbsenceOnly = absenceKnown
+    ? { known: true, count: absenceCount, indexes: absenceIndexes.slice(0, 4) }
+    : { known: false }
   const out = {
     errors: codes,
     diagnosticCounts: { compileErrors: errors.length, failedExamples: failed.length, unverifiedCitations: unverified.length },
+    passedAbsenceOnly,
+    ...(absenceKnown && absenceCount > 0 ? { assertionScopeGuidance: 'In these passed examples no positive outcome was asserted; only specified conclusions were checked for absence. A pass does not establish a named error or alternative result. Compare the Source and add expect where required.' } : {}),
     compileIssues: issues.filter(row => row.code !== 'compile_error').slice(0, 6),
     failedExamples: failed.slice(0, 3).map(({ row, index }) => ({ index,
       missingCount: count(row.missing), unexpectedCount: count(row.unexpected), copiedIntoInputsCount: count(row.copiedIntoInputs) })),
@@ -105,7 +118,8 @@ export function authoringDiagnostics(report) {
       reason: citationReasons.has(row?.reason) ? row.reason : 'citation_unverified' })),
     exampleDetailsComplete: Array.isArray(report.examples?.results) && results.length === report.examples?.total,
     diagnosticsTruncated: issues.filter(row => row.code !== 'compile_error').length > 6
-      || errors.length > codes.length || failed.length > 3 || unverified.length > 3,
+      || errors.length > codes.length || failed.length > 3 || unverified.length > 3
+      || absenceKnown && absenceCount > passedAbsenceOnly.indexes.length,
     details: 'Indexes are zero-based. Read the attached immutable check Artifact for the complete draft and checker report; material permissions apply.',
   }
   // Static advice is separate from checker evidence. No rule, key or citation is
@@ -135,6 +149,14 @@ export function authoringDiagnostics(report) {
   while (Buffer.byteLength(JSON.stringify(out)) > 1500 && selectedAdvice.length) {
     selectedAdvice.pop()
     out.formatGuidance = selectedAdvice.join(' ')
+    out.diagnosticsTruncated = true
+  }
+  while (Buffer.byteLength(JSON.stringify(out)) > 1500 && out.passedAbsenceOnly.indexes?.length) {
+    out.passedAbsenceOnly.indexes.pop()
+    out.diagnosticsTruncated = true
+  }
+  if (Buffer.byteLength(JSON.stringify(out)) > 1500 && out.assertionScopeGuidance) {
+    delete out.assertionScopeGuidance
     out.diagnosticsTruncated = true
   }
   return out
