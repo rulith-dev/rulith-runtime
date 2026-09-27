@@ -271,46 +271,6 @@ arm('local authoring review explains compilation failures without interpreting c
     assert.equal(await page.locator('#authoring-save').isDisabled(), true)
   })
 
-arm('failed local assistant preparation keeps the selected Agent and permissions for retry',
-  { width: 1400, height: 900 }, async ({ page, fixture }) => {
-    await openAgent(page, 'inst-1')
-    await page.click('#authoring-open')
-    await page.click('#authoring-worker-start')
-    await page.locator('#authoring-prepare').waitFor({ state: 'visible' })
-    await page.waitForFunction(() => !document.getElementById('authoring-prepare').disabled)
-    assert.equal(await page.locator('#authoring-prepare').isEnabled(), true)
-    fixture.control.authoringPrepareRefusal = 'The local checker is unavailable. Retry preparation.'
-    await page.click('#authoring-prepare')
-    await page.locator('#authoring-notice').filter({ hasText: fixture.control.authoringPrepareRefusal }).waitFor()
-    assert.equal(await page.locator('#authoring-prepare').isEnabled(), true)
-    assert.equal(await page.locator('#authoring-local-read').isChecked(), true)
-    assert.equal(await page.locator('#authoring-off-machine').isChecked(), true)
-    assert.equal(fixture.control.authoringPrepareRequests.length, 1)
-    assert.equal(fixture.control.authoringPrepareRequests[0].instanceId, 'inst-1')
-    fixture.control.authoringPrepareRefusal = ''
-    await page.click('#authoring-prepare')
-    await page.locator('#authoring-notice').filter({ hasText: 'Local assistant prepared for this Agent.' }).waitFor()
-    assert.equal(fixture.control.authoringPrepareRequests.length, 2)
-  })
-
-arm('preparation refuses an unreadable Source before any document action can be offered',
-  { width: 1400, height: 900 }, async ({ page, fixture }) => {
-    await openAgent(page, 'inst-1')
-    await page.click('#authoring-open')
-    await page.click('#authoring-worker-start')
-    await page.locator('#authoring-prepare').waitFor({ state: 'visible' })
-    await page.uncheck('#authoring-local-read')
-    await page.uncheck('#authoring-off-machine')
-    await page.click('#authoring-prepare')
-    await page.locator('#authoring-notice').filter({ hasText: 'Choose local material delivery or authorized remote delivery' }).waitFor()
-    assert.equal(fixture.control.authoringPrepareRequests.length, 0, 'an unreadable Source was sent for preparation')
-    await page.check('#authoring-local-read')
-    await page.click('#authoring-prepare')
-    await page.locator('#authoring-notice').filter({ hasText: 'Local assistant prepared for this Agent.' }).waitFor()
-    assert.deepEqual(fixture.control.authoringPrepareRequests[0].materialPermissions,
-      { localRead: true, offMachine: false })
-  })
-
 arm('refused private save keeps the certified Case and checked draft for an explicit retry',
   { width: 1400, height: 900 }, async ({ page, fixture }) => {
     fixture.control.authoringQuestions = false
@@ -1258,30 +1218,18 @@ arm('model editor remains usable on a narrow screen and an error retains the typ
   }, modelFixture)
 
 for (const viewport of [{ width: 1440, height: 960 }, { width: 390, height: 844 }]) {
-  arm('document preparation guides Worker readiness and survives a directory update at ' + viewport.width + 'px', viewport,
+  arm('document tools install locally and link to ordinary Console controls at ' + viewport.width + 'px', viewport,
     async ({ page, fixture }) => {
-      fixture.rows[0].agent = true
-      fixture.rows[0].ready = { agent: true, worker: false }
       if (viewport.width < 980) await page.click('#rail-open')
       await openAgent(page, 'inst-1')
       if (viewport.width < 980) await page.click('#rail-open')
       await page.click('#authoring-open')
-      assert.equal(await page.locator('#authoring-prepare').isEnabled(), false)
-      assert.match(await page.locator('#authoring-worker-status').textContent(), /Start.*Worker/)
-      await page.uncheck('#authoring-off-machine')
-      await page.click('#authoring-worker-start')
-      assert.equal(await page.locator('#authoring-prepare').isEnabled(), false)
-      assert.match(await page.locator('#authoring-worker-status').textContent(), /Waiting/)
-      fixture.device.agents.push({ id: 'agent-new', name: 'New Agent' })
-      fixture.rows[0].ready.worker = true
-      await page.waitForFunction(() => !document.getElementById('authoring-prepare').disabled)
-      assert.equal(await page.locator('#authoring-off-machine').isChecked(), false, 'polls preserve the current permission choice')
-      assert.equal(await page.locator('[data-agent="agent-new"]').count(), 1)
+      assert.equal(await page.locator('#authoring-install-checker').isEnabled(), true)
+      assert.equal(await page.locator('#authoring-local-read').count(), 0)
+      assert.match(await page.locator('#authoring-configure').getAttribute('href'), /agents\/agent-alpha.*tab=runtime/)
+      await page.click('#authoring-install-checker')
+      await page.locator('#authoring-notice').filter({ hasText: 'Local rule checker installed' }).waitFor()
+      assert.deepEqual(fixture.control.checkerInstallRequests, [{}])
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
-      if (process.env.RULITH_FLOW_SCREENSHOTS) await page.screenshot({ path: join(process.env.RULITH_FLOW_SCREENSHOTS, 'document-prepare-' + viewport.width + '.png') })
-      await page.click('#authoring-prepare')
-      await page.locator('#authoring-notice').filter({ hasText: 'Local assistant prepared' }).waitFor()
-      assert.equal(fixture.control.authoringPrepareRequests.length, 1)
-      assert.deepEqual(fixture.control.authoringPrepareRequests[0].materialPermissions, { localRead: true, offMachine: false })
     })
 }

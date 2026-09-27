@@ -10,8 +10,8 @@ const step = process.env.RULITH_LIVE_STEP || 'inspect'
 const agentName = process.env.RULITH_LIVE_AGENT || ''
 const expectedCase = process.env.RULITH_LIVE_CASE || ''
 const remoteMaterialDisclosure = process.env.RULITH_LIVE_MATERIAL_DISCLOSURE === 'remote'
-if (process.env.RULITH_LIVE_RUN !== '1' || !agentName || !['inspect', 'inspect-recovery', 'start', 'prepare', 'upload', 'review', 'save', 'verify'].includes(step))
-  throw new Error('Set RULITH_LIVE_RUN=1, RULITH_LIVE_AGENT and RULITH_LIVE_STEP=inspect|inspect-recovery|start|prepare|upload|review|save|verify.')
+if (process.env.RULITH_LIVE_RUN !== '1' || !agentName || !['inspect', 'inspect-recovery', 'start', 'install-checker', 'upload', 'review', 'save', 'verify'].includes(step))
+  throw new Error('Set RULITH_LIVE_RUN=1, RULITH_LIVE_AGENT and RULITH_LIVE_STEP=inspect|inspect-recovery|start|install-checker|upload|review|save|verify.')
 if (['save', 'verify'].includes(step) && !expectedCase)
   throw new Error('Set RULITH_LIVE_CASE to the certified Case shown by the review before saving or verifying.')
 const packageRoot = process.env.RULITH_LIVE_PACKAGE_ROOT || (process.platform === 'win32' ? join(process.env.APPDATA || '', 'npm', 'node_modules', 'rulith') : '')
@@ -82,17 +82,6 @@ try {
   console.log(JSON.stringify({ packageVersion: (await import(pathToFileURL(join(packageRoot, 'package.json')).href, { with: { type: 'json' } })).default.version,
     account: state.device.account?.name, agent: row.name, agentControl: await read('#agent-toggle'),
     workerControl: await read('#worker-toggle'), documentAssistant: await read('#authoring-open') }))
-  if (['prepare', 'upload'].includes(step)) {
-    // A historical installation conflict is visible before any role starts. Do not
-    // spend a model/Worker session merely to rediscover that this Agent is ineligible.
-    await page.click('#authoring-open')
-    await page.waitForFunction(() => !document.getElementById('authoring-notice').textContent.includes('Reading this Agent'), null, { timeout: 30000 })
-    const notice = (await page.locator('#authoring-notice').innerText()).trim()
-    console.log(JSON.stringify({ phase: 'authoring-preflight', notice }))
-    if (notice.includes('earlier Document Authoring Assistant installed'))
-      throw new Error(`Local authoring preparation is unavailable: ${notice}`)
-    await page.click('#authoring-close')
-  }
   if (step === 'inspect') {
     const child = page.frameLocator('#stage iframe:not([hidden])')
     await child.locator('#stream').waitFor({ timeout: 30000 })
@@ -108,7 +97,7 @@ try {
     console.log(JSON.stringify({ phase: 'recovery-inspect', workerControl: await read('#worker-toggle'),
       tail: (await child.locator('body').innerText()).slice(-4500) }))
   }
-  if (['start', 'prepare', 'upload'].includes(step)) {
+  if (['start', 'upload'].includes(step)) {
     await ensureRoleStarted('#agent-toggle', 'Stop Agent', () => { agentStartedByScript = true })
     await ensureRoleStarted('#worker-toggle', 'Stop Worker', () => { workerStartedByScript = true })
     console.log(JSON.stringify({ phase: 'roles-started', agentControl: await read('#agent-toggle'), workerControl: await read('#worker-toggle') }))
@@ -119,31 +108,16 @@ try {
       console.log(JSON.stringify({ phase: 'conversation-after-start', tail: (await child.locator('#stream').innerText()).slice(-3500) }))
     }
   }
-  if (['prepare', 'upload'].includes(step)) {
+  if (step === 'install-checker') {
     await page.click('#authoring-open')
-    await page.waitForFunction(() => !document.getElementById('authoring-notice').textContent.includes('Reading this Agent'), null, { timeout: 30000 })
-    console.log(JSON.stringify({ phase: 'authoring-before-prepare', notice: await read('#authoring-notice'), prepare: await read('#authoring-prepare'),
-      localRead: await page.locator('#authoring-local-read').isChecked(), offMachine: await page.locator('#authoring-off-machine').isChecked() }))
-    if (!await page.locator('#authoring-prepare').isEnabled())
-      throw new Error(`Local authoring preparation is unavailable: ${(await page.locator('#authoring-notice').innerText()).trim()}`)
-    await page.check('#authoring-local-read')
-    if (remoteMaterialDisclosure && !localModel) await page.check('#authoring-off-machine')
-    console.log(JSON.stringify({ phase: 'material-permissions-chosen', localRead: await page.locator('#authoring-local-read').isChecked(),
-      offMachine: await page.locator('#authoring-off-machine').isChecked() }))
-    let prepared = false
-    for (let attempt = 1; attempt <= 12; attempt++) {
-      await page.click('#authoring-prepare')
-      await page.waitForFunction(() => !document.getElementById('authoring-prepare').disabled, null, { timeout: 180000 })
-      const notice = (await page.locator('#authoring-notice').innerText()).trim()
-      console.log(JSON.stringify({ phase: 'authoring-prepare', attempt, notice }))
-      if (notice.includes('Agent program is current') || notice.includes('Local assistant prepared for this Agent.')) { prepared = true; break }
-      if (!notice.includes('retry prepare')) throw new Error(`Local authoring preparation failed: ${notice}`)
-      await page.waitForTimeout(6000)
-    }
-    if (!prepared) throw new Error('Local authoring Source and authenticated Worker tools did not become current after bounded retries.')
+    await page.click('#authoring-install-checker')
+    await page.locator('#authoring-notice').filter({ hasText: 'Local rule checker installed' }).waitFor({ timeout: 1800000 })
+    console.log(JSON.stringify({ phase: 'checker-installed',
+      console: await page.locator('#authoring-configure').getAttribute('href'),
+      materialRoot: await page.locator('#authoring-material-root').innerText(),
+      next: 'Install the capability and confirm Source binding/material permissions in Console before upload.' }))
   }
   if (step === 'upload') {
-    await page.click('#authoring-close')
     const child = page.frameLocator('#stage iframe:not([hidden])')
     await child.locator('#prompt').waitFor({ timeout: 30000 })
     await child.locator('#convopen').click()

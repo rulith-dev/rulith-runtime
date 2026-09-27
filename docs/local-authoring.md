@@ -1,15 +1,19 @@
 # Document assistant
 
-1. Sign in to Rulith, select an enabled Agent, configure its model and start its Worker.
-2. Open **Document assistant**, choose at least one material delivery permission, then
-   press **Prepare local assistant**. A remote model needs the explicit remote-disclosure
-   permission as well as local delivery when it reads a locally held document. Preparation
-   with both permissions off is refused before installing the assistant: its ingest action
-   would otherwise run without any permitted path to register its Artifact result. Preparation installs the ordinary
-   `official_authoring@3.1.0` Release on that Agent and binds its file Source to this
-   profile's material area. It downloads two pinned public checker JARs once per computer.
-   Java 25 is required. Existing conversations and credentials are retained.
-3. Attach a UTF-8 `.txt` or `.md` document (at most 256 KiB) in the conversation. Ask
+1. Sign in to Rulith and select an enabled Agent with a model configured.
+2. Open **Document assistant → Install local checker**. This downloads the two pinned
+   public checker JARs to this computer; Java 25 is required. Start or restart the Worker
+   after installation so that it advertises the tools.
+3. Open the Agent in Console. Install the ordinary `official_authoring@3.1.0` capability
+   through Market / Agent Configuration. In **Runtime → Source bindings**, bind its file
+   Source to this Agent's Worker Connection and the material area displayed in the local
+   dialog. Enable its required advertised tools, lock the Source and wait for confirmation.
+4. Under that Source's **Material delivery**, explicitly save the permitted channels.
+   A remote model needs off-machine permission as well as local delivery when reading a
+   local document. The Source page shows saved choices and effective permissions separately;
+   deployment policy can override either choice. Both channels can be denied, but the demo
+   then has no material delivery path and cannot complete document checks.
+5. Attach a UTF-8 `.txt` or `.md` document (at most 256 KiB) in the conversation. Ask
    the Agent to prepare a capability from it, answer its questions, and let it run
    the mechanical checks and close the matching Case after they pass. The preferred
    `construct_rule_draft` Action accepts an explicit compact construction, expands only
@@ -17,7 +21,7 @@
    decision branches and the fixed certified Case terminal, then
    sends that expanded draft through the same compiler, kernel example runner and exact
    citation checker used by `check_rule_draft`.
-4. Open **Document assistant → Review checked draft**. Review its rules, examples,
+6. Open **Document assistant → Review checked draft**. Review its rules, examples,
    citations and unresolved questions. If several recent checks exist, choose the exact
    **Checked version**; each revision has its own local result and must match a certified Case.
    A failed version read returns the choice to the draft still shown. Choose **Save private
@@ -79,10 +83,13 @@ rejecting a `format` field does not imply support for a newer contract. Explicit
 `/2` construction is being verified with matching adoption-build checker JARs and
 is not enabled by these diagnostic changes.
 
-Preparation grants material access only to the selected Agent and its current
-Source/Connection/material-root binding. Deployment denials take precedence.
-An unlocked Source or a different Connection/material-root binding cannot use that
-managed permission. Preparing a new binding requires an explicit operator action.
+Material access is configured through ordinary Console Source management. Unlocking,
+changing the Source binding, or revoking its Connection invalidates the saved managed
+permission. Relocking the same location does not restore it; explicitly confirm the
+current binding's choices. Unrelated configuration edits retain the choices but delivery
+waits while configuration confirmation is pending. Existing permission rows from before
+this lifecycle tracking remain visible after an explicit identity-store upgrade; they
+require reconfirmation. This does not override deployment policy or replay a pending action.
 A Worker without the pinned checker or Java 25 fails
 with a setup message; it never falls back to a hosted model or checker.
 
@@ -90,25 +97,10 @@ For an offline development fixture, `RULITH_AUTHORING_JAR` can name an absolute
 `local-authoring.jar` with its matching `rule-check.jar` beside it, and
 `RULITH_AUTHORING_JAVA` can name an absolute Java 25 executable. These are operator
 configuration, never arguments the model can supply.
-These overrides apply to the Worker process. The workbench's **Prepare local
-assistant** button installs the public checker pinned by this Rulith release.
-
-The preparation dialog reads the selected Agent's current material permissions through
-`POST /manager/authoring/status` before enabling submission. This is a read-only device
-control-plane request: the Gateway verifies the account, Agent, Connection and material
-root. Existing permissions are loaded afresh on each opening; an unavailable read cannot
-silently replace them with checkbox defaults. A binding to another Worker or material
-area must be unlocked in Console first. Periodic workbench refreshes do not overwrite
-choices while the dialog is being edited.
-
-The dialog offers **Start Worker** when needed and waits for its initialization before
-enabling preparation. The manager checks the selected account, Agent, Connection and
-Worker before any checker download, then checks the same target again after installation.
-If access, configuration or Worker readiness changes during the download, preparation
-stops before sending the setup command. A model endpoint change requires restarting the
-Worker before new attachments or preparation, as indicated in the selected workspace.
-Signing out can stop the local roles and revoke the device while the public checker
-download continues; completing that download cannot resume setup under a different login.
+These overrides apply to the Worker process. **Install local checker** installs only the
+public checker pinned by this Rulith release. It does not install capabilities, change Source
+bindings or grant material permissions. Sign-out can complete while the public download is
+in flight; completing the download has no account governance effect.
 
 Arithmetic built-ins bind their `result` variable in a rule premise (`when`); later
 premises and conclusions (`then`) can use it. The initial construction cue includes

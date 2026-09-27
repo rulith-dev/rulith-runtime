@@ -61,7 +61,7 @@ Automated coverage currently includes the real Chromium UI tests in
 the real manager/child-process tests in `test/local-manager.test.mjs`, and Worker,
 Agent and persistence tests under `test/`. Those browser fixtures use simulated
 Gateway responses, so they do not replace this published-account acceptance run.
-The workbench browser suite now exercises preparation refusal/retry, private-save
+The workbench browser suite now exercises local checker installation, private-save
 refusal/retry, a committed save whose HTTP reply is lost, and an unresolved save
 whose read-back is temporarily unavailable. It checks that a later Review recovers
 the receipt without a second UI save.
@@ -73,12 +73,16 @@ For a newly enabled QA Agent, first run `test/browser/live-setup.browser.mjs` wi
 `RULITH_LIVE_RUN=1` and `RULITH_LIVE_AGENT` set; it refreshes the linked account,
 uses the first-use dialog, and pairs the local profile without replacing another key.
 Set `RULITH_LIVE_RUN=1`, `RULITH_LIVE_AGENT` to a dedicated enabled QA Agent, and
-`RULITH_LIVE_STEP` to `inspect`, `prepare`, `upload`, `review`, `save`, or `verify`.
+`RULITH_LIVE_STEP` to `inspect`, `install-checker`, `upload`, `review`, `save`, or `verify`.
 For a remote model, set `RULITH_LIVE_MATERIAL_DISCLOSURE=remote` only when the
 synthetic fixture may be disclosed to that provider. The upload arm refuses to send
-the fixture to a remote model without this explicit setting. Preparation retries
-the same Source setup while Worker tools and program projection become current;
-it does not count a pending projection as readiness.
+the fixture to a remote model without this explicit setting. The checker-install step only
+downloads local pinned tools and prints the Console link and material area. Before upload,
+use ordinary Market/Agent Configuration to install the capability, then Runtime Source
+bindings to lock the correct Worker/location and explicitly save material permissions.
+The live script does not grant permissions or claim that checker installation completes
+this account-governance step. The isolated Java authoring acceptance exercises the ordinary
+installation, Source binding and permission APIs before its real Worker/model flow.
 Run the script once per step, in that order, with `RULITH_LIVE_CASE` set to the
 certified Case displayed by `review` before `save` and `verify`. `upload` begins a
 fresh local conversation transcript. The Agent's Board focus is shared across its

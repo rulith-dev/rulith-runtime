@@ -1301,35 +1301,6 @@ test('removing an Agent says where its files stayed, and is refused while it run
   assert.equal(page.frames.size, 0, 'the workspace of an Agent that is gone goes with it')
 })
 
-test('authoring reloads saved permissions and does not carry an unsaved choice into another opening', async () => {
-  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
-  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
-  let unavailable = false, release
-  const page = await runPageScript(managerPage, { respond: async path => {
-    if (path === '/manager/authoring/status') {
-      if (unavailable) return { status: 503, body: { ok: false, teaching: 'Permission read unavailable' } }
-      if (release === false) await new Promise(done => { release = done })
-      return { body: { ok: true, bindingMatches: true, configured: true, materialPermissions: { localRead: false, offMachine: true } } }
-    }
-    return { body: snapshot }
-  } })
-  await page.choose('a'); await settle()
-  release = false
-  const opening = page.$('authoring-open').onclick(); await settle()
-  assert.equal(page.$('authoring-prepare').disabled, true, 'unknown permissions cannot be submitted')
-  release(); await opening
-  assert.equal(page.$('authoring-local-read').checked, false)
-  assert.equal(page.$('authoring-off-machine').checked, true)
-  assert.equal(page.$('authoring-prepare').disabled, false)
-  page.$('authoring-off-machine').checked = false
-  await page.$('authoring-open').onclick()
-  assert.equal(page.$('authoring-off-machine').checked, true, 'unsaved UI choices are not the stored grant')
-  unavailable = true
-  await page.$('authoring-open').onclick()
-  assert.equal(page.$('authoring-prepare').disabled, true, 'read failure must not overwrite a saved grant with defaults')
-  assert.match(page.$('authoring-notice').textContent, /Permission read unavailable/)
-})
-
 test('the private-draft review exposes premises, source quotes, examples and Case scope before saving once', async () => {
   const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
   const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
@@ -1347,7 +1318,6 @@ test('the private-draft review exposes premises, source quotes, examples and Cas
     report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } },
   }
   const page = await runPageScript(managerPage, { respond: async path => {
-    if (path === '/manager/authoring/status') return { body: { ok: true, bindingMatches: true, configured: true, materialPermissions: { localRead: true, offMachine: false } } }
     if (path === '/manager/authoring/review') return { body: review }
     if (path === '/manager/authoring/save') { saves += 1; return { body: { entry: {}, packId: 'qa.shipping_fee', caseId: 'case-4' } } }
     return { body: snapshot }
@@ -1386,8 +1356,6 @@ test('document revisions stay selectable and a save retry rechecks the exact sel
     cases: [{ caseId: 'case-revision', title: 'Certified' }] })
   let refuseFirst = true
   const page = await runPageScript(managerPage, { respond: async (path, { body }) => {
-    if (path === '/manager/authoring/status') return { body: { ok: true, bindingMatches: true,
-      configured: true, materialPermissions: { localRead: true, offMachine: false } } }
     if (path === '/manager/authoring/review') return body.resultId === first && refuseFirst
       ? { status: 503, body: { teaching: 'Earlier result temporarily unreadable' } }
       : { body: review(body.resultId || second) }
@@ -1430,7 +1398,6 @@ test('reopening a saved document check shows its durable receipt and never offer
     draft: { program: { id: 'qa.shipping_fee', title: 'Shipping fee', rules: [] }, questions: [] },
     report: { compiled: true, examples: { total: 1, passed: 1 }, citations: { total: 1, verified: 1 } } }
   const page = await runPageScript(managerPage, { respond: async path => {
-    if (path === '/manager/authoring/status') return { body: { ok: true, bindingMatches: true, configured: true, materialPermissions: { localRead: true, offMachine: false } } }
     if (path === '/manager/authoring/review') return { body: review }
     if (path === '/manager/authoring/save') { saves += 1; return { body: {} } }
     return { body: snapshot }
@@ -1454,19 +1421,6 @@ test('reopening a saved document check shows its durable receipt and never offer
   assert.equal(page.$('authoring-publication').textContent, 'Inspect private drafts in Console')
   assert.doesNotMatch(page.$('authoring-publication').href, /publish=1/)
   assert.match(page.$('authoring-notice').textContent, /changed or been removed/)
-})
-
-test('an older authoring installation blocks preparation and links to the exact Agent configuration', async () => {
-  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })
-  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
-  const page = await runPageScript(managerPage, { respond: async path => path === '/manager/authoring/status'
-    ? { body: { ok: true, bindingMatches: true, preparationBlocked: true, teaching: 'Remove the earlier installation in Agent Configuration.', materialPermissions: { localRead: true, offMachine: false } } }
-    : { body: snapshot } })
-  await page.choose('a'); await settle(); await page.$('authoring-open').onclick()
-  assert.equal(page.$('authoring-prepare').disabled, true)
-  assert.equal(page.$('authoring-configure').hidden, false)
-  assert.match(page.$('authoring-configure').href, /agents\/agent-alpha\?tab=configuration$/)
-  assert.match(page.$('authoring-notice').textContent, /earlier installation/)
 })
 
 test('a late readiness receipt clears only the matching unconfirmed-start notice', async () => {
@@ -1515,28 +1469,6 @@ test('the selected Agent offers the current next step without treating live proc
   assert.equal(page.$('dlg-attach').hidden, false)
 })
 
-test('document preparation waits for the selected Worker and preserves material choices during readiness changes', async () => {
-  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], ready: { agent: true, worker: false }, agent: true })
-  const snapshot = () => stateOf({ device: linkedDevice(), instances: [row] })
-  const page = await runPageScript(managerPage, { respond: async path => path === '/manager/authoring/status'
-    ? { body: { ok: true, bindingMatches: true, materialPermissions: { localRead: true, offMachine: false } } }
-    : { body: snapshot() } })
-  await page.choose('a'); await settle(); await page.$('authoring-open').onclick()
-  assert.equal(page.$('authoring-prepare').disabled, true)
-  assert.equal(page.$('authoring-worker-start').hidden, false)
-  page.$('authoring-off-machine').checked = true
-  row.worker = true; page.render(snapshot())
-  assert.equal(page.$('authoring-worker-start').hidden, true)
-  assert.equal(page.$('authoring-prepare').disabled, true)
-  assert.match(page.$('authoring-worker-status').textContent, /Waiting/)
-  row.ready.worker = true; page.render(snapshot())
-  assert.equal(page.$('authoring-prepare').disabled, false)
-  assert.equal(page.$('authoring-off-machine').checked, true)
-  row.model = { workerRestartRequired: true }; page.render(snapshot())
-  assert.equal(page.$('authoring-prepare').disabled, true)
-  assert.match(page.$('authoring-worker-status').textContent, /Stop and start/)
-})
-
 test('sync errors and incomplete withdrawal stops have visible recovery without offering the old account link', async () => {
   const row = configuredOf('agent-alpha', { id: 'a', accessStopWarning: 'still running', agent: true, open: true })
   const snapshot = stateOf({ device: linkedDevice(), instances: [row], directorySync: { error: 'network offline', checkedAt: '', stale: true } })
@@ -1572,4 +1504,16 @@ test('identical slow-start messages remain scoped to their Agent across switchin
   assert.match(page.$('worker-notice').textContent,/B · agent/,'A becoming ready does not silence B')
   rows[1].ready.agent=true; page.render(snapshot())
   assert.equal(page.$('worker-notice').textContent,'')
+})
+
+test('document tools link to ordinary Console configuration without a second preparation call', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'] })
+  const snapshot = stateOf({ device: linkedDevice(), instances: [row] })
+  const calls = []
+  const page = await runPageScript(managerPage, { respond: async path => { calls.push(path); return { body: snapshot } } })
+  await page.choose('a'); await settle()
+  await page.$('authoring-open').onclick(); await settle()
+  assert.equal(page.$('authoring-install-checker').disabled, false)
+  assert.match(page.$('authoring-configure').href, /agents\/agent-alpha.*tab=runtime/)
+  assert.equal(calls.some(path => /authoring\/(status|prepare)/.test(path)), false)
 })

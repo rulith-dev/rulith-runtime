@@ -1384,11 +1384,11 @@ test('the retired /mcp-services address keeps the way back', async (t) => {
 test('the manager answers exactly its documented control-plane operations', async (t) => {
   await withManager(t, async ({ manager }) => {
     const source = readFileSync(join(import.meta.dirname, '..', 'local', 'manager-server.mjs'), 'utf8')
-    const routes = [...source.matchAll(/'(\/manager\/[a-z/]+)':/g)].map((match) => match[1]).sort()
+    const routes = [...source.matchAll(/'(\/manager\/[a-z/-]+)':/g)].map((match) => match[1]).sort()
     assert.deepEqual(routes, [
-      '/manager/authoring/prepare', '/manager/authoring/review', '/manager/authoring/save', '/manager/authoring/status',
+      '/manager/authoring/install-checker', '/manager/authoring/review', '/manager/authoring/save',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
-      '/manager/device/start', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget',
+      '/manager/device/start', '/manager/instances/connection-key', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll', '/manager/instances/start',
       '/manager/instances/stop', '/manager/model/default',
@@ -1403,56 +1403,6 @@ test('the manager answers exactly its documented control-plane operations', asyn
   })
 })
 
-test('direct authoring preparation refuses an unreadable material Source before any setup', async (t) => {
-  await withManager(t, async ({ manager }) => {
-    const call = async materialPermissions => {
-      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/prepare`, {
-        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({ instanceId: 'not-set-up', materialPermissions }),
-      })
-      return { status: response.status, body: await response.json() }
-    }
-    const denied = await call({ localRead: false, offMachine: false })
-    assert.equal(denied.status, 400)
-    assert.match(denied.body.teaching, /Choose local material delivery/)
-    const malformed = await call({ localRead: true })
-    assert.equal(malformed.status, 400)
-    assert.match(malformed.body.teaching, /explicitly name localRead and offMachine/)
-  })
-})
-
-test('document preparation checks Worker readiness before downloading and rechecks after a long installation', async t => {
-  let downloads = 0, releaseInstall, enteredInstall
-  const entered = new Promise(resolve => { enteredInstall = resolve })
-  const installed = new Promise(resolve => { releaseInstall = resolve })
-  await withManager(t, async ({ manager, gateway }) => {
-    const row = await addInstance(manager, 'Preparation', { agentId: AGENTS[0] })
-    const prepare = async () => {
-      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/prepare`, {
-        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({ instanceId: row.id, materialPermissions: { localRead: true, offMachine: false } }),
-      })
-      return { status: response.status, body: await response.json() }
-    }
-    const stopped = await prepare()
-    assert.equal(stopped.status, 400)
-    assert.match(stopped.body.teaching, /Start.*Worker/)
-    assert.equal(downloads, 0, 'a known missing prerequisite does not download the checker')
-    await manager.instances.control(row.id, { role: 'worker', operation: 'start' })
-    const pending = prepare()
-    try {
-      await entered
-      gateway.disableAgent(AGENTS[0])
-      await manager.instances.refreshDevice()
-    } finally { releaseInstall() }
-    const changed = await pending
-    assert.equal(changed.status, 400)
-    assert.equal(downloads, 1)
-    assert.equal(gateway.requests.some(request => /authoring\/prepare/.test(request.path)), false,
-      'authorization withdrawn during download cannot create an installation')
-  }, { installChecker: async () => { downloads += 1; enteredInstall(); await installed } })
-})
-
 test('a stalled public checker installation cannot delay stopping and signing out of the account', async t => {
   let releaseInstall, enteredInstall
   const entered = new Promise(resolve => { enteredInstall = resolve })
@@ -1460,9 +1410,9 @@ test('a stalled public checker installation cannot delay stopping and signing ou
   await withManager(t, async ({ manager, gateway }) => {
     const row = await addInstance(manager, 'Download sign-out', { agentId: AGENTS[0] })
     await manager.instances.start(row.id)
-    const pending = fetch(`http://127.0.0.1:${manager.port}/manager/authoring/prepare`, {
+    const pending = fetch(`http://127.0.0.1:${manager.port}/manager/authoring/install-checker`, {
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({ instanceId: row.id, materialPermissions: { localRead: true, offMachine: false } }),
+      body: '{}',
     })
     await entered
     try {
@@ -1474,7 +1424,7 @@ test('a stalled public checker installation cannot delay stopping and signing ou
       assert.equal(manager.instances.hosts.has(row.id), false)
     } finally { releaseInstall() }
     const prepared = await pending
-    assert.equal(prepared.status, 400)
+    assert.equal(prepared.status, 200)
     assert.equal(gateway.requests.some(request => /authoring\/prepare/.test(request.path)), false)
   }, { installChecker: async () => { enteredInstall(); await installed } })
 })
@@ -1818,4 +1768,22 @@ test('leaving a keyed account default needs an explicit custom key', async t => 
       'an open host cannot re-retain its old custom key after leaving the default')
     await assert.rejects(manager.instances.start(live.id), /no ready model configuration/)
   })
+})
+
+test('checker installation has no account governance effect and retired preparation routes are absent', async t => {
+  let downloads = 0
+  await withManager(t, async ({ manager, gateway }) => {
+    for (const path of ['status', 'prepare']) {
+      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/${path}`, {
+        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}',
+      })
+      assert.equal(response.status, 404)
+    }
+    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/install-checker`, {
+      method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}',
+    })
+    assert.equal(response.status, 200)
+    assert.equal(downloads, 1)
+    assert.equal(gateway.requests.some(r => /authoring\/(status|prepare)/.test(r.path)), false)
+  }, { installChecker: async () => { downloads++ } })
 })

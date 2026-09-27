@@ -59,7 +59,7 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   /** The account and Console this device is signed in to; the directory joins on both. */
   const CONSOLE = 'https://console.example', ACCOUNT = 'acct-1'
   /** Flipped by a test: what the conversation host answers when a message is sent. */
-  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringCompileErrors: [], authoringPrepareRefusal: '', authoringPrepareRequests: [], authoringReviewRefusal: '', authoringReviewRequests: [], authoringVersions: null, authoringSaveRefusal: '', authoringSaveDropResponse: false, authoringSaveRequests: [], authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
+  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringCompileErrors: [], checkerInstallRequests: [], authoringReviewRefusal: '', authoringReviewRequests: [], authoringVersions: null, authoringSaveRefusal: '', authoringSaveDropResponse: false, authoringSaveRequests: [], authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
 
   // Configured Agents, as the manager reports them once pairing has completed: the directory
   // joins a profile to an Agent by account, Console origin and Agent id together.
@@ -164,12 +164,9 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       row[body.role] = body.operation === 'start'
       return void json(res, 200, { ok: true, control: { role: body.role, state: body.operation === 'start' ? 'ready' : 'stopped' }, ...state() })
     }
-    if (path === '/manager/authoring/status') return void json(res, 200, { ok: true, configured: true, bindingMatches: true,
-      materialPermissions: { localRead: true, offMachine: true } })
-    if (path === '/manager/authoring/prepare') {
-      control.authoringPrepareRequests.push(body)
-      if (control.authoringPrepareRefusal) return void json(res, 409, { ok: false, teaching: control.authoringPrepareRefusal })
-      return void json(res, 200, { ok: true, stage: 'ready', teaching: 'Local assistant prepared for this Agent.' })
+    if (path === '/manager/authoring/install-checker') {
+      control.checkerInstallRequests.push(body)
+      return void json(res, 200, { ok: true, teaching: 'Local rule checker installed.' })
     }
     if (path === '/manager/authoring/review' && control.authoringReviewRefusal) return void json(res, 503, { ok: false, teaching: control.authoringReviewRefusal })
     if (path === '/manager/authoring/review') {

@@ -204,19 +204,16 @@ export function createManagerServer({
     modelDefaults: instances.modelDefaults(),
     instances: instances.overview(),
   })
-  const authoringTarget = (instanceId, { requireWorker = false } = {}) => {
+  const authoringTarget = (instanceId) => {
     const grant = device.status()
-    if (grant.state !== 'linked') throw new Error('Sign in before preparing the local document assistant.')
+    if (grant.state !== 'linked') throw new Error('Sign in before reviewing or saving a local checked draft.')
     const row = instances.overview().find((entry) => entry.id === instanceId)
-    if (!row || !row.paired || !row.agentId || !row.connectionId) throw new Error('Choose an attached Agent with its Worker connection before preparing the document assistant.')
-    if (requireWorker && row.worker !== true) throw new Error('Start this Agent’s Worker and wait for initialization before preparing the document assistant.')
-    if (requireWorker && row.ready?.worker !== true) throw new Error('The Worker is still starting. Wait for initialization before preparing the document assistant.')
-    if (requireWorker && row.model?.workerRestartRequired) throw new Error('Stop and start this Worker to apply the model service change before preparing the document assistant.')
+    if (!row || !row.paired || !row.agentId || !row.connectionId) throw new Error('Choose an attached Agent with its Worker connection before reviewing a checked draft.')
     if (row.origin !== grant.origin || row.accountId !== String(grant.account?.id ?? '') || !grant.agents.some((agent) => agent.id === row.agentId)) {
       throw new Error('The selected Agent is no longer enabled for this signed-in account.')
     }
-    return { expectedAccountId: String(grant.account.id), agentId: row.agentId, connectionId: row.connectionId,
-      materialRoot: String(row.authoring?.materialRoot ?? ''), toolDescriptors: Array.isArray(row.authoring?.toolDescriptors) ? row.authoring.toolDescriptors : [] }
+    if (!row.authoring?.materialRoot) throw new Error('This Agent has no configured local material area.')
+    return { expectedAccountId: String(grant.account.id), agentId: row.agentId, materialRoot: row.authoring.materialRoot }
   }
   const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex')
   const checkedResult = (instanceId, resultId = '') => {
@@ -273,32 +270,10 @@ export function createManagerServer({
       const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'expectedAgentId', 'expectedConnectionId', 'key'])
       return instances.setConnectionKey(String(fields.instanceId ?? ''), fields)
     },
-    '/manager/authoring/status': (body) => {
-      const fields = onlyFields(body, ['instanceId'])
-      return instances.admit(() => {
-        const { toolDescriptors, ...target } = authoringTarget(String(fields.instanceId ?? ''))
-        return device.authoringStatus(target)
-      })
-    },
-    '/manager/authoring/prepare': async (body) => {
-      const fields = onlyFields(body, ['instanceId', 'materialPermissions'])
-      const permissions = onlyFields(fields.materialPermissions, ['localRead', 'offMachine'])
-      if (typeof permissions.localRead !== 'boolean' || typeof permissions.offMachine !== 'boolean')
-        throw new Error('Material permissions must explicitly name localRead and offMachine.')
-      if (!permissions.localRead && !permissions.offMachine)
-        throw new Error('Choose local material delivery or authorized remote delivery before preparing the assistant.')
-      const scope = deviceScope(device.status())
-      const target = await instances.admit(() => authoringTarget(String(fields.instanceId ?? ''), { requireWorker: true }))
-      // Public file downloads cannot hold sign-out behind network progress. Only the
-      // account-scoped setup command participates in admission after a fresh check.
+    '/manager/authoring/install-checker': async (body) => {
+      onlyFields(body, [])
       await installChecker()
-      return instances.admit(() => {
-        const current = authoringTarget(String(fields.instanceId ?? ''), { requireWorker: true })
-        if (deviceScope(device.status()) !== scope || JSON.stringify(current) !== JSON.stringify(target))
-          throw new Error('The selected Agent or Worker binding changed during preparation. Open Document assistant again.')
-        return device.authoringPrepare({ ...current,
-          requestId: randomUUID(), materialPermissions: permissions })
-      })
+      return { ok: true, teaching: 'Local rule checker installed. Start or restart the Worker to advertise its tools.' }
     },
     '/manager/authoring/save': (body) => {
       const fields = onlyFields(body, ['instanceId', 'resultId', 'caseId'])

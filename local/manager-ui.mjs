@@ -386,11 +386,11 @@ export const managerPage = String.raw`<!doctype html>
 <div class="modal" id="dlg-authoring" role="dialog" aria-modal="true" aria-labelledby="authoring-title" hidden><div class="modal-card">
   <div class="modal-head"><div><b id="authoring-title">Document assistant</b><span class="subline" id="authoring-sub"></span></div><button class="modal-close" id="authoring-close" aria-label="Close document assistant">×</button></div>
   <div class="modal-body"><div id="authoring-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
-    <p id="authoring-copy">Prepare this Agent to create and check capability drafts from documents using its selected model. Preparation installs a local checker on this computer; Java 25 is required.</p>
+    <p id="authoring-copy">Install the local rule checker (Java 25 required), then install the Document Authoring Assistant capability in Console. Use the Agent’s Runtime page to lock its Source to this Worker and configure material delivery.</p>
     <p id="authoring-worker-status" role="status"></p>
     <button id="authoring-worker-start" hidden>Start Worker</button>
-    <label class="checkline"><input id="authoring-local-read" type="checkbox" checked> Allow local material delivery to this Agent</label><label class="checkline"><input id="authoring-off-machine" type="checkbox"> Allow document text to reach a remote model or an authorized Gateway proxy</label>
-    <div class="actions"><button class="btn" id="authoring-prepare">Prepare local assistant</button><button id="authoring-review-open">Review checked draft</button><a class="btn" id="authoring-configure" target="_blank" rel="noopener noreferrer" hidden>Manage installed capabilities</a></div>
+    <p class="sub">This Worker’s material area: <code id="authoring-material-root"></code></p>
+    <div class="actions"><button class="btn" id="authoring-install-checker">Install local checker</button><button id="authoring-review-open">Review checked draft</button><a class="btn" id="authoring-configure" target="_blank" rel="noopener noreferrer">Open Agent in Console</a></div>
     <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><label id="authoring-result-row" hidden>Checked version<select id="authoring-result-choice"></select></label><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
   </div>
 </div></div>
@@ -407,7 +407,7 @@ const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendin
    on a picture that may be minutes old is worse than a control that says why it is waiting. */
 let offline='',pollFails=0;
 /* The exact (Agent here, cloud Agent) pair the replacement tick was given for. */
-let replaceFor='',authoringResult=null,authoringRenderedFor=null,authoringFor='',authoringScope='',authoringPermissionsReady=false,authoringLoad=0;
+let replaceFor='',authoringResult=null,authoringRenderedFor=null,authoringFor='',authoringScope='';
 const pendingStartNotices=new Map();
 const shownStartNotices=new Map();
 function rememberStartNotice(id,role,noticeId,message){
@@ -519,10 +519,8 @@ function controlSpec(){
     'worker-toggle':['role:'+selected+':worker',Boolean(row)&&hasRole(row,'worker')&&!row.orphaned&&(row.worker===true||!row.blocked)],
     'tools-open':[windowScope(selected),Boolean(row)],
     'authoring-open':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned],
-    'authoring-prepare':['authoring:'+selected,Boolean(row)&&row.paired&&row.worker&&row.ready?.worker!==false&&!row.model?.workerRestartRequired&&!row.blocked&&!row.orphaned&&authoringPermissionsReady],
+    'authoring-install-checker':['authoring:'+selected,Boolean(row)&&row.paired],
     'authoring-worker-start':['role:'+selected+':worker',Boolean(row)&&row.paired&&!row.worker&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned&&!busy.has('authoring:'+selected)],
-    'authoring-local-read':['authoring:'+selected,authoringPermissionsReady],
-    'authoring-off-machine':['authoring:'+selected,authoringPermissionsReady],
     'authoring-review-open':['authoring:'+selected,Boolean(row)&&row.paired&&!row.blocked&&!row.orphaned],
     'authoring-result-choice':['authoring:'+selected,Boolean(row)&&authoringResult&&Array.isArray(authoringResult.availableResults)&&authoringResult.availableResults.length>1],
     'authoring-case':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId],
@@ -1009,17 +1007,13 @@ function renderWorker(){
 }
 function renderAuthoring(){
   const current=sel();if(authoringFor!==selected||authoringScope!==(current?.origin||'')+'/'+(current?.accountId||'')){
-    authoringResult=null;authoringPermissionsReady=false;
-    $('authoring-local-read').checked=false;$('authoring-off-machine').checked=false;
+    authoringResult=null;
     say('authoring-notice','The selected Agent changed. Close this dialog and choose the Agent again.');
   }
   const row=sel();$('authoring-sub').textContent=row?.name||'';
   $('authoring-worker-start').hidden=!row||Boolean(row.worker);
-  $('authoring-worker-status').textContent=!row?'Choose an Agent first.':row.blocked||row.orphaned?'Resolve this Agent’s setup in settings before preparing the assistant.'
-    :!row.worker?'Start this Agent’s Worker before preparing the assistant.'
-    :row.ready?.worker===false?'Waiting for Worker initialization. Preparation becomes available when it is confirmed.'
-    :row.model?.workerRestartRequired?'Stop and start this Worker to apply the model service change before preparing the assistant.'
-    :'Worker is initialized. Preparation will verify its tools.';
+  $('authoring-worker-status').textContent=!row?'Choose an Agent first.':!row.worker?'Start this Agent’s Worker after installing the checker.':'Worker is running. Restart it after installing new local tools.';
+  $('authoring-material-root').textContent=row?.authoring?.materialRoot||'Unavailable';
   const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
   const versions=ready&&Array.isArray(authoringResult.availableResults)?authoringResult.availableResults:[];
   $('authoring-result-row').hidden=versions.length<2;
@@ -1476,27 +1470,13 @@ $('worker-toggle').onclick=()=>{const id=selected,row=rowOf(id);if(row)controlRo
 $('tools-open').onclick=()=>openSettings(selected,'/worker-tools','worker-notice');
 $('authoring-worker-start').onclick=()=>{const row=sel();if(row&&!row.worker)return controlRole(row.id,'worker','start','authoring-notice');};
 $('authoring-open').onclick=()=>{
-  const row=sel(),id=selected,scope=(row?.origin||'')+'/'+(row?.accountId||''),load=++authoringLoad;
-  authoringFor=id;authoringScope=scope;authoringResult=null;authoringPermissionsReady=false;
-  $('authoring-configure').hidden=true;$('authoring-configure').removeAttribute('href');
-  $('authoring-local-read').checked=false;$('authoring-off-machine').checked=false;
-  say('authoring-notice','Reading this Agent’s current material permissions…');
-  openDialog('dlg-authoring','authoring-close');applyControls();
-  const current=()=>load===authoringLoad&&selected===id&&authoringScope===scope
-    &&(sel()?.origin||'')+'/'+(sel()?.accountId||'')===scope;
-  return api('/manager/authoring/status',{instanceId:id}).then(v=>{
-    if(!current())return;
-    const p=v.materialPermissions;
-    if(typeof p?.localRead!=='boolean'||typeof p?.offMachine!=='boolean')throw Error('Current material permissions could not be confirmed. Reopen this dialog to retry.');
-    $('authoring-local-read').checked=p.localRead;$('authoring-off-machine').checked=p.offMachine;
-    authoringPermissionsReady=v.bindingMatches===true&&v.preparationBlocked!==true;
-    if(v.preparationBlocked===true&&row?.origin&&row?.agentId){$('authoring-configure').href=new URL('/console/#/agents/'+encodeURIComponent(row.agentId)+'?tab=configuration',row.origin).href;$('authoring-configure').hidden=false;}
-    say('authoring-notice',v.teaching||(v.configured?'Saved material choices loaded. Prepare to apply them to this Worker binding.':'Choose the material permissions for this Agent.'),!authoringPermissionsReady);
-  }).catch(e=>{if(current())say('authoring-notice',e.message,true);}).finally(()=>{if(current())applyControls();});
+  const row=sel();authoringFor=selected;authoringScope=(row?.origin||'')+'/'+(row?.accountId||'');authoringResult=null;
+  $('authoring-configure').hidden=!(row?.origin&&row?.agentId);
+  if(row?.origin&&row?.agentId)$('authoring-configure').href=new URL('/console/#/agents/'+encodeURIComponent(row.agentId)+'?tab=runtime',row.origin).href;
+  else $('authoring-configure').removeAttribute('href');
+  say('authoring-notice','');openDialog('dlg-authoring','authoring-close');renderAuthoring();applyControls();
 };
-$('authoring-prepare').onclick=()=>{const id=selected,localRead=$('authoring-local-read').checked,offMachine=$('authoring-off-machine').checked;
-  if(!localRead&&!offMachine){say('authoring-notice','Choose local material delivery or authorized remote delivery before preparing the assistant.',true);return;}
-  run('authoring:'+id,'authoring-notice',()=>api('/manager/authoring/prepare',{instanceId:id,materialPermissions:{localRead,offMachine}}).then(v=>say('authoring-notice',v.teaching||('Assistant state: '+v.stage+'.'))));};
+$('authoring-install-checker').onclick=()=>run('authoring:'+selected,'authoring-notice',()=>api('/manager/authoring/install-checker',{}).then(v=>say('authoring-notice',v.teaching)));
 function loadAuthoringReview(id,resultId){return api('/manager/authoring/review',{instanceId:id,...(resultId?{resultId}:{})}).then(v=>{
   if(selected!==id||authoringFor!==id)return;
   if(resultId&&v.resultId!==resultId)throw Error('The checked version changed during review. Reopen the review before saving.');
