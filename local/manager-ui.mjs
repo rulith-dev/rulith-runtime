@@ -137,8 +137,6 @@ body{overflow:hidden}
 .authoring-review-item pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel2);border-radius:6px;padding:10px;font-size:var(--fs-4);max-height:260px;overflow:auto}
 .authoring-review-item blockquote{margin:10px 0 0;padding:7px 10px;border-left:2px solid var(--accent);color:var(--dim)}
 .authoring-notes{white-space:pre-wrap;overflow-wrap:anywhere}
-.notes{color:var(--dim);font-size:var(--fs-4);margin:12px 0 0;padding-left:18px}
-.notes:empty{display:none}
 .inlinefield{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
 .inlinefield select{flex:1 1 220px;min-width:0}
 .checkline{display:inline-flex;align-items:center;gap:7px;margin:0;color:var(--dim);font-size:var(--fs-4)}
@@ -269,14 +267,6 @@ export const managerPage = String.raw`<!doctype html>
     <p class="muted">Profiles on this computer that are not one of the Agents above: not connected yet, imported, or connected under another account or Console. They are kept so nothing is lost, and they are never offered as an Agent this account authorizes.</p>
     <div id="profiles"></div>
     <p class="muted" id="profiles-empty" hidden>No other local profiles.</p>
-    <div id="import-block" hidden>
-      <h4>Bring across an older installation</h4>
-      <p id="import-path"></p>
-      <p class="muted">Its model, tool and resource settings are copied into a profile of its own; the original files are never moved or changed. Its existing Agent and Worker credentials stay with the original installation — this profile is connected to an Agent separately.</p>
-      <label>Name for the imported profile<input id="import-name" maxlength="80" placeholder="Existing installation"></label>
-      <div class="actions"><button id="import">Import</button></div>
-      <ul class="notes" id="import-notes"></ul>
-    </div>
     </details>
   </div>
 </div></div>
@@ -410,7 +400,7 @@ const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 /* One manager key, read from this page's own address. The page ships with no secret, and the
    per-Agent loopback keys it never sees: opening an Agent asks the manager for that Agent's
    address and loads it. Nothing is written to storage and no address is logged. */
-let state={instances:[],device:{state:'none'},legacyInstall:null},selected='',notes=[],drawer='',pollTimer,signInPollError='',polling=null,pendingReplaceFor='',lastStateRevision=0,lastStateServerId='',requestSequence=0,lastStateRequest=0;
+let state={instances:[],device:{state:'none'}},selected='',drawer='',pollTimer,signInPollError='',polling=null,pendingReplaceFor='',lastStateRevision=0,lastStateServerId='',requestSequence=0,lastStateRequest=0;
 const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendingAccountId,row.pendingAgentId]):'';
 /* What this page currently knows about the manager itself. While the connection is lost, the state
    on screen is the last one that arrived and nothing may be changed from it: a control acting
@@ -519,7 +509,6 @@ function controlSpec(){
       setupAuthorized(setupFor)],
     // Once the profile exists its mode is a fact about files on disk, not a choice any more.
     'setup-mode':['setup:'+(setupFor?setupFor.id:''),Boolean(setupFor)&&setupProfile(setupFor)==null],
-    'import':['add',state.legacyInstall!=null],
     'pair':['attach:'+selected,Boolean(row)&&linked&&!row.paired&&!row.pendingAgentId&&agents.length>0&&[...$('agent-select').options].some(option=>!option.disabled&&option.value===$('agent-select').value)],
     'pair-poll':['attach:'+selected,Boolean(row&&row.pendingAgentId)],
     'pair-replace':['attach:'+selected,Boolean(linked&&row?.pendingAgentId&&row.pendingError?.code==='runtime_credential_exists'
@@ -878,11 +867,8 @@ function profileReason(row){
   return 'Connected to '+(row.agentName||row.agentId)+', which is not enabled in this account now';
 }
 function renderProfiles(){
-  const legacy=state.legacyInstall,rows=looseProfiles();
-  $('local-settings').hidden=rows.length===0&&legacy==null&&$('signin-settings').hidden;
-  $('import-block').hidden=legacy==null;
-  if(legacy)$('import-path').innerHTML='Found <code>'+esc(legacy.configFile)+'</code>'+(legacy.imported?' · already imported once':'');
-  $('import-notes').innerHTML=notes.map(n=>'<li>'+esc(n)+'</li>').join('');
+  const rows=looseProfiles();
+  $('local-settings').hidden=rows.length===0&&$('signin-settings').hidden;
   const markup=rows.map(row=>'<button type="button" class="profilerow" data-profile="'+esc(row.id)+'">'
     +'<b>'+esc(row.name)+'</b><small>'+esc(profileReason(row))+'</small></button>').join('');
   $('profiles-empty').hidden=rows.length>0;
@@ -1128,7 +1114,7 @@ function pruneFrames(){
 }
 function render(next){
   const signedIn=next?.device?.state==='linked'&&['pending','approved'].includes(state.device?.state);
-  if(next!==undefined)state={instances:next.instances||[],device:next.device||{state:'none'},directorySync:next.directorySync||null,modelDefaults:next.modelDefaults||null,legacyInstall:next.legacyInstall==null?null:next.legacyInstall};
+  if(next!==undefined)state={instances:next.instances||[],device:next.device||{state:'none'},directorySync:next.directorySync||null,modelDefaults:next.modelDefaults||null};
   if(signedIn){signInPollError='';say('account-notice','');closeDialog('dlg-account');say('notice','Signed in as '+(state.device.account?.name||'your account')+'.');}
   if(selected&&!rowOf(selected))selected='';
   renderStartNotices();
@@ -1427,8 +1413,6 @@ $('setup-start').onclick=()=>{
     }
   });
 };
-$('import').onclick=()=>run('add','account-notice',()=>api('/manager/instances/import',{sourceConfigFile:state.legacyInstall.configFile,name:$('import-name').value})
-  .then(v=>{notes=v.notes||[];render();say('account-notice','Imported as a profile that is not connected yet. The original installation was not changed and keeps its own credentials.');}));
 /* The replacement is sent only if the tick still belongs to exactly this Agent and exactly
    this cloud Agent — the pair that was on screen when it was ticked. Anything else and it is
    somebody's old intent applied to a credential they were not looking at. */

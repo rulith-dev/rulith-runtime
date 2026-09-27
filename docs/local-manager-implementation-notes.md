@@ -1,5 +1,9 @@
 # Local manager — implementation notes
 
+Historical implementation record. On 2026-09-27 the current-version-only decision
+retired the single-instance CLI and future installation imports described below.
+Existing managed profiles are preserved. Current usage is in [local-manager.md](local-manager.md).
+
 Runtime half of the approved *Local account and multi-Agent upgrade* (2026-09-20), after
 root's counterexample review. Everything is uncommitted in the `codex/local-manager-upgrade`
 worktree; nothing is deployed.

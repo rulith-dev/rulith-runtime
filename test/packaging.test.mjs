@@ -44,12 +44,11 @@ test('the packed npm artifact prepares the demo offline and refuses a missing bu
     assert.equal(prepared.status, 0, prepared.stderr)
     assert.match(prepared.stdout, /Verified 5 bundled files/)
     assert.equal(existsSync(join(target, 'runtime/input.json')), true)
-    const config = JSON.parse(readFileSync(join(target, 'rulith-local.json'), 'utf8'))
-    assert.equal(config.worker.env.RULITH_WORKER_ROOT, target)
-    assert.equal(existsSync(join(config.worker.env.RULITH_WORKER_ROOT, 'adapters/verified-calculation/read-input.mjs')), true)
+    assert.equal(existsSync(join(target, 'rulith-local.json')), false)
+    assert.equal(existsSync(join(target, 'adapters/verified-calculation/read-input.mjs')), true)
     assert.equal(spawnSync('git', ['init', '-q', dir], { windowsHide: true }).status, 0)
-    assert.equal(spawnSync('git', ['-C', dir, 'check-ignore', '--no-index', join(target, 'rulith-local.json')], { windowsHide: true }).status, 0,
-      'the generated credential file must be ignored even in an unrelated repository')
+    assert.equal(spawnSync('git', ['-C', dir, 'check-ignore', '--no-index', join(target, 'runtime/input.json')], { windowsHide: true }).status, 0,
+      'local data stays ignored even in an unrelated repository')
     rmSync(join(unpacked, 'examples/verified-calculation/read-input.mjs'))
     const refusedTarget = join(dir, 'refused')
     const refused = spawnSync(process.execPath, [join(unpacked, 'examples/verified-calculation/setup.mjs'), refusedTarget], { env: environment, encoding: 'utf8', windowsHide: true })
@@ -330,13 +329,13 @@ test('the standalone Console setup uses embedded release pins when no package ma
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
     assert.equal(existsSync(join(target, 'rulith-agent.mjs')), false)
     assert.equal(requested.some(path => /^(agent|worker)\//.test(path)), false)
-    const config=JSON.parse(readFileSync(join(target,'rulith-local.json'),'utf8'))
-    assert.deepEqual(config.roles,['agent','worker'])
-    assert.equal(config.agent.env.RULITH_TOKEN,'')
-    assert.equal(config.worker.env.RULITH_CONNECTION_KEY,'')
-    assert.equal(config.worker.env.RULITH_WORKER_ROOT,target)
-    assert.equal(config.worker.env.RULITH_TOOLS_FILE,join(target,'worker-tools.json'))
-    assert.match(readFileSync(join(target, '.gitignore'), 'utf8'), /^\/rulith-local\.json$/m)
+    assert.equal(existsSync(join(target, 'rulith-local.json')), false)
+    const manifest = JSON.parse(readFileSync(join(target, 'worker-tools.json'), 'utf8'))
+    for (const tool of Object.values(manifest.tools)) {
+      assert.match(tool.entry, /^adapters\/verified-calculation\//)
+      assert.equal(existsSync(join(target, tool.entry)), true)
+    }
+    assert.match(result.stdout, /profile worker.env RULITH_WORKER_ROOT and RULITH_TOOLS_FILE/)
   })
 })
 

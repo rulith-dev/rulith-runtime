@@ -21,7 +21,7 @@ browser access key; keep it on this computer.
   choosing an Agent or conversation switches both together.
 
 The account is anchored at the lower left. Role controls, tools, connection setup,
-model configuration, importing an older installation and technical details are
+model configuration and technical details are
 opened when needed. Role controls affect only the selected instance on this computer,
 not every remote Connection that the cloud Agent might use. On a small screen the
 Agent list and execution information open on demand. Presentation uses the same
@@ -140,7 +140,7 @@ the account menu shows the actual error and **Reset sign-in**. A request that ha
 delivered credentials is cleared locally. An approved sign-in with credentials
 uses sign-out: stop local Agents, confirm revocation, then clear. Incomplete stopping or
 revocation is reported without pretending that sign-out succeeded.
-Older installation imports are under **Advanced local settings**, separate from sign-in.
+Existing local profiles are under **Advanced local settings**, separate from sign-in.
 
 The intended account, Console and Agent are recorded when first-use setup creates a
 local profile. Reloading or restarting before pairing resumes that same profile;
@@ -175,25 +175,16 @@ retry. Model settings, tool configurations, workspaces and user files are kept.
 Remote revocation blocks the issued credentials at the Gateway; it is not a claim
 that a local process or already-started external effect has stopped.
 
-## Existing installation
+## One workbench entry
 
-Import from this computer's settings copies a legacy installation into an independent profile.
-The original files are preserved. Tool manifests, Source vaults, mutable MCP state
-and owned workspace paths are copied or re-rooted; changes are reported. The old
-Agent token and Worker credentials stay with the original installation: they were
-not issued by this device and cannot be covered by its sign-out. Connect the new
-profile separately. Do not run two clients with the same Agent token.
+Run `rulith`, `rulith start`, or `rulith setup` to open the workbench. Configure each
+Agent in its own local profile. The old single-instance CLI and installation import
+have been removed. Unsupported options fail before creating state; an inherited
+`RULITH_LOCAL_CONFIG` must be unset before starting the workbench.
 
-Compatible single-Agent entry points remain available:
-
-```sh
-rulith start --legacy
-rulith start --config /path/to/rulith-local.json
-rulith start --role worker
-```
-
-`RULITH_LOCAL_CONFIG` also selects that single-Agent mode. Starting the workbench
-never silently moves or rewrites the legacy configuration.
+Existing managed profiles, including ones previously imported, retain their configuration,
+materials and history. Their original import provenance remains visible in details.
+Starting the workbench does not read or change an unrelated single-instance configuration.
 
 ## Files and limits
 
@@ -234,7 +225,7 @@ does not create account-scoped durable history.
 `RULITH_MANAGER_HOME`, `RULITH_MANAGER_PORT` (default7780) and `RULITH_MANAGER_KEY`
 configure the workbench. Only one workbench process can own a profile root at a time;
 a second launch refuses until the first exits. Instance ports and per-run browser keys are assigned
-automatically. Explicit single-Agent mode still uses `RULITH_LOCAL_PORT` (default7790).
+automatically.
 
 Rulith and installed MCP servers run with your operating-system permissions. Known
 protected-path checks prevent accidental exposure of the manager's private files;

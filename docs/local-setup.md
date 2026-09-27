@@ -1,9 +1,9 @@
 # Set up Rulith
 
-Run `rulith setup` and open the printed [Local manager](local-manager.md). Sign in through Console and approve the Agents this computer may use. Add an instance, choose its Agent, then open **Settings and details → Setup**. Each instance starts with its Agent and Worker stopped. Use `rulith setup --legacy` or an explicit `--config` for the original single-instance wizard.
+Run `rulith setup` and open the printed [workbench](local-manager.md). Sign in through Console, select an Agent, and complete its first-use setup. Each instance starts with its Agent and Worker stopped. Reopen its setup from **Settings and details → Setup**.
 
 1. Choose **existing agent / MCP client** or **run with Rulith**. The first uses your client's model; only the second needs local model settings.
-2. In the manager, attach an Agent from the approved list. The standalone wizard instead asks for your Console origin and computer name, then uses a short code to confirm the target Agent in Console. Pairing alone grants no tool access.
+2. Attach the selected Agent from the signed-in account directory. Pairing alone grants no tool access.
 3. Select local resource locations or installed MCP services. Their credentials stay in the local vault. Send the selection for authorization and start Worker.
 4. Review the resources and actual tools in Console. Authorize your selection and wait for Worker confirmation.
 5. For a Local agent, save your model endpoint/name/key on this computer, start Agent, and open the conversation. For an existing client, use its MCP configuration from Console.

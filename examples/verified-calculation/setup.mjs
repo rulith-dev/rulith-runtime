@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Download the public Tool manifest and Adapters, then prepare a local verified
- * JSON calculation workspace and an empty Local configuration. Agent capabilities
+ * JSON calculation workspace and a Tool manifest for a managed profile. Agent capabilities
  * are installed in Console; credentials are never requested or copied here.
  *
  * Every downloaded file is checked before anything is written. An installed package or
@@ -111,27 +111,15 @@ async function main() {
     writeFileSync(path, contents)
   }
 
-  // The governed file Source is target/runtime. Config and Adapter code are outside
-  // that data directory, so granting access to the demo input does not expose keys.
-  writeFileSync(resolve(target, '.gitignore'), '/rulith-local.json\n/runtime/\n')
-  const configPath = resolve(target, 'rulith-local.json')
-  writeFileSync(configPath, JSON.stringify({
-    roles: ['agent', 'worker'],
-    agent: { env: {
-      RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '',
-      RULITH_MODEL_URL: 'http://127.0.0.1:1234', RULITH_MODEL: '<model-id>', RULITH_MODEL_KEY: '',
-    } },
-    worker: { env: {
-      RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '',
-      RULITH_WORKER_ROOT: target, RULITH_TOOLS_FILE: resolve(target, 'worker-tools.json'),
-    } },
-  }, null, 2) + '\n', { mode: 0o600 })
+  // The governed Source contains only data. Credentials belong to the workbench profile.
+  writeFileSync(resolve(target, '.gitignore'), '/runtime/\n')
 
   console.log(`Verified ${downloads.size} ${bundled ? 'bundled files' : 'downloads'} against artifact-manifest.json`)
   console.log(`Prepared ${target}`)
-  console.log(`Edit ${configPath}: enter your Agent token, model settings, and Worker Connection credentials.`)
+  console.log(`Worker root: ${target}`)
+  console.log(`Tool manifest: ${resolve(target, 'worker-tools.json')}`)
   console.log(`Source location for Console: ${resolve(target, 'runtime')}`)
-  console.log('The Capability comes from Console; run the installed npm Rulith Local with this configuration. See the 5-minute quickstart.')
+  console.log('Run rulith, sign in and select your demo Agent. Set its profile worker.env RULITH_WORKER_ROOT and RULITH_TOOLS_FILE to the paths above while the workbench is stopped. Preserve its other settings. See the quickstart.')
 }
 
 // The status is set rather than forced. `process.exit()` tears the loop down while the

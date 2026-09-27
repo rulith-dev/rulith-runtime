@@ -88,12 +88,12 @@ function exampleRow(name, args, overrides = {}) {
 }
 
 /** Drive the real Worker over one poll that dispatches `rows`, then hold it idle. */
-async function runExample(rows, { env = {}, settled, sources } = {}) {
+async function runExample(rows, { env = {}, settled, sources, tools = MANIFEST.tools, files = { ...ADAPTERS, 'runtime/input.json': INPUT_BYTES } } = {}) {
   let dispatched = false
   const result = await driveWorker({
     env,
-    extraTools: MANIFEST.tools,
-    extraFiles: { ...ADAPTERS, 'runtime/input.json': INPUT_BYTES },
+    extraTools: tools,
+    extraFiles: files,
     sources: sources ?? ((root) => [{ name: SOURCE, type: 'file', access: join(root, 'runtime') }]),
     reply: (operation) => {
       if (operation.kind === 'Poll') {
@@ -418,12 +418,37 @@ test('RT-EXAMPLE-6 an invocation that names no Source, or another one, never rea
 
 // The public quickstart now uses the real Local composer. Native tool argument correctness
 // is exercised by the live Core/Gateway/Runtime acceptance instead of hand-copied tool JSON.
+test('prepared example workspace and manifest run through the configured Worker with only their bound data Source', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'rulith-prepared-example-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const prepared = join(directory, 'demo')
+  const setup = spawnSync(process.execPath, [join(EXAMPLE, 'setup.mjs'), prepared], {
+    encoding: 'utf8', env: { ...process.env, RULITH_DOWNLOAD_ORIGIN: undefined },
+  })
+  assert.equal(setup.status, 0, setup.stderr)
+  assert.equal(existsSync(join(prepared, 'rulith-local.json')), false)
+  const tools = JSON.parse(readFileSync(join(prepared, 'worker-tools.json'), 'utf8')).tools
+  const action = ACTIONS.load_calculation_input
+  const row = exampleRow('load_calculation_input', {}, { toolDigest: toolDigest(tools[action.execution.tool]) })
+  const result = await runExample([row], { tools, files: {},
+    env: { RULITH_WORKER_ROOT: prepared, RULITH_TOOLS_FILE: join(prepared, 'worker-tools.json') },
+    sources: () => [{ name: SOURCE, type: 'file', access: join(prepared, 'runtime') }],
+  })
+  assert.equal(result.receipts.length, 1, result.output)
+  assert.doesNotMatch(result.output, /Skipping/)
+  assert.deepEqual(factNamed(result.receipts[0], 'rulith.verified_calculation.calculation_input').args, {
+    node: NODE, job_id: JOB.job_id, unit_price_cents: JOB.unit_price_cents, quantity: JOB.quantity, shipping_cents: JOB.shipping_cents,
+  })
+})
+
 test('RT-EXAMPLE-11 the guide starts a configured Case through Local without scripted model tool calls', () => {
   const guide = readFileSync(join(EXAMPLE, 'README.md'), 'utf8')
   const contract = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/verified-calculation-recipe.json'), 'utf8')).capability.caseContracts[0]
   assert.ok(guide.includes(contract.caseType))
   for (const argument of contract.businessKey.arguments) assert.ok(guide.includes(argument))
-  assert.match(guide, /rulith start --role agent\+worker/)
+  assert.match(guide, /Start Worker/)
+  assert.match(guide, /Start Agent/)
+  assert.doesNotMatch(guide, /--role|RULITH_LOCAL_CONFIG/)
   assert.match(guide, /Local composer/)
   assert.match(guide, /Protocol troubleshooting \(optional\)/)
 })

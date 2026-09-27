@@ -126,7 +126,7 @@ async function withManager(t, run, { signIn = true, agents = AGENTS, ...managerO
   const root = mkdtempSync(join(tmpdir(), 'rulith-instances-'))
   const gateway = createDevicesGateway()
   await gateway.listen()
-  const manager = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json'), startConfirmMs: 8000, ...managerOptions })
+  const manager = createManagerServer({ root, port: 0, key: KEY, startConfirmMs: 8000, ...managerOptions })
   await manager.listen()
   t.after(async () => {
     await manager.close()
@@ -252,7 +252,7 @@ test('first-use allocation survives restart and concurrent retries without issui
     assert.equal(manager.instances.overview()[0].paired, false)
     assert.equal(manager.instances.overview()[0].pendingAgentId, '')
     await manager.close()
-    const restarted = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json') })
+    const restarted = createManagerServer({ root, port: 0, key: KEY })
     try {
       await restarted.listen()
       const retry = () => fetch(`http://127.0.0.1:${restarted.port}/manager/instances/create`, {
@@ -1010,7 +1010,7 @@ test('a manager that closes with a draining child records it rather than claimin
 
     // Which is what makes the *next* workbench refuse to open a second host over that child.
     await manager.registry.patchInstance(instance.id, (row) => ({ runtime: { ...row.runtime, pid: 999_999 } }))
-    const next = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json') })
+    const next = createManagerServer({ root, port: 0, key: KEY })
     await next.listen()
     t.after(() => next.close())
     assert.ok(next.registry.instance(instance.id).orphaned, 'the marker the previous run left is read by this one')
@@ -1388,7 +1388,7 @@ test('the manager answers exactly its documented control-plane operations', asyn
     assert.deepEqual(routes, [
       '/manager/authoring/prepare', '/manager/authoring/review', '/manager/authoring/save', '/manager/authoring/status',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
-      '/manager/device/start', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget', '/manager/instances/import',
+      '/manager/device/start', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll', '/manager/instances/start',
       '/manager/instances/stop', '/manager/model/default',
@@ -1508,24 +1508,34 @@ test('removing an instance from the list keeps its directory and refuses while i
   })
 })
 
-test('the manager page offers an existing installation without reading or changing it', async (t) => {
-  const home = mkdtempSync(join(tmpdir(), 'rulith-offer-'))
-  const root = join(home, 'manager')
-  mkdirSync(root, { recursive: true })
-  const legacyConfigFile = join(home, 'local.json')
-  writeFileSync(legacyConfigFile, JSON.stringify({ roles: ['worker'], worker: { env: { RULITH_CONNECTION_KEY: 'legacy-connection-key' } } }, null, 2))
-  t.after(() => rmSync(home, { recursive: true, force: true }))
-  const before = readFileSync(legacyConfigFile, 'utf8')
-
-  const manager = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile })
-  await manager.listen()
-  t.after(() => manager.close())
-  const state = manager.state()
-  assert.equal(state.legacyInstall.configFile, legacyConfigFile)
-  assert.equal(state.legacyInstall.imported, false)
-  assert.equal(readFileSync(legacyConfigFile, 'utf8'), before)
-  assert.equal(JSON.stringify(state).includes('legacy-connection-key'), false,
-    'offering an installation must not read its credentials into a page')
+test('the workbench has no import route and preserves existing imported profiles', async (t) => {
+  await withManager(t, async ({ manager, root }) => {
+    const instance = await addInstance(manager, 'Existing imported profile', { agentId: 'agent-alpha' })
+    const source = join(root, 'unrelated-local.json')
+    writeFileSync(source, 'unrelated credentials must stay untouched')
+    const registryFile = join(root, 'registry.json')
+    const registry = JSON.parse(readFileSync(registryFile, 'utf8'))
+    Object.assign(registry.instances.find(row => row.id === instance.id), {
+      importedFrom: source, legacyCredentials: ['RULITH_TOKEN', 'RULITH_CONNECTION_KEY'],
+    })
+    writeFileSync(registryFile, JSON.stringify(registry))
+    await manager.close()
+    const next = createManagerServer({ root, port: 0, key: KEY, startConfirmMs: 8000 })
+    await next.listen()
+    t.after(() => next.close())
+    const state = next.state()
+    assert.equal(Object.hasOwn(state, 'legacyInstall'), false)
+    assert.equal(state.instances.find(row => row.id === instance.id).legacyImport.configFile, source)
+    assert.equal((await next.instances.start(instance.id)).started, true)
+    assert.equal(observedEnv(next, instance.id, 'agent').RULITH_TEST_IDENTITY, 'agent-alpha')
+    const response = await fetch('http://127.0.0.1:' + next.port + '/manager/instances/import', {
+      method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceConfigFile: source, name: 'Duplicate' }),
+    })
+    assert.equal(response.status, 404)
+    assert.equal(next.state().instances.length, 1)
+    assert.equal(readFileSync(source, 'utf8'), 'unrelated credentials must stay untouched')
+  })
 })
 
 test('the manager page and its routes are gated against unauthenticated, cross-origin and rebound callers', async (t) => {

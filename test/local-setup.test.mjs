@@ -5,7 +5,7 @@ import { publicEncrypt, constants } from 'node:crypto'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createLocalHost, defaultLocalConfig, rolesFromArgs } from '../local/rulith-local.mjs'
+import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
 import { setupOrigin } from '../local/setup-service.mjs'
 
 for (const mode of ['existing_agent', 'local_agent']) test('setup pairs '+mode+' without exposing credentials and resumes a lost acknowledgement',async t=>{
@@ -23,7 +23,7 @@ for (const mode of ['existing_agent', 'local_agent']) test('setup pairs '+mode+'
   let host=createLocalHost({configFile,config,roles:config.roles,port:0,autoStart:false});await host.listen();
   t.after(async()=>{await host.close();await new Promise(r=>cloud.close(r));rmSync(dir,{recursive:true,force:true});});
   const call=async(path,body,headers={})=>{const response=await fetch('http://127.0.0.1:'+host.port+path,{method:body===undefined?'GET':'POST',headers:{'x-rulith-local':host.key,'content-type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});return{status:response.status,body:await response.json()};};
-  assert.deepEqual(rolesFromArgs(['setup'],['worker']),['worker']);assert.equal(host.status().agent,false);
+  assert.equal(host.status().agent,false);
   assert.equal((await call('/setup/pair/start',{}, {origin:'http://localhost:1'})).status,403);
   const base='http://127.0.0.1:'+cloud.address().port;
   assert.equal((await call('/setup/pair/start',{consoleUrl:base,name:'Laptop / 中文',clientMode:mode})).status,200);

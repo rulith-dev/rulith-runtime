@@ -32,7 +32,7 @@ const instanceOf = (overrides = {}) => ({
   blocked: '', orphaned: null, legacyImport: null,
   hostPort: 0, servePort: 0, signedOutAt: '', createdAt: '', importedFrom: '', ...overrides,
 })
-const stateOf = (overrides = {}) => ({ ok: true, root: 'D:/manager', device: deviceOf(), instances: [], legacyInstall: null, ...overrides })
+const stateOf = (overrides = {}) => ({ ok: true, root: 'D:/manager', device: deviceOf(), instances: [], ...overrides })
 const ORIGIN = 'https://console.example', ACCOUNT = 'acct-1'
 const linkedDevice = (agents = [{ id: 'agent-alpha', name: 'Alpha' }]) =>
   deviceOf({ state: 'linked', origin: ORIGIN, account: { id: ACCOUNT, name: 'Test Account' }, agents })
@@ -65,7 +65,7 @@ test('every route the page calls is a route the manager server answers', () => {
   }
   // Every operation an operator can only reach from this page is still reachable.
   for (const required of ['/manager/device/signout', '/manager/device/forget', '/manager/instances/pair',
-    '/manager/instances/pair/cancel', '/manager/instances/control', '/manager/instances/import',
+    '/manager/instances/pair/cancel', '/manager/instances/control',
     '/manager/instances/model/copy', '/manager/instances/forget', '/manager/instances/open',
     '/manager/instances/stop']) {
     assert.ok(paths.includes(required), `${required} is unreachable from the page`)
@@ -254,7 +254,7 @@ test('the account dialog shows exactly one state at a time', async () => {
 
 test('failed sign-in keeps the address editable and exposes retry instead of an empty approval screen', async () => {
   const device = deviceOf({ state: 'pending', origin: ORIGIN, deviceName: 'My laptop', teaching: 'Sign-in did not finish.' })
-  const page = await openPage(stateOf({ device, legacyInstall: { configFile: 'D:/old/local.json' } }))
+  const page = await openPage(stateOf({ device }))
   assert.equal(page.$('signed-out').hidden, false)
   assert.equal(page.$('pending').hidden, true)
   assert.equal(page.$('sign-in').disabled, false)
@@ -1040,16 +1040,6 @@ test('a dialog whose Agent disappeared says so rather than showing nothing at al
   page.openDialog('dlg-details')
   assert.equal(page.$('detail-attention').hidden, false)
   assert.match(page.$('detail-attention').textContent, /no longer on this computer/)
-})
-
-test('an older installation is offered only when one is there, and the import says what it leaves behind', async () => {
-  const absent = await openPage(stateOf())
-  assert.equal(absent.$('import-block').hidden, true)
-  const present = await openPage(stateOf({ legacyInstall: { configFile: 'D:/home/.rulith/local.json', imported: false } }))
-  assert.equal(present.$('import-block').hidden, false)
-  assert.ok(present.$('import-path').innerHTML.includes('D:/home/.rulith/local.json'))
-  assert.match(managerPage, /copied into a profile of its own/)
-  assert.match(managerPage, /stay with the original installation/, 'an import that leaves credentials behind has to say so')
 })
 
 test('signing in sends what the operator typed, and nothing else', async () => {

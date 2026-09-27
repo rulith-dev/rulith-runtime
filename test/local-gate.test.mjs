@@ -16,7 +16,7 @@
  * so parallel release checks can exercise these HTTP gates without port handoffs.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -138,10 +138,4 @@ test('the page, once loaded with the key, can still reach the data routes', asyn
     const unauthorized = await fetch(`http://127.0.0.1:${port}/status`)
     assert.equal(unauthorized.status, 401, 'the data routes must refuse a missing key the same way the page does')
   })
-})
-
-test('the CLI prints a URL that carries the key it just minted', () => {
-  const source = readFileSync(join(import.meta.dirname, '..', 'local', 'rulith-local.mjs'), 'utf8')
-  assert.match(source, /Local UI: http:\/\/127\.0\.0\.1:\$\{host\.port\}\/\?k=\$\{host\.key\}/,
-    'the page is only reachable with the key, so the printed URL is the only way in')
 })

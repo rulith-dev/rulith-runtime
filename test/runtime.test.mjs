@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, protectedWorkerExecutables, toolDigest, toolFromSpec, workerToolManifest, workerToolsOf, workspaceWriteEnabled } from '../worker/rulith-worker.mjs'
-import { createLocalHost, defaultConfigPath, defaultLocalConfig, effectiveChildEnv, localInteger, modeOf, normalizeLocalConfig, rolesFromArgs, rolesOf } from '../local/rulith-local.mjs'
+import { createLocalHost, defaultLocalConfig, effectiveChildEnv, localInteger, modeOf, normalizeLocalConfig, rolesOf } from '../local/rulith-local.mjs'
 import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -76,7 +76,6 @@ test('Rulith Local has exactly agent, worker, and combined startup modes', () =>
   assert.deepEqual(rolesOf('worker'), ['worker'])
   assert.deepEqual(rolesOf('agent+worker'), ['agent', 'worker'])
   assert.equal(modeOf(['agent', 'worker']), 'agent+worker')
-  assert.deepEqual(rolesFromArgs(['start', '--role', 'worker'], ['agent']), ['worker'])
   assert.throws(() => rolesOf('operator'), /agent, worker, or both/)
   const config = defaultLocalConfig()
   assert.equal(config.agent.env.RULITH_MODEL_URL, 'https://api.anthropic.com/v1/messages')
@@ -134,7 +133,6 @@ test('the npm package installs the Rulith Local command rather than the retired 
   assert.ok(pkg.files.includes('agent/') && pkg.files.includes('worker/') && pkg.files.includes('local/'))
   assert.equal(pkg.files.includes('examples/'), false, 'generated example runtime directories must never enter the npm package')
   assert.ok(pkg.files.includes('examples/verified-calculation/setup.mjs'))
-  assert.match(defaultConfigPath('C:\\Users\\example'), /\.rulith[\\/]local\.json$/)
 })
 
 test('the first-party Agent uses the same public MCP bearer surface as every other Agent client', () => {
@@ -1652,10 +1650,8 @@ test('verified calculation is one Capability composed of Program and Sources', (
   assert.match(guide, /one\s+installed Capability with four inspectable sections/i)
   assert.doesNotMatch(guide, /two governed components|install.*Knowledge[\s\S]*install.*source/i,
     'typed protocol components must not leak back into the user installation ritual')
-  assert.match(guide, /verified-calc-worker/)
-  assert.doesNotMatch(guide, /verified-calculation-worker/)
-  assert.match(guide, /generated absolute `RULITH_WORKER_ROOT` and `RULITH_TOOLS_FILE`/,
-    'the guide must keep the setup-generated Adapter and manifest paths')
+  assert.match(guide, /`RULITH_WORKER_ROOT` and `RULITH_TOOLS_FILE`/,
+    'the profile must use the prepared Adapter and manifest paths')
 })
 
 // The behaviour this used to assert is now driven end to end in

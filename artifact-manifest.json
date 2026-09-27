@@ -84,7 +84,7 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "30b01ec9c1e80dbf6df779e194d21782397c8cc9114ae61ace583772c6ad76a3"
+      "sha256": "07b03e02f8ff9031e399e4aa4bd11c2d8316c576b471684a3557d463e8778bbb"
     },
     "local/material-service.mjs": {
       "sha256": "c792c11005480860e1656fa49b257eedb55d453cc3574687a52a707f2479fa8c"
@@ -105,16 +105,16 @@
       "sha256": "c363b57bb1920e6f32e4caf557fe829aac79ae9eaedb4eea90550c1924ab080b"
     },
     "local/instance-manager.mjs": {
-      "sha256": "a5b2d31c8b735ab35bfb7d101aef9d611a60157d864808834e1d899f8684e3e2"
+      "sha256": "b9093aacab3ea8af525a9d4264d95b33b149ac5696df90951c303212618d44d3"
     },
     "local/manager-server.mjs": {
-      "sha256": "54fd2ba0254606b7a1f37a1accdcfddea0aa0dcaab45101c23a811640d84505e"
+      "sha256": "e8856d898f619f667cf47ecf743b8b2de5fc20b6f13cd441bc018bd1d7791eae"
     },
     "local/manager-ui.mjs": {
-      "sha256": "f375e83f880e2be9558dcfd181f4a4285ba26b6d1b5f6b51b9df50e1ded240fe"
+      "sha256": "12ebaf17f38a939471759e9baee9339b9e7e2bdd89bc5abe7bb46050d8f38370"
     },
     "docs/local-manager.md": {
-      "sha256": "d1105921b108ac977c5813df964c99e551bc49d33a61f027606f1dfaa05a4df6"
+      "sha256": "6d57f29aa166b73520551eb39019a559c5988f3af988c6fa91df199bed7e1655"
     },
     "docs/local-materials.md": {
       "sha256": "70be70cdc4a443d30cf780512c5a1dbeb3798e0ea9f3c266562fa0e546b13474"
@@ -150,7 +150,7 @@
       "sha256": "a5a9af5d7e1fc5243a0c4441f3c6dcb009c27383f76249bc51fd31a6f33d273a"
     },
     "docs/local-setup.md": {
-      "sha256": "8ded3f2ac13fc3c68516ef022919e6c09af39f7425a7b35fa105a97370d89195"
+      "sha256": "e57010b2fcbd2aac402d03c11e4a22e3f4a6175c25e833681f33857da5a22289"
     },
     "config/rulith-sources.example.json": {
       "sha256": "38dd6cb5e0e28e7e5a3b167f59ba5bb2c9263b20123eda28150071c1934f112f"
@@ -162,7 +162,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "03060a30a736571cbc18db73fc8a769a5d0fb032ac904c86b0d408d2de283195"
+      "sha256": "0a054c3033e7e39aa011ad8a9dfe6514794183b360fb25bd214bcfee6a9280f9"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -171,7 +171,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "3aa8825328ea1725268b636799c98afc5eb5199227cf7e118f60fbfa314f06ea"
+      "sha256": "2bbc0fc5cd5e7dc86408937f4b6eb9249e6bef2482692b655cd23ccb21e305ae"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "bc97ed124af5e7d086a4b1ac2bf36f34915d90345ba12471587e5cff91eadb2c"

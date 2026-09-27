@@ -12,7 +12,6 @@ import { DEFAULT_MODEL_URL } from './model-settings.mjs'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { localPage, projectRecovery } from './local-ui.mjs'
@@ -55,18 +54,6 @@ export function modeOf(roles) {
   return selected.length === 2 ? 'agent+worker' : selected[0]
 }
 
-export function rolesFromArgs(args, fallback) {
-  const input = [...args]
-  if (input[0] === 'start' || input[0] === 'setup') input.shift()
-  if (input.includes('--help') || input.includes('-h')) return null
-  let chosen
-  for (let i = 0; i < input.length; i++) {
-    if ((input[i] === '--role' || input[i] === '--roles') && input[i + 1] !== undefined) { chosen = input[++i]; continue }
-    throw new Error(`Unknown Rulith option: ${input[i]}`)
-  }
-  return rolesOf(chosen ?? fallback)
-}
-
 export function defaultLocalConfig() {
   return {
     roles: ['agent', 'worker'],
@@ -78,8 +65,6 @@ export function defaultLocalConfig() {
     paths: {},
   }
 }
-
-export function defaultConfigPath(home = homedir()) { return join(home, '.rulith', 'local.json') }
 
 export function normalizeLocalConfig(config) {
   const defaults = defaultLocalConfig()
@@ -126,23 +111,6 @@ export const INHERITED_CREDENTIAL_VARIABLES = Object.freeze(['ANTHROPIC_API_KEY'
 export function isolatedEnvironmentBase(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) =>
     !/^RULITH_/i.test(name) && !INHERITED_CREDENTIAL_VARIABLES.includes(name)))
-}
-
-function loadConfig(configFile) {
-  if (!existsSync(configFile)) {
-    const config = defaultLocalConfig()
-    mkdirSync(dirname(resolve(configFile)), { recursive: true, mode: 0o700 })
-    writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 })
-    console.log(`Created ${configFile}. Add credentials for the selected roles, then restart Rulith.`)
-    return config
-  }
-  const raw = JSON.parse(readFileSync(configFile, 'utf8'))
-  const config = normalizeLocalConfig(raw)
-  if (raw.cloud !== undefined || raw.agent?.env?.RULITH_AGENT !== undefined) {
-    saveConfig(configFile, config)
-    console.warn('Removed retired Cloud-session or Agent-selector fields. The configured MCP token is now the only Agent identity source.')
-  }
-  return config
 }
 
 function saveConfig(configFile, config) {
@@ -1194,115 +1162,52 @@ Usage:
   rulith setup                Same manager page, for a first installation
   rulith start                Same manager page
 
-  rulith start --legacy [--role agent|worker|agent+worker]
-                              The original single-instance mode, on one configuration file
-  rulith start --config <file>
-                              Single-instance mode on that exact file
-
-The single-instance mode is also selected by setting RULITH_LOCAL_CONFIG, or by naming
-roles with --role: an existing deployment keeps working with the command it already uses.
-Its configuration defaults to ~/.rulith/local.json and is never migrated or deleted by the
-manager; the manager offers to import a copy into its own instance directory.
-
 Environment:
-  RULITH_LOCAL_CONFIG   Single-instance configuration file (also selects that mode)
-  RULITH_LOCAL_PORT     Single-instance loopback UI port (default 7790)
   RULITH_MANAGER_HOME   Manager directory (default ~/.rulith/manager)
   RULITH_MANAGER_PORT   Manager loopback UI port (default 7780)
   RULITH_MANAGER_KEY    Fixed manager browser key: 16-128 of A-Z a-z 0-9 - _
                         (default: 32 random hex characters, new on every run)`
 
-/**
- * Which of the two entry points this command line asked for.
- *
- * The manager is the normal entry now, and the single-instance mode has to stay reachable
- * *by the command an existing deployment already runs*. Three things select it, and each one
- * is an explicit statement that this invocation is about one configuration file: `--legacy`,
- * `--config <file>`, and `RULITH_LOCAL_CONFIG` in the environment. `--role` selects it too,
- * because roles are a property of one instance — under the manager each instance names its
- * own — so a command that passes them is describing the single-instance deployment it always
- * described.
- *
- * Nothing here reads or writes configuration. Choosing an entry point must not be the step
- * that creates a file.
- */
+/** Parse without touching state. All supported commands open the same workbench. */
 export function parseLocalCli(argv, env = {}) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true }
   const input = [...argv]
   const command = ['setup', 'start', 'manager'].includes(input[0]) ? input.shift() : 'start'
-  let configFile
-  let legacy = false
-  const roleArgs = []
-  for (let index = 0; index < input.length; index++) {
-    if (input[index] === '--legacy') { legacy = true; continue }
-    if (input[index] === '--config') {
-      if (input[index + 1] === undefined) throw new Error('--config needs a configuration file path.')
-      configFile = input[++index]
-      legacy = true
-      continue
-    }
-    if (input[index] === '--role' || input[index] === '--roles') legacy = true
-    roleArgs.push(input[index])
+  if (input.length > 0) throw new Error('Unknown Rulith option: ' + input[0])
+  if (String(env.RULITH_LOCAL_CONFIG ?? '').trim() !== '') {
+    throw new Error('RULITH_LOCAL_CONFIG is no longer supported. Unset it and run rulith to open the workbench.')
   }
-  const inherited = String(env.RULITH_LOCAL_CONFIG ?? '').trim()
-  if (command === 'manager') {
-    if (legacy) throw new Error('rulith manager runs the multi-instance manager. Use "rulith start --legacy" or --config for the single-instance mode.')
-    return { command: 'manager', legacy: false, roleArgs }
-  }
-  if (!legacy && inherited !== '') { legacy = true; configFile = inherited }
-  if (!legacy && roleArgs.length > 0) throw new Error(`Unknown Rulith option: ${roleArgs[0]}`)
-  return { command, legacy, roleArgs, ...(legacy ? { configFile: configFile ?? (inherited || defaultConfigPath()) } : {}) }
+  return { command }
 }
 
 if (IS_MAIN) {
   let cli
   try { cli = parseLocalCli(process.argv.slice(2), process.env) } catch (error) { console.error(error.message); process.exit(1) }
   if (cli.help) { console.log(CLI_HELP); process.exit(0) }
-  if (cli.legacy) {
-    const port = localInteger('RULITH_LOCAL_PORT', process.env.RULITH_LOCAL_PORT, 7790)
-    const key = (process.env.RULITH_LOCAL_KEY ?? '').trim() || randomUUID().replace(/-/g, '')
-    const configFile = cli.configFile
-    const config = loadConfig(configFile)
-    let roles
-    try { roles = rolesFromArgs(cli.roleArgs, config.roles) } catch (error) { console.error(error.message); process.exit(1) }
-    const setupMode = cli.command === 'setup'
-    const host = createLocalHost({ configFile, config, roles, port, key, autoStart: !setupMode })
-    await host.listen()
-    console.log(`Rulith · mode ${host.mode}`)
-    if (setupMode) console.log(`Local UI: http://127.0.0.1:${host.port}/setup?k=${host.key}`)
-    else console.log(`Local UI: http://127.0.0.1:${host.port}/?k=${host.key}`)
-    console.log(`Configuration: ${resolve(configFile)} · credentials are stored here, and are sent only to the services they authenticate to.`)
-    process.on('SIGINT', async () => { await host.close(); process.exit(0) })
-  } else {
-    /**
-     * Started after this module finishes evaluating, deliberately.
-     *
-     * The manager builds its instance hosts out of `createLocalHost`, so its module graph
-     * depends on this one. Importing it from a *top-level* await here would suspend this
-     * module's evaluation while the manager's graph waited for this module to finish — a
-     * cycle that never settles and exits with nothing printed. Loading it from a callback
-     * lets this module complete first, which is all the cycle needs.
-     */
-    void import('./manager-server.mjs').then(async ({ createManagerServer }) => {
-      const { defaultManagerRoot } = await import('./manager-registry.mjs')
-      const root = (process.env.RULITH_MANAGER_HOME ?? '').trim() || defaultManagerRoot()
-      const manager = createManagerServer({
-        root,
-        port: localInteger('RULITH_MANAGER_PORT', process.env.RULITH_MANAGER_PORT, 7780),
-        key: (process.env.RULITH_MANAGER_KEY ?? '').trim() || randomUUID().replace(/-/g, ''),
-      })
-      await manager.listen()
-      console.log('Rulith')
-      console.log(`Workbench: http://127.0.0.1:${manager.port}/?k=${manager.key}`)
-      console.log(`Instances: ${resolve(root)} · credentials are stored here; execution credentials are sent to their own configured Gateway.`)
-      if (existsSync(defaultConfigPath())) {
-        console.log(`An existing single-instance configuration is at ${defaultConfigPath()}. It has not been read or changed:`
-          + ' import a copy from the manager, or run "rulith start --legacy" to keep using it directly.')
-      }
-      process.on('SIGINT', async () => { await manager.close(); process.exit(0) })
-    }).catch((error) => {
-      console.error(String(error?.message ?? error))
-      process.exit(1)
+  /**
+   * Started after this module finishes evaluating, deliberately.
+   *
+   * The manager builds its instance hosts out of `createLocalHost`, so its module graph
+   * depends on this one. Importing it from a *top-level* await here would suspend this
+   * module's evaluation while the manager's graph waited for this module to finish — a
+   * cycle that never settles and exits with nothing printed. Loading it from a callback
+   * lets this module complete first, which is all the cycle needs.
+   */
+  void import('./manager-server.mjs').then(async ({ createManagerServer }) => {
+    const { defaultManagerRoot } = await import('./manager-registry.mjs')
+    const root = (process.env.RULITH_MANAGER_HOME ?? '').trim() || defaultManagerRoot()
+    const manager = createManagerServer({
+      root,
+      port: localInteger('RULITH_MANAGER_PORT', process.env.RULITH_MANAGER_PORT, 7780),
+      key: (process.env.RULITH_MANAGER_KEY ?? '').trim() || randomUUID().replace(/-/g, ''),
     })
-  }
+    await manager.listen()
+    console.log('Rulith')
+    console.log(`Workbench: http://127.0.0.1:${manager.port}/?k=${manager.key}`)
+    console.log(`Instances: ${resolve(root)} · credentials are stored here; execution credentials are sent to their own configured Gateway.`)
+    process.on('SIGINT', async () => { await manager.close(); process.exit(0) })
+  }).catch((error) => {
+    console.error(String(error?.message ?? error))
+    process.exit(1)
+  })
 }

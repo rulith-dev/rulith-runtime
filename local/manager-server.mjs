@@ -15,9 +15,7 @@
  */
 import http from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { acquireWorkbenchLease, createManagerRegistry, defaultManagerRoot } from './manager-registry.mjs'
 import { createDeviceClient } from './device-client.mjs'
 import { createInstanceManager } from './instance-manager.mjs'
@@ -106,7 +104,7 @@ const onlyFields = (body, allowed) => {
  */
 export function createManagerServer({
   root = defaultManagerRoot(), port = 7780, key = randomUUID().replace(/-/g, ''),
-  legacyConfigFile = join(homedir(), '.rulith', 'local.json'), startConfirmMs, leaseWaitMs = 0,
+  startConfirmMs, leaseWaitMs = 0,
   directoryRefreshMs = 30_000, installChecker = installAuthoringChecker,
 } = {}) {
   /** The installation claim, held from `listen` to `close`. */
@@ -205,10 +203,6 @@ export function createManagerServer({
     directorySync: directoryStatus(),
     modelDefaults: instances.modelDefaults(),
     instances: instances.overview(),
-    // Offered, never acted on: an installation is imported only when somebody asks for it.
-    legacyInstall: existsSync(resolve(legacyConfigFile))
-      ? { configFile: resolve(legacyConfigFile), imported: registry.read().instances.some((row) => row.importedFrom === resolve(legacyConfigFile)) }
-      : null,
   })
   const authoringTarget = (instanceId, { requireWorker = false } = {}) => {
     const grant = device.status()
@@ -261,7 +255,6 @@ export function createManagerServer({
     '/manager/device/forget': (body) => { onlyFields(body, []); return instances.forgetDevice() },
     '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'])),
     '/manager/instances/create': (body) => instances.create(onlyFields(body, ['name', 'mode', 'setupTarget'])),
-    '/manager/instances/import': (body) => instances.import(onlyFields(body, ['sourceConfigFile', 'name', 'mode'])),
     '/manager/instances/pair': (body) => {
       const fields = onlyFields(body, ['instanceId', 'agentId', 'replaceAgentToken'])
       return instances.pair(String(fields.instanceId ?? ''), { agentId: fields.agentId, replaceAgentToken: fields.replaceAgentToken })

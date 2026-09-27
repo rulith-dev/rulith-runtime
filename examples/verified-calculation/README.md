@@ -15,9 +15,7 @@ sample files, not a client-owned recipe. No database reset is needed.
 2. Under **Market**, install **Verified Calculation** to that Agent. It appears as one
    installed Capability with four inspectable sections: Vocabulary, Rules, Actions and
    Sources, plus its `verified_calculation` Case Type.
-3. Under **Agent → Runtime**, create the Agent MCP token and one Worker Connection named
-   `verified-calc-worker`. Copy the token, Connection ID and Connection key when shown.
-   Wait to bind the Source until the Worker has reported its Tools.
+3. Wait to bind the Source until the local Worker has reported its Tools.
 
 ## Install and prepare locally
 
@@ -29,7 +27,7 @@ PowerShell:
 ```powershell
 npm.cmd install --global rulith@0.8.17
 node "$(npm.cmd root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
-$env:RULITH_LOCAL_CONFIG="$PWD/rulith-demo/rulith-local.json"
+rulith start
 ```
 
 Bash:
@@ -37,46 +35,41 @@ Bash:
 ```bash
 npm install --global rulith@0.8.17
 node "$(npm root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
-export RULITH_LOCAL_CONFIG="$PWD/rulith-demo/rulith-local.json"
+rulith start
 ```
 
 The bundled setup verifies five files without another network download. It creates
-`worker-tools.json`, `adapters/`, `runtime/input.json`, and an empty `rulith-local.json`.
-It refuses a non-empty destination. The configuration is outside the `runtime/` data
-folder, so the file Source need not expose credentials or Adapter code.
+`worker-tools.json`, `adapters/`, and `runtime/input.json`, and refuses a non-empty
+destination. Adapter paths stay relative to the configured Worker root; the runtime
+does not permit a script manifest to escape that root.
 
-Edit `rulith-demo/rulith-local.json` once:
-
-- `agent.env`: fill `RULITH_TOKEN`, your `RULITH_MODEL_URL` and `RULITH_MODEL`; supply
-  `RULITH_MODEL_KEY` for a remote endpoint. The generated URL is a loopback example.
-- `worker.env`: fill `RULITH_CONNECTION` and `RULITH_CONNECTION_KEY`.
-- Keep the generated absolute `RULITH_WORKER_ROOT` and `RULITH_TOOLS_FILE` paths.
-
-The existing standalone Console `setup.mjs` download prepares the same directory by
-verifying assets from the immutable Runtime release. Rulith Local still comes from npm.
+Open the printed workbench URL. Sign in, select `verified-calculation`, and complete
+its first-use setup. The workbench obtains that Agent's runtime credentials and Worker
+Connection. Configure your default model through the account menu, or override it in
+this Agent's settings. Keep the Agent and Worker stopped while configuring the tools.
 
 ## Register the available Tools, then bind the Source
 
-Start only the Worker (`rulith.cmd` in PowerShell):
+1. For this new demo Agent, open its gear menu → **Technical details → Files** to find
+   the profile directory. Stop Rulith with Ctrl+C in its terminal before editing that
+   directory's `local.json`. In the existing `worker.env` object, set only
+   `RULITH_WORKER_ROOT` and `RULITH_TOOLS_FILE` to the **Worker root** and **Tool manifest**
+   absolute paths printed by setup. Preserve the rest of the profile, including its
+   credentials, model and session settings. Do not use an Agent with unrelated tool
+   configuration for this demo. On Windows, escape backslashes in JSON or use `/`.
+2. Run `rulith start` again, select the same Agent, and click **Start Worker**.
+   In Console, open the same Agent's Runtime and confirm its
+   Connection advertises the three verified-calculation Tools.
+3. Bind `verified-calculation-local` to that Connection. Use the **absolute Source
+   location printed by setup**, ending in `rulith-demo/runtime`. Select the three
+   matching Tools and lock the binding. This data directory contains neither model
+   credentials nor Adapter code.
+4. Click **Stop Worker**, then **Start Worker** to load the authorized Source. Click
+   **Start Agent** and use the Local composer. The workbench keeps the same profile,
+   Connection and conversation throughout; no separate CLI configuration is needed.
 
-```text
-rulith start --role worker
-```
-
-Wait for its Tool Manifest to appear under **Agent → Runtime**. Then bind
-`verified-calculation-local` to `verified-calc-worker` under **Source bindings**. Use the
-**absolute Source location printed by setup**, ending in `rulith-demo/runtime`. Select
-the matching required Tools and lock the binding. Use the printed absolute path to make the intended directory unambiguous.
-
-Stop that Worker with Ctrl+C. It reads authorized Sources at startup, so a restart is
-required after the first binding. From the same shell and configuration, start both roles:
-
-```text
-rulith start --role agent+worker
-```
-
-Open the loopback Local UI URL printed by Rulith Local. No separate Agent script,
-Worker script, source checkout, or developer test suite is needed.
+The standalone Console setup download prepares the same assets using immutable release
+pins. It does not create credentials, install a Capability, or grant access to a Source.
 
 ## Run and verify
 

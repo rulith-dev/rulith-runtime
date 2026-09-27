@@ -58,24 +58,21 @@ npx --yes rulith@latest
 
 The workbench stores its account grant and separate Agent profiles under
 `~/.rulith/manager` and prints a loopback address with a per-run `?k=` browser key.
-Browser-assisted sign-in replaces copying account credentials. To keep an existing
-single-Agent deployment, use `rulith start --legacy` or an explicit `--config`; this
-mode uses `~/.rulith/local.json` (mode `0o600`, in a `0o700` directory).
-Windows does not enforce those mode bits, so on Windows restrict the file through its
-ACL or keep the secrets in the deployment environment instead. For the single-Agent deployment, edit that file or inject
-equivalent secrets through the deployment environment: one Agent identity and token,
-one local model configuration, and—when Worker is enabled—one Agent-owned Connection
-and key.
+Browser-assisted sign-in creates the account grant; selecting an Agent opens its local
+profile. Configure the default model in the account menu and per-Agent overrides in
+settings. Agent tokens and Worker credentials are delivered during first-use setup.
+Profiles remain separate, and shell credentials are not inherited by every Agent.
+On Windows, protect the profile directory with your account's filesystem permissions.
 
-For an OpenAI-compatible local model service, set `RULITH_MODEL_URL` to its server
-root such as `http://127.0.0.1:1234`; the Agent derives `/v1/chat/completions`.
+In **Account → Default model**, or the selected Agent's model settings, enter the
+model service URL, model ID and provider key. For an OpenAI-compatible local model,
+use its server root such as `http://127.0.0.1:1234`; the Agent derives `/v1/chat/completions`.
 A model key is optional only for a loopback endpoint; remote providers still require one.
 
-DeepSeek Flash uses the same OpenAI-compatible path: set `RULITH_MODEL_URL` to
-`https://api.deepseek.com/chat/completions`, `RULITH_MODEL` to `deepseek-flash`, and
-`RULITH_MODEL_KEY` to your local provider credential. `RULITH_MODEL_THINKING=disabled`
-explicitly disables thinking; `enabled` enables it, while omission leaves the provider
-default unchanged. Provider reasoning continuation is retained in the local conversation
+For DeepSeek Flash, enter `https://api.deepseek.com/chat/completions` as the URL,
+`deepseek-flash` as the model ID, and your provider credential in the key field.
+Under **Model options → Thinking**, choose **Off**, **On**, or **Provider default**.
+Shell model variables do not configure workbench profiles. Provider reasoning continuation is retained in the local conversation
 for subsequent native tool calls; it is not displayed as an answer or submitted as Board
 evidence. See the [DeepSeek thinking/tool contract](https://api-docs.deepseek.com/guides/thinking_mode/).
 
@@ -94,19 +91,9 @@ cd rulith-runtime
 npm test
 ```
 
-No build step is required. Run `npm start` for the workbench. Explicit role flags
-keep the compatible single-Agent deployment:
-
-```powershell
-npm start -- --role agent
-npm start -- --role worker
-npm start -- --role agent+worker
-```
-
-`rulith start` opens the manager by default. An explicit `--role`, `--config`,
-`RULITH_LOCAL_CONFIG`, or `--legacy` retains the original single-instance entry.
-The Agent and Worker remain separate child processes even in combined mode. Database
-tools load the optional `pg` package only when used.
+No build step is required. Run `npm start` for the workbench, select an Agent, and use
+**Start Agent** or **Start Worker** for that profile. The roles remain separate child
+processes. Database tools load the optional `pg` package only when used.
 
 ## Agent Runtime
 
@@ -578,9 +565,9 @@ copying only `rulith-worker.mjs` is insufficient.
    attest. Declare its access modes and versioned Tool references. A stdio Source's
    public access address can be a non-secret locator such as `stdio:local-mail`;
    its actual process configuration stays local. HTTP uses its non-secret endpoint.
-3. Declare the named remote Tool in the Worker manifest, start `rulith start --role worker`,
+3. Declare the named remote Tool in the Worker manifest, select its Agent in the workbench and click **Start Worker**,
    then bind and lock the Source and its required advertised Tools in Console.
-   If Local also supplies the model, use `--role agent+worker` instead.
+   If Rulith also supplies the model, configure it and click **Start Agent**.
 4. Use the existing `rulith.mcp.discover@1` through a governed read Action to inspect
    remote names and schemas. Discovery reads up to 200 Tools across pages and reports
    truncation. It does not install or authorize what it discovers. Tool parameters
@@ -681,35 +668,16 @@ Source root they are handed and nothing else: they have no path override and no 
 directory, so an Adapter granted no Source, or one of the wrong type, refuses instead of
 reading a file of its own choosing.
 
-## Compatible single-Agent deployment
+## Managed local profiles
 
-Copy `config/rulith-local.example.json` outside the repository, select `agent`,
-`worker`, or both roles, fill in the local values, and run:
+Run `rulith start` and open its printed loopback URL. Sign in, select an Agent, and
+complete first-use setup. The left list selects the Agent; the middle and right areas
+show its conversation and execution information. Switching preserves each profile's
+processes and history. See [the workbench guide](docs/local-manager.md).
 
-```powershell
-$env:RULITH_LOCAL_CONFIG = 'C:\path\to\rulith-local.json'
-npm start
-```
-
-Rulith prints one loopback URL containing a random key. Open that exact URL: the
-key gates every route, including the page itself, and the page reads it from its own
-address rather than carrying an embedded copy. The Agent is conversational first:
-greetings and ordinary discussion create no Case and perform no Board operation.
-Rulith is an optional tool the model selects when work benefits from persistent state,
-rules, evidence, external Actions, verification, or an auditable conclusion. One tool
-call advances at most one Case step; an unfinished Case guides later decisions but never
-forces another model turn.
-
-In Agent+Worker mode, the Local UI uses a familiar Agent-workbench shape: conversation
-activity on the left, dialogue and selected governed execution in the center, a composer
-at the bottom, and the active Rulith Case, frontier, Worker activity, evidence, and
-receipts on the right. Agent and Worker modes use role-specific projections of the same
-UI and event contract.
-
-The single-Agent page observes its configured identity, process health, Cases, Trace,
-evidence and receipts. Its setup and tool pages configure this instance while the
-required roles are stopped. The multi-Agent workbench adds browser-assisted device
-sign-in and Agent selection; neither page grants cloud tools or changes governance.
+Ordinary conversation creates no Case. The model selects Rulith tools when work benefits
+from persistent state, rules, evidence, execution or an auditable conclusion. The profile's
+setup and tool pages configure its local resources; they do not grant cloud authority.
 
 The deployment configuration owns the model endpoint and key, Agent runtime,
 Worker Connection key, Source credentials, Tool adapters, workspace roots, local Tool
