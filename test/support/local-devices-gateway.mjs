@@ -23,7 +23,7 @@
  */
 import { createServer } from 'node:http'
 import { constants, createHash, publicEncrypt, randomUUID } from 'node:crypto'
-import { advertisedTools, defaultGateway, MCP_PROTOCOL_VERSION, RULITH_META } from './agent-harness.mjs'
+import { CONTRACT, advertisedTools, defaultGateway, MCP_PROTOCOL_VERSION, RULITH_META } from './agent-harness.mjs'
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex')
 const code8 = () => randomUUID().replace(/[^A-Z0-9]/gi, '').toUpperCase().slice(0, 8)
@@ -385,7 +385,7 @@ export function createDevicesGateway({
         const meta = { [RULITH_META]: { agentId: issued.agentId, recovery: { state: 'none' } } }
         const send = (result) => { response.writeHead(200, headers); response.end(JSON.stringify({ jsonrpc: '2.0', id: body.id ?? null, result })) }
         if (body.method === 'initialize') {
-          return void send({ protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} },
+          return void send({ protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {}, experimental: { [RULITH_META]: CONTRACT.serverCapabilities } },
             serverInfo: { name: 'rulith-devices-fixture', version: '0' }, _meta: meta })
         }
         if (body.method === 'notifications/initialized') { response.writeHead(202, headers); return void response.end() }

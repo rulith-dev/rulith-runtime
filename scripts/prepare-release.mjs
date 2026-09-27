@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -49,5 +50,6 @@ for (const file of pinned) {
   setup = setup.replace(pattern, `$1${hash(file)}$2`)
 }
 write(setupFile, setup)
+execFileSync(process.execPath, [resolve(root, 'scripts/generate-mcp-surface.mjs')], { stdio: 'inherit', windowsHide: true })
 
 console.log(`prepared Runtime ${version}; add its changelog entry, run npm run manifest, then npm run release:verify`)

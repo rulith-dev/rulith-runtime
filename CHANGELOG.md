@@ -4,6 +4,13 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Require the pinned `rulith/v2` server capabilities during initialization, before
+  adopting recovery metadata, listing tools or calling the model. Missing or malformed
+  capabilities stop with a matching-release instruction; no legacy observation mode
+  is inferred. MCP client information now uses the actual package version.
+  The published `0.8.17` package still uses the previous protocol; deploy this candidate
+  only with its matching Gateway release, after the release adoption checks.
+
 - Bind Worker reviews to the frozen invocation, request digest and policy
   fingerprint. Cache a review only after an accepted report and until its
   returned expiry, so rejected or expired reviews do not stall later polling.

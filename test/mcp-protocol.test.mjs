@@ -15,6 +15,7 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 
 import { MCP_PROTOCOL_VERSION, MODEL_TOOLS, advertisedTools, callTool, runAgent } from './support/agent-harness.mjs'
 
@@ -47,11 +48,29 @@ test('RT-PROTO-2 the negotiated version and the declared capability travel on ev
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.initializes[0].protocolVersion, MCP_PROTOCOL_VERSION)
   assert.deepEqual(run.initializes[0].capabilities?.experimental?.['rulith/v2'], { operationRecovery: 1 })
+  assert.equal(run.initializes[0].clientInfo.version,
+    JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version)
   for (const request of run.requests) {
     assert.equal(request.protocolHeader, MCP_PROTOCOL_VERSION,
       `a ${request.httpMethod} ${request.method} request carried protocol version ${request.protocolHeader}`)
   }
 })
+
+for (const serverCapabilities of [null, [], {}, { operationRecovery: 1 },
+  { operationRecovery: 1, boardObservation: 0 }, { operationRecovery: '1', boardObservation: 1 },
+  { operationRecovery: 1, boardObservation: 1, serialRecovery: 1 }]) {
+  test(`incompatible server capabilities stop before model, tools or recovery: ${JSON.stringify(serverCapabilities)}`, async () => {
+    const run = await runAgent({ serverCapabilities,
+      recovery: { state: 'waiting', callRef: 'original-call', tool: 'ApplyAction', retryAfterMs: 100 },
+      model: () => 'Must not run.', timeoutMs: 20_000 })
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.deepEqual(run.methods, ['initialize'])
+    assert.equal(run.modelRequests.length, 0)
+    assert.equal(run.pings, 0)
+    assert.match(run.stderr, /Install the matching Gateway release/)
+    assert.doesNotMatch(run.stderr, /token rejected|rotate the Agent token/)
+  })
+}
 
 // ── Connection replacement is not session expiry ─────────────────────────────
 

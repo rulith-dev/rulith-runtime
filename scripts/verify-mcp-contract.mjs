@@ -201,22 +201,22 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
   if (!Array.isArray(recoveryStates) || recoveryStates.length === 0 || !recoveryStates.every((state) => typeof state === 'string')) {
     throw new ContractError(`${path}: the metadata schema declares no RecoveryState enum.`)
   }
-  const capabilities = bundle.metadata.$defs?.ClientCapabilities
-  if (!isObject(capabilities) || !isObject(capabilities.properties)) {
-    throw new ContractError(`${path}: the metadata schema declares no ClientCapabilities shape.`)
-  }
-  const clientCapabilities = {}
-  for (const [name, shape] of Object.entries(capabilities.properties)) {
-    if (!isObject(shape) || shape.const === undefined) {
-      throw new ContractError(`${path}: ClientCapabilities.${name} has no constant value for a client to declare.`)
+  const constantCapabilities = label => {
+    const shape = bundle.metadata.$defs?.[label]
+    if (!isObject(shape) || shape.type !== 'object' || !isObject(shape.properties)
+      || shape.additionalProperties !== false || !Array.isArray(shape.required)
+      || JSON.stringify([...shape.required].sort()) !== JSON.stringify(Object.keys(shape.properties).sort())) {
+      throw new ContractError(`${path}: ${label} must require exactly its closed set of properties.`)
     }
-    clientCapabilities[name] = shape.const
+    return Object.fromEntries(Object.entries(shape.properties).map(([name, property]) => {
+      if (!isObject(property) || !Object.hasOwn(property, 'const')) {
+        throw new ContractError(`${path}: ${label}.${name} has no constant value to declare.`)
+      }
+      return [name, property.const]
+    }))
   }
-  for (const name of Array.isArray(capabilities.required) ? capabilities.required : []) {
-    if (!Object.hasOwn(clientCapabilities, name)) {
-      throw new ContractError(`${path}: ClientCapabilities requires ${name}, which it does not define.`)
-    }
-  }
+  const clientCapabilities = constantCapabilities('ClientCapabilities')
+  const serverCapabilities = constantCapabilities('ServerCapabilities')
 
   if (!isObject(bundle.queryProfiles)) {
     throw new ContractError(`${path} carries no queryProfiles; the audience set is part of the contract.`)
@@ -236,6 +236,7 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
     schemas,
     recoveryStates: [...recoveryStates],
     clientCapabilities,
+    serverCapabilities,
     metadata: bundle.metadata,
     queryProfiles: bundle.queryProfiles,
     queryContext: bundle.queryContext,

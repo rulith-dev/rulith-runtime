@@ -29,13 +29,16 @@ test('RT-OBS-1 a new user message can ask the model for one QueryBoard observati
   assert.equal(run.localEvents.some(event => event.type === 'recovery' && event.state === 'none'), false)
 })
 
-test('RT-OBS-2 without the server capability, waiting still blocks before the model', async () => {
+test('RT-OBS-2 a legacy server is refused at initialize without observing or replacing pending work', async () => {
   const run = await runAgent({
-    argv: [], chatLines: ['What can you see now?'], serverBoardObservation: false,
+    argv: ['Inspect pending work.'], serverBoardObservation: false,
     env: { RULITH_RECOVERY_WAIT_MS: '550' }, recovery: WAITING,
     model: () => callTool('QueryBoard', {}),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 1)
+  assert.deepEqual(run.methods, ['initialize'])
+  assert.match(run.stderr, /requires rulith\/v2 server capabilities/)
   assert.equal(run.modelRequests.length, 0)
   assert.deepEqual(run.verbs, [])
 })

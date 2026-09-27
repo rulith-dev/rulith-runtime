@@ -2,7 +2,8 @@
 /**
  * One call at a time, and the authority decides when the last one is over.
  *
- * While a call is unresolved this Agent runs no model turn and sends no business tool call.
+ * Mechanical waiting runs no model turn and sends no business tool call. New user input
+ * can request a restricted observation; board-observation.test.mjs covers that separate case.
  * It waits on the authority's recovery state through `ping`; `ReadOperation` is the separate
  * public read that can collect a ready original result without occupying the business slot.
  *
@@ -17,21 +18,27 @@ import test from 'node:test'
 import { HOP_FAILURE, callTool, runAgent } from './support/agent-harness.mjs'
 
 test('RT-REC-2 a waiting call is waited for, and the model is not asked in the meantime', async () => {
+  let modelCalls = 0
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '10000' },
-    chatLines: ['Carry on.'],
+    argv: [], chatLines: ['Run the action.'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '10000' },
     captureLocalEvents: true,
-    // Still executing for the first two reads, then finished with nothing to hand over.
-    recovery: ({ pings }) => (pings < 2
-      ? { state: 'waiting', callRef: 'call-9', tool: 'ApplyAction', retryAfterMs: 150 }
-      : { state: 'none' }),
-    model: () => 'Nothing further is needed.',
+    tool: name => name === 'ApplyAction' ? HOP_FAILURE : undefined,
+    recovery: ({ pings, toolCalls, readsDelivered }) => {
+      if (toolCalls === 0 || readsDelivered > 0) return { state: 'none' }
+      if (pings < 2) assert.equal(modelCalls, 1, 'waiting must not wake the model')
+      return { state: pings < 2 ? 'waiting' : 'result_ready', callRef: 'call-9', tool: 'ApplyAction', retryAfterMs: 150 }
+    },
+    readRecord: { state: 'result_ready', originalTool: 'ApplyAction', originalResult: {
+      content: [{ type: 'text', text: JSON.stringify({ accepted: false, errorCode: 'action_declined', teaching: 'No execution was admitted.' }) }],
+      isError: true,
+    } },
+    model: () => ++modelCalls === 1 ? callTool('ApplyAction', { action: 'demo.ship' }) : 'The action was declined.',
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.ok(run.pings >= 2, `the host stopped asking before the call settled: ${run.pings} ping(s)`)
-  assert.deepEqual(run.verbs, [], `a tool call went out while an earlier call was executing: ${run.verbs.join(', ')}`)
-  assert.equal(run.modelRequests.length, 1, 'the model was asked while the earlier call was still executing')
+  assert.deepEqual(run.verbs, ['ApplyAction', 'ReadOperation'])
+  assert.equal(run.modelRequests.length, 2, 'the model only continues after the original result is read')
   assert.match(run.stdout, /still executing at the authority/)
   assert.match(run.stdout, /the model is not being asked anything/)
   const waiting = run.localEvents.find((event) => event.type === 'recovery' && event.state === 'waiting')
@@ -40,17 +47,17 @@ test('RT-REC-2 a waiting call is waited for, and the model is not asked in the m
 
 test('RT-REC-3 a call needing operator reconciliation stops the turn instead of guessing', async () => {
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '5000' },
-    chatLines: ['Carry on.'],
+    argv: [], chatLines: ['Run the action.'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '5000' },
     captureLocalEvents: true,
-    recovery: { state: 'reconciliation_required', callRef: 'call-9', tool: 'ApplyAction',
+    tool: name => name === 'ApplyAction' ? HOP_FAILURE : undefined,
+    recovery: ({ toolCalls }) => toolCalls === 0 ? { state: 'none' } : { state: 'reconciliation_required', callRef: 'call-9', tool: 'ApplyAction',
       teaching: 'The Worker was lost while the Action was in flight.' },
-    model: () => 'The model should never be asked.',
+    model: () => callTool('ApplyAction', { action: 'demo.ship' }),
     timeoutMs: 20_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, [], `work continued past a call that needs reconciliation: ${run.verbs.join(', ')}`)
-  assert.equal(run.modelRequests.length, 0,
+  assert.deepEqual(run.verbs, ['ApplyAction'], `work continued past a call that needs reconciliation: ${run.verbs.join(', ')}`)
+  assert.equal(run.modelRequests.length, 1,
     'the model was asked to decide something while an unreconciled call was outstanding')
   assert.match(run.stdout, /needs operator reconciliation/)
   assert.match(run.stdout, /The Worker was lost while the Action was in flight/)

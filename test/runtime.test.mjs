@@ -303,7 +303,7 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
     const reply = (result) => res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result }))
     if (input.method === 'initialize') {
       return void reply({
-        protocolVersion: '2025-11-25', capabilities: { tools: {} },
+        protocolVersion: '2025-11-25', capabilities: { tools: {}, experimental: { 'rulith/v2': { operationRecovery: 1, boardObservation: 1 } } },
         serverInfo: { name: 'live-mcp', version: '1' },
         // A conforming endpoint always publishes the recovery record. `none` is the
         // authority saying there is nothing outstanding — which is why this run never has

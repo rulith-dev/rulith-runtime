@@ -415,7 +415,7 @@ export async function runAgent({
   dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
   protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, readRecord,
-  serverBoardObservation = false, replaceAfter, conflictBody, conflictSessionId,
+  serverBoardObservation = true, serverCapabilities, replaceAfter, conflictBody, conflictSessionId,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
   captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
@@ -661,6 +661,7 @@ export async function runAgent({
       initializes.push({
         meta: input.params?._meta?.[RULITH_META],
         capabilities: input.params?.capabilities,
+        clientInfo: input.params?.clientInfo,
         protocolVersion: input.params?.protocolVersion,
         presentedSession: request.headers['mcp-session-id'],
         issuedSession: session.id,
@@ -668,7 +669,7 @@ export async function runAgent({
       return send({
         protocolVersion,
         capabilities: { tools: {}, ...(serverBoardObservation ? { experimental: {
-          [RULITH_META]: { operationRecovery: 1, boardObservation: 1 },
+          [RULITH_META]: serverCapabilities === undefined ? CONTRACT.serverCapabilities : serverCapabilities,
         } } : {}) },
         serverInfo: { name: 'rulith-gateway-test', version: '0' },
         ...(omitAgentId && recoveryNow() === undefined ? {} : {

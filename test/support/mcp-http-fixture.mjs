@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Small malformed-response fixture. Successful interoperability uses the independent SDK server.
+import { CONTRACT, RULITH_META } from './agent-harness.mjs'
 export function mcpHttpHandler(answer) {
   return async (req, res) => {
     if (req.method === 'GET') { res.writeHead(405); res.end(); return }
@@ -10,7 +11,7 @@ export function mcpHttpHandler(answer) {
     res.setHeader('content-type', 'application/json')
     if (request.method === 'initialize') {
       res.end(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
-        protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' },
+        protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, experimental: { [RULITH_META]: CONTRACT.serverCapabilities } }, serverInfo: { name: 'fixture', version: '1' },
       } })); return
     }
     await answer(request, res)

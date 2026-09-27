@@ -40,6 +40,7 @@ test('RT-CONTRACT-1 the vendored bundle is what this Runtime speaks', () => {
   assert.equal(typeof bundle.metadataNamespace, 'string')
   assert.ok(bundle.recoveryStates.includes('none') && bundle.recoveryStates.includes('waiting'))
   assert.equal(bundle.clientCapabilities.operationRecovery, 1)
+  assert.deepEqual(bundle.serverCapabilities, { operationRecovery: 1, boardObservation: 1 })
   const observation = bundle.tools.find((tool) => tool.name === 'QueryBoard')
   assert.equal(observation.resultSchemaRef,
     'docs/specs/schemas/rulith-board-observation-v1.schema.json#/$defs/QueryBoardResult')
@@ -74,6 +75,9 @@ for (const [label, mutate, expected] of [
   ['no files', (b) => { b.files = {} }, /carries no files/],
   ['no surface', (b) => { delete b.surface }, /carries no surface projection/],
   ['no metadata schema', (b) => { delete b.metadata }, /carries no host metadata schema/],
+  ['an optional server recovery capability', (b) => { b.metadata.$defs.ServerCapabilities.required = ['boardObservation'] }, /ServerCapabilities must require exactly/],
+  ['an open server capability shape', (b) => { b.metadata.$defs.ServerCapabilities.additionalProperties = true }, /ServerCapabilities must require exactly/],
+  ['a variable recovery protocol', (b) => { delete b.metadata.$defs.ServerCapabilities.properties.operationRecovery.const }, /ServerCapabilities.operationRecovery has no constant/],
   ['no audience profiles', (b) => { delete b.queryProfiles }, /carries no queryProfiles/],
   ['no query context', (b) => { delete b.queryContext }, /carries no queryContext/],
 ]) {

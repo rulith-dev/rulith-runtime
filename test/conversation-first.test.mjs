@@ -32,6 +32,9 @@ const freePort = async () => {
   return port
 }
 
+const committed = view => ({ accepted: true, view,
+  observation: { consistency: 'committed', operationAtAdmission: { state: 'none' } } })
+
 // ── RT-TOOLS: what the model is offered, and what it may not reach ───────────
 //
 // Tool membership has one machine source across the three repositories:
@@ -403,8 +406,7 @@ test('RT-META-5 a root the authority reports as unavailable loses the status it 
       calls += 1
       if (calls < 2) return undefined
       return withMeta(
-        { accepted: true, revision: 'r7',
-          payload: { roots: [], unavailableRoots: ['ROOT_1'], cases: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] } },
+        committed({ roots: [], unavailableRoots: ['ROOT_1'], cases: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] }),
         { agentId: TEST_AGENT_ID, focusedRoots: [{ caseId: 'CASE_1', root: 'ROOT_1' }] },
       )
     },
@@ -434,7 +436,7 @@ test('RT-META-6 a bounded view that dropped rows says so; a complete one does no
       // `loss` object that a Core draft proposed and the published schema does not contain,
       // so against the real authority it saw no truncation at all.
       const core = board.tool(name, args, session, meta)
-      return withMeta({ ...core, payload: { ...core.payload, cases: { ...core.payload.cases, truncated: true }, total: 9, truncated: true } }, board.meta(session))
+      return withMeta(committed({ ...core.payload, cases: { ...core.payload.cases, truncated: true }, total: 9, truncated: true }), board.meta(session))
     },
     model: (round) => {
       if (round === 1) return callTool('OpenCase', {})
@@ -466,9 +468,8 @@ test('RT-META-6b a root a truncated answer did not reach keeps a labelled observ
       calls += 1
       if (calls < 2) return undefined
       return withMeta(
-        { accepted: true, revision: 'r7',
-          // Truncated, and mentioning no roots at all: CASE_1 is unreported, not absent.
-          payload: { roots: [], cases: { directory: [], total: 4, truncated: true }, gaps: [], nodes: [], total: 0, truncated: false } },
+        // Truncated, and mentioning no roots at all: CASE_1 is unreported, not absent.
+        committed({ roots: [], cases: { directory: [], total: 4, truncated: true }, gaps: [], nodes: [], total: 0, truncated: false }),
         { agentId: TEST_AGENT_ID, focusedRoots: [{ caseId: 'CASE_1', root: 'ROOT_1' }] },
       )
     },
@@ -1767,25 +1768,26 @@ test('inconsistent provider cache counts remain unknown, not a fabricated discou
 })
 
 test('long turns retain Artifact evidence and the latest Board View while shortening older views', async () => {
+  const admissions = ['waiting', 'result_ready', 'reconciliation_required'].flatMap(state =>
+    ['ApplyAction', 'ApplyBatch'].map(originalTool => ({ state, originalTool })))
+  let acceptedQueries = 0
   const ref = 'art_' + 'a'.repeat(32)
   const gateway = defaultGateway({
     cases: Array.from({ length: 90 }, (_, index) => ({ caseId: `ARCHIVED_${index}`, root: `ROOT_${index}`, status: 'closed' })),
     artifacts: { [ref]: { text: 'immutable document marker for authoring' } },
   })
   let queries = 0
-  const originalTool = gateway.tool.bind(gateway)
-  gateway.tool = (name, args, session) => {
-    const answer = originalTool(name, args, session)
-    if (name === 'QueryBoard') {
-      queries += 1
-      if (queries % 3 === 0) return { ...answer, accepted: false, errorCode: 'query_refused_for_fixture', teaching: 'The Board refused this query.' }
-      return { ...answer, observationReceipt: `UNIQUE_RECEIPT_${queries}` }
-    }
-    return answer
-  }
   const run = await runAgent({
     argv: [], chatLines: ['Read the attached material and inspect the Board.'],
     gateway, captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '12' },
+    tool: (name, args, board, session) => {
+      if (name !== 'QueryBoard') return undefined
+      queries += 1
+      if (queries % 3 === 0) return { accepted: false, errorCode: 'query_refused_for_fixture', teaching: 'The Board refused this query.' }
+      const result = committed(board.tool(name, args, session).payload)
+      result.observation.operationAtAdmission = admissions[acceptedQueries++]
+      return result
+    },
     model: (round) => round === 1 ? callTool('ReadArtifact', { ref })
       : round < 11 ? callTool('QueryBoard', {}) : 'The inspection is complete.',
   })
@@ -1801,10 +1803,11 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
     'the latest authoritative Board View was removed')
   assert.match(transcript, /query_refused_for_fixture/,
     'a refused tool result lost its reason when its older Board View was shortened')
-  for (const query of [1, 2, 4, 5, 7, 8]) assert.match(transcript, new RegExp(`UNIQUE_RECEIPT_${query}`),
-    'identical snapshots lost their distinct non-view metadata')
-  assert.equal((transcript.match(/ARCHIVED_89/g) ?? []).length, 4,
-    'all three refused snapshots and the latest accepted snapshot must remain complete')
+  const retainedAdmissions = last.messages.filter(message => message.role === 'tool')
+    .map(message => JSON.parse(message.content).observation?.operationAtAdmission).filter(Boolean)
+  assert.deepEqual(retainedAdmissions, admissions, 'identical snapshots lost their distinct non-view metadata')
+  assert.equal((transcript.match(/ARCHIVED_89/g) ?? []).length, 1,
+    'only the latest identical accepted snapshot is needed; refused reads carry no snapshot')
   assert.match(transcript, /identicalToToolCall/)
   assert.ok(run.localEvents.some((event) => event.type === 'model-usage'
     && event.compactedViews > 0 && event.compactedTranscriptBytes > 0))
@@ -1819,9 +1822,9 @@ test('context compression retains distinct Board observations and partial or ref
       if (name !== 'QueryBoard') return undefined
       queries += 1
       const marker = ['FIRST_SCOPE_ONLY', 'PARTIAL_SCOPE_ONLY', 'REFUSED_SCOPE_ONLY', 'LAST_SCOPE_ONLY'][queries - 1]
-      return { accepted: queries !== 3, ...(queries === 3 ? { errorCode: 'refused_but_retained', teaching: 'Use the earlier complete result.' } : {}),
-        payload: { cases: { directory: [{ caseId: marker, root: marker, status: 'closed' }, ...cases], total: cases.length + 1, truncated: queries === 2 },
-          roots: [], gaps: [], nodes: [], actions: [] } }
+      if (queries === 3) return { accepted: false, errorCode: 'refused_but_retained', teaching: `${marker}: Use the earlier complete result.` }
+      return committed({ cases: { directory: [{ caseId: marker, root: marker, status: 'closed' }, ...cases], total: cases.length + 1, truncated: queries === 2 },
+        roots: [], gaps: [], nodes: [], actions: [] })
     },
     model: round => round <= 4 ? callTool('QueryBoard', {}) : 'Compared all observations.',
   })

@@ -27,15 +27,14 @@ import { HOP_FAILURE, callTool, freePort, runAgent } from './support/agent-harne
 /** Still executing, forever: the authority holds the call and never settles it. */
 const stillWaiting = { state: 'waiting', callRef: 'call-1', tool: 'ApplyBatch', retryAfterMs: 120 }
 
-test('RT-ID-1 while one call is unresolved the Agent sends nothing further, turn after turn', async () => {
-  // The gate is Agent-wide and it does not reopen because a new user message arrived. Two
-  // messages, one unresolved write, and exactly one call on the wire.
+test('RT-ID-1 new user input never permits a second write while the original is unresolved', async () => {
+  // A new message may invite a restricted observation turn, but it never grants another write.
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '4', RULITH_RECOVERY_WAIT_MS: '700' },
     chatLines: ['Record a fact.', 'Try again please.'],
     tool: (name) => (name === 'ApplyBatch' ? HOP_FAILURE : undefined),
     recovery: ({ pings }) => (pings === 0 ? { state: 'none' } : stillWaiting),
-    model: (round) => (round === 1
+    model: (round) => (round <= 2
       ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       : 'I will wait.'),
     timeoutMs: 25_000,
@@ -43,9 +42,8 @@ test('RT-ID-1 while one call is unresolved the Agent sends nothing further, turn
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   const sent = run.requests.filter((request) => request.method === 'tools/call')
   assert.equal(sent.length, 1, `a second call went out while the first was unresolved: ${run.verbs.join(', ')}`)
-  assert.equal(run.modelRequests.length, 1,
-    'the model was asked again while a call of its own was unresolved')
-  // The second user message is answered honestly rather than by starting work.
+  assert.equal(run.modelRequests.length, 3, 'new input gets a restricted turn and its refusal feedback')
+  assert.match(JSON.stringify(run.modelRequests.at(-1).messages), /call_queue_suspended/)
   assert.match(run.stdout, /still executing at the authority/)
 })
 

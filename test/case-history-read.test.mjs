@@ -7,7 +7,8 @@ const history = { root: 'root-old', caseId: 'case-old', status: 'available', asO
   disposition: 'completed', certified: true,
   // Compact public facts fit the history budget; the pretty-printed trace does not.
   facts: Array.from({ length: 800 }, () => ({ a: { b: 1 } })), truncated: true }
-const result = { accepted: true, view: { caseHistory: history } }
+const result = { accepted: true, view: { caseHistory: history },
+  observation: { consistency: 'committed', operationAtAdmission: { state: 'none' } } }
 const expected = { observed: true, history: { root: 'root-old', caseId: 'case-old', status: 'available',
   disposition: 'completed', certified: true, factsOnPage: 800, morePages: true } }
 
