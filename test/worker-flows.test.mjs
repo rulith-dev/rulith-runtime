@@ -37,6 +37,9 @@ const reviewRow = (overrides = {}) => ({
   work: 'inv_review',
   tool: 'acme.ship@1',
   norm: 'clause-7',
+  invocation: 'inv_ship_order_1',
+  requestDigest: 'sha256:' + 'a'.repeat(64),
+  expectedPolicyFingerprint: 'sha256:' + 'b'.repeat(64),
   connectionId: CONNECTION,
   caseFile: { rendered: 'The action ships an order for a customer in the EU.' },
   ...overrides,
@@ -297,11 +300,39 @@ test('RT-WK-FLOW-3 a review seat reaches a verdict and reports it, and refuses t
     assert.ok(report, `${label}: no verdict was reported:\n${run.output}`)
     assert.equal(report.operation.workType, 'review')
     assert.equal(report.operation.norm, 'clause-7')
+    assert.equal(report.operation.invocation, 'inv_ship_order_1')
+    assert.equal(report.operation.requestDigest, reviewRow().requestDigest)
+    assert.equal(report.operation.expectedPolicyFingerprint, reviewRow().expectedPolicyFingerprint)
     assert.equal(report.operation.verdict, verdict, `${label}: the seat reported the wrong verdict`)
     assert.equal(report.operation.workerGeneration, 7, `${label}: the verdict stated no generation`)
     assert.equal(run.of('ClaimWork').length, 0, `${label}: review has no claim of its own`)
   }
 })
+
+test('a rejected or expired review is offered again instead of being cached as cleared', async () => {
+  for (const first of [
+    { accepted: false, errorCode: 'governance_changed' },
+    { accepted: true, payload: { expiresAt: 1 } },
+  ]) {
+    let reports = 0, polls = 0;
+    const run = await driveWorker({
+      reviewer: { verdict: 'allow', citedClause: 'clause-7', reason: 'checked' },
+      env: { RULITH_REVIEW_MIN_INTERVAL_MS: '0' },
+      reply: operation => {
+        if (operation.kind === 'Poll') {
+          polls++;
+          return { body: { accepted: true, payload: { work: [reviewRow()] } } };
+        }
+        if (operation.kind === 'ReportWork') return { body: ++reports === 1 ? first
+          : { accepted: true, payload: { expiresAt: Date.now() + 600000 } } };
+      },
+      done: () => polls >= 4,
+      timeoutMs: 12000,
+    });
+    assert.equal(run.timedOut, false, run.output);
+    assert.equal(run.of('ReportWork').length, 2, run.output);
+  }
+});
 
 test('RT-WK-FLOW-4 one unusable row does not swallow the rest of the batch', async () => {
   // The endpoint that has not been cut over sends a verification row still carrying Case

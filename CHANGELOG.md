@@ -4,6 +4,12 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Bind Worker reviews to the frozen invocation, request digest and policy
+  fingerprint. Cache a review only after an accepted report and until its
+  returned expiry, so rejected or expired reviews do not stall later polling.
+  This requires the matching Core/Gateway clearance contract; pending reviews
+  using the old wire format need explicit disposition before deployment.
+
 - Show historical Case reads and their observed closure status separately from current
   focus in the inspector, including recovered original reads and unavailable histories.
   A returned page is not labelled as a complete proof or a newly running Case.

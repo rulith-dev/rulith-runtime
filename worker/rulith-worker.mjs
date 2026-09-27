@@ -3343,7 +3343,7 @@ function shouldReview(seen, w, now = Date.now()) {
   const digest = createHash('sha256').update(String(w.caseFile?.rendered ?? '')).digest('hex').slice(0, 16)
   const prior = seen.get(key)
   if (prior !== undefined && typeof prior === 'object') {
-    if (prior.digest === digest) return false
+    if (prior.digest === digest && now < prior.expiresAt) return false
     if (now - prior.at < REVIEW_MIN_INTERVAL_MS) return false
   }
   // **只记时刻,判词落定之后才记指纹**(2026-08-22,RT-WK-DEDUP-3)。
@@ -3362,15 +3362,21 @@ function shouldReview(seen, w, now = Date.now()) {
 /** 判词落定之后才把指纹记上。**判据只有一条: 核心会不会据这份判词动作**——
  *  `allow`/`block`/`not_applicable` 都会,算判过;`uncertain` 不会,留给下一拍重投。
  *  (不点名条款的 `not_applicable` 在 `parseVerdict` 里就已折成 `uncertain`,到不了这里。) */
-function noteReviewed(seen, w, verdict, now = Date.now()) {
+function noteReviewed(seen, w, verdict, expiresAt, now = Date.now()) {
   if (verdict !== 'allow' && verdict !== 'block' && verdict !== 'not_applicable') return
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return
   const key = `${w.work ?? ''}|${w.tool}|${w.norm}`
   const digest = createHash('sha256').update(String(w.caseFile?.rendered ?? '')).digest('hex').slice(0, 16)
-  seen.set(key, { digest, at: now })
+  seen.set(key, { digest, at: now, expiresAt })
 }
 const REVIEWED = new Map()
 
 async function handleReview(w) {
+  if (typeof w.invocation !== 'string' || !w.invocation
+    || !/^sha256:[0-9a-f]{64}$/.test(w.requestDigest ?? '')
+    || !/^sha256:[0-9a-f]{64}$/.test(w.expectedPolicyFingerprint ?? '')) {
+    throw new Error('Review work must identify its frozen invocation, request and policy')
+  }
   // 没配审查员=这台不是清关工人,别人的活不抢(与"表里没有的动作不领"同律)
   if (!REVIEWER_URL || !REVIEWER_MODEL) {
     console.log(`· Skipping review ${w.norm}: RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are not configured`)
@@ -3401,7 +3407,6 @@ async function handleReview(w) {
   } finally {
     await stopRenewing()
   }
-  noteReviewed(REVIEWED, w, v.verdict) // 判成了才算判过(uncertain 留给下一拍重投)
   if (!leaseIsLive()) {
     console.error(`⚠ The lease was lost while ${w.tool} × ${w.norm} was being reviewed. The verdict is still offered`
       + ` under the generation that produced it (${reviewedUnder.workerGeneration}); the authority decides whether to`
@@ -3410,8 +3415,12 @@ async function handleReview(w) {
   }
   const rep = await work({
     kind: 'ReportWork', workType: 'review', tool: w.tool, norm: w.norm,
-    verdict: v.verdict, reason: v.reason, ...(v.citedClause ? { citedClause: v.citedClause } : {}),
+    invocation: w.invocation, requestDigest: w.requestDigest,
+    expectedPolicyFingerprint: w.expectedPolicyFingerprint,
+    verdict: v.verdict, reason: v.reason, citedClause: v.citedClause ?? '', feature: v.feature ?? '',
   }, reviewedUnder)
+  // 只有 Core 已记录且仍有效的判词才进入本机去重；发送过、被拒或已过期都不算。
+  if (rep.accepted === true) noteReviewed(REVIEWED, w, v.verdict, rep.payload?.expiresAt)
   const landed = rep.accepted === true ? 'accepted' : `rejected (${rep.errorCode ?? ''}: ${String(rep.teaching ?? '').slice(0, 80)})`
   // 三种归宿在日志里必须分得开: 「审过放行」「审过但这条款不管它」「仍拦」是三件事,
   // 写成两种的那一版让运维分不出"合规过关"与"根本没进合规射程"(与板上 via 同律)。
