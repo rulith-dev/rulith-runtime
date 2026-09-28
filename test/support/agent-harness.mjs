@@ -228,7 +228,9 @@ export function defaultGateway({
             if (row.status === 'closed' || row.status === 'archived') {
               return refuse(session, 'case_closed', `Case ${row.caseId} is ${row.status} and cannot be focused.`)
             }
-            if (row.status === 'paused') row.status = 'running'
+            if (row.status === 'paused') {
+              return refuse(session, 'case_paused', 'This Case is paused. The operator or policy that holds it must release its pause before the Agent can continue.')
+            }
             session.focus.add(row.caseId)
             return accept(session)
           }

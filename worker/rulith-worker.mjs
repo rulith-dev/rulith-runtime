@@ -1312,6 +1312,17 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
  * it is what the Gateway most recently confirmed, judged only by the Gateway.
  */
 let lease
+let leaseKeeper
+let leaseClosing = false
+
+function retireLeaseKeeper() {
+  const keeper = leaseKeeper
+  if (keeper === undefined) return undefined
+  keeper.stopped = true
+  clearTimeout(keeper.timer)
+  leaseKeeper = undefined
+  return keeper.inFlight
+}
 
 /** One second is the local floor on renewal, so a tiny window cannot become a busy loop. */
 const RENEW_FLOOR_MS = 1000
@@ -1376,30 +1387,48 @@ export function parseLease(value) {
  * backwards is an older fence answering late. Either way the safe reading is the same: this
  * process holds nothing until the Gateway says otherwise.
  */
+export function leaseSnapshotRegresses(current, next) {
+  if (current === undefined || current.workerGeneration !== next.workerGeneration) return false
+  const currentTime = Date.parse(current.serverTime), nextTime = Date.parse(next.serverTime)
+  return nextTime < currentTime || (nextTime === currentTime
+    && Date.parse(next.expiresAt) <= Date.parse(current.expiresAt))
+}
+
 function adoptLease(value, why) {
+  if (leaseClosing) return undefined
   const next = parseLease(value)
   if (next === undefined) {
     if (lease !== undefined) {
       console.error(`⚠ ${why}: the answer carried no usable active lease, so this Worker is holding none.`
         + ' It will not claim, execute or change what its Tools advertise until the Gateway confirms one.')
     }
+    retireLeaseKeeper()
     lease = undefined
     return undefined
   }
   if (next.workerId !== WORKER_ID) {
     console.error(`⚠ ${why}: the lease names instance ${next.workerId}, and this process is ${WORKER_ID}.`
       + ' A lease issued to another instance is not this one\'s to use.')
+    retireLeaseKeeper()
     lease = undefined
     return undefined
   }
   if (lease !== undefined && next.workerGeneration < lease.workerGeneration) {
     console.error(`⚠ ${why}: generation ${next.workerGeneration} is older than the ${lease.workerGeneration} this process holds.`
       + ' A fence only moves forward, so this answer is a late one from a generation that has been replaced.')
+    retireLeaseKeeper()
     lease = undefined
     return undefined
   }
+  if (leaseSnapshotRegresses(lease, next)) {
+    // A Poll can return after a concurrent RenewLease. An older or identical
+    // same-generation snapshot cannot reset the locally measured lease window.
+    return lease
+  }
   const replaced = lease !== undefined && next.workerGeneration > lease.workerGeneration
+  if (replaced) retireLeaseKeeper()
   lease = next
+  keepLeaseAlive()
   if (replaced) {
     wev('lease', { state: 'generation-advanced', workerGeneration: next.workerGeneration })
   }
@@ -1422,20 +1451,26 @@ const renewDueInMs = () => (lease === undefined ? undefined
  * the lease rather than keeping the old one alive locally, and an unreachable Gateway is
  * treated the same way, because a lease this process cannot confirm is one it does not have.
  */
-async function renewLease() {
-  if (lease === undefined) return undefined
+async function renewLease(keeper) {
+  if (keeper.stopped || leaseKeeper !== keeper || lease === undefined || leaseClosing) return undefined
   const held = lease
   let answer
   try {
-    answer = await work({ kind: 'RenewLease' })
+    answer = await work({ kind: 'RenewLease' }, held)
   } catch (e) {
+    if (keeper.stopped || leaseKeeper !== keeper || leaseClosing) return undefined
     if (e instanceof CredentialRejectedError) throw e
     console.error(`⚠ Renewing the lease failed (${String(e?.message ?? e).slice(0, 160)}).`
       + ' This Worker stops taking work: a lease it cannot confirm is a lease it does not hold.')
+    retireLeaseKeeper()
     lease = undefined
     wev('lease', { state: 'renew-unreachable' })
     return undefined
   }
+  // A response to a retired holder is history, never a fresh lease. In particular,
+  // Release must not be followed by a late Renew that starts another keeper.
+  if (keeper.stopped || leaseKeeper !== keeper || leaseClosing
+    || lease?.workerGeneration !== held.workerGeneration) return undefined
   const renewed = adoptLease(answer?.lease, 'RenewLease')
   if (renewed === undefined) {
     console.error(`⚠ The Gateway did not renew the lease for generation ${held.workerGeneration}`
@@ -1446,10 +1481,12 @@ async function renewLease() {
 }
 
 /**
- * Keep one long call's lease alive while it runs.
+ * Keep this Worker's current lease alive across short Polls and long work.
  *
- * Only the current lease is renewed, and only while this one piece of work is in flight; the
- * Worker never runs a second piece beside it. If a renewal fails the timer stops and the
+ * Only one keeper exists for the current generation, regardless of how many Polls or work
+ * calls use it. A caller's returned function waits for an in-flight renewal before judging
+ * its lease, but does not cancel the keeper on a short Poll response. If renewal fails it
+ * stops and the
  * lease is dropped — the hand cannot be un-run, so what stops is everything after it: no
  * further claim, and no pretence that the report will be accepted.
  *
@@ -1461,43 +1498,43 @@ async function renewLease() {
  * not been sent*. The credential refusal is the same fact the poll loop will meet on its next
  * hop, so it is recorded and the renewals stop.
  *
- * And stopping must be a rendezvous rather than a flag. `clearTimeout` cannot recall a tick
- * that is already awaiting the Gateway, so a caller that read `leaseIsLive()` immediately
- * after stopping could be reading it a moment before an in-flight renewal cleared the lease —
- * the answer would depend on which promise resolved first. `stop()` returns a promise that
- * settles once no renewal is in flight, so the reading after it is a stable one.
+ * Judging the lease must be a rendezvous rather than a flag. A caller that read
+ * `leaseIsLive()` before an in-flight renewal settled could still claim under a lease that
+ * renewal just lost. The returned function waits for that renewal; only retirement on
+ * lease loss, generation change or stop cancels the shared timer.
  */
 function keepLeaseAlive() {
-  let stopped = false
-  let timer
-  let inFlight
+  if (lease === undefined) return async () => {}
+  if (leaseKeeper?.generation === lease.workerGeneration && !leaseKeeper.stopped) {
+    const keeper = leaseKeeper
+    return async () => { await keeper.inFlight }
+  }
+  retireLeaseKeeper()
+  const keeper = { generation: lease.workerGeneration, stopped: false, timer: undefined, inFlight: undefined }
+  leaseKeeper = keeper
   const tick = async () => {
-    if (stopped || lease === undefined) return
-    inFlight = (async () => {
+    if (keeper.stopped || leaseKeeper !== keeper || lease?.workerGeneration !== keeper.generation) return
+    keeper.inFlight = (async () => {
       try {
-        await renewLease()
+        await renewLease(keeper)
       } catch (e) {
         // Only a rejected Connection credential reaches here; `renewLease` handles the rest.
         // It is not this timer's to act on beyond stopping: the poll loop meets the same 401
         // on its next hop and ends the process there, with the whole story in one place.
-        stopped = true
+        retireLeaseKeeper()
         lease = undefined
         console.error(`⚠ Renewals stopped: ${String(e?.message ?? e).slice(0, 200)}`)
         wev('lease', { state: 'renew-credential-rejected' })
       }
     })()
-    try { await inFlight } finally { inFlight = undefined }
-    if (stopped || lease === undefined) return
-    timer = setTimeout(tick, renewDueInMs())
-    timer.unref?.()
+    try { await keeper.inFlight } finally { keeper.inFlight = undefined }
+    if (keeper.stopped || leaseKeeper !== keeper || lease === undefined) return
+    keeper.timer = setTimeout(tick, renewDueInMs())
+    keeper.timer.unref?.()
   }
-  timer = setTimeout(tick, renewDueInMs() ?? RENEW_FLOOR_MS)
-  timer.unref?.()
-  return async () => {
-    stopped = true
-    clearTimeout(timer)
-    await inFlight
-  }
+  keeper.timer = setTimeout(tick, renewDueInMs() ?? RENEW_FLOOR_MS)
+  keeper.timer.unref?.()
+  return async () => { await keeper.inFlight }
 }
 
 /**
@@ -1508,7 +1545,12 @@ function keepLeaseAlive() {
  * kept as unknown and the Worker stops rather than reporting a clean handover it cannot
  * prove.
  */
-async function releaseLease() {
+let releasePromise
+function releaseLease() { return releasePromise ??= releaseLeaseOnce() }
+
+async function releaseLeaseOnce() {
+  leaseClosing = true
+  await retireLeaseKeeper()
   if (lease === undefined) return true
   let answer
   try {
@@ -4357,17 +4399,27 @@ let quietPolls = 0
 /** Said once when the lease goes, and once again when it comes back. */
 let leaseAnnounced = false
 if (IS_MAIN) {
-  let stoppingLocal = false
-  const stopLocal = async () => {
-    if (stoppingLocal) return
+  let stoppingLocal = false, emergencyStopping = false
+  const requestDrain = () => {
+    if (stoppingLocal || emergencyStopping) return
     stoppingLocal = true
     running = false
+    console.log('\nWorker stopping; finishing any claimed work and its original report before releasing the lease.')
+  }
+  const stopWithoutHost = async () => {
+    if (emergencyStopping) return
+    emergencyStopping = true
+    running = false
+    // With no owner left to observe a drain, stop immediately. A dispatched invocation
+    // remains unresolved at the authority; this path never claims that it did not run.
+    leaseClosing = true
+    await retireLeaseKeeper()
     await closeMcpClients()
     await releaseLease().catch(() => false)
     process.exit(0)
   }
   process.on('message', message => {
-    if (message?.protocol === 'rulith-local-control' && message.operation === 'stop') void stopLocal()
+    if (message?.protocol === 'rulith-local-control' && message.operation === 'stop') requestDrain()
     /**
      * A locally delivered read, asked for over the channel this process already has.
      *
@@ -4390,14 +4442,11 @@ if (IS_MAIN) {
   })
   // The launching host died. Ending here is what keeps a Worker from outliving everything
   // that knows about it — still holding a lease, still claiming work, while the machine
-  // reports the instance as stopped. It takes the ordinary managed-stop path, so the lease is
-  // released; anything already dispatched keeps its recorded, unresolved state.
-  process.on('disconnect', () => { void stopLocal() })
-  process.on('SIGTERM', () => { void stopLocal() })
-  process.on('SIGINT', () => {
-    running = false
-    console.log('\nWorker stopping; releasing the lease.')
-  })
+  // reports the instance as stopped. This emergency path can interrupt a claimed action;
+  // its original dispatch remains unresolved at the authority, never reported as failure.
+  process.on('disconnect', () => { void stopWithoutHost() })
+  process.on('SIGTERM', requestDrain)
+  process.on('SIGINT', requestDrain)
 
   try {
     await SOURCES_READY
@@ -4477,6 +4526,7 @@ if (IS_MAIN) {
       } finally {
         await stopPollRenewal()
       }
+      if (!running || leaseClosing) break
       if (beforePoll !== undefined && lease === undefined) {
         throw new Error('The lease was lost while Poll was waiting; its late answer cannot restore authority.')
       }
@@ -4588,6 +4638,7 @@ if (IS_MAIN) {
         // been refused, every five seconds, with the same answer each time. The line is not
         // taken back by asserting it.
         const had = lease !== undefined
+        retireLeaseKeeper()
         lease = undefined
         console.error(`${e.message}. This Worker now holds no lease and will poll for one`
           + `${had ? ' without restating the generation it was holding' : ''}; it claims nothing until the Gateway confirms one.`)
@@ -4607,4 +4658,5 @@ if (IS_MAIN) {
   await delivering
   await releaseLease().catch(() => false)
   await closeMcpClients()
+  if (stoppingLocal) process.exit(process.exitCode ?? 0)
 }

@@ -535,16 +535,28 @@ export async function driveWorker({
   if (ipc) child.on('message', (message) => messages.push(message))
   child.stdout.setEncoding('utf8').on('data', (chunk) => { output += chunk })
   child.stderr.setEncoding('utf8').on('data', (chunk) => { output += chunk })
+  let childExited = false
+  const childExit = new Promise((exited) => child.once('exit', () => { childExited = true; exited() }))
 
   const deadline = Date.now() + timeoutMs
   let timedOut = false
-  while (!done(seen, output, { messages, send: (message) => { try { child.send(message) } catch { /* the child has gone */ } } })) {
+  while (!done(seen, output, {
+    messages,
+    get exited() { return childExited },
+    ran: (label) => existsSync(effectLog)
+      ? readFileSync(effectLog, 'utf8').split('\n').filter((line) => line === label).length : 0,
+    send: (message) => { try { child.send(message) } catch { /* the child has gone */ } },
+    disconnect: () => { if (child.connected) child.disconnect() },
+  })) {
     if (Date.now() > deadline) { timedOut = true; break }
     await new Promise((tick) => setTimeout(tick, 25))
   }
-  child.kill('SIGKILL')
-  await new Promise((closed) => child.once('close', closed))
+  if (!childExited) child.kill('SIGKILL')
+  await childExit
+  child.stdout.destroy()
+  child.stderr.destroy()
   for (const response of held) response.destroy()
+  server.closeAllConnections()
   await new Promise((closed) => server.close(closed))
 
   const effects = existsSync(effectLog)

@@ -118,8 +118,10 @@ For the loopback service, `POST /task` accepts the same host-owned selection as
 The first request may omit `sessionKey`; the service returns a newly generated one,
 which the caller must echo on follow-ups. Two clients that omit it never share a
 conversation or selected Case. A caller may also send an existing `caseId` from
-`/runs` or Console to select a running Case or resume a paused one without opening a
-replacement Case.
+`/runs` or Console to select a running Case without opening a replacement Case.
+A paused Case requires every pause hold to be released by its authorized owner. Console
+can release operator holds; policy holds require their policy authority. Selecting a Case ID
+does not resume it. After it resumes, select that same Case ID.
 `RULITH_CASE_TYPE` and `RULITH_BUSINESS_KEY_JSON` set local defaults. Contracted
 Case Types require the exact business-key argument names shown by their Case
 Contract; exploration omits them. The Runtime sends values only. Cloud computes

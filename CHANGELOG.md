@@ -4,6 +4,14 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Keep one Worker lease renewal loop alive across both short empty polls and long work.
+  Ignore replies from a retired holder, preserve newer same-generation observations,
+  and finish any in-flight renewal before releasing the lease.
+- Let a normal managed stop finish already claimed work and its original report before
+  releasing the lease. Stop taking new work immediately; the workbench reports `stopping`
+  until the process exits. A lost host still takes the emergency exit path and leaves any
+  unfinished dispatched result unresolved, without replaying the action.
+
 - Require the pinned `rulith/v2` server capabilities during initialization, before
   adopting recovery metadata, listing tools or calling the model. Missing or malformed
   capabilities stop with a matching-release instruction; no legacy observation mode

@@ -1472,17 +1472,23 @@ test('--case brings a running Case into focus through the same public tool and s
   assert.ok(run.localEvents.some((event) => event.type === 'case-state' && event.caseId === 'CASE_RUNNING' && event.caseStatus === 'running'))
 })
 
-test('--case resumes a paused Case, which the model has no separate verb to do', async () => {
+test('--case preserves a paused Case and delivers the authority refusal to the model', async () => {
+  const gateway = defaultGateway({ cases: [{ caseId: 'CASE_PAUSED', root: 'ROOT_PAUSED', status: 'paused' }] })
   const run = await runAgent({
     argv: ['--case', 'CASE_PAUSED'],
+    captureLocalEvents: true,
     chatLines: ['Continue the paused work.'],
-    gateway: defaultGateway({ cases: [{ caseId: 'CASE_PAUSED', root: 'ROOT_PAUSED', status: 'paused' }] }),
-    model: () => 'The paused Case is back.',
+    gateway,
+    model: () => 'The Case is paused; its pause hold must be handled through governance.',
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.deepEqual(run.verbs, ['OpenCase'], `a retired lifecycle operation was issued: ${run.verbs.join(', ')}`)
-  assert.match(run.stdout, /Case "CASE_PAUSED" is in focus for this conversation \(acceptance root "ROOT_PAUSED", running\)/)
+  assert.equal(gateway.state.cases.get('CASE_PAUSED').status, 'paused')
+  assert.match(run.stdout, /could not be brought into focus/)
+  assert.match(JSON.stringify(run.modelRequests[0]), /operator or policy that holds it/)
+  assert.match(JSON.stringify(run.modelRequests[0]), /do not claim that Case is active/)
+  assert.equal(run.localEvents.some(event => event.type === 'case-state'), false)
 })
 
 test('--case on a Case the authority refuses says so and does not claim the Case is active', async () => {

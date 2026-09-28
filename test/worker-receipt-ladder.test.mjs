@@ -19,7 +19,7 @@ import test from 'node:test'
 
 import {
   DONE, HOLD, RESET,
-  actionRow, driveWorker, leasingGateway, toolDigest,
+  actionRow, activeLease, driveWorker, leasingGateway, toolDigest,
 } from './support/worker-harness.mjs'
 
 /** The declared-environment Tool, defined once so its pin and its installation agree. */
@@ -77,6 +77,11 @@ test('RT-WK-RECEIPT-2: repeated resets exhaust the ladder and say plainly that t
       if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
       if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
       if (operation.kind === 'ReportWork') return RESET
+      if (operation.kind === 'RenewLease') {
+        assert.equal(operation.workerGeneration, 7, 'renewal must keep the dispatched lease generation')
+        return { body: { accepted: true, lease: activeLease({ workerId: operation.workerId,
+          workerGeneration: operation.workerGeneration }) } }
+      }
       throw new Error(`unexpected operation ${String(operation.kind)}`)
     },
     done: (seen, output) => DONE.action.test(output),

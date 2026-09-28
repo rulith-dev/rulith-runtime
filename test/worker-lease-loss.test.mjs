@@ -26,6 +26,7 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { leaseSnapshotRegresses } from '../worker/rulith-worker.mjs'
 
 import {
   DONE, HOLD, RESET, actionRow, activeLease, driveWorker, evidenceRow, slowActionRow, verificationRow,
@@ -42,6 +43,20 @@ const SLOW_TOOL = { 'acme.slow@1': { adapter: 'run', sourceTypes: ['file'], entr
 const slowRow = () => slowActionRow()
 /** A lease whose heartbeat falls due while the slow adapter is still running. */
 const shortLease = (operation) => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 })
+
+test('late same-generation Poll snapshots cannot roll back a renewed lease', () => {
+  const current = { workerGeneration: 7, serverTime: '2026-09-28T10:00:01.000Z',
+    expiresAt: '2026-09-28T10:01:01.000Z' }
+  assert.equal(leaseSnapshotRegresses(current, { ...current,
+    serverTime: '2026-09-28T10:00:00.999Z', expiresAt: '2026-09-28T10:01:00.999Z' }), true)
+  assert.equal(leaseSnapshotRegresses(current, { ...current,
+    expiresAt: '2026-09-28T10:01:00.999Z' }), true)
+  assert.equal(leaseSnapshotRegresses(current, { ...current }), true)
+  assert.equal(leaseSnapshotRegresses(current, { ...current,
+    expiresAt: '2026-09-28T10:01:01.001Z' }), false)
+  assert.equal(leaseSnapshotRegresses(current, { ...current,
+    workerGeneration: 8, expiresAt: '2026-09-28T10:00:01.500Z' }), false)
+})
 
 test('an idle long Poll renews its existing generation before its lease expires', async () => {
   let polls = 0, renewals = 0
@@ -61,6 +76,255 @@ test('an idle long Poll renews its existing generation before its lease expires'
   assert.equal(run.timedOut, false, run.output)
   assert.equal(polls, 2, 'renewals must happen while the same Poll is waiting')
   assert.ok(run.of('RenewLease').every(row => row.operation.workerGeneration === 7))
+  assert.equal(run.of('ClaimWork').length, 0)
+})
+
+test('short empty Polls keep one lease renewed across the whole idle window', async () => {
+  let generation = 7, expires = 0, renewals = 0, refusals = 0
+  const begun = Date.now()
+  const lease = operation => {
+    const now = Date.now()
+    return { workerId: operation.workerId, workerGeneration: generation,
+      serverTime: new Date(now).toISOString(), expiresAt: new Date(expires).toISOString(),
+      heartbeatAfterMs: Math.min(1100, Math.max(1, Math.floor((expires - now) / 2))) }
+  }
+  const run = await driveWorker({
+    reply: operation => {
+      if (operation.kind === 'Poll') {
+        if (expires && Date.now() >= expires && operation.workerGeneration !== undefined) {
+          refusals++
+          return { status: 409, body: { accepted: false, errorCode: 'worker_lease_expired' } }
+        }
+        if (!expires || Date.now() >= expires) { generation++; expires = Date.now() + 2400 }
+        return { delayMs: 25, body: { accepted: true, lease: lease(operation), payload: { work: [] } } }
+      }
+      if (operation.kind === 'RenewLease') {
+        renewals++
+        expires = Date.now() + 2400
+        return { body: { accepted: true, lease: lease(operation) } }
+      }
+      return { body: { accepted: true } }
+    },
+    done: () => Date.now() - begun >= 5500 || refusals > 0,
+    timeoutMs: 8000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(refusals, 0, 'a rapid empty Poll loop let its still-needed lease expire')
+  assert.ok(renewals >= 2, `only ${renewals} renewal(s) across 5.5 seconds of ${run.of('Poll').length} short Polls: ${run.output.slice(-600)}`)
+  assert.deepEqual([...new Set(run.of('Poll').map(row => row.operation.workerGeneration).filter(Boolean))], [8])
+})
+
+test('repeated identical Poll snapshots cannot extend a locally expired lease', async () => {
+  let snapshot, firstLeaseAt = 0, offeredAt = 0
+  const run = await driveWorker({
+    reply: operation => {
+      if (operation.kind === 'Poll') {
+        if (!snapshot) {
+          snapshot = activeLease({ workerId: operation.workerId, windowMs: 2100, heartbeatAfterMs: 200 })
+          firstLeaseAt = Date.now()
+        }
+        const offer = Date.now() - firstLeaseAt >= 2700
+        if (offer && !offeredAt) offeredAt = Date.now()
+        return { delayMs: 25, body: { accepted: true, lease: snapshot,
+          payload: { work: offer ? [actionRow()] : [] } } }
+      }
+      if (operation.kind === 'RenewLease') return { body: { accepted: true, lease: snapshot } }
+      return { body: { accepted: true } }
+    },
+    done: seen => seen.some(row => row.operation.kind === 'ClaimWork')
+      || (offeredAt > 0 && Date.now() - offeredAt >= 350),
+    timeoutMs: 5000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.ok(run.of('RenewLease').length >= 1, 'the duplicate snapshot never exercised renewal')
+  assert.equal(run.of('ClaimWork').length, 0,
+    'an identical Poll or Renew response refreshed heldSince and authorized an expired claim')
+})
+
+test('a generation change retires the old keeper before renewing the new lease', async () => {
+  let polls = 0, switched = false
+  const run = await driveWorker({
+    reply: operation => {
+      if (operation.kind === 'Poll') {
+        if (++polls === 5) switched = true
+        return { delayMs: 25, body: { accepted: true, lease: activeLease({ workerId: operation.workerId,
+          workerGeneration: switched ? 8 : 7, windowMs: 4000, heartbeatAfterMs: 200 }), payload: { work: [] } } }
+      }
+      if (operation.kind === 'RenewLease') return { body: { accepted: true,
+        lease: activeLease({ workerId: operation.workerId, workerGeneration: operation.workerGeneration,
+          windowMs: 4000, heartbeatAfterMs: 200 }) } }
+      return { body: { accepted: true } }
+    },
+    done: seen => seen.some(row => row.operation.kind === 'RenewLease'
+      && row.operation.workerGeneration === 8),
+    timeoutMs: 5000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  const renewals = run.of('RenewLease')
+  assert.ok(renewals.length >= 1)
+  assert.ok(renewals.every(row => row.operation.workerGeneration === 8),
+    'the old generation renewed after the replacement was adopted')
+  assert.equal(run.of('ClaimWork').length, 0)
+})
+
+test('managed stop joins a pending renewal before releasing the lease', async () => {
+  let sentStop = false, releaseSeenAt = 0
+  const run = await driveWorker({
+    ipc: true,
+    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
+    reply: operation => operation.kind === 'Poll' ? { body: { accepted: true, payload: { work: [] } } }
+      : operation.kind === 'RenewLease' ? { delayMs: 400, body: { accepted: true,
+        lease: activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }) } }
+        : operation.kind === 'ReleaseLease' ? { delayMs: 1800, body: { accepted: true } }
+          : { body: { accepted: true } },
+    done: (seen, _output, control) => {
+      if (!sentStop && seen.some(row => row.operation.kind === 'RenewLease')) {
+        sentStop = true
+        control.send({ protocol: 'rulith-local-control', operation: 'stop' })
+      }
+      if (!releaseSeenAt && seen.some(row => row.operation.kind === 'ReleaseLease')) releaseSeenAt = Date.now()
+      return releaseSeenAt > 0 && Date.now() - releaseSeenAt >= 1300
+    },
+    timeoutMs: 6000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  const kinds = run.seen.map(row => row.operation.kind)
+  assert.ok(kinds.indexOf('RenewLease') < kinds.indexOf('ReleaseLease'))
+  assert.equal(run.of('RenewLease').length, 1, 'a late Renew response revived a keeper during managed shutdown')
+})
+
+test('a Poll already in flight cannot adopt a lease after managed stop begins', async () => {
+  let polls = 0, sentStop = false, releaseSeenAt = 0
+  const run = await driveWorker({
+    ipc: true,
+    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1
+        ? { body: { accepted: true, payload: { work: [] } } }
+        : { delayMs: 1200, body: { accepted: true, payload: { work: [] } } }
+      if (operation.kind === 'ReleaseLease') return { delayMs: 2500, body: { accepted: true } }
+      if (operation.kind === 'RenewLease') return { body: { accepted: true,
+        lease: activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }) } }
+      return { body: { accepted: true } }
+    },
+    done: (seen, _output, control) => {
+      if (!sentStop && polls >= 2) {
+        sentStop = true
+        control.send({ protocol: 'rulith-local-control', operation: 'stop' })
+      }
+      if (!releaseSeenAt && seen.some(row => row.operation.kind === 'ReleaseLease')) releaseSeenAt = Date.now()
+      return releaseSeenAt > 0 && Date.now() - releaseSeenAt >= 2300
+    },
+    timeoutMs: 6000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  const release = run.seen.findIndex(row => row.operation.kind === 'ReleaseLease')
+  assert.equal(run.seen.slice(release + 1).filter(row => row.operation.kind === 'RenewLease').length, 0,
+    'a late Poll answer restarted renewal after stop requested ReleaseLease')
+  assert.equal(run.of('ClaimWork').length, 0)
+})
+
+test('managed stop drains one claimed external action and its original receipt before release', async () => {
+  let polls = 0, claimedAt = 0, effectAt = 0, stoppedAt = 0, releasedAt = 0
+  const run = await driveWorker({
+    ipc: true,
+    lease: shortLease,
+    extraAdapters: SLOW_ADAPTER,
+    extraTools: SLOW_TOOL,
+    env: { P2_SLOW_MS: '2400' },
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1
+        ? { body: { accepted: true, payload: { work: [slowRow(), actionRow()] } } }
+        : HOLD
+      if (operation.kind === 'RenewLease') return { body: { accepted: true, lease: shortLease(operation) } }
+      if (operation.kind === 'ReleaseLease') return { delayMs: 1000, body: { accepted: true } }
+      return { body: { accepted: true, revision: 'b12' } }
+    },
+    done: (seen, _output, control) => {
+      if (!claimedAt && seen.some(row => row.operation.kind === 'ClaimWork')) claimedAt = Date.now()
+      if (claimedAt && !effectAt && control.ran('slow') === 1) effectAt = Date.now()
+      if (effectAt && !stoppedAt && Date.now() - effectAt >= 350) {
+        stoppedAt = Date.now()
+        control.send({ protocol: 'rulith-local-control', operation: 'stop' })
+      }
+      if (!releasedAt && seen.some(row => row.operation.kind === 'ReleaseLease')) releasedAt = Date.now()
+      return releasedAt > 0 && control.exited
+    },
+    timeoutMs: 8000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.ran('slow'), 1, 'the already claimed action did not execute exactly once')
+  assert.equal(run.ran('ship'), 0, 'managed stop claimed a second action')
+  assert.ok(releasedAt - stoppedAt >= 1500, 'managed stop exited before the in-flight action drained')
+  const kinds = run.seen.map(row => row.operation.kind)
+  assert.ok(kinds.indexOf('ClaimWork') < kinds.indexOf('ReportWork')
+    && kinds.indexOf('ReportWork') < kinds.indexOf('ReleaseLease'),
+  'the original action receipt was skipped or sent after releasing the lease')
+  assert.equal(run.of('ReportWork').length, 1)
+  assert.equal(run.of('ReportWork')[0].operation.workerGeneration,
+    run.of('ClaimWork')[0].operation.workerGeneration)
+})
+
+test('Host disconnect escalates managed drain and leaves the dispatched action unresolved', async () => {
+  let claimedAt = 0, effectAt = 0, stoppedAt = 0, disconnectedAt = 0, exitedAt = 0
+  const run = await driveWorker({
+    ipc: true,
+    lease: shortLease,
+    extraAdapters: SLOW_ADAPTER,
+    extraTools: SLOW_TOOL,
+    env: { P2_SLOW_MS: '3000' },
+    reply: operation => {
+      if (operation.kind === 'Poll') return { body: { accepted: true,
+        payload: { work: [slowRow(), actionRow()] } } }
+      if (operation.kind === 'RenewLease') return { body: { accepted: true, lease: shortLease(operation) } }
+      return { body: { accepted: true, revision: 'b12' } }
+    },
+    done: (seen, _output, control) => {
+      if (!claimedAt && seen.some(row => row.operation.kind === 'ClaimWork')) claimedAt = Date.now()
+      if (claimedAt && !effectAt && control.ran('slow') === 1) effectAt = Date.now()
+      if (effectAt && !stoppedAt && Date.now() - effectAt >= 350) {
+        stoppedAt = Date.now()
+        control.send({ protocol: 'rulith-local-control', operation: 'stop' })
+      }
+      if (stoppedAt && !disconnectedAt && Date.now() - stoppedAt >= 350) {
+        disconnectedAt = Date.now()
+        control.disconnect()
+      }
+      if (control.exited && !exitedAt) exitedAt = Date.now()
+      return exitedAt > 0
+    },
+    timeoutMs: 6000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.ran('slow'), 1, 'the original external effect did not start')
+  assert.equal(run.ran('ship'), 0, 'a second action was claimed after stop')
+  assert.ok(exitedAt - claimedAt < 2500, 'Host disconnect did not interrupt the pending drain')
+  assert.equal(run.of('ClaimWork').length, 1)
+  assert.equal(run.of('ReportWork').length, 0,
+    'an interrupted action was falsely reported as completed or failed')
+})
+
+test('a refused renewal retires the keeper and the next Poll acquires without an old generation', async () => {
+  let refused = false
+  const run = await driveWorker({
+    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
+    reply: operation => {
+      if (operation.kind === 'Poll') return { delayMs: 25, body: { accepted: true, payload: { work: [] } } }
+      if (operation.kind === 'RenewLease') {
+        refused = true
+        return { body: { accepted: false, errorCode: 'worker_lease_lost' } }
+      }
+      return { body: { accepted: true } }
+    },
+    done: seen => {
+      const renewal = seen.findIndex(row => row.operation.kind === 'RenewLease')
+      return refused && renewal >= 0 && seen.slice(renewal + 1).some(row => row.operation.kind === 'Poll'
+        && row.operation.workerGeneration === undefined)
+    },
+    timeoutMs: 8000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.of('RenewLease').length, 1, 'the refused generation kept renewing')
   assert.equal(run.of('ClaimWork').length, 0)
 })
 
