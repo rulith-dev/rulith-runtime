@@ -2,6 +2,34 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.9.1 - 2026-09-30
+
+- Publish the `rulith/v2` client line as 0.9.1. Release 0.9.0 was tagged in this repository
+  (`v0.9.0`) but never published to npm, so 0.9.1 is the first `rulith/v2` release on the
+  registry and there is no `rulith@0.9.0` to install. It carries every change listed under
+  0.9.0 and the fixes below. The client protocol is unchanged: the same MCP date and
+  `rulith/v2` capabilities. A Gateway that recommends this line pins 0.9.1, so its Console
+  shows `npm install --global rulith@0.9.1`. The publication steps `CONTRIBUTING.md` gives for
+  a protocol change apply to 0.9.1: publish under `next`, and move `latest` only with the
+  Gateway cutover.
+- Make the setup wizard's Verified Calculation sample match the installed 1.0.2 Release.
+  **Prepare the calculation sample** copied a Worker Tool Manifest that stated no contracts
+  and patched in each Tool's `kind` alone, so the Worker advertised `params: {}` and
+  `returns: []` for all three Tools, and the Gateway's exact contract check found none of them
+  compatible. The packaged `examples/verified-calculation/worker-tools.json` now restates the
+  1.0.2 contracts in full: kinds, parameter tables and result mappings, with an empty
+  `returns` for `write_output@1`. It is byte-identical to the manifest the Gateway serves to
+  the Console Quickstart, so the wizard, `setup.mjs` and the Quickstart produce the same Tool
+  pins. The wizard writes it unchanged, and refuses before writing anything if any of the
+  three Tools does not state `kind`, `params` and `returns`. Adapter code, the sample input
+  and the Source scope are unchanged. A sample prepared by an earlier wizard or `setup.mjs`
+  keeps its old manifest: prepare it again into a new, empty directory, point the Worker and
+  the Source at it as before, then lock the three Tools in Console.
+- Record the optional `pg` driver (8.23.0) in `package-lock.json` again. The lockfile had kept
+  its dependencies but lost the driver itself, so `npm ci` in a checkout installed no
+  database driver. Installs from npm were unaffected: the published package carries no
+  lockfile.
+
 ## 0.9.0 - 2026-09-29
 
 - Version this release 0.9.0: its `rulith/v2` Host contract cannot talk to Gateways that

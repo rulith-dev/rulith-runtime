@@ -22,6 +22,33 @@ export function setupOrigin(raw) {
   return url.origin
 }
 
+/** The three Tools of the Verified Calculation sample. Their contracts belong to the installed Release. */
+const SAMPLE_TOOLS = ['read_input', 'write_output', 'verify_output'].map(name => 'rulith.verified_calculation.' + name + '@1')
+
+/**
+ * 计算示例的 Worker Tool 清单：只有三个 Tool 都写出了完整合同，才原样交回打包的字节。
+ *
+ * Tool 合同的权威是已安装的 Release：kind、params、returns 与 Source 类型；清单只是它的复述，Gateway 逐项精确比较。
+ * 清单省略 params 或 returns 时，Worker 按缺省广告 {} 与 []，三个 Tool 都被判不兼容；0.9.0 及更早的向导只补写
+ * kind，正是这个缺陷。这里只核对每个 Tool 都写出了 kind、params、returns 三项，不补写、不按 Tool 名推断，缺哪一项
+ * 就明确拒绝；与 1.0.2 合同逐项相等由 Gateway 在 Poll 时判定，并由 test/local-setup-sample.test.mjs 钉住。
+ * 调用方必须在写任何文件之前调用它，拒绝时目标目录保持原样。
+ */
+export function sampleToolManifest(bytes) {
+  let tools
+  try { tools = JSON.parse(bytes.toString('utf8'))?.tools } catch { tools = undefined }
+  const incomplete = SAMPLE_TOOLS.filter(id => {
+    const tool = tools?.[id]
+    return typeof tool?.kind !== 'string' || !tool.params || typeof tool.params !== 'object' || Array.isArray(tool.params)
+      || !Array.isArray(tool.returns)
+  })
+  if (incomplete.length) {
+    throw new Error('The packaged Verified Calculation Tool manifest does not state kind, params and returns for '
+      + incomplete.join(', ') + ', so its Worker would not advertise the installed contracts. Reinstall rulith; nothing was written.')
+  }
+  return bytes
+}
+
 /** 本机保存模型配置和领取私钥；Cloud 只收到配对公钥、资源定位及无凭据工具定义。 */
 export function createSetupService({ configFile, getConfig, saveConfig, effectiveEnv, mcpServices, toolManagement, stopped, agentStopped = stopped, workerStopped = stopped, agentCredentialConfigured = () => !!getConfig().agent?.env?.RULITH_TOKEN, approvePairing, onModelConfigured, onConnectionKeyConfigured, authorizeConnectionKey }) {
   const stateFile = configFile + '.setup.json'
@@ -265,14 +292,13 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       const target = resolve(body.directory)
       if (existsSync(target) && readdirSync(target).length) throw new Error('Choose an empty directory; existing files will not be overwritten.')
       const source = fileURLToPath(new URL('../examples/verified-calculation/', import.meta.url))
+      // 打包清单已逐项复述已安装 1.0.2 Release 的合同，与 Gateway 提供给 Console 快速上手页的清单逐字节相同，
+      // 所以向导、setup.mjs 与快速上手页得到同一组 Tool pin。清单原样写出；先核对，再写任何文件。
+      const manifest = sampleToolManifest(readFileSync(join(source, 'worker-tools.json')))
       mkdirSync(join(target, 'adapters/verified-calculation'), { recursive: true })
       for (const file of ['read-input.mjs','write-output.mjs','verify-output.mjs']) copyFileSync(join(source,file),join(target,'adapters/verified-calculation',file),fsConstants.COPYFILE_EXCL)
       copyFileSync(join(source,'data/input.json'),join(target,'input.json'),fsConstants.COPYFILE_EXCL)
-      // 旧发布包的清单未标出读写类型；向导显式对齐现役计算能力的三个固定 Action。
-      // 不改历史下载锚，也不从工具名称推断任意用户工具的类型。
-      const manifest = read(join(source,'worker-tools.json'))
-      for (const [id, kind] of [['read_input','read'],['write_output','write'],['verify_output','read']]) manifest.tools['rulith.verified_calculation.' + id + '@1'].kind = kind
-      writeFileSync(join(target,'worker-tools.json'),JSON.stringify(manifest,null,2)+'\n',{flag:'wx',mode:0o600})
+      writeFileSync(join(target,'worker-tools.json'),manifest,{flag:'wx',mode:0o600})
       persistConfiguration(next => { next.worker = { ...next.worker, env: { ...next.worker?.env, RULITH_WORKER_ROOT: target, RULITH_TOOLS_FILE: join(target,'worker-tools.json') } } })
       atomic(stateFile, { ...state(), resources: [{ name: 'verified-calculation-local', type: 'file', access: target }] })
       return { directory: target }

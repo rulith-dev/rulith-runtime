@@ -39,9 +39,9 @@ test that fails against the previous behavior.
 
 ## Releases that change the client protocol
 
-When a release cannot talk to the Gateway that production runs (for example 0.9.0, the first
-`rulith/v2` Host), `latest` must keep pointing at the release production accepts until the
-Gateway itself is cut over.
+When a release cannot talk to the Gateway that production runs (for example 0.9.1, the first
+published `rulith/v2` Host), `latest` must keep pointing at the release production accepts
+until the Gateway itself is cut over.
 
 The Gateway checks the client protocol (the MCP date and the `rulith/v2` capabilities), not the
 exact release. It pins the one Runtime release it recommends in

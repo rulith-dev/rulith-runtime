@@ -3,16 +3,61 @@
   "tools": {
     "rulith.verified_calculation.read_input@1": {
       "adapter": "run",
+      "kind": "read",
+      "params": {},
+      "returns": [
+        {
+          "predicate": "rulith.verified_calculation.calculation_input",
+          "args": {
+            "node": "$node",
+            "job_id": "$job_id",
+            "unit_price_cents": "$unit_price_cents",
+            "quantity": "$quantity",
+            "shipping_cents": "$shipping_cents"
+          }
+        }
+      ],
       "sourceTypes": ["file"],
       "entry": "adapters/verified-calculation/read-input.mjs"
     },
     "rulith.verified_calculation.write_output@1": {
       "adapter": "run",
+      "kind": "write",
+      "params": {
+        "node": "string",
+        "job_id": "string",
+        "unit_price_cents": "number",
+        "quantity": "number",
+        "shipping_cents": "number",
+        "subtotal_cents": "number",
+        "total_cents": "number"
+      },
+      "returns": [],
       "sourceTypes": ["file"],
       "entry": "adapters/verified-calculation/write-output.mjs"
     },
     "rulith.verified_calculation.verify_output@1": {
       "adapter": "run",
+      "kind": "read",
+      "params": {
+        "node": "string",
+        "job_id": "string",
+        "subtotal_cents": "number",
+        "total_cents": "number",
+        "status": "string"
+      },
+      "returns": [
+        {
+          "predicate": "rulith.verified_calculation.output_record",
+          "args": {
+            "node": "$node",
+            "job_id": "$job_id",
+            "subtotal_cents": "$subtotal_cents",
+            "total_cents": "$total_cents",
+            "status": "$status"
+          }
+        }
+      ],
       "sourceTypes": ["file"],
       "entry": "adapters/verified-calculation/verify-output.mjs",
       "handles": {
