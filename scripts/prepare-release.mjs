@@ -50,6 +50,9 @@ for (const file of pinned) {
   setup = setup.replace(pattern, `$1${hash(file)}$2`)
 }
 write(setupFile, setup)
-execFileSync(process.execPath, [resolve(root, 'scripts/generate-mcp-surface.mjs')], { stdio: 'inherit', windowsHide: true })
+// Both generated projections carry the Runtime version, so both are regenerated with it.
+for (const generator of ['scripts/generate-mcp-surface.mjs', 'scripts/generate-worker-protocol.mjs']) {
+  execFileSync(process.execPath, [resolve(root, generator)], { stdio: 'inherit', windowsHide: true })
+}
 
 console.log(`prepared Runtime ${version}; add its changelog entry, run npm run manifest, then npm run release:verify`)

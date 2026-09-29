@@ -78,7 +78,7 @@ const MCP_URL = `${URL_BASE}/mcp`
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
 const RULITH_CONTRACT_SOURCE_COMMIT = '5f57245bd339305d3112c336bbf67c769d3c92e7'
-const RULITH_RUNTIME_VERSION = "0.8.17"
+const RULITH_RUNTIME_VERSION = "0.9.0"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v2'
@@ -508,6 +508,126 @@ class McpSessionExpiredError extends Error {}
 /** The endpoint negotiated a protocol version this client does not speak. */
 class McpProtocolVersionError extends Error {}
 
+/** The Gateway's reasons for refusing a client release at `initialize`. */
+const VERSION_REFUSAL_REASONS = new Set(['incompatible_client', 'unsupported_protocol'])
+/**
+ * The one npm package this Runtime will ever tell a person to install: its own. The
+ * package test pins `package.json` to this name.
+ */
+const RUNTIME_PACKAGE = 'rulith'
+
+/**
+ * The release of this Runtime an authority names in `error.data.requiredClient`, or undefined.
+ *
+ * Only this Runtime's own package and one exact `x.y.z` release are accepted, and the install
+ * command is composed here from them. A person copies what this Runtime shows into a
+ * terminal, so the wire may choose a version of this package and nothing else: not a
+ * different package, not a range or dist-tag, not the command text itself.
+ */
+function requiredClientOf(data) {
+  const value = data?.requiredClient
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const version = value.version
+  if (value.package !== RUNTIME_PACKAGE || typeof version !== 'string'
+    || !/^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})$/.test(version)) return undefined
+  return { version, install: `npm install --global ${RUNTIME_PACKAGE}@${version}` }
+}
+
+/**
+ * A peer's text as one plain line: control, format (bidi and zero-width) and line or
+ * paragraph separators flattened to spaces, bounded. Text from the wire can say what it
+ * likes; it cannot restyle the terminal, reorder what is shown, or start a line of its own.
+ */
+function plainPeerText(value, limit = 600) {
+  const flat = (typeof value === 'string' ? value : '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').replace(/\s+/g, ' ').trim()
+  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat
+}
+
+/**
+ * What a version refusal has and has not done, said truthfully for when it happens. At startup
+ * nothing was called at all. Later, earlier turns may already have asked the model, so the
+ * promise is about what comes next: nothing further, and no earlier call again.
+ */
+const nothingCalled = () => (connection.established
+  ? 'The model is not asked anything further and no earlier call is re-sent.'
+  : 'No model or business tool was called.')
+
+/** Whether release `candidate` (x.y.z) is newer than `current` (x.y.z). */
+function newerRelease(candidate, current) {
+  const [a, b] = [candidate, current].map((value) => value.split('.').map(Number))
+  const differs = [0, 1, 2].find((index) => a[index] !== b[index])
+  return differs !== undefined && a[differs] > b[differs]
+}
+
+/**
+ * Rulith Local keeps the first 400 characters of every line a Runtime child prints
+ * (`local/rulith-local.mjs`), in its view and on its terminal. Each line of a version or
+ * credential refusal stays within that, and an install command always stands on a line of its
+ * own, so the command is never what Local cuts off.
+ */
+const LOCAL_LINE_LIMIT = 400
+
+/**
+ * A labelled line quoting a peer's text as data, bounded so the whole line fits one Local line.
+ * The room left for the text allows for the quotes, the ellipsis and a few JSON escapes.
+ */
+const quotedPeerLine = (label, value) =>
+  `${label}${JSON.stringify(plainPeerText(value, LOCAL_LINE_LIMIT - label.length - 10))}`
+
+/**
+ * The words for an `initialize` the Gateway refused as a version mismatch.
+ *
+ * The remedy comes first, within the first two lines, because a caller that shortens this
+ * message keeps its beginning: the reader must learn first that this is not a credential
+ * problem and which release to install. A Gateway can require an older release than this one
+ * (a service rolled back, or a newer release installed ahead of its cutover); installing it is
+ * then a downgrade, and the message says so rather than calling it an upgrade.
+ */
+function versionRefusalMessage(reason, error) {
+  const required = requiredClientOf(error?.data)
+  const remedy = required === undefined
+    ? '   The Gateway did not name the Runtime release it requires. Use the install command shown in the'
+      + ' Rulith Console for this service, or ask the operator which Rulith release the Gateway runs.'
+    : required.version === RULITH_RUNTIME_VERSION
+      ? `   The Gateway names ${RUNTIME_PACKAGE}@${required.version}, which is this Runtime's own release, yet refused it.`
+        + ' Ask the operator which Rulith release the Gateway runs.'
+      : newerRelease(RULITH_RUNTIME_VERSION, required.version)
+        ? `   This Gateway requires Rulith Runtime ${required.version}, older than this one: installing it is a downgrade.`
+          + ' To use this service, install it and start the Runtime again:'
+          + `\n     ${required.install}`
+        : '   Install the Runtime release this Gateway requires, then start the Runtime again:'
+          + `\n     ${required.install}`
+  return `Version mismatch, not a credential problem: this Gateway does not accept Rulith Runtime ${RULITH_RUNTIME_VERSION}.`
+    + `\n${remedy}`
+    + `\n   ${nothingCalled()} The Rulith Gateway at ${URL_BASE} refused this Runtime at initialize; this Runtime speaks MCP`
+    + ` ${MCP_PROTOCOL_VERSION} with ${RULITH_META} ${JSON.stringify(HOST_CAPABILITIES)}.`
+    + '\n   Do not replace the Agent token or retry an unfinished action: neither changes the version.'
+    + `\n${quotedPeerLine(`   Gateway message (${reason}): `, error?.message)}`
+}
+
+/**
+ * The words for a rejected Agent token.
+ *
+ * The Gateway's teaching is its own next step, so it is shown as its quoted message rather than
+ * as this Runtime's advice. The causes differ in their remedy: a revoked token needs pairing
+ * again, a disabled Agent only needs enabling (its token then works again), and an account
+ * that is not provisioned is fixed by neither. So the lead only states what happened. An
+ * install line appears only when composed here from a validated `requiredClient` naming a
+ * newer release of this Runtime. A Gateway checks the protocol, not the exact release, so an
+ * older pin is not a reason to downgrade.
+ */
+function credentialRejection(body) {
+  if (plainPeerText(body?.teaching) === '') {
+    return 'Agent MCP token rejected (401): rotate the Agent token in Console and update this client configuration.'
+  }
+  const required = requiredClientOf(body?.error?.data)
+  return 'Agent MCP token rejected (401): the Rulith service did not accept this Agent token.'
+    + (required === undefined || !newerRelease(required.version, RULITH_RUNTIME_VERSION) ? ''
+      : `\n   This service's Console installs Rulith Runtime ${required.version}, newer than this one. Install it first:`
+        + `\n     ${required.install}`)
+    + `\n${quotedPeerLine('   Gateway message: ', body.teaching)}`
+}
+
 /**
  * Read a whole non-streaming body, bounded.
  *
@@ -698,8 +818,10 @@ async function connectionReplacement(response, method, rpcId, presentedSession) 
   try { parsed = JSON.parse(await readWholeBody(response)) } catch { parsed = undefined }
   const error = parsed?.error
   const reason = String(error?.data?.reason ?? '')
+  // Every message below is the peer's text, printed to a person: flattened and bounded like
+  // any other, so it cannot restyle the terminal or start a line of its own.
   if (error?.code === -32000 && reason === 'connection_replaced') {
-    return new McpConnectionReplacedError(String(error.message ?? '').trim()
+    return new McpConnectionReplacedError(plainPeerText(error.message)
       || 'This Agent connection was replaced by a newer authenticated client.')
   }
   // Only this Gateway reason is currently proved to originate before a call is
@@ -711,10 +833,10 @@ async function connectionReplacement(response, method, rpcId, presentedSession) 
     && rpcResponseFor(parsed, rpcId) === parsed
     && error?.code === -32000 && reason === 'material_proof_unavailable'
     && error.data?.requestExecuted === false) {
-    return new McpAdmissionRefusalError(reason, String(error.message ?? reason).slice(0, 320))
+    return new McpAdmissionRefusalError(reason, plainPeerText(error.message, 320) || reason)
   }
-  return new Error(`MCP ${method} failed (HTTP 409)${reason === '' ? '' : `, reason ${JSON.stringify(reason)}`}:`
-    + ` ${String(error?.message ?? 'conflict').slice(0, 240)}`)
+  return new Error(`MCP ${method} failed (HTTP 409)${reason === '' ? '' : `, reason ${JSON.stringify(plainPeerText(reason, 80))}`}:`
+    + ` ${plainPeerText(error?.message, 240) || 'conflict'}`)
 }
 
 /**
@@ -739,6 +861,8 @@ const connection = {
   lastEventId: undefined,
   /** Set once the authority says this connection was replaced. Terminal, never cleared. */
   replaced: false,
+  /** Set once this process has had a working session; a later refusal is then mid-run. */
+  established: false,
   /** The recovery state the authority last published for this Agent. */
   recovery: undefined,
 }
@@ -886,9 +1010,9 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000, id, notificatio
     clearTimeout(timeout)
   }
   if (response.status === 401) {
-    let teaching
-    try { teaching = JSON.parse(raw) } catch { teaching = undefined }
-    throw new AgentCredentialRejectedError(`Agent MCP token rejected (401): ${teaching?.teaching ?? 'rotate the Agent token in Console and update this client configuration.'}`)
+    let rejected
+    try { rejected = JSON.parse(raw) } catch { rejected = undefined }
+    throw new AgentCredentialRejectedError(credentialRejection(rejected))
   }
   // The session header is adopted only from an answer this client could read and correlate.
   // A header attached to an unreadable, mismatched or failed response says nothing about
@@ -917,7 +1041,21 @@ async function mcpRpc(method, params = {}, { timeoutMs = 45_000, id, notificatio
     return undefined
   }
   if (!response.ok || body === undefined || body.error !== undefined) {
-    const teaching = body?.error?.message ?? String(raw ?? '').replace(/\s+/g, ' ').trim().slice(0, 240)
+    // A refused `initialize` that names a protocol reason is a version mismatch, and saying
+    // "cannot establish an authenticated session" would send the reader to rotate a token
+    // that was never the cause. Read as such only on the combination the Gateway publishes
+    // for it — HTTP 400, JSON-RPC -32000 and one of these reasons — and only here, where no
+    // session exists yet and nothing can have executed.
+    const refusal = body?.error
+    const reason = refusal?.data?.reason
+    if (method === 'initialize' && response.status === 400 && refusal?.code === -32000
+      && typeof reason === 'string' && VERSION_REFUSAL_REASONS.has(reason)) {
+      throw new McpProtocolVersionError(versionRefusalMessage(reason, refusal))
+    }
+    // The Gateway's own message keeps the ordinary bound; an unparsed body is only a hint, so
+    // it keeps the tighter one it always had.
+    const stated = typeof body?.error?.message === 'string'
+    const teaching = plainPeerText(stated ? body.error.message : raw, stated ? 600 : 240)
     throw new Error(`MCP ${method} failed (HTTP ${response.status}): ${teaching || 'empty response'}`)
   }
   return body.result
@@ -1008,14 +1146,15 @@ async function openSession() {
       || Object.entries(SERVER_CAPABILITIES).some(([name, value]) => serverRecovery[name] !== value)) {
       throw new McpProtocolVersionError(`Rulith ${RULITH_RUNTIME_VERSION} requires ${RULITH_META} server capabilities`
         + ` ${JSON.stringify(SERVER_CAPABILITIES)}. This endpoint did not advertise that contract.`
-        + ' Install the matching Gateway release before starting this Runtime. No model or business tool was called;'
-        + ' do not replace credentials or retry an unfinished action to resolve this version mismatch.')
+        + ` Install the matching Gateway release before starting this Runtime. ${nothingCalled()}`
+        + ' Do not replace credentials or retry an unfinished action to resolve this version mismatch.')
     }
     const meta = hostMetaOf(result)
     if (typeof meta?.agentId === 'string' && meta.agentId.trim() !== '') agentId ||= meta.agentId.trim()
     absorbHostMeta(meta)
     await mcpRpc('notifications/initialized', {}, { notification: true, timeoutMs: 15_000, handshake: true })
     session.ready = true
+    session.established = true
     return session
   })()
   try { return await session.opening } catch (error) { session.opening = undefined; throw error }
@@ -1384,7 +1523,7 @@ function recoveryOf(meta) {
   }
   const state = String(recovery.state ?? '')
   if (!RECOVERY_STATES.has(state)) {
-    return { state: 'unreadable', teaching: `The authority published recovery state ${JSON.stringify(recovery.state)}, which this Runtime does not understand.` }
+    return { state: 'unreadable', teaching: `The authority published recovery state ${JSON.stringify(plainPeerText(String(recovery.state ?? ''), 80))}, which this Runtime does not understand.` }
   }
   const positive = (value) => (Number.isFinite(value) && value >= 0 ? Number(value) : undefined)
   return {
@@ -2294,6 +2433,14 @@ const pendingObservationNote = (recovery) => `[Host recovery state — the earli
 Its result has not been delivered. You may request a committed Board snapshot with QueryBoard in this user-initiated turn.
 That snapshot reports the operation's state when the read was admitted, not whether its effect happened. Do not propose a write, ReadArtifact or a Case focus until the original outcome has been recovered or reconciled.`
 
+/**
+ * A Gateway that no longer accepts this release, met while settling: the turn stops with the
+ * whole version-mismatch message. Calling it an unreachable or unauthenticated connection, or
+ * cutting it before the install line, would send the reader after the wrong fault.
+ */
+const versionMismatchStop = (error) => ({ ok: false, state: 'version_mismatch',
+  teaching: `${error.message}\n   Any earlier call keeps its identity at the authority.` })
+
 async function settleRecovery(ctx, { force = false, allowObservation = false } = {}) {
   // The handshake already published a recovery state, and every tool result republishes it,
   // so a host that knows there is nothing outstanding does not ask again. That is not an
@@ -2306,6 +2453,10 @@ async function settleRecovery(ctx, { force = false, allowObservation = false } =
   } catch (error) {
     if (error instanceof McpConnectionReplacedError) throw error
     if (error instanceof AgentCredentialRejectedError) throw error
+    // A Gateway that now refuses this release is a version mismatch, said in full: calling it
+    // an unreachable or unauthenticated connection, or cutting it before the install line,
+    // would send the reader after the wrong fault. The turn stops; nothing is re-sent.
+    if (error instanceof McpProtocolVersionError) return versionMismatchStop(error)
     // No authenticated connection means no way to learn what is outstanding, and no licence
     // to guess. Nothing has been sent, and nothing will be until there is one.
     return { ok: false, state: 'unreachable',
@@ -2330,6 +2481,8 @@ async function settleRecovery(ctx, { force = false, allowObservation = false } =
     } catch (error) {
       if (error instanceof McpConnectionReplacedError) throw error
       if (error instanceof AgentCredentialRejectedError) throw error
+      // A re-initialize refused for this release will not change by polling again.
+      if (error instanceof McpProtocolVersionError) return versionMismatchStop(error)
       if (Date.now() >= deadline) {
         return { ok: false, state: 'unreachable',
           teaching: `The authority could not be reached to settle this Agent's outstanding call: ${String(error?.message ?? error).slice(0, 200)}`
@@ -2366,7 +2519,8 @@ async function settleRecovery(ctx, { force = false, allowObservation = false } =
       }
       return { ok: false, state: recovery.state,
         teaching: `An earlier ${recovery.tool ?? 'tool'} call from this Agent needs operator reconciliation before work continues.`
-          + ` ${recovery.teaching ?? 'Its outcome is unknown to this host and will not be guessed.'}`
+          // The authority's explanation is its text, not this host's: one plain bounded line.
+          + ` ${plainPeerText(recovery.teaching) || 'Its outcome is unknown to this host and will not be guessed.'}`
           + ' Automatic recovery has stopped. Reconcile the original call in Console; the effects it may have had are not cancelled by waiting.' }
     }
     if (recovery.state === 'unreadable') {

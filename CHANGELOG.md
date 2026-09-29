@@ -2,7 +2,38 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.9.0 - 2026-09-29
+
+- Version this release 0.9.0: its `rulith/v2` Host contract cannot talk to Gateways that
+  accept the published 0.8.17 (`rulith/v1`), and the reverse holds too. The Gateway pins the
+  exact Runtime release it accepts, and its Console shows `npm install --global rulith@0.9.0`.
+  Publish under the `next` dist-tag and move `latest` only with the Gateway cutover; see
+  `CONTRIBUTING.md`.
+- Read a Gateway that refuses this release at `initialize` (HTTP 400, JSON-RPC `-32000`,
+  `data.reason` `incompatible_client` or `unsupported_protocol`) as a version mismatch, not
+  as a failure to authenticate. The message gives the install command for the release the
+  Gateway names in `data.requiredClient`, or points to the Rulith Console's install command
+  and the operator when it names none; says, at startup, that no model or business tool was
+  called; and quotes the Gateway's own message. The command names only this Runtime's own
+  package and an exact version; any other package, range or command text from the wire is
+  ignored. A Gateway that requires an older release than this one is named as a downgrade.
+  Exit status stays 1 at startup. A running Runtime that meets the refusal after
+  its session ends, including while it polls for an earlier result, stops the turn at once
+  with the full message, saying the model is not asked anything further and no earlier call
+  is re-sent, instead of retrying and reporting an unreachable connection.
+- Show the Gateway's next step when a credential is rejected, including when a restarted
+  Worker's Connection is refused on its first Source read. Agent and Worker quote it as the
+  Gateway's message on one bounded plain line, with control, format and line-break
+  characters flattened, and their own lead only states what happened: a disabled Agent needs
+  enabling and an unprovisioned account needs the operator, so pairing again is the
+  Gateway's advice to give. Both add an install line only when they can compose one from a
+  validated `requiredClient` naming a newer release of this package. A Worker whose
+  Connection is valid but whose Agent is gone is no longer told to copy a fresh key.
+- Keep each line of a version or credential refusal within the 400 characters Rulith Local
+  shows of each child line, with an install command always on a line of its own.
+- Flatten the other Gateway texts printed to a person the same way: a `connection_replaced`
+  or other conflict message, and the authority's explanation of a call that needs
+  reconciliation.
 
 - Keep one Worker lease renewal loop alive across both short empty polls and long work.
   Ignore replies from a retired holder, preserve newer same-generation observations,

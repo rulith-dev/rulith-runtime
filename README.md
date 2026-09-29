@@ -83,6 +83,12 @@ npm install --global rulith
 rulith start
 ```
 
+A Rulith service checks the client protocol (the MCP date and the `rulith/v2` capabilities),
+not the exact release, and its Console names the one release it recommends. To connect to a
+service, install the exact version its Console shows in Setup or Quickstart instead
+(`npm install --global rulith@<version>`): around a protocol change, npm's `latest` can
+briefly differ from the release that service accepts.
+
 To inspect or contribute to the source instead:
 
 ```bash
@@ -199,6 +205,16 @@ client is now this Agent's one effective client: this Runtime stops and does **n
 reconnect, because two hosts that both reconnect on that signal fight over one Agent.
 `HTTP 404` means the transport session is gone, and the answer is to initialize a new one —
 which says nothing about whether the call made under the old session executed.
+
+A refused `initialize` is read the same way. `HTTP 400` with JSON-RPC `-32000` and
+`data.reason` `incompatible_client` or `unsupported_protocol` means the Gateway runs another
+client protocol. The Runtime stops before calling the model and reports a version mismatch,
+not a credential problem. When the Gateway names the release of this package it requires in
+`data.requiredClient`, the Runtime prints `npm install --global rulith@<version>` on a line of
+its own, composed here rather than copied from the wire, and calls it a downgrade when that
+release is older than this one; otherwise it points to the install command shown in the Rulith
+Console. The exit status is 1. A rejected credential stays 3 and quotes the Gateway's own next
+step as its message; a takeover stays 4.
 
 Host metadata travels beside the model's content, never inside it, in the MCP `_meta`
 block under `rulith/v2`: the authenticated Agent identity, the Board revision (an audit

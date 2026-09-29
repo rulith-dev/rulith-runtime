@@ -388,6 +388,10 @@ function renderModelAnswer(answer, provider) {
  * @param {object|function} [options.readRecord] Public ReadOperation state/result. Its optional
  *   `__localDelivery` fixture field travels only in the private local delivery metadata namespace.
  *   `__operationTarget` overrides the private target selected by the read before delivery.
+ * @param {Function} [options.refuseInitialize] (input, attempt) => { status, body } | undefined
+ *   answers the `attempt`-th `initialize` (0-based) with that HTTP status and JSON body and
+ *   opens no session, as a Gateway refusing this client release does; undefined answers
+ *   normally. The JSON-RPC body is written verbatim, so an arm states the exact shape.
  * @param {number}   [options.replaceAfter] Answer this and every later request with HTTP 409
  *   `connection_replaced`, as the Gateway does once another client has taken over.
  * @param {object|function} [options.conflictBody] Replace the 409 body, for the arms that prove the
@@ -417,7 +421,7 @@ export async function runAgent({
   dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
   protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, readRecord,
-  serverBoardObservation = true, serverCapabilities, replaceAfter, conflictBody, conflictSessionId,
+  serverBoardObservation = true, serverCapabilities, refuseInitialize, replaceAfter, conflictBody, conflictSessionId,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
   captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
@@ -444,6 +448,8 @@ export async function runAgent({
   let activeSession
   const replaced = new Set()
   let pings = 0
+  /** Every `initialize` the endpoint was sent, refused or not; the next attempt's 0-based number. */
+  let initializeAttempts = 0
   let readsDelivered = 0
   const storeDir = sessionFile === undefined ? mkdtempSync(join(tmpdir(), 'rulith-session-')) : undefined
   const store = sessionFile ?? join(storeDir, 'agent-sessions.json')
@@ -581,6 +587,13 @@ export async function runAgent({
       return
     }
     methods.push(String(input.method ?? ''))
+    const refused = input.method === 'initialize' && typeof refuseInitialize === 'function'
+      ? refuseInitialize(input, initializeAttempts++) : undefined
+    if (refused !== undefined) {
+      // A refused initialize opens and replaces nothing, so no session is minted for it.
+      response.writeHead(refused.status, { 'content-type': 'application/json' })
+      return void response.end(JSON.stringify(refused.body))
+    }
     const session = sessionOf(request, input)
     const swapSession = typeof swapSessionOnCall === 'number' && input.method === 'tools/call'
       && toolCalls.length + 1 >= swapSessionOnCall
