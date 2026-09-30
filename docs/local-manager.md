@@ -97,9 +97,12 @@ Changing the default applies when an inheriting Agent next starts. Running Agent
 current model until restarted. Changing one Agent's model requires stopping that Agent;
 its independently running Worker does not have to stop. The page says when model settings
 are missing and takes **Set model** directly to the editor, without trying to start a child.
-If the model endpoint changes while a Worker remains running, its panel asks you to stop
-and start that Worker before using new attachments. Existing attachments retain the model
-destination approved when they were added; changing models never transfers that permission.
+If the model endpoint changes while a Worker remains running, that Worker still reads
+attachments for the previous endpoint. Its panel notes this, and adding a file in the
+conversation says so beside the file; stop and start the Worker before using new attachments.
+Only an Agent that already has attachments shows this as its next step. Existing attachments
+retain the model destination approved when they were added; changing models never transfers
+that permission.
 
 Saved API keys are never sent back to the page. A blank key retains a saved key only for the
 same model service; changing services requires entering a new key or explicitly clearing it.
@@ -139,7 +142,25 @@ Returning to the workbench checks approval immediately. If automatic checks fail
 the account menu shows the actual error and **Reset sign-in**. A request that has not
 delivered credentials is cleared locally. An approved sign-in with credentials
 uses sign-out: stop local Agents, confirm revocation, then clear. Incomplete stopping or
-revocation is reported without pretending that sign-out succeeded.
+revocation is reported without pretending that sign-out succeeded; the notice names each
+Agent and process that is still running.
+
+The workbench records the processes it starts, with what identifies each one. A recorded
+process is known to have ended when another program, or a process this workbench started
+itself, now holds its process number, or when it was recorded before the computer last
+started; it then no longer blocks sign-out, **Reset sign-in**, opening that Agent, or starting
+the workbench. Linux names each boot exactly, and tells apart two processes that had the same
+number by when each started. On Windows and macOS a restart shows only when the computer has
+been up for less time than it had when the process was recorded, and a Windows shutdown with
+Fast Startup does not count as a restart at all. On Windows the program now holding the
+number then decides, and when that program is Node, as many developer tools are, so does the
+script it runs: a record names its script by file name (`rulith-local.mjs`, `rulith-agent.mjs`
+or `rulith-worker.mjs`), and a Node process running another one is not the recorded process.
+A Node process whose command line cannot be read, or that holds a number recorded by Rulith
+0.9.1 or earlier, still counts as running. macOS has no program check at all: a process number
+that another process has taken there still counts as running. Whenever a recorded process
+still counts as running, the notice names it and its process number. A marker left by
+processes that did outlive a closed workbench clears by itself once those processes end.
 Existing local profiles are under **Advanced local settings**, separate from sign-in.
 
 The intended account, Console and Agent are recorded when first-use setup creates a
@@ -207,9 +228,11 @@ before existing conversation text is sent to that destination.
 History is written atomically by the Agent, before a message is acknowledged. An
 unreadable history is preserved and blocks startup; a failed write blocks admission
 or stops further execution. Changes are stored per turn under an exclusive writer lock;
-the original JSON is retained during migration. The Conversations dialog pages through
-active and archived history. Archive preserves receipts and messages and frees active
-capacity; restore is required before sending again. Stop the Agent before archiving
+the original JSON is retained during migration. A lock left by a stopped Agent is removed
+before the workbench starts that Agent again, once the process that took it has provably
+ended; an Agent whose history another running process holds does not start, and names it.
+The Conversations dialog pages through active and archived history. Archive preserves
+receipts and messages and frees active capacity; restore is required before sending again. Stop the Agent before archiving
 unfinished work. Archiving does not cancel a Board Case.
 Active history is limited to 1,000 turns and 256 MiB, including 8 MiB reserved for each
 unfinished turn. A single stored turn is limited to 32 MiB. No history is silently deleted.

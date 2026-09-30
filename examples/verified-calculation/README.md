@@ -25,7 +25,7 @@ remote endpoints require a provider key. The five-minute run assumes those prere
 PowerShell:
 
 ```powershell
-npm.cmd install --global rulith@0.9.1
+npm.cmd install --global rulith@0.9.2
 node "$(npm.cmd root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -33,7 +33,7 @@ rulith start
 Bash:
 
 ```bash
-npm install --global rulith@0.9.1
+npm install --global rulith@0.9.2
 node "$(npm root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -60,13 +60,26 @@ this Agent's settings. Keep the Agent and Worker stopped while configuring the t
 2. Run `rulith start` again, select the same Agent, and click **Start Worker**.
    In Console, open the same Agent's Runtime and confirm its
    Connection advertises the three verified-calculation Tools.
-3. Bind `verified-calculation-local` to that Connection. Use the **absolute Source
-   location printed by setup**, ending in `rulith-demo/runtime`. Select the three
-   matching Tools and lock the binding. This data directory contains neither model
-   credentials nor Adapter code.
-4. Click **Stop Worker**, then **Start Worker** to load the authorized Source. Click
-   **Start Agent** and use the Local composer. The workbench keeps the same profile,
-   Connection and conversation throughout; no separate CLI configuration is needed.
+3. Bind `verified-calculation-local` to that Connection. Keep the Release's default
+   location, `runtime`, which the Worker resolves against its root, or use the **absolute
+   Source location printed by setup**, ending in `rulith-demo/runtime`: both name the same
+   folder. Select the three matching Tools and lock the binding. This data directory
+   contains neither model credentials nor Adapter code.
+4. Click **Start Agent** and use the Local composer. The running Worker loads the
+   authorized Source the first time it is given work there, so it needs no restart. That
+   holds for a newly bound Source only: when you bind a Source the running Worker already
+   knows to another location (for example from a 0.9.1 absolute path to `runtime`), it
+   keeps the old location until you restart the Worker. The workbench keeps the same
+   profile, Connection and conversation throughout; no separate CLI configuration is needed.
+
+Steps 1 and 2 can also be done from the workbench in one click, without the setup script.
+Open the Agent's setup (**Settings and details → Setup**), go to **Resources**, open
+**Prepare the calculation sample**, enter a new, empty directory and click **Prepare sample
+and start Worker**. It writes the same files in the same layout as the setup script, points
+this Agent's Worker at them, sends the Source folder (`runtime` in that directory) for
+authorization unless other resources are selected on that page, and starts the Worker. In
+step 3, the Release's default Source location, `runtime`, already names that folder: it is
+relative to the Worker root.
 
 The standalone Console setup download prepares the same assets using immutable release
 pins. It does not create credentials, install a Capability, or grant access to a Source.

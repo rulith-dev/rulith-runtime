@@ -104,7 +104,7 @@ const onlyFields = (body, allowed) => {
  */
 export function createManagerServer({
   root = defaultManagerRoot(), port = 7780, key = randomUUID().replace(/-/g, ''),
-  startConfirmMs, leaseWaitMs = 0,
+  startConfirmMs, leaseWaitMs = 0, orphanRecheckMs,
   directoryRefreshMs = 30_000, installChecker = installAuthoringChecker,
 } = {}) {
   /** The installation claim, held from `listen` to `close`. */
@@ -115,7 +115,7 @@ export function createManagerServer({
   }
   const registry = createManagerRegistry({ root })
   const device = createDeviceClient({ root: registry.root })
-  const instances = createInstanceManager({ registry, device, startConfirmMs,
+  const instances = createInstanceManager({ registry, device, startConfirmMs, orphanRecheckMs,
     /**
      * The address an instance page is told to offer as the way back.
      *

@@ -12,7 +12,7 @@ HTTPS deployments and loopback development origins are supported. The wizard doe
 
 Existing credentials are preserved. Replacing an Agent's client token requires an explicit choice in the authorized pairing flow and invalidates all copies of the previous token. Stop the relevant local role before changing its configuration. Pairing expires after ten minutes; lost responses resume the same request. Only device proof can retrieve credentials, and proof/private keys are removed after local persistence is acknowledged.
 
-For the installed Verified Calculation capability, Local can prepare the sample in a new empty directory. It never overwrites existing files. Other native tool/vault formats remain available under Worker tools and deployment configuration.
+For the installed Verified Calculation capability, **Prepare sample and start Worker** writes the sample into a new empty directory, in the layout of `examples/verified-calculation/setup.mjs` (the Source's data in its `runtime` folder, the Release's default Source location), and points this Agent's Worker at it. It never overwrites existing files. The same click stops the Worker if it is running (a running Worker first finishes work it has claimed), sends its Source folder, `runtime`, for authorization when it is the only selected resource, and starts the Worker again so Console can check its three calculation Tools. A running Agent keeps running. Other native tool/vault formats remain available under Worker tools and deployment configuration.
 
 ## Reading the conversation
 

@@ -604,7 +604,10 @@ function addFiles(list){
     const row={key:'a'+attachSeq,name:String(file.name||'file'),status:'adding',id:'',reason:'',file,destination:String(state.status?.runtime?.agent?.modelService||'')}
     rows.push(row);addMaterial(file,row,into)
   }
-  saySent('');sayFiles(refused);renderAttachments()
+  /* A Worker started before the current model service was set reads attachments for the old
+     one only. This is the moment that matters, so it is said here, beside the files. */
+  saySent('');sayFiles([refused,state.status?.runtime?.worker?.modelRestartRequired
+    ?'The Worker started before the current model service was set, so the Agent cannot read new files yet. Stop and start the Worker before sending.':''].filter(Boolean).join(' '));renderAttachments()
 }
 /* Removing is immediate and final for that row, including while its bytes are still being
    read: the answer, when it comes, finds the row is no longer in the draft and stops there. */

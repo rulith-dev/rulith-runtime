@@ -574,7 +574,9 @@ function nextStep(row){
   if(hasRole(row,'worker')){
     if(!row.worker)return step(row.mode==='existing_client'?'Start this Worker to handle this Agent’s tools and files.':'Chat is ready. Start the Worker when you need local tools or attachments.','worker','Start Worker');
     if(row.ready?.worker===false)return step('The Worker process is running; initialization has not been confirmed yet.','details','Review settings');
-    if(row.model?.workerRestartRequired)return step('The model service changed. Stop this Worker, then start it before using new attachments.','worker','Stop Worker');
+    /* Only reads of attachments use the model service a Worker started with, so a restart is the
+       next step only for an Agent that has attachments. Otherwise the Worker note says it quietly. */
+    if(row.model?.workerRestartUrgent)return step('The model service changed. Stop this Worker, then start it before using new attachments.','worker','Stop Worker');
   }
   return null;
 }
@@ -996,7 +998,8 @@ function renderWorker(){
   $('worker-note').textContent=!has?'This Agent does not run a Worker on this computer.'
     :row.orphaned?'Processes from a manager that is gone are still running. Open settings for what is still there.'
       :row.blocked?row.blocked
-        :row.worker&&row.model?.workerRestartRequired?'Model service changed. Stop and start this Worker before using new attachments.'
+        :row.worker&&row.model?.workerRestartUrgent?'Model service changed. Stop and start this Worker before using new attachments.'
+        :row.worker&&row.model?.workerRestartRequired?'Doing the work this Agent asks for on this computer. The model service changed since it started. Stop and start this Worker before using new attachments.'
         :row.worker?(row.ready?.worker===false?'Waiting for Worker initialization.':'Doing the work this Agent asks for on this computer.')
           :'Start the Worker when this Agent should use the tools and files on this computer.';
   if(has)$('worker-toggle').textContent=row.worker?'Stop Worker':'Start Worker';

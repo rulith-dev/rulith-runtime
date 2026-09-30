@@ -29,15 +29,25 @@
  * together was exactly the case that broke.
  *
  * So: age proves nothing, and absence of evidence proves nothing. A lock is reclaimed only
- * when its recorded owner is a process on **this machine** that the kernel says is gone. An
- * unreadable or foreign-host lock is ambiguous and is waited on, then reported. Ownership is
- * re-verified after acquisition and again before every write and before release, because the
- * one thing worse than waiting for a lock is believing you hold one you do not.
+ * when its recorded owner is a process on **this machine** that is provably gone: the kernel
+ * says no process has that pid, or the process holding it now is not the recorded one (see
+ * `process-identity.mjs` — a lock written before this machine last booted, or whose pid now
+ * belongs to another program, or on Windows to a Node process running another script). Being old
+ * is still not being gone. An unreadable or foreign-host lock is ambiguous and is waited on, then
+ * reported. Ownership is re-verified after acquisition and again before every write and before
+ * release, because the one thing worse than waiting for a lock is believing you hold one you do not.
+ *
+ * `clearStaleLock` is that reclaiming rule on its own, and the only code that deletes a lock this
+ * process does not hold. Taking a lock uses it, and so does the Local host, for the lock an Agent
+ * keeps on its conversation history (see `rulith-local.mjs`).
  */
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { instanceRecordedAt, processRecordRunning, processStamp } from './process-identity.mjs'
+
+export { processAlive } from './process-identity.mjs'
 
 export const REGISTRY_FORMAT = 'rulith-local-manager/1'
 const LOCK_POLL_MS = 25
@@ -59,16 +69,20 @@ export function writeJsonAtomic(file, value, mode = 0o600) {
 }
 
 /**
- * Is the process that wrote a lock or claimed an instance still there?
+ * Is the process that wrote this lock ticket still the one holding its pid?
  *
- * `kill(pid, 0)` sends no signal and only asks the kernel. `EPERM` means the process
- * exists and belongs to somebody else, which is still "alive" — answering `false` there
- * would let one account's manager steal another's instance directory.
+ * A ticket written before 0.9.2 carries only `at`, the moment it was taken, which is still enough
+ * to tell a ticket from before this boot. A newer ticket also carries the writer's process stamp.
  */
-export function processAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try { process.kill(pid, 0); return true } catch (error) { return error?.code === 'EPERM' }
-}
+const ticketHolderRunning = (ticket) => processRecordRunning(ticket, { recordedAt: ticket.at })
+
+/**
+ * A new lock ticket for this process: who holds it, and what identifies that process — including
+ * the script it was started with (`process.argv[1]`): `rulith-local.mjs` for the workbench,
+ * `rulith-agent.mjs` for an Agent holding its conversation history.
+ */
+const newTicket = (extra = {}) => ({ pid: process.pid, host: hostname(), id: randomUUID(), at: Date.now(), ...extra,
+  ...processStamp(process.pid, { script: process.argv[1] }) })
 
 /** A registry file that exists but cannot be understood. Never repaired, never overwritten. */
 export class RegistryUnreadableError extends Error {
@@ -114,12 +128,55 @@ function readLockFile(lockFile) {
 }
 
 /**
+ * Remove `lockFile` if, and only if, its ticket names a process on this host that is proven gone.
+ *
+ * The one rule by which a lock this process does not hold is ever deleted, shared by taking a
+ * lock (`tryTakeLock`) and by the Local host's check of an Agent's conversation lock: no expiry;
+ * an absent, unreadable, anonymous or foreign-host lock is left alone; a lock whose holder may
+ * still be running is left alone; and the ticket is read again immediately before removal, so a
+ * lock that was replaced while this was being decided is not the one deleted.
+ *
+ * "Proven gone" is judged from this process's point of view (`process-identity.mjs`), which knows
+ * its own pid and session and the children it started. That knowledge is the reason the Local host
+ * asks before it starts an Agent: the Agent, asking from inside itself, cannot tell that the pid on
+ * an old lock now belongs to its own host or Worker. It is also the one thing to watch for: a live
+ * child's lock about itself reads, from its parent, as another process's record of a pid a child
+ * now holds, and is removed. Never ask about a lock a running child of this process may hold.
+ *
+ * Returns what it saw: `state` is `absent`, `unreadable`, `anonymous`, `foreign`, `running`,
+ * `removed`, or `changed` (the file changed, or its holder stopped looking gone, between the two
+ * readings), with the ticket as `held` when there was one, and for a lock left in place, the words
+ * a refusal uses for it as `ambiguity`.
+ */
+export function clearStaleLock(lockFile) {
+  const seen = readLockFile(lockFile)
+  if (seen.state === 'absent') return { state: 'absent' }
+  if (seen.state === 'unknown') return { state: 'unreadable', ambiguity: `a lock file that could not be read (${seen.code})` }
+  if (seen.state === 'anonymous') {
+    // A lock created microseconds ago looks exactly like this, and so does one from a
+    // process that died between `open` and `write`. Waiting costs milliseconds; deleting
+    // costs correctness.
+    return { state: 'anonymous', ambiguity: 'a lock file whose owner has not been recorded yet' }
+  }
+  const held = seen.record
+  if (held.host !== hostname()) return { state: 'foreign', held, ambiguity: `a lock held by process ${held.pid} on ${held.host}` }
+  if (ticketHolderRunning(held)) return { state: 'running', held, ambiguity: `a lock held by running process ${held.pid}` }
+  // Proven dead, on this machine. Re-read immediately before removing so a lock that was
+  // replaced while this decision was being made is not the one that gets deleted.
+  const confirmed = readLockFile(lockFile)
+  if (confirmed.state === 'held' && confirmed.record.id === held.id && !ticketHolderRunning(confirmed.record)) {
+    rmSync(lockFile, { force: true })
+    return { state: 'removed', held }
+  }
+  return { state: 'changed', held }
+}
+
+/**
  * One attempt to take `lockFile`, and what to say if it is somebody else's.
  *
  * Shared by the per-edit registry lock and the workbench lease so both obey exactly the same
- * rules: no expiry, a lock is reclaimed only when its record names a process **on this host**
- * that the kernel says is gone, an unreadable or foreign-host lock is ambiguous and waited on,
- * and ownership is confirmed by reading the ticket back.
+ * rules — those of `clearStaleLock`, which it asks whenever the file already exists — and
+ * ownership is confirmed by reading the ticket back.
  */
 function tryTakeLock(lockFile, ticket) {
   try {
@@ -127,25 +184,12 @@ function tryTakeLock(lockFile, ticket) {
     writeFileSync(lockFile, JSON.stringify(ticket), { flag: 'wx', mode: 0o600 })
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error
-    const seen = readLockFile(lockFile)
-    if (seen.state === 'unknown') return { taken: false, ambiguity: `a lock file that could not be read (${seen.code})` }
-    if (seen.state === 'absent') return { taken: false, retry: true }
-    const held = seen.record
-    if (held === undefined) {
-      // A lock created microseconds ago looks exactly like this, and so does one from a
-      // process that died between `open` and `write`. Waiting costs milliseconds; deleting
-      // costs correctness.
-      return { taken: false, ambiguity: 'a lock file whose owner has not been recorded yet' }
-    }
-    if (held.host !== hostname()) return { taken: false, ambiguity: `a lock held by process ${held.pid} on ${held.host}`, held }
-    if (processAlive(held.pid)) return { taken: false, ambiguity: `a lock held by running process ${held.pid}`, held }
-    // Proven dead, on this machine. Re-read immediately before removing so a lock that was
-    // replaced while this decision was being made is not the one that gets deleted.
-    const confirmed = readLockFile(lockFile)
-    if (confirmed.state === 'held' && confirmed.record.id === held.id && !processAlive(confirmed.record.pid)) {
-      rmSync(lockFile, { force: true })
-    }
-    return { taken: false, retry: true, held }
+    const seen = clearStaleLock(lockFile)
+    const held = seen.held === undefined ? {} : { held: seen.held }
+    // Left in place: somebody else's, or nobody's this process can prove is gone.
+    if (seen.ambiguity !== undefined) return { taken: false, ambiguity: seen.ambiguity, ...held }
+    // Gone, removed as proven stale, or changed while it was being judged: try again at once.
+    return { taken: false, retry: true, ...held }
   }
   // `wx` is the mutual exclusion, but another process may have been reclaiming a stale lock at
   // the same instant and removed this one. A lock that reads back as somebody else's is not
@@ -176,7 +220,7 @@ const stillOwns = (lockFile, ticket) => {
  * stale claim would mean two processes writing one file.
  */
 async function withFileLock(lockFile, action, { waitMs = LOCK_WAIT_MS } = {}) {
-  const ticket = { pid: process.pid, host: hostname(), id: randomUUID(), at: Date.now() }
+  const ticket = newTicket()
   const owned = () => stillOwns(lockFile, ticket)
   const deadline = Date.now() + waitMs
   let lastAmbiguity = ''
@@ -199,9 +243,22 @@ async function withFileLock(lockFile, action, { waitMs = LOCK_WAIT_MS } = {}) {
     + ' Nothing was changed. Close the other Rulith manager, or wait for it to finish, and retry.')
 }
 
-/** A second workbench process is already running against this installation. */
+/**
+ * A second workbench process is already running against this installation.
+ *
+ * `detail` says what was found — "a lock held by running process 1234", or "a lock file that could
+ * not be read (EBUSY)" — without the rest of the sentence, and `holder` is the ticket it names when
+ * a readable lock named one. The same lease guards an Agent's conversation history
+ * (`agent/conversation-store.mjs`), where "another Rulith workbench" and `RULITH_MANAGER_HOME`
+ * would send the operator after the wrong thing; that caller words its own refusal from these.
+ */
 export class WorkbenchBusyError extends Error {
-  constructor(message) { super(message); this.name = 'WorkbenchBusyError' }
+  constructor(message, { detail = '', holder } = {}) {
+    super(message)
+    this.name = 'WorkbenchBusyError'
+    this.detail = detail
+    this.holder = holder
+  }
 }
 
 /**
@@ -223,10 +280,12 @@ export class WorkbenchBusyError extends Error {
  * not each claim the installation.
  */
 export async function acquireWorkbenchLease(lockFile, { waitMs = 0 } = {}) {
-  const ticket = { pid: process.pid, host: hostname(), id: randomUUID(), at: Date.now(), purpose: 'workbench' }
+  const ticket = newTicket({ purpose: 'workbench' })
   const deadline = Date.now() + waitMs
   let lastAmbiguity = ''
   let holder
+  /** The ticket the last refusal was about: set only when a readable lock named its holder. */
+  let lastHolder
   // `retry` means the file changed under this attempt — usually because a provably dead
   // owner's claim was just removed. That is not waiting for anybody, so it is retried at once
   // even with no wait budget: a workbench starting after a crashed one would otherwise clean
@@ -242,7 +301,7 @@ export async function acquireWorkbenchLease(lockFile, { waitMs = 0 } = {}) {
         release: () => { if (stillOwns(lockFile, ticket)) rmSync(lockFile, { force: true }) },
       }
     }
-    if (attempt.ambiguity !== undefined) lastAmbiguity = attempt.ambiguity
+    if (attempt.ambiguity !== undefined) { lastAmbiguity = attempt.ambiguity; lastHolder = attempt.held }
     if (attempt.held !== undefined) holder = attempt.held
     if (attempt.retry === true && immediate > 0) { immediate -= 1; continue }
     if (Date.now() >= deadline) break
@@ -256,7 +315,7 @@ export async function acquireWorkbenchLease(lockFile, { waitMs = 0 } = {}) {
     + `${holder?.host !== undefined && holder.host !== hostname() ? '' : ''}).`
     + ` Close it, or point this one at a different installation with RULITH_MANAGER_HOME.`
     + ' Two workbenches on one installation would each open their own web host for the same Agents'
-    + ' and write over each other\'s account state.')
+    + ' and write over each other\'s account state.', { detail: lastAmbiguity || 'lock held', holder: lastHolder })
 }
 
 export function emptyRegistry() {
@@ -364,13 +423,20 @@ export function createManagerRegistry({ root = defaultManagerRoot(), lockWaitMs 
      * still running is still holding its credential and its Board connection. So a marker is
      * only cleared when the manager is gone *and* every child it recorded is gone too.
      * Anything else is recorded as orphaned, with the pids, and refused rather than reopened.
+     *
+     * "Gone" is asked of each recorded process, not of its pid alone. After a reboot the pids
+     * in a marker may belong to unrelated programs, and a marker written before this boot, or
+     * naming a pid another program now holds, is cleared here like any other dead one
+     * (`process-identity.mjs`). Markers written by 0.9.1 and earlier carry no stamps; the
+     * time their row was written stands in.
      */
     reclaimStale: () => update((state) => {
       for (const row of state.instances) {
         if (row.runtime === undefined) continue
-        if (processAlive(row.runtime.pid)) continue
-        const living = (row.runtime.children ?? []).filter((child) => processAlive(child.pid))
-        if (living.length === 0) { delete row.runtime; delete row.orphaned; continue }
+        const recordedAt = instanceRecordedAt(row)
+        if (processRecordRunning(row.runtime, { recordedAt })) continue
+        const living = (row.runtime.children ?? []).filter((child) => processRecordRunning(child, { recordedAt }))
+        if (living.length === 0) { delete row.runtime; delete row.orphaned; delete row.unobservedAt; continue }
         row.orphaned = { managerPid: row.runtime.pid, children: living, observedAt: new Date().toISOString() }
       }
       return state

@@ -45,6 +45,7 @@ const files = [
   'local/local-ui.mjs',
   'local/theme.mjs',
   'local/manager-registry.mjs',
+  'local/process-identity.mjs',
   'local/model-settings.mjs',
   'local/device-client.mjs',
   'local/instance-manager.mjs',

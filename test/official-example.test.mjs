@@ -24,10 +24,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
+import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
 import { BOARD, CONNECTION, HOLD, ROOT, SIGNED, driveWorker, toolDigest, artifactWorkFields } from './support/worker-harness.mjs'
 
 const EXAMPLE = join(ROOT, 'examples', 'verified-calculation')
@@ -439,6 +441,70 @@ test('prepared example workspace and manifest run through the configured Worker 
   assert.deepEqual(factNamed(result.receipts[0], 'rulith.verified_calculation.calculation_input').args, {
     node: NODE, job_id: JOB.job_id, unit_price_cents: JOB.unit_price_cents, quantity: JOB.quantity, shipping_cents: JOB.shipping_cents,
   })
+})
+
+test('a sample the workbench prepares is read by the Worker at the Release\'s default Source location "runtime"', async t => {
+  // The Release installs `verified-calculation-local` with a default location, and Console fills
+  // the binding in with it. 0.9.1's workbench put input.json at the Worker root, where that
+  // relative location could not reach it; the Worker resolves it against its root.
+  const RELEASE_LOCATION = SOURCES.sources[0].access
+  assert.equal(RELEASE_LOCATION, 'runtime')
+  const directory = mkdtempSync(join(tmpdir(), 'rulith-workbench-example-'))
+  const connection = 'conn-workbench-example', connectionKey = 'workbench-example-key'
+  const proposals = []
+  const cloud = createServer(async (request, response) => {
+    let raw = ''
+    for await (const chunk of request) raw += chunk
+    response.setHeader('content-type', 'application/json')
+    const authenticated = request.headers['x-rulith-connection'] === connection && request.headers['x-rulith-connection-key'] === connectionKey
+    if (request.url === '/local-setup/context' && authenticated) {
+      return void response.end(JSON.stringify({ agentId: 'agent-example', agentName: 'Example', connectionId: connection,
+        sources: [{ name: SOURCE, type: 'file' }] }))
+    }
+    if (request.url === '/local-setup/resources' && authenticated) {
+      proposals.push(JSON.parse(raw))
+      return void response.end(JSON.stringify({ revision: 'rev-1', state: 'awaiting_authorization' }))
+    }
+    response.writeHead(404)
+    response.end('{}')
+  })
+  await new Promise((ready) => cloud.listen(0, '127.0.0.1', ready))
+  const configFile = join(directory, 'local.json'), config = defaultLocalConfig()
+  config.worker.env = { ...config.worker.env, RULITH_WORK_URL: `http://127.0.0.1:${cloud.address().port}/work`,
+    RULITH_CONNECTION: connection, RULITH_CONNECTION_KEY: connectionKey }
+  // The host's own Worker is the reporting stand-in; the real Worker below runs on what was written.
+  config.paths = { agent: join(ROOT, 'test', 'support', 'echo-role.mjs'), worker: join(ROOT, 'test', 'support', 'echo-role.mjs') }
+  writeFileSync(configFile, JSON.stringify(config))
+  const host = createLocalHost({ configFile, config, roles: config.roles, port: 0, autoStart: false })
+  await host.listen()
+  t.after(async () => {
+    await host.close()
+    await new Promise((closed) => cloud.close(closed))
+    rmSync(directory, { recursive: true, force: true })
+  })
+  const prepared = join(directory, 'demo')
+  const answer = await fetch(`http://127.0.0.1:${host.port}/setup/example`, { method: 'POST',
+    headers: { 'x-rulith-local': host.key, 'content-type': 'application/json' }, body: JSON.stringify({ directory: prepared }) })
+  assert.equal(answer.status, 200, JSON.stringify(await answer.clone().json()))
+  const saved = JSON.parse(readFileSync(configFile, 'utf8')).worker.env
+  assert.equal(saved.RULITH_WORKER_ROOT, prepared)
+  // What was sent for authorization names the same folder as the Release's default location.
+  const proposed = proposals[0]?.resources?.[0]?.access
+  assert.equal(proposed, realpathSync(join(prepared, RELEASE_LOCATION)))
+
+  const tools = JSON.parse(readFileSync(saved.RULITH_TOOLS_FILE, 'utf8')).tools
+  const row = exampleRow('load_calculation_input', {}, { toolDigest: toolDigest(tools[ACTIONS.load_calculation_input.execution.tool]) })
+  for (const access of [RELEASE_LOCATION, proposed]) {
+    const result = await runExample([row], { tools, files: {},
+      env: { RULITH_WORKER_ROOT: saved.RULITH_WORKER_ROOT, RULITH_TOOLS_FILE: saved.RULITH_TOOLS_FILE },
+      sources: () => [{ name: SOURCE, type: 'file', access }],
+    })
+    assert.equal(result.receipts.length, 1, result.output)
+    assert.doesNotMatch(result.output, /Skipping|calculation input rejected/)
+    assert.deepEqual(factNamed(result.receipts[0], 'rulith.verified_calculation.calculation_input').args, {
+      node: NODE, job_id: JOB.job_id, unit_price_cents: JOB.unit_price_cents, quantity: JOB.quantity, shipping_cents: JOB.shipping_cents,
+    }, `the Worker did not read the prepared sample at location ${access}`)
+  }
 })
 
 test('RT-EXAMPLE-11 the guide starts a configured Case through Local without scripted model tool calls', () => {

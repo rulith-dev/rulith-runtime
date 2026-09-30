@@ -1469,6 +1469,25 @@ test('the selected Agent offers the current next step without treating live proc
   assert.equal(page.$('dlg-attach').hidden, false)
 })
 
+test('a Worker restart for a changed model service is the next step only for an Agent with attachments', async () => {
+  // Saving model settings while the Worker ran: only reads of attachments use the model service
+  // a Worker started with. The owner used none, and was told to stop the Worker anyway.
+  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], agent: true, worker: true,
+    ready: { agent: true, worker: true }, model: { ready: true, workerRestartRequired: true, workerRestartUrgent: false } })
+  const snapshot = () => stateOf({ device: linkedDevice(), instances: [row] })
+  const page = await openPage(snapshot())
+  await page.choose('a'); await settle()
+  assert.equal(page.$('agent-readiness').hidden, true, 'with no attachments nothing is put ahead of using the Agent')
+  assert.match(page.$('worker-note').textContent, /The model service changed since it started\. Stop and start this Worker before using new attachments\./)
+  assert.equal(page.$('worker-pill').textContent, 'Running')
+
+  row.model.workerRestartUrgent = true; page.render(snapshot())
+  assert.equal(page.$('agent-readiness').hidden, false)
+  assert.equal(page.$('agent-readiness-copy').textContent, 'The model service changed. Stop this Worker, then start it before using new attachments.')
+  assert.equal(page.$('agent-readiness-action').textContent, 'Stop Worker')
+  assert.equal(page.$('worker-note').textContent, 'Model service changed. Stop and start this Worker before using new attachments.')
+})
+
 test('sync errors and incomplete withdrawal stops have visible recovery without offering the old account link', async () => {
   const row = configuredOf('agent-alpha', { id: 'a', accessStopWarning: 'still running', agent: true, open: true })
   const snapshot = stateOf({ device: linkedDevice(), instances: [row], directorySync: { error: 'network offline', checkedAt: '', stale: true } })

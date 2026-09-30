@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { acquireWorkbenchLease } from '../local/manager-registry.mjs'
+import { acquireWorkbenchLease, WorkbenchBusyError } from '../local/manager-registry.mjs'
 
 const FORMAT = 'rulith-conversations/1', LIBRARY = 'rulith-conversations/2'
 const MAX_BYTES = 32 * 1024 * 1024, RESERVE_BYTES = 8 * 1024 * 1024, ACTIVE_BYTES = 256 * 1024 * 1024
@@ -108,7 +108,19 @@ export async function openConversations(directory, owner, { recoverInterrupted =
   const file = conversationFile(directory, owner)
   let lease
   try { lease = await acquireWorkbenchLease(file + '.lock') }
-  catch (error) { throw new ConversationStoreError('Conversation history is locked or unavailable. ' + error.message) }
+  catch (error) {
+    // 这把锁只守护本 Agent 的对话历史；租约的通用拒绝说的是"另一个工作台"和 RULITH_MANAGER_HOME，在这里会误导操作者。
+    // 锁里写明了持有者（仍在运行，或在另一台机器上）才说"被另一个进程占用"；读不出持有者时只说拿不到锁。
+    if (error instanceof WorkbenchBusyError && error.holder !== undefined) {
+      throw new ConversationStoreError(`This Agent's conversation history is in use by another process (${error.detail}).`
+        + ' Stop the other Agent that uses this history, or wait for it to exit, then try again.')
+    }
+    if (error instanceof WorkbenchBusyError) {
+      throw new ConversationStoreError(`Conversation history is locked or unavailable: its lock ${file}.lock could not be taken`
+        + ` (${error.detail}). Nothing was changed; try again, and check that file if this persists.`)
+    }
+    throw new ConversationStoreError('Conversation history is locked or unavailable. ' + error.message)
+  }
   const close = () => { lease.release(); process.off('exit', close) }
   process.once('exit', close)
   try {

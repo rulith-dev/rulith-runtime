@@ -23,7 +23,7 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
-import { defaultMaterialRoot, materialIdentity } from '../worker/material-store.mjs'
+import { MATERIAL_STORE_VERSION, defaultMaterialRoot, materialIdentity } from '../worker/material-store.mjs'
 
 const KEY = 'local-materials-key'
 const REMOTE_MODEL = 'https://api.anthropic.com/v1/messages'
@@ -811,6 +811,37 @@ test('the Worker child is given the material area and fingerprints, never the Ag
         'the Worker was handed the Agent credential it is deliberately never given')
       assert.equal(environment.RULITH_MATERIALS_KEY, undefined,
         'the Worker was handed the delivery key, which is the Agent\'s to hold')
+    } finally {
+      await host.close()
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a Worker started without a material area is never reported as needing a restart for the model', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-local-materials-none-'))
+  try {
+    const configFile = join(dir, 'local.json')
+    const config = defaultLocalConfig()
+    config.agent.env = { ...config.agent.env, RULITH_MODEL_URL: REMOTE_MODEL }
+    config.worker.env = { ...config.worker.env, RULITH_CONNECTION: CONNECTION, RULITH_CONNECTION_KEY: 'key-1' }
+    config.paths = { agent: join(dir, 'absent-agent.mjs'), worker: join(HERE, 'support', 'echo-role.mjs') }
+    // An area this build refuses to open, because it belongs to another profile: the Worker is
+    // started without one, holds no attachments, and compares no model destination.
+    const root = defaultMaterialRoot(configFile)
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'store.json'), JSON.stringify({ version: MATERIAL_STORE_VERSION, profile: 'another-profile',
+      owner: 'another-owner', agent: '', createdAt: new Date().toISOString() }))
+    const host = createLocalHost({ configFile, config, roles: ['worker'], port: 0, key: KEY, autoStart: false, startConfirmMs: 8000 })
+    await host.listen()
+    try {
+      const started = await fetch(`http://127.0.0.1:${host.port}/control`, { method: 'POST',
+        headers: { 'x-rulith-local': KEY, 'content-type': 'application/json' }, body: JSON.stringify({ role: 'worker', operation: 'start' }) })
+      assert.equal(started.status, 200, JSON.stringify(await started.json()))
+      const observed = host.events().find((event) => event.src === 'worker' && event.type === 'up')?.observed
+      assert.equal(observed?.RULITH_MATERIALS_ROOT, undefined, 'the Worker was started without a material area')
+      assert.equal(host.workerModelRestartRequired, false, 'a Worker with no attachments has no model destination to be out of date')
     } finally {
       await host.close()
     }

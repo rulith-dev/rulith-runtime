@@ -317,6 +317,30 @@ test('eight files is the limit, and a file over 8 MiB is refused by name', async
   assert.equal(sent(page, '/materials').some((call) => call.body.name === 'huge.bin'), false)
 })
 
+test('a Worker started under the previous model service is named beside the files, where it matters', async () => {
+  // The workbench no longer leads with this restart for an Agent without attachments, so the
+  // moment somebody adds one is where the page has to say it.
+  const status = (modelRestartRequired) => ({ ok: true, mode: 'agent+worker', roles: ['agent', 'worker'], agent: true, worker: true,
+    runtime: { configFile: 'D:/local/rulith-local.json',
+      agent: { id: 'agent-alpha', credentialConfigured: true, modelService: 'http://127.0.0.1:8080/v1', model: 'test-model', modelKeyConfigured: true, thinking: 'standard' },
+      worker: { connection: 'conn-1', credentialConfigured: true, workspaceTools: 'read', toolsFile: '', sourcesFile: '', modelRestartRequired } } })
+  for (const required of [false, true]) {
+    const page = await loadLocalPage(localPage, { respond: async (path, request) => {
+      if (path.startsWith('/status')) return { body: status(required) }
+      if (path.startsWith('/materials')) {
+        return { body: { ok: true, material: { id: 'mat-1', name: request.body.name, mediaType: request.body.mediaType, totalBytes: 5, digest: 'sha256:' + 'ab'.repeat(32) } } }
+      }
+      return undefined
+    } })
+    await addThroughDialog(page, [fileOf('notes.txt')])
+    assert.deepEqual(page.chips().map((chip) => chip.name + ' · ' + chip.said), ['notes.txt · Ready'])
+    if (required) {
+      assert.equal(page.$('filesnote').textContent, 'The Worker started before the current model service was set,'
+        + ' so the Agent cannot read new files yet. Stop and start the Worker before sending.')
+    } else assert.equal(page.$('filesnote').textContent, '')
+  }
+})
+
 test('a file added in one conversation never follows the person to another', async () => {
   const page = await load()
   await page.emit({ src: 'agent', type: 'task-start', session: 's-alpha', at: '2026-09-20T15:30:00.000Z', text: 'Alpha' })

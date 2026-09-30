@@ -2,6 +2,94 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.9.2 - 2026-09-30
+
+- Smooth the first run of the Verified Calculation walkthrough. The client protocol, the
+  model-facing tools and the MCP contract are unchanged: the same MCP date and `rulith/v2`
+  capabilities as 0.9.1. Release 0.9.1 was prepared on `main` but not tagged or published;
+  0.9.2 carries every change listed under 0.9.1 and 0.9.0. A Gateway that recommends this line
+  pins 0.9.2, and the publication steps `CONTRIBUTING.md` gives for 0.9.1 apply unchanged:
+  publish under `next`, and move `latest` only with the Gateway cutover.
+- Stop reading a recorded pid as a recorded process. After a reboot, Windows had given the pid
+  the workbench recorded for an Agent to an unrelated PowerShell, and **Reset sign-in** refused
+  ("Some instances are still running") until that terminal was closed. The records of the
+  workbench itself, of each Agent and Worker it starts, and of both lock files now carry what
+  identified the process when it was recorded: the time, the uptime, which process wrote the
+  record, and on Linux the boot id and process start time, on Windows the program name. A
+  recorded process has ended when no process holds its pid; when this workbench or a role it
+  started holds the pid now; when it was recorded before this boot (the boot id on Linux,
+  elsewhere an uptime counter that went backwards); or when a different program holds its pid
+  now (another start time on Linux, another program named by `tasklist` on Windows). A clock
+  set forward, or a virtual machine resumed after a pause, cannot make a live process's record
+  look older than the boot. Anything else still counts as running, as before. Markers and locks
+  written by 0.9.1 and earlier carry no stamp: they are dated by the wall clock (older than
+  `Date.now() - os.uptime()` by more than ten minutes) and, on Windows, expected to name the
+  workbench's own Node program. After a restart they no longer block sign-out, **Reset
+  sign-in**, opening an Agent or starting the workbench; after a Windows shutdown with Fast
+  Startup, which does not restart the uptime counter, they stop blocking once their pid belongs
+  to another program. The refusal now names each Agent and process still running, and a marker
+  whose processes have ended clears on the page's next poll.
+- Tell a recorded process from another Node program on Windows. After a shutdown with Fast
+  Startup, the Windows default, the uptime counter keeps counting, so only the program name
+  could clear a record, and a pid that any unrelated `node.exe` had taken since (Claude Code, an
+  MCP server, a dev server) still counted as running. That blocked sign-out, **Reset sign-in**,
+  opening an Agent, and even `rulith start`, whose claim on the installation Windows had ended
+  without releasing. Each record written on Windows now also names the script its process runs,
+  by file name: `rulith-local.mjs`, `rulith-agent.mjs` or `rulith-worker.mjs`, and a Node process
+  whose command line, read through PowerShell, does not mention that name is another process.
+  Only the file name is compared: npm's shim, junctions and 8.3 short names spell one script's
+  path in several ways, and a path that failed to match would declare a live workbench gone. A
+  command line that cannot be read, such as an elevated process's, proves nothing, and records
+  from 0.9.1 and earlier name no script, so a Node process holding their pid still counts as
+  running.
+- Clear the conversation lock a stopped Agent left behind before starting the next one. The
+  Agent does not ask to be stopped gracefully, so every stop ends it, and on Windows it ends
+  before it can release the lock on its conversation history. The next Agent judged that stale
+  conversation lock from inside itself, where nothing shows that the pid on it now belongs to its
+  own host or Worker, and Windows readily gives the old Agent's pid to the Worker that **Prepare
+  sample and start Worker** restarts. That Agent exited with status 5, saying that another Rulith
+  workbench was running and pointing at `RULITH_MANAGER_HOME`. The Local host, which knows its
+  own pid and the children it started, now removes such a lock before it starts an Agent, by the
+  rule that reclaims every other lock; a lock another process may still hold is left in place. An
+  Agent refused by one now says that its conversation history is in use by another process, and
+  names that process.
+- Prepare the calculation sample in one action. **Prepare sample and start Worker** used to
+  refuse while any role ran ("Stop Agent and Worker before preparing files"), and nothing said
+  so up front: a Worker already running without the calculation Tools left Console showing all
+  three as Missing. The click now stops the Worker if it is running (a running Worker finishes
+  work it has claimed first), writes the files, points the Worker at them, sends the sample's
+  Source folder for authorization, starts the Worker again, and reports each outcome in one
+  message. A running Agent keeps running: only the Worker's configuration changes. The files now
+  use the layout `setup.mjs` writes: the Adapters and `worker-tools.json` at the Worker root, and
+  the Source's data in `runtime/input.json`. The Release's default Source location, `runtime`,
+  which Console fills in and the Worker resolves against its root, therefore names the sample's
+  data as it is; 0.9.1 put `input.json` at the root, where that location could not reach it and
+  `read_input` failed unless the operator typed the absolute path. What is sent for
+  authorization is the absolute path of that same `runtime` folder. A sample prepared by 0.9.1
+  keeps its layout: bind its Source to that directory's absolute path, or prepare the sample
+  again into a new, empty directory. The step still refuses a
+  non-empty directory before stopping anything, checks the packaged manifest before writing, and
+  never writes over an existing file; it also refuses, before stopping anything, a directory the
+  workbench would not let a Worker use, and a restart that would be refused. When other
+  resources are selected, nothing is sent on the operator's behalf, and the earlier selection
+  is kept beside the sample instead of replaced. **Send selection for authorization** no longer
+  asks for the Agent and Worker to be stopped: a selection only waits for authorization in
+  Console and changes nothing a running role uses.
+- Start no role in a Local host once it has begun closing. A request already in flight, such as
+  a sample being prepared, could otherwise start a Worker after the host had stopped its roles;
+  a sample step that finds the host closing after its Worker stopped writes nothing.
+- Say that a Worker needs a restart after a model change where it matters. A running Worker keeps
+  the model service it started with, and only reads of attachments use it. The workbench now
+  leads with "Stop this Worker" only for an Agent that already has attachments; otherwise the
+  Worker panel notes it, and adding a file in the conversation says so beside the file. A Worker
+  started without a material area is no longer reported as needing a restart at all.
+- Correct the Verified Calculation guide: a running Worker loads a newly bound Source the first
+  time it is given work there, so binding needs no Worker restart, while binding a Source the
+  Worker already knows to another location takes effect only once the Worker restarts; the
+  Release's default Source location `runtime` and the absolute path `setup.mjs` prints name the
+  same folder; and the workbench's one-click preparation is described as the alternative to the
+  setup script.
+
 ## 0.9.1 - 2026-09-30
 
 - Publish the `rulith/v2` client line as 0.9.1. Release 0.9.0 was tagged in this repository

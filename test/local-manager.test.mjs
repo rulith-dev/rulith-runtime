@@ -19,11 +19,12 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { Socket, createServer as createNetServer } from 'node:net'
-import { tmpdir } from 'node:os'
+import { tmpdir, uptime } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { createManagerServer, localAuthoringSaveRequestId, localAuthoringResultVersions } from '../local/manager-server.mjs'
 import { processAlive } from '../local/manager-registry.mjs'
+import { processStamp } from '../local/process-identity.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { isolatedEnvironmentBase } from '../local/rulith-local.mjs'
 import { materialDeviceFingerprint, materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
@@ -1234,6 +1235,140 @@ test('a running instance records the pids it owns, so the next manager can ask t
 
     await manager.instances.stop(instance.id)
     assert.equal(manager.registry.instance(instance.id).runtime, undefined)
+  })
+})
+
+// ── A recorded pid is not a recorded process ─────────────────────────────────
+
+/** A process with nothing to do with Rulith, standing for whatever took over a recorded pid. */
+async function unrelatedProcess(t) {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+  t.after(() => child.kill())
+  await new Promise((done, fail) => { child.once('spawn', done); child.once('error', fail) })
+  return child
+}
+const beforeThisBoot = () => new Date(Date.now() - uptime() * 1000 - 2 * 60 * 60_000).toISOString()
+
+test('after a reboot, a marker from before it does not block resetting the sign-in, even with its pids taken again', async (t) => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const instance = await addInstance(manager, 'Document QA', { agentId: 'agent-alpha' })
+    assert.ok(loadInstanceConfig(instance.directory).worker.env.RULITH_CONNECTION_KEY)
+    // The owner's registry after the reboot, as 0.9.1 wrote it: bare pids under a marker dated
+    // before the reboot, one of them now held by an unrelated terminal, plus the orphan marker
+    // 0.9.1's own startup wrote when it found that pid taken.
+    const terminal = await unrelatedProcess(t)
+    await manager.registry.patchInstance(instance.id, () => ({
+      runtime: { pid: 999_999, startedAt: beforeThisBoot(),
+        children: [{ role: 'agent', pid: terminal.pid }, { role: 'worker', pid: 999_998 }] },
+      orphaned: { managerPid: 999_999, children: [{ role: 'agent', pid: terminal.pid }], observedAt: new Date().toISOString() },
+    }))
+    gateway.expireDevice(manager.device.status().deviceId)
+    await manager.device.refresh().catch(() => undefined)
+    assert.equal(manager.device.status().state, 'unusable')
+
+    const reset = await manager.instances.forgetDevice()
+    assert.equal(reset.state, 'none', 'the reset the owner was refused: ' + JSON.stringify(reset))
+    assert.equal(loadInstanceConfig(instance.directory).worker.env.RULITH_CONNECTION_KEY, '')
+    await manager.registry.reclaimStale()
+    assert.equal(manager.registry.instance(instance.id).runtime, undefined, 'the stale marker is cleared')
+    assert.equal(manager.registry.instance(instance.id).orphaned, undefined)
+    assert.equal(processAlive(terminal.pid), true, 'nothing was done to the process that holds the pid now')
+  })
+})
+
+test('a recorded process whose pid another program holds now does not block signing out',
+  { skip: !['linux', 'win32'].includes(process.platform) && 'no cheap process identity on this platform' }, async (t) => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const instance = await addInstance(manager, 'Reused pid', { agentId: 'agent-alpha' })
+    const other = await unrelatedProcess(t)
+    // Written this boot by a workbench that has since crashed. The Agent it recorded has exited,
+    // and its pid now belongs to a different program.
+    const stamp = { ...processStamp(other.pid), session: 'a-crashed-workbench' }
+    const recorded = process.platform === 'linux'
+      ? { ...stamp, startTicks: String(BigInt(stamp.startTicks) + 1n) }
+      : { ...stamp, image: 'rulith-recorded-agent.exe' }
+    await manager.registry.patchInstance(instance.id, () => ({
+      runtime: { pid: 999_999, ...stamp, children: [{ role: 'agent', pid: other.pid, ...recorded }] },
+    }))
+    const result = await manager.instances.signOut()
+    assert.equal(result.state, 'signed_out', JSON.stringify(result))
+    assert.equal(gateway.requests.filter((row) => row.path === '/local-devices/revoke').length, 1)
+    assert.equal(processAlive(other.pid), true)
+  })
+})
+
+test('a child that is still running blocks signing out, and the refusal names the Agent and its pid', async (t) => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const instance = await addInstance(manager, 'Survivor', { agentId: 'agent-alpha' })
+    const worker = await unrelatedProcess(t)
+    // Stamped the way a host stamps the Worker it spawns, by a workbench that crashed since.
+    const stamp = { ...processStamp(worker.pid), session: 'a-crashed-workbench' }
+    await manager.registry.patchInstance(instance.id, () => ({
+      runtime: { pid: 999_999, ...stamp, children: [{ role: 'worker', pid: worker.pid, ...stamp }] },
+    }))
+    const refused = await manager.instances.signOut()
+    assert.equal(refused.state, 'incomplete', JSON.stringify(refused))
+    assert.match(refused.teaching, new RegExp(`^Still running: Survivor \\(Worker process ${worker.pid}\\)\\.`))
+    assert.equal(gateway.requests.filter((row) => row.path === '/local-devices/revoke').length, 0)
+
+    const exited = new Promise((done) => worker.once('exit', done))
+    worker.kill()
+    await exited
+    assert.equal((await manager.instances.signOut()).state, 'signed_out')
+  })
+})
+
+test('an orphan marker clears by itself once its processes end, while the page is only polling', async (t) => {
+  await withManager(t, async ({ manager }) => {
+    const instance = await addInstance(manager, 'Recovering', { agentId: 'agent-alpha' })
+    const survivor = await unrelatedProcess(t)
+    await manager.registry.patchInstance(instance.id, () => ({
+      runtime: { pid: 999_999, startedAt: new Date().toISOString(), children: [{ role: 'agent', pid: survivor.pid }] } }))
+    await manager.registry.reclaimStale()
+    assert.ok(manager.registry.instance(instance.id).orphaned)
+    assert.match(manager.instances.overview()[0].blocked, /still has processes/)
+
+    const exited = new Promise((done) => survivor.once('exit', done))
+    survivor.kill()
+    await exited
+    // Nothing is opened, started or reclaimed by hand: the page's polls are all that happens.
+    const deadline = Date.now() + 10_000
+    while (manager.instances.overview()[0].orphaned !== null && Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 50))
+    }
+    const row = manager.instances.overview()[0]
+    assert.equal(row.orphaned, null)
+    assert.equal(row.blocked, '')
+    assert.equal(manager.registry.instance(instance.id).runtime, undefined)
+  }, { orphanRecheckMs: 0 })
+})
+
+test('a Worker restart for a new model service becomes the next step only once the Agent has attachments', async (t) => {
+  await withManager(t, async ({ manager, gateway }) => {
+    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
+    const instance = await addInstance(manager, 'Attachments', { agentId: 'agent-alpha' })
+    assert.equal((await manager.instances.start(instance.id)).started, true)
+    const current = () => manager.instances.overview().find((row) => row.id === instance.id).model
+    assert.equal(current().workerRestartRequired, false)
+
+    assert.equal((await manager.instances.control(instance.id, { role: 'agent', operation: 'stop' })).stopped, true)
+    await manager.instances.setInstanceModel(instance.id, { ...scope, source: 'custom', url: 'http://127.0.0.1:11435/v1', name: 'another-model', key: '' })
+    assert.equal(current().workerRestartRequired, true, 'the running Worker still carries the previous model destination')
+    assert.equal(current().workerRestartUrgent, false, 'with no attachments, that is not the next thing to do')
+
+    const url = new URL((await manager.instances.open(instance.id)).url)
+    const added = await fetch(url.origin + '/materials', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k'), origin: url.origin },
+      body: JSON.stringify({ name: 'notes.txt', mediaType: 'text/plain', bytes: Buffer.from('attached').toString('base64') }) })
+    assert.equal(added.status, 200, JSON.stringify(await added.clone().json()))
+    assert.equal(current().workerRestartUrgent, true, 'an Agent with attachments is told to restart its Worker first')
+    const status = await (await fetch(url.origin + '/status', { headers: { 'x-rulith-local': url.searchParams.get('k') } })).json()
+    assert.equal(status.runtime.worker.modelRestartRequired, true, 'the conversation page can say it beside the files')
+
+    await manager.instances.control(instance.id, { role: 'worker', operation: 'stop' })
+    await manager.instances.control(instance.id, { role: 'worker', operation: 'start' })
+    assert.equal(current().workerRestartRequired, false)
+    assert.equal(current().workerRestartUrgent, false)
   })
 })
 

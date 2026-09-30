@@ -110,6 +110,17 @@ export function createMaterialService({ root, getIdentity, custodian, key }) {
       return { materials: open().publicList() }
     },
     /**
+     * Does this profile hold any local material at all?
+     *
+     * Asked to decide how loudly to say that a running Worker still carries the previous model
+     * destination, which matters only to reads of materials. It never creates an area to find
+     * out, and a store that cannot be opened answers no: nothing in it can be read either.
+     */
+    inUse() {
+      if (!configured) return false
+      try { return openMaterialStore(root, getIdentity(), { create: false }).list().length > 0 } catch { return false }
+    },
+    /**
      * Validate membership for a case submission, and produce what may be forwarded.
      *
      * Membership is checked against the owner binding, and disclosure against the destination in

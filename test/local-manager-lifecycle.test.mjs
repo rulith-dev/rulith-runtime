@@ -12,6 +12,11 @@
  *     arriving in that window slipped past the snapshot, so the manager could answer
  *     `signed_out` with a child it had just started still alive and owned.
  *
+ * The same lease keeps an Agent's conversation history, and a lock left behind there is judged
+ * where the most is known. A stopped Agent leaves its lock on Windows, and only the host knows
+ * that the pid on it now belongs to the host itself or to its Worker: the next Agent, asking from
+ * inside, refused to start.
+ *
  * The workbench arms use real separate processes, because a claim that is only ever contended
  * inside one process is not a claim that has been tested.
  */
@@ -19,12 +24,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { hostname, tmpdir, uptime } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { conversationFile } from '../agent/conversation-store.mjs'
 import { createManagerServer } from '../local/manager-server.mjs'
-import { acquireWorkbenchLease, processAlive, WorkbenchBusyError } from '../local/manager-registry.mjs'
+import { acquireWorkbenchLease, clearStaleLock, processAlive, WorkbenchBusyError } from '../local/manager-registry.mjs'
+import { noteChildExited, noteChildStarted, processStamp } from '../local/process-identity.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { createDevicesGateway } from './support/local-devices-gateway.mjs'
 
@@ -138,6 +145,70 @@ test('a claim whose owner is gone is recovered; a living owner is never stolen, 
   assert.equal(existsSync(lockFile), false)
 })
 
+/** A running process that has nothing to do with Rulith, holding whatever pid it was given. */
+async function unrelatedProcess(t) {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+  t.after(() => child.kill())
+  await new Promise((done, fail) => { child.once('spawn', done); child.once('error', fail) })
+  return child
+}
+
+test('a claim written before this machine booted is recovered, even though its pid is running again', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-claim-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const lockFile = join(root, 'workbench.lock')
+  // A workbench that was running when the machine restarted never released its claim, and the
+  // pid it recorded now belongs to some other program. 0.9.1 wrote only the time it claimed.
+  const other = await unrelatedProcess(t)
+  writeFileSync(lockFile, JSON.stringify({ pid: other.pid, host: hostname(), id: 'before-the-reboot',
+    at: Date.now() - uptime() * 1000 - 2 * 60 * 60_000, purpose: 'workbench' }))
+  const lease = await acquireWorkbenchLease(lockFile)
+  assert.equal(JSON.parse(readFileSync(lockFile, 'utf8')).pid, process.pid)
+  assert.equal(processAlive(other.pid), true)
+  lease.release()
+})
+
+test('a claim whose pid another program holds now is recovered',
+  { skip: !['linux', 'win32'].includes(process.platform) && 'no cheap process identity on this platform' }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-claim-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const lockFile = join(root, 'workbench.lock')
+  // Claimed this boot by a workbench that crashed; its pid was given to a different program.
+  const other = await unrelatedProcess(t)
+  const stamp = { ...processStamp(other.pid), session: 'a-crashed-workbench' }
+  const claimed = process.platform === 'linux'
+    ? { ...stamp, startTicks: String(BigInt(stamp.startTicks) + 1n) }
+    : { ...stamp, image: 'rulith-crashed-workbench.exe' }
+  writeFileSync(lockFile, JSON.stringify({ pid: other.pid, host: hostname(), id: 'crashed', at: Date.now(), purpose: 'workbench', ...claimed }))
+  const lease = await acquireWorkbenchLease(lockFile)
+  assert.equal(JSON.parse(readFileSync(lockFile, 'utf8')).pid, process.pid)
+  lease.release()
+
+  // The same claim naming the program that really holds the pid is a living owner, and is refused.
+  writeFileSync(lockFile, JSON.stringify({ pid: other.pid, host: hostname(), id: 'running', at: Date.now(), purpose: 'workbench', ...stamp }))
+  await assert.rejects(acquireWorkbenchLease(lockFile), WorkbenchBusyError)
+})
+
+test('on Windows, a claim whose pid a Node process running something else holds now is recovered',
+  { skip: process.platform !== 'win32' && 'the command-line rule is Windows only' }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-claim-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const lockFile = join(root, 'workbench.lock')
+  // A workbench that Windows ended at a Fast Startup shutdown: the uptime counter never restarted,
+  // and its pid now belongs to another Node program, so neither the boot nor the program name can
+  // tell. The script it ran can. (A claim naming the script its holder does run is refused: the
+  // real second workbench above is that arm.)
+  const other = await unrelatedProcess(t)
+  const claimed = { ...processStamp(other.pid, { script: 'C:\\Users\\op\\AppData\\Roaming\\npm\\\\node_modules\\rulith\\local\\rulith-local.mjs' }),
+    session: 'a-workbench-before-shutdown' }
+  assert.equal(claimed.script, 'rulith-local.mjs')
+  writeFileSync(lockFile, JSON.stringify({ pid: other.pid, host: hostname(), id: 'before-shutdown', at: Date.now(), purpose: 'workbench', ...claimed }))
+  const lease = await acquireWorkbenchLease(lockFile)
+  assert.equal(JSON.parse(readFileSync(lockFile, 'utf8')).pid, process.pid)
+  assert.equal(processAlive(other.pid), true, 'nothing was done to the process that holds the pid now')
+  lease.release()
+})
+
 test('building a manager claims nothing; listening claims, closing releases', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'rulith-claim-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -159,6 +230,129 @@ test('building a manager claims nothing; listening claims, closing releases', as
   await b.listen()
   assert.equal(JSON.parse(readFileSync(lockFile, 'utf8')).pid, process.pid)
   await b.close()
+})
+
+// ── A lock left behind, judged by the process that knows the most ────────────
+
+/** A lock ticket as another process on this machine writes one, naming `pid`. */
+const ticketFor = (pid, extra = {}) => ({ pid, host: hostname(), id: `ticket-${pid}`, at: Date.now(), purpose: 'workbench', ...extra })
+
+test('clearing a stale lock leaves alone every lock that is not proven stale', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-stale-lock-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const lockFile = join(root, 'history.json.lock')
+
+  assert.deepEqual(clearStaleLock(lockFile), { state: 'absent' })
+  assert.equal(existsSync(lockFile), false, 'looking creates nothing')
+
+  // A lock created a moment ago, whose owner has not been written yet.
+  writeFileSync(lockFile, '')
+  assert.equal(clearStaleLock(lockFile).state, 'anonymous')
+  assert.equal(readFileSync(lockFile, 'utf8'), '')
+
+  // A pid on another machine says nothing about this one.
+  writeFileSync(lockFile, JSON.stringify(ticketFor(999_999, { host: `${hostname()}-elsewhere` })))
+  assert.equal(clearStaleLock(lockFile).state, 'foreign')
+  assert.equal(existsSync(lockFile), true)
+
+  // A running process on this machine, stamped as it stamps itself.
+  const other = await unrelatedProcess(t)
+  const live = ticketFor(other.pid, { ...processStamp(other.pid), session: 'a-running-agent' })
+  writeFileSync(lockFile, JSON.stringify(live))
+  assert.deepEqual(clearStaleLock(lockFile), { state: 'running', held: live, ambiguity: `a lock held by running process ${other.pid}` })
+  assert.deepEqual(JSON.parse(readFileSync(lockFile, 'utf8')), live)
+
+  // A lock path that cannot be read as a file.
+  rmSync(lockFile)
+  mkdirSync(lockFile)
+  assert.equal(clearStaleLock(lockFile).state, 'unreadable')
+  assert.equal(existsSync(lockFile), true)
+})
+
+test('a lock whose pid this process, or a child it started, holds now is stale and is removed', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-stale-lock-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const lockFile = join(root, 'history.json.lock')
+
+  // Written by an earlier process that had this process's pid, as this process would stamp itself.
+  writeFileSync(lockFile, JSON.stringify(ticketFor(process.pid, {
+    ...processStamp(process.pid, { script: process.argv[1] }), session: 'an-earlier-agent' })))
+  assert.equal(clearStaleLock(lockFile).state, 'removed')
+  assert.equal(existsSync(lockFile), false)
+
+  // Written by an Agent whose pid is now a Worker's. Judged by any process but the one that started
+  // that Worker, the lock looks held: Node holds the pid, from the start time the ticket names.
+  const worker = await unrelatedProcess(t)
+  const ticket = ticketFor(worker.pid, { ...processStamp(worker.pid), session: 'a-killed-agent' })
+  writeFileSync(lockFile, JSON.stringify(ticket))
+  assert.equal(clearStaleLock(lockFile).state, 'running', 'without knowing whose child holds the pid, nothing proves the Agent gone')
+  noteChildStarted(worker.pid)
+  t.after(() => noteChildExited(worker.pid))
+  assert.deepEqual(clearStaleLock(lockFile), { state: 'removed', held: ticket })
+  assert.equal(existsSync(lockFile), false)
+})
+
+/**
+ * An attached instance whose Agent stand-in opens its conversation history as the Agent does, and
+ * the lock file that history is kept under.
+ */
+async function addHistoryInstance(manager, name) {
+  const instance = await addInstance(manager, name, { agentId: 'agent-alpha' })
+  const config = loadInstanceConfig(instance.directory)
+  config.agent.env = { ...config.agent.env, RULITH_TEST_OPEN_HISTORY: '1' }
+  saveInstanceConfig(instance.directory, config)
+  const row = manager.registry.instance(instance.id)
+  const owner = { origin: row.origin, accountId: row.accountId, agentId: row.agentId }
+  const lockFile = conversationFile(join(instance.directory, 'conversations'), owner) + '.lock'
+  const pidOf = (role) => manager.instances.hosts.get(instance.id)?.host.children().find((child) => child.role === role)?.pid
+  return { ...instance, lockFile, pidOf }
+}
+
+test('a conversation lock a stopped Agent left behind does not stop the next Agent, when its pid is now the Worker\'s or the workbench\'s', async (t) => {
+  await withManager(t, async ({ manager }) => {
+    const instance = await addHistoryInstance(manager, 'History')
+    assert.equal((await manager.instances.start(instance.id)).started, true)
+    assert.equal(JSON.parse(readFileSync(instance.lockFile, 'utf8')).pid, instance.pidOf('agent'), 'the Agent holds its history')
+
+    for (const [holder, pid, script] of [['Worker', instance.pidOf('worker'), ECHO], ['workbench', process.pid, process.argv[1]]]) {
+      assert.equal((await manager.instances.control(instance.id, { role: 'agent', operation: 'stop' })).stopped, true, holder)
+      // What a stopped Agent leaves on Windows, where every stop ends it outright: its lock, naming a
+      // pid that Windows has since given to the Worker — **Prepare sample and start Worker** does
+      // exactly that — or to this workbench. Stamped as the process now holding the pid would stamp
+      // itself, so that nothing inside the next Agent tells this lock from one really held.
+      writeFileSync(instance.lockFile, JSON.stringify(ticketFor(pid, { id: `left-behind-${holder}`,
+        ...processStamp(pid, { script }), session: 'a-stopped-agent' })))
+      const started = await manager.instances.control(instance.id, { role: 'agent', operation: 'start' })
+      assert.equal(started.started, true, `${holder}: ${JSON.stringify(started)}`)
+      assert.equal(JSON.parse(readFileSync(instance.lockFile, 'utf8')).pid, instance.pidOf('agent'), `${holder}: the new Agent holds its history`)
+    }
+  })
+})
+
+test('a conversation lock another running process holds is left in place, and the Agent says whose it is', async (t) => {
+  await withManager(t, async ({ manager }) => {
+    const instance = await addHistoryInstance(manager, 'Held history')
+    const other = await unrelatedProcess(t)
+    const held = ticketFor(other.pid, { id: 'held-by-another-agent', ...processStamp(other.pid), session: 'another-agent' })
+    mkdirSync(join(instance.directory, 'conversations'), { recursive: true })
+    writeFileSync(instance.lockFile, JSON.stringify(held))
+
+    // The host neither refuses nor waits: it leaves the lock and starts the Agent, which refuses.
+    const started = await manager.instances.control(instance.id, { role: 'agent', operation: 'start' })
+    assert.equal(started.started, false, JSON.stringify(started))
+    assert.match(started.teaching, /exited during startup/)
+    assert.deepEqual(JSON.parse(readFileSync(instance.lockFile, 'utf8')), held, 'a lock that may still be held is left alone')
+
+    // What the Agent printed reaches Trace line by line, possibly just after its exit.
+    const said = () => manager.instances.hosts.get(instance.id).host.events()
+      .filter((event) => event.src === 'agent' && event.stderr === true).map((event) => event.line).join('\n')
+    const deadline = Date.now() + 5_000
+    while (!/conversation history/.test(said()) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 25))
+    const refusal = said()
+    assert.match(refusal, new RegExp(`This Agent's conversation history is in use by another process \\(a lock held by running process ${other.pid}\\)\\.`))
+    assert.match(refusal, /Stop the other Agent that uses this history, or wait for it to exit, then try again\./)
+    assert.doesNotMatch(refusal, /workbench|RULITH_MANAGER_HOME/i)
+  })
 })
 
 // ── The drain admits nothing new ─────────────────────────────────────────────

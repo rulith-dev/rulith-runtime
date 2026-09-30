@@ -593,3 +593,147 @@ are refused while legitimate server code from the installation remains usable.
 Customer-facing product name is Rulith. Main startup is the three-column workbench;
 explicit legacy/config/role options preserve single-Agent use. Full UI negative-path
 review and final integrated test counts are recorded in the final root validation logs.
+
+### 0.9.2: a recorded pid is not a recorded process
+
+The owner's first real run of 0.9.1 met the gap in `reclaimStale` and `survivingProcesses`: both
+asked only `processAlive(pid)`. After a reboot, the registry still named the Agent pid of the
+instance *Document QA*; Windows had given that pid to an unrelated PowerShell, so **Reset
+sign-in** refused with "Some instances are still running" until the owner found and closed
+that terminal.
+
+`local/process-identity.mjs` now decides whether a recorded process still exists, for the
+instance markers, their children and both lock files. Each record carries a stamp taken when
+it is written: `startedAt`, `uptime`, the writer's `session`, and on Linux `bootId` and the
+process start time in clock ticks (`startTicks`), on Windows the image name and the entry
+script's file name (`script`, see below). The host stamps each role the moment it spawns it. A
+record is proven gone when:
+
+- no process holds its pid;
+- this process, or a role this process started and has not seen exit, holds its pid, and this
+  process did not write it;
+- it was written before this boot: Linux compares `boot_id` exactly; elsewhere a stamped record
+  is dated only by the uptime counter, which went backwards if the machine restarted (sixty
+  seconds of allowance on Windows and Linux, ten minutes elsewhere);
+- a different program holds its pid: a changed Linux start time, or on Windows a different
+  program named by `tasklist` (read only when every cheaper test left the record alive; an
+  answer is kept five seconds for that same record, never for another record of the pid);
+- on Windows, a Node process holds its pid whose command line does not name the script the
+  record names (see "Telling two Node processes apart on Windows" below).
+
+The wall clock is not evidence against a stamped record: a clock set forward, or a virtual
+machine resumed after a pause, moves `Date.now() - os.uptime()` and would make a live process's
+record look older than the boot. It is used only for rows and lock tickets written by 0.9.1 and
+earlier, which have nothing else: they are dated by their marker's `runtime.startedAt` (or a
+ticket's `at`) and proven stale more than ten minutes before this boot. On Windows such a
+record is also compared with the workbench's own Node program, because every process a
+workbench records was started from it; that is what clears the owner's case after a Fast
+Startup shutdown, which does not restart the uptime counter.
+
+Anything else stays "may be running", as before. Records this process wrote itself are never
+dated at all, so nothing can make the workbench disown its own children. The account notice
+now names each Agent and process that is still running, and a marker whose processes have
+ended clears on the page's next poll (at most every ten seconds, and only rewriting the
+registry once one of them has ended) instead of waiting for the instance to be opened or the
+workbench restarted.
+
+Tested in `test/process-identity.test.mjs` (every rule, with a scripted probe and against real
+processes, including a clock stepped forward eight hours over a live stamped record) and in the
+manager suites: a pre-boot marker whose pid is running again does not block **Reset sign-in**;
+a pid now held by another program does not block sign-out; a real surviving child still blocks
+it and is named; a pre-boot or reused-pid workbench claim is recovered while a live one is
+not; an orphan marker clears once its process ends.
+
+An independent review of this pass found two gaps, both closed below: a Windows record whose
+pid some other Node process held, with the uptime counter not gone backwards, still counted as
+running; and an Agent's conversation lock was judged only from inside the next Agent.
+
+#### Telling two Node processes apart on Windows
+
+After a Windows shutdown with Fast Startup, the default, the uptime counter keeps counting, so
+only the program name could clear a record. Node is the program name of much else on a
+developer's machine — Claude Code, MCP servers, dev servers — and a record whose pid one of them
+held still counted as running. The workbench's own claim is such a record: Windows ends the
+workbench at shutdown without releasing it, so `rulith start` itself could be refused.
+
+Every stamp written on Windows now also names the entry script of the process it records, as a
+file name (`script`): the host stamps each role with the basename of the path it spawned
+(`rulith-agent.mjs`, `rulith-worker.mjs`, or the file `paths.agent` / `paths.worker` names), and a
+process stamps itself with the basename of `process.argv[1]` (the manager's runtime marker and
+every lock ticket, so `rulith-local.mjs` for the workbench and `rulith-agent.mjs` for an Agent's
+conversation lock). When the image check has not proven a record gone, the record is stamped
+and names a plain-ASCII script, `tasklist` named the recorded program as the holder, and the pid
+is not held by a child this process started, the holder's command line is read:
+
+```
+powershell.exe -NoProfile -NonInteractive -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8;
+  $p = Get-CimInstance Win32_Process -Filter 'ProcessId=<pid>'; if ($p) { 'rulith-command-line:' + $p.CommandLine }"
+```
+
+one synchronous call from `%SystemRoot%\System32\WindowsPowerShell\v1.0`, with a five-second
+timeout, hidden, stdin ignored, and the pid checked to be a positive integer before it reaches
+the filter. It took 0.32 s warm and 0.45 s cold on the development machine. Only text after the
+`rulith-command-line:` mark is read, so a warning or module notice on standard output can never
+pass for a command line. A readable command line whose lower-cased text does not contain the
+lower-cased script name proves the record gone (`pid_reused`). An empty or unreadable one —
+an elevated process, a process that exited meanwhile, PowerShell unavailable — proves nothing.
+Answers are cached per record, keyed like the image answers plus the script: a "different
+script" answer for good, since that record's process had ended, and any other answer for five
+seconds.
+
+**Why the file name and never the path.** The comparison must never call a live process gone.
+npm's cmd shim starts the workbench through a path with a doubled backslash
+(`…\npm\\node_modules\rulith\local\rulith-local.mjs`), its PowerShell shim through one that ends
+in forward slashes (`…\npm/node_modules/rulith/local/rulith-local.mjs`, as a live workbench on
+the development machine reported), junctions and 8.3 short names spell the same directories in
+other ways (a long profile name becomes `C:\Users\ALEXAN~1\…`), and a process's own `argv[1]` is
+resolved while its command line keeps what was typed. A full-path mismatch in any of these would
+declare a live workbench gone, and a second workbench would take its lease. The file name is the
+one part every spelling shares; a holder that merely mentions it, or a different script with a
+longer name containing it, is read as running, which errs only toward the conservative answer.
+
+Records that name no script keep the earlier behaviour exactly: stamps from before this change,
+unstamped records from 0.9.1 and earlier, and records of a process not started from a script
+file. So do Linux, which already tells processes apart by start time, and macOS, which has no
+program check at all: a reused pid there still counts as running. Records this process wrote about
+a child it still runs are not asked about either; the host rewrites them whenever a child starts
+or exits.
+
+#### The Agent's conversation lock is judged by its host
+
+The Agent takes the workbench lease helper on `<conversation file>.lock`. It never advertises a
+managed stop, so every Agent stop is `child.kill()`, and on Windows that ends it before its exit
+handler can release the lock. The next Agent then judged the lock from inside its own process,
+where "this process holds the pid" and "a child I started holds the pid" say nothing about its
+host or its Worker. After a stop, **Prepare sample and start Worker** restarts the Worker, and
+Windows readily gives it the old Agent's pid: the next Agent exited with status 5, reporting that
+another Rulith workbench was running and naming `RULITH_MANAGER_HOME`.
+
+`clearStaleLock(lockFile)` in `manager-registry.mjs` is now the one rule by which a lock this
+process does not hold is removed, factored out of `tryTakeLock`, whose behaviour is unchanged: an
+absent, unreadable, anonymous or foreign-host lock is left alone, a lock whose holder may still
+be running is left alone, and a lock proven gone is read again and removed only if it is still
+the same ticket. It returns what it saw. `startAgent` in `rulith-local.mjs` calls it on
+`historyFile + '.lock'` after its refusals and immediately before spawning: the host's verdict
+knows its own pid and session and its started children, so a lock whose pid the host or its
+Worker now holds is cleared. It never refuses or waits; a lock that still looks held is left to
+the Agent. This is safe only because no Agent of that host is running at that point (the start is
+refused otherwise): "a child I started holds the pid" is wrong for a record a live child wrote
+about itself, and the Agent is the only child that writes this lock.
+
+An Agent that is refused now words it for the history: `WorkbenchBusyError` carries `detail`
+(what was found) and `holder` (the ticket, when a readable lock named one), and
+`openConversations` says "This Agent's conversation history is in use by another process (a lock
+held by running process 1234). Stop the other Agent that uses this history, or wait for it to
+exit, then try again." A lock that names no holder is reported as history that is locked or
+unavailable, with the lock's path. The exit status stays 5; the workbench's own lease refusal is
+unchanged.
+
+Tested in `test/process-identity.test.mjs` (the command-line rule with a scripted probe on every
+platform, and on Windows against a real Node process running another script) and
+`test/local-manager-lifecycle.test.mjs` (`clearStaleLock` leaves every lock alone that is not
+proven stale and removes one whose pid this process or its started child holds; a stopped Agent's
+lock whose pid is now the Worker's or the workbench's no longer stops the next Agent, with a
+stand-in Agent that opens its history exactly as the Agent does; a lock a running process holds is
+left in place and the Agent's refusal names it), and `test/conversation-store.test.mjs` (the real
+Agent's refusal names the conversation history, not a workbench or `RULITH_MANAGER_HOME`).

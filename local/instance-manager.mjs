@@ -27,7 +27,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { createLocalHost, defaultLocalConfig, normalizeLocalConfig } from './rulith-local.mjs'
-import { newInstanceId, processAlive, writeJsonAtomic } from './manager-registry.mjs'
+import { newInstanceId, writeJsonAtomic } from './manager-registry.mjs'
+import { instanceRecordedAt, processRecordRunning, processStamp } from './process-identity.mjs'
 import { checkedModelInput, createModelSettings, maxOutputTokens, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
 
 export const INSTANCE_MODES = Object.freeze(['local_agent', 'existing_client'])
@@ -101,7 +102,7 @@ export function newInstanceConfig({ directory, mode = 'local_agent', servePort }
  * @param {ReturnType<import('./manager-registry.mjs').createManagerRegistry>} options.registry
  * @param {ReturnType<import('./device-client.mjs').createDeviceClient>} options.device
  */
-export function createInstanceManager({ registry, device, startConfirmMs, managerReturnUrl }) {
+export function createInstanceManager({ registry, device, startConfirmMs, managerReturnUrl, orphanRecheckMs = 10_000 }) {
   /** Live hosts, by instance id. Created once, cached, never re-created on selection. */
   const hosts = new Map()
   const instancesRoot = join(registry.root, 'instances')
@@ -479,7 +480,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     if (live !== undefined) return live
     await registry.reclaimStale()
     const row = record(id)
-    if (row.runtime !== undefined && row.runtime.pid !== process.pid && processAlive(row.runtime.pid)) {
+    if (row.runtime !== undefined && row.runtime.pid !== process.pid
+      && processRecordRunning(row.runtime, { recordedAt: instanceRecordedAt(row) })) {
       throw new Error(`Instance ${row.name} is already open in another Rulith manager (process ${row.runtime.pid}).`)
     }
     // A manager that died can leave its Agent and Worker running. Opening a second host over
@@ -579,15 +581,22 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
    * a marker claiming no children while children run. It is retried, and if it still cannot be
    * written the failure is kept and surfaced on the instance — an operator who can see
    * "this instance's processes are not recorded" can act; a silent gap cannot be acted on.
+   *
+   * Each process is written down with what identifies it (`process-identity.mjs`): this
+   * manager's own stamp, taken once and naming the script this process was started with, and
+   * each child's, taken by the host the moment it spawned that child. A later run can then tell a
+   * recorded process from an unrelated one that was given the same pid, which after a reboot is
+   * the ordinary case on Windows.
    */
   const runtimeRecordFailures = new Map()
   const accessStopWarnings = new Map()
+  const managerStamp = processStamp(process.pid, { script: process.argv[1] })
   const recordRuntime = async (id, children) => {
     const live = hosts.get(id)
     if (live === undefined) return
     const observed = children ?? live.host.children()
     const write = () => registry.patchInstance(id, () => ({ hostPort: live.host.port, servePort: live.servePort,
-      runtime: { pid: process.pid, startedAt: new Date().toISOString(), children: observed } }))
+      runtime: { pid: process.pid, ...managerStamp, children: observed } }))
     try {
       await write()
       runtimeRecordFailures.delete(id)
@@ -640,7 +649,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     // so the next run's orphan check sees a dead manager with living children and refuses to
     // open a second host over them.
     await registry.patchInstance(id, () => ({
-      runtime: { pid: process.pid, startedAt: new Date().toISOString(), children: unobserved },
+      runtime: { pid: process.pid, ...managerStamp, children: unobserved },
       unobservedAt: new Date().toISOString(),
     }))
     return { closed: true, unobserved }
@@ -688,22 +697,69 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     return ['agent', 'worker'].filter((role) => status[role] === true)
   }
 
-  // A dead host is not evidence that its children stopped. Inspect recorded PIDs again on
-  // every attempt, so an orphan blocks credential cleanup only while it is actually alive.
+  // A dead host is not evidence that its children stopped. Inspect recorded processes again on
+  // every attempt, so an orphan blocks credential cleanup only while it is actually alive — and
+  // only while the process under its pid is still the recorded one. A pid that an unrelated
+  // program took over after a reboot is not a running Agent (`process-identity.mjs`).
   const survivingProcesses = (row) => {
+    const recordedAt = instanceRecordedAt(row)
     const children = [...(row.runtime?.children ?? []), ...(row.orphaned?.children ?? [])]
     const seen = new Set()
     const results = children.filter((child) => {
-      if (seen.has(child.pid) || !processAlive(child.pid)) return false
+      if (seen.has(child.pid) || !processRecordRunning(child, { recordedAt })) return false
       seen.add(child.pid)
       return true
-    }).map((child) => ({ role: child.role, state: 'elsewhere', ok: false,
+    }).map((child) => ({ role: child.role, pid: child.pid, state: 'elsewhere', ok: false,
       teaching: `The ${child.role} process ${child.pid} is still running outside this workbench. Stop it before clearing its credentials.` }))
-    if (row.runtime && row.runtime.pid !== process.pid && processAlive(row.runtime.pid)) {
-      results.push({ role: 'host', state: 'elsewhere', ok: false,
+    if (row.runtime && row.runtime.pid !== process.pid && processRecordRunning(row.runtime, { recordedAt })) {
+      results.push({ role: 'host', pid: row.runtime.pid, state: 'elsewhere', ok: false,
         teaching: `This instance is open in another Rulith workbench (process ${row.runtime.pid}); stop it there first.` })
     }
     return results
+  }
+  /**
+   * Which Agents are still running, and what, in one line an operator can act on.
+   *
+   * The account notice shows only a teaching, so the names and pids that decide what to stop
+   * have to be in it. Before this, "Some instances are still running" left the operator to
+   * work out which process, which is how an unrelated terminal holding a reused pid went
+   * unnoticed.
+   */
+  const stillRunning = (running) => running.map((row) => {
+    const parts = (row.results ?? []).filter((result) => result.ok !== true).map((result) =>
+      result.role === 'host' ? `open in another workbench${result.pid ? `, process ${result.pid}` : ''}`
+        : `${result.role === 'agent' ? 'Agent' : result.role === 'worker' ? 'Worker' : String(result.role ?? 'process')}`
+          + `${result.pid ? ` process ${result.pid}` : ''}${result.state === 'stopping' ? ' still stopping' : ''}`)
+    return parts.length === 0 ? row.name : `${row.name} (${parts.join(', ')})`
+  }).join('; ')
+
+  /**
+   * Clear orphan markers whose processes have ended since the last check, without a restart.
+   *
+   * A marker is re-examined when a host is opened and when the workbench starts. Neither
+   * happens while an operator is looking at "processes from a manager that is gone are still
+   * running", and the controls that would open a host are exactly the ones that marker
+   * disables. So while any marker exists, the page's own polling re-runs the same
+   * `reclaimStale` — at most every ten seconds, never while closing — and a marker whose
+   * processes the operator has since stopped clears by itself. Nothing is cleared that the
+   * startup check would have kept.
+   */
+  let orphanRecheck
+  let orphanRecheckAt = -Infinity
+  const recheckOrphans = (rows) => {
+    if (phase === 'closing' || orphanRecheck !== undefined || performance.now() - orphanRecheckAt < orphanRecheckMs) return
+    orphanRecheckAt = performance.now()
+    // Asked outside the registry lock, and the registry is written only when `reclaimStale` would
+    // change something: a marker whose manager is gone names a process that has ended. While
+    // every orphan still runs, or the manager's own record still looks alive, nothing is rewritten.
+    const ended = rows.some((row) => {
+      if (row.orphaned === undefined || row.runtime === undefined) return false
+      const recordedAt = instanceRecordedAt(row)
+      if (processRecordRunning(row.runtime, { recordedAt })) return false
+      return (row.orphaned.children ?? []).some((child) => !processRecordRunning(child, { recordedAt }))
+    })
+    if (!ended) return
+    orphanRecheck = registry.reclaimStale().catch(() => undefined).finally(() => { orphanRecheck = undefined })
   }
 
   const rememberPairingError = (id, error) => registry.patchInstance(id, (row) => row.pairing ? {
@@ -728,11 +784,14 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
      */
     overview: () => {
       const grant = device.status()
-      return registry.read().instances.map((row) => {
+      const rows = registry.read().instances
+      if (rows.some((row) => row.orphaned !== undefined)) recheckOrphans(rows)
+      return rows.map((row) => {
       const live = hosts.get(row.id)
       const status = live?.host.status()
       if (runningRoles(row.id).length === 0) accessStopWarnings.delete(row.id)
       const model = publicModel(row, grant)
+      const workerRestartRequired = live?.host.workerModelRestartRequired === true
       const currentDefault = modelSource(row) === 'default' ? defaultFor(row, grant) : undefined
       const worker = loadInstanceConfig(resolve(row.directory)).worker?.env ?? {}
       const manifest = readJson(text(worker.RULITH_TOOLS_FILE), { tools: {} })
@@ -755,7 +814,13 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         pendingReplace: row.pairing?.replaceAgentToken === true,
         pendingOrigin: row.pairing?.origin ?? '', pendingAccountId: row.pairing?.accountId ?? '',
         setupTarget: row.setupTarget ?? null,
-        model: { ...model, workerRestartRequired: live?.host.workerModelRestartRequired === true,
+        // A running Worker keeps the model destination it started with, and only reads of local
+        // attachments use it: the Document assistant's and the material read Tool's. Restarting
+        // is the next thing to do only once this profile actually holds attachments; before
+        // that, the page mentions it quietly instead of putting it ahead of everything else.
+        // 只有本 profile 已有本地附件时才把"重启 Worker"作为下一步；没有附件时只低调提示。
+        model: { ...model, workerRestartRequired,
+          workerRestartUrgent: workerRestartRequired && live.host.attachmentsInUse === true,
           restartRequired: model.source === 'default' && status?.agent === true
             && live?.inheritedModelSignature !== modelSignature(currentDefault ?? {}) },
         pendingApproved: row.pairing?.approvedAt !== undefined,
@@ -1025,8 +1090,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       const live = hosts.get(id)
       if (operation === 'stop' && live === undefined) {
-        if (row.orphaned || row.runtime?.children?.some(child => processAlive(child.pid))
-          || (row.runtime && row.runtime.pid !== process.pid && processAlive(row.runtime.pid))) {
+        if (survivingProcesses(row).length > 0) {
           throw new Error('This Agent has processes outside this workbench. Stop them with their owning workbench before reporting them stopped.')
         }
         return { instanceId: id, role, state: 'stopped', stopped: true, results: [] }
@@ -1424,16 +1488,16 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         const progress = { state: 'incomplete', step: 'stop', at: new Date().toISOString(), instances: running.map((row) => row.name) }
         await device.noteSignOut(progress)
         return { state: 'incomplete', step: 'stop', running,
-          teaching: 'Some instances are still running, so this device was not revoked and is still signed in. Stop them and sign out again.' }
+          teaching: `Still running: ${stillRunning(running)}. This device was not revoked and is still signed in. Stop them and sign out again.` }
       }
       // Asked again, right before the irreversible step. The drain is what makes this
       // unreachable; checking anyway is what makes "nothing was running when this device was
       // revoked" a fact this code verified rather than one it inferred from its own design.
       const late = registry.read().instances.filter((row) => runningRoles(row.id).length > 0 || survivingProcesses(row).length > 0)
       if (late.length > 0) {
-        return { state: 'incomplete', step: 'stop',
-          running: late.map((row) => ({ id: row.id, name: row.name, results: survivingProcesses(row) })),
-          teaching: `${late.map((row) => row.name).join(', ')} started running while this sign-out was in progress, so this device was not revoked.`
+        const lateRunning = late.map((row) => ({ id: row.id, name: row.name, results: survivingProcesses(row) }))
+        return { state: 'incomplete', step: 'stop', running: lateRunning,
+          teaching: `Started running while this sign-out was in progress: ${stillRunning(lateRunning)}. This device was not revoked.`
             + ' Nothing was revoked and nothing was cleared; sign out again.' }
       }
       let revoked
@@ -1510,13 +1574,13 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       if (running.length > 0) {
         return { state: 'incomplete', step: 'stop', running,
-          teaching: 'Some instances are still running. Stop them before clearing the credentials this authorization issued.' }
+          teaching: `Still running: ${stillRunning(running)}. Stop them before clearing the credentials this authorization issued.` }
       }
       const late = registry.read().instances.filter((row) => runningRoles(row.id).length > 0 || survivingProcesses(row).length > 0)
       if (late.length > 0) {
-        return { state: 'incomplete', step: 'stop',
-          running: late.map((row) => ({ id: row.id, name: row.name, results: survivingProcesses(row) })),
-          teaching: 'Some processes are still running. Nothing was revoked or cleared; stop them and retry.' }
+        const lateRunning = late.map((row) => ({ id: row.id, name: row.name, results: survivingProcesses(row) }))
+        return { state: 'incomplete', step: 'stop', running: lateRunning,
+          teaching: `Still running: ${stillRunning(lateRunning)}. Nothing was revoked or cleared; stop them and retry.` }
       }
       let revoke = 'not_issued'
       let revokeTeaching = ''
@@ -1559,6 +1623,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
      */
     closeAll: async () => {
       await drain('closing')
+      // A marker re-check started by the page's last poll finishes before anything closes, so no
+      // registry edit from this workbench is still in flight after it has shut down.
+      await orphanRecheck
       const unobserved = []
       const failures = []
       // Until empty, not once over a snapshot: the loop itself awaits, and a host that was

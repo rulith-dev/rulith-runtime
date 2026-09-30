@@ -72,6 +72,20 @@ test('real Agent rejects a mismatched authenticated identity before reading conv
   assert.doesNotMatch(run.stderr, /Cannot establish an authenticated MCP session/)
 })
 
+test('a real Agent whose history another process holds says so, not that another workbench runs', async t => {
+  // This test process holds the history, as a second Agent on the same history would.
+  const dir = fixture(t), holder = await openConversations(dir, owner); t.after(() => holder.close())
+  const run = await runAgent({ argv: ['--serve'], env: { RULITH_CONVERSATION_DIR: dir, RULITH_CONVERSATION_OWNER: JSON.stringify(owner), RULITH_SERVE_KEY: 'held-history', RULITH_SERVE_PORT: String(await freePort()) }, model: () => 'wrong' })
+  assert.equal(run.code, 5, run.stderr)
+  const refusal = run.stderr.split('\n').find(line => line.includes('conversation history')) ?? ''
+  assert.match(refusal, new RegExp(`^✗ Local conversation history needs attention: This Agent's conversation history is in use by another process \\(a lock held by running process ${process.pid}\\)\\.`))
+  assert.match(refusal, /Stop the other Agent that uses this history, or wait for it to exit, then try again\.$/)
+  assert.doesNotMatch(refusal, /workbench/i)
+  assert.doesNotMatch(run.stderr, /RULITH_MANAGER_HOME/)
+  assert.equal(run.modelRequests.length, 0)
+  assert.equal(JSON.parse(readFileSync(holder.file + '.lock', 'utf8')).pid, process.pid, 'the holder keeps its lock')
+})
+
 test('a history write failure refuses admission before any model or Board tool executes', async t => {
   const dir = fixture(t), blocked = join(dir, 'not-a-directory')
   writeFileSync(blocked, 'preserve me')

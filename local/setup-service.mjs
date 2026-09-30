@@ -24,6 +24,13 @@ export function setupOrigin(raw) {
 
 /** The three Tools of the Verified Calculation sample. Their contracts belong to the installed Release. */
 const SAMPLE_TOOLS = ['read_input', 'write_output', 'verify_output'].map(name => 'rulith.verified_calculation.' + name + '@1')
+/** The file Source the installed Verified Calculation Release reads and writes. */
+const SAMPLE_SOURCE = 'verified-calculation-local'
+/**
+ * Where that Source's data lives, relative to the Worker root: the Release declares `runtime` as
+ * the Source's default location, and `examples/verified-calculation/setup.mjs` writes this layout.
+ */
+const SAMPLE_DATA = 'runtime'
 
 /**
  * 计算示例的 Worker Tool 清单：只有三个 Tool 都写出了完整合同，才原样交回打包的字节。
@@ -83,7 +90,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
   const persistConfiguration = (mutate, role = 'all') => {
     const allowed = role === 'agent' ? agentStopped() : role === 'worker' ? workerStopped() : stopped()
     if (!allowed) throw new Error(role === 'agent' ? 'Stop Agent before changing its model.'
-      : role === 'worker' ? 'Stop Worker before replacing its Connection key.'
+      : role === 'worker' ? 'Stop Worker before changing its configuration.'
         : 'Stop Agent and Worker before changing local setup.')
     const current = read(configFile, getConfig()), next = structuredClone(current)
     mutate(next); saveConfig(next)
@@ -91,6 +98,20 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
   const context = () => {
     if (!configured()) throw new Error('Pair this Local first.')
     return cloud(connection().base, '/local-setup/context', undefined, true)
+  }
+  /**
+   * Send one complete resource selection to Console, where it waits for authorization.
+   *
+   * The Gateway keeps one selection per Connection and replaces it whole, so what is sent is
+   * everything selected, never a single addition. It is a proposal: nothing is authorized by
+   * sending it, and it changes nothing a running role uses.
+   */
+  const propose = async (resources, { remember = true } = {}) => {
+    // 使用与真实 Worker 相同的组成和校验路径，错误清单不能被向导报为就绪。
+    toolManagement.overview()
+    const result = await cloud(connection().base, '/local-setup/resources', { resources }, true)
+    if (remember) atomic(stateFile, { ...state(), resources })
+    return result
   }
   return {
     get busy() { return busy },
@@ -283,29 +304,139 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       await onModelConfigured?.()
       return { teaching: 'Model configuration saved on this computer.' }
     }),
-    example: body => exclusive(async () => {
+    /**
+     * Prepare the Verified Calculation sample as one action, and leave the Worker running with it.
+     *
+     * One click used to be a refusal ("Stop Agent and Worker before preparing files"), a Stop,
+     * the preparation, "Send selection for authorization" and a Start, and nothing said so up
+     * front: a Worker already running without the calculation Tools left Console showing all
+     * three as Missing. The click on "Prepare sample and start Worker" is now the consent for
+     * those steps, in this order:
+     *
+     *   1. Everything that can refuse without touching anything: an empty target directory that
+     *      the owner would let a Worker use, the Capability installed for this Agent, the packaged
+     *      manifest stating every contract, and — for a running Worker — a start that would be
+     *      refused afterwards.
+     *   2. Stop the Worker if it is running, and wait for it to exit. A managed stop finishes any
+     *      claimed work and its report first. A Worker that has not exited leaves nothing prepared,
+     *      and the directory is checked again after the wait.
+     *   3. Write the files in the layout `setup.mjs` writes — the Adapters and the Tool Manifest
+     *      at the Worker root, the Source's data under `runtime/` — never over an existing file,
+     *      and point this profile's Worker root and Tool Manifest at them. The Release's default
+     *      Source location, `runtime`, then names the data folder as it is. Only the Worker's
+     *      configuration changes, so a running Agent is left alone.
+     *   4. Send the Source folder for authorization, when it is the only selected resource. The
+     *      Gateway replaces a Connection's selection whole, so with other resources selected
+     *      nothing is sent on the operator's behalf; they review and send the combined selection.
+     *   5. Start the Worker, so it advertises the three Tools for Console to check.
+     *
+     * The answer states each outcome in one `teaching`. `roles` is supplied by the host this
+     * service belongs to; without it, a running Worker is refused as before.
+     *
+     * 中文说明：点击"准备示例并启动 Worker"即同意停止并重启 Worker。只改 Worker 配置，所以不动正在运行的
+     * Agent；拒绝覆盖已有文件、清单核对、原子写入都保持不变；已有其他资源选择时不替用户发送。
+     * 示例数据放在 Worker 根目录下的 runtime/，与 setup.mjs 相同，Release 默认的 Source 位置 "runtime"
+     * 因而直接可用；发送给 Console 的是该目录的绝对路径，Worker 解析两者得到同一个目录。
+     */
+    example: (body, roles) => exclusive(async () => {
       fields(body, ['directory'])
-      if (!stopped()) throw new Error('Stop Agent and Worker before preparing files.')
-      const current = await context()
-      if (!current.sources.some(source => source.name === 'verified-calculation-local' && source.type === 'file')) throw new Error('Install Verified Calculation for this Agent in Console first.')
       if (!text(body.directory).trim()) throw new Error('Choose a new directory for the sample.')
       const target = resolve(body.directory)
       if (existsSync(target) && readdirSync(target).length) throw new Error('Choose an empty directory; existing files will not be overwritten.')
+      const current = await context()
+      if (!current.sources.some(source => source.name === SAMPLE_SOURCE && source.type === 'file')) throw new Error('Install Verified Calculation for this Agent in Console first.')
       const source = fileURLToPath(new URL('../examples/verified-calculation/', import.meta.url))
       // 打包清单已逐项复述已安装 1.0.2 Release 的合同，与 Gateway 提供给 Console 快速上手页的清单逐字节相同，
       // 所以向导、setup.mjs 与快速上手页得到同一组 Tool pin。清单原样写出；先核对，再写任何文件。
       const manifest = sampleToolManifest(readFileSync(join(source, 'worker-tools.json')))
-      mkdirSync(join(target, 'adapters/verified-calculation'), { recursive: true })
-      for (const file of ['read-input.mjs','write-output.mjs','verify-output.mjs']) copyFileSync(join(source,file),join(target,'adapters/verified-calculation',file),fsConstants.COPYFILE_EXCL)
-      copyFileSync(join(source,'data/input.json'),join(target,'input.json'),fsConstants.COPYFILE_EXCL)
-      writeFileSync(join(target,'worker-tools.json'),manifest,{flag:'wx',mode:0o600})
-      persistConfiguration(next => { next.worker = { ...next.worker, env: { ...next.worker?.env, RULITH_WORKER_ROOT: target, RULITH_TOOLS_FILE: join(target,'worker-tools.json') } } })
-      atomic(stateFile, { ...state(), resources: [{ name: 'verified-calculation-local', type: 'file', access: target }] })
-      return { directory: target }
+      const exposed = roles?.directoryRefusal?.(target)
+      if (exposed) throw new Error(exposed)
+      const wasRunning = !workerStopped()
+      if (wasRunning) {
+        if (roles === undefined) throw new Error('Stop Worker before preparing files.')
+        // A start that is already known to be refused is said now, while the Worker still runs.
+        const refused = await roles.startRefusal()
+        if (refused) throw new Error(`The Worker could not be started again (${String(refused).trim().replace(/\.$/, '')}), so it was not stopped and nothing was prepared.`)
+        await roles.stopWorker()
+        // Judged by the process, not by the answer: a Worker that exited on its own meanwhile
+        // has stopped too, and one that is still draining has not.
+        if (!workerStopped()) {
+          throw new Error('The Worker was asked to stop and has not exited yet: it finishes any work it has claimed first.'
+            + ' Nothing was prepared. Prepare the sample again once the Worker shows as stopped.')
+        }
+        // The stop can take tens of seconds. A host that began closing meanwhile gets nothing
+        // written for a Worker it will not start, and the directory is looked at again.
+        if (roles.closing?.()) throw new Error('This Local host began closing while the Worker stopped, so nothing was prepared.')
+        if (existsSync(target) && readdirSync(target).length) {
+          const restarted = await roles.startWorker()
+          throw new Error('Choose an empty directory; existing files will not be overwritten. Files appeared in it while the Worker stopped.'
+            + (restarted.body?.ok === true ? ' The Worker was started again with its previous tools.' : ' The Worker did not start again: ' + text(restarted.body?.teaching)))
+        }
+      }
+      try {
+        mkdirSync(join(target, 'adapters/verified-calculation'), { recursive: true })
+        for (const file of ['read-input.mjs','write-output.mjs','verify-output.mjs']) copyFileSync(join(source,file),join(target,'adapters/verified-calculation',file),fsConstants.COPYFILE_EXCL)
+        // The layout `setup.mjs` writes and the Release expects: the Source's data under `runtime/`,
+        // which is the Release's default Source location relative to the Worker root, and the
+        // Adapters and Tool Manifest beside it at that root. 0.9.1 put input.json at the root, where
+        // the default location "runtime" could not reach it.
+        mkdirSync(join(target, SAMPLE_DATA))
+        copyFileSync(join(source,'data/input.json'),join(target,SAMPLE_DATA,'input.json'),fsConstants.COPYFILE_EXCL)
+        writeFileSync(join(target,'worker-tools.json'),manifest,{flag:'wx',mode:0o600})
+        // The governed Source contains only data, and the Worker writes output.json into it.
+        writeFileSync(join(target,'.gitignore'),'/' + SAMPLE_DATA + '/\n',{flag:'wx'})
+        persistConfiguration(next => { next.worker = { ...next.worker, env: { ...next.worker?.env, RULITH_WORKER_ROOT: target, RULITH_TOOLS_FILE: join(target,'worker-tools.json') } } }, 'worker')
+      } catch (error) {
+        // The configuration is written last, so a failure here left the Worker's own settings as
+        // they were: start it again on them rather than leave it stopped by this click.
+        const restarted = wasRunning ? await roles.startWorker() : undefined
+        throw new Error(String(error?.message ?? error) + ' The sample was not prepared.'
+          + (!wasRunning ? '' : restarted.body?.ok === true ? ' The Worker was started again with its previous tools.'
+            : ' The Worker was stopped for this and did not start again: ' + text(restarted.body?.teaching)))
+      }
+      // From here the files are written and the Worker points at them, so nothing below may leave
+      // the Worker stopped: a failure to record or send the selection is reported, and the
+      // Worker is still started.
+      let selection = 'kept', selectionTeaching = ''
+      try {
+        // The Source folder as the resource route would record it, so a later manual send matches.
+        // The Worker resolves a relative location against its root, so with the root at `target`
+        // this absolute path and the Release's default "runtime" name the same folder. The absolute
+        // one is sent: the route can check it exists, and it stays right if the root moves.
+        const sample = { name: SAMPLE_SOURCE, type: 'file', access: realpathSync(join(target, SAMPLE_DATA)) }
+        // Only selections this page can still show and send count; one for a Source that is no
+        // longer installed is dropped rather than left to stop the sample being sent.
+        const offered = new Set([...current.sources.map(row => row.name), ...mcpServices.overview().services.map(row => row.name)])
+        const others = (state().resources ?? []).filter(row => row.name !== SAMPLE_SOURCE && offered.has(row.name))
+        const resources = [...others, sample]
+        atomic(stateFile, { ...state(), resources })
+        if (others.length === 0) { await propose(resources, { remember: false }); selection = 'sent' }
+      } catch (error) {
+        selection = 'failed'
+        selectionTeaching = String(error?.message ?? error).trim().replace(/\.$/, '')
+      }
+      const worker = roles === undefined ? undefined : await roles.startWorker()
+      const workerReady = worker?.body?.ok === true
+      const started = wasRunning ? 'restarted' : 'started'
+      const teaching = [`Prepared the calculation sample in ${target}.`,
+        worker === undefined ? 'Start the Worker so it advertises the three calculation Tools.'
+          : workerReady ? `The Worker was ${started} with the three calculation Tools.`
+            : worker.body?.state === 'unconfirmed'
+              ? `The Worker was ${started} but has not reported that it finished initializing; open Trace to see what it printed.`
+              : `The Worker did not start: ${text(worker.body?.teaching) || 'its start was not confirmed.'}`,
+        selection === 'sent' ? `Its Source folder, ${SAMPLE_DATA}, was sent to Console: review and authorize it there.`
+          : selection === 'kept' ? 'Other resources are selected here too, so nothing was sent: review the selection and send it for authorization.'
+            : `Its Source folder, ${SAMPLE_DATA}, was not sent to Console (${selectionTeaching}). Send the selection for authorization from this page again,`
+              + ` or bind ${SAMPLE_SOURCE} in Console with its default location, ${SAMPLE_DATA}.`,
+      ].join(' ')
+      return { directory: target, selection, worker: worker === undefined ? 'not_started' : text(worker.body?.state) || (workerReady ? 'ready' : 'failed'),
+        workerReady, teaching }
     }),
+    // Sending a selection no longer asks for the roles to be stopped. It is a proposal that waits
+    // for authorization in Console and changes nothing a running role uses; the refusal only made
+    // an operator stop and restart a Worker to send it, which the sample step now does itself.
     resources: body => exclusive(async () => {
       fields(body, ['resources', 'services'])
-      if (!stopped()) throw new Error('Stop Agent and Worker before changing resources.')
       const current = await context(), services = mcpServices.overview().services, resources = []
       if (!Array.isArray(body.resources) || !Array.isArray(body.services) || body.resources.length + body.services.length > 32) throw new Error('Choose at most 32 resources to share with Console.')
       for (const value of body.resources) {
@@ -323,11 +454,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
         if (!service || resources.some(row => row.name === name)) throw new Error('Select each installed MCP service once.')
         resources.push({ name, type: 'mcp', access: 'local://' + name, definition: service.definition })
       }
-      // 使用与真实 Worker 相同的组成和校验路径，错误清单不能被向导报为就绪。
-      toolManagement.overview()
-      const result = await cloud(connection().base, '/local-setup/resources', { resources }, true)
-      atomic(stateFile, { ...state(), resources })
-      return result
+      return propose(resources)
     }),
   }
 }

@@ -31,6 +31,24 @@ if (process.env.RULITH_TEST_EXIT === '1') {
 }
 
 /**
+ * `RULITH_TEST_OPEN_HISTORY=1` makes the Agent stand-in open its conversation history before it
+ * reports readiness: the same `openConversations` call on the directory and owner the host passed,
+ * and the same refusal as the Agent — the message on standard error and exit status 5. An arm about
+ * that history's lock then watches the real lock being taken, or refused, by a separate process,
+ * which keeps it until it exits and releases it only if it exits on its own.
+ */
+if (agentRole && process.env.RULITH_TEST_OPEN_HISTORY === '1') {
+  const { openConversations } = await import('../../agent/conversation-store.mjs')
+  try {
+    await openConversations(process.env.RULITH_CONVERSATION_DIR ?? '', JSON.parse(process.env.RULITH_CONVERSATION_OWNER || '{}'))
+  } catch (error) {
+    // Exit once the line is written: a pipe on Windows may still hold it when `process.exit` runs.
+    await new Promise((done) => process.stderr.write(`\n✗ Local conversation history needs attention: ${error.message}\n\n`, done))
+    process.exit(5)
+  }
+}
+
+/**
  * How long this child keeps working after it is asked to stop.
  *
  * A real role finishing a call does not leave the instant it is told to. Advertising
