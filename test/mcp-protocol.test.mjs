@@ -22,7 +22,7 @@ import { MCP_PROTOCOL_VERSION, MODEL_TOOLS, advertisedTools, callTool, runAgent 
 // ── Protocol baseline: the version is a contract, not a greeting ─────────────
 
 test('RT-PROTO-1 a version this client does not speak stops the run before any business', async () => {
-  // The session, streaming, resumption and serial-recovery rules this Runtime depends on
+  // The session, streaming, resumption and held-call rules this Runtime depends on
   // are defined by the version it negotiated. An endpoint speaking an earlier one may list
   // tools perfectly well and then differ exactly where it matters — so the refusal is at
   // the handshake, not at the first write that behaves unexpectedly.
@@ -47,7 +47,9 @@ test('RT-PROTO-2 the negotiated version and the declared capability travel on ev
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.initializes[0].protocolVersion, MCP_PROTOCOL_VERSION)
-  assert.deepEqual(run.initializes[0].capabilities?.experimental?.['rulith/v2'], { operationRecovery: 1 })
+  assert.deepEqual(run.initializes[0].capabilities?.experimental?.['rulith/v3'], { heldCalls: 1 })
+  assert.equal(run.initializes[0].capabilities?.experimental?.['rulith/v2'], undefined,
+    'a rulith/v2 declaration would be refused by a v3 Gateway before any session opens')
   assert.equal(run.initializes[0].clientInfo.version,
     JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version)
   for (const request of run.requests) {
@@ -56,12 +58,11 @@ test('RT-PROTO-2 the negotiated version and the declared capability travel on ev
   }
 })
 
-for (const serverCapabilities of [null, [], {}, { operationRecovery: 1 },
-  { operationRecovery: 1, boardObservation: 0 }, { operationRecovery: '1', boardObservation: 1 },
-  { operationRecovery: 1, boardObservation: 1, serialRecovery: 1 }]) {
-  test(`incompatible server capabilities stop before model, tools or recovery: ${JSON.stringify(serverCapabilities)}`, async () => {
+for (const serverCapabilities of [false, null, [], {}, { heldCalls: 0 }, { heldCalls: '1' },
+  { heldCalls: 1, boardObservation: 1 }, { operationRecovery: 1, boardObservation: 1 }]) {
+  test(`incompatible server capabilities stop before model, tools or waiting: ${JSON.stringify(serverCapabilities)}`, async () => {
     const run = await runAgent({ serverCapabilities,
-      recovery: { state: 'waiting', callRef: 'original-call', tool: 'ApplyAction', retryAfterMs: 100 },
+      priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker' }],
       model: () => 'Must not run.', timeoutMs: 20_000 })
     assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
     assert.deepEqual(run.methods, ['initialize'])
@@ -93,11 +94,28 @@ test('RT-CONN-1 a replaced connection ends the run and does not reconnect', asyn
   assert.deepEqual(after, [], `the host kept talking after being replaced: ${JSON.stringify(after)}`)
 })
 
+test('RT-CONN-1b a stream resume refused because another client took over ends the run the same way', async () => {
+  // The third shape of the replacement signal: a resumption is not a request, so its refusal
+  // names the reason alone. It is as terminal as the other two.
+  const run = await runAgent({
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '4' },
+    sseResults: true, breakStreamOnCall: 1,
+    replaceAfter: 5, // initialize, initialized, tools/list, the broken tools/call, then the resume
+    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
+    timeoutMs: 20_000,
+  })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 4, `${run.stdout}\n${run.stderr}`)
+  assert.match(run.stderr, /replaced by a newer authenticated client/)
+  assert.equal(run.requests[4]?.httpMethod, 'GET', 'the broken stream was not resumed on its own session')
+  assert.deepEqual(run.requests.slice(5), [], 'the host kept talking after its resume was refused as replaced')
+})
+
 test('RT-CONN-2 a 409 that is not connection_replaced is not read as a takeover', async () => {
   // The reason string is load-bearing. A bare `-32000`, or a 409 raised for anything else,
   // must not put this host into the one state it cannot leave on its own.
   const run = await runAgent({
-    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4,
     conflictBody: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'a different conflict', data: { reason: 'quota_exceeded' } } },
     model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.'),
@@ -106,11 +124,11 @@ test('RT-CONN-2 a 409 that is not connection_replaced is not read as a takeover'
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 4, 'an unrelated 409 was read as a connection takeover')
   assert.doesNotMatch(run.stderr, /replaced by a newer authenticated client/)
-  assert.match(run.stdout, /Board outcome unknown for OpenCase/,
-    'a conflict this client cannot interpret leaves the outcome unknown, which is what it is')
+  assert.match(run.stdout, /No answer arrived for OpenCase/,
+    'a conflict this client cannot interpret is a transport failure, which is what it is')
 })
 
-test('a correlated pre-admission material refusal is final; an unproven conflict stays unknown', async () => {
+test('a correlated pre-admission material refusal is final; an unproven conflict is a transport failure', async () => {
   const refusal = input => ({ jsonrpc: '2.0', id: input.id,
     error: { code: -32000, message: 'The Host proof was not available for this call.',
       data: { reason: 'material_proof_unavailable', requestExecuted: false } } })
@@ -121,13 +139,13 @@ test('a correlated pre-admission material refusal is final; an unproven conflict
     timeoutMs: 20_000,
   })
   assert.notEqual(sound.code, 'timeout', `${sound.stdout}\n${sound.stderr}`)
-  assert.match(sound.stdout, /Board rejected OpenCase: The Host proof was not available/)
-  assert.doesNotMatch(sound.stdout, /Board outcome unknown for OpenCase/)
+  assert.match(sound.stdout, /OpenCase was not executed \(material_proof_unavailable\): The Host proof was not available/)
+  assert.doesNotMatch(sound.stdout, /No answer arrived for OpenCase/)
   assert.equal(sound.requests.filter(row => row.method === 'tools/call').length, 1,
     'an authority refusal must not be retried by the transport')
 
   const unproven = await runAgent({
-    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4,
     conflictBody: input => ({ ...refusal(input), error: { ...refusal(input).error,
       data: { reason: 'material_proof_unavailable' } } }),
@@ -135,36 +153,36 @@ test('a correlated pre-admission material refusal is final; an unproven conflict
     timeoutMs: 25_000,
   })
   assert.notEqual(unproven.code, 'timeout', `${unproven.stdout}\n${unproven.stderr}`)
-  assert.match(unproven.stdout, /Board outcome unknown for OpenCase/,
+  assert.match(unproven.stdout, /No answer arrived for OpenCase/,
     'the reason alone cannot prove that no operation executed')
 
   const wrongSession = await runAgent({
-    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4, conflictBody: refusal, conflictSessionId: 'a-different-mcp-session',
     model: round => round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.',
     timeoutMs: 25_000,
   })
   assert.notEqual(wrongSession.code, 'timeout', `${wrongSession.stdout}\n${wrongSession.stderr}`)
-  assert.match(wrongSession.stdout, /Board outcome unknown for OpenCase/,
+  assert.match(wrongSession.stdout, /No answer arrived for OpenCase/,
     'a correlated id under another session is not a receipt for this connection')
 
   const wrongId = await runAgent({
-    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4, conflictBody: input => ({ ...refusal(input), id: 'another-request' }),
     model: round => round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.',
     timeoutMs: 25_000,
   })
   assert.notEqual(wrongId.code, 'timeout', `${wrongId.stdout}\n${wrongId.stderr}`)
-  assert.match(wrongId.stdout, /Board outcome unknown for OpenCase/,
+  assert.match(wrongId.stdout, /No answer arrived for OpenCase/,
     'an error for another JSON-RPC request cannot clear this operation')
 })
 
 test('RT-CONN-3 an expired session is re-established rather than treated as a takeover', async () => {
   // 404 says the transport session is gone, and the base protocol answer is to initialize a
   // new one. What it does not say is whether the call made under the old session executed,
-  // so the new session's recovery state is what answers that — never a re-send.
+  // so the strip of the next result is what shows that — never a re-send.
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '4', RULITH_RECOVERY_WAIT_MS: '800' },
+    argv: [], env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     expireSessionAfter: 4, // the first tools/call only
     model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'I will wait for the outcome.'),
@@ -173,10 +191,12 @@ test('RT-CONN-3 an expired session is re-established rather than treated as a ta
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 4, 'an expired session was reported as a connection replacement')
   assert.ok(run.initializes.length >= 2, `the client did not establish a new session: ${run.methods.join(', ')}`)
-  assert.match(run.stdout, /Board outcome unknown for OpenCase/)
+  assert.match(run.stdout, /No answer arrived for OpenCase \(session_expired: /)
   const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'OpenCase').at(-1)
-  assert.match(verdict.teaching, /session_expired|transport session ended/)
-  assert.match(verdict.teaching, /may well have been applied/,
+  assert.match(verdict.teaching, /session ended before the answer arrived/)
+  // The session's own id is transport detail, kept for the log (AIS §2).
+  assert.doesNotMatch(JSON.stringify(run.modelRequests), /mcp-1/)
+  assert.match(verdict.teaching, /may or may not have run/,
     'a lost session was reported as though the command had certainly not run')
   // The call is not re-sent under the new session: its transport key belonged to the old one.
   // (The 404 is answered before the endpoint records the call, so the count is taken from
@@ -204,9 +224,9 @@ test('RT-RESUME-1 a broken response stream is resumed from its event id, not re-
   assert.match(run.stdout, /Case Context in focus/, 'the recovered answer was not used as the answer')
 })
 
-test('RT-RESUME-2 an unrecoverable stream is an unknown outcome, never an empty answer', async () => {
+test('RT-RESUME-2 an unrecoverable stream is a lost answer, never an empty one', async () => {
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: [], env: { RULITH_MAX_ROUNDS: '3' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     sseResults: true, breakStreamOnCall: 1, refuseResume: true,
     model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.'),
@@ -215,8 +235,12 @@ test('RT-RESUME-2 an unrecoverable stream is an unknown outcome, never an empty 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.toolCalls.length, 1, 'an unrecovered answer was answered by asking again')
   const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'OpenCase').at(-1)
-  assert.match(verdict.teaching, /response_not_correlated|never carried a response/)
-  assert.match(verdict.teaching, /resuming from the last event id did not recover it/)
+  assert.match(verdict.teaching, /answer stream was cut before the answer arrived/)
+  assert.match(verdict.teaching, /resuming it did not bring the answer back/)
+  // How the stream failed names the request id, so it is said in the log and not to the model.
+  assert.match(run.stdout, /resuming from the last event id did not recover it/)
+  assert.equal(JSON.stringify(run.modelRequests).includes(run.toolCalls[0].id), false, 'the request id reached the model')
+  assert.equal(verdict.transportFailed, true)
   assert.equal(verdict.accepted, false, 'a stream that carried nothing was read as a successful answer')
 })
 
@@ -225,7 +249,7 @@ test('RT-RESUME-2 an unrecoverable stream is an unknown outcome, never an empty 
 for (const [label, corruptResponse, expected] of [
   ['a response under a different JSON-RPC id', 'id', /id "a-different-request" rather than the requested/],
   ['a response tagged jsonrpc 1.0', 'jsonrpc', /jsonrpc="1.0" rather than "2.0"/],
-  ['an event stream carrying only somebody else\'s response', 'sse-other', /never carried a response to request id/],
+  ['an event stream carrying only somebody else\'s response', 'sse-other', /ended without a response to request id/],
 ]) {
   test(`RT-RPC-1 ${label} is not accepted as this request's answer`, async () => {
     const run = await runAgent({
@@ -277,22 +301,24 @@ for (const [label, corruptResponse] of [
 
 // ── Session identity is not refreshable metadata ─────────────────────────────
 
-test('RT-RPC-4 a write answered under a different session is an unknown outcome, not a refresh', async () => {
+test('RT-RPC-4 a write answered under a different session is a transport failure, not a refresh', async () => {
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '4', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: [], env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     swapSessionOnCall: 1,
     model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'That did not resolve.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  // The command was sent under one authenticated session and answered under another, so what
-  // happened to it is not known. Adopting the new identity and calling it a metadata refresh
-  // would have made an unresolved write look settled.
+  // The command was sent under one authenticated session and answered under another, so this
+  // client cannot take the answer as the command's. Adopting the new identity and calling it
+  // a metadata refresh would have made an unanswered write look settled.
   const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'OpenCase').at(-1)
-  assert.match(verdict.teaching, /response_not_correlated|answered under/)
-  assert.match(verdict.teaching, /outcome of this step is unknown/)
-  assert.match(run.stdout, /Board outcome unknown for OpenCase/)
+  assert.match(verdict.teaching, /What came back was not the answer to this call/)
+  assert.match(verdict.teaching, /transport failure, not the Board's answer/)
+  // Which sessions were involved is for the person reading the log; session ids never reach a model.
+  assert.match(run.stdout, /No answer arrived for OpenCase \(response_not_correlated: .*answered under/)
+  assert.doesNotMatch(JSON.stringify(run.modelRequests), /mcp-1/)
   // And no focus was created from an answer this client would not attribute to its session.
   assert.doesNotMatch(run.stdout, /Case Context in focus/)
 })
@@ -311,7 +337,7 @@ test('RT-SURFACE-1 an extra advertised tool is a refused protocol mismatch, not 
   assert.equal(run.modelRequests.length, 0,
     `an incompatible advertised surface was filtered into a valid one and the run continued:\n${run.stdout}\n${run.stderr}`)
   assert.match(run.stderr, /advertises a tool surface this Runtime cannot speak/)
-  assert.match(run.stderr, /advertises UnexpectedTool, which is not part of the approved seven-tool surface/)
+  assert.match(run.stderr, /advertises UnexpectedTool, which is not part of the approved surface/)
   assert.match(run.stderr, /This is a protocol mismatch, not a filtering decision/)
   // The refusal names both sides, so a reader can see which one to move.
   assert.match(run.stderr, new RegExp(`Contract:\\s+${MODEL_TOOLS.join(', ')}`))
@@ -363,7 +389,7 @@ test('RT-SURFACE-4 a missing approved tool is refused and named', async () => {
   assert.match(run.stderr, /does not advertise QueryBoard/)
 })
 
-test('RT-SURFACE-5 the approved seven, exactly, reach the model (calibration)', async () => {
+test('RT-SURFACE-5 the approved six, exactly, reach the model (calibration)', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.', timeoutMs: 20_000 })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
@@ -412,10 +438,10 @@ test('optional tool descriptions remain optional without replacing explicitly em
   }
 })
 
-test('RT-RPC-5 a response too large to read is an unknown outcome that says which unknown it is', async () => {
+test('RT-RPC-5 a response too large to read is a transport failure that says which one it is', async () => {
   const oversized = 'x'.repeat(9 * 1_048_576)
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '4', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: [], env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     tool: (name, args, board, session, meta) => {
       if (name !== 'OpenCase') return undefined
@@ -427,11 +453,10 @@ test('RT-RPC-5 a response too large to read is an unknown outcome that says whic
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'OpenCase').at(-1)
-  assert.match(verdict.teaching, /response_too_large|exceeded the/)
-  assert.match(verdict.teaching, /The hop succeeded, but the answer exceeded this client's local response limit/,
+  assert.match(verdict.teaching, /The answer exceeded this host's local response limit and was not read/,
     'a local read limit was reported as though the authority had never answered')
-  assert.match(verdict.teaching, /The command may well have been applied/)
-  assert.match(verdict.teaching, /outcome of this step is unknown/)
+  assert.match(verdict.teaching, /may or may not have run/)
+  assert.doesNotMatch(verdict.teaching, /\bunknown\b/i)
 })
 
 // ── Housekeeping the base protocol defines ───────────────────────────────────
@@ -447,7 +472,7 @@ test('RT-SURFACE-6 a paged tools/list is read to the end before membership is ju
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const pages = run.requests.filter((request) => request.method === 'tools/list')
-  assert.equal(pages.length, 4, `seven tools in pages of two is four pages: ${pages.length}`)
+  assert.equal(pages.length, 3, `six tools in pages of two is three pages: ${pages.length}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
   assert.deepEqual([...offered].sort(), [...MODEL_TOOLS].sort())
   assert.doesNotMatch(run.stderr, /does not advertise/)
@@ -472,7 +497,7 @@ test('RT-RESUME-3 resumption lives inside the call\'s own deadline, not beside i
   // attempts share the call's budget, so an unrecoverable stream ends within it.
   const started = Date.now()
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '400', RULITH_MCP_TIMEOUT_MS: '2000' },
+    argv: [], env: { RULITH_MAX_ROUNDS: '3', RULITH_MCP_TIMEOUT_MS: '2000' },
     chatLines: ['Open a Case.'],
     sseResults: true, breakStreamOnCall: 1, refuseResume: true,
     model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The outcome was not known.'),

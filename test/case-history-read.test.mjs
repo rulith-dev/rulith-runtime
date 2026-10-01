@@ -7,8 +7,7 @@ const history = { root: 'root-old', caseId: 'case-old', status: 'available', asO
   disposition: 'completed', certified: true,
   // Compact public facts fit the history budget; the pretty-printed trace does not.
   facts: Array.from({ length: 800 }, () => ({ a: { b: 1 } })), truncated: true }
-const result = { accepted: true, view: { caseHistory: history },
-  observation: { consistency: 'committed', operationAtAdmission: { state: 'none' } } }
+const result = { accepted: true, view: { caseHistory: history }, observation: { consistency: 'committed' }, operations: [] }
 const expected = { observed: true, history: { root: 'root-old', caseId: 'case-old', status: 'available',
   disposition: 'completed', certified: true, factsOnPage: 800, morePages: true } }
 
@@ -26,20 +25,19 @@ test('a historical read reaches Local independently of the truncated trace previ
 test('a refused history read does not retain a successful history summary from its payload', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Read recorded history.'], captureLocalEvents: true,
     model: round => round === 1 ? callTool('QueryBoard', { include: ['caseHistory'], selector: { roots: ['root-old'] } }) : 'Unavailable.',
-    tool: name => name === 'QueryBoard' ? { ...result, accepted: false, errorCode: 'access_denied' } : undefined })
+    tool: name => name === 'QueryBoard' ? { accepted: false, errorCode: 'stale_revision', requestExecuted: false,
+      teaching: 'Restart at the first page.', operations: [], view: { caseHistory: history } } : undefined })
   assert.equal(run.code, 0, run.stderr)
   assert.equal(run.localEvents.find(event => event.type === 'tool-result')?.boardRead, undefined)
 })
 
-test('ReadOperation delivers the original historical page summary without replaying QueryBoard', async () => {
-  const run = await runAgent({ argv: [], chatLines: ['Continue reviewing.'], captureLocalEvents: true,
-    recovery: ({ readsDelivered }) => readsDelivered === 0
-      ? { state: 'result_ready', callRef: 'call-history', tool: 'QueryBoard' } : { state: 'none' },
-    readRecord: { state: 'result_ready', originalTool: 'QueryBoard',
-      originalResult: { isError: false, content: [{ type: 'text', text: JSON.stringify(result) }] } },
-    model: () => 'Reviewed.' })
+test('a historical read is never an operation: it is not held, waited for or replayed from the strip', async () => {
+  const run = await runAgent({ argv: [], chatLines: ['Read recorded history twice.'], captureLocalEvents: true,
+    model: round => round <= 2 ? callTool('QueryBoard', { include: ['caseHistory'], selector: { roots: ['root-old'] } }) : 'Reviewed.',
+    tool: name => name === 'QueryBoard' ? result : undefined })
   assert.equal(run.code, 0, run.stderr)
-  assert.deepEqual(run.verbs, ['ReadOperation'])
-  assert.deepEqual(run.localEvents.find(event => event.type === 'operation-read')?.boardRead, expected)
-  assert.equal(run.localEvents.some(event => event.type === 'case-open' || event.type === 'case-state'), false)
+  assert.deepEqual(run.verbs, ['QueryBoard', 'QueryBoard'], 'each read answers its own request')
+  assert.equal(run.operations.length, 0, 'a read became an operation')
+  assert.equal(run.toolCalls.every(call => call.progressToken === undefined), true, 'a read asked to be held')
+  assert.equal(run.pings, 0)
 })

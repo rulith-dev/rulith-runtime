@@ -60,7 +60,7 @@ test('the conversation list and the Case evidence are moved, not rebuilt', () =>
   assert.match(script, /query\.addEventListener\('change',\(\)=>syncEvidence\(\)\)/, 'a resize has to put them back')
   for (const id of ['convmodal', 'convbody', 'convclose', 'evidencemodal', 'evidencebody', 'evidenceclose', 'inspector'])
     assert.match(localPage, new RegExp(`id="${id}"`), `the embedded presentation lost #${id}`)
-  for (const id of ['cases', 'newcase', 'roots', 'recovery', 'frontier', 'workers', 'composer', 'stream'])
+  for (const id of ['cases', 'newcase', 'roots', 'operations', 'frontier', 'workers', 'composer', 'stream'])
     assert.match(localPage, new RegExp(`id="${id}"`), `the conversation page lost #${id}`)
 })
 
@@ -140,7 +140,7 @@ test('the embedded conversation keeps every behaviour it has on its own', () => 
   // These are the parts a person would notice missing: the composer, the Case preferences it
   // carries, the Trace view, tool disclosure, Markdown, the session log and Runtime details.
   for (const marker of ['id="composer"', 'id="casepopover"', 'data-view="trace"', 'renderMarkdown',
-    'renderToolCall', 'id="exportlog"', 'id="runtimemodal"', 'projectCaseRoots', 'projectRecovery'])
+    'renderToolCall', 'id="exportlog"', 'id="runtimemodal"', 'projectCaseRoots', 'projectOperations'])
     assert.ok(localPage.includes(marker), `the embedded conversation lost ${marker}`)
   assert.doesNotMatch(script, /EMBEDDED\s*\?\s*fetch|if\(EMBEDDED\)\s*return/,
     'embedding changes presentation only; no route and no behaviour may depend on it')

@@ -14,7 +14,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { localPage, projectRecovery } from './local-ui.mjs'
+import { localPage, projectOperations } from './local-ui.mjs'
 import { createMcpServices } from './mcp-services.mjs'
 import { workerToolsPage } from './worker-tools-ui.mjs'
 import { createWorkerToolManagement } from './worker-tool-management.mjs'
@@ -292,9 +292,9 @@ export function createLocalHost({
     } catch { /* an owner that cannot record this must not take the host down with it */ }
   }
   const events = []
-  // A bounded log is not the latest recovery observation. Keep this small
-  // projection separately so a reconnect cannot turn an evicted warning into idle.
-  let recoverySnapshot = projectRecovery([])
+  // A bounded log is not the latest report of this Agent's operations. Keep this small
+  // projection separately so a reconnect cannot turn an evicted report into "none reported".
+  let operationsSnapshot = projectOperations([])
   const clients = new Set()
   let nextSequence = 1
   const components = {
@@ -448,10 +448,12 @@ export function createLocalHost({
     },
   })
   const emit = (src, type, data = {}) => {
-    const recoveryEvent = src === 'agent' && ['pending-inherited', 'recovery'].includes(type)
+    // Operations are reported under the account and Agent this host serves, so that the page
+    // links a waiting operation to Console only when those still match.
+    const operationsEvent = src === 'agent' && type === 'operations'
     const event = { sequence: nextSequence++, t: Date.now(), src, type, ...data,
-      ...(recoveryEvent ? { accountId: conversationOwner?.accountId || '', agentId: components.agent.agentId } : {}) }
-    if (!event.historical) recoverySnapshot = projectRecovery([event], recoverySnapshot)
+      ...(operationsEvent ? { accountId: conversationOwner?.accountId || '', agentId: components.agent.agentId } : {}) }
+    if (!event.historical) operationsSnapshot = projectOperations([event], operationsSnapshot)
     events.push(event)
     if (events.length > 2000) events.splice(0, events.length - 1500)
     const frame = `data: ${JSON.stringify(event)}\n\n`
@@ -1041,7 +1043,7 @@ export function createLocalHost({
           .sort((a, b) => (a.t ?? a.at ?? 0) - (b.t ?? b.at ?? 0))
         if (disconnected) return
         for (const event of replay) res.write(`data: ${JSON.stringify(event)}\n\n`)
-        res.write(`data: ${JSON.stringify({ src: 'local', type: 'runtime-recovery', recovery: recoverySnapshot })}\n\n`)
+        res.write(`data: ${JSON.stringify({ src: 'local', type: 'runtime-operations', operations: operationsSnapshot })}\n\n`)
         clients.add(res); return
       }
       if (path === '/status' && req.method === 'GET') {

@@ -123,3 +123,33 @@ test('the workbench reads stopped Agent history through its authenticated event 
   assert.match(text, /interrupted/)
   assert.doesNotMatch(text, /activeCaseId|focused/)
 })
+
+test('unread outcome identities survive a restart beside the history, and carry no content', async t => {
+  // Only what is needed to show a conversation an outcome again: tool, label, admission time,
+  // outcome class, whether its model has yet to read it. Never a result, a summary or a reason.
+  const dir = fixture(t), first = await openConversations(dir, owner)
+  assert.deepEqual(first.unreadOutcomes(), {})
+  first.saveUnreadOutcomes({ 'chat-1': [
+    { tool: 'ApplyAction', label: 'ApplyAction demo.ship', at: '2026-10-01T00:00:01.000Z', state: 'done', unread: true, result: 'not kept' },
+    { tool: 'ApplyBatch', label: 'ApplyBatch', at: '2026-10-01T00:00:02.000Z', state: 'running', unread: false },
+  ] })
+  first.close()
+  const second = await openConversations(dir, owner); t.after(() => second.close())
+  assert.deepEqual(second.unreadOutcomes(), { 'chat-1': [
+    { tool: 'ApplyAction', label: 'ApplyAction demo.ship', at: '2026-10-01T00:00:01.000Z', state: 'done', unread: true },
+    { tool: 'ApplyBatch', label: 'ApplyBatch', at: '2026-10-01T00:00:02.000Z', state: 'running', unread: false },
+  ] })
+  assert.doesNotMatch(readFileSync(join(`${second.file}.d`, '_unread-outcomes.json'), 'utf8'), /not kept/)
+  assert.throws(() => second.saveUnreadOutcomes({ 'chat-1': [{ tool: 'ApplyAction', label: 'x', at: 'y', state: 'guessed', unread: true }] }),
+    /invalid unread-outcome entry/)
+})
+
+test('a damaged unread-outcome record is preserved and stops the history from opening, like any damaged history file', async t => {
+  const dir = fixture(t), first = await openConversations(dir, owner)
+  first.saveUnreadOutcomes({ 'chat-1': [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', at: 'a', state: 'done', unread: true }] })
+  first.close()
+  const path = join(`${conversationFile(dir, owner)}.d`, '_unread-outcomes.json')
+  writeFileSync(path, '{truncated')
+  await assert.rejects(openConversations(dir, owner), /record of unread outcomes could not be read; it was preserved/)
+  assert.equal(readFileSync(path, 'utf8'), '{truncated')
+})

@@ -22,9 +22,22 @@ test('tool cards show actual arguments and results without inventing Board certi
   assert.match(html,/<details/);assert.match(html,/Arguments/);assert.match(html,/order.count/);assert.match(html,/nodeIds/);
   assert.doesNotMatch(html,/certified|completed/i);
   assert.match(renderToolCall({cmd:'ApplyAction'},undefined),/Waiting for result/);
-  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:false}),/Outcome unknown/);
-  assert.match(renderToolCall({cmd:'ApplyAction'},{handedOver:true}),/this request did not run/);
+  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:false,transportFailed:true}),/No answer \(connection failed\)/);
+  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:true,accepted:false,notExecuted:true}),/Not executed/);
+  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:true,held:'running'}),/Still running/);
+  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:true,held:'waiting_for_decision'}),/Waiting for a decision/);
+  assert.doesNotMatch(renderToolCall({cmd:'ApplyAction'},{authoritative:true,held:'needs_person'}),/act-state bad/,
+    'an operation that waits for a person is not a refusal');
   assert.match(renderToolCall({cmd:'<script>'},{authoritative:true,output:localToolSnapshot('<script>')}),/&lt;script&gt;/);
+});
+test('a settled outcome whose content is withheld shows its outcome class, never "Held"',()=>{
+  // Nothing is in progress: the call settled, and only its content may not be shown.
+  const done=renderToolCall({cmd:'ApplyAction'},{authoritative:true,held:'done',contentWithheld:true});
+  assert.match(done,/<span class="act-state">Done · content withheld<\/span>/);assert.doesNotMatch(done,/Held/);
+  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:true,held:'failed',contentWithheld:true}),/act-state bad">Failed · content withheld/);
+  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:true,held:'refused',contentWithheld:true}),/act-state bad">Refused · content withheld/);
+  assert.match(renderToolCall({cmd:'ApplyAction'},{authoritative:true,held:'unknown',contentWithheld:true}),
+    /<span class="act-state">Reconciled, external effect unknown · content withheld<\/span>/);
 });
 test('large results are explicitly truncated and never split a UTF-8 character',()=>{
   const snapshot=localToolSnapshot({text:'中文'.repeat(100)},53);

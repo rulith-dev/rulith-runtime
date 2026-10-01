@@ -37,13 +37,18 @@ test('RT-CONTRACT-1 the vendored bundle is what this Runtime speaks', () => {
   assert.deepEqual(MODEL_TOOLS, bundle.tools.map((tool) => tool.name))
   // Everything the Runtime compiles in comes from here, not from a constant beside it.
   assert.equal(typeof bundle.protocolVersion, 'string')
-  assert.equal(typeof bundle.metadataNamespace, 'string')
-  assert.ok(bundle.recoveryStates.includes('none') && bundle.recoveryStates.includes('waiting'))
-  assert.equal(bundle.clientCapabilities.operationRecovery, 1)
-  assert.deepEqual(bundle.serverCapabilities, { operationRecovery: 1, boardObservation: 1 })
+  assert.equal(bundle.metadataNamespace, 'rulith/v3')
+  // The held-call contract: seven outcome classes, always shown; no operation-read tool.
+  assert.deepEqual(bundle.operationStates,
+    ['running', 'waiting_for_decision', 'done', 'failed', 'refused', 'unknown', 'needs_person'])
+  assert.deepEqual(bundle.runningStages, ['not_dispatched', 'at_worker'])
+  assert.deepEqual(bundle.operationTools, ['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase', 'ReadArtifact'])
+  assert.equal(bundle.tools.some((tool) => tool.name === 'ReadOperation'), false)
+  assert.deepEqual(bundle.clientCapabilities, { heldCalls: 1 })
+  assert.deepEqual(bundle.serverCapabilities, { heldCalls: 1 })
   const observation = bundle.tools.find((tool) => tool.name === 'QueryBoard')
   assert.equal(observation.resultSchemaRef,
-    'docs/specs/schemas/rulith-board-observation-v1.schema.json#/$defs/QueryBoardResult')
+    'docs/specs/schemas/rulith-board-observation-v2.schema.json#/$defs/QueryBoardResult')
   assert.ok(bundle.schemas.find((schema) => schema.name === 'QueryBoard')?.resultSchema,
     'the committed Board observation result schema was dropped from the verified bundle')
   for (const { inputSchema } of bundle.schemas) {
@@ -75,9 +80,12 @@ for (const [label, mutate, expected] of [
   ['no files', (b) => { b.files = {} }, /carries no files/],
   ['no surface', (b) => { delete b.surface }, /carries no surface projection/],
   ['no metadata schema', (b) => { delete b.metadata }, /carries no host metadata schema/],
-  ['an optional server recovery capability', (b) => { b.metadata.$defs.ServerCapabilities.required = ['boardObservation'] }, /ServerCapabilities must require exactly/],
+  ['an optional server held-call capability', (b) => { b.metadata.$defs.ServerCapabilities.required = [] }, /ServerCapabilities must require exactly/],
   ['an open server capability shape', (b) => { b.metadata.$defs.ServerCapabilities.additionalProperties = true }, /ServerCapabilities must require exactly/],
-  ['a variable recovery protocol', (b) => { delete b.metadata.$defs.ServerCapabilities.properties.operationRecovery.const }, /ServerCapabilities.operationRecovery has no constant/],
+  ['a variable held-call protocol', (b) => { delete b.metadata.$defs.ServerCapabilities.properties.heldCalls.const }, /ServerCapabilities.heldCalls has no constant/],
+  ['no operation states', (b) => { delete b.metadata.$defs.OperationState }, /declares no OperationState enum/],
+  ['held tools that are not the membership', (b) => { b.metadata.$defs.OperationTool.enum.push('QueryBoard') }, /OperationTool enum/],
+  ['the v2 surface', (b) => { b.surface.schema = 'rulith-mcp-surface/v2'; b.files['protocol/mcp-surface.json'].content = JSON.stringify(b.surface) }, /does not match the digest|expected rulith-mcp-surface\/v3|differs from the carried/],
   ['no audience profiles', (b) => { delete b.queryProfiles }, /carries no queryProfiles/],
   ['no query context', (b) => { delete b.queryContext }, /carries no queryContext/],
 ]) {

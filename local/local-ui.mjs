@@ -61,9 +61,7 @@ export function projectBoardReads(events) {
     if (event.src !== 'agent') continue
     const direct = event.type === 'tool-result' && event.cmd === 'QueryBoard'
       && event.authoritative === true && event.accepted === true
-    const recovered = event.type === 'operation-read' && event.tool === 'QueryBoard'
-      && event.state !== 'unavailable' && event.boardRead?.observed === true
-    if (!direct && !recovered) continue
+    if (!direct) continue
     observed = true
     const history = event.boardRead?.history
     if (history?.root && ['available', 'unavailable'].includes(history.status)) histories.set(history.root, history)
@@ -83,85 +81,41 @@ export function renderHistoryReads(rows) {
 }
 
 /**
- * What this conversation is waiting for, in plain words.
+ * This Agent's recent operations, as the authority last showed them.
  *
- * The Agent may be holding a call whose outcome only the authority knows. That is not an
- * error and it is not idleness, and showing it as either is how a person concludes the
- * Runtime is stuck — or, worse, that nothing was ever dispatched. So it gets its own line:
- * the state the authority published, which tool it concerns, and what the host is doing
- * about it. Nothing is inferred; every field comes from an event the Agent emitted.
+ * The Agent forwards the recent-operations strip in its state-only form — label, state,
+ * stage and times — whenever the authority shows it: at `initialize`, on each `ping` while it
+ * keeps a model's call open, and with every tool result. Nothing is inferred here: an entry
+ * the page did not receive is not shown, and when the Agent process changes the list is kept
+ * but marked as from before that change, because the new process has not reported yet.
  *
- * The states are the authority's four, plus the local blocked outcomes that end a turn.
- * `result_ready` is deliberately visible even though it is usually brief: when the read
- * cannot be completed, that brief state is the whole explanation.
+ * A held call — one the authority still holds while the Agent keeps the model's own call
+ * open — gets its own line, so that a quiet conversation reads as waiting, not as stuck.
  */
-export function projectRecovery(events, initial) {
-  let current = initial ?? { state: 'none', label: 'No unresolved call', detail: '', tool: '' }
+export function projectOperations(events, initial) {
+  const words = { running: 'Running', waiting_for_decision: 'Waiting for a decision in Console', done: 'Done',
+    failed: 'Failed', refused: 'Refused', unknown: 'Reconciled, external effect unknown',
+    needs_person: 'Needs reconciliation in Console' }
+  const stages = { not_dispatched: 'not yet dispatched', at_worker: 'at the Worker' }
+  let current = initial ?? { reported: false, stale: false, entries: [], held: null, accountId: '', agentId: '' }
   for (const event of events) {
     if (event.src !== 'agent') continue
-    const tool = String(event.tool || current.tool || '')
-    if (['spawn', 'exit'].includes(event.type) && current.state !== 'none') {
-      current = { state: 'unconfirmed', tool, label: 'Earlier ' + (tool || 'tool') + ' status needs refreshing',
-        accountId: current.accountId, agentId: current.agentId, callRef: current.callRef, caseId: current.caseId,
-        detail: 'The Agent process changed. Its earlier recovery observation is no longer current; the server must confirm the original call before further work.' }
+    if (['spawn', 'exit'].includes(event.type)) current = { ...current, stale: current.reported, held: null }
+    if (event.type === 'operations' && Array.isArray(event.operations)) {
+      const entries = event.operations
+        .filter((row) => row !== null && typeof row === 'object' && Object.hasOwn(words, row.state))
+        .slice(0, 7)
+        .map((row) => ({ label: String(row.label || row.tool || 'Operation'), state: row.state,
+          words: words[row.state] + (Object.hasOwn(stages, row.stage) ? ' · ' + stages[row.stage] : '')
+            + (row.contentWithheld === true ? ' · content withheld' : ''),
+          since: String(row.since || ''), needsPerson: ['waiting_for_decision', 'needs_person'].includes(row.state) }))
+      current = { ...current, reported: true, stale: false, entries,
+        accountId: String(event.accountId || ''), agentId: String(event.agentId || '') }
     }
-    if (event.type === 'pending-inherited') {
-      current = { state: 'inherited', tool, label: 'Earlier ' + (tool || 'tool') + ' outcome is unknown',
-        accountId: String(event.accountId || ''), agentId: String(event.agentId || ''), callRef: '', caseId: '',
-        detail: 'This computer recorded an unfinished call from a previous run. Its current server state has not been checked. Open this Agent’s Runtime in Console to inspect it; do not repeat the action.' }
+    if (event.type === 'held-call') {
+      current = { ...current, held: event.phase === 'waiting'
+        ? { tool: String(event.tool || ''), label: String(event.label || event.tool || 'A call') } : null }
     }
-    if (event.type === 'recovery') {
-      if (event.state === 'none') {
-        // The authority says there is nothing outstanding. Without this branch the panel
-        // kept showing the last `waiting` for the rest of the session, which reads as a
-        // Runtime that never came back.
-        current = { state: 'none', tool: '', label: 'No unresolved call', detail: '' }
-      } else if (event.state === 'unreadable') {
-        current = { state: 'unreadable', tool, label: 'The authority published no readable recovery record',
-          detail: 'This host will not start work while it cannot tell whether a call is outstanding.' }
-      } else if (event.state === 'claim_not_honoured') {
-        current = { state: 'result_ready', tool, label: 'An earlier ' + (tool || 'tool') + ' result was not delivered',
-          detail: 'The authority reports a determined result but ReadOperation did not return that original result. It is being retried.' }
-      } else if (event.state === 'waiting') {
-        current = { state: 'waiting', tool, label: 'Waiting for an earlier ' + (tool || 'tool') + ' call',
-          detail: 'The authority is still executing it. A new user message may request an independent Board observation when the server supports it; the earlier call remains pending.' }
-      } else if (event.state === 'result_ready') {
-        current = { state: 'result_ready', tool, label: 'Collecting an earlier ' + (tool || 'tool') + ' result',
-          detail: 'The outcome is determined and ReadOperation is collecting its public result without a Board command.' }
-      } else if (event.state === 'reconciliation_required') {
-        current = { state: 'reconciliation_required', tool, label: 'An earlier ' + (tool || 'tool') + ' call needs operator reconciliation',
-          detail: 'Reconcile the original call in Console. An independent Board observation can show committed state, but cannot settle the earlier effect.' }
-      } else {
-        current = { state: 'unreadable', tool: '', label: 'The authority published an unknown recovery state',
-          detail: 'This host cannot confirm the original call or its current state. Inspect this Agent in Console before further work.' }
-      }
-      if (['unreadable', 'claim_not_honoured', 'waiting', 'result_ready', 'reconciliation_required'].includes(event.state)) current = { ...current,
-        accountId: String(event.accountId || ''), agentId: String(event.agentId || ''),
-        callRef: String(event.callRef || ''), caseId: String(event.caseId || '') }
-    }
-    if (event.type === 'operation-read' && event.state === 'unavailable') {
-      current = { state: 'read_unavailable', tool,
-        label: 'Earlier ' + (tool || 'pure read') + ' content is unavailable',
-        detail: 'The original read is terminal, but its content was refused under current disclosure. No original result was supplied; the model may decide a new command.' }
-    }
-    if (event.type === 'handoff' || (event.type === 'operation-read' && event.state === undefined)) {
-      current = { state: 'none', tool: '', label: 'No unresolved call',
-        detail: 'The public result of an earlier ' + (String(event.tool || 'tool')) + ' call was read for the model, which decides again.' }
-    }
-    if (event.type === 'queue-suspended') {
-      current = { ...current, detail: event.notSent + ' further call(s) proposed in that turn were not sent.' }
-    }
-    if (event.type === 'recovery-conflict') {
-      current = { state: 'unreconciled', tool: String(event.tool || ''),
-        label: 'An earlier ' + String(event.tool || 'tool') + ' call needs reconciling',
-        detail: 'Its outcome was never learned and the authority reports nothing outstanding. Reconcile request '
-          + String(event.requestId || '') + ' in Console; an empty record does not prove the command had no effect.' }
-    }
-    if (event.type === 'blocked') {
-      current = { state: 'blocked', tool, label: 'Turn stopped: ' + String(event.reason || 'unresolved call'),
-        detail: String(event.teaching || '') }
-    }
-    // A model proposal or QueryBoard verdict is no evidence that the original call settled.
   }
   return current
 }
@@ -169,12 +123,22 @@ export function projectRecovery(events, initial) {
 /** An actual request/result pair; accepted means admission, never Case certification. */
 export function renderToolCall(event, result) {
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
-  const status = !result ? 'Waiting for result' : result.handedOver ? 'Earlier result returned; this request did not run' : result.refusedLocally ? 'Not sent' : result.readUnavailable ? 'Observation unavailable' : !result.authoritative ? 'Outcome unknown' : result.accepted === false ? 'Rejected' : result.accepted === true ? 'Accepted' : 'Result returned'
+  const held = { running: 'Still running', waiting_for_decision: 'Waiting for a decision', needs_person: 'Needs a person', unlisted: 'No longer listed' }
+  // A settled outcome whose content may not be shown: its class is known, and is said, with the
+  // content marked withheld. It is not "held" — nothing is still in progress.
+  const settled = { done: 'Done', failed: 'Failed', refused: 'Refused', unknown: 'Reconciled, external effect unknown' }
+  const withheld = Boolean(result) && result.contentWithheld === true && Object.hasOwn(settled, result.held)
+  const status = !result ? 'Waiting for result' : result.refusedLocally ? 'Not sent' : result.readUnavailable ? 'Observation unavailable'
+    : result.transportFailed ? 'No answer (connection failed)' : withheld ? settled[result.held] + ' · content withheld'
+      : result.held ? (held[result.held] || 'Held')
+        : result.notExecuted ? 'Not executed' : !result.authoritative ? 'No answer' : result.accepted === false ? 'Rejected'
+          : result.accepted === true ? 'Accepted' : 'Result returned'
   const snapshot = (name, value) => value ? '<div class="call-part"><b>' + name + '</b>' + (value.truncated ? '<p>Display truncated · ' + esc(value.totalBytes) + ' bytes in the original result. This preview is incomplete.</p>' : '') + '<pre>' + esc(value.text) + '</pre></div>' : ''
   // A call is one line of activity — what was asked for, and how it ended — that opens onto
   // the request and the result it actually carried. The status word is the only place colour
-  // is spent, and only when the answer was a refusal.
-  const refused = Boolean(result) && (result.accepted === false || result.refusedLocally === true)
+  // is spent, and only when the answer was a refusal or a failure.
+  const refused = Boolean(result) && (withheld ? ['failed', 'refused'].includes(result.held)
+    : !result.held && (result.accepted === false || result.refusedLocally === true))
   return '<div class="message quiet"><details class="activity tool-call" data-call="' + esc(event.callId) + '"><summary>'
     + '<span class="act-ico">›</span><span class="act-text">' + esc(event.cmd) + '</span><span class="act-more"></span>'
     + '<span class="act-state' + (refused ? ' bad' : '') + '">' + esc(status) + '</span></summary>'
@@ -292,7 +256,7 @@ html,body{height:100%}body{overflow:hidden}
 </style></head><body><div class="app" id="app">
 <aside class="sidebar"><div class="brand"><span class="logo"></span>Rulith<span class="mode" id="mode">…</span></div><button class="new" id="newcase">＋ New conversation</button><div class="side-title">Activity</div><div class="cases" id="cases"><div class="case active" data-case="">All activity</div></div><div class="side-foot" id="sidefoot"><div class="runtimeid"><span class="avatar">A</span><span class="runtimecopy"><b id="agentname">Configured Agent</b><small id="agentidentity">loading…</small></span></div><button class="settingsopen" id="runtimeopen">◎ Runtime details</button><div class="statusline"><span class="dot" id="agentdot"></span>Agent <span id="agentstate">off</span></div><div class="statusline"><span class="dot" id="workerdot"></span>Worker <span id="workerstate">off</span></div></div></aside>
 <main class="main"><header class="top"><div><div class="title" id="title">Local activity</div><div class="sub" id="subtitle">Conversation with optional Rulith Case tools</div></div><nav class="views" aria-label="Activity view"><button class="viewtab active" data-view="case">Conversation</button><button class="viewtab" data-view="trace">Trace</button></nav><span class="spacer"></span><button class="ghost embedded-only" id="convopen" aria-haspopup="dialog">Conversations</button><button class="ghost" id="evidenceopen" aria-haspopup="dialog" hidden>Evidence</button><button class="ghost sessionlog" id="exportlog" title="Download loaded events in this view; not a complete history or Case proof">Export view ↓</button><button class="ghost mobile-settings" id="mobileruntime" title="Runtime details">◎</button><button class="ghost" id="clear">Clear view</button></header><div id="exportnote" class="exportnote" role="status" hidden></div><div id="connectionnotice" class="sub" role="status" hidden></div><div id="historybar" class="sub" hidden><button class="ghost" id="loadolder" hidden>Load earlier messages</button><button class="ghost" id="archivehistory">Archive conversation</button><span id="historystate"></span><button class="ghost" id="historyconsent" hidden>Use this model for earlier messages</button><button class="ghost" id="newattempt" hidden>Send as a new message</button></div><div class="stream" id="stream"><div class="empty" id="empty"><h1>What would you like to discuss or handle?</h1><p>Chat normally. The Agent will use Rulith when governed work, evidence, or an auditable Case is useful.</p></div></div></main>
-<aside class="inspector" id="inspector" tabindex="-1" aria-label="Rulith Cases"><div class="inspect-head">Rulith Cases</div><section class="section"><h3>Cases</h3><div class="kv"><span>Acceptance roots</span><b id="casecount">Not in use</b></div><div class="frontier" id="roots"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Unresolved call</h3><div class="frontier" id="recovery"><div class="item">No unresolved call</div></div></section><section class="section"><h3>Current frontier</h3><div class="frontier" id="frontier"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Worker activity</h3><div class="workers" id="workers"><div class="item">No Worker activity for this conversation.</div></div></section></aside>
+<aside class="inspector" id="inspector" tabindex="-1" aria-label="Rulith Cases"><div class="inspect-head">Rulith Cases</div><section class="section"><h3>Cases</h3><div class="kv"><span>Acceptance roots</span><b id="casecount">Not in use</b></div><div class="frontier" id="roots"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Recent operations</h3><div class="frontier" id="operations"><div class="item">No operations reported yet.</div></div></section><section class="section"><h3>Current frontier</h3><div class="frontier" id="frontier"><div class="item">Rulith has not been used for this conversation.</div></div></section><section class="section"><h3>Worker activity</h3><div class="workers" id="workers"><div class="item">No Worker activity for this conversation.</div></div></section></aside>
 <form class="composer" id="composer"><div class="composebox"><div class="attach" id="attachlist" hidden aria-live="polite" aria-label="Files added to this message"></div><small class="attachnote" id="attachnote" hidden>Files are kept on this computer. Reading them requires the Agent’s authorized tools. Content sent to your selected model follows its data permissions.</small><label class="materialtarget" id="materialtargetwrap" hidden>Files for <select id="materialtarget" aria-label="Case for these files"></select></label><small id="composertarget" hidden></small><textarea id="prompt" placeholder="Message the Agent…" rows="1"></textarea><p class="composererr" id="composererr" role="alert" aria-live="assertive"></p><p class="attachsent" id="attachsent" role="status"></p><div class="case-pop" id="casepopover" hidden><label>Preferred Case Type if Rulith is used<input id="casetype" value="" placeholder="Automatic" aria-label="Case Type"></label><label>Business key JSON (optional)<input id="businesskey" placeholder='{"job_id":"..."}' aria-label="Business key JSON"></label></div><div class="attach-menu" id="attachmenu" role="menu" aria-label="Add to this message" hidden><button type="button" id="attachfiles" role="menuitem">Add files<small>Up to 8 files, 8 MiB each</small></button><button type="button" class="advanced" id="attachprefs" role="menuitem">Advanced · Case preferences</button></div><input type="file" id="fileinput" multiple hidden aria-hidden="true" tabindex="-1"><div class="composebar"><button type="button" class="roundbtn" id="caseoptions" title="Add files" aria-label="Add files or Case preferences" aria-haspopup="menu" aria-expanded="false">＋</button><span class="toolbarbadge" id="toolbadge">Rulith available</span><button type="button" class="modelbadge" id="modelbadge" title="Runtime details">Model</button><span class="toolbarbadge" id="thinkingbadge">Provider default</span><button class="send" id="send" title="Send message">↑</button></div></div></form>
 </div><div class="modal" id="runtimemodal" role="dialog" aria-modal="true" aria-labelledby="runtimetitle" hidden><div class="modal-card"><div class="modal-head"><div><b id="runtimetitle">Runtime details</b><span class="sub">Read-only projection of the single-Agent Runtime configuration. Edit the configuration file or secret manager, then restart the process.</span></div><button class="modal-close" id="runtimeclose" aria-label="Close Runtime details">×</button></div><div class="runtimegrid"><section class="runtimepane"><h3>Agent</h3><div class="kv"><span>Cloud Agent</span><b id="detailagent">—</b></div><div class="kv"><span>Credential</span><b id="detailagentkey">—</b></div><div class="kv"><span>Model service</span><b><code id="detailmodelurl">—</code></b></div><div class="kv"><span>Model</span><b id="detailmodel">—</b></div><div class="kv"><span>Model key</span><b id="detailmodelkey">—</b></div><div class="kv"><span>Reasoning</span><b id="detailthinking">—</b></div><div class="kv"><span>Case calls</span><b id="detailconcurrency">—</b></div><div class="runtimecontrols"><button data-control="agent" data-operation="stop">Stop Agent</button><button data-control="agent" data-operation="start">Start Agent</button></div></section><section class="runtimepane"><h3>Worker</h3><div class="kv"><span>Connection</span><b id="detailconnection">—</b></div><div class="kv"><span>Credential</span><b id="detailworkerkey">—</b></div><div class="kv"><span>Workspace tools</span><b id="detailtools">—</b></div><div class="kv"><span>Tool manifest</span><b><code id="detailtoolsfile">—</code></b></div><div class="kv"><span>Source vault</span><b><code id="detailsourcesfile">—</code></b></div><div class="runtimecontrols"><button data-control="worker" data-operation="stop">Stop Worker</button><button data-control="worker" data-operation="start">Start Worker</button></div></section></div><div class="runtimefoot">Configuration: <code id="detailconfig">—</code><div id="runtimemsg"></div></div></div></div>
 <div class="modal panelmodal" id="convmodal" role="dialog" aria-modal="true" aria-labelledby="convtitle" hidden><div class="modal-card"><div class="modal-head"><div><b id="convtitle">Conversations</b><span class="sub">Conversations available on this computer.</span></div><button class="modal-close" id="convclose" aria-label="Close conversations">×</button></div><div class="panelbody" id="convbody"><div><button class="ghost" id="historyactive">Active</button><button class="ghost" id="historyarchived">Archived</button><button class="ghost" id="historymore" hidden>More conversations</button></div><p id="historynotice" class="sub" role="status"></p><button class="ghost" id="exportviewmobile">Export loaded view ↓</button></div></div></div>
@@ -302,7 +266,7 @@ html,body{height:100%}body{overflow:hidden}
 ${projectCaseRoots.toString()}
 ${projectBoardReads.toString()}
 ${renderHistoryReads.toString()}
-${projectRecovery.toString()}
+${projectOperations.toString()}
 ${renderMarkdown.toString()}
 ${renderToolCall.toString()}
 ${managerReturnHref.toString()}
@@ -311,7 +275,7 @@ const K=new URLSearchParams(location.search).get('k')||'', $=(id)=>document.getE
    window of its own. It changes presentation only: no state, no route and no behaviour here
    depends on the surrounding page. Only a bounded readiness receipt crosses its origin. */
 const EMBEDDED=new URLSearchParams(location.search).get('embedded')==='1'
-const state={status:null,events:[],cases:new Map(),active:'',view:'case',session:'',fresh:false,lastCases:'',lastStream:'',lastRoots:'',lastRecovery:'',lastFrontier:'',lastWorkers:''}
+const state={status:null,events:[],cases:new Map(),active:'',view:'case',session:'',fresh:false,lastCases:'',lastStream:'',lastRoots:'',lastOperations:'',lastFrontier:'',lastWorkers:''}
 const history={available:false,items:[],archived:false,offset:0,before:null,selectedArchived:false,request:0,listRequest:0,confirmedFor:'',expectedModel:'',caseBase:'',busy:false}
 async function historyList(more=false){
   const filter=history.archived,offset=more?history.items.length:0,request=++history.listRequest
@@ -325,14 +289,14 @@ async function historyList(more=false){
   }catch(e){if(request===history.listRequest)$('historynotice').textContent=e.message}
 }
 function mergeEvent(e){
-  if(e.src==='local'&&e.type==='runtime-recovery'&&!e.historical){state.runtimeRecovery=e.recovery;return}
+  if(e.src==='local'&&e.type==='runtime-operations'&&!e.historical){state.runtimeOperations=e.operations;return}
   const at=e.historyKey?state.events.findIndex(x=>x.historyKey===e.historyKey):-1
   if(at>=0){if(!state.events[at].historical&&e.historical)return;state.events[at]=e}
   else if(!e.sequence||!state.events.some(x=>x.sequence===e.sequence&&x.t===e.t))state.events.push(e)
   else return
-  // Recovery belongs to this Agent process, not the selected transcript. Clearing
-  // or loading conversation history must not erase or resurrect an unresolved call.
-  if(!e.historical)state.runtimeRecovery=projectRecovery([e],state.runtimeRecovery)
+  // Operations belong to this Agent, not the selected transcript. Clearing or loading
+  // conversation history must not erase or resurrect an operation's state.
+  if(!e.historical)state.runtimeOperations=projectOperations([e],state.runtimeOperations)
   remember(e)
 }
 function historyControls(){
@@ -381,19 +345,19 @@ function renderCases(){
  root.querySelectorAll('[data-case]').forEach(n=>n.onclick=()=>selectConversation(n.dataset.case))
  root.querySelectorAll('[data-draft]').forEach(n=>n.onclick=()=>selectDraft(n.dataset.draft))
 }
-function eventBody(e){if(e.type==='action-outcome')return (e.recovered?'Earlier result · ':'')+(e.action||'Action')+' · '+({confirmed:'Worker result confirmed',failed:'Worker result failed',refused:'Action refused',unknown:'External outcome unknown'}[e.status]||'Result unavailable');if(e.type==='model-usage'||e.type==='model-summary')return (e.calls?e.calls+' model call(s) · ':'')+(Number(e.durationMs||0)/1000).toFixed(2)+' s · '+(e.inputTokens===null||e.outputTokens===null?'Token usage not reported':e.inputTokens+' input / '+e.outputTokens+' output tokens reported')+(e.unknownUsageCalls?' · '+e.unknownUsageCalls+' call(s) without complete token counts':'');if(e.type==='tool-timing')return e.tool+' · '+(Number(e.durationMs||0)/1000).toFixed(2)+' s'+(e.outcome==='failed'?' · adapter failed':'');if(e.type==='tool-call')return e.input?.text||'';if(e.type==='tool-result')return e.output?.text||'';if(e.type==='case-state')return 'Case lifecycle: '+(e.caseStatus||'unavailable')+(e.root?' · root '+e.root:'')+(typeof e.gaps==='number'?' · '+e.gaps+' open gap(s)':'');if(e.type==='focus')return (e.roots||[]).length?'In focus: '+(e.roots||[]).map((r)=>r.caseId+' ('+r.status+')').join(' · '):'No Case is in focus.';if(e.type==='case-unfocused')return 'Released from this conversation\\'s focus. Its lifecycle on the Board is unchanged.';if(e.type==='affected')return (e.affectedCases||[]).length?'Affected Cases: '+e.affectedCases.join(' · '):'No live acceptance root advanced.';if(e.type==='recovery')return projectRecovery([{...e,src:'agent'}]).label;if(e.type==='operation-read')return e.state==='unavailable'?'The earlier '+(e.tool||'pure read')+' content could not be disclosed; no original result was supplied.':'The public result of an earlier '+(e.tool||'tool')+' call was read for the model.';if(e.type==='handoff')return 'The outcome of an earlier '+(e.tool||'tool')+' call was handed to the model. That request executed nothing.';if(e.type==='blocked')return e.teaching||'This turn stopped without asking the model.';if(e.type==='queue-suspended')return e.notSent+' further call(s) proposed in that turn were not sent: an earlier call had an unknown outcome.';if(e.type==='artifact-read')return 'Artifact '+(e.ref||'')+' · '+(e.complete?'final fragment':'fragment')+(e.truncated?' · truncated at the read limit':'')+(e.mediaType?' · '+e.mediaType:'');if(e.type==='worker-activity-unavailable')return e.note||'This Runtime cannot yet report a dispatched invocation: the Agent Profile result has no published field carrying it. Follow the Action in Console.';if(e.type==='loss')return 'Bounded view: '+(e.omitted===undefined?'rows were':e.omitted+' row(s) were')+' omitted ('+(e.reason||'limit')+'). This answer is partial.';if(e.type==='propose')return e.say||JSON.stringify(e.tool||e.cmds||e.ops||{},null,2);if(e.type==='verdict')return e.accepted?'Accepted by Board'+(e.cmd?' · '+e.cmd:''):(e.teaching||'Rejected by Board');if(e.type==='source-plan')return (e.plans||[]).map((p)=>p.action+' via '+p.source+' → '+p.predicate).join('\\n');if(e.type==='claimed')return (e.kind||'work')+' · '+(e.id||'claimed');if(e.type==='reported')return (e.kind||'work')+' · '+(e.id||'')+' · '+(e.landed?'receipt committed':'receipt not committed')+(e.result?'\\n'+e.result:'')+(e.reason?'\\n'+e.reason:'');if(e.type==='case-open')return e.ok===false?'Case could not be opened':'Case Type '+(e.caseType||'exploration');if(e.type==='case-closed')return 'Disposition: '+(e.disposition||'closed');if(e.type==='model-error')return e.teaching||'The model response could not be completed.';if(e.type==='case-pending')return e.reason||e.note||'Waiting for evidence';if(e.type==='session-detached')return e.note||'The local conversation was reclaimed; its Rulith Case remains on the Board.';if(e.type==='log')return e.line||'';return e.note||e.text||''}
+function eventBody(e){if(e.type==='action-outcome')return (e.action||'Action')+' · '+({confirmed:'Worker result confirmed',failed:'Worker result failed',refused:'Action refused',unknown:'External outcome unknown'}[e.status]||'Result unavailable');if(e.type==='model-usage'||e.type==='model-summary')return (e.calls?e.calls+' model call(s) · ':'')+(Number(e.durationMs||0)/1000).toFixed(2)+' s · '+(e.inputTokens===null||e.outputTokens===null?'Token usage not reported':e.inputTokens+' input / '+e.outputTokens+' output tokens reported')+(e.unknownUsageCalls?' · '+e.unknownUsageCalls+' call(s) without complete token counts':'');if(e.type==='tool-timing')return e.tool+' · '+(Number(e.durationMs||0)/1000).toFixed(2)+' s'+(e.outcome==='failed'?' · adapter failed':'');if(e.type==='tool-call')return e.input?.text||'';if(e.type==='tool-result')return e.output?.text||'';if(e.type==='case-state')return 'Case lifecycle: '+(e.caseStatus||'unavailable')+(e.root?' · root '+e.root:'')+(typeof e.gaps==='number'?' · '+e.gaps+' open gap(s)':'');if(e.type==='focus')return (e.roots||[]).length?'In focus: '+(e.roots||[]).map((r)=>r.caseId+' ('+r.status+')').join(' · '):'No Case is in focus.';if(e.type==='case-unfocused')return 'Released from this conversation\\'s focus. Its lifecycle on the Board is unchanged.';if(e.type==='affected')return e.unreported?'Affected Cases not reported: this result came from the recent-operations strip, which does not carry them.':(e.affectedCases||[]).length?'Affected Cases: '+e.affectedCases.join(' · '):'No live acceptance root advanced.';if(e.type==='operations'){const open=(e.operations||[]).filter((row)=>['running','waiting_for_decision','needs_person'].includes(row?.state));return open.length?open.map((row)=>String(row.label||row.tool)+' · '+String(row.state).replaceAll('_',' ')).join(' · '):'No operation in progress.'}if(e.type==='held-call'){const what=String(e.label||e.tool||'A call');if(e.phase==='waiting')return what+' is still running at the authority. The Agent keeps the model\\'s call open and asks it nothing meanwhile.';if(e.state==='running')return what+' is still running. The model\\'s call is answered with running and the position; the operation goes on and nothing was cancelled.';if(e.state==='unanswered')return what+': its answer was lost, and it could not be found again. The model\\'s call is told so; its outcome will show in operations.';return what+' is no longer running. The model\\'s call is answered with '+(e.state==='answered'?'its result.':'its state, '+String(e.state||'').replaceAll('_',' ')+'.')}if(e.type==='blocked')return e.teaching||'This turn stopped without asking the model.';if(e.type==='queue-suspended')return e.notSent+' further call(s) proposed in that turn were not sent: the model decides again after an earlier result.';if(e.type==='artifact-read')return 'Artifact '+(e.ref||'')+' · '+(e.complete?'final fragment':'fragment')+(e.truncated?' · truncated at the read limit':'')+(e.mediaType?' · '+e.mediaType:'');if(e.type==='worker-activity-unavailable')return e.note||'This Runtime cannot yet report a dispatched invocation: the Agent Profile result has no published field carrying it. Follow the Action in Console.';if(e.type==='loss')return 'Bounded view: '+(e.omitted===undefined?'rows were':e.omitted+' row(s) were')+' omitted ('+(e.reason||'limit')+'). This answer is partial.';if(e.type==='propose')return e.say||JSON.stringify(e.tool||e.cmds||e.ops||{},null,2);if(e.type==='verdict')return e.held?(e.cmd||'Call')+' · '+String(e.held).replaceAll('_',' ')+(e.teaching?' · '+e.teaching:''):e.accepted?'Accepted by Board'+(e.cmd?' · '+e.cmd:''):(e.teaching||'Rejected by Board');if(e.type==='source-plan')return (e.plans||[]).map((p)=>p.action+' via '+p.source+' → '+p.predicate).join('\\n');if(e.type==='claimed')return (e.kind||'work')+' · '+(e.id||'claimed');if(e.type==='reported')return (e.kind||'work')+' · '+(e.id||'')+' · '+(e.landed?'receipt committed':'receipt not committed')+(e.result?'\\n'+e.result:'')+(e.reason?'\\n'+e.reason:'');if(e.type==='case-open')return e.ok===false?'Case could not be opened':'Case Type '+(e.caseType||'exploration');if(e.type==='case-closed')return 'Disposition: '+(e.disposition||'closed');if(e.type==='model-error')return e.teaching||'The model response could not be completed.';if(e.type==='case-pending')return e.reason||e.note||'Waiting for evidence';if(e.type==='session-detached')return e.note||'The local conversation was reclaimed; its Rulith Case remains on the Board.';if(e.type==='log')return e.line||'';return e.note||e.text||''}
 /* The words each event gets. A label a person can read is the whole of what most events
    need to contribute; the rest of the transcript is the conversation itself. */
-const EVENT_LABELS={'pending-inherited':'Earlier call awaiting recovery','case-state':'Case lifecycle','focus':'Cases in focus','case-unfocused':'Case released from focus','affected':'Affected Cases','loss':'Bounded view','recovery':'Unresolved call','handoff':'Earlier outcome handed over','operation-read':'Original operation read','blocked':'Turn stopped','model-error':'Model response failed','queue-suspended':'Remaining calls not sent','artifact-read':'Artifact fragment read','worker-activity-unavailable':'Invocation reporting unavailable','action-outcome':'Action result','case-open':'Rulith Case opened','case-closed':'Rulith Case closed','case-pending':'Rulith Case pending','session-detached':'Conversation detached','source-plan':'Source route','verdict':'Board decision','claimed':'Worker claimed','reported':'Worker receipt','task-done':'Agent turn finished','task-start':'Message','task-queued':'Message queued','slot-open':'Capacity available','up':'Runtime online','spawn':'Process started','exit':'Process exited','round':'Agent turn','log':'Runtime log','error':'Runtime error'}
+const EVENT_LABELS={'operations':'Recent operations','held-call':'Held call','case-state':'Case lifecycle','focus':'Cases in focus','case-unfocused':'Case released from focus','affected':'Affected Cases','loss':'Bounded view','blocked':'Turn stopped','model-error':'Model response failed','queue-suspended':'Remaining calls not sent','artifact-read':'Artifact fragment read','worker-activity-unavailable':'Invocation reporting unavailable','action-outcome':'Action result','case-open':'Rulith Case opened','case-closed':'Rulith Case closed','case-pending':'Rulith Case pending','session-detached':'Conversation detached','source-plan':'Source route','verdict':'Board decision','claimed':'Worker claimed','reported':'Worker receipt','task-done':'Agent turn finished','task-start':'Message','task-queued':'Message queued','slot-open':'Capacity available','up':'Runtime online','spawn':'Process started','exit':'Process exited','round':'Agent turn','log':'Runtime log','error':'Runtime error'}
 EVENT_LABELS['board-observation-unavailable'] = 'Board observation unavailable'
 /* Which events are allowed to raise their voice. A refusal, a stopped turn, a Case waiting on
    evidence and a conversation that was detached are the states a person has to act on; a
    lease, an accepted call and a finished turn are not, however many of them arrive. */
 function eventLevel(e){
   if(e.type==='action-outcome')return e.status==='unknown'?'wait':(['failed','refused'].includes(e.status)?'bad':'')
-  if(e.type==='pending-inherited')return 'wait'
-  if(e.accepted===false||e.landed===false||e.type==='error'||e.type==='blocked'||e.type==='model-error'||e.type==='recovery-conflict')return 'bad'
-  if(e.type==='recovery')return e.state&&e.state!=='none'?'wait':''
+  if(e.type==='held-call')return e.phase==='waiting'?'wait':''
+  if(e.type==='verdict'&&e.held)return 'wait'
+  if(e.accepted===false||e.landed===false||e.type==='error'||e.type==='blocked'||e.type==='model-error')return 'bad'
   if(e.type==='task-done'&&['interrupted','not-started'].includes(e.outcome))return 'wait'
   if(['case-pending','queue-suspended','session-detached','worker-activity-unavailable','loss'].includes(e.type))return 'wait'
   return ''
@@ -401,22 +365,26 @@ function eventLevel(e){
 /* A stable name for a quiet line that can be opened, so that expanding one and then receiving
    another event does not close it again. */
 const noteKey=(e)=>'note:'+e.type+':'+(e.at||e.t||'')+':'+(e.callId||e.caseId||e.id||'')
-function recoveryActions(rec,link=true){
-  if(!rec||rec.state==='none')return ''
-  const call=rec.callRef?'<small>Original call: <code>'+esc(rec.callRef)+'</code></small>'
-    :'<small>Original call reference unavailable.</small>'
-  if(!link)return call
+/* A person has to act on an operation that waits for a decision or needs reconciliation, and
+   that happens in Console. The link is offered only when this page's Console binding, the
+   running Agent and the account the operations were reported under all agree. */
+function operationsConsoleLink(ops){
   const binding=state.status?.runtime?.console,agentId=state.status?.runtime?.agent?.id
-  if(!binding?.accountId||!agentId||binding.agentId!==agentId||rec.agentId!==agentId
-    ||rec.accountId!==binding.accountId)
-    return call+'<small>Console destination unavailable until this account and Agent are confirmed.</small>'
+  if(!binding?.accountId||!agentId||binding.agentId!==agentId||ops.agentId!==agentId||ops.accountId!==binding.accountId)
+    return '<small>Console destination unavailable until this account and Agent are confirmed.</small>'
   let origin
-  try{const url=new URL(binding.origin);if(!['https:','http:'].includes(url.protocol))return call;origin=url.origin}catch{return call}
-  const runtime=origin+'/console/#/agents/'+encodeURIComponent(agentId)+'?tab=runtime'
-  const caseLink=rec.caseId?'<a class="sidelink" target="_blank" rel="noopener noreferrer" href="'
-    +esc(origin+'/console/#/cases/'+encodeURIComponent(agentId)+'/'+encodeURIComponent(rec.caseId))+'">Open original Case in Console</a>':''
-  return call+'<a class="sidelink" target="_blank" rel="noopener noreferrer" href="'+esc(runtime)
-    +'">Open Agent Runtime in Console</a>'+caseLink
+  try{const url=new URL(binding.origin);if(!['https:','http:'].includes(url.protocol))return '';origin=url.origin}catch{return ''}
+  return '<a class="sidelink" target="_blank" rel="noopener noreferrer" href="'
+    +esc(origin+'/console/#/agents/'+encodeURIComponent(agentId)+'?tab=runtime')+'">Open Agent Runtime in Console</a>'
+}
+function renderOperations(ops){
+  if(!ops||!ops.reported)return '<div class="item">No operations reported yet.</div>'
+  const since=(value)=>{const at=new Date(value);return Number.isNaN(at.getTime())?'':' · since '+at.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
+  const held=ops.held?'<div class="item">Waiting for '+esc(ops.held.label)+'<small>The authority still holds this call. The Agent keeps the model\\'s call open and asks it nothing meanwhile.</small></div>':''
+  const stale=ops.stale?'<div class="item">Reported before the Agent process changed<small>The new process has not reported its operations yet.</small></div>':''
+  const rows=ops.entries.length?ops.entries.map((row)=>'<div class="item">'+esc(row.label)+'<small>'+esc(row.words+since(row.since))+'</small>'+(row.needsPerson?operationsConsoleLink(ops):'')+'</div>').join('')
+    :'<div class="item">No recent operations.</div>'
+  return held+stale+rows
 }
 /* What a person's message carried, when the event says so.
    Only what the event itself published is shown, and only the filenames: a material id is a
@@ -431,24 +399,24 @@ function attachedFiles(e){
     :rows.length+' file'+(rows.length===1?'':'s')+' attached')+'</div>'
 }
 function card(e,trace=false){
-  const body=e.type==='pending-inherited'?projectRecovery([{...e,src:'agent'}]).detail:eventBody(e)
+  const body=eventBody(e)
   if(e.type==='history-cases')return '<div class="message quiet">Historical Cases: '+(e.caseIds||[]).map(id=>'<a target="_blank" rel="noopener noreferrer" href="'+esc(history.caseBase+encodeURIComponent(id))+'">'+esc(id)+'</a>').join(' · ')+'<small> Open Console to read their current state.</small></div>'
   if(!trace&&e.type==='tool-result')return ''
   if(!trace&&e.type==='verdict'&&e.callId)return ''
   if(!trace&&e.type==='tool-call')return renderToolCall(e,state.toolResults?.get(e.callId))
-  if(!trace&&['case-state','focus','case-unfocused','affected','spawn','exit','up','log','start','round','task-queued','slot-open'].includes(e.type))return ''
+  if(!trace&&['operations','case-state','focus','case-unfocused','affected','spawn','exit','up','log','start','round','task-queued','slot-open'].includes(e.type))return ''
   if(!trace&&(e.type==='task-start'||(e.type==='user'&&!e.interject)))return '<div class="message user"><div class="bubble">'+esc(e.text||'')+attachedFiles(e)+'</div></div>'
   if(!trace&&e.type==='propose'&&e.say)return '<div class="message"><div class="meta">Agent · '+timeOf(e)+'</div><div class="agent-text">'+renderMarkdown(e.say)+'</div></div>'
   const label=e.type==='task-done'&&['interrupted','not-started'].includes(e.outcome)?'Agent turn interrupted':EVENT_LABELS[e.type]||e.type.replaceAll('-',' ')
   const when='<span class="act-state">'+esc(e.src||'')+' · '+timeOf(e)+'</span>'
   const level=eventLevel(e)
-  if(level!=='')return '<div class="message"><div class="alert '+level+'"><b>'+esc(label)+'<span class="right">'+esc(e.src||'')+' · '+timeOf(e)+'</span></b>'+(body?'<div class="alert-body">'+esc(body)+'</div>':'')+((e.type==='recovery'||e.type==='pending-inherited')?recoveryActions(projectRecovery([{...e,src:'agent'}]),false):'')+'</div></div>'
+  if(level!=='')return '<div class="message"><div class="alert '+level+'"><b>'+esc(label)+'<span class="right">'+esc(e.src||'')+' · '+timeOf(e)+'</span></b>'+(body?'<div class="alert-body">'+esc(body)+'</div>':'')+'</div></div>'
   const NL=String.fromCharCode(10),first=String(body||'').split(NL)[0]
   const head='<span class="act-ico">'+(e.src==='worker'?'⚙':'◇')+'</span><span class="act-text">'+esc(label)+(first?' · '+esc(first):'')+'</span>'
   if(!body||(body.length<=110&&body.indexOf(NL)<0))return '<div class="message quiet"><div class="note">'+head+when+'</div></div>'
   return '<div class="message quiet"><details class="activity" data-call="'+esc(noteKey(e))+'"><summary>'+head+'<span class="act-more"></span>'+when+'</summary><div class="call-content"><div class="call-part"><pre>'+esc(body)+'</pre></div></div></details></div>'
 }
-function renderInspector(filtered){const reversed=[...filtered].reverse();const reads=projectBoardReads(filtered),rows=projectCaseRoots(filtered),rec=state.runtimeRecovery??projectRecovery(filtered),recMarkup='<div class="item">'+esc(rec.label)+(rec.detail?'<small>'+esc(rec.detail)+'</small>':'')+recoveryActions(rec)+'</div>';if(recMarkup!==state.lastRecovery){$('recovery').innerHTML=recMarkup;state.lastRecovery=recMarkup}const inFocus=rows.filter((r)=>r.focused),hasCase=rows.length>0;const countText=(!hasCase?(reads.observed?'0 in focus':'Not in use'):inFocus.length+' in focus'+(rows.length>inFocus.length?' · '+(rows.length-inFocus.length)+' released':''))+(reads.histories.length?' · '+reads.histories.length+' histories read':'');if($('casecount').textContent!==countText)$('casecount').textContent=countText;const rootsMarkup=(hasCase?rows.map((r)=>'<div class="item">'+esc(r.caseId)+' — '+esc(r.label)+'<small>'+(r.root?'root '+esc(r.root)+' · ':'')+esc(r.observation)+(r.gaps===null?'':' · '+r.gaps+' open gap(s)')+(r.focused?'':' · released from focus')+'</small></div>').join(''):'<div class="item">'+(reads.observed?'Board queried; no Case is in focus.':'Rulith has not been used for this conversation.')+'</div>')+renderHistoryReads(reads.histories);if(rootsMarkup!==state.lastRoots){$('roots').innerHTML=rootsMarkup;state.lastRoots=rootsMarkup}const plan=reversed.find((e)=>e.type==='source-plan'),frontierMarkup=plan&&plan.plans?.length?plan.plans.map((p)=>'<div class="item">'+esc(p.predicate)+'<small>'+esc(p.action)+' via '+esc(p.source)+'</small></div>').join(''):hasCase?'<div class="item">No frontier has been reported.</div>':reads.observed?'<div class="item">No current Case frontier was reported by this read.</div>':'<div class="item">Rulith has not been used for this conversation.</div>';if(frontierMarkup!==state.lastFrontier){$('frontier').innerHTML=frontierMarkup;state.lastFrontier=frontierMarkup}const worker=filtered.filter((e)=>(e.src==='worker'&&(['claimed','reported','error','skip','up'].includes(e.type)||(e.type==='log'&&e.stderr)))||(e.src==='agent'&&['worker-activity-unavailable','action-outcome'].includes(e.type))).slice(-8).reverse(),workerMarkup=worker.length?worker.map((e)=>'<div class="item">'+esc(e.type==='up'?'Worker online':e.type==='worker-activity-unavailable'?'Invocation reporting unavailable · '+eventBody(e):eventBody(e))+'<small>'+timeOf(e)+'</small></div>').join(''):'<div class="item">No Worker activity for this conversation.</div>';if(workerMarkup!==state.lastWorkers){$('workers').innerHTML=workerMarkup;state.lastWorkers=workerMarkup}}
+function renderInspector(filtered){const reversed=[...filtered].reverse();const reads=projectBoardReads(filtered),rows=projectCaseRoots(filtered),ops=state.runtimeOperations??projectOperations(filtered),opsMarkup=renderOperations(ops);if(opsMarkup!==state.lastOperations){$('operations').innerHTML=opsMarkup;state.lastOperations=opsMarkup}const inFocus=rows.filter((r)=>r.focused),hasCase=rows.length>0;const countText=(!hasCase?(reads.observed?'0 in focus':'Not in use'):inFocus.length+' in focus'+(rows.length>inFocus.length?' · '+(rows.length-inFocus.length)+' released':''))+(reads.histories.length?' · '+reads.histories.length+' histories read':'');if($('casecount').textContent!==countText)$('casecount').textContent=countText;const rootsMarkup=(hasCase?rows.map((r)=>'<div class="item">'+esc(r.caseId)+' — '+esc(r.label)+'<small>'+(r.root?'root '+esc(r.root)+' · ':'')+esc(r.observation)+(r.gaps===null?'':' · '+r.gaps+' open gap(s)')+(r.focused?'':' · released from focus')+'</small></div>').join(''):'<div class="item">'+(reads.observed?'Board queried; no Case is in focus.':'Rulith has not been used for this conversation.')+'</div>')+renderHistoryReads(reads.histories);if(rootsMarkup!==state.lastRoots){$('roots').innerHTML=rootsMarkup;state.lastRoots=rootsMarkup}const plan=reversed.find((e)=>e.type==='source-plan'),frontierMarkup=plan&&plan.plans?.length?plan.plans.map((p)=>'<div class="item">'+esc(p.predicate)+'<small>'+esc(p.action)+' via '+esc(p.source)+'</small></div>').join(''):hasCase?'<div class="item">No frontier has been reported.</div>':reads.observed?'<div class="item">No current Case frontier was reported by this read.</div>':'<div class="item">Rulith has not been used for this conversation.</div>';if(frontierMarkup!==state.lastFrontier){$('frontier').innerHTML=frontierMarkup;state.lastFrontier=frontierMarkup}const worker=filtered.filter((e)=>(e.src==='worker'&&(['claimed','reported','error','skip','up'].includes(e.type)||(e.type==='log'&&e.stderr)))||(e.src==='agent'&&['worker-activity-unavailable','action-outcome'].includes(e.type))).slice(-8).reverse(),workerMarkup=worker.length?worker.map((e)=>'<div class="item">'+esc(e.type==='up'?'Worker online':e.type==='worker-activity-unavailable'?'Invocation reporting unavailable · '+eventBody(e):eventBody(e))+'<small>'+timeOf(e)+'</small></div>').join(''):'<div class="item">No Worker activity for this conversation.</div>';if(workerMarkup!==state.lastWorkers){$('workers').innerHTML=workerMarkup;state.lastWorkers=workerMarkup}}
 function render(forceTail){historyControls();$('composertarget').hidden=state.fresh||!!state.active||!state.session;$('composertarget').textContent='Message to: '+(state.cases.get(state.session)?.title||state.session);const stream=$('stream'),oldTop=stream.scrollTop,stick=forceTail===true||stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;renderCases();const filtered=state.fresh?[]:state.events.filter((e)=>!state.active||caseOf(e)===state.active);state.toolResults=new Map(filtered.filter(e=>e.type==='tool-result').map(e=>[e.callId,e]));const cards=filtered.map((e)=>card(e,state.view==='trace')).filter(Boolean).join('');$('title').textContent=state.active?(state.cases.get(state.active)?.title||state.active):state.status?.mode==='worker'?'Worker activity':'Local activity';$('subtitle').textContent=state.active?state.active:'Conversation with optional Rulith Case tools';document.querySelectorAll('[data-view]').forEach((button)=>button.classList.toggle('active',button.dataset.view===state.view));const needsSetup=state.status&&(state.status.roles.includes('agent')?!state.status.agent:state.status.roles.includes('worker')&&!state.status.worker);const initializing=state.status?.agent&&state.status.ready?.agent===false;const heading=initializing?'Agent readiness is not confirmed':needsSetup?'Runtime is not ready':state.status?.mode==='worker'?'Worker is ready for governed work':'What would you like to discuss or handle?',copy=initializing?'The process is running. You can try sending a message; a connection failure will appear here.':needsSetup?(state.status.roles.includes('agent')?'Configure and start the Agent to begin a conversation.':'Start the Worker to handle authorized tool requests.'):state.status?.mode==='worker'?'Claims, Tool execution, and receipts will appear here.':'Chat normally. The Agent will use Rulith when governed work, evidence, or an auditable Case is useful.',markup=cards||'<div class="empty"><h1>'+heading+'</h1><p>'+copy+'</p></div>';const open=new Set(markup===state.lastStream?[]:[...stream.querySelectorAll('details[data-call][open]')].map(e=>e.dataset.call));if(markup!==state.lastStream){stream.innerHTML=markup;for(const detail of stream.querySelectorAll('details[data-call]'))detail.open=open.has(detail.dataset.call);state.lastStream=markup;stream.scrollTop=stick?stream.scrollHeight:oldTop}else if(stick)stream.scrollTop=stream.scrollHeight;renderMaterialTarget();renderInspector(filtered)}
 function showRuntime(r){const a=r.runtime?.agent||{},w=r.runtime?.worker||{};$('agentname').textContent='Agent Runtime';$('agentidentity').textContent=a.id||'not configured';$('modelbadge').textContent=a.model||'No model';$('thinkingbadge').textContent=a.thinking==='disabled'?'Thinking off':a.thinking==='extended'?'Thinking on':'Provider default';$('toolbadge').textContent=r.roles.includes('worker')?'Rulith · workspace tools '+(w.workspaceTools||'read'):'Rulith MCP';$('detailagent').textContent=a.id||'—';$('detailagentkey').textContent=a.credentialConfigured?'Configured':'Missing';$('detailmodelurl').textContent=a.modelService||'—';$('detailmodel').textContent=a.model||'—';$('detailmodelkey').textContent=a.modelKeyConfigured?'Configured':'Not configured';$('detailthinking').textContent=a.thinking==='disabled'?'Off':a.thinking==='extended'?'On':'Provider default';$('detailconcurrency').textContent='serial · one connection';$('detailconnection').textContent=w.connection||'—';$('detailworkerkey').textContent=w.credentialConfigured?'Configured':'Missing';$('detailtools').textContent=w.workspaceTools||'read';$('detailtoolsfile').textContent=w.toolsFile||'built-in only';$('detailsourcesfile').textContent=w.sourcesFile||'none';$('detailconfig').textContent=r.runtime?.configFile||'—';document.querySelectorAll('[data-control]').forEach((button)=>button.hidden=EMBEDDED||!r.roles.includes(button.dataset.control))}
 async function refresh(){const response=await fetch('/status?k='+encodeURIComponent(K)).catch(()=>null);if(response?.status===401||response?.status===403){location.reload();return}const r=await response?.json().catch(()=>null);if(!r||!r.ok)return;state.status=r;$('mode').textContent=r.mode;$('agentstate').textContent=r.roles.includes('agent')?(r.agent?'local online':'local off'):'not local';$('workerstate').textContent=r.roles.includes('worker')?(r.worker?'local online':'local off'):'not local';$('agentdot').className='dot '+(r.agent?'on':'');$('workerdot').className='dot '+(r.worker?'on':'');$('newcase').hidden=!r.roles.includes('agent');$('composer').hidden=!r.roles.includes('agent');$('app').classList.toggle('worker-only',r.mode==='worker');showRuntime(r);render()}

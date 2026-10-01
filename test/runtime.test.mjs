@@ -118,7 +118,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.9.2')
+  assert.equal(pkg.version, '0.10.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -147,21 +147,24 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('the model surface is the seven tools of the unified list, and no second grammar survives', () => {
+test('the model surface is the six tools of the unified list, and no second grammar survives', () => {
   const whole = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   // The runtime names the retired surfaces once, in the constant it refuses them by. That
   // single declaration is the allow-list; the scan below runs over everything else, so a
   // retired name reappearing anywhere it could be *called* still turns this red.
   assert.match(whole, /const RETIRED_TOOL_NAMES = \['agent_protocol', 'GetCompletion', 'GetBoardManifest', 'RunDischarge', 'GetProjection', 'GetChanges'\]/,
     'the refusal list for retired host surfaces is gone, so advertising one would no longer be named')
-  const source = whole.split('\n').filter((line) => !line.startsWith('const RETIRED_TOOL_NAMES =')).join('\n')
+  assert.match(whole, /const RETIRED_V2_TOOL_NAMES = \['ReadOperation'\]/,
+    'a v2 endpoint still advertising ReadOperation would no longer be named')
+  const source = whole.split('\n').filter((line) => !line.startsWith('const RETIRED_TOOL_NAMES =')
+    && !line.startsWith('const RETIRED_V2_TOOL_NAMES =')).join('\n')
   // Membership comes from the vendored projection of `protocol/mcp-surface.json`, with each
   // tool's dispatch target beside it, and from nowhere else. The retired handwritten
   // `agentVerb` / `agentRead` membership fields are gone with the host split.
   assert.match(source, /const RULITH_MCP_SURFACE = Object\.freeze\(\[/)
   assert.match(source, /const MODEL_TOOLS = RULITH_MCP_SURFACE\.map\(\(entry\) => entry\.name\)/)
   assert.match(source, /name: 'ReadArtifact', target: 'artifact'/)
-  assert.match(source, /name: 'ReadOperation', target: 'operation'/)
+  assert.doesNotMatch(source, /target: 'operation'/, 'the retired operation-read target survived')
   assert.match(source, /const BOARD_TOOLS = new Set\(RULITH_MCP_SURFACE\.filter\(\(entry\) => entry\.target === 'core'\)/)
   assert.doesNotMatch(source, /agentVerb|agentRead/)
   // The retired fenced-JSON dialect, the retired host tool split, and the client-side
@@ -175,8 +178,8 @@ test('the model surface is the seven tools of the unified list, and no second gr
     'HOST_TOOLS', 'agentProtocol', 'GetCompletion', 'agent_protocol', 'RunDischarge', 'GetBoardManifest',
     'ResumeCase', 'runDischarge', 'probeLawLock', 'hostView', 'traceForward', 'flushTrace',
     // The retired host poll loop, by its declaration rather than by the word: the host no
-    // longer polls the Board for progress. Settling an *unresolved call* against the
-    // authority's own recovery record is a different thing and keeps the word.
+    // longer polls the Board for progress. Watching a held call on the strip's state form,
+    // which reads no Board, is a different thing.
     'async function settle\\(', 'SETTLE_POLL_MS',
     'CASE_CONTEXT_OPERATIONS', 'RULITH_TRACE', 'RULITH_AUTO_DISCHARGE', 'RULITH_SETTLE_WAIT_MS',
     'certifiedOf', 'expectedRevision:',
@@ -185,6 +188,13 @@ test('the model surface is the seven tools of the unified list, and no second gr
     // of them would be keeping the rule.
     'OBSERVATION_REFUSALS', 'stale_observation', 'scope_expanded', 'turnObservation', 'bootstrapUsed',
     'persistSlotRecord', 'restoreSlotRecord',
+    // The rulith/v2 recovery machinery, by every name it wore. The authority holds each call
+    // and shows every outcome on the strip; a host gate, a recovery record or a note in the
+    // assistant's voice beside that would be a second, quieter source of truth.
+    'ReadOperation', 'readOperation', 'settleRecovery', 'claimOperation', 'recoveredOperationNote',
+    'unavailableReadNote', 'pendingObservationNote', 'host_recovery', 'hostRecoveryEntry', 'RECOVERY_STATES',
+    'operationRecovery', 'boardObservation', 'persistUnresolved', 'holdUnresolved', 'operationAtAdmission',
+    'transportAmbiguous', 'call_gate_open',
   ]) {
     assert.doesNotMatch(source, new RegExp(retired), `${retired} survived the single-MCP rewrite`)
   }
@@ -206,7 +216,7 @@ test('the retired wire fields are stripped from schemas and refused when a model
   assert.match(source, /const RETIRED_TOOL_FIELDS = \['case', 'expectedRevision', 'caseRevision', 'expectedBoardSharedEpoch', 'viewToken'\]/)
   assert.match(source, /const HOST_METADATA_FIELDS = \[[^\]]*'kind'[^\]]*'queryContext'[^\]]*'audienceProfile'[^\]]*'requestedRoots'[^\]]*'requestId'/s)
   assert.match(source, /const HOST_OWNED_TOOL_FIELDS = \[\.\.\.RETIRED_TOOL_FIELDS, \.\.\.HOST_METADATA_FIELDS\]/)
-  assert.match(source, /refusal\(retired\.length > 0 \? 'retired_wire_field' : 'host_owned_field', teaching\)/)
+  assert.match(source, /refusal\(retired\.length > 0 \? 'retired_wire_field' : 'host_owned_field', teaching, name\)/)
   assert.match(source, /retiredFieldTeaching/)
   assert.match(source, /hostFieldTeaching/)
 })
@@ -303,16 +313,15 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
     const reply = (result) => res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result }))
     if (input.method === 'initialize') {
       return void reply({
-        protocolVersion: '2025-11-25', capabilities: { tools: {}, experimental: { 'rulith/v2': { operationRecovery: 1, boardObservation: 1 } } },
+        protocolVersion: '2025-11-25', capabilities: { tools: {}, experimental: { 'rulith/v3': { heldCalls: 1 } } },
         serverInfo: { name: 'live-mcp', version: '1' },
-        // A conforming endpoint always publishes the recovery record. `none` is the
-        // authority saying there is nothing outstanding — which is why this run never has
-        // to ping for it.
-        _meta: { 'rulith/v2': { agentId: 'agent-public-1', focusedRoots: [], recovery: { state: 'none' } } },
+        // The state form of the recent-operations strip: nothing yet, which is why this run
+        // never has to ping.
+        _meta: { 'rulith/v3': { agentId: 'agent-public-1', focusedRoots: [], operations: [] } },
       })
     }
     if (input.method === 'ping') {
-      return void reply({ _meta: { 'rulith/v2': { agentId: 'agent-public-1', focusedRoots: [], recovery: { state: 'none' } } } })
+      return void reply({ _meta: { 'rulith/v3': { agentId: 'agent-public-1', focusedRoots: [], operations: [] } } })
     }
     if (input.method === 'tools/list') {
       assert.equal(String(req.headers['mcp-session-id']), sessionId, 'the session header was not carried after initialize')
@@ -324,25 +333,26 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
           { name: 'CloseCase', inputSchema: { type: 'object', properties: { disposition: { type: 'string' }, case: { type: 'object' } } } },
           { name: 'QueryBoard', inputSchema: { type: 'object', properties: { include: { type: 'array' } } } },
           { name: 'ReadArtifact', inputSchema: { type: 'object', required: ['ref'], properties: { ref: { type: 'string' }, offset: { type: 'integer' }, maxBytes: { type: 'integer' } } } },
-          { name: 'ReadOperation', inputSchema: { type: 'object', additionalProperties: false, properties: {} } },
         ],
-        _meta: { 'rulith/v2': { agentId: 'agent-public-1', focusedRoots: [], recovery: { state: 'none' } } },
+        _meta: { 'rulith/v3': { agentId: 'agent-public-1', focusedRoots: [] } },
       })
     }
     assert.equal(input.method, 'tools/call')
     const name = String(input.params?.name ?? '')
     toolNames.push(name)
-    sentMeta.push(input.params?._meta?.['rulith/v2'])
+    sentMeta.push(input.params?._meta?.['rulith/v3'])
     if (name === 'CloseCase') closed = true
+    const now = new Date(Date.UTC(2026, 9, 1, 8, 0, toolNames.length)).toISOString()
     const core = {
       accepted: true, revision: `r${toolNames.length}`, payload: boardView(!closed),
       ...(closed ? { receipt: { disposition: 'completed' } } : {}),
+      operations: toolNames.map((tool, index) => ({ tool, label: tool, state: 'done', summary: `${tool}: done`,
+        at: new Date(Date.UTC(2026, 9, 1, 8, 0, index + 1)).toISOString(), since: now })).reverse(),
     }
     reply({
       content: [{ type: 'text', text: JSON.stringify(core) }],
-      _meta: { 'rulith/v2': {
+      _meta: { 'rulith/v3': {
         agentId: 'agent-public-1',
-        recovery: { state: 'none' },
         boardRevision: `r${toolNames.length}`,
         focusedRoots: closed ? [] : [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE' }],
         ...(closed ? { affectedCases: ['CASE_LIVE'] } : {}),
@@ -1731,6 +1741,8 @@ function runtimeEnvNamesSupported(root = ROOT) {
     const source = codeOnly(readFileSync(file, 'utf8'))
     for (const m of source.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1])
     for (const m of source.matchAll(/process\.env\[\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
+    // The Agent's numeric knobs are read through one checked reader, by name.
+    for (const m of source.matchAll(/\benvNumber\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
     // A name written into a child's environment as an object key — Rulith Local's spawns.
     for (const m of source.matchAll(/\b(RULITH_[A-Z0-9_]*)\s*:/g)) names.add(m[1])
     // The context the Worker hands a `run` Adapter is one declared map. `handRun`

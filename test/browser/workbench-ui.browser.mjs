@@ -22,7 +22,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { startMockWorkbench } from './mock-manager.mjs'
-import { projectRecovery } from '../../local/local-ui.mjs'
+import { projectOperations } from '../../local/local-ui.mjs'
 
 const PLAYWRIGHT = process.env.RULITH_PLAYWRIGHT_MODULE || 'D:/Work/rulith-java/console-web/node_modules/playwright/index.js'
 
@@ -107,7 +107,7 @@ const TRANSCRIPTS = {
   'inst-2': conversation('s-gamma', 'CASE-GAMMA', 'ROOT-GAMMA', 'gamma.invoice', 'http:gamma-rates', 'lease-gamma'),
 }
 /** What the Agent's own inspector is showing right now, wherever its sections currently live. */
-const inspectorText = (child) => child.evaluate(() => ['roots', 'recovery', 'frontier', 'workers']
+const inspectorText = (child) => child.evaluate(() => ['roots', 'operations', 'frontier', 'workers']
   .map((id) => document.getElementById(id).textContent).join(' ⟂ '))
 
 /** Choose an Agent and wait for its workspace to report that it loaded. */
@@ -137,75 +137,84 @@ arm('historical reads show closure observations without acquiring Case focus or 
     { src: 'agent', type: 'tool-result', cmd: 'QueryBoard', authoritative: true, accepted: true,
       boardRead: { observed: true, history: { root: 'ROOT-HISTORY', caseId: 'CASE-HISTORY',
         status: 'available', disposition: 'completed', certified: true, factsOnPage: 4, morePages: true } } },
-    { src: 'agent', type: 'operation-read', tool: 'QueryBoard',
+    { src: 'agent', type: 'tool-result', cmd: 'QueryBoard', authoritative: true, accepted: true,
       boardRead: { observed: true, history: { root: 'ROOT-UNAVAILABLE', status: 'unavailable' } } },
   ], 'inst-2': [] } })
 
-arm('an inherited unresolved call survives conversation changes and clear view without leaking to another Agent',
+arm('recent operations survive conversation changes and clear view without leaking to another Agent',
   { width: 1440, height: 900 }, async ({ page }) => {
     const child = await openAgent(page, 'inst-1')
-    await child.locator('#recovery').getByText('Earlier ApplyAction outcome is unknown', { exact: false }).waitFor()
-    assert.match(await child.locator('#recovery').innerText(), /current server state has not been checked/)
-    assert.match(await child.locator('#stream').innerText(), /Earlier call awaiting recovery/)
+    const rail = child.locator('#operations')
+    await rail.getByText('Waiting for ApplyAction demo.ship', { exact: false }).waitFor()
+    assert.match(await rail.innerText(), /The authority still holds this call/)
+    assert.match(await rail.innerText(), /Running · at the Worker/)
+    assert.match(await rail.innerText(), /OpenCase exploration/)
+    assert.match(await child.locator('#stream').innerText(), /still running at the authority/)
+    // The strip is the Agent's, not a conversation's: it stays with the Agent, not the transcript.
     await child.click('#convopen')
     await child.click('#newcase')
-    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
+    assert.match(await rail.innerText(), /Waiting for ApplyAction demo\.ship/)
     await child.click('#clear')
-    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
+    assert.match(await rail.innerText(), /Waiting for ApplyAction demo\.ship/)
     const other = await openAgent(page, 'inst-2')
-    assert.match(await other.locator('#recovery').innerText(), /No unresolved call/)
+    assert.match(await other.locator('#operations').innerText(), /No operations reported yet/)
     await openAgent(page, 'inst-1')
-    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
+    assert.match(await rail.innerText(), /Waiting for ApplyAction demo\.ship/)
   }, { events: { 'inst-1': [
-    { src: 'agent', type: 'pending-inherited', tool: 'ApplyAction', requestId: 'fixture-request', at: at(30) },
-    { src: 'agent', type: 'recovery', state: 'none', historical: true, historyKey: 'old-cleared-call', session: 'past', at: at(10) },
+    { src: 'agent', type: 'operations', at: at(30), operations: [
+      { tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker', at: at(30), since: at(30) },
+      { tool: 'OpenCase', label: 'OpenCase exploration', state: 'done', at: at(29), since: at(29) }] },
+    { src: 'agent', type: 'held-call', phase: 'waiting', tool: 'ApplyAction', label: 'ApplyAction demo.ship', at: at(30) },
   ], 'inst-2': [] } })
 
-arm('a new browser frame restores the recovery snapshot even without its original log event',
+arm('a new browser frame restores the operations snapshot even without its original log event',
   { width: 1440, height: 900 }, async ({ page }) => {
     const child = await openAgent(page, 'inst-1')
-    await child.locator('#recovery').getByText('Earlier ApplyAction outcome is unknown', { exact: false }).waitFor()
-    assert.doesNotMatch(await child.locator('#stream').innerText(), /runtime recovery|runtime-recovery/,
+    const rail = child.locator('#operations')
+    await rail.getByText('ApplyAction demo.ship', { exact: false }).waitFor()
+    assert.match(await rail.innerText(), /Needs reconciliation in Console/)
+    assert.doesNotMatch(await child.locator('#stream').innerText(), /runtime-operations/,
       'the host snapshot is state, not a fabricated conversation event')
     await child.click('#clear')
-    assert.match(await child.locator('#recovery').innerText(), /Earlier ApplyAction outcome is unknown/)
-  }, { events: [{ src: 'local', type: 'runtime-recovery', recovery:
-    projectRecovery([{ src: 'agent', type: 'pending-inherited', tool: 'ApplyAction' }]) }] })
+    assert.match(await rail.innerText(), /Needs reconciliation in Console/)
+  }, { events: [{ src: 'local', type: 'runtime-operations', operations:
+    projectOperations([{ src: 'agent', type: 'operations', operations: [
+      { tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'needs_person', at: at(30), since: at(31) }] }]) }] })
 
-arm('an original call links to the bound Agent Runtime and disappears on account, Agent, or recovery change',
+arm('an operation that waits for a person links to the bound Agent Runtime, and the link goes with a changed account or Agent',
   { width: 1440, height: 900 }, async ({ page, fixture }) => {
     const child = await openAgent(page, 'inst-1')
-    const rail = child.locator('#recovery')
+    const rail = child.locator('#operations')
     const link = rail.getByRole('link', { name: 'Open Agent Runtime in Console' })
     await link.waitFor()
     assert.equal(await link.getAttribute('href'),
       'https://console.example/console/#/agents/agent%20%2Fone%3F?tab=runtime')
-    assert.match(await rail.innerText(), /Original call: call-original/)
-    assert.match(await child.locator('#stream').innerText(), /Original call: call-original/)
-    assert.equal(await rail.getByRole('link', { name: 'Open original Case in Console' }).count(), 0)
-    await child.evaluate(() => { mergeEvent({ src: 'agent', type: 'recovery', state: 'reconciliation_required',
-      tool: 'ApplyAction', callRef: 'call-original', caseId: 'CASE /1?', accountId: 'acct-1', agentId: 'agent /one?' }); render() })
-    assert.equal(await rail.getByRole('link', { name: 'Open original Case in Console' }).getAttribute('href'),
-      'https://console.example/console/#/cases/agent%20%2Fone%3F/CASE%20%2F1%3F')
+    assert.match(await rail.innerText(), /Waiting for a decision in Console/)
+    // The operation's identity never reaches the page: there is no original-call reference to link.
+    assert.doesNotMatch(await rail.innerText(), /ordinal|callRef|Original call/)
 
     fixture.control.runtimeConsole = { origin: 'https://console.example', accountId: 'acct-other', agentId: 'agent /one?' }
-    await child.waitForFunction(() => !document.querySelector('#recovery a'))
+    await child.waitForFunction(() => !document.querySelector('#operations a'))
     assert.match(await rail.innerText(), /Console destination unavailable/)
     fixture.control.runtimeConsole = { origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent-other' }
     await child.waitForTimeout(2700)
     assert.equal(await link.count(), 0)
     fixture.control.runtimeConsole = { origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent /one?' }
     await link.waitFor()
+    // A new Agent process has not reported yet: the list is kept, and said to be from before.
     await child.evaluate(() => { mergeEvent({ src: 'agent', type: 'exit' }); render() })
-    assert.match(await rail.innerText(), /status needs refreshing/)
-    assert.match(await rail.innerText(), /Original call: call-original/)
-    await child.evaluate(() => { mergeEvent({ src: 'agent', type: 'recovery', state: 'none' }); render() })
-    assert.match(await rail.innerText(), /No unresolved call/)
-    assert.equal(await link.count(), 0)
+    assert.match(await rail.innerText(), /Reported before the Agent process changed/)
+    await child.evaluate(() => { mergeEvent({ src: 'agent', type: 'operations', accountId: 'acct-1', agentId: 'agent /one?',
+      operations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'done',
+        at: '2026-09-20T15:30:00.000Z', since: '2026-09-20T15:40:00.000Z' }] }); render() })
+    assert.match(await rail.innerText(), /ApplyAction demo\.ship[\s\S]*Done/)
+    assert.doesNotMatch(await rail.innerText(), /Reported before the Agent process changed/)
+    assert.equal(await link.count(), 0, 'a settled operation still offered a Console action')
   }, { instances: [{ id: 'inst-1', name: 'Research', mode: 'local_agent', directory: 'D:/instances/inst-1',
     origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent /one?', agentName: 'One', paired: true }],
-  agents: [{ id: 'agent /one?', name: 'One' }], events: [{ src: 'agent', type: 'recovery', state: 'reconciliation_required',
-    tool: 'ApplyAction', callRef: 'call-original', accountId: 'acct-1', agentId: 'agent /one?' }] })
+  agents: [{ id: 'agent /one?', name: 'One' }], events: [{ src: 'agent', type: 'operations', accountId: 'acct-1',
+    agentId: 'agent /one?', operations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'waiting_for_decision',
+      at: at(30), since: at(31) }] }] })
 
 arm('local authoring review shows the checked program and keeps Save disabled for questions',
   { width: 1400, height: 900 }, async ({ page }) => {

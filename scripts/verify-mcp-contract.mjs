@@ -27,7 +27,9 @@
  *     materializer does not touch — type, required, additionalProperties, and the set of
  *     property names — so a rewritten tool projection cannot ride along on intact file
  *     digests;
- *   · the metadata schema's `ToolName` enum is the same membership again.
+ *   · the metadata schema's `ToolName` enum is the same membership again, and its
+ *     `OperationTool` enum is that membership without `QueryBoard`: the tools whose calls
+ *     the authority holds and shows in the recent-operations strip.
  *
  * After installation the packaged bytes are bound by `artifact-manifest.json`, which is the
  * integrity story for the shipped file rather than for its provenance.
@@ -43,7 +45,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 export const BUNDLE_SCHEMA = 'rulith-mcp-contract-bundle/v1'
-export const SURFACE_SCHEMA = 'rulith-mcp-surface/v2'
+export const SURFACE_SCHEMA = 'rulith-mcp-surface/v3'
 export const BUNDLE_PATH = 'protocol/mcp-contract.json'
 export const SURFACE_FILE = 'protocol/mcp-surface.json'
 
@@ -86,8 +88,9 @@ const skeletonOf = (schema) => JSON.stringify({
  * Validate a parsed bundle and return everything this Runtime consumes from it.
  *
  * Returns `{ sourceCommit, protocolVersion, metadataNamespace, tools, schemas,
- * recoveryStates, clientCapabilities, queryProfiles, queryContext, files }`. `tools` is the
- * `[{name, target, operation, resultSchemaRef?}]` membership in contract order.
+ * operationStates, runningStages, operationTools, clientCapabilities, serverCapabilities,
+ * queryProfiles, queryContext, files }`. `tools` is the `[{name, target, operation,
+ * resultSchemaRef?}]` membership in contract order.
  */
 export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
   if (!isObject(bundle)) throw new ContractError(`${path} is not an object.`)
@@ -156,7 +159,9 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
       throw new ContractError(`${path}: materialized tool ${JSON.stringify(tool?.name)} does not match the declared`
         + ` ${JSON.stringify(entry?.name)} (${JSON.stringify(entry?.target)}/${JSON.stringify(entry?.operation ?? null)}).`)
     }
-    if (entry.target !== 'core' && entry.target !== 'artifact' && entry.target !== 'operation') {
+    // Two targets, and no third: the v3 surface has no operation-read tool. An outcome
+    // reaches a Host through the recent-operations strip every result carries.
+    if (entry.target !== 'core' && entry.target !== 'artifact') {
       throw new ContractError(`${path}: ${entry.name} declares dispatch target ${JSON.stringify(entry.target)}.`)
     }
     if (!isObject(tool.inputSchema)) throw new ContractError(`${path}: ${entry.name} carries no materialized inputSchema.`)
@@ -197,9 +202,22 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
     throw new ContractError(`${path}: the metadata ToolName enum ${JSON.stringify(toolNameEnum ?? null)}`
       + ` is not the tool membership ${JSON.stringify(names)}.`)
   }
-  const recoveryStates = bundle.metadata.$defs?.RecoveryState?.enum
-  if (!Array.isArray(recoveryStates) || recoveryStates.length === 0 || !recoveryStates.every((state) => typeof state === 'string')) {
-    throw new ContractError(`${path}: the metadata schema declares no RecoveryState enum.`)
+  const enumOf = (label) => {
+    const values = bundle.metadata.$defs?.[label]?.enum
+    if (!Array.isArray(values) || values.length === 0 || !values.every((value) => typeof value === 'string' && value !== '')) {
+      throw new ContractError(`${path}: the metadata schema declares no ${label} enum.`)
+    }
+    return [...values]
+  }
+  const operationStates = enumOf('OperationState')
+  const runningStages = enumOf('RunningStage')
+  const operationTools = enumOf('OperationTool')
+  // The held tools are the membership without the one read that is never held. A strip entry
+  // naming a tool outside the surface would be an operation this client cannot place.
+  const heldNames = names.filter((name) => name !== 'QueryBoard')
+  if (JSON.stringify([...operationTools].sort()) !== JSON.stringify([...heldNames].sort())) {
+    throw new ContractError(`${path}: the metadata OperationTool enum ${JSON.stringify(operationTools)}`
+      + ` is not the tool membership without QueryBoard ${JSON.stringify(heldNames)}.`)
   }
   const constantCapabilities = label => {
     const shape = bundle.metadata.$defs?.[label]
@@ -234,7 +252,9 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
       ...(entry.resultSchemaRef === undefined ? {} : { resultSchemaRef: entry.resultSchemaRef }),
     })),
     schemas,
-    recoveryStates: [...recoveryStates],
+    operationStates,
+    runningStages,
+    operationTools,
     clientCapabilities,
     serverCapabilities,
     metadata: bundle.metadata,

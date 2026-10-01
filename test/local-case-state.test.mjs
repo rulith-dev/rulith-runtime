@@ -129,11 +129,12 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   const start = ui.localPage.indexOf('function projectCaseRoots(')
   const end = ui.localPage.indexOf('const K=', start)
   assert.ok(start >= 0 && end > start)
-  const elements = new Map(['casecount', 'roots', 'recovery', 'frontier', 'workers'].map((id) => [id, { textContent: '', innerHTML: '' }]))
-  const context = vm.createContext({ state: {}, $: (id) => elements.get(id), esc: String, timeOf: () => '', eventBody: () => '' })
+  const elements = new Map(['casecount', 'roots', 'operations', 'frontier', 'workers'].map((id) => [id, { textContent: '', innerHTML: '' }]))
+  const context = vm.createContext({ state: {}, $: (id) => elements.get(id), esc: String, timeOf: () => '', eventBody: () => '', URL })
   vm.runInContext(ui.localPage.slice(start, end), context)
-  const recoveryActions = ui.localPage.slice(ui.localPage.indexOf('function recoveryActions('), ui.localPage.indexOf('/* What a person', ui.localPage.indexOf('function recoveryActions(')))
-  vm.runInContext(recoveryActions, context)
+  const operationsPanel = ui.localPage.slice(ui.localPage.indexOf('function operationsConsoleLink('),
+    ui.localPage.indexOf('/* What a person', ui.localPage.indexOf('function operationsConsoleLink(')))
+  vm.runInContext(operationsPanel, context)
   const renderer = ui.localPage.split('\n').find((line) => line.startsWith('function renderInspector('))
   assert.ok(renderer)
   vm.runInContext(renderer, context)
@@ -164,42 +165,43 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   assert.match(elements.get('roots').innerHTML, /CASE_2 — Paused/)
   assert.match(elements.get('roots').innerHTML, /CASE_1 — Running.*3 open gap\(s\).*released from focus/)
 
-  // An unresolved call is neither an error nor idleness, and the panel says which it is.
+  // A running operation is neither an error nor idleness, and the panel says which it is.
   // Shown as idle, a person concludes the Runtime is stuck or that nothing was dispatched.
-  assert.match(elements.get('recovery').innerHTML, /No unresolved call/)
-  context.events = [{ src: 'agent', type: 'pending-inherited', tool: 'ApplyAction' }]
+  assert.match(elements.get('operations').innerHTML, /No operations reported yet/)
+  const running = { tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker',
+    at: '2026-10-01T08:00:00Z', since: '2026-10-01T08:00:01Z' }
+  context.events = [{ src: 'agent', type: 'operations', operations: [running] },
+    { src: 'agent', type: 'held-call', phase: 'waiting', tool: 'ApplyAction', label: 'ApplyAction demo.ship' }]
   vm.runInContext('renderInspector(events)', context)
-  assert.match(elements.get('recovery').innerHTML, /Earlier ApplyAction outcome is unknown/)
-  assert.match(elements.get('recovery').innerHTML, /current server state has not been checked/)
-  context.events = [{ src: 'agent', type: 'recovery', state: 'waiting', tool: 'ApplyAction', callRef: 'call-9' }]
-  vm.runInContext('renderInspector(events)', context)
-  assert.match(elements.get('recovery').innerHTML, /Waiting for an earlier ApplyAction call/)
-  assert.match(elements.get('recovery').innerHTML,
-    /A new user message may request an independent Board observation when the server supports it/)
-  assert.match(elements.get('recovery').innerHTML, /earlier call remains pending/)
+  assert.match(elements.get('operations').innerHTML, /Waiting for ApplyAction demo\.ship/)
+  assert.match(elements.get('operations').innerHTML, /asks it nothing meanwhile/)
+  assert.match(elements.get('operations').innerHTML, /ApplyAction demo\.ship<small>Running · at the Worker/)
 
-  context.events = [
-    { src: 'agent', type: 'recovery', state: 'reconciliation_required', tool: 'ApplyAction' },
-  ]
+  // Waiting for a person: the link to Console is offered only for the account and Agent the
+  // report was made under.
+  context.state.status = { runtime: { agent: { id: 'agent-1' },
+    console: { origin: 'https://console.example', accountId: 'acct-1', agentId: 'agent-1' } } }
+  context.events = [{ src: 'agent', type: 'operations', accountId: 'acct-1', agentId: 'agent-1',
+    operations: [{ ...running, state: 'needs_person', stage: undefined }] }]
   vm.runInContext('renderInspector(events)', context)
-  assert.match(elements.get('recovery').innerHTML, /needs operator reconciliation/)
-  assert.match(elements.get('recovery').innerHTML, /cannot settle the earlier effect/)
+  assert.match(elements.get('operations').innerHTML, /Needs reconciliation in Console/)
+  assert.match(elements.get('operations').innerHTML, /href="https:\/\/console\.example\/console\/#\/agents\/agent-1\?tab=runtime"/)
+  context.events = [{ src: 'agent', type: 'operations', accountId: 'acct-other', agentId: 'agent-1',
+    operations: [{ ...running, state: 'waiting_for_decision', stage: undefined }] }]
+  vm.runInContext('renderInspector(events)', context)
+  assert.match(elements.get('operations').innerHTML, /Waiting for a decision in Console/)
+  assert.match(elements.get('operations').innerHTML, /Console destination unavailable until this account and Agent are confirmed/)
+  assert.doesNotMatch(elements.get('operations').innerHTML, /href=/)
+  context.state.status = undefined
 
-  context.events = [
-    { src: 'agent', type: 'recovery', state: 'result_ready', tool: 'ApplyBatch' },
-    { src: 'agent', type: 'operation-read', tool: 'ApplyBatch', callRef: 'call-1' },
-  ]
+  context.events = [{ src: 'agent', type: 'operations', operations: [
+    { tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', at: 'a', since: 'b' },
+    { tool: 'CloseCase', label: 'CloseCase ROOT_1', state: 'unknown', contentWithheld: true, at: 'c', since: 'd' },
+  ] }, { src: 'agent', type: 'exit' }]
   vm.runInContext('renderInspector(events)', context)
-  assert.match(elements.get('recovery').innerHTML, /No unresolved call/)
-  assert.match(elements.get('recovery').innerHTML, /read for the model, which decides again/)
-
-  context.events = [
-    { src: 'agent', type: 'recovery', state: 'result_ready', tool: 'ReadArtifact' },
-    { src: 'agent', type: 'operation-read', state: 'unavailable', tool: 'ReadArtifact' },
-  ]
-  vm.runInContext('renderInspector(events)', context)
-  assert.match(elements.get('recovery').innerHTML, /Earlier ReadArtifact content is unavailable/)
-  assert.match(elements.get('recovery').innerHTML, /No original result was supplied/)
+  assert.match(elements.get('operations').innerHTML, /Reported before the Agent process changed/)
+  assert.match(elements.get('operations').innerHTML, /ApplyBatch<small>Done/)
+  assert.match(elements.get('operations').innerHTML, /Reconciled, external effect unknown · content withheld/)
 
   // Looking at a closed Case is an observation, not focus or a new lifecycle transition.
   context.events = [{ src: 'agent', type: 'tool-result', cmd: 'QueryBoard', authoritative: true,

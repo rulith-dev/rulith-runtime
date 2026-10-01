@@ -83,7 +83,7 @@ npm install --global rulith
 rulith start
 ```
 
-A Rulith service checks the client protocol (the MCP date and the `rulith/v2` capabilities),
+A Rulith service checks the client protocol (the MCP date and the `rulith/v3` capabilities),
 not the exact release, and its Console names the one release it recommends. To connect to a
 service, install the exact version its Console shows in Setup or Quickstart instead
 (`npm install --global rulith@<version>`): around a protocol change, npm's `latest` can
@@ -134,18 +134,19 @@ Contract; exploration omits them. The Runtime sends values only. Cloud computes
 and pins the business-key, Capability Release, Case Contract, generation, and
 commercial-term digests before the Case opens, so the model never fills them.
 
-### The model surface: seven tools on one endpoint
+### The model surface: six tools on one endpoint
 
 The Agent Runtime is an ordinary MCP client. It connects to one path — `/mcp` — performs
-the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the seven
-tools of the unified MCP surface: five that dispatch to Board operations, one read of
-already-generated result data, and `ReadOperation` for the original call's public result.
+the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the six
+tools of the unified MCP surface: five that dispatch to Board operations and one read of
+already-generated result data. There is no operation-read tool: an earlier call's outcome
+reaches the model on the recent-operations strip every result carries.
 
 That membership is not written here. It is compiled from `protocol/mcp-contract.json`, the
 contract bundle exported from a named commit of the contract repository and verified
 against that repository's Git objects before it was vendored. The protocol version, the
-metadata namespace, the client capability this host declares and the recovery states all
-come from the same bundle. `npm run check` regenerates the projection and fails on drift,
+metadata namespace, the capabilities on both sides and the operation states all come from
+the same bundle. `npm run check` regenerates the projection and fails on drift,
 so the Runtime cannot quietly speak a surface the contract does not name — and there is no
 hand-written list to fall back to if the bundle is missing: that is an error, not a
 default. The private Worker hop is vendored the same way, as `protocol/worker-contract.json`.
@@ -181,7 +182,7 @@ in the prompt restates them. `caseType` stays on `OpenCase`, but an operator who
 one with `--case-type`, `RULITH_CASE_TYPE` or a `POST /task` body has made that governance
 selection, and a model turn cannot move the work onto another contract.
 
-That membership is a contract, not a menu. An endpoint that advertises a sixth tool, a
+That membership is a contract, not a menu. An endpoint that advertises a seventh tool, a
 duplicate, or one of the retired host surfaces is a **protocol mismatch**: startup refuses
 and names both sides. Silently reinterpreting it into the approved six would be this client
 deciding on its own what the authority had offered. The same applies to the protocol
@@ -197,14 +198,17 @@ completes on the matched event rather than waiting for a close that the spec onl
 recommends. Each event's `id:` is kept as a cursor, so a stream that breaks before the
 answer arrives is **resumed** with `Last-Event-ID` rather than re-decided — reissuing the
 request would turn one command into two. A command sent under one authenticated session and
-answered under another is an **unknown outcome**, not a metadata refresh.
+answered under another is a **transport failure**, not a metadata refresh: that answer is not
+taken as the command's.
 
 Two server answers are read as themselves rather than as generic failures. `HTTP 409` with
 JSON-RPC `-32000` and `data.reason = "connection_replaced"` means another authenticated
 client is now this Agent's one effective client: this Runtime stops and does **not**
 reconnect, because two hosts that both reconnect on that signal fight over one Agent.
 `HTTP 404` means the transport session is gone, and the answer is to initialize a new one —
-which says nothing about whether the call made under the old session executed.
+which says nothing about whether the call made under the old session executed. A call the
+Gateway was still holding when another client took over ends its stream with the same
+`connection_replaced` error, and this Runtime stops the same way.
 
 A refused `initialize` is read the same way. `HTTP 400` with JSON-RPC `-32000` and
 `data.reason` `incompatible_client` or `unsupported_protocol` means the Gateway runs another
@@ -217,9 +221,10 @@ Console. The exit status is 1. A rejected credential stays 3 and quotes the Gate
 step as its message; a takeover stays 4.
 
 Host metadata travels beside the model's content, never inside it, in the MCP `_meta`
-block under `rulith/v2`: the authenticated Agent identity, the Board revision (an audit
+block under `rulith/v3`: the authenticated Agent identity, the Board revision (an audit
 string, never a precondition), the `{caseId, root}` focus pairs, the complete
-`affectedCases`, and the recovery record described below. It travels one way. The protected
+`affectedCases`, and, on `initialize` and `ping`, the state form of the recent-operations
+strip described below. It travels one way. The protected
 query context — `audienceProfile` and `requestedRoots` — is injected by the Gateway from the
 authenticated principal, and the session id is a response header, so a conforming client
 attaches nothing of its own. A model cannot name any of it: the Core command kind, query
@@ -234,11 +239,11 @@ which Agent this is.
 A conversation holds a *set* of acceptance roots with independent lifecycles, not one
 active Case. Bringing an existing Case into focus is a host feature reached through
 `--case` and the Local UI, and it uses the same public `OpenCase({caseId})` the model
-would. Deterministic discharge, bounded waiting and closure mechanics belong to Cloud and
-the Board; this runtime runs no second wait or discharge state machine, and a stopped
+would. Deterministic discharge, holding a call until its outcome and closure mechanics belong
+to Cloud and the Board; this runtime runs no second discharge state machine, and a stopped
 model turn is not a paused Case.
 
-### One connection, one call at a time, one recovery path
+### One connection, one call at a time, held calls
 
 The Agent has **one authenticated MCP connection**, and everything goes through it: every
 local conversation, `--case`, the Local UI, and the shadow reviewer. Conversations are
@@ -254,63 +259,163 @@ each against the premises, grounding and policy in force when it runs; there is 
 token, no observation ledger and no first-write exception.
 
 A call is identified by **(Agent, MCP session, JSON-RPC request id)**. All three parts
-matter: under a different session the same body is a *different* logical call, so a call
-whose outcome is unknown is never re-presented after the session that carried it has gone.
-This host holds at most one such call — it is serial, so there is only ever one — and
-remembers it durably until the authority says what became of it.
+matter: under a different session the same body is a *different* logical call, so every call
+this host makes is a fresh identity, sent once, and a call whose answer was lost is never
+re-presented.
 
-When a call's outcome cannot be determined, the business queue stops there. Mechanical
-recovery does not ask the model to poll. If the server explicitly advertises independent
-Board observation, a new user message can ask the model for `QueryBoard` while the earlier
-operation remains waiting or needs reconciliation. Writes, `ReadArtifact`, and Case focus
-stay blocked. The state comes from the authority, on the base protocol's own
-`ping`, whose empty result carries a recovery record under `rulith/v2`:
+The Gateway holds every call except `QueryBoard` until its outcome, until a person has to
+decide, or until its hold bound (50 s by default), and every tool result it returns — refusals
+included — carries `operations`, this Agent's recent operations, newest first (a call this host
+did not send, or whose answer never arrived, carries no full strip, and the model is told so):
 
-| State | What this host does |
+| State | What it means |
 | --- | --- |
-| `none` | Nothing outstanding; work proceeds. Nothing is polled for. |
-| `waiting` | Mechanical recovery waits and pings without a model turn. A new user message may request an independent `QueryBoard` observation if the server advertises it. |
-| `result_ready` | Reads the original public MCP result with `ReadOperation({})`; the read itself succeeds even if the original tool result was an error. |
-| `reconciliation_required` | Stops automatic recovery and shows the operator where to reconcile the original call; a new user message may still request an independent Board observation on an advertising server. |
+| `running` | Still in progress: not yet dispatched, or at the Worker. |
+| `waiting_for_decision` | Waiting for a person's decision in Console. |
+| `done`, `failed`, `refused` | Settled, with the operation's own result while it waits to be acknowledged, else a summary. |
+| `unknown` | Reconciled by a person, with the external effect still unknown. Never a timing or transport verdict, and never a reason to try again. |
+| `needs_person` | A person must reconcile it in Console. |
 
-A successful `QueryBoard` now reports a committed, bounded `view` and an `observation`
-whose `operationAtAdmission` describes the original call when the read was admitted. The
-snapshot and admission state are from different moments; neither proves whether that
-call had an effect. An unavailable observation never replaces or clears the original
-unresolved call. Servers without the explicit `boardObservation:1` capability retain the
-strict recovery gate.
+A settled entry may say `contentWithheld`: its outcome class is shown, and nothing of its
+content may be shown to this Agent now. `initialize` and `ping` carry the same strip in host
+metadata, in a state form that also carries each operation's host-only ordinal; the model never
+sees an ordinal.
 
-If a terminal `ReadArtifact` or `QueryBoard` result cannot be disclosed under current
-authorization, the Host reports that read refusal as labelled recovery data and lets the
-model decide a new command. It does not invent the original result. This exception does
-not apply to writes, unknown outcomes, or reads that are still pending.
+This host sends a progress token with each held call and waits as long as progress arrives:
+`RULITH_MCP_TIMEOUT_MS` (75 s) is how long a call may go with neither an answer nor progress,
+above the Gateway's hold bound. When the Gateway answers `running`, the model's tool call stays
+open. The host first reads the strip of that `running` answer itself: a call can settle as it is
+answered, and then this strip is the one that carries its result in full, while it is
+unacknowledged — so the model is answered from it at once, before anything else is sent. Otherwise
+the host asks the model nothing, reads the state form on `ping` until that operation — found by
+the ordinal its progress named, or, until a ping names it, by its own entry on its `running`
+answer — is no longer running, then reads the position once with a public `QueryBoard`, whose
+strip carries the operation's own result. The model's call is answered with that result, intact —
+its own Board View included, which shows what that step touched — and with the position of that
+read beside it: its strip, and its Board View as `currentView`. The model sees what a synchronous
+call would have shown it. The strip carries a result without its host metadata, so the Cases such
+a result affected are reported to Local as not reported, rather than as none.
+`waiting_for_decision` and `needs_person` reach the model at once. After `RULITH_HOST_WAIT_MS`
+(ten minutes) the model is answered `running` with the current position; the operation goes
+on, nothing is cancelled, and its outcome shows in `operations` of a later result. A
+`ReadArtifact` is answered by reading the object again, with a fresh local ticket where the
+material is local: its strip entry never carries bytes or tickets. A read that cannot be read
+again, because no session can be opened, is answered with exactly that — never with "not sent,
+nothing ran", since the model's own read was sent. `ping` and `QueryBoard` are public MCP that
+any Host may use; there is no channel only this host can reach. A `running` answer that also
+carries an earlier outcome in full is passed on at once instead: the wait's pings would count
+that outcome as read, and later strips carry a summary of it. A withheld outcome the model has not
+been shown — after a restart, every withheld outcome is one — does not cut the wait short: it says
+its outcome class the same way once acknowledged, so it is shown with the answer the wait ends
+with, or, when that answer carries no strip, before the model's next write is sent. While a call
+is waited for, the whole Agent waits with it: its calls are serial, and no other conversation of
+this Agent is answered meanwhile. If the Gateway stops accepting this release during the wait,
+the model's call is answered with what is known of it — `running` — and the turn stops after
+that answer; the call is never reported as one that was not sent.
 
-A state this Runtime cannot read blocks as well, and so does a *missing* record: `none` is
-the authority saying there is nothing outstanding, and silence is this host having no idea.
-An unrecognised or absent state treated as "nothing outstanding" is the one mistake that
-lets a command run twice.
+The Gateway's write gate does the rest. A write sent while an operation is still running,
+waiting for a decision or needing reconciliation is not executed (`operation_running`), and
+neither is a write sent before the latest outcome was shown to this session
+(`previous_result_undelivered`), which carries that outcome in its strip. Both say
+`requestExecuted:false`, and this host reads that as "not executed", never as unknown. Calls
+the model proposed in the same turn are not sent once such an answer comes back, once a call is
+still held, or once an answer shows an earlier outcome the model had not read — after that, the
+gate would let the next write on this session through: the model decides again from what it
+was shown.
 
-The other disagreement that stops work is this host holding a call whose outcome it never
-learned while the authority reports nothing outstanding. An empty recovery record is a
-statement about the Gateway's records, not about the world, so neither reading is acted on:
-the call is named, with its request id, for a person to reconcile in Console.
+When no answer arrives — the connection fails, the stream is cut and cannot be resumed from
+`Last-Event-ID`, the call goes quiet past `RULITH_MCP_TIMEOUT_MS`, the session ends — nothing is
+re-sent, and the host opens a new session instead of going on with the one whose answer it lost.
+If the Gateway had already named the call in its progress, the host knows which operation it
+was: it watches it on the new session exactly as it watches a held call, and answers the
+model's call with its own result. Otherwise the model is told so: a transport failure, the call
+may or may not have run, and `operations` will show whether it did. What the model reads names
+the cause; how the transport failed, which can name the request id or a session id, is written
+to the log only. A result the Gateway wrote but this host never read stays unacknowledged on the
+session that lost it, so the next write this host sends on a new session is refused with that
+result rather than run blind. Which conversation's write that is, the Gateway cannot tell; the
+next section is how the conversation that made the call is shown its outcome all the same.
 
-The recovered outcome goes to the model as labelled **Host recovery data**. Provider
-transports render it as assistant-role text without a fabricated tool call. The original
-tool result remains untrusted data; its text is never placed in a system, developer or user
-message. The model reads what ran, sees that the collecting request executed no Board
-command, and decides again.
+The Gateway counts a result as acknowledged once the session it was written to makes another
+request. When a turn ends in text, the host sends one `ping` on that session, so that a restart
+does not find the result unacknowledged and refuse the next write with it — but only once the
+model of the conversation that result was answered to has replied to a request carrying it. A
+turn cut off at its round limit, or by a model error, leaves its last results unread, and the ping
+that follows another conversation's text does not acknowledge them. Any *request* of another
+conversation does, as the Gateway counts it: what still shows that conversation its own outcome
+then is the record described in the next section. A greeting sends nothing.
 
-The model can also call `ReadOperation({})` explicitly. Its answer separates the read state
-from `originalTool` and `originalResult`, which retains the original tool's public MCP
-`content`, `isError`, and optional `structuredContent`. Host metadata and the opaque call
-reference stay outside model content. The read neither refreshes the Board View nor spends
-the pending business call slot.
+The host's own calls pass the same gate: bringing the Case the operator selected into focus
+(`--case`, the Local UI, a served task's `caseId`) is an `OpenCase`, and the shadow reviewer's
+finding is an `ApplyBatch`. When one of them is refused with `previous_result_undelivered`, the
+earlier outcome that refusal carries is delivered to this session, and the next write would run.
+So the strip is shown, verbatim and labelled as the Board's record, in the next message the model
+of the conversation the call was made for reads, before it decides anything. Until some model has
+read it, no acknowledgement ping is sent; and when another conversation's turn runs first —
+because the turn it was fetched for stopped before asking its model — that turn's message carries
+it too, since every request of that turn would acknowledge it. A focus refused that way is asked
+for once more and then runs, except when files are being bound to that Case through it: the
+material proof belongs to the first request, so the files are submitted again. The shadow
+reviewer does not write at all after a call of the turn was held, not executed, or lost its
+answer, nor while a result of the turn is still unread.
+
+### Several conversations, one session
+
+The Gateway delivers a result to a session and gates a write on what that session was shown. This
+host carries every local conversation — `--serve`, and so every Rulith Local workbench — over its
+one session, so on its own that guarantee would let one conversation read, and acknowledge, the
+outcome of another conversation's write: the conversation that made the write would then send it
+again and it would run (Board spec TOOL-06). The same follows when the transcript that showed a
+conversation an outcome is lost before its model read it — the turn ended at its round limit or in
+a model error, and then the conversation's slot was reclaimed for another one, or the process
+restarted: conversation history comes back as text, without tool results. So the host keeps, per
+conversation, the outcomes of its own writes that its model has not read:
+
+- A write answered with its outcome is kept until the conversation's model replies to a request
+  carrying that answer. A write its model last saw unresolved — answered `running`,
+  `waiting_for_decision`, `needs_person` or no longer listed, or whose answer was lost — is kept by
+  tool, label and admission time, the identity the strip gives it. A lost answer the Gateway had
+  not named yet is recognised as the one new entry of its tool on a later strip, as long as no
+  other operation has been admitted since; a call the Gateway refused before running it is not one.
+- Any answer this host reads — to any conversation or to its own calls, `running` answers included
+  — that shows such a write settled is captured for that conversation as the model would have seen
+  it then: with the full result while it is unacknowledged, since afterwards strips carry a
+  summary.
+- The conversation's next message names what is waiting; the outcome itself comes, once, with the
+  answer to its next Board call, and is kept until its model has replied to that. A write is not
+  sent: this host refuses it in the Gateway's own shape — `previous_result_undelivered`,
+  `requestExecuted:false`, the outcome in `operations`. Any other answer carries the outcome in its
+  strip, in place of the summary the Gateway now shows.
+- When the transcript that showed it is gone — the slot was reclaimed, or the process restarted —
+  and nothing of it was captured, the next write reads the position once first, and is refused
+  with the outcome as that fresh strip shows it, or, when the strip no longer lists it (it lists
+  this Agent's latest five operations, any still unresolved and the latest settled write), with the
+  call named and a note that a person can check it in Console. A conversation with nothing unread is not refused,
+  and costs no extra read.
+
+With conversation history configured — Rulith Local configures it — the identities are written
+beside it, atomically, whenever they change: tool, label, admission time and outcome class, never
+a result, summary or reason, as the history keeps no tool results either. That is what carries the
+guarantee across a restart. Without conversation history it lives in this process only: it
+survives a reclaimed slot, not a restart. All conversations together keep at most 512 entries; a
+call no strip lists any more while its outcome was never seen is dropped, since nothing more can
+be shown of it. When the process ends on its own, or on SIGINT, or on SIGTERM where the platform
+delivers it (Rulith Local's stop on POSIX), it first prints what no model has read; Local's stop
+on Windows ends the process at once, and nothing is printed then. The Gateway's own gate still
+judges every write this host sends.
+
+`QueryBoard` is never held and never an operation. It reports a committed, bounded `view`,
+`observation.consistency: "committed"` and the strip. The strip and the view are not one atomic
+snapshot, and neither proves an earlier call's effect. A read that fails is reported as an
+unavailable observation and changes nothing else.
 
 An authoritative refusal is never replayed by the host: the Board judged the step, and
 resending it with the refusal's own words attached would be this client deciding on the
-model's behalf. Local UI shows the unresolved call, its state and its tool beside the Cases
-in focus.
+model's behalf. Local UI shows the recent operations beside the Cases in focus.
+
+Nothing about an unfinished call is kept on disk. Runtime 0.9 recorded such a call in
+`agent-sessions.json`; a record found there is named once at startup, with its request id, and
+removed, because the strip `initialize` carries already shows what became of the call.
 
 Inside `ApplyBatch`, a step of reasoning takes one of five shapes:
 
@@ -746,8 +851,8 @@ The model never supplies the trusted input values or the calculated output value
   `SELECT`; every model value is passed through the database driver's parameter array
   rather than interpolated into SQL. Fenced write tools classify and reject unsupported
   or destructive statements unless the declared contract allows them.
-- The model can name exactly seven tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
-  `CloseCase`, `QueryBoard`, `ReadArtifact`, `ReadOperation`. Anything else is refused locally and never
+- The model can name exactly six tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
+  `CloseCase`, `QueryBoard` and `ReadArtifact`. Anything else is refused locally and never
   reaches Cloud, so injected text in a task, a document, or a tool result cannot spend the
   Agent's credential on verification, Worker receipts, clearance, or package and Board
   governance. Cloud authorization is the second line, not the first. The protected query

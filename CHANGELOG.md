@@ -2,6 +2,132 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.10.0 - 2026-10-01
+
+- Speak the `rulith/v3` client protocol, which removes `ReadOperation`. The model sees six tools
+  again, and every tool result the Gateway returns, refusals included, carries `operations`: this
+  Agent's recent operations, newest first, each with its state (`running`, `waiting_for_decision`,
+  `done`, `failed`, `refused`, `unknown` or `needs_person`). The MCP date is unchanged
+  (2025-11-25), and this Runtime declares `rulith/v3` `{"heldCalls":1}` at `initialize`. The two
+  protocol lines do not mix. A `rulith/v3` Gateway refuses Runtime 0.9.x at `initialize` with
+  `incompatible_client` and the release it requires, before any session opens: 0.9.x then prints
+  its version-mismatch message with the install line (`npm install --global rulith@0.10.0` for a
+  Gateway that pins this release) and calls nothing. This release in turn stops at `initialize`
+  against a Gateway that does not promise `rulith/v3` held calls, and says so. The Gateway pins
+  the release it accepts, so publish under `next` and move `latest` only with the Gateway cutover,
+  as `CONTRIBUTING.md` describes.
+- Wait for a call the Gateway still holds instead of calling it unknown. The Gateway now holds
+  every call except `QueryBoard` until its outcome, until a person has to decide, or until its
+  hold bound (50 s by default), and answers each of these; it no longer ends a call with an
+  empty event. This Runtime sends a progress token with each held call and keeps waiting while
+  progress arrives. `RULITH_MCP_TIMEOUT_MS` (75 s by default, above the hold bound) is how long
+  a call may go with neither an answer nor progress. When the Gateway answers `running`, the
+  model's tool call stays open. The Runtime first reads the strip of that `running` answer: a
+  call that settled as it was answered is answered from it at once, while that strip still
+  carries its result in full. Otherwise it asks the model nothing, watches the strip on `ping`
+  for that operation, and once it has settled reads the position with one public `QueryBoard`.
+  It then answers the model's call with the call's own result, intact and as a synchronous call
+  would have returned it — its own Board View included — with that read's strip and its Board
+  View as `currentView` beside it. The whole Agent waits meanwhile: its calls are serial. A
+  `running` answer that also carries an earlier outcome in full is passed on at once instead,
+  because the wait would acknowledge that outcome; a withheld outcome the model has not been
+  shown does not cut the wait short, and is shown with the answer the wait ends with or before
+  the model's next write. `waiting_for_decision` and `needs_person` reach the model at once.
+  After `RULITH_HOST_WAIT_MS` (ten minutes by default), the model is answered `running` with the
+  current position; the operation goes on, nothing is cancelled, and its outcome shows in
+  `operations` later. A held `ReadArtifact` is answered by reading the object again, with a
+  fresh local ticket where the material is local; its strip entry never carries bytes or
+  tickets, and the one re-read after a lost read is waited for like any held call. A settled
+  operation whose content may not be shown is answered with its outcome class alone, in the
+  Gateway's own words: "The outcome is done. Its content is withheld from you now.", and for
+  `unknown` that its effect may already have happened, not to repeat it, and that a person can
+  check the effect in Console.
+- Teach the model the strip in a few sentences. Every answer from the authority shows
+  `operations`; a call the Runtime did not send, or whose answer did not arrive, shows no full
+  list of them, and `QueryBoard` does. `running` means the move is still in progress and
+  should not be sent again. `unknown` means its effect may already have happened and it should
+  not be repeated. A write sent while something runs is not executed, and
+  `previous_result_undelivered` means: read the previous outcome shown in `operations`, then
+  decide. The `ReadOperation` guidance, the observation-only turn and the "unknown outcome"
+  teaching for a slow call are gone.
+- Read an answer that says `requestExecuted:false` as "not executed", never as an unknown
+  outcome. When no answer arrives (the connection fails, the stream is cut and cannot be resumed
+  from `Last-Event-ID`, the call goes quiet, the session ends), nothing is re-sent, and the
+  Runtime opens a new session instead of going on with the one whose answer it lost. If the
+  Gateway had already named the call in its progress, the Runtime watches that operation on the
+  new session and answers the model's call with its own result. Otherwise the model is told
+  that this is a transport failure: the call may or may not have run, and `operations` will show
+  whether it did. The model is told the cause only; the transport's detail, which can name the
+  request id or a session id, goes to the log. A result the Gateway wrote but this Runtime never
+  read stays unacknowledged on the session that lost it, so the next write the Runtime sends on
+  a new session is refused with that result (`previous_result_undelivered`) instead of running
+  blind; the conversation that made the call is shown its outcome as the next entry describes,
+  whichever conversation's write that refusal answered. A read that cannot be read again for
+  want of a session says so, instead of "not sent, nothing ran". Same-session stream resumption
+  is unchanged. A held call's stream that ends with `connection_replaced` stops this Runtime as
+  the 409 always did. A Gateway that stops accepting this release while a call is open no longer
+  turns that call into one "not sent": the call is answered with what is known of it, and the
+  turn stops after the answer.
+- Give every local conversation the write gate's guarantee, although they share one MCP session.
+  The Gateway's delivery and write gate are per session, and `--serve` — so every Rulith Local
+  workbench — carries all conversations over one: one conversation reading the Board could
+  acknowledge the outcome of another conversation's write, whose "send it again" then ran twice.
+  The same followed when the transcript that showed a conversation an outcome was lost before its
+  model read it (its turn ended at the round limit or in a model error, then its slot was reclaimed
+  or the process restarted, and the history came back as text). Each conversation now keeps the
+  outcomes of its own writes its model has not read: a write answered with its outcome until the
+  model replies to that answer; one its model last saw unresolved, by tool, label and admission
+  time (a lost answer the Gateway had not named is recognised as the one new entry of its tool on a
+  later strip, as long as no other operation was admitted meanwhile). Any answer that shows one
+  settled is captured for that conversation, with the full result while it is unacknowledged. The
+  conversation's next message names what is waiting, and its next Board call shows it once: a
+  write is not sent but refused by the Runtime in the Gateway's own shape
+  (`previous_result_undelivered`, `requestExecuted:false`, the outcome in `operations`), and any
+  other answer carries the outcome in its strip. When the transcript is gone and nothing of the
+  outcome was captured, the write reads the position first and is refused with the outcome as that
+  fresh strip shows it, or, if it is no longer listed, with the call named and Console to check;
+  a conversation with nothing unread is not refused. With conversation history configured (Rulith
+  Local), the identities — tool, label, admission time, outcome class, never content — are written
+  beside the history atomically whenever they change, which carries this across a restart; without
+  it, it holds while the process runs. When the process ends on its own, or on SIGINT, or on
+  SIGTERM where the platform delivers it (Local's stop on POSIX), it first prints what no model has
+  read; Local's stop on Windows ends it at once, and nothing is printed then.
+- Acknowledge results a model has read. When a turn ends in text, the Runtime sends one `ping` on
+  the same session, which is how the Gateway counts the result as acknowledged; without it, the
+  first write after a restart was refused with the old result. The ping is sent only once the
+  model of the conversation that result was answered to has replied to a request carrying it: a
+  turn cut off at its round limit leaves its last results unread, and the ping after another
+  conversation's text does not acknowledge them (that conversation's requests do, as the Gateway
+  counts them, and the record above is what still shows the outcome to its own conversation). The
+  Runtime's own calls go through the same write gate: bringing the operator's Case into focus is
+  an `OpenCase`, and the shadow reviewer's finding an `ApplyBatch`. When one of them is refused
+  with `previous_result_undelivered`, the earlier outcome it carries is shown, verbatim and
+  labelled as the Board's record, in the next message the model of the conversation it was made
+  for reads — and in another conversation's message first when that conversation's turn comes
+  before — and a refused focus is asked for once more. The rest of a model turn is not sent once an
+  answer shows an earlier outcome the model has not read. The shadow reviewer no longer writes
+  after a call of the turn was held, not executed or lost its answer, nor while a result of the
+  turn is unread. Local refusals now carry `requestExecuted:false` and the refused `tool`, like
+  the Gateway's own.
+- Remove the Runtime's own unresolved-call gate, the 120-second recovery wait
+  (`RULITH_RECOVERY_WAIT_MS` and `RULITH_RECOVERY_POLL_MS`) and the assistant-role "Host recovery
+  data" notes. This also removes a defect: a note collected in a turn's last round never reached
+  the transcript, although the Gateway had counted it delivered. The Gateway's write gate now
+  keeps a new write from running before the previous outcome has been shown, for this Runtime
+  and for any other client.
+- Stop recording unresolved calls in `agent-sessions.json`. A record Runtime 0.9 left there is
+  named once at startup, with its request id, and removed; nothing is re-sent. The strip that
+  `initialize` carries lists the latest operations, any still in progress and the latest settled
+  write, so it shows that call while it is among them; the notice says so, and says nothing of it
+  when `initialize` carried no readable strip. `RULITH_SESSION_FILE` now only says
+  where such a record may be.
+- Show the strip in the workbench. The inspector's "Unresolved call" section becomes "Recent
+  operations": each operation's label and state, a line while the Agent keeps a model's call
+  open for a held call, and a link to the Agent's Runtime in Console for an operation that waits
+  for a person. Tool cards say "Still running", "Waiting for a decision", "Not executed" or
+  "No answer (connection failed)" instead of "Outcome unknown", and a settled call whose content
+  is withheld shows its outcome class with "content withheld" rather than "Held".
+
 ## 0.9.2 - 2026-09-30
 
 - Smooth the first run of the Verified Calculation walkthrough. The client protocol, the

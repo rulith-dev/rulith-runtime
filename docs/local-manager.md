@@ -8,7 +8,7 @@ browser access key; keep it on this computer.
 
 - **Agents, left:** this account's currently enabled Agents. Choose one to enter
   its workspace or set it up on this computer for the first time. Each local profile
-  keeps its own model settings, credentials, tools, workspace and pending-call recovery records.
+  keeps its own model settings, credentials, tools and workspace.
 - **Conversation, center:** the original conversation, Trace and composer. Changing
   Agents preserves each open conversation page and its unsent input.
   Switching conversations also preserves each draft's text, attachments and Case
@@ -16,8 +16,8 @@ browser access key; keep it on this computer.
   the open page; closing or reloading it discards unsent input. Accepted conversation
   history is saved separately. All activity retains the selected composer destination
   and names it above the input.
-- **Execution information, right:** the selected conversation's Cases, unresolved call,
-  frontier and Worker activity. These live in the same page as the conversation, so
+- **Execution information, right:** the selected conversation's Cases, the Agent's recent
+  operations, frontier and Worker activity. These live in the same page as the conversation, so
   choosing an Agent or conversation switches both together.
 
 The account is anchored at the lower left. Role controls, tools, connection setup,
@@ -63,8 +63,8 @@ with a link to the local profiles; one failed stop does not prevent stopping oth
 The selected workspace names its next step: finish connection, set a model, start the
 Agent, or prepare the Worker. **Starting** means the process exists but initialization
 has not yet been confirmed. Agent settings also links directly to
-that Agent's Runtime in Console, where an unresolved call can be inspected through the
-existing recovery procedure. Opening the link does not retry or dispose of a call.
+that Agent's Runtime in Console, where an operation that waits for a person's decision or
+needs reconciliation is handled. Opening the link does not retry or dispose of a call.
 
 One cloud Agent attaches to one profile in this workbench. Different profiles may
 share a display name but never Agent/Connection credentials or a mutable working directory. Device
@@ -211,9 +211,10 @@ Starting the workbench does not read or change an unrelated single-instance conf
 
 Profiles live under `~/.rulith/manager/instances/<id>` by default. Each contains
 `local.json`, MCP service state, Worker configuration, Source vault, workspace and
-`agent-sessions.json`. The latter stores pending MCP calls for recovery, separately
-from `conversations/<owner-hash>.json` and its `.d` directory, which preserve accepted
-messages, attachment names and visible replies. History is scoped to the Console origin, account and Agent;
+`conversations/<owner-hash>.json` with its `.d` directory, which preserve accepted
+messages, attachment names and visible replies. An `agent-sessions.json` left by Runtime 0.9
+held a record of an unfinished call; the Agent names such a record once at startup and removes
+it, because the Gateway's recent-operations strip now shows what became of every call. History is scoped to the Console origin, account and Agent;
 replacing a credential does not change its owner. It remains readable with the Agent
 stopped. New conversation starts empty; select an existing conversation to continue it.
 

@@ -232,7 +232,7 @@ test('RT-CUTOVER-6 a Gateway that refuses this release mid-run stops the turn wi
   // longer accepts this release. The turn must stop saying so in full — not as an unreachable
   // or unauthenticated connection, and not cut before the install line.
   const run = await runAgent({
-    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '600' },
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     expireSessionAfter: 4, // initialize, initialized, tools/list, then the tools/call answered 404
     refuseInitialize: refusedAfterFirst,
     model: (round) => (round === 1 ? { text: '', toolCalls: [{ name: 'OpenCase', input: {} }] } : 'Nothing further.'),
@@ -242,22 +242,22 @@ test('RT-CUTOVER-6 a Gateway that refuses this release mid-run stops the turn wi
   assert.equal(run.requests.filter((row) => row.method === 'tools/call').length, 1, 'nothing was re-sent')
 })
 
-test('RT-CUTOVER-8 a refusal met while polling an earlier result stops at once, not after the recovery wait', async () => {
-  // An earlier result is ready; its ReadOperation finds the session gone, and the next poll's
-  // re-initialize is refused. Polling cannot change the release, so the turn stops at once with
-  // the whole message instead of retrying until the wait expires and calling it unreachable.
+test('RT-CUTOVER-8 a refusal met while watching a held call stops at once, not after the host bound', async () => {
+  // A call is held and answered running; the session goes while this host watches the strip,
+  // and the re-initialize is refused. Watching cannot change the release, so the turn stops at
+  // once with the whole message instead of waiting out the host bound and calling it unreachable.
   const run = await runAgent({
-    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '2', RULITH_RECOVERY_WAIT_MS: '30000' },
-    recovery: { state: 'result_ready', callRef: 'original-call', tool: 'ApplyAction' },
-    expireSessionAfter: 5, // initialize, initialized, tools/list, ping, then the ReadOperation answered 404
+    argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '2', RULITH_HOST_POLL_MS: '50', RULITH_HOST_WAIT_MS: '30000' },
+    hold: (name) => (name === 'ApplyAction' ? { answer: 'running', holdMs: 50 } : undefined),
+    expireSessionAfter: 5, // initialize, initialized, tools/list, the held call, then the first ping answered 404
     refuseInitialize: refusedAfterFirst,
-    model: () => 'The model must not be asked while the release does not match.',
+    model: (round) => (round === 1 ? callTool('ApplyAction', { action: 'demo.ship', args: {} }) : 'Must not be asked.'),
     timeoutMs: 20_000,
   })
   assertRunningMismatch(run)
-  assert.equal(run.modelRequests.length, 0)
+  assert.equal(run.modelRequests.length, 1, 'the model was asked while the release did not match')
   assert.deepEqual(run.requests.map((row) => row.method),
-    ['initialize', 'notifications/initialized', 'tools/list', 'ping', 'tools/call', 'initialize'])
+    ['initialize', 'notifications/initialized', 'tools/list', 'tools/call', 'ping', 'initialize'])
 })
 
 /**
@@ -407,17 +407,15 @@ test('RT-CUTOVER-10 the other peer texts shown to a person are flattened the sam
   assert.doesNotMatch(replaced.stderr, /[\u001b\u202e]/)
   assert.equal(replaced.modelRequests.length, 0)
 
-  // The authority's explanation of a call that needs reconciliation is its text, not this host's.
-  const reconcile = await runAgent({
-    argv: [], chatLines: ['Run the action.'], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '5000' },
-    tool: (name) => (name === 'ApplyAction' ? HOP_FAILURE : undefined),
-    recovery: ({ toolCalls }) => (toolCalls === 0 ? { state: 'none' } : { state: 'reconciliation_required',
-      callRef: 'call-9', tool: 'ApplyAction', teaching: 'The Worker was lost\u001b[2J\nwhile\u2028the Action ran.' }),
-    model: () => callTool('ApplyAction', { action: 'demo.ship' }),
+  // A takeover that ends a held call's stream quotes the Gateway's message, flattened the same way.
+  const held = await runAgent({
+    argv: ['do the work'],
+    hold: (name) => (name === 'ApplyAction' ? { answer: 'running', holdMs: 50 } : undefined),
+    replaceDuringHold: () => 'Taken over\u001b[2J\nwhile\u2028the Action ran.',
+    model: () => callTool('ApplyAction', { action: 'demo.ship', args: {} }),
     timeoutMs: 20_000,
   })
-  assert.notEqual(reconcile.code, 'timeout', `${reconcile.stdout}\n${reconcile.stderr}`)
-  assert.match(reconcile.stdout, /needs operator reconciliation/)
-  assert.ok(reconcile.stdout.includes('The Worker was lost [2J while the Action ran.'), reconcile.stdout)
-  assert.doesNotMatch(`${reconcile.stdout}${reconcile.stderr}`, /[\u001b\u2028]/)
+  assert.equal(held.code, 4, `${held.stdout}\n${held.stderr}`)
+  assert.ok(held.stderr.includes('Taken over [2J while the Action ran.'), held.stderr)
+  assert.doesNotMatch(`${held.stdout}${held.stderr}`, /[\u001b\u2028]/)
 })

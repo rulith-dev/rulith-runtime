@@ -6,21 +6,28 @@
  * Everything under test here is a decision the Agent makes about what to put on the wire,
  * so the assertions are on what the endpoint received — not on a return value the Agent
  * computed and could compute correctly while sending something else. The endpoint records
- * every `initialize` and every `tools/call` in order, with the `_meta["rulith/v2"]` block
- * each call carried, including the calls the Agent decided not to make, by their absence.
+ * every `initialize`, `ping` and `tools/call` in order, with the `_meta` each call carried,
+ * including the calls the Agent decided not to make, by their absence.
  *
  * There is exactly one path: `/mcp`. The gateway speaks the MCP 2025-11-25 lifecycle
  * (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`, plus `ping`
- * and a resumable GET stream), mints a session id per initialize, and answers the seven
- * tools — `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard`,
- * `ReadArtifact`, and `ReadOperation`. Each answers with JSON text carrying the result,
- * and carries host metadata beside it in `_meta`, never inside the text.
+ * and a resumable GET stream), mints a session id per initialize, and answers the six tools
+ * — `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard` and
+ * `ReadArtifact`. Each answers with JSON text carrying the result and this Agent's
+ * recent-operations strip, and carries host metadata beside it in `_meta`, never inside the
+ * text.
  *
- * The recovery half of the contract is scriptable because it is where the interesting
- * defects live: `recovery` drives what `ping` and `initialize` publish, `readRecord` makes
- * ReadOperation return the original public result, `replaceAfter` produces the
- * 409 that means another client took over, and `breakStreamOnCall` cuts a response stream
- * so the answer has to be recovered with `Last-Event-ID` rather than re-decided.
+ * The `rulith/v3` half of the contract is modelled because it is where the interesting
+ * defects live. Every call but QueryBoard becomes an operation with a host-only ordinal; the
+ * strip in every result shows the recent ones, and `initialize` and `ping` show their state
+ * form, ordinals included. A scenario's `hold` plan makes a call be held — answered
+ * `running`, `waiting_for_decision` or `needs_person`, with progress for its progress token —
+ * and settles it later. The write gate refuses a write while an operation is unresolved
+ * (`operation_running`) or before the latest outcome was shown to the session asking
+ * (`previous_result_undelivered`), both with `requestExecuted:false`, exactly as the
+ * authority does. `replaceAfter` produces the 409 that means another client took over, and
+ * `breakStreamOnCall` cuts a response stream so the answer has to be recovered with
+ * `Last-Event-ID` rather than re-decided.
  */
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
@@ -32,7 +39,6 @@ import { loadContractBundle } from '../../scripts/verify-mcp-contract.mjs'
 
 export const ROOT = resolve(import.meta.dirname, '..', '..')
 export const TEST_TOKEN = `rlt_agt_${'a'.repeat(43)}`
-export const RULITH_META = 'rulith/v2'
 export const TEST_AGENT_ID = 'agent-public-1'
 
 /**
@@ -47,6 +53,7 @@ export const TEST_AGENT_ID = 'agent-public-1'
  * not a wire field.
  */
 export const CONTRACT = loadContractBundle(ROOT)
+export const RULITH_META = CONTRACT.metadataNamespace
 export const MCP_SURFACE = CONTRACT.tools.map((tool) => ({ name: tool.name, target: tool.target }))
 export const MODEL_TOOLS = MCP_SURFACE.map((entry) => entry.name)
 export const BOARD_WRITES = CONTRACT.tools.filter((tool) => tool.target === 'core' && tool.name !== 'QueryBoard')
@@ -62,14 +69,10 @@ export const MCP_PROTOCOL_VERSION = CONTRACT.protocolVersion
 export const HOP_FAILURE = Symbol('hop-failure')
 
 /**
- * Answer with an explicit host metadata block instead of the gateway's own.
- *
- * The recovery record is filled in when the scenario does not state one: the contract makes
- * it required of every `rulith/v2` block, so a fixture that omitted it would be modelling a
- * non-conforming endpoint by accident. A scenario that wants that endpoint says so, by
- * passing `recovery: undefined` explicitly.
+ * Answer with an explicit host metadata block instead of the gateway's own. The decoded text
+ * is still given the Agent's strip, as every result is, unless the scenario says otherwise.
  */
-export const withMeta = (core, meta) => ({ __core: core, __meta: { recovery: { state: 'none' }, ...meta } })
+export const withMeta = (core, meta) => ({ __core: core, __meta: meta })
 
 /**
  * The advertised tool surface a conforming authority publishes: the contract's own
@@ -205,6 +208,8 @@ export function defaultGateway({
   })
   return {
     state,
+    /** The current bounded view, read without side effects. */
+    peek(session) { return view(session) },
     /** Host metadata for a result the gateway itself produced. */
     meta(session, extra = {}) {
       return {
@@ -380,14 +385,24 @@ function renderModelAnswer(answer, provider) {
  * @param {number}   [options.rejectToolAfter] Reject this and later model tool call with HTTP 401.
  * @param {string}   [options.sessionFile] Durable session store path handed to the Agent.
  * @param {string}   [options.protocolVersion] The version the endpoint negotiates in initialize.
- * @param {Function|object} [options.recovery] The recovery record `ping`/`initialize` publish;
- *   a function receives `{pings, toolCalls}` so a scenario can move waiting → result_ready.
- *   Defaults to `{state:'none'}`, because a conforming Gateway always publishes one — pass
- *   `null` to model an endpoint that omits it, which a host must refuse to read as "nothing
- *   outstanding".
- * @param {object|function} [options.readRecord] Public ReadOperation state/result. Its optional
- *   `__localDelivery` fixture field travels only in the private local delivery metadata namespace.
- *   `__operationTarget` overrides the private target selected by the read before delivery.
+ * @param {object|false|null} [options.serverCapabilities] What initialize advertises under
+ *   `experimental["rulith/v3"]`; the contract's own by default, `false` to advertise nothing.
+ * @param {Function} [options.hold] (name, args, counters) => plan | undefined makes that call be held.
+ *   A plan is `{ answer, stage, holdMs, progressMs, sendOrdinal, settle, settlesAsAnswered }`: the
+ *   held call is answered `answer` (`running` by default) after `holdMs`, sending progress for its
+ *   token every `progressMs` (the first names its host-only ordinal unless `sendOrdinal` is false);
+ *   `settle` receives `{ pings, queries, toolCalls, requests, sinceMs, method, tool }` — `method` and
+ *   `tool` name the request being answered, absent inside a hold — and returns the operation's next
+ *   state — `{ state, core, contentWithheld, summary, reason, decision, stage, text, isError }` —
+ *   or undefined. `text` and `isError` replace the recorded result's text and error flag.
+ *   `settlesAsAnswered` (a state such as `{ state: 'done' }`) settles the call in the instant its
+ *   `running` answer is written: the answer still says `running`, and its strip — written after —
+ *   carries the call's own result in full, as a Gateway's can.
+ * @param {Array}    [options.priorOperations] Operations a previous client left, as registry rows.
+ * @param {Function} [options.omitStrip] (method) => true drops the strip from that answer, to model
+ *   an endpoint that fails to publish it.
+ * @param {Function} [options.replaceDuringHold] (call) => true | message ends that held call's stream with
+ *   the JSON-RPC `connection_replaced` error a takeover produces, with that message when one is given.
  * @param {Function} [options.refuseInitialize] (input, attempt) => { status, body } | undefined
  *   answers the `attempt`-th `initialize` (0-based) with that HTTP status and JSON body and
  *   opens no session, as a Gateway refusing this client release does; undefined answers
@@ -407,8 +422,14 @@ function renderModelAnswer(answer, provider) {
  * @param {number}   [options.pageTools] Answer `tools/list` in pages of this size, with the
  *   `nextCursor` the base protocol defines.
  * @param {number}   [options.listenPort]  Fixed endpoint port, so two runs share one endpoint identity.
+ * @param {Function} [options.hideOperation] (op, counters) => true leaves that operation off every strip
+ *   written from then on, model-visible and state form alike, as a Gateway that no longer lists it.
+ * @param {Function} [options.refusePing] (n) => true answers the n-th `ping` (1-based) with HTTP 500 and a
+ *   JSON-RPC error, as an endpoint that cannot answer it now; the ping is still recorded.
  * @param {(string|object|function)[]} [options.serveTasks] Submit these task bodies after --serve is ready.
  * @param {boolean} [options.waitForServeCompletion] Wait for each accepted task's run record.
+ * @param {boolean} [options.stopAfterServe] Stop the served Agent once every task has its run record,
+ *   instead of waiting for `timeoutMs`.
  * @param {boolean} [options.waitForServeReady] Wait for the Agent endpoint even when no task is submitted.
  * @param {boolean} [options.captureLocalEvents] Capture the Agent's IPC event stream.
  * @param {string[]} [options.chatLines] Send these lines to interactive stdin.
@@ -420,13 +441,13 @@ export async function runAgent({
   omitAgentId = false, sseResults = false, corruptResponse, swapSessionOnCall,
   dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
-  protocolVersion = MCP_PROTOCOL_VERSION, recovery = { state: 'none' }, readRecord,
-  serverBoardObservation = true, serverCapabilities, refuseInitialize, replaceAfter, conflictBody, conflictSessionId,
-  expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools,
+  protocolVersion = MCP_PROTOCOL_VERSION, serverCapabilities, hold, priorOperations = [], omitStrip, replaceDuringHold,
+  refuseInitialize, replaceAfter, conflictBody, conflictSessionId,
+  expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools, refusePing, hideOperation,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
-  captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
+  stopAfterServe = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
 } = {}) {
-  const board = gateway ?? defaultGateway({ queryIndependent: serverBoardObservation })
+  const board = gateway ?? defaultGateway({ queryIndependent: true })
   /** Every `tools/call` the Agent made, in order: { name, args, meta, id, sessionId }. */
   const toolCalls = []
   /** Every `initialize` the Agent made: { meta, capabilities, protocolVersion, presentedSession, issuedSession }. */
@@ -437,6 +458,13 @@ export async function runAgent({
   /** Every request the endpoint saw on `/mcp`: { httpMethod, method, sessionId, lastEventId, status }. */
   const requests = []
   const modelRequests = []
+  /**
+   * Model requests and JSON-RPC methods in the one order they arrived: `{ kind: 'model', n }` for
+   * the n-th model request (1-based), `{ kind: 'mcp', method }` for an `/mcp` request. It is how
+   * an arm says a ping came after the model read the result it acknowledges, not merely after
+   * the call that delivered it.
+   */
+  const order = []
   const localEvents = []
   const answerModel = model ?? (() => 'Nothing further is needed.')
   /** Authenticated MCP sessions this endpoint issued. */
@@ -450,7 +478,6 @@ export async function runAgent({
   let pings = 0
   /** Every `initialize` the endpoint was sent, refused or not; the next attempt's 0-based number. */
   let initializeAttempts = 0
-  let readsDelivered = 0
   const storeDir = sessionFile === undefined ? mkdtempSync(join(tmpdir(), 'rulith-session-')) : undefined
   const store = sessionFile ?? join(storeDir, 'agent-sessions.json')
 
@@ -478,12 +505,97 @@ export async function runAgent({
     if (named !== '' && mcpSessions.has(named)) return mcpSessions.get(named)
     return newSession()
   }
-  /** The recovery record this endpoint publishes right now, or nothing. */
-  const recoveryNow = () => {
-    const value = typeof recovery === 'function'
-      ? recovery({ pings, requests: requests.length, toolCalls: toolCalls.length, readsDelivered }) : recovery
-    return value === undefined || value === null ? undefined : { recovery: value }
+  // ── The Agent's operations, as the authority keeps them ──
+  //
+  // Every tools/call but QueryBoard is an operation with an ordinal the endpoint allocates in
+  // admission order. The ordinal is host-only: the state form on initialize and ping carries
+  // it, the model-visible strip in a tool result does not. A result is delivered when a
+  // response carrying it in full is written to a session, and acknowledged when that session
+  // makes a later request.
+  const SETTLED = new Set(['done', 'failed', 'refused', 'unknown'])
+  const UNRESOLVED = new Set(['running', 'waiting_for_decision', 'needs_person'])
+  const WRITES = new Set(['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase'])
+  const operations = priorOperations.map((row, index) => ({ ordinal: index + 1,
+    at: new Date(Date.now() - 60_000 + index).toISOString(), since: new Date().toISOString(),
+    delivered: new Map(), acked: false, ...row }))
+  let ordinalSeq = operations.length
+  // `at` is strictly increasing within an Agent, so label and `at` tell entries apart.
+  let lastAdmission = 0
+  const admissionTime = () => {
+    lastAdmission = Math.max(Date.now(), lastAdmission + 1)
+    return new Date(lastAdmission).toISOString()
   }
+  let queries = 0
+  let requestSeq = 0
+  const counters = () => ({ pings, queries, toolCalls: toolCalls.length, requests: requests.length })
+  const labelOf = (name, args) => [name,
+    name === 'ApplyAction' ? args.action : name === 'OpenCase' ? (args.caseId ?? args.caseType ?? '')
+      : name === 'CloseCase' ? args.root : name === 'ReadArtifact' ? args.ref : ''].filter(Boolean).join(' ')
+  /** How a decoded result ends, as a strip state. */
+  const outcomeOf = (core) => {
+    const status = core?.result?.status
+    if (['failed', 'refused', 'unknown'].includes(status)) return status
+    return core?.accepted === true ? 'done' : 'refused'
+  }
+  const publicResultOf = (op) => ({ content: [{ type: 'text', text: op.text ?? JSON.stringify(op.core) }],
+    isError: op.isError ?? op.core?.accepted !== true })
+  /** Move an operation along its plan, once per request; `method` and `tool` name the request, when there is one. */
+  const advance = (method, tool) => {
+    for (const op of operations) {
+      if (SETTLED.has(op.state) || typeof op.plan?.settle !== 'function') continue
+      const next = op.plan.settle({ ...counters(), sinceMs: Date.now() - (op.admittedAt ?? Date.now()), method, tool })
+      if (next === undefined || (next.state === op.state && next.stage === op.stage)) continue
+      op.state = next.state
+      op.stage = next.state === 'running' ? next.stage : undefined
+      op.since = new Date().toISOString()
+      if (next.core !== undefined) op.core = next.core
+      // A recorded result that is not what it should be: another text, or an error envelope.
+      if (next.text !== undefined) op.text = next.text
+      if (next.isError !== undefined) op.isError = next.isError
+      if (next.decision !== undefined) op.decision = next.decision
+      if (SETTLED.has(op.state)) {
+        op.contentWithheld = next.contentWithheld === true
+        op.summary = next.summary ?? op.summary ?? `${op.label}: ${op.state}`
+        op.reason = op.state === 'refused' ? (next.reason ?? op.core?.teaching ?? 'refused') : undefined
+      }
+    }
+  }
+  const latestSettledWrite = () => [...operations].reverse().find((op) => SETTLED.has(op.state) && WRITES.has(op.tool))
+  /** Acknowledge what was delivered to this session before this request. */
+  const acknowledge = (session, requestNo) => {
+    for (const op of operations) {
+      const deliveredAt = op.delivered.get(session.id)
+      if (deliveredAt !== undefined && deliveredAt < requestNo) op.acked = true
+    }
+  }
+  /** The model-visible strip, newest first; `own` is the operation this response is itself the result of. */
+  const listed = () => operations.filter((op) => !hideOperation?.(op, counters()))
+  const visibleStrip = (session, requestNo, own) => {
+    const newest = [...listed()].reverse()
+    const latest = latestSettledWrite()
+    const picked = newest.slice(0, 5)
+    for (const op of newest.slice(5)) if (UNRESOLVED.has(op.state) || (op === latest && !op.acked)) picked.push(op)
+    return picked.map((op) => {
+      // Shown in full: the latest settled write, still unacknowledged, in a response that is
+      // not itself its result. A withheld outcome shows its state instead, and that counts too.
+      const full = op === latest && !op.acked && op !== own
+      if (full) op.delivered.set(session.id, requestNo)
+      return {
+        tool: op.tool, label: op.label, state: op.state,
+        ...(op.state === 'running' && op.stage ? { stage: op.stage } : {}),
+        ...(op.state === 'waiting_for_decision' ? { decision: op.decision ?? 'a person\'s decision in Console' } : {}),
+        ...(op.state === 'refused' ? { reason: op.reason ?? 'refused' } : {}),
+        at: op.at, since: op.since,
+        ...(SETTLED.has(op.state) ? (op.contentWithheld ? { contentWithheld: true }
+          : full ? { result: publicResultOf(op) } : { summary: op.summary ?? `${op.label}: ${op.state}` }) : {}),
+      }
+    })
+  }
+  /** The state form, ordinals included and no content flag: host metadata of initialize and ping. */
+  const stateStrip = () => [...listed()].reverse().slice(0, 7).map((op) => ({
+    ordinal: op.ordinal, tool: op.tool, label: op.label, state: op.state,
+    ...(op.state === 'running' && op.stage ? { stage: op.stage } : {}), at: op.at, since: op.since,
+  }))
 
   const server = createServer(async (request, response) => {
     const chunks = []
@@ -493,6 +605,7 @@ export async function runAgent({
     paths.push(url)
     if (url.startsWith('/v1/chat/completions') || url.startsWith('/v1/messages')) {
       modelRequests.push(input)
+      order.push({ kind: 'model', n: modelRequests.length })
       if (refuseTools && input.tools !== undefined) {
         response.writeHead(400, { 'content-type': 'application/json' })
         return void response.end(JSON.stringify({ error: { message: 'this endpoint does not support tools' } }))
@@ -512,6 +625,7 @@ export async function runAgent({
     }
     const httpMethod = String(request.method ?? 'POST').toUpperCase()
     const lastEventId = typeof request.headers['last-event-id'] === 'string' ? request.headers['last-event-id'] : undefined
+    order.push({ kind: 'mcp', method: String(input.method ?? httpMethod) })
     requests.push({
       httpMethod, method: String(input.method ?? ''), sessionId: request.headers['mcp-session-id'],
       protocolHeader: request.headers['mcp-protocol-version'], lastEventId,
@@ -534,7 +648,7 @@ export async function runAgent({
         error: {
           code: -32000,
           message: 'This Agent connection was replaced by a newer authenticated client.',
-          data: { reason: 'connection_replaced' },
+          data: { reason: 'connection_replaced', ...(httpMethod === 'GET' ? {} : { requestExecuted: false }) },
         },
       }))
     }
@@ -672,6 +786,13 @@ export async function runAgent({
       response.end(`id: ${record(envelope)}\nevent: message\ndata: ${body}\n\n`)
     }
 
+    // Every JSON-RPC request after initialize acknowledges what an earlier response delivered
+    // to its session, and moves the Agent's operations along their plans. Notifications and
+    // stream resumes do neither.
+    const requestNo = input.id === undefined || input.method === 'initialize' ? requestSeq : ++requestSeq
+    if (input.id !== undefined && input.method !== 'initialize') acknowledge(session, requestNo)
+    advance(String(input.method ?? ''), input.method === 'tools/call' ? String(input.params?.name ?? '') : undefined)
+    const hostStrip = (method) => (omitStrip?.(method) ? {} : { operations: stateStrip() })
     if (input.method === 'initialize') {
       initializes.push({
         meta: input.params?._meta?.[RULITH_META],
@@ -683,23 +804,24 @@ export async function runAgent({
       })
       return send({
         protocolVersion,
-        capabilities: { tools: {}, ...(serverBoardObservation ? { experimental: {
+        capabilities: { tools: {}, ...(serverCapabilities === false ? {} : { experimental: {
           [RULITH_META]: serverCapabilities === undefined ? CONTRACT.serverCapabilities : serverCapabilities,
-        } } : {}) },
+        } }) },
         serverInfo: { name: 'rulith-gateway-test', version: '0' },
-        ...(omitAgentId && recoveryNow() === undefined ? {} : {
-          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...recoveryNow() } },
-        }),
+        _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...hostStrip('initialize') } },
       })
     }
     if (input.method === 'ping') {
-      // The empty result plus recovery metadata. It touches no Board state and returns at
-      // once: a host waiting on an unresolved call must be able to ask without spending a
-      // model turn or reading anything it is not entitled to.
+      // The empty result plus the strip's state form. It touches no Board state, delivers no
+      // result and returns at once: a host keeping a model's call open must be able to watch
+      // without spending a model turn or reading anything it is not entitled to.
       pings += 1
-      const meta = recoveryNow()
-      return send(meta === undefined ? {} : { _meta: { [RULITH_META]: {
-        agentId: TEST_AGENT_ID, focusedRoots: [], ...meta } } })
+      if (refusePing?.(pings)) {
+        response.writeHead(500, { 'content-type': 'application/json', ...sessionHeaders })
+        return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id,
+          error: { code: -32603, message: 'ping could not be answered now' } }))
+      }
+      return send({ _meta: { [RULITH_META]: { agentId: TEST_AGENT_ID, focusedRoots: [], ...hostStrip('ping') } } })
     }
     if (input.method === 'notifications/initialized') {
       response.writeHead(202, sessionHeaders)
@@ -723,16 +845,12 @@ export async function runAgent({
         return send({
           tools: page,
           ...(next < all.length ? { nextCursor: String(next) } : {}),
-          ...(omitAgentId && recoveryNow() === undefined ? {} : {
-            _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...recoveryNow() } },
-          }),
+          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [] } },
         })
       }
       return send({
         tools: all,
-        ...(omitAgentId && recoveryNow() === undefined ? {} : {
-          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...recoveryNow() } },
-        }),
+        _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [] } },
       })
     }
     if (input.method !== 'tools/call') {
@@ -743,53 +861,11 @@ export async function runAgent({
     const name = String(input.params?.name ?? '')
     const args = input.params?.arguments ?? {}
     const meta = input.params?._meta?.[RULITH_META]
-    toolCalls.push({ name, args, meta, id: input.id, sessionId: session.id })
+    const progressToken = input.params?._meta?.progressToken
+    toolCalls.push({ name, args, meta, id: input.id, sessionId: session.id, progressToken })
     if (Number.isInteger(rejectToolAfter) && toolCalls.length >= rejectToolAfter) {
       response.writeHead(401, { 'content-type': 'application/json', ...sessionHeaders })
       return void response.end(JSON.stringify({ teaching: 'rotate the Agent token in Console' }))
-    }
-    // A read record is a separate public operation. It does not consume the pending
-    // business slot or ask the Board to execute anything. A scripted transport failure
-    // leaves the same read RPC available for a retry under its original identity.
-    if (name === 'ReadOperation') {
-      const scripted = tool?.(name, args, board, session, meta)
-      if (scripted === HOP_FAILURE) {
-        response.writeHead(502, { 'content-type': 'text/plain', ...sessionHeaders })
-        return void response.end('upstream unavailable')
-      }
-      const value = typeof readRecord === 'function'
-        ? readRecord({ pings, toolCalls: toolCalls.length, readsDelivered }) : readRecord ?? { state: 'none' }
-      const { __localDelivery: localDelivery, __isError: readIsError = false,
-        __omitHostMeta: omitHostMeta = false, __recovery: readRecovery,
-        __operationTarget: targetOverride, ...publicRecord } = value
-      const selected = recoveryNow()?.recovery
-      const operationTarget = targetOverride === undefined
-        ? (selected?.state !== 'none' && selected?.callRef !== undefined && selected?.tool !== undefined
-          ? { callRef: selected.callRef, tool: selected.tool } : undefined)
-        : targetOverride
-      if (!readIsError) readsDelivered += 1
-      return send({ isError: readIsError, content: [{ type: 'text', text: JSON.stringify(publicRecord) }],
-        _meta: { ...(omitHostMeta ? {} : { [RULITH_META]: {
-          agentId: TEST_AGENT_ID, focusedRoots: [], ...(readRecovery === undefined ? recoveryNow() : { recovery: readRecovery }),
-          ...(operationTarget === null || operationTarget === undefined ? {} : { operationTarget }) } }),
-        ...(localDelivery === undefined ? {} : { 'rulith/local-delivery/v1': localDelivery }) } }, { sse: sseResults })
-    }
-    // The serial gate, on the server side. While the authority says a call is still
-    // executing, a new `tools/call` does not run: it is refused with the state, exactly as
-    // §5.2 requires. A host that sent one anyway gets an error rather than an execution,
-    // which is what makes "the host must not send it" testable at all.
-    const pendingState = recoveryNow()?.recovery?.state
-    if (pendingState === 'waiting' && !(serverBoardObservation && name === 'QueryBoard')) {
-      return send({
-        isError: true,
-        content: [{ type: 'text', text: JSON.stringify({
-          accepted: false,
-          errorCode: 'call_in_flight',
-          requestExecuted: false,
-          teaching: 'This Agent has a call in flight; nothing further runs until it settles.',
-        }) }],
-        _meta: { [RULITH_META]: { agentId: TEST_AGENT_ID, focusedRoots: [], ...recoveryNow() } },
-      }, { sse: sseResults })
     }
     const scripted = tool?.(name, args, board, session, meta)
     if (scripted === HOP_FAILURE) {
@@ -797,28 +873,128 @@ export async function runAgent({
       return void response.end('upstream unavailable')
     }
     const explicit = scripted !== null && typeof scripted === 'object' && Object.hasOwn(scripted, '__core')
-    const admitted = recoveryNow()?.recovery ?? { state: 'none' }
-    const core = explicit ? scripted.__core : (scripted === undefined ? board.tool(name, args, session, meta) : scripted)
-    // Default fixture responses follow the new decoded-result contract. A scripted
-    // QueryBoard response is served verbatim so negative arms can test a nonconforming
-    // endpoint rather than having this fixture silently repair its disclosure mistake.
-    const publicCore = serverBoardObservation && name === 'QueryBoard' && scripted === undefined && core?.accepted === true
-      ? { accepted: true, view: core.view ?? core.payload,
-        observation: { consistency: 'committed', operationAtAdmission: {
-          state: admitted.state,
-          ...(admitted.state === 'none' ? {} : { originalTool: admitted.tool }),
-        } } }
-      : core
     const wireIsError = explicit && scripted.__isError === true
-    const hostMeta = explicit ? scripted.__meta : board.meta(session)
-    const withRecovery = hostMeta === undefined ? recoveryNow() : { ...hostMeta, ...recoveryNow() }
-    const { ['rulith/local-delivery/v1']: localDelivery, ...ordinaryMeta } = withRecovery ?? {}
-    return send({
-      ...(wireIsError ? { isError: true } : {}),
-      content: [{ type: 'text', text: JSON.stringify(publicCore) }],
-      ...(withRecovery === undefined ? {} : { _meta: { [RULITH_META]: ordinaryMeta,
-        ...(localDelivery === undefined ? {} : { 'rulith/local-delivery/v1': localDelivery }) } }),
-    }, { sse: sseResults })
+    // Host metadata is read when the answer is written, after the Board acted: focus and
+    // revision are the ones this answer reports.
+    const envelope = (text, isError = false) => {
+      const hostMeta = explicit ? scripted.__meta : board.meta(session)
+      const { ['rulith/local-delivery/v1']: localDelivery, ...ordinaryMeta } = hostMeta ?? {}
+      return {
+        ...(isError || wireIsError ? { isError: true } : {}),
+        content: [{ type: 'text', text }],
+        ...(hostMeta === undefined ? {} : { _meta: { [RULITH_META]: ordinaryMeta,
+          ...(localDelivery === undefined ? {} : { 'rulith/local-delivery/v1': localDelivery }) } }),
+      }
+    }
+    const strip = (own) => (omitStrip?.('tools/call') ? {} : { operations: visibleStrip(session, requestNo, own) })
+
+    if (name === 'QueryBoard') {
+      // Never held, never an operation. A scripted answer is served verbatim so that negative
+      // arms can test a nonconforming endpoint rather than having this fixture repair it.
+      queries += 1
+      const core = explicit ? scripted.__core : (scripted === undefined ? board.tool(name, args, session, meta) : scripted)
+      const answer = scripted === undefined && core?.accepted === true
+        ? { accepted: true, view: core.view ?? core.payload, observation: { consistency: 'committed' }, ...strip() }
+        : scripted === undefined ? { ...core, ...strip() } : core
+      return send(envelope(JSON.stringify(answer)), { sse: sseResults })
+    }
+
+    // The write gate, as the authority applies it: nothing runs while an operation is
+    // unresolved, and no write runs before the latest outcome was shown to this session.
+    const unresolved = operations.find((op) => UNRESOLVED.has(op.state))
+    const latest = latestSettledWrite()
+    const gate = unresolved !== undefined ? 'operation_running'
+      : WRITES.has(name) && latest !== undefined && !latest.acked && !latest.delivered.has(session.id)
+        ? 'previous_result_undelivered' : undefined
+    if (gate !== undefined) {
+      const refusal = { accepted: false, requestExecuted: false, tool: name, errorCode: gate,
+        teaching: gate === 'operation_running'
+          ? `Not executed: ${unresolved.label} is still in progress. Its outcome will appear in operations; do not send it again.`
+          : 'Not executed: read the previous outcome in operations, then decide again.',
+        ...strip(), ...(name === 'ReadArtifact' ? {} : { view: board.peek?.(session) ?? {} }) }
+      return send(envelope(JSON.stringify(refusal), true), { sse: sseResults })
+    }
+
+    const plan = hold?.(name, args, counters())
+    const core = explicit ? scripted.__core : (scripted === undefined ? board.tool(name, args, session, meta) : scripted)
+    const now = admissionTime()
+    const op = { ordinal: ++ordinalSeq, tool: name, label: labelOf(name, args), at: now, since: now, core,
+      delivered: new Map(), acked: false, plan, admittedAt: Date.now() }
+    if (plan === undefined) {
+      op.state = outcomeOf(core)
+      op.summary = `${op.label}: ${op.state}`
+      if (op.state === 'refused') op.reason = String(core?.teaching ?? core?.errorCode ?? 'refused')
+    } else {
+      op.state = plan.answer ?? 'running'
+      if (op.state === 'running') op.stage = plan.stage ?? 'at_worker'
+      if (op.state === 'waiting_for_decision') op.decision = plan.decision ?? 'a person\'s decision in Console'
+    }
+    operations.push(op)
+
+    if (plan === undefined) {
+      op.delivered.set(session.id, requestNo)
+      return send(envelope(JSON.stringify(scripted?.__noStrip ? core : { ...core, ...strip(op) })), { sse: sseResults })
+    }
+
+    // A held call: progress for its token while the authority holds it — the first at admission,
+    // each naming its host-only ordinal — then its answer: the outcome if it settled in time,
+    // else its state.
+    response.writeHead(200, { 'content-type': 'text/event-stream', ...sessionHeaders })
+    const write = (payload) => response.write(`id: ${record(payload)}\nevent: message\ndata: ${JSON.stringify(payload)}\n\n`)
+    let progressSeq = 0
+    const progress = () => {
+      if (progressToken === undefined) return
+      write({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken, progress: progressSeq++,
+        ...(plan.sendOrdinal !== false ? { _meta: { [RULITH_META]: { ordinal: op.ordinal } } } : {}) } })
+    }
+    progress()
+    const holdMs = plan.holdMs ?? 0
+    const started = Date.now()
+    while (Date.now() - started < holdMs) {
+      await new Promise((wake) => { setTimeout(wake, Math.max(1, Math.min(plan.progressMs ?? 50, holdMs - (Date.now() - started)))) })
+      advance()
+      if (SETTLED.has(op.state)) break
+      progress()
+    }
+    const replacing = replaceDuringHold?.(op)
+    if (replacing) {
+      replaced.add(session.id)
+      write({ jsonrpc: '2.0', id: input.id, error: { code: -32000,
+        message: typeof replacing === 'string' ? replacing : 'This Agent connection was replaced by a newer authenticated client.',
+        data: { reason: 'connection_replaced', ordinal: op.ordinal } } })
+      return void response.end()
+    }
+    let text
+    // Settled in the instant the `running` answer is written: the answer says `running`, and the
+    // strip written with it already shows the call settled — with its result in full, since the
+    // Gateway's held answer is not that result, and delivers it like any strip.
+    const racing = plan.settlesAsAnswered !== undefined && !SETTLED.has(op.state)
+    if (racing) {
+      op.state = plan.settlesAsAnswered.state ?? 'done'
+      op.stage = undefined
+      op.since = new Date().toISOString()
+      op.contentWithheld = plan.settlesAsAnswered.contentWithheld === true
+      op.summary = `${op.label}: ${op.state}`
+    }
+    if (!racing && SETTLED.has(op.state) && op.contentWithheld !== true) {
+      op.delivered.set(session.id, requestNo)
+      text = JSON.stringify({ ...op.core, ...strip(op) })
+    } else {
+      if (!racing && op.contentWithheld === true) op.delivered.set(session.id, requestNo)
+      // The Gateway's own words for each held answer; for a withheld outcome, its words by outcome class.
+      const teaching = racing ? 'Still running; its outcome will appear in operations. Do not send it again.'
+        : { running: 'Still running; its outcome will appear in operations. Do not send it again.',
+          waiting_for_decision: 'Waiting for a person\'s decision in Console. Do not send it again.',
+          needs_person: 'A person must reconcile this operation in Console. Do not send it again.',
+          unknown: 'The outcome is unknown: its external effect may already have happened. Its content is withheld from'
+            + ' you now. Do not repeat the operation; a person can check the effect in Console.' }[op.state]
+        ?? `The outcome is ${op.state}. Its content is withheld from you now.`
+      // A held answer is not the operation's result, so its strip names no entry as its own.
+      text = JSON.stringify({ state: racing ? 'running' : op.state, ...(!racing && op.contentWithheld ? { contentWithheld: true } : {}),
+        teaching, ...strip(racing ? undefined : op), ...(name === 'ReadArtifact' ? {} : { view: board.peek?.(session) ?? {} }) })
+    }
+    write({ jsonrpc: '2.0', id: input.id, result: envelope(text) })
+    response.end()
   })
 
   // A fixed port lets two runs share one endpoint identity, which is what the durable
@@ -911,6 +1087,12 @@ export async function runAgent({
     }
     serveSnapshot = await fetch(`http://127.0.0.1:${env.RULITH_SERVE_PORT}/runs?k=${encodeURIComponent(String(env.RULITH_SERVE_KEY ?? ''))}`)
       .then((candidate) => candidate.json()).catch(() => undefined)
+    // A served Agent never exits on its own. Once every task has its record there is nothing
+    // further to observe, so an arm that asks for it does not sit out the whole timeout.
+    if (stopAfterServe && child.exitCode === null && child.signalCode === null) {
+      await new Promise((settled) => setTimeout(settled, 150))
+      child.kill('SIGKILL')
+    }
   }
 
   const code = await Promise.race([
@@ -921,14 +1103,16 @@ export async function runAgent({
   clearTimeout(timer)
   if (stdinFailure) throw new Error(`Agent fixture input failed (${stdinFailure.code}):\n${stdout}\n${stderr}`)
   return {
-    code, stdout, stderr, modelRequests, localEvents, port, exitedAt,
+    code, stdout, stderr, modelRequests, order, localEvents, port, exitedAt,
     serveStatuses, serveResponses, serveSnapshot, board, toolCalls, initializes, methods, paths, requests,
     sessionStore: store,
-    /** How many `ping` calls the endpoint answered. */
-    pings,
+    /** How many `ping` calls the endpoint answered, and how many QueryBoard calls it served. */
+    pings, queries,
+    /** The Agent's operations as the endpoint kept them, oldest first. */
+    operations,
     /** Model-facing tool names actually called, in order. */
     verbs: toolCalls.map((call) => call.name),
-    /** The `_meta["rulith/v2"]` block each tool call carried, in order. */
+    /** The `_meta["rulith/v3"]` block each tool call carried, in order. */
     sentMeta: toolCalls.map((call) => call.meta),
   }
   } finally {

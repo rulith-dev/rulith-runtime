@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * The model surface is seven tools called over one `/mcp` endpoint.
+ * The model surface is six tools called over one `/mcp` endpoint.
  *
  * `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard` dispatch to Board
  * operations, and `ReadArtifact` reads already-generated result data from the Gateway's
@@ -32,8 +32,7 @@ const freePort = async () => {
   return port
 }
 
-const committed = view => ({ accepted: true, view,
-  observation: { consistency: 'committed', operationAtAdmission: { state: 'none' } } })
+const committed = view => ({ accepted: true, view, observation: { consistency: 'committed' }, operations: [] })
 
 // ── RT-TOOLS: what the model is offered, and what it may not reach ───────────
 //
@@ -73,7 +72,9 @@ test('RT-TOOLS-1 the model-facing tools are exactly the unified MCP surface list
   assert.deepEqual(runtime.map((entry) => entry.name), MODEL_TOOLS)
   assert.deepEqual(runtime.filter((entry) => entry.target === 'artifact').map((entry) => entry.name), ['ReadArtifact'],
     'the artifact read is the one tool served by the data plane rather than by a Board operation')
-  assert.deepEqual(runtime.filter((entry) => entry.target === 'operation').map((entry) => entry.name), ['ReadOperation'])
+  // No operation-read tool: an outcome reaches the model on the strip every result carries.
+  assert.deepEqual(runtime.filter((entry) => entry.target === 'operation'), [])
+  assert.equal(offered.includes('ReadOperation'), false, 'the retired operation read was offered to the model')
   // The retired host split, by name. These were reachable from the first-party client
   // alone, which is exactly why they had to go.
   for (const retired of ['GetCompletion', 'agent_protocol', 'RunDischarge', 'GetBoardManifest', 'PauseCase', 'ResumeCase', 'GetProjection']) {
@@ -128,7 +129,7 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
 test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.' })
   const tools = declaredToolsOf(run.modelRequests[0])
-  assert.equal(tools.length, 7)
+  assert.equal(tools.length, 6)
   // Top level only, because that is the scope host metadata lives on. The envelope is the
   // boundary; a property one level down inside a business object is business data, and
   // RT-TOOLS-3c asserts that such a property survives.
@@ -142,11 +143,7 @@ test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', 
     const branches = ['oneOf', 'anyOf', 'allOf'].flatMap((key) => (Array.isArray(tool.schema?.[key]) ? tool.schema[key] : []))
     const properties = [...Object.keys(tool.schema?.properties ?? {}),
       ...branches.flatMap((branch) => Object.keys(branch?.properties ?? {}))]
-    if (tool.name === 'ReadOperation') {
-      assert.equal(tool.schema?.type, 'object')
-      assert.equal(tool.schema?.additionalProperties, false)
-      assert.deepEqual(properties, [], 'ReadOperation must take exactly {}')
-    } else assert.ok(properties.length > 0, `${tool.name} lost its schema entirely rather than one property`)
+    assert.ok(properties.length > 0, `${tool.name} lost its schema entirely rather than one property`)
     for (const field of owned) {
       assert.equal(properties.includes(field), false, `${tool.name} still shows the host-owned ${field} argument`)
     }
@@ -223,7 +220,7 @@ test('RT-TOOLS-3d a schema that makes host metadata required is refused, not qui
   assert.equal(run.modelRequests.length, 0, 'the model was asked to work against a contract no call could satisfy')
 })
 
-test('RT-TOOLS-4 a tool that is not one of the seven is refused locally and never forwarded', async () => {
+test('RT-TOOLS-4 a tool that is not one of the six is refused locally and never forwarded', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['remove the pack'],
@@ -323,14 +320,14 @@ test('RT-META-1 the client sends no protected metadata of its own, in the envelo
     'host metadata leaked into the model transcript')
 })
 
-test('RT-META-1b the client declares the recovery capability it actually implements', async () => {
+test('RT-META-1b the client declares the held-call capability it actually implements', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.' })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const [handshake] = run.initializes
   assert.equal(handshake.protocolVersion, '2025-11-25', 'the client offered a protocol version it does not implement')
-  assert.deepEqual(handshake.capabilities?.experimental?.['rulith/v2'], { operationRecovery: 1 },
-    'the operation-recovery declaration is how a Gateway knows this host waits on one call and collects the result;'
-    + ' without it the Gateway must refuse the host before any business runs')
+  assert.deepEqual(handshake.capabilities?.experimental?.['rulith/v3'], { heldCalls: 1 },
+    'the declaration says this host sends a progress token and waits past the hold bound;'
+    + ' a rulith/v2 declaration would be refused before any session opened')
   assert.equal(handshake.presentedSession, undefined, 'a fresh process presented a session identity it does not hold')
 })
 
@@ -944,38 +941,32 @@ test('RT-SERIAL-1 several calls in one turn are executed one after another, in o
   assert.match(results, /OpenCase/)
 })
 
-test('RT-SERIAL-2 an unresolved call suspends the rest of the turn instead of continuing it', async () => {
-  // The queue stops at the first unknown outcome. What must not happen is the second call
-  // going out anyway: with one call unresolved this Agent may send nothing at all, and a
-  // write issued past that point could be the second half of a command that already ran.
+test('RT-SERIAL-2 a call the authority is still holding suspends the rest of the turn', async () => {
+  // The queue stops at the first answer the model has to read before anything else makes
+  // sense. What must not happen is the second call going out anyway: it was chosen before the
+  // model knew that the first one waits for a person.
   const run = await runAgent({
-    argv: [], env: { RULITH_MAX_ROUNDS: '3', RULITH_RECOVERY_WAIT_MS: '1500' },
+    argv: [], env: { RULITH_MAX_ROUNDS: '3' },
     chatLines: ['Do all three steps.'], captureLocalEvents: true,
-    tool: (name) => (name === 'OpenCase' ? HOP_FAILURE : undefined),
-    // Nothing is outstanding until the first call goes out; after it, the authority says
-    // that call is still executing.
-    recovery: ({ toolCalls }) => (toolCalls === 0
-      ? { state: 'none' }
-      : { state: 'waiting', callRef: 'call-1', tool: 'OpenCase', retryAfterMs: 250 }),
-    model: () => ({
+    hold: (name) => (name === 'OpenCase' ? { answer: 'needs_person' } : undefined),
+    model: (round) => (round === 1 ? {
       text: '',
       toolCalls: [
         { name: 'OpenCase', input: {} },
         { name: 'ApplyBatch', input: { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] } },
         { name: 'QueryBoard', input: {} },
       ],
-    }),
+    } : 'A person has to reconcile it first.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.deepEqual(run.verbs, ['OpenCase'],
-    `calls were sent while an earlier one was unresolved: ${run.verbs.join(', ')}`)
-  assert.equal(run.modelRequests.length, 1,
-    'the model was asked again while a call was unresolved, so it could have proposed work that cannot be carried')
+    `calls chosen before the model saw the first answer were sent: ${run.verbs.join(', ')}`)
+  assert.equal(run.modelRequests.length, 2, 'the model was not given the held answer and the unsent calls')
   const suspension = run.localEvents.find((event) => event.type === 'queue-suspended')
   assert.equal(suspension?.notSent, 2, 'the two unsent calls were not reported as unsent')
   assert.match(run.stdout, /were not sent/)
-  assert.match(run.stdout, /still executing at the authority/)
+  assert.match(run.stdout, /OpenCase is waiting for a person to reconcile it in Console/)
 })
 
 test('the configured Case Type cannot be overridden by model output', async () => {
@@ -1129,11 +1120,11 @@ test('a bounded public Action result reports its own terminal state without inve
   assert.equal(mismatched.localEvents.filter(event => event.type === 'worker-activity-unavailable').length, 1)
 })
 
-test('a contradictory Action envelope keeps the original outcome unknown', async () => {
+test('a contradictory Action envelope is not taken as the outcome', async () => {
   for (const contradiction of ['ambiguous-code', 'mcp-error']) {
     const run = await runAgent({
       argv: [], captureLocalEvents: true,
-      env: { RULITH_MAX_ROUNDS: '4', RULITH_RECOVERY_WAIT_MS: '500' },
+      env: { RULITH_MAX_ROUNDS: '4' },
       chatLines: ['Try the declared Action.'],
       tool: (name, args, board, session, meta) => {
         if (name !== 'ApplyAction') return undefined
@@ -1168,7 +1159,7 @@ test('a normal MCP envelope can carry an authoritative business refusal', async 
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.localEvents.some(event => event.type === 'verdict' && event.cmd === 'ApplyAction'
-    && event.accepted === false && event.transportAmbiguous !== true), true)
+    && event.accepted === false && event.transportFailed !== true), true)
   assert.equal(run.localEvents.some(event => event.type === 'action-outcome'), false)
 })
 
@@ -1329,18 +1320,17 @@ test('RULITH_MODEL_TOOLS=emulated selects the fallback transport without a faile
 })
 
 for (const failure of [HOP_FAILURE, { accepted: false, errorCode: 'upstream_unavailable', teaching: 'The Board response was lost.' }]) {
-test(`a ${failure === HOP_FAILURE ? 'transport' : 'gateway upstream'} failure the authority has no record of is an unreconciled conflict, not a retry`, async () => {
+test(`a ${failure === HOP_FAILURE ? 'transport' : 'gateway upstream'} failure is said as one, and the host never re-sends the call`, async () => {
   // The old behaviour was to tell the model "retry the identical step, it keeps the same
   // request identity". That promise cannot be kept: the transport key includes the MCP
-  // session, so a re-send under any later session is a *different* logical call, and a
-  // write that already landed could land twice. When the authority then reports nothing
-  // outstanding, the two views disagree — and an empty recovery record is a statement about
-  // the Gateway's records, not about the world. So it stops and names the call.
+  // session, so a re-send under any later session is a *different* logical call. The host
+  // re-sends nothing; the model is told the answer did not arrive, and whatever it chooses
+  // next is a new call that the authority's write gate judges.
   let attempts = 0
   const batch = { operations: [{ op: 'assert_fact', id: 'F_AMBIG', predicate: 'scratch.demo.value', args: { value: 'one' } }] }
   const run = await runAgent({
     argv: [],
-    env: { RULITH_MAX_ROUNDS: '5', RULITH_RECOVERY_WAIT_MS: '800' },
+    env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Record this despite a transient network failure.'],
     captureLocalEvents: true,
     tool: (name) => {
@@ -1350,32 +1340,49 @@ test(`a ${failure === HOP_FAILURE ? 'transport' : 'gateway upstream'} failure th
     },
     model: (round) => {
       if (round === 1) return callTool('OpenCase', {})
-      if (round <= 3) return callTool('ApplyBatch', batch)
-      return 'The retry landed.'
+      if (round === 2) return callTool('ApplyBatch', batch)
+      return 'I will look at operations before trying again.'
     },
     timeoutMs: 25_000,
   })
-
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const sent = run.toolCalls.filter((call) => call.name === 'ApplyBatch')
-  assert.equal(sent.length, 1, `the unresolved write was sent again: ${JSON.stringify(run.verbs)}`)
-  assert.equal(run.modelRequests.length, 2,
-    'the model was asked again while a call of its own was unresolved and unreconciled')
+  assert.equal(sent.length, 1, `the host re-sent a write whose answer was lost: ${JSON.stringify(run.verbs)}`)
+  assert.equal(run.modelRequests.length, 3, 'the model was not told that the answer was lost')
   // The classification still travels — as the verdict a person and the local view can read.
   const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch').at(-1)
-  assert.equal(verdict.transportAmbiguous, true)
-  assert.match(verdict.teaching, /outcome of this step is unknown/)
-  assert.doesNotMatch(verdict.teaching, /Retry the identical step/,
+  assert.equal(verdict.transportFailed, true)
+  assert.match(verdict.teaching, /transport failure, not the Board's answer: the call may or may not have run/)
+  assert.doesNotMatch(verdict.teaching, /Retry the identical step|reaches that same identity/,
     'transport uncertainty was reported as something the model may simply re-issue')
-  assert.match(run.stdout, /Board outcome unknown for ApplyBatch/)
-  // And the conflict is named, with the request, rather than resolved by guessing.
-  assert.match(run.stdout, /holding a ApplyBatch call \(request /)
-  assert.match(run.stdout, /does not prove the command had no effect/)
-  assert.match(run.stdout, /will not re-send it under a new transport identity/)
-  assert.ok(run.localEvents.some((event) => event.type === 'blocked' && event.reason === 'unreconciled'))
+  assert.match(run.stdout, /No answer arrived for ApplyBatch/)
   assert.ok(run.localEvents.some((event) => event.type === 'case-state' && event.contact === 'unknown'),
-    'after an ambiguous mutation, the inspector must not continue presenting an earlier observation as confirmed')
+    'after a lost answer, the inspector must not continue presenting an earlier observation as confirmed')
 })
 }
+
+test('a write whose answer was lost after it ran cannot run again blind: the next write is refused with its result', async () => {
+  // The lost-in-transit window. The authority executed the batch and wrote its answer, and the
+  // stream broke before it arrived, with no way to resume it. The host opens a new session
+  // rather than going on with this one, so the lost result stays unacknowledged; when the
+  // model proposes the same write again, the authority does not run it, and hands the model
+  // the earlier outcome instead.
+  const batch = { operations: [{ op: 'assert_fact', id: 'F_ONCE', predicate: 'x', args: {} }] }
+  const run = await runAgent({
+    argv: [], env: { RULITH_MAX_ROUNDS: '5' }, chatLines: ['Record it once.'],
+    sseResults: true, breakStreamOnCall: 2, refuseResume: true,
+    model: (round) => round === 1 ? callTool('OpenCase', {}) : round <= 3 ? callTool('ApplyBatch', batch) : 'Recorded once.',
+    timeoutMs: 25_000,
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.operations.filter((op) => op.tool === 'ApplyBatch').length, 1, 'the write ran twice')
+  assert.ok(run.initializes.length >= 2, 'the host kept using the session whose answer it lost')
+  const second = JSON.parse(run.modelRequests.at(-1).messages.filter((message) => message.role === 'tool').at(-1).content)
+  assert.equal(second.errorCode, 'previous_result_undelivered')
+  assert.equal(second.requestExecuted, false)
+  assert.equal(second.operations.find((entry) => entry.tool === 'ApplyBatch').result.isError, false,
+    'the refusal did not hand over the earlier outcome')
+})
 
 test('distinct submissions carry distinct request identities, and an answered one is not reused', async () => {
   // The other half of the retry ledger. An id that never got released would make every
@@ -1774,8 +1781,10 @@ test('inconsistent provider cache counts remain unknown, not a fabricated discou
 })
 
 test('long turns retain Artifact evidence and the latest Board View while shortening older views', async () => {
-  const admissions = ['waiting', 'result_ready', 'reconciliation_required'].flatMap(state =>
-    ['ApplyAction', 'ApplyBatch'].map(originalTool => ({ state, originalTool })))
+  const strips = ['running', 'waiting_for_decision', 'needs_person'].flatMap(state =>
+    ['ApplyAction', 'ApplyBatch'].map(tool => [{ tool, label: tool, state, at: '2026-10-01T08:00:00Z', since: '2026-10-01T08:00:01Z',
+      ...(state === 'running' ? { stage: 'at_worker' } : {}),
+      ...(state === 'waiting_for_decision' ? { decision: 'a person\'s decision in Console' } : {}) }]))
   let acceptedQueries = 0
   const ref = 'art_' + 'a'.repeat(32)
   const gateway = defaultGateway({
@@ -1789,9 +1798,10 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
     tool: (name, args, board, session) => {
       if (name !== 'QueryBoard') return undefined
       queries += 1
-      if (queries % 3 === 0) return { accepted: false, errorCode: 'query_refused_for_fixture', teaching: 'The Board refused this query.' }
+      if (queries % 3 === 0) return { accepted: false, errorCode: 'query_refused_for_fixture', requestExecuted: false,
+        teaching: 'The Board refused this query.', operations: [], view: {} }
       const result = committed(board.tool(name, args, session).payload)
-      result.observation.operationAtAdmission = admissions[acceptedQueries++]
+      result.operations = strips[acceptedQueries++]
       return result
     },
     model: (round) => round === 1 ? callTool('ReadArtifact', { ref })
@@ -1809,9 +1819,9 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
     'the latest authoritative Board View was removed')
   assert.match(transcript, /query_refused_for_fixture/,
     'a refused tool result lost its reason when its older Board View was shortened')
-  const retainedAdmissions = last.messages.filter(message => message.role === 'tool')
-    .map(message => JSON.parse(message.content).observation?.operationAtAdmission).filter(Boolean)
-  assert.deepEqual(retainedAdmissions, admissions, 'identical snapshots lost their distinct non-view metadata')
+  const retainedStrips = last.messages.filter(message => message.role === 'tool')
+    .map(message => JSON.parse(message.content)).filter(result => result.observation !== undefined).map(result => result.operations)
+  assert.deepEqual(retainedStrips, strips, 'identical snapshots lost their distinct operations strips')
   assert.equal((transcript.match(/ARCHIVED_89/g) ?? []).length, 1,
     'only the latest identical accepted snapshot is needed; refused reads carry no snapshot')
   assert.match(transcript, /identicalToToolCall/)
@@ -1828,7 +1838,8 @@ test('context compression retains distinct Board observations and partial or ref
       if (name !== 'QueryBoard') return undefined
       queries += 1
       const marker = ['FIRST_SCOPE_ONLY', 'PARTIAL_SCOPE_ONLY', 'REFUSED_SCOPE_ONLY', 'LAST_SCOPE_ONLY'][queries - 1]
-      if (queries === 3) return { accepted: false, errorCode: 'refused_but_retained', teaching: `${marker}: Use the earlier complete result.` }
+      if (queries === 3) return { accepted: false, errorCode: 'refused_but_retained', requestExecuted: false,
+        teaching: `${marker}: Use the earlier complete result.`, operations: [], view: {} }
       return committed({ cases: { directory: [{ caseId: marker, root: marker, status: 'closed' }, ...cases], total: cases.length + 1, truncated: queries === 2 },
         roots: [], gaps: [], nodes: [], actions: [] })
     },

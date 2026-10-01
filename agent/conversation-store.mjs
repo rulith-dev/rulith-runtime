@@ -14,6 +14,38 @@ const turnFile = (file, id) => join(folder(file), hash(id) + '.turn.json')
 const archiveFile = (file, key) => join(folder(file), hash(key) + '.session.json')
 const compare = (a,b) => a.at - b.at || a.id.localeCompare(b.id)
 
+// 每个对话中、模型尚未读到的自身调用结局的身份记录：工具、标签、受理时间、结局类别，以及是否已知已定。
+// 与历史同一规则：不保存工具结果、摘要或任何内容；这些只用于重启或对话槽回收后，在该对话下一次写入前
+// 重新读取操作栏并给模型看一次。读不出时与其他历史文件一样明确报错，不静默丢弃。
+const OUTCOMES = 'rulith-unread-outcomes/1'
+const outcomesFile = file => join(folder(file), '_unread-outcomes.json')
+const OUTCOME_STATES = new Set(['running', 'waiting_for_decision', 'needs_person', 'unlisted', 'lost',
+  'done', 'failed', 'refused', 'unknown'])
+const OUTCOMES_PER_CONVERSATION = 64
+function validOutcomes(value, owner) {
+  if (value?.format !== OUTCOMES || !sameOwner(value.owner, owner) || value.conversations === null
+    || typeof value.conversations !== 'object' || Array.isArray(value.conversations)) throw new Error('invalid unread-outcome record')
+  const conversations = Object.create(null)
+  for (const [sessionKey, entries] of Object.entries(value.conversations)) {
+    if (!Array.isArray(entries) || entries.length > OUTCOMES_PER_CONVERSATION) throw new Error('invalid unread-outcome list')
+    for (const e of entries) {
+      if (e === null || typeof e !== 'object' || typeof e.tool !== 'string' || e.tool === '' || typeof e.label !== 'string'
+        || e.label === '' || typeof e.at !== 'string' || e.at === '' || !OUTCOME_STATES.has(e.state)
+        || typeof e.unread !== 'boolean' || (e.withheld !== undefined && e.withheld !== true)) throw new Error('invalid unread-outcome entry')
+    }
+    conversations[sessionKey] = entries.map(({ tool, label, at, state, withheld, unread }) =>
+      ({ tool, label, at, state, ...(withheld ? { withheld: true } : {}), unread }))
+  }
+  return conversations
+}
+/** The unread-outcome identities kept beside this history: `{ [sessionKey]: [{tool, label, at, state, withheld?, unread}] }`. */
+export function readUnreadOutcomes(file, owner) {
+  const path = outcomesFile(file)
+  if (!existsSync(path)) return Object.create(null)
+  try { return validOutcomes(readJson(path), owner) }
+  catch (error) { throw new ConversationStoreError(`The record of unread outcomes could not be read; it was preserved. ${error.message}`) }
+}
+
 // 历史是可见对话的投影，不承载凭据、工具正文、MCP会话或Board权威。
 export function conversationFile(directory, owner) {
   if (!directory || !owner?.origin || !owner?.accountId || !owner?.agentId) throw new ConversationStoreError('Conversation history needs a verified account and Agent.')
@@ -125,6 +157,7 @@ export async function openConversations(directory, owner, { recoverInterrupted =
   process.once('exit', close)
   try {
     let data = readConversations(file, owner, { metadataOnly: true })
+    const unread = readUnreadOutcomes(file, owner)
     const ensure = () => {
       if (!lease.owned()) throw new ConversationStoreError('The conversation history writer no longer owns its lock.')
       if (data.format === LIBRARY) return
@@ -216,6 +249,13 @@ export async function openConversations(directory, owner, { recoverInterrupted =
         return messages
       },
       snapshot() { return { ...data, turns: data.turns.map(hydrate), archived: { ...data.archived } } },
+      /** The unread-outcome identities this history held when it was opened. */
+      unreadOutcomes() { return structuredClone(unread) },
+      /** Replace them, atomically: written whole or not at all. */
+      saveUnreadOutcomes(conversations) {
+        ensure()
+        atomicWrite(outcomesFile(file), { format: OUTCOMES, owner, conversations: validOutcomes({ format: OUTCOMES, owner, conversations }, owner) })
+      },
     }
   } catch (error) { close(); throw error }
 }

@@ -293,8 +293,10 @@ test('the runtime uploads no trace and opens no second cloud channel', async () 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   // Every request the endpoint saw was either the model service or an approved tool
   // over the MCP handshake. A client-side trace uploader would appear here as a method or
-  // a tool name that is neither.
+  // a tool name that is neither. The one `ping` is the base protocol's own: it acknowledges,
+  // on the same session, the OpenCase result the model has read (AIS §5.2).
   assert.deepEqual([...new Set(run.methods)].sort(),
-    ['initialize', 'notifications/initialized', 'tools/call', 'tools/list'])
+    ['initialize', 'notifications/initialized', 'ping', 'tools/call', 'tools/list'])
+  assert.equal(run.pings, 1)
   assert.ok(run.verbs.every((verb) => MODEL_TOOLS.includes(verb)), `an unexpected tool was called: ${run.verbs.join(', ')}`)
 })

@@ -15,7 +15,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
-import { localPage, renderToolCall, projectRecovery } from '../local/local-ui.mjs'
+import { localPage, renderToolCall } from '../local/local-ui.mjs'
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
@@ -30,7 +30,6 @@ const shippedCard = () => {
     eventBody: (e) => e.body ?? '',
     renderMarkdown: (value) => '<p>' + esc(value) + '</p>',
     renderToolCall,
-    projectRecovery,
     state: { toolResults: new Map() },
   })
   vm.runInContext(localPage.slice(start, end), context)
@@ -61,7 +60,7 @@ test('a routine event is a line of text, not a panel', () => {
 test('wrong, waiting, or needing a person keeps a treatment of its own', () => {
   const card = shippedCard()
   const bad = [
-    { src: 'agent', type: 'blocked', body: 'An earlier ApplyAction call has an unknown outcome.' },
+    { src: 'agent', type: 'blocked', body: 'This Gateway no longer accepts this Runtime release.' },
     { src: 'agent', type: 'error', body: 'The Runtime could not reach the Gateway.' },
     { src: 'agent', type: 'verdict', accepted: false, body: 'Rejected by Board' },
     { src: 'worker', type: 'reported', landed: false, body: 'receipt not committed' },
@@ -73,15 +72,17 @@ test('wrong, waiting, or needing a person keeps a treatment of its own', () => {
   }
   for (const event of [
     { src: 'agent', type: 'case-pending', body: 'Waiting for evidence' },
-    { src: 'agent', type: 'pending-inherited', tool: 'ApplyAction' },
+    { src: 'agent', type: 'held-call', phase: 'waiting', body: 'ApplyAction demo.ship is still running at the authority.' },
+    { src: 'agent', type: 'verdict', held: 'waiting_for_decision', body: 'ApplyAction · waiting for decision' },
     { src: 'agent', type: 'queue-suspended', body: '2 further call(s) were not sent' },
     { src: 'agent', type: 'session-detached', body: 'The local conversation was reclaimed.' },
-    { src: 'agent', type: 'recovery', state: 'waiting', body: 'Waiting for an earlier ApplyAction call' },
   ]) {
     assert.match(card(event), /class="alert wait"/, event.type + ' is a state a person is waiting on')
   }
-  // A recovery that says there is nothing outstanding is not a warning about anything.
-  assert.match(card({ src: 'agent', type: 'recovery', state: 'none', body: 'No unresolved call' }), /class="note"/)
+  // A held call that has been answered is not a warning about anything, and the strip itself is
+  // the inspector's to show: the transcript leaves it out.
+  assert.match(card({ src: 'agent', type: 'held-call', phase: 'answered', body: 'The model\'s call is answered.' }), /class="note"/)
+  assert.equal(card({ src: 'agent', type: 'operations', operations: [] }), '')
 })
 
 test('a line with more to say opens in place, and stays open across a refresh', () => {
@@ -95,7 +96,7 @@ test('a line with more to say opens in place, and stays open across a refresh', 
   // is the same on the next render, or it closes itself every time an event arrives.
   assert.match(html, /data-call="note:source-plan:2026-09-20T15:36:00\.000Z:case-1"/)
   assert.equal(card(long), html, 'the same event must produce the same name')
-  assert.match(card({ src: 'agent', type: 'handoff', body: 'An earlier call was handed over.' }),
+  assert.match(card({ src: 'agent', type: 'artifact-read', body: 'Artifact art_1 · final fragment' }),
     /class="note"/, 'a line that fits needs no disclosure')
 })
 
