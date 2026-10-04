@@ -317,13 +317,12 @@ test('eight files is the limit, and a file over 8 MiB is refused by name', async
   assert.equal(sent(page, '/materials').some((call) => call.body.name === 'huge.bin'), false)
 })
 
-test('a Worker started under the previous model service is named beside the files, where it matters', async () => {
-  // The workbench no longer leads with this restart for an Agent without attachments, so the
-  // moment somebody adds one is where the page has to say it.
-  const status = (modelRestartRequired) => ({ ok: true, mode: 'agent+worker', roles: ['agent', 'worker'], agent: true, worker: true,
+test('automatic Worker reload is explained beside files while running executions drain', async () => {
+  const status = (reloading) => ({ ok: true, mode: 'agent+worker', roles: ['agent', 'worker'], agent: true, worker: true,
+    workerSetting: { enabled: true, reloading, state: reloading ? 'offline' : 'online' },
     runtime: { configFile: 'D:/local/rulith-local.json',
       agent: { id: 'agent-alpha', credentialConfigured: true, modelService: 'http://127.0.0.1:8080/v1', model: 'test-model', modelKeyConfigured: true, thinking: 'standard' },
-      worker: { connection: 'conn-1', credentialConfigured: true, workspaceTools: 'read', toolsFile: '', sourcesFile: '', modelRestartRequired } } })
+      worker: { connection: 'conn-1', credentialConfigured: true, workspaceTools: 'read', toolsFile: '', sourcesFile: '' } } })
   for (const required of [false, true]) {
     const page = await loadLocalPage(localPage, { respond: async (path, request) => {
       if (path.startsWith('/status')) return { body: status(required) }
@@ -335,8 +334,7 @@ test('a Worker started under the previous model service is named beside the file
     await addThroughDialog(page, [fileOf('notes.txt')])
     assert.deepEqual(page.chips().map((chip) => chip.name + ' · ' + chip.said), ['notes.txt · Ready'])
     if (required) {
-      assert.equal(page.$('filesnote').textContent, 'The Worker started before the current model service was set,'
-        + ' so the Agent cannot read new files yet. Stop and start the Worker before sending.')
+      assert.match(page.$('filesnote').textContent, /reloading automatically after its running executions drain/)
     } else assert.equal(page.$('filesnote').textContent, '')
   }
 })
@@ -345,6 +343,8 @@ test('a file added in one conversation never follows the person to another', asy
   const page = await load()
   await page.emit({ src: 'agent', type: 'task-start', session: 's-alpha', at: '2026-09-20T15:30:00.000Z', text: 'Alpha' })
   await page.emit({ src: 'agent', type: 'task-start', session: 's-beta', at: '2026-09-20T15:31:00.000Z', text: 'Beta' })
+  await page.emit({ src: 'agent', type: 'task-done', session: 's-alpha', outcome: 'conversation' })
+  await page.emit({ src: 'agent', type: 'task-done', session: 's-beta', outcome: 'conversation' })
   const caseOf = (session) => page.all('.case').find((row) => row.dataset.case === session)
 
   await page.click(caseOf('s-alpha'))
@@ -404,6 +404,7 @@ const withConversations = async (page, sessions) => {
   let minute = 30
   for (const session of sessions) {
     await page.emit({ src: 'agent', type: 'task-start', session, at: '2026-09-20T15:' + (minute += 1) + ':00.000Z', text: 'In ' + session })
+    await page.emit({ src: 'agent', type: 'task-done', session, outcome: 'conversation' })
   }
   return (session) => page.all('.case').find((row) => row.dataset.case === session)
 }

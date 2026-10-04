@@ -3,13 +3,13 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "69288ec1bd674443e2d7a199fef8572636c80c7080fc1f85f1a576402055901c"
+      "sha256": "1996232614d8921f66c09c5e05e7c4836e318e4ff22d55fb30b833f59c046365"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
     },
     "agent/conversation-store.mjs": {
-      "sha256": "45db5f4f3bd3d2e8b8a83e6f7cea87476aa8854437ef681bb968210097e00cca"
+      "sha256": "b1898e5ad98a73907380af590a674c35e07062a9b39d5a29b6cbc6ae55f8e7cd"
     },
     "agent/conversation-reader.mjs": {
       "sha256": "5f35feed1bd111720524318ff65bfa8b4a4d97632846b9134b222785237fd48b"
@@ -54,7 +54,7 @@
       "sha256": "616cbe6b498bcd2e7fecdddc1dcd015779b9c3ff3c7469fc92e821100b48640f"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "e75d748ee82d9f1f6ddd81ba122095f0fb4be579125ecd45af94730c59c928bc"
+      "sha256": "b8311c8f0b3d7667c068f17c990178e6e1732f27cc71f60dba5d48705c8f2d27"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -84,13 +84,13 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "57905d0537727e725b7fc706a44f9f06c5d289c95ae617d6648dfd6e027f036e"
+      "sha256": "6e2905cf31672c9762021f396bfd94b89bd0df3e3939b71c41549eb1cfa39800"
     },
     "local/material-service.mjs": {
       "sha256": "d0c809c405dd903cff1c1e156b69657a1742ab470671446d6c00c7466201aec6"
     },
     "local/local-ui.mjs": {
-      "sha256": "63f96c49660dc7f63cc2d5149c33caca54f8c75fa17db5d1c73bc953be0d972a"
+      "sha256": "95fee6d766085e7b9ace63618cddb9e87c9beadff00c7d4673c0fbb275b55f32"
     },
     "local/theme.mjs": {
       "sha256": "a0d692385464527706e0d12126970190a518c4b03077731473bdd58b6f2a141a"
@@ -108,16 +108,16 @@
       "sha256": "8c4b15cbd1241f36bd0b3806d0ce290a2f658758ec0909a5a18064479cdf35c1"
     },
     "local/instance-manager.mjs": {
-      "sha256": "8f8fa51741b656bb078e800666bd70331a81ac6a3d86eb84992b795f3eb932e2"
+      "sha256": "4c8ccaa8c54851c66f5056c81d319f06dd312f5934520f63cd9e2e11edbe9dcd"
     },
     "local/manager-server.mjs": {
-      "sha256": "005cb429473ba97056458ca314a2bd470b0fd91232a77736960c1c4e5fbf4c0c"
+      "sha256": "441e5437fc8abe897ae8ac5a48086aac083fbaa10ae5541e2eb4b10c91b3c9a7"
     },
     "local/manager-ui.mjs": {
-      "sha256": "444eed70e21227364954cd997cbb165ee9955a2d55c47d28a9dd34a8f349dff7"
+      "sha256": "a642f3e4b0f9ca7b31a6f3869e0250f4f6c97a3a8d78493580c59fa34596ad40"
     },
     "docs/local-manager.md": {
-      "sha256": "dfe456568c73e01cefeb87d9a4f748c5424aab1340d6119e225655c2a0b4f97c"
+      "sha256": "af592d9a7dbfa264af430375cef8de3f45d084bbed6b3ddf3a4d39e5b3d15433"
     },
     "docs/local-materials.md": {
       "sha256": "70be70cdc4a443d30cf780512c5a1dbeb3798e0ea9f3c266562fa0e546b13474"
@@ -126,13 +126,13 @@
       "sha256": "dda52e94ccf9957fdb12538d0a29b7e2261826df4c55164de5a89c10a3f62b23"
     },
     "local/setup-service.mjs": {
-      "sha256": "d8b26a2254631683b33077a0f1bc93175e4253d4de6036b5fb6fe7494a07142c"
+      "sha256": "a37ee8f7864e9a800c52949bd5177b26840a6521b48fd216a445c19c78b17ca9"
     },
     "local/setup-ui.mjs": {
-      "sha256": "4b8e3123cd16acb665d8697c408e6a7ce939d0348c2660c4540e929dc7a1d887"
+      "sha256": "0c7348ac6288de18d92d09e76fbf881819613478cb4c5deb986a4d1dca516534"
     },
     "local/mcp-services.mjs": {
-      "sha256": "a3b6dce8a85ecb3c21750d489662816f719cbe319ad4b1b33d4d0055aee15808"
+      "sha256": "220491400619adbf822a60633a2e2aaf1739d618d2f52ea11c97db2cb55fdd1b"
     },
     "local/mcp-registry.mjs": {
       "sha256": "78f8e16578d1c91be45d19b96ce1124c61b03ae657eb01538056638425f95e2c"
@@ -141,19 +141,19 @@
       "sha256": "074a5803dff77e3200f4e949dd8ed7073a3ffaad9d3bb4c32b1a9fddc5cab6ba"
     },
     "local/worker-tools-ui.mjs": {
-      "sha256": "44eb9292f4a81e59ef5629d90659d9c8522326473c05f9fe2808ac2a187b776c"
+      "sha256": "ddf7c4ea68e57c1a6e76dc37ac6595e339e7d85ce1416f21fa0efd2b470f6fce"
     },
     "local/worker-tools-browser.mjs": {
-      "sha256": "2d839f0dbff2a325c37a67849f2dc3e6e8619d9c44a5e99c67a8e5f9ba6d3bd8"
+      "sha256": "24ea24b0b54f4021e01a118ff4c9d4210034a1335ce9b0747df88f2761b38ed7"
     },
     "local/worker-tool-management.mjs": {
-      "sha256": "3e97b4cbd150000ba2f65c0ae091873fe46f5bc00bde15dc4739070e89c71d33"
+      "sha256": "5915d5a36ddd9d8648e82ba49f101f526ef112d280a1421f645715a9e2d0c7ea"
     },
     "docs/local-mcp-setup.md": {
-      "sha256": "a5a9af5d7e1fc5243a0c4441f3c6dcb009c27383f76249bc51fd31a6f33d273a"
+      "sha256": "212b756217421a86e21536fbc6f3560bd6598b26223f4a23793140a20fe2ae52"
     },
     "docs/local-setup.md": {
-      "sha256": "ca442a68854d50be133cce2d7dc7446b09428a78e64c46389fc0277b19076feb"
+      "sha256": "6f75f57a86cc22ec38baa39ca78557327ff89fbedfd12b0346ae5e1df86c3447"
     },
     "config/rulith-sources.example.json": {
       "sha256": "38dd6cb5e0e28e7e5a3b167f59ba5bb2c9263b20123eda28150071c1934f112f"
@@ -165,7 +165,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "623d90a3832b266dfe781359e19e3c67f5d5e6a1fe49ee6f7898b2665f95a6dd"
+      "sha256": "72bc4586c7f8a2ead722fef2e65bebb476c19129daada2bc1ca7b3859c42d3c4"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -174,7 +174,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "239961cc3ea422f3572e89ccb89a5e92a78ec8df58f8367dcdb447a65e942101"
+      "sha256": "be7987b2c1fd28f4acaaf0a615026adbe2d3f62a825744decef77ca81dc25a4c"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "e173b13818e54b7f9b07a9ad70fce2a4a7b6426abc514780efe41e080e14d244"

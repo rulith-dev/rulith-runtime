@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { startFixtureRoles } from './support/local-role-controls.mjs'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,7 +30,7 @@ for (const settled of [false, true]) test(`new SSE clients receive the operation
     key: 'operations-test', isolateEnvironment: true,
     conversationOwner: { origin: 'https://api.rulith.ai', accountId: 'acct-1', agentId: 'test-operations' } })
   try {
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     const until = Date.now() + 10_000
     while (!host.events().some(e => e.type === 'snapshot-test-ready') && Date.now() < until)
       await new Promise(resolve => setTimeout(resolve, 20))
@@ -105,7 +106,7 @@ test('a malformed Console origin leaves status readable without a link', async (
     roles: ['agent'], port: 0, key: 'origin-test', autoStart: false, isolateEnvironment: true,
     conversationOwner: owner })
   try {
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     const status = () => fetch(`http://127.0.0.1:${host.port}/status?k=origin-test`).then(r => r.json())
     assert.equal((await status()).runtime.console.origin, 'https://console.example')
     owner.origin = 'https://[invalid'

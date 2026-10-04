@@ -15,7 +15,7 @@ const turn = (n, sessionKey = 'chat') => ({ id: `t-${n}`, sessionKey, text: `mes
 test('archive is reversible, blocks new execution and retains request deduplication', async t => {
   const dir = fixture(t), store = await openConversations(dir, owner); t.after(() => store.close())
   store.accept(turn(1), { ok: true, id: 't-1' }, 'request-0000000001', 'same')
-  assert.throws(() => store.archive('chat', true), /running|queued/)
+  assert.throws(() => store.archive('chat', true), /accepted turns still finishing/)
   store.finish('t-1', 'done', 'complete'); store.archive('chat', true)
   assert.throws(() => store.accept(turn(2), { ok: true }, '', ''), /archived/)
   assert.equal(store.find('request-0000000001', 'same').duplicate, true)

@@ -109,17 +109,16 @@ an existing Agent token remains a separate, explicit choice.
 
 ### 8 · `start` and the instance page bypassing the lifecycle — **fixed**
 
-`createLocalHost` gained `managedPolicy`, consulted by `POST /control` with `start` and by
-every `POST /setup/*`. The manager binds it per instance id, so it answers about that instance
+`createLocalHost` gained `managedPolicy`, consulted by first-message Agent startup,
+automatic Worker startup, `POST /worker-setting` and every `POST /setup/*`. The manager binds it per instance id, so it answers about that instance
 and never about a global selection. It requires: a linked device; the instance's recorded
 origin/account matching the current grant; its Agent still in the authorized set; and, for
 starting, that it is attached at all. `/setup/pair/*` additionally requires a persisted
-reservation, so a pairing cannot be begun from an instance page at all. `instances.start()`
-checks the same thing first, to give one clear refusal instead of a per-role one. A standalone
+reservation, so a pairing cannot be begun from an instance page at all. A standalone
 host has no policy and keeps its existing semantics exactly.
 
 Tested: an unattached instance, an instance with nobody signed in, an Agent removed from the
-grant, a direct `POST /control` from an instance page before and after sign-out, and a direct
+grant, a direct `POST /cases` from an instance page before and after sign-out, and a direct
 `POST /setup/pair/start` from an instance page.
 
 ### 9 · Pairing reservation — **fixed**
@@ -273,8 +272,9 @@ Everything downstream then answered truthfully about a world that no longer cont
 
 Three changes:
 
-- It refuses while **any** role is running, naming which, and refuses a Worker-only profile
-  outright — an existing client's Agent never reads a model endpoint.
+- It applies model edits while roles run, reloading the Agent between turns and the Worker
+  after execution drain. A Worker-only profile is refused: its existing Agent client never
+  reads this computer's model endpoint.
 - It never closes a host. When one is open, the change goes through that instance's own
   `POST /setup/model`, which updates the live configuration in place; `setup.model` gained an
   optional `thinking` field so this stays one write path rather than two.
@@ -285,9 +285,11 @@ Evidence: `test/local-manager.test.mjs`, *"nothing tears down a host while a chi
 finishing"*. `test/support/echo-role.mjs` gained `RULITH_TEST_STOP_DELAY_MS` and advertises
 `managedStop`, so the child is asked over IPC and really keeps running for nine seconds after
 being asked to stop — on Windows as well as POSIX. The arm starts only the Worker, through the
-instance page's own `/control`, and asserts: the copy is refused; `closeHost` is refused;
-`stop` answers `stopping` while the child is still recorded and still alive; **sign-out returns
-`incomplete` and does not revoke**; and once the child really exits, everything agrees.
+instance host's trusted role interface, and asserts: copying updates the live configuration
+without closing the host; `closeHost` is refused while its child drains; an unforced stop
+answers `stopping` while the child is still recorded and alive. Explicit manager stop,
+sign-out and removal bound graceful drain, then kill only their owned child and observe its
+exit before closing or revoking. Their results report whether termination was forced.
 
 ### 2 · A failed attachment stranded a reservation — **fixed**
 
@@ -352,8 +354,8 @@ outside Rulith's state is not refused by this check.
 ### 5 · Child pids were not recorded when a role was started from the instance page — **fixed**
 
 `recordRuntime` ran only from the manager's own `ensureHost`/`start`/`stop`, so a role started
-through the instance page's `/control` — which the policy permits, and which `local-ui.mjs`
-posts — existed only in this process's memory. A later manager read `children: []`, cleared the
+through the instance page's first message or local tools setting existed only in this
+process's memory. A later manager read `children: []`, cleared the
 marker and could open a second host over a live Worker.
 
 `createLocalHost` gained `onChildChange`, fired on every spawn and every exit whoever asked for

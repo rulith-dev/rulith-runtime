@@ -37,8 +37,8 @@ test('embedded, only the Agent list is repeated; the Case inspector is this page
     'a composer that ignores the inspector column sits under it')
   assert.match(localPage, /@media\(max-width:900px\)\{\.app\.embedded\{grid-template-columns:minmax\(0,1fr\)\}\.app\.embedded \.inspector\{display:none\}\.app\.embedded \.composer\{right:0\}\}/,
     'it folds away only when the frame itself is too narrow to hold it')
-  assert.match(localPage, /\.runtimecontrols\[hidden\]\{display:none\}/,
-    'starting a role belongs to the workbench, which is where a person sees its state')
+  assert.match(script, /\$\('worker-setting-wrap'\)\.hidden=EMBEDDED\|\|/,
+    'the workbench owns the per-Agent tools setting, so the conversation does not repeat it')
 })
 
 test('the conversation list and the Case evidence are moved, not rebuilt', () => {

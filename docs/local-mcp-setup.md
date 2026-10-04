@@ -1,7 +1,7 @@
 # Local Worker tool management
 
 Open the URL printed by `rulith start`, choose the Agent, then **Settings and details → Tools**. In the original single-instance mode, use **Worker tools · manage**.
-Stop Agent and Worker using Runtime controls before changing executable configuration.
+Save tool configuration while chatting. The Worker reloads automatically once its running executions have drained; the Agent keeps its current turn.
 
 **My tools** lists the complete configured Worker inventory: built-in workspace and Source tools, original manifest tools, and selected MCP tools. Search by Tool ID, adapter or service, filter by configuration origin, and inspect each contract. Disabled workspace built-ins remain visible. This inventory uses the same composition and validation as Worker startup. It describes local configuration; actual advertisement, Connection locks and Agent permissions are shown in Console.
 
@@ -15,7 +15,7 @@ Database credentials, HTTP secrets and Source roots continue to use the existing
 
 1. Under **Add tools → MCP directory**, search the official **MCP Registry** by server name and open **Details and setup**. Review the publisher, version, repository and installation option. Choose a local Source ID, complete the declared arguments or credential fields, then install/connect and discover in one step. **Connect MCP** accepts existing stdio executables or HTTP endpoints. **Templates → Filesystem** configures the fixed reference server with one allowed directory; it is part of this common flow.
 2. Inspect discovered input schemas and explicitly select each tool's read/write/run classification. Rediscovery retains selections only when the input schema is unchanged; changed schemas require review. Discovery never calls a tool.
-3. Save the selected tools. Start Worker so its advertisement includes them.
+3. Save the selected tools. Enable **Use this computer’s tools and files** so the Worker advertises them; an enabled Worker reloads automatically after its current executions drain.
 4. Download the Source definition. In the Agent's Console **Configuration → Sources**, import and review it.
 5. Under **Runtime**, bind that Source to the correct Connection and the location displayed by Local; enable and lock its required tools.
 6. The Agent discovers the authorized Actions through `QueryBoard` and calls `ApplyAction`.

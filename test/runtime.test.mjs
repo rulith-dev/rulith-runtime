@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { startFixtureRoles } from './support/local-role-controls.mjs'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -118,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.10.1')
+  assert.equal(pkg.version, '0.11.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -424,9 +425,9 @@ test('Rulith Local starts exactly the selected roles and receives structured chi
     for (const [mode, expected] of [['agent', { agent: true, worker: false }], ['worker', { agent: false, worker: true }], ['agent+worker', { agent: true, worker: true }]]) {
       const config = defaultLocalConfig()
       config.paths = { agent: child, worker: child }
-      const host = createLocalHost({ configFile: join(dir, `${mode}.json`), config, roles: rolesOf(mode), port: 0, key: 'test-key' })
+      const host = createLocalHost({ configFile: join(dir, `${mode}.json`), config, roles: rolesOf(mode), port: 0, key: 'test-key', startConfirmMs: 100 })
       try {
-        await host.listen()
+        await host.listen(); await startFixtureRoles(host)
         // Wait for the events this arm is about rather than for a fixed 80ms. Spawning a
         // Node child and receiving its first IPC message takes longer than that on a
         // loaded Windows host, and the arm failed intermittently against a correct host —
@@ -437,7 +438,10 @@ test('Rulith Local starts exactly the selected roles and receives structured chi
         while (wanted.some((role) => !readySources().has(role)) && Date.now() < deadline) {
           await new Promise((accept) => setTimeout(accept, 25))
         }
-        assert.deepEqual(host.status(), { mode, roles: rolesOf(mode), ...expected, ready: { agent: false, worker: false } })
+        const { workerSetting, agentReloading, ...status } = host.status()
+        assert.deepEqual(status, { mode, roles: rolesOf(mode), ...expected, ready: { agent: false, worker: false } })
+        assert.equal(workerSetting.enabled, false)
+        assert.equal(agentReloading, false)
         const sources = readySources()
         assert.equal(sources.has('agent'), expected.agent)
         assert.equal(sources.has('worker'), expected.worker)
@@ -455,7 +459,7 @@ test('RT-LOCAL-CONFIG-1: Worker receives the absolute Local config path even whe
   config.paths = { worker: child }
   const host = createLocalHost({ configFile, config, roles: ['worker'], port: 0, key: 'config-key' })
   try {
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     const deadline = Date.now() + 5_000
     while (!host.events().some((event) => event.type === 'config-path') && Date.now() < deadline) {
       await new Promise((accept) => setTimeout(accept, 25))
@@ -478,7 +482,7 @@ test('Rulith Local status is a read-only redacted runtime projection', async () 
   config.agent.env.RULITH_MODEL_KEY = 'model-secret-value'
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'status-key' })
   try {
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     const deadline = Date.now() + 5_000
     while (!host.events().some((event) => event.src === 'agent' && event.type === 'start' && event.agentId === 'agent-public-1')
       && Date.now() < deadline) {
@@ -521,11 +525,7 @@ async function localRole({ role = 'agent', source, startConfirmMs }, run) {
     ...(startConfirmMs === undefined ? {} : { startConfirmMs }),
   })
   const control = async (operation) => {
-    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=start-key`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ role, operation }),
-    })
-    return { status: response.status, body: await response.json() }
+    return operation === 'start' ? host.startRole(role) : host.stopRole(role)
   }
   const exits = () => host.events().filter((event) => event.src === role && event.type === 'exit').length
   /** Put the host back to "this role is not running", so a `start` really starts one. */
@@ -539,9 +539,8 @@ async function localRole({ role = 'agent', source, startConfirmMs }, run) {
     return stopped
   }
   try {
-    // `listen` starts the selected roles, which is the product's behaviour and not what these
-    // arms are about: each drives an explicit operator `start` from a stopped state.
-    await host.listen()
+    // These ownership arms drive the internal startup primitive with an owned stand-in.
+    await host.listen(); await startFixtureRoles(host)
     await run({ host, control, quiesce, port: host.port })
   } finally {
     await host.close()
@@ -712,11 +711,7 @@ test('Rulith Local does not let a child that answers the stop signal confirm the
     config.paths = { agent: child }
     const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'sigterm-key', startConfirmMs: 5_000 })
     const control = async (operation) => {
-      const response = await fetch(`http://127.0.0.1:${host.port}/control?k=sigterm-key`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role: 'agent', operation }),
-      })
-      return { status: response.status, body: await response.json() }
+      return operation === 'start' ? host.startRole('agent') : host.stopRole('agent')
     }
     const until = async (predicate, what) => {
       const deadline = Date.now() + 10_000
@@ -724,7 +719,7 @@ test('Rulith Local does not let a child that answers the stop signal confirm the
       assert.ok(predicate(), `timed out waiting for ${what}`)
     }
     try {
-      await host.listen()
+      await host.listen(); await startFixtureRoles(host)
       await until(() => host.events().some((e) => e.src === 'agent' && e.type === 'start'), 'the first child to report ready')
       await control('stop')
       await until(() => !host.status().agent, 'the first child to exit')
@@ -810,15 +805,11 @@ test('Rulith Local confirms each start by its own process, so an earlier role re
   config.paths = { agent: child }
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'identity-key', startConfirmMs: 1_500 })
   const control = async (operation) => {
-    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=identity-key`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ role: 'agent', operation }),
-    })
-    return { status: response.status, body: await response.json() }
+    return operation === 'start' ? host.startRole('agent') : host.stopRole('agent')
   }
   try {
-    await host.listen()
-    // The role auto-starts with `listen`, and that first process is the one that reports ready.
+    await host.listen(); await startFixtureRoles(host)
+    // The fixture starts the first process, which reports readiness.
     const deadline = Date.now() + 5_000
     while (!host.events().some((event) => event.src === 'agent' && event.type === 'start') && Date.now() < deadline) {
       await new Promise((accept) => setTimeout(accept, 25))
@@ -860,7 +851,7 @@ test('the shipped Worker really sends the readiness event Rulith Local confirms 
   config.worker.env.RULITH_TOOLS_FILE = join(dir, 'absent-tools.json')
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['worker'], port: 0, key: 'real-key' })
   try {
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     const deadline = Date.now() + 20_000
     while (!host.events().some((event) => event.src === 'worker' && event.type === 'up') && Date.now() < deadline) {
       await new Promise((accept) => setTimeout(accept, 25))
@@ -894,14 +885,10 @@ test('the shipped Agent refuses to start without its Gateway, and Rulith Local r
   config.agent.env.RULITH_MODEL_KEY = 'unused-offline'
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'real-agent-key' })
   const control = async (operation) => {
-    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=real-agent-key`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ role: 'agent', operation }),
-    })
-    return { status: response.status, body: await response.json() }
+    return operation === 'start' ? host.startRole('agent') : host.stopRole('agent')
   }
   try {
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     const deadline = Date.now() + 20_000
     while (!host.events().some((event) => event.src === 'agent' && event.type === 'exit') && Date.now() < deadline) {
       await new Promise((accept) => setTimeout(accept, 25))
@@ -928,19 +915,16 @@ test('Rulith Local reports an immediate child exit instead of claiming the role 
   config.paths = { agent: child }
   const host = createLocalHost({ configFile: join(dir, 'local.json'), config, roles: ['agent'], port: 0, key: 'exit-key' })
   try {
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     const deadline = Date.now() + 5_000
     while (!host.events().some((event) => event.src === 'agent' && event.type === 'exit') && Date.now() < deadline) {
       await new Promise((accept) => setTimeout(accept, 25))
     }
     assert.ok(host.events().some((event) => event.src === 'agent' && event.type === 'exit'),
       'the immediate child exit never reached the Local host')
-    const response = await fetch(`http://127.0.0.1:${host.port}/control?k=exit-key`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ role: 'agent', operation: 'start' }),
-    })
+    const response = await host.startRole('agent')
     assert.equal(response.status, 400)
-    assert.match(String((await response.json()).teaching), /exited during startup/i)
+    assert.match(String(response.body.teaching), /exited during startup/i)
   } finally {
     await host.close()
     rmSync(dir, { recursive: true, force: true })
@@ -1575,8 +1559,9 @@ test('Rulith Local presents a conversation-first Agent workbench with optional R
   assert.match(localPage, /role="dialog"/)
   assert.match(localPage, /Runtime details/)
   assert.match(localPage, /Read-only projection of the single-Agent Runtime configuration/)
-  assert.match(localPage, /Start Agent/)
-  assert.match(localPage, /Stop Worker/)
+  assert.doesNotMatch(localPage, /Start Agent|Stop Agent|Start Worker|Stop Worker/)
+  assert.match(localPage, /Use this computer’s tools and files/)
+  assert.match(localPage, /Stops this turn\. Work already handed to Rulith is not withdrawn\./)
   assert.match(localPage, /id="detailconfig"/)
   assert.match(localPage, /id="caseoptions"/)
   assert.match(localPage, /id="modelbadge"/)

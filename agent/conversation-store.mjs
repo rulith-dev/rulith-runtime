@@ -217,6 +217,7 @@ export async function openConversations(directory, owner, { recoverInterrupted =
       },
       start(id) { update(id, t => { t.state = 'running' }) },
       modelServices(sessionKey) { return [...new Set(data.turns.filter(t => t.sessionKey === sessionKey).map(t => t.modelService).filter(Boolean))] },
+      lastOutcome(sessionKey) { return data.turns.filter(t => t.sessionKey === sessionKey).sort(compare).at(-1)?.outcome },
       usage(id, measured) {
         // 诊断先在内存累计，随下一次正文/终态持久化；统计本身不能打断模型回复。
         const t = data.turns.find(t => t.id === id); if (!t) return
@@ -234,7 +235,7 @@ export async function openConversations(directory, owner, { recoverInterrupted =
       archive(sessionKey, archived, { stopped = false } = {}) {
         const rows = data.turns.filter(t => t.sessionKey === sessionKey)
         if (!rows.length) throw new ConversationStoreError('This conversation could not be found.')
-        if (rows.some(t => ['queued', 'running'].includes(t.state)) && !stopped) throw new ConversationStoreError('Wait for this conversation to finish or stop the Agent before archiving queued or running work.')
+        if (rows.some(t => ['queued', 'running'].includes(t.state)) && !stopped) throw new ConversationStoreError('This conversation has accepted turns still finishing; the Agent service archives it after they finish.')
         if (stopped) for (const t of rows) if (['queued', 'running'].includes(t.state)) update(t.id, next => { next.state = 'interrupted'; next.endedAt = Date.now(); next.note = 'The Agent stopped. This local turn was not replayed.' })
         ensure(); atomicWrite(archiveFile(file, sessionKey), { sessionKey, archived: archived === true })
         data.archived[sessionKey] = archived === true

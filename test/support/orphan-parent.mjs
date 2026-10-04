@@ -15,6 +15,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { startFixtureRoles } from './local-role-controls.mjs'
 import { createLocalHost, defaultLocalConfig } from '../../local/rulith-local.mjs'
 
 const role = process.env.ORPHAN_ROLE === 'agent' ? 'agent' : 'worker'
@@ -48,6 +49,7 @@ writeFileSync(join(directory, 'worker-tools.json'), JSON.stringify({ format: 'ru
 
 const host = createLocalHost({ configFile, config, roles: [role], port: 0, autoStart: true, isolateEnvironment: true })
 await host.listen()
+await startFixtureRoles(host)
 
 const readyEvent = role === 'agent' ? 'start' : 'up'
 const deadline = Date.now() + 25_000

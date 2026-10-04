@@ -39,6 +39,7 @@ const instanceOf = (overrides = {}) => ({
   id: 'inst-1', name: 'Research', mode: 'local_agent', directory: 'D:/instances/inst-1',
   origin: '', accountId: '', agentId: '', agentName: '', connectionId: '', paired: true,
   open: false, roles: [], agent: false, worker: false, runningAgentId: '', pendingAgentId: '',
+  workerSetting: { enabled: false, visible: true, state: 'offline' },
   blocked: '', orphaned: null, legacyImport: null, hostPort: 0, servePort: 0,
   signedOutAt: '', createdAt: '', importedFrom: '', ...overrides,
 })
@@ -59,7 +60,7 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   /** The account and Console this device is signed in to; the directory joins on both. */
   const CONSOLE = 'https://console.example', ACCOUNT = 'acct-1'
   /** Flipped by a test: what the conversation host answers when a message is sent. */
-  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringCompileErrors: [], checkerInstallRequests: [], authoringReviewRefusal: '', authoringReviewRequests: [], authoringVersions: null, authoringSaveRefusal: '', authoringSaveDropResponse: false, authoringSaveRequests: [], authoringSaves: [], cases: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } }
+  const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringCompileErrors: [], checkerInstallRequests: [], authoringReviewRefusal: '', authoringReviewRequests: [], authoringVersions: null, authoringSaveRefusal: '', authoringSaveDropResponse: false, authoringSaveRequests: [], authoringSaves: [], caseRequests: [], stopRequests: [], caseDelay: 0, cases: { ok: false, teaching: 'Reconnect this Agent before sending a message.' } }
 
   // Configured Agents, as the manager reports them once pairing has completed: the directory
   // joins a profile to an Agent by account, Console origin and Agent id together.
@@ -77,6 +78,9 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   // One host per Agent, as on a real computer: separate ports, separate documents, separate
   // conversations. Two frames pointed at one server would hide exactly the mistake the
   // A → B → A arm is there to catch.
+  const streams = new Map()
+  const emit = (id, event) => { for (const res of streams.get(id) ?? []) res.write('data: ' + JSON.stringify(event) + '\n\n') }
+  control.emit = emit
   const hosts = new Map()
   const hostServer = (row) => http.createServer(async (req, res) => {
     const path = (req.url ?? '/').split('?')[0]
@@ -86,19 +90,36 @@ export async function startMockWorkbench({ instances, agents, events = [], model
     if (path === '/worker-tools') return void html(res, workerToolsPage)
     if (path === '/status') {
       return void json(res, 200, { ok: true, mode: 'agent+worker', roles: ['agent', 'worker'],
-        agent: row.agent === true, worker: row.worker === true,
+        agent: row.agent === true, worker: row.worker === true, workerSetting: row.workerSetting,
         runtime: { configFile: 'D:/instances/inst-1/local.json',
           console: control.runtimeConsole ?? { origin: row.origin, accountId: row.accountId, agentId: row.agentId },
-          agent: { id: row.agentId, credentialConfigured: true, modelService: 'http://127.0.0.1:8080/v1', model: 'test-model', modelKeyConfigured: true, thinking: 'standard' },
+          agent: { id: row.agentId, credentialConfigured: true, modelService: 'http://localhost:9/v1', model: 'test-model', modelKeyConfigured: true, thinking: 'standard' },
           worker: { connection: 'conn-1', credentialConfigured: true, workspaceTools: 'read', toolsFile: '', sourcesFile: '' } } })
     }
     if (path === '/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
       res.write(': open\n\n')
+      if (!streams.has(row.id)) streams.set(row.id, new Set())
+      streams.get(row.id).add(res); res.on('close', () => streams.get(row.id)?.delete(res))
       for (const event of (Array.isArray(events) ? events : events[row.id] ?? [])) res.write('data: ' + JSON.stringify(event) + '\n\n')
       return
     }
-    if (path === '/cases' && req.method === 'POST') { await readBody(req); return void json(res, 200, control.cases) }
+    if (path === '/cases' && req.method === 'POST') {
+      const body = await readBody(req); control.caseRequests.push({ instanceId: row.id, ...body })
+      if (control.caseDelay) await new Promise(done => setTimeout(done, control.caseDelay))
+      if (control.cases.ok) {
+        row.agent = true; const id = 'turn-' + control.caseRequests.length
+        emit(row.id, { src: 'agent', type: 'task-start', id, session: body.sessionKey, text: body.text, t: Date.now() })
+        return void json(res, 200, { ...control.cases, id, sessionKey: body.sessionKey })
+      }
+      return void json(res, 200, control.cases)
+    }
+    if (path === '/turn/stop' && req.method === 'POST') {
+      const body = await readBody(req); control.stopRequests.push({ instanceId: row.id, ...body })
+      emit(row.id, { src: 'agent', type: 'task-done', id: body.id, session: body.sessionKey, outcome: 'user-stopped',
+        note: 'Stopped by the user. Work already handed to Rulith is not withdrawn.', t: Date.now() })
+      return void json(res, 200, { ok: true, state: 'stopped' })
+    }
     if (path === '/setup/state') return void json(res, 200, { ok: true, linked: true, code: '', expiresAt: '', consoleUrl: 'https://console.example', clientMode: 'local_agent', resources: [], services: [], machineName: 'Work laptop', model: { url: '', name: '' }, agentId: 'agent-alpha' })
     if (path === '/setup/context') return void json(res, 200, { ok: true, agentName: 'Alpha', agentId: 'agent-alpha', sources: [] })
     if (path === '/worker-tools/state') return void json(res, 200, { ok: true, tools: [], workspace: 'read', services: [] })
@@ -158,11 +179,12 @@ export async function startMockWorkbench({ instances, agents, events = [], model
       row.open = true; row.hostPort = port; row.roles = ['agent', 'worker']
       return void json(res, 200, { ok: true, url: hostUrl(row.id, String(body.page ?? '/')), hostPort: port, ...state() })
     }
-    if (path === '/manager/instances/control') {
+    if (path === '/manager/instances/worker-setting') {
       if (control.roleRefusal) return void json(res, 409, { ...state(), ok: false, teaching: control.roleRefusal })
       if (!row) return void json(res, 400, { ok: false, teaching: 'No such Agent.', ...state() })
-      row[body.role] = body.operation === 'start'
-      return void json(res, 200, { ok: true, control: { role: body.role, state: body.operation === 'start' ? 'ready' : 'stopped' }, ...state() })
+      row.workerSetting = { enabled: body.enabled, visible: true, state: body.enabled ? 'online' : 'offline' }
+      row.worker = body.enabled
+      return void json(res, 200, { ...state(), teaching: 'Local tools setting saved.' })
     }
     if (path === '/manager/authoring/install-checker') {
       control.checkerInstallRequests.push(body)

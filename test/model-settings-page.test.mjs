@@ -49,7 +49,7 @@ test('missing model opens a bound settings form instead of attempting to start a
   const state = snapshot()
   const page = await runPageScript(managerPage, { respond: async () => ({ body: state }) })
   await page.choose('inst-one'); await settle()
-  await page.$('agent-toggle').onclick()
+  await page.$('agent-readiness-action').onclick()
   assert.equal(page.$('dlg-model').hidden, false)
   assert.equal(page.$('model-source').value, 'default')
   assert.equal(page.$('model-fields').hidden, false)
@@ -90,7 +90,7 @@ test('an account change clears entered secrets and prevents stale model writes',
   assert.equal(page.calls.some(call => call.method === 'POST'), false)
 })
 
-test('saving an override addresses its original Agent and never starts without the start action', async () => {
+test('saving an override addresses its original Agent and lets first-message startup handle an idle Agent', async () => {
   const state = snapshot({ instances: [instance({ worker: true })] })
   const page = await runPageScript(managerPage, { respond: async () => ({ body: state }) })
   await page.choose('inst-one'); await settle()
@@ -107,17 +107,17 @@ test('saving an override addresses its original Agent and never starts without t
   assert.equal(page.calls.some(call => call.path === '/manager/instances/control'), false)
 })
 
-test('running Agents cannot change their own model while the account default remains editable', async () => {
+test('running Agents can save model changes that apply automatically between turns', async () => {
   const state = snapshot({ instances: [instance({ agent: true })] })
   const page = await runPageScript(managerPage, { respond: async () => ({ body: state }) })
   await page.choose('inst-one'); await settle()
   page.$('agent-model-open').onclick()
-  assert.equal(page.$('model-save').disabled, true)
-  assert.match(page.$('model-blocked').textContent, /Stop this Agent/)
+  assert.equal(page.$('model-save').disabled, false)
+  assert.equal(page.$('model-blocked').hidden, true)
   page.$('model-close').onclick()
   page.$('default-model-open').onclick()
   assert.equal(page.$('model-save').disabled, false)
-  assert.match(page.$('model-effect').textContent, /until restarted/)
+  assert.match(page.$('model-effect').textContent, /automatically between turns/)
 })
 
 for (const delayedPath of ['/manager/model/default', '/manager/instances/model']) {
@@ -137,7 +137,7 @@ for (const delayedPath of ['/manager/model/default', '/manager/instances/model']
     await page.choose('inst-one'); await settle()
     page.$('agent-model-open').onclick()
     page.$('model-key').value = 'entered-secret'
-    const saving = page.$('model-save-start').onclick()
+    const saving = page.$('model-save').onclick()
     await settle()
     assert.equal(page.calls.filter(call => call.path === delayedPath).length, 1)
     page.render(snapshot({ device: { state: 'linked', origin, account: { id: 'account-b' }, agents: [] },
@@ -183,11 +183,11 @@ test('removing a saved key sends an explicit clear request without reading the s
   assert.equal(request.body.clearKey, true)
 })
 
-test('a Worker bound to the prior model service explains how to use new attachments', async () => {
-  const row = instance({ worker: true, model: { source: 'default', configured: true, ready: true, workerRestartRequired: true } })
+test('model settings keep the per-Agent Worker setting without manual role controls', async () => {
+  const row = instance({ worker: true, model: { source: 'default', configured: true, ready: true } })
   const page = await runPageScript(managerPage, { respond: async () => ({ body: snapshot({ instances: [row] }) }) })
   await page.choose(row.id); await settle()
-  assert.match(page.$('worker-note').textContent, /Stop and start this Worker before using new attachments/)
-  assert.equal(page.$('worker-toggle').textContent, 'Stop Worker')
+  assert.match(page.$('worker-note').textContent, /Worker runs with Rulith/)
+  assert.equal(page.$('worker-setting-label').hidden, false)
   assert.equal(page.calls.some(call => call.path === '/manager/instances/control'), false, 'a model change cannot interrupt a Worker on its own')
 })

@@ -594,10 +594,10 @@ arm('a closed drawer is out of the tab order, and a window that grows past the b
     assert.equal(await page.isVisible('#scrim'), true)
     assert.equal(await page.getAttribute('#rail-open', 'aria-expanded'), 'true')
     // The per-Agent controls travel with the list they act on, so opening the drawer is also
-    // how a phone reaches Start Agent, Tools and the settings dialog.
+    // how a phone reaches the local-tools setting, Tools and the settings dialog.
     await page.click('button[data-instance="inst-1"]')
     await page.click('#rail-open')
-    for (const id of ['#agent-toggle', '#worker-toggle', '#tools-open', '#details-open'])
+    for (const id of ['#worker-setting', '#tools-open', '#details-open'])
       assert.equal(await page.isVisible(id), true, id + ' is unreachable on a phone')
 
     await page.setViewportSize({ width: 1300, height: 900 })
@@ -684,7 +684,7 @@ arm('a manager that stops answering says so, and nothing may be changed from the
     await fixture.silenceManager()
     await page.waitForSelector('#connection:not([hidden])', { timeout: 20000 })
     assert.match(await page.textContent('#connection'), /did not answer/)
-    for (const control of ['#worker-toggle', '#agent-toggle', '#tools-open']) {
+    for (const control of ['#worker-setting', '#tools-open']) {
       assert.equal(await page.isDisabled(control), true, control + ' was still offered against a remembered state')
     }
     // The conversation that is already open is not torn down: it is a different server and it
@@ -697,14 +697,17 @@ arm('a manager that stops answering says so, and nothing may be changed from the
    the linkage — that choosing an Agent, or a conversation inside one, moves both halves —
    which is exactly what a shell drawing its own summary panel would get wrong silently. */
 
-arm('Agent start refusal stays beside the controls in the mobile drawer',
+arm('local-tools setting refusal stays beside the setting in the mobile drawer',
   { width: 390, height: 780 }, async ({ page, fixture }) => {
     await page.click('#rail-open')
     await openAgent(page, 'inst-1')
     await page.click('#rail-open')
     fixture.control.roleRefusal = 'Reconnect this Agent before starting it.'
-    await page.click('#agent-toggle')
+    // A refused change puts the checkbox back, so this is a click, not page.check(), which
+    // insists that the box ends up checked.
+    await page.click('#worker-setting')
     await page.waitForFunction(() => document.getElementById('worker-notice').textContent.includes('Reconnect'))
+    await page.waitForFunction(() => document.getElementById('worker-setting').checked === false)
     assert.equal(await page.isVisible('#worker-notice'), true)
     assert.equal(await page.locator('#rail').evaluate(el => el.contains(document.getElementById('worker-notice'))), true)
     assert.equal(await page.textContent('#notice'), '', 'the answer must not sit behind the open drawer')
@@ -1189,7 +1192,7 @@ arm('default and custom model output budgets save explicitly and invalid input s
     assert.equal(await page.locator('#dlg-model').isVisible(), true)
   }, modelFixture)
 
-arm('missing model leads directly to default setup, then the explicit start action',
+arm('missing model leads to setup, then the first message starts the Agent',
   { width: 1440, height: 960 }, async ({ page, fixture }) => {
     await page.click('[data-instance="inst-1"]')
     await page.locator('#agent-readiness-action').click()
@@ -1198,9 +1201,15 @@ arm('missing model leads directly to default setup, then the explicit start acti
     await page.fill('#model-url', 'https://model.example/v1')
     await page.fill('#model-name', 'chosen-model')
     await page.fill('#model-key', 'fixture-only-key')
-    await page.click('#model-save-start')
+    await page.click('#model-save')
     await page.locator('#dlg-model').waitFor({ state: 'hidden' })
-    await page.getByRole('button', { name: 'Stop Agent', exact: true }).waitFor()
+    assert.equal(await page.locator('#agent-toggle').count(), 0)
+    assert.equal(fixture.rows[0].agent, false)
+    const child = await openAgent(page, 'inst-1')
+    fixture.control.cases = { ok: true }
+    await child.fill('#prompt', 'First message')
+    await child.click('#send')
+    await child.getByRole('button', { name: 'Stop this turn', exact: true }).waitFor()
     assert.equal(fixture.rows[0].agent, true)
     assert.equal(fixture.rows[0].worker, false, 'model setup cannot start an unrelated role')
     assert.equal(fixture.control.modelRequests.length, 2)
@@ -1242,3 +1251,39 @@ for (const viewport of [{ width: 1440, height: 960 }, { width: 390, height: 844 
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
     })
 }
+
+arm('Send becomes a scoped Stop during a turn and retains the next draft',
+  { width: 1440, height: 960 }, async ({ page, fixture }) => {
+    const child = await openAgent(page, 'inst-1')
+    fixture.control.caseDelay = 500
+    fixture.control.cases = { ok: true }
+    await child.fill('#prompt', 'Start a conversation')
+    await child.click('#send')
+    await child.getByText('Starting…', { exact: true }).waitFor()
+    const stop = child.getByRole('button', { name: 'Stop this turn', exact: true })
+    await stop.waitFor()
+    assert.equal(await stop.getAttribute('title'), 'Stops this turn. Work already handed to Rulith is not withdrawn.')
+    await child.fill('#prompt', 'Keep this for the next turn')
+    await stop.click()
+    await child.getByText('Stopped by the user', { exact: false }).first().waitFor()
+    await child.getByRole('button', { name: 'Send message', exact: true }).waitFor()
+    assert.equal(await child.inputValue('#prompt'), 'Keep this for the next turn')
+    assert.equal(fixture.control.caseRequests.length, 1)
+    assert.equal(fixture.control.stopRequests.length, 1)
+    assert.equal(fixture.control.stopRequests[0].sessionKey, fixture.control.caseRequests[0].sessionKey)
+    assert.equal(fixture.rows[0].agent, true)
+  })
+
+arm('local-tools setting persists per Agent without changing another Agent',
+  { width: 1440, height: 960 }, async ({ page, fixture }) => {
+    await openAgent(page, 'inst-1')
+    await page.check('#worker-setting')
+    await page.locator('#worker-pill').filter({ hasText: 'online' }).waitFor()
+    await openAgent(page, 'inst-2')
+    assert.equal(await page.isChecked('#worker-setting'), false)
+    assert.equal(await page.textContent('#worker-pill'), 'offline')
+    assert.equal(fixture.rows[0].workerSetting.enabled, true)
+    assert.equal(fixture.rows[1].workerSetting.enabled, false)
+    await openAgent(page, 'inst-1')
+    assert.equal(await page.isChecked('#worker-setting'), true)
+  })

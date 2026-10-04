@@ -365,7 +365,7 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
       current.services[draft.name] = { name: draft.name, mode: draft.mode, directory: draft.directory, source: draft.source, registry: draft.registry,
         tools, discovered: draft.tools.filter(tool => seen.has(tool.name)), definition }
       save(current); probes.clear(); preparations.clear()
-      return { service: publicService(current.services[draft.name]), teaching: 'Saved locally. Start Worker, import the Source definition in Console, then bind and enable its tools for the Agent.' }
+      return { service: publicService(current.services[draft.name]), teaching: 'Saved locally. Enable local tools; the Worker reloads after execution drain. Import the Source definition in Console, then bind and enable its tools for the Agent.' }
     }),
     remove: name => exclusive(async () => {
       sourceName(name)

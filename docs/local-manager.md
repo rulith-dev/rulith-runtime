@@ -20,10 +20,9 @@ browser access key; keep it on this computer.
   operations, frontier and Worker activity. These live in the same page as the conversation, so
   choosing an Agent or conversation switches both together.
 
-The account is anchored at the lower left. Role controls, tools, connection setup,
-model configuration and technical details are
-opened when needed. Role controls affect only the selected instance on this computer,
-not every remote Connection that the cloud Agent might use. On a small screen the
+The account is anchored at the lower left. Local tool settings, connection setup,
+model configuration and technical details open when needed. The local tool setting
+belongs to the selected Agent's profile on this computer. On a small screen the
 Agent list and execution information open on demand. Presentation uses the same
 neutral gray style as Console.
 
@@ -46,9 +45,9 @@ neutral gray style as Console.
    consent; listing, refreshing and ordinary switching never allocate profiles or reissue tokens.
 5. For a local Agent, choose **Use the default model** or configure **Use a different model**.
    If the default has not been configured, the same dialog asks for its endpoint, model
-   name and API key. **Save** only saves; **Save and start Agent** explicitly starts that Agent.
+   name and API key. **Save** saves the settings. Sending the first message starts that Agent automatically; the conversation shows **Starting…** while it comes up.
    Existing MCP clients keep their own model configuration.
-6. Start the Worker when it is needed for tools. Tool and resource authorization remains in Console.
+6. Enable **Use this computer’s tools and files** when this Agent needs local tools. Tool and resource authorization remains in Console.
 
 While Rulith is running, the workbench checks the account directory every 30 seconds,
 including when its browser is closed. Account shows when the list was received and any
@@ -60,8 +59,7 @@ after an Agent is enabled in Console. A temporary network failure preserves the 
 a confirmed device rejection stops that account's local roles. Incomplete stops remain visible
 with a link to the local profiles; one failed stop does not prevent stopping other profiles.
 
-The selected workspace names its next step: finish connection, set a model, start the
-Agent, or prepare the Worker. **Starting** means the process exists but initialization
+The selected workspace names its next step: finish connection, set a model, or prepare local tools. **Starting** means the process exists but initialization
 has not yet been confirmed. Agent settings also links directly to
 that Agent's Runtime in Console, where an operation that waits for a person's decision or
 needs reconciliation is handled. Opening the link does not retry or dispose of a call.
@@ -82,7 +80,7 @@ Off and On send an explicit `thinking.type` to OpenAI-compatible services that s
 65536. It is sent as `max_tokens` to either supported provider shape. A larger setting may
 cost more, and the provider may reject a limit it does not support; Rulith does not silently
 lower it. Default-model followers inherit this setting, while copied and custom models keep
-their own value. A changed setting takes effect when the Agent next starts.
+their own value. A changed setting restarts a running Agent automatically between turns.
 An empty response or a response cut off at its output limit is reported as a recoverable
 model failure, without executing partial tool calls. Continue the same conversation after
 raising the output limit in model settings if the provider supports it; Rulith does not retry
@@ -93,14 +91,11 @@ once. New local Agent profiles follow this default. For one Agent, open its gear
 choose **Model settings** to switch between the default and a separate configuration.
 Profiles created before this feature and imported installations keep their existing settings.
 
-Changing the default applies when an inheriting Agent next starts. Running Agents keep their
-current model until restarted. Changing one Agent's model requires stopping that Agent;
-its independently running Worker does not have to stop. The page says when model settings
-are missing and takes **Set model** directly to the editor, without trying to start a child.
+Changing the default or an Agent’s override restarts the affected Agent automatically between turns. Accepted turns finish on the previous model; new messages wait for the restart. The page says when model settings are missing and takes **Set model** directly to the editor.
 If the model endpoint changes while a Worker remains running, that Worker still reads
-attachments for the previous endpoint. Its panel notes this, and adding a file in the
-conversation says so beside the file; stop and start the Worker before using new attachments.
-Only an Agent that already has attachments shows this as its next step. Existing attachments
+attachments for the previous endpoint until its current executions drain. The Worker
+reloads automatically; adding a file during the drain explains the pending reload.
+Existing attachments
 retain the model destination approved when they were added; changing models never transfers
 that permission.
 
@@ -117,7 +112,7 @@ to their Agents, and each Agent keeps its own Worker, tool permissions and worki
 ## Replace a Worker Connection key
 
 When Console rotates or restores a Connection key, open that Agent's settings and choose
-**Replace Connection key**. Stop its Worker, enter the replacement key, and Rulith verifies it
+**Replace Connection key**. Enter the replacement key, and Rulith verifies it
 against the currently attached Agent and Connection at that profile's Console origin before
 saving it atomically. The old key is not displayed or retained by the page. A key for another
 Agent, Connection, account, or Console address is refused; a remote verification error never
@@ -183,14 +178,40 @@ and stop this computer** or revoke this device in Console before signing in and
 connecting again. This revokes the exact credentials that device issued, without
 changing later replacement credentials or unrelated Connections.
 
-## Stop and sign out
+## Turns, local tools and sign-out
 
-**Stop Agent** and **Stop Worker** affect only the named role of the selected Agent.
-Opening settings or choosing another Agent does not stop either role. A process
-that is still draining is reported as stopping, not stopped.
+The Agent starts automatically with the first message, showing **Starting…** in the
+conversation. Model changes restart it automatically after accepted turns finish.
+There are no Agent or Worker Start/Stop buttons.
 
-**Sign out and stop this computer** first observes managed processes exit, then
-confirms device revocation at the Gateway, then clears the credentials it issued.
+During a turn, **Send** becomes **Stop**. Stop aborts the model request immediately.
+A Rulith call already sent is allowed to answer within the existing held-call bounds;
+its answer is recorded, and the turn ends without another model request. The history
+says **Stopped by the user**. Other conversations remain unaffected. Its tooltip says:
+“Stops this turn. Work already handed to Rulith is not withdrawn.” To stop Board work,
+pause the Case or withdraw work before dispatch in Console. An Action still running
+can report its eventual outcome in operations.
+
+**Use this computer’s tools and files** is saved in each Agent's local profile as
+`worker.enabled`. When enabled, its Worker starts with Rulith and restarts after a crash
+with bounded backoff (250 ms, 1 s, 4 s, 10 s). Repeated failures stop automatic retries
+and appear beside the setting. A minute of stable operation resets the failure count.
+Credential rejection (Worker exit code 3) stops retries and reports **needs setup**;
+replace its Connection key before enabling local tools again. A crash retry delayed
+by manager sign-out admission resumes when that drain finishes, under the current grant.
+Tool changes reload the Worker after its running executions drain; turning the setting
+off drains and stops it. Its status is **online**, **offline** or **needs setup**,
+based on the Connection and active Worker lease. Agents without local tools default to
+off and show no Worker controls. Existing-client mode keeps the setting and status.
+This setting grants no Gateway permissions; tool and resource authorization stays in Console.
+
+Opening settings or choosing another Agent leaves accepted work with its owning role.
+
+**Sign out and stop this computer** gives each owned process two seconds to drain,
+then kills an owned child still running and observes its exit before confirming device
+revocation at the Gateway and clearing issued credentials. Explicit manager stop and
+**Remove from Rulith** use the same bound. The response and Trace report forced termination;
+work already handed to Rulith may still be running and can be checked in Console.
 If any step is incomplete, the page says so and preserves the same request for
 retry. Model settings, tool configurations, workspaces and user files are kept.
 Remote revocation blocks the issued credentials at the Gateway; it is not a claim
@@ -233,11 +254,12 @@ the original JSON is retained during migration. A lock left by a stopped Agent i
 before the workbench starts that Agent again, once the process that took it has provably
 ended; an Agent whose history another running process holds does not start, and names it.
 The Conversations dialog pages through active and archived history. Archive preserves
-receipts and messages and frees active capacity; restore is required before sending again. Stop the Agent before archiving
-unfinished work. Archiving does not cancel a Board Case.
+receipts and messages and frees active capacity; restore is required before sending again.
+Archiving unfinished work applies automatically after its accepted turns finish.
+Archiving does not cancel a Board Case.
 Active history is limited to 1,000 turns and 256 MiB, including 8 MiB reserved for each
 unfinished turn. A single stored turn is limited to 32 MiB. No history is silently deleted.
-For a private backup, stop the Agent and copy both the owner JSON and its `.d` directory.
+For a private backup, sign out and stop this computer, then copy both the owner JSON and its `.d` directory.
 Never overwrite history while the Agent is running. Windows protects atomic replacement
 against process interruption, but does not provide a directory-fsync guarantee on power loss.
 Archive releases active capacity, not disk space. List indexing still scans file metadata

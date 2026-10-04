@@ -113,7 +113,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.10.1"
+const RULITH_RUNTIME_VERSION = "0.11.0"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -532,6 +532,12 @@ export function wev(type, data = {}) {
     if (WEV_IPC) process.send({ protocol: 'rulith-local-event', event })
     else process.stdout.write(JSON.stringify(event) + '\n')
   } catch { /* Observability never blocks execution. */ }
+}
+let availabilityState = 'offline'
+function reportAvailability(state) {
+  if (availabilityState === state) return
+  availabilityState = state
+  wev('availability', { state })
 }
 /** 人读行与结构化事件是**同一件事的两种写法**，不是两件事（2026-08-18 用户看站输出：
  *  每条流水显示了两遍）。结构化模式下人读行退位——读它的那位（站）本来就在读事件；
@@ -1552,6 +1558,7 @@ async function renewLease(keeper) {
     retireLeaseKeeper()
     lease = undefined
     wev('lease', { state: 'renew-unreachable' })
+    reportAvailability('offline')
     return undefined
   }
   // A response to a retired holder is history, never a fresh lease. In particular,
@@ -1560,6 +1567,7 @@ async function renewLease(keeper) {
     || lease?.workerGeneration !== held.workerGeneration) return undefined
   const renewed = adoptLease(answer?.lease, 'RenewLease')
   if (renewed === undefined) {
+    reportAvailability('offline')
     console.error(`⚠ The Gateway did not renew the lease for generation ${held.workerGeneration}`
       + `${answer?.errorCode ? ` (${answer.errorCode})` : ''}. This Worker stops taking work; it does not re-acquire through renewal.`)
     wev('lease', { state: 'renew-refused', ...(answer?.errorCode ? { errorCode: String(answer.errorCode) } : {}) })
@@ -1612,6 +1620,7 @@ function keepLeaseAlive() {
         lease = undefined
         console.error(`⚠ Renewals stopped: ${String(e?.message ?? e).slice(0, 200)}`)
         wev('lease', { state: 'renew-credential-rejected' })
+        reportAvailability('needs setup')
       }
     })()
     try { await keeper.inFlight } finally { keeper.inFlight = undefined }
@@ -4539,6 +4548,7 @@ if (IS_MAIN) {
     await SOURCES_READY
   } catch (e) {
     if (e instanceof CredentialRejectedError) {
+      reportAvailability('needs setup')
       console.error(e.message)
       process.exitCode = 3
       running = false
@@ -4572,7 +4582,7 @@ if (IS_MAIN) {
     say(`rulith-worker ${WORKER_VERSION} online · connection ${CONNECTION_ID} · instance ${WORKER_ID}`
       + ` · hop ${RULITH_WORKER_CONTRACT_SOURCE_COMMIT.slice(0, 12)} · ${seats.join(' · ')}`, 'up',
       { connectionId: CONNECTION_ID, workerId: WORKER_ID, version: WORKER_VERSION, tools: advertised.length,
-        workerContract: RULITH_WORKER_CONTRACT_SOURCE_COMMIT, managedStop: true,
+        workerContract: RULITH_WORKER_CONTRACT_SOURCE_COMMIT, managedStop: true, reportsAvailability: true,
         reviewer: Boolean(REVIEWER_URL && REVIEWER_MODEL) })
     if (MATERIALS_ROOT !== '') {
       console.log('· Material custody is in hand for this profile. Object bytes stay on this machine;'
@@ -4586,6 +4596,7 @@ if (IS_MAIN) {
   const delivering = runDeliveryBroker({ leaseOf: () => (leaseIsLive() ? lease : undefined), alive: () => running })
     .catch((error) => {
       if (error instanceof CredentialRejectedError) {
+        reportAvailability('needs setup')
         console.error(error.message)
         process.exitCode = 3
         running = false
@@ -4623,6 +4634,7 @@ if (IS_MAIN) {
       // process held a moment ago.
       const held = adoptLease(r?.lease, POLL_KIND)
       if (held === undefined) {
+        reportAvailability('offline')
         if (!leaseAnnounced) {
           leaseAnnounced = true
           console.error(`⚠ The Gateway has not confirmed an active lease for ${WORKER_ID}.`
@@ -4638,6 +4650,7 @@ if (IS_MAIN) {
         say(`● Lease active · generation ${held.workerGeneration} · until ${held.expiresAt}`, 'lease',
           { state: 'active', workerGeneration: held.workerGeneration, expiresAt: held.expiresAt })
       }
+      reportAvailability('online')
       // 单数组 + workType 判别(Poll 合流面): 求证工单/可领动作/清关案卷同队,按型分派。
       // **动作优先**(2026-08-23 站上实跑证伤,用户裁「不可用当然得修」): 单线程循环里
       // 动作排在成串求证重探后面 ⇒ ApplyAction 受理到执行隔约一分钟,act_wait 30s
@@ -4712,6 +4725,7 @@ if (IS_MAIN) {
         console.log(`\n· Note: a reviewer is configured, but no review arrived in five polls. If actions are awaiting clearance, confirm that Connection "${CONNECTION_ID}" has the reviewer role.`)
       }
     } catch (e) {
+      reportAvailability(e instanceof CredentialRejectedError ? 'needs setup' : 'offline')
       if (e instanceof CredentialRejectedError) {
         console.error(e.message)
         process.exitCode = 3

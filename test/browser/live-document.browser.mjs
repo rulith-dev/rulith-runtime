@@ -33,8 +33,7 @@ const fixture = fileURLToPath(new URL('../fixtures/authoring-shipping-policy.md'
 
 const manager = createManagerServer({ port: 0 })
 let browser, page, started = false
-let agentStartedByScript = false
-let workerStartedByScript = false
+let toolsEnabledByScript = false
 try {
   await manager.listen()
   started = true
@@ -73,39 +72,38 @@ try {
   await page.click(`button[data-instance="${row.id}"]`)
   await page.waitForFunction(id => document.querySelector('button.agentrow[aria-current="true"]')?.dataset.instance === id, row.id, { timeout: 15000 })
   const read = async id => ({ text: (await page.locator(id).innerText()).trim(), visible: await page.locator(id).isVisible(), enabled: await page.locator(id).isEnabled() })
-  const ensureRoleStarted = async (selector, runningLabel, markOwned) => {
-    if ((await page.locator(selector).innerText()).includes(runningLabel)) return
-    markOwned()
-    await page.click(selector)
-    await page.waitForFunction(([id, label]) => document.querySelector(id)?.textContent.includes(label), [selector, runningLabel], { timeout: 30000 })
+  const ensureToolsEnabled = async () => {
+    if (await page.locator('#worker-setting').isChecked()) return
+    toolsEnabledByScript = true
+    await page.check('#worker-setting')
+    await page.locator('#worker-pill').filter({ hasText: 'online' }).waitFor({ timeout: 30000 })
   }
   console.log(JSON.stringify({ packageVersion: (await import(pathToFileURL(join(packageRoot, 'package.json')).href, { with: { type: 'json' } })).default.version,
-    account: state.device.account?.name, agent: row.name, agentControl: await read('#agent-toggle'),
-    workerControl: await read('#worker-toggle'), documentAssistant: await read('#authoring-open') }))
+    account: state.device.account?.name, agent: row.name, agentStatus: await read('#agent-pill'),
+    workerStatus: await read('#worker-pill'), localTools: await page.locator('#worker-setting').isChecked(), documentAssistant: await read('#authoring-open') }))
   if (step === 'inspect') {
     const child = page.frameLocator('#stage iframe:not([hidden])')
     await child.locator('#stream').waitFor({ timeout: 30000 })
     console.log(JSON.stringify({ phase: 'conversation-inspect', tail: (await child.locator('#stream').innerText()).slice(-3500) }))
   }
   if (step === 'inspect-recovery') {
-    // Inspect startup's local recovery marker. No Worker, message or business Tool
-    // is started; server recovery is only checked when the runtime next contacts it.
-    await ensureRoleStarted('#agent-toggle', 'Stop Agent', () => { agentStartedByScript = true })
+    // Local history is visible before process startup. Agent recovery happens with its first message.
     const child = page.frameLocator('#stage iframe:not([hidden])')
     await child.locator('#stream').waitFor({ timeout: 30000 })
     await page.waitForTimeout(5000)
-    console.log(JSON.stringify({ phase: 'recovery-inspect', workerControl: await read('#worker-toggle'),
+    console.log(JSON.stringify({ phase: 'recovery-inspect', workerStatus: await read('#worker-pill'), localTools: await page.locator('#worker-setting').isChecked(),
       tail: (await child.locator('body').innerText()).slice(-4500) }))
   }
   if (['start', 'upload'].includes(step)) {
-    await ensureRoleStarted('#agent-toggle', 'Stop Agent', () => { agentStartedByScript = true })
-    await ensureRoleStarted('#worker-toggle', 'Stop Worker', () => { workerStartedByScript = true })
-    console.log(JSON.stringify({ phase: 'roles-started', agentControl: await read('#agent-toggle'), workerControl: await read('#worker-toggle') }))
+    await ensureToolsEnabled()
+    console.log(JSON.stringify({ phase: 'roles-started', agentStatus: await read('#agent-pill'), workerStatus: await read('#worker-pill'), localTools: await page.locator('#worker-setting').isChecked() }))
     if (step === 'start') {
       const child = page.frameLocator('#stage iframe:not([hidden])')
       await child.locator('#stream').waitFor({ timeout: 30000 })
-      await page.waitForTimeout(5000)
-      console.log(JSON.stringify({ phase: 'conversation-after-start', tail: (await child.locator('#stream').innerText()).slice(-3500) }))
+      await child.locator('#prompt').fill('Hello. Please reply briefly without opening a Case.')
+      await child.locator('#send').click()
+      await child.locator('#stream').getByText(/Agent turn (finished|interrupted)|Stopped by the user/).last().waitFor({ timeout: 120000 })
+      console.log(JSON.stringify({ phase: 'conversation-after-first-message', tail: (await child.locator('#stream').innerText()).slice(-3500) }))
     }
   }
   if (step === 'install-checker') {
@@ -181,11 +179,9 @@ try {
   try {
     if (page && !page.isClosed()) {
       if (await page.locator('#authoring-close').isVisible()) await page.click('#authoring-close')
-      for (const [owned, selector, stoppedLabel] of [[workerStartedByScript, '#worker-toggle', 'Start Worker'], [agentStartedByScript, '#agent-toggle', 'Start Agent']]) {
-        if (owned && (await page.locator(selector).innerText()).startsWith('Stop ')) {
-          await page.click(selector)
-          await page.waitForFunction(([id, label]) => document.querySelector(id)?.textContent.includes(label), [selector, stoppedLabel], { timeout: 30000 })
-        }
+      if (toolsEnabledByScript && await page.locator('#worker-setting').isChecked()) {
+        await page.uncheck('#worker-setting')
+        await page.locator('#worker-pill').filter({ hasText: 'offline' }).waitFor({ timeout: 30000 })
       }
     }
   } catch (error) { cleanupError = error }

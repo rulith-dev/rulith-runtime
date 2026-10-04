@@ -47,30 +47,24 @@ test('RT-WKC-1 the vendored Worker protocol is pinned to committed bytes', () =>
     assert.match(String(RAW.files[file].gitBlobOid), /^[0-9a-f]{40}$/u,
       `${file} carries no Git blob object id, so the pin cannot be checked against the repository`)
   }
-  // The two vendored contracts are separate artefacts and stay separate — which is a statement
-  // about **what each one carries**, not about which commit each names.
-  //
-  // This used to be `notEqual(mcp.sourceCommit, CONTRACT.sourceCommit)`, and that was the wrong
-  // reading of the same rule. Both bundles are exported from one repository, so a commit that
-  // genuinely changes both surfaces leaves both correctly pinned to it — and the assertion made
-  // vendoring that commit impossible, which would have been resolved by pinning one of them to
-  // a commit its bytes did not come from. A test that can only be satisfied by a false pin is
-  // worse than no test.
-  //
-  // What must hold is that neither bundle can smuggle the other's bytes. The two overlap by one
-  // file on purpose — the artifact-read schema is part of both surfaces — so the rule is not
-  // "no overlap" but "the overlap is the same file": same Git blob, same content. A disjointness
-  // assertion would have been false about a legitimate sharing, and would have taught the next
-  // person to break the sharing rather than to check it.
+  // Each bundle is pinned to its own source revision. MCP moved to S22 in 0.10.1;
+  // the private Worker hop stayed at its earlier revision. A shared schema can therefore
+  // legitimately carry different committed bytes. Verify each blob against its own pin;
+  // require identical bytes only when the two bundles name the same source revision.
   const mcp = JSON.parse(readFileSync(join(ROOT, 'protocol', 'mcp-contract.json'), 'utf8'))
   const workerFiles = Object.keys(RAW.files)
   const mcpFiles = mcp.files ?? {}
   assert.ok(workerFiles.length > 0 && Object.keys(mcpFiles).length > 0, 'a bundle that carries no files cannot be compared')
   for (const file of workerFiles.filter((name) => mcpFiles[name] !== undefined)) {
-    assert.equal(RAW.files[file].gitBlobOid, mcpFiles[file].gitBlobOid,
-      `${file} is carried by both bundles as two different Git objects, so one of them is not the committed file`)
-    assert.equal(RAW.files[file].content, mcpFiles[file].content,
-      `${file} is carried by both bundles with different bytes`)
+    for (const bundle of [RAW, mcp]) {
+      assert.equal(gitBlobOid(bundle.files[file].content), bundle.files[file].gitBlobOid,
+        `${file} does not match its committed blob at ${bundle.sourceCommit}`)
+    }
+    if (RAW.sourceCommit === mcp.sourceCommit) {
+      assert.equal(RAW.files[file].gitBlobOid, mcpFiles[file].gitBlobOid,
+        `${file} differs between bundles pinned to the same commit`)
+      assert.equal(RAW.files[file].content, mcpFiles[file].content)
+    }
   }
   // The one vector that would be smuggling rather than sharing: the public surface projection
   // is what the Agent's membership is generated from, and a private hop bundle carrying it

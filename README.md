@@ -97,9 +97,14 @@ cd rulith-runtime
 npm test
 ```
 
-No build step is required. Run `npm start` for the workbench, select an Agent, and use
-**Start Agent** or **Start Worker** for that profile. The roles remain separate child
-processes. Database tools load the optional `pg` package only when used.
+No build step is required. Run `npm start` for the workbench, select an Agent, and
+send the first message to start that Agent automatically. Enable **Use this computer’s tools and files** when the Agent needs a local Worker. The roles remain separate child
+processes. Model changes restart the Agent between turns; Worker configuration reloads after
+running executions drain. During a turn, Send becomes Stop: it aborts the model request,
+records a user stop, and waits for any Rulith call already sent without withdrawing it.
+Pause the Case or withdraw work before dispatch in Console to stop Board work.
+**Sign out and stop this computer** remains the global exit. Database tools load the
+optional `pg` package only when used.
 
 ## Agent Runtime
 
@@ -689,9 +694,9 @@ copying only `rulith-worker.mjs` is insufficient.
    attest. Declare its access modes and versioned Tool references. A stdio Source's
    public access address can be a non-secret locator such as `stdio:local-mail`;
    its actual process configuration stays local. HTTP uses its non-secret endpoint.
-3. Declare the named remote Tool in the Worker manifest, select its Agent in the workbench and click **Start Worker**,
+3. Declare the named remote Tool in the Worker manifest, select its Agent in the workbench and enable **Use this computer’s tools and files**,
    then bind and lock the Source and its required advertised Tools in Console.
-   If Rulith also supplies the model, configure it and click **Start Agent**.
+   If Rulith also supplies the model, configure it and send the first message.
 4. Use the existing `rulith.mcp.discover@1` through a governed read Action to inspect
    remote names and schemas. Discovery reads up to 200 Tools across pages and reports
    truncation. It does not install or authorize what it discovers. Tool parameters

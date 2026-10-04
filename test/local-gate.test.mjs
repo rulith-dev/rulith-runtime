@@ -4,7 +4,7 @@
  *
  * `/` used to be answered before the gate ran and had the key substituted into the
  * HTML, so `curl 127.0.0.1:7790/` from any process on the machine returned a working
- * key for `/control`, `/cases` and `/status`. Loopback is shared by every local
+ * key for `/worker-setting`, `/turn/stop`, `/cases` and `/status`. Loopback is shared by every local
  * account, every application, and anything a browser page can reach; the key is the
  * only thing separating them, and the page was handing it out.
  *

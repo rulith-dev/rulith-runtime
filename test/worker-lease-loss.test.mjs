@@ -307,6 +307,7 @@ test('Host disconnect escalates managed drain and leaves the dispatched action u
 test('a refused renewal retires the keeper and the next Poll acquires without an old generation', async () => {
   let refused = false
   const run = await driveWorker({
+    ipc: true, env: { RULITH_LOCAL_EVENTS: 'ipc' },
     lease: operation => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
     reply: operation => {
       if (operation.kind === 'Poll') return { delayMs: 25, body: { accepted: true, payload: { work: [] } } }
@@ -326,6 +327,9 @@ test('a refused renewal retires the keeper and the next Poll acquires without an
   assert.equal(run.timedOut, false, run.output)
   assert.equal(run.of('RenewLease').length, 1, 'the refused generation kept renewing')
   assert.equal(run.of('ClaimWork').length, 0)
+  const availability = run.messages.filter(message => message.event?.type === 'availability').map(message => message.event.state)
+  assert.ok(availability.includes('online'), 'the confirmed lease makes this Worker online')
+  assert.ok(availability.includes('offline'), 'a refused renewal makes this Worker offline')
 })
 
 test('a late Poll response cannot restore a lease refused by a concurrent renewal', async () => {
@@ -525,6 +529,7 @@ test('RT-WK-LOSS-5 a rejected credential during renewal is not an unhandled reje
   // same 401 on its next hop and exits with its own teaching.
   let polls = 0
   const run = await driveWorker({
+    ipc: true, env: { RULITH_LOCAL_EVENTS: 'ipc' },
     reply: (operation) => {
       if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [slowRow()] } } } : HOLD
       if (operation.kind === 'RenewLease') return { status: 401, text: JSON.stringify({ teaching: 'This Connection key was rotated.' }) }
@@ -533,7 +538,7 @@ test('RT-WK-LOSS-5 a rejected credential during renewal is not an unhandled reje
     lease: shortLease,
     extraAdapters: SLOW_ADAPTER,
     extraTools: SLOW_TOOL,
-    done: (seen, output) => DONE.action.test(output),
+    done: (seen, output, { messages }) => messages.some(message => message.event?.type === 'reported' && message.event.kind === 'action'),
     timeoutMs: 25_000,
   })
   assert.equal(run.timedOut, false, run.output)
@@ -544,6 +549,7 @@ test('RT-WK-LOSS-5 a rejected credential during renewal is not an unhandled reje
   assert.ok(report, 'the execution ran and its receipt was never sent')
   assert.equal(report.operation.workerGeneration, 7)
   assert.match(run.output, /Renewals stopped/)
+  assert.ok(run.messages.some(message => message.event?.type === 'availability' && message.event.state === 'needs setup'))
 })
 
 test('RT-WK-LOSS-6 stopping mid-batch leaves the rest unclaimed rather than half-taken', async () => {

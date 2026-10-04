@@ -2,6 +2,17 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.11.0 - unreleased
+
+- Removed Agent and Worker Start/Stop buttons from the local workbench. The first message starts the Agent; model changes restart it between turns.
+- Send becomes Stop during a turn. The authenticated, conversation-scoped `POST /turn/stop` endpoint aborts the model request, preserves in-flight Rulith calls and records user-stopped turns.
+- Added the per-Agent “Use this computer’s tools and files” setting. Enabled Workers start with Rulith, retry crashes with bounded backoff and reload after execution drain; turning the setting off stops the Worker.
+- Setup, model, Connection key and tool changes apply without manual role stops. Gateway permissions, role identity checks, serve authentication and conversation locks remain in force.
+- Material proofs are registered only after Agent startup succeeds, using the process-reported identity. Messages racing a model reload wait or retry one refused task.
+- Explicit manager stop, sign-out and removal bound graceful drain, kill only owned children still running, observe their exit and report forced termination. Worker credential rejection reports needs setup without retries; retries refused during a manager drain resume afterwards.
+- Status refresh observes unfinished work only from a turn explicitly stopped by the user, including after history restoration.
+
+
 ## 0.10.1 - 2026-10-03
 
 - Teach the model to read the position and each Action's readiness, reason and waits in

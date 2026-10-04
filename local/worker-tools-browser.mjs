@@ -6,7 +6,7 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
   const node = (tag, text) => { const result = document.createElement(tag); if (text !== undefined) result.textContent = text; return result }
   let view = { tools: [], services: [], presets: [] }, status = {}, busy = false, registry, loadedDirectory = false
   let originalName, originalToolId, originalToolRevision, preparationId = '', probeId = '', downloadService
-  const blocked = () => busy || status.agent || status.worker
+  const blocked = () => busy
   $('back').href = '/?k=' + encodeURIComponent(key)
   function say(message, error = false) { $('result').textContent = message; $('result').classList.toggle('error', error) }
   async function api(path, body) {
@@ -21,12 +21,9 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
     $('add').inert = busy; $('inventory').inert = busy
     document.querySelectorAll('[data-panel]').forEach(button => { button.disabled = busy })
     document.querySelectorAll('[data-mutation]').forEach(button => { button.disabled = blocked() })
-    document.querySelectorAll('[data-control]').forEach(button => {
-      const role = button.dataset.control
-      button.disabled = busy || !status.roles?.includes(role) || (button.dataset.operation === 'start' ? status[role] : !status[role])
-    })
-    $('runtime-note').textContent = status.agent || status.worker ? 'Stop Agent and Worker before changing tool configuration. Browsing and inspecting tools remain available.'
-      : 'Changes apply when Worker starts. Agent permissions and actual Connection locks are managed in Console.'
+    $('worker-setting').checked = status.workerSetting?.enabled === true
+    $('worker-setting').disabled = busy
+    $('runtime-note').textContent = 'Changes reload the Worker automatically after running executions drain. Tool and resource permissions stay in Console.'
     registry?.updateButtons()
   }
   async function action(message, run) {
@@ -103,7 +100,7 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
   async function refresh() {
     const [tools, runtime] = await Promise.all([api('/worker-tools/state'), api('/status')])
     view = tools; status = runtime
-    $('runtime').textContent = 'Agent ' + (status.agent ? 'running' : 'stopped') + ' · Worker ' + (status.worker ? 'running' : 'stopped')
+    $('runtime').textContent = 'Worker: ' + (status.workerSetting?.state || 'offline') + (status.workerSetting?.failure ? ' · ' + status.workerSetting.failure : '')
     $('workspace-mode').value = view.workspaceMode; $('manifest-path').textContent = view.manifestFile; $('vault-path').textContent = view.vaultFile
     $('services').replaceChildren()
     for (const service of view.services) {
@@ -187,9 +184,9 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
     if (mode === 'mcp') resetService()
     if (mode === 'directory') { $('registry-source-name').readOnly = false; $('registry-source-name').value = '' }
   })
-  document.querySelectorAll('[data-control]').forEach(button => button.onclick = () => action('Updating Runtime process…', async () => {
-    const result = await api('/control', { role: button.dataset.control, operation: button.dataset.operation }); await refresh(); say(result.teaching || button.dataset.control + ': ' + result.state)
-  }))
+  $('worker-setting').onchange = () => action('Saving local tools setting…', async () => {
+    const result = await api('/worker-setting', { enabled: $('worker-setting').checked }); await refresh(); say(result.teaching)
+  })
   $('tool-search').oninput = renderTools; $('tool-origin').onchange = renderTools
   $('refresh').onclick = () => action('Refreshing configuration…', async () => { await refresh(); say('Configuration refreshed.') })
   $('adapter-template').onchange = () => { $('tool-definition').value = JSON.stringify(templates[$('adapter-template').value], null, 2) }

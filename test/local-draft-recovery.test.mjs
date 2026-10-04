@@ -123,6 +123,7 @@ test('two independently edited drafts are retained when the send acknowledgement
 
 test('export notices clear on switching and All activity keeps archived-send refusal',async()=>{
   const page=await setup(path=>path.startsWith('/conversation?')?{body:{ok:true,available:true,archived:true,events:[]}}:undefined)
+  await page.emit({src:'agent',type:'task-done',session:'alpha',id:'a',outcome:'conversation'})
   await choose(page,'alpha');await page.click('exportlog');assert.equal(page.$('exportnote').hidden,false)
   await choose(page,'');assert.equal(page.$('exportnote').hidden,true)
   await page.type('must not send to archive');await page.submit()

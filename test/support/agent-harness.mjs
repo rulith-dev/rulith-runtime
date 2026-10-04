@@ -445,7 +445,7 @@ export async function runAgent({
   refuseInitialize, replaceAfter, conflictBody, conflictSessionId,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools, refusePing, hideOperation,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
-  stopAfterServe = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000,
+  stopAfterServe = false, captureLocalEvents = false, chatLines = [], timeoutMs = 20_000, onServeReady,
 } = {}) {
   const board = gateway ?? defaultGateway({ queryIndependent: true })
   /** Every `tools/call` the Agent made, in order: { name, args, meta, id, sessionId }. */
@@ -610,7 +610,8 @@ export async function runAgent({
         response.writeHead(400, { 'content-type': 'application/json' })
         return void response.end(JSON.stringify({ error: { message: 'this endpoint does not support tools' } }))
       }
-      const answer = answerModel(modelRequests.length, input)
+      const answer = await answerModel(modelRequests.length, input, { request, response })
+      if (response.destroyed) return
       // A scripted `{ status }` models a provider outage rather than an answer.
       if (answer !== null && typeof answer === 'object' && Number.isInteger(answer.status)) {
         response.writeHead(answer.status, { 'content-type': 'application/json' })
@@ -1061,6 +1062,8 @@ export async function runAgent({
       await new Promise((ready) => setTimeout(ready, 25))
     }
     if (!/Task endpoint ready/.test(stdout)) throw new Error(`serve endpoint did not become ready:\n${stdout}\n${stderr}`)
+    await onServeReady?.({ url: `http://127.0.0.1:${env.RULITH_SERVE_PORT}`, key: String(env.RULITH_SERVE_KEY ?? ''),
+      modelRequests, toolCalls, localEvents, child })
     for (const [taskIndex, task] of serveTasks.entries()) {
       const resolvedTask = typeof task === 'function' ? task(serveResponses) : task
       const body = typeof resolvedTask === 'string' ? { text: resolvedTask } : resolvedTask

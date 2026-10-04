@@ -29,6 +29,7 @@ const instanceOf = (overrides = {}) => ({
   id: 'inst-000000000001', name: 'Research', mode: 'local_agent', directory: 'D:/instances/one',
   origin: '', accountId: '', agentId: '', agentName: '', connectionId: '', paired: false,
   open: false, roles: [], agent: false, worker: false, runningAgentId: '', pendingAgentId: '',
+  workerSetting: { enabled: false, visible: true, state: 'offline' },
   blocked: '', orphaned: null, legacyImport: null,
   hostPort: 0, servePort: 0, signedOutAt: '', createdAt: '', importedFrom: '', ...overrides,
 })
@@ -50,6 +51,42 @@ const openPage = (state) => runPageScript(managerPage, { respond: async () => ({
 /** Let promises the page started settle before inspecting what it did. */
 const settle = async () => { for (let i = 0; i < 4; i += 1) await new Promise((done) => setImmediate(done)) }
 
+test('Connection key replacement stays available while the Worker runs and preserves the exact identity scope', async () => {
+  const row = configuredOf('agent-alpha', { connectionId: 'conn-alpha', open: true, roles: ['agent', 'worker'],
+    agent: true, worker: true, workerSetting: { enabled: true, visible: true, state: 'online' } })
+  const state = stateOf({ device: linkedDevice(), instances: [row] })
+  const page = await runPageScript(managerPage, { respond: async () => ({ body: { ...state, ok: true,
+    teaching: 'Connection key saved. The Worker reloads automatically after running executions drain.' } }) })
+  await page.choose(row.id); await settle()
+  assert.equal(page.$('connection-key-open').disabled, false)
+  page.$('connection-key-open').onclick()
+  assert.equal(page.$('connection-key-save').disabled, false)
+  page.$('connection-key-value').value = 'replacement-fixture-key'
+  page.render({ ...state, instances: [{ ...row, worker: false }] })
+  assert.equal(page.$('connection-key-value').value, 'replacement-fixture-key', 'a Worker drain does not invalidate the identity')
+  await page.$('connection-key-save').onclick(); await settle()
+  const write = page.calls.find(call => call.path === '/manager/instances/connection-key')
+  assert.deepEqual(write.body, { instanceId: row.id, expectedOrigin: ORIGIN, expectedAccountId: ACCOUNT,
+    expectedAgentId: 'agent-alpha', expectedConnectionId: 'conn-alpha', key: 'replacement-fixture-key' })
+  assert.match(page.$('details-notice').textContent, /reloads automatically/)
+})
+
+test('Connection key form invalidates on account, Agent or Connection changes', async () => {
+  for (const changes of [{ account: { id: 'different-account' } }, { agentId: 'different-agent' }, { connectionId: 'different-connection' }]) {
+    const row = configuredOf('agent-alpha', { connectionId: 'conn-alpha', worker: true })
+    const state = stateOf({ device: linkedDevice(), instances: [row] })
+    const page = await openPage(state)
+    await page.choose(row.id); await settle()
+    page.$('connection-key-open').onclick(); page.$('connection-key-value').value = 'replacement-fixture-key'
+    page.render(changes.account ? { ...state, device: { ...state.device, account: changes.account } }
+      : { ...state, instances: [{ ...row, ...changes }] })
+    assert.equal(page.$('connection-key-value').value, '')
+    assert.equal(page.$('connection-key-save').disabled, true)
+    await page.$('connection-key-save').onclick(); await settle()
+    assert.equal(page.calls.some(call => call.path === '/manager/instances/connection-key'), false)
+  }
+})
+
 test('every element the script reaches for is declared in the markup it ships with', () => {
   const declared = new Set(declaredIds(managerPage))
   const missing = [...new Set(referencedIds(managerPage))].filter((id) => !declared.has(id))
@@ -58,16 +95,15 @@ test('every element the script reaches for is declared in the markup it ships wi
 })
 
 test('every route the page calls is a route the manager server answers', () => {
-  const paths = [...new Set([...managerPage.matchAll(/'(\/manager\/[a-z/]+)'/g)].map((match) => match[1]))]
+  const paths = [...new Set([...managerPage.matchAll(/'(\/manager\/[a-z/-]+)'/g)].map((match) => match[1]))]
   assert.ok(paths.length >= 12, 'the page must still drive the whole manager')
   for (const path of paths) {
     assert.ok(SERVER_SOURCE.includes(`'${path}'`), `the page calls ${path}, which the manager server does not answer`)
   }
   // Every operation an operator can only reach from this page is still reachable.
   for (const required of ['/manager/device/signout', '/manager/device/forget', '/manager/instances/pair',
-    '/manager/instances/pair/cancel', '/manager/instances/control',
-    '/manager/instances/model/copy', '/manager/instances/forget', '/manager/instances/open',
-    '/manager/instances/stop']) {
+    '/manager/instances/pair/cancel', '/manager/instances/worker-setting',
+    '/manager/instances/model/copy', '/manager/instances/forget', '/manager/instances/open']) {
     assert.ok(paths.includes(required), `${required} is unreachable from the page`)
   }
 })
@@ -104,10 +140,10 @@ test('the shell is the Agent list and the stage, and the third column belongs to
   // The Cases, the unresolved call, the frontier and the Worker activity of the conversation
   // are the Agent page's own projection; a panel here would be a second answer about them.
   assert.doesNotMatch(managerPage, /workerrail|class="workerhead"/, 'the generic Worker rail is retired')
-  for (const id of ['worker-pill', 'worker-toggle', 'tools-open', 'agent-toggle', 'details-open'])
+  for (const id of ['worker-pill', 'worker-setting', 'tools-open', 'details-open'])
     assert.ok(managerPage.includes('id="' + id + '"'), 'the per-Agent control ' + id + ' must still exist')
   const rail = managerPage.slice(managerPage.indexOf('<aside class="rail"'), managerPage.indexOf('<main class="center"'))
-  for (const id of ['railsel', 'agent-toggle', 'details-open', 'worker-toggle', 'tools-open', 'account-open'])
+  for (const id of ['railsel', 'details-open', 'worker-setting', 'tools-open', 'account-open'])
     assert.ok(rail.includes('id="' + id + '"'), id + ' belongs in the Agent rail, beside the Agent it acts on')
   assert.equal((managerPage.match(/role="dialog" aria-modal="true"/g) ?? []).length, 8,
     'account, add, connect, Connection key, model, settings, document assistant and the settings page are dialogs, not a homepage')
@@ -395,49 +431,39 @@ test('no selectable cloud Agent means no enabled attachment submit', async () =>
   assert.equal(page.$('pair').disabled, true)
 })
 
-test('a role is started and stopped by itself, for the Agent chosen when the button was pressed', async () => {
-  const rows = [
-    instanceOf({ id: 'a', name: 'A', paired: true, open: true, hostPort: 9001, roles: ['agent', 'worker'] }),
-    instanceOf({ id: 'b', name: 'B', paired: true, open: true, hostPort: 9002, roles: ['agent', 'worker'] }),
-  ]
+test('the Worker setting belongs to the selected Agent and never controls its Agent process', async () => {
+  const rows = ['a', 'b'].map(id => instanceOf({ id, paired: true, open: true, hostPort: id === 'a' ? 9001 : 9002, roles: ['agent', 'worker'] }))
   const page = await runPageScript(managerPage, { respond: async (path, request) => {
-    if (path === '/manager/instances/open') return { body: { ...stateOf({ instances: rows }), url: 'http://127.0.0.1:9001/?k=k', hostPort: 9001 } }
-    if (path === '/manager/instances/control') {
-      const row = rows.find((entry) => entry.id === request.body.instanceId)
-      row[request.body.role] = request.body.operation === 'start'
-      return { body: { ...stateOf({ instances: rows }), control: { state: 'ready' } } }
+    if (path === '/manager/instances/worker-setting') {
+      const row = rows.find(r => r.id === request.body.instanceId)
+      row.workerSetting = { enabled: request.body.enabled, visible: true, state: request.body.enabled ? 'online' : 'offline' }
     }
-    return { body: stateOf({ instances: rows }) }
+    return { body: { ...stateOf({ instances: rows }), url: 'http://127.0.0.1:9001/?k=k', hostPort: 9001 } }
   } })
   await page.choose('a'); await settle()
-  await page.$('worker-toggle').onclick(); await settle()
-  const control = page.calls.filter((call) => call.path === '/manager/instances/control')
-  assert.deepEqual(control[0].body, { instanceId: 'a', role: 'worker', operation: 'start' })
-  assert.equal(page.$('worker-pill').textContent, 'Running')
-  assert.equal(page.$('worker-toggle').textContent, 'Stop Worker')
-  assert.equal(page.$('agent-toggle').textContent, 'Start Agent', 'controlling one role must not touch the other')
-
-  await page.$('agent-toggle').onclick(); await settle()
-  assert.deepEqual(page.calls.filter((call) => call.path === '/manager/instances/control')[1].body,
-    { instanceId: 'a', role: 'agent', operation: 'start' })
-  assert.equal(page.$('notice').textContent, '', 'a role that started needs no commentary')
+  page.$('worker-setting').checked = true
+  await page.$('worker-setting').onchange(); await settle()
+  assert.deepEqual(page.calls.find(c => c.path === '/manager/instances/worker-setting').body, { instanceId: 'a', enabled: true })
+  assert.equal(page.$('worker-pill').textContent, 'online')
+  assert.equal(rows[0].agent, false)
+  assert.equal(page.calls.some(c => c.path === '/manager/instances/control'), false)
+  assert.equal(page.$('agent-toggle'), undefined)
+  await page.choose('b'); await settle()
+  assert.equal(page.$('worker-setting').checked, false)
 })
 
-test('a role that did not stop is not reported as stopped', async () => {
-  const rows = [instanceOf({ id: 'a', name: 'A', paired: true, open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })]
-  const page = await runPageScript(managerPage, { respond: async (path) => (path === '/manager/instances/control'
-    // The request succeeded; the process did not exit, and the state says so.
-    ? { body: { ...stateOf({ instances: rows }), control: { state: 'stopping', teaching: 'It was sent the stop signal.' } } }
-    : path === '/manager/instances/open'
-      ? { body: { ...stateOf({ instances: rows }), url: 'http://127.0.0.1:9001/?k=k', hostPort: 9001 } }
-      : { body: stateOf({ instances: rows }) }) })
+test('Worker availability and drain teaching come from the saved setting rather than process liveness', async () => {
+  const row = instanceOf({ id: 'a', paired: true, worker: true, workerSetting: { enabled: true, visible: true, state: 'online' } })
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/instances/worker-setting') row.workerSetting = { enabled: false, visible: true, state: 'offline', reloading: true }
+    return { body: { ...stateOf({ instances: [row] }), url: 'http://127.0.0.1:9001/?k=k', hostPort: 9001, teaching: 'The Worker stops after running executions drain.' } }
+  } })
   await page.choose('a'); await settle()
-  await page.$('worker-toggle').onclick(); await settle()
-  // In the Worker's own panel: on a phone the centre's notice is behind that panel's scrim.
-  assert.match(page.$('worker-notice').textContent, /asked to stop and has not exited yet/)
-  assert.match(page.$('worker-notice').textContent, /sent the stop signal/, 'the host\'s own teaching is carried, not replaced')
-  assert.equal(page.$('notice').textContent, '', 'the Worker does not write into the centre')
-  assert.equal(page.$('worker-pill').textContent, 'Running', 'the pill follows the process, not the request')
+  page.$('worker-setting').checked = false
+  await page.$('worker-setting').onchange(); await settle()
+  assert.equal(page.$('worker-pill').textContent, 'offline')
+  assert.match(page.$('worker-notice').textContent, /executions drain/)
+  assert.equal(page.$('notice').textContent, '')
 })
 
 test('a role this computer does not run is described, not offered', async () => {
@@ -445,9 +471,9 @@ test('a role this computer does not run is described, not offered', async () => 
     instanceOf({ id: 'a', name: 'Desk', mode: 'existing_client', paired: true, connectionId: 'conn-1' }),
   ] }))
   await page.choose('a')
-  assert.equal(page.$('agent-toggle').hidden, true, 'an Agent that runs elsewhere has no Start here')
+  assert.equal(page.$('agent-toggle'), undefined, 'Agent lifecycle has no button')
   assert.equal(page.$('agent-pill').textContent, 'Worker only')
-  assert.equal(page.$('worker-toggle').hidden, false, 'the Worker is what this computer does run')
+  assert.equal(page.$('worker-setting-label').hidden, false, 'existing-client mode keeps the local-tools setting')
   assert.match(page.$('center-sub').textContent, /runs elsewhere|does the work/)
 })
 
@@ -457,8 +483,7 @@ test('a blocked Agent says why, and its controls stay unavailable', async () => 
       blocked: 'Agent Alpha is no longer part of what this device is authorized for.' }),
   ] }))
   await page.choose('a')
-  assert.equal(page.$('agent-toggle').disabled, true)
-  assert.equal(page.$('worker-toggle').disabled, true)
+  assert.equal(page.$('worker-setting').disabled, true)
   assert.match(page.$('worker-note').textContent, /no longer part of what this device/)
   page.openDialog('dlg-details')
   assert.equal(page.$('detail-attention').hidden, false)
@@ -472,7 +497,7 @@ test('processes from a manager that is gone are named, not summarised', async ()
   await page.choose('a')
   page.openDialog('dlg-details')
   assert.match(page.$('detail-attention').textContent, /agent pid 777/)
-  assert.equal(page.$('agent-toggle').disabled, true, 'starting beside a process nobody owns is how two Agents share one identity')
+  assert.equal(page.$('worker-setting').disabled, true, 'an unowned process keeps lifecycle changes unavailable')
 })
 
 test('connecting a cloud Agent offers the permitted ones, marks the taken ones, and needs explicit consent to replace', async () => {
@@ -837,7 +862,7 @@ test('an interrupted attachment offers to finish itself or to be given up', asyn
   assert.deepEqual(page.calls.find((call) => call.path === '/manager/instances/pair/cancel').body, { instanceId: 'a' })
 })
 
-test('model settings can be taken from another Agent, never from itself, and never while one runs', async () => {
+test('model settings can be copied from another Agent while running and never from itself', async () => {
   const rows = [
     instanceOf({ id: 'a', name: 'Configured', paired: true, agentId: 'agent-alpha' }),
     instanceOf({ id: 'b', name: 'Fresh', paired: true, agentId: 'agent-beta' }),
@@ -852,9 +877,9 @@ test('model settings can be taken from another Agent, never from itself, and nev
   assert.equal(page.$('model-from').innerHTML.includes('>Configured<'), false, 'an Agent cannot take its own settings')
   assert.equal(page.$('model-from').innerHTML.includes('value="c"'), false, 'a Worker-only profile has no model of its own')
 
-  // Either role running is enough: the file is read by both.
+  // Both roles reload their new configuration automatically.
   page.render(stateOf({ device: linkedDevice(), instances: rows.map((row) => (row.id === 'a' ? { ...row, open: true, roles: ['agent', 'worker'], worker: true } : row)) }))
-  assert.equal(page.$('model-copy').disabled, true)
+  assert.equal(page.$('model-copy').disabled, false)
 
   await page.choose('c')
   assert.equal(page.$('model-row').hidden, true)
@@ -929,12 +954,12 @@ test('a second press of a control that is still working says so', async () => {
   const rows = [instanceOf({ id: 'a', name: 'A', paired: true, open: true, hostPort: 9001, roles: ['agent', 'worker'] })]
   let release
   const page = await runPageScript(managerPage, { respond: async (path) => {
-    if (path === '/manager/instances/control') { await new Promise((done) => { release = done }) }
+    if (path === '/manager/instances/worker-setting') { await new Promise((done) => { release = done }) }
     return { body: { ...stateOf({ instances: rows }), url: 'http://127.0.0.1:9001/?k=k', hostPort: 9001 } }
   } })
   await page.choose('a'); await settle()
-  const first = page.$('worker-toggle').onclick(); await settle()
-  page.$('worker-toggle').onclick()
+  const first = page.$('worker-setting').onchange(); await settle()
+  page.$('worker-setting').onchange()
   assert.match(page.$('worker-notice').textContent, /still working/, 'a control that quietly does nothing is a control nobody trusts')
   release(); await first; await settle()
 })
@@ -995,15 +1020,14 @@ test('a manager that stops answering is said so, and nothing may be changed from
   await settle()
   assert.equal(page.$('connection').hidden, false)
   assert.match(page.$('connection').textContent, /did not answer/)
-  assert.equal(page.$('worker-toggle').disabled, true, 'a write decided from a remembered picture is the one mistake this page can make')
-  assert.equal(page.$('agent-toggle').disabled, true)
+  assert.equal(page.$('worker-setting').disabled, true, 'a write decided from a remembered picture is the one mistake this page can make')
   assert.equal(page.$('setup-start').disabled, true, 'setting an Agent up allocates a profile and mints a credential')
   assert.equal(page.$('setup-mode').disabled, true)
 
   answering = true
   await page.api('/manager/state'); await settle()
   assert.equal(page.$('connection').hidden, true, 'a manager that came back is not still reported as gone')
-  assert.equal(page.$('worker-toggle').disabled, false)
+  assert.equal(page.$('worker-setting').disabled, false)
   assert.equal(page.$('stage-action').disabled, false, 'recovery applies to the stage immediately')
 })
 
@@ -1220,7 +1244,7 @@ test('a slow action on one Agent blocks neither the other Agents nor choosing be
   ]
   let release
   const page = await runPageScript(managerPage, { respond: async (path, request) => {
-    if (path === '/manager/instances/control') { await new Promise((done) => { release = done }); return { body: stateOf({ instances: rows }) } }
+    if (path === '/manager/instances/worker-setting') { await new Promise((done) => { release = done }); return { body: stateOf({ instances: rows }) } }
     if (path === '/manager/instances/open') {
       const id = request.body.instanceId
       return { body: { ...stateOf({ instances: rows }), url: `http://127.0.0.1:900${id === 'a' ? 1 : 2}/?k=k`, hostPort: id === 'a' ? 9001 : 9002 } }
@@ -1228,18 +1252,17 @@ test('a slow action on one Agent blocks neither the other Agents nor choosing be
     return { body: stateOf({ instances: rows }) }
   } })
   await page.choose('a'); await settle()
-  const pending = page.$('worker-toggle').onclick()
+  const pending = page.$('worker-setting').onchange()
   await settle()
-  assert.equal(page.$('worker-toggle').disabled, true, 'the control that is working says so')
+  assert.equal(page.$('worker-setting').disabled, true, 'the control that is working says so')
 
   await page.choose('b'); await settle()
   assert.equal(page.$('center-title').textContent, 'B', 'a slow action elsewhere must not hold the workbench still')
-  assert.equal(page.$('worker-toggle').disabled, false, 'B\'s Worker has nothing in flight')
-  assert.equal(page.$('agent-toggle').disabled, false)
+  assert.equal(page.$('worker-setting').disabled, false, 'B\'s Worker has nothing in flight')
 
   release({}); await pending; await settle()
   await page.choose('a'); await settle()
-  assert.equal(page.$('worker-toggle').disabled, false)
+  assert.equal(page.$('worker-setting').disabled, false)
 })
 
 test('a refreshed state keeps what is being typed, chosen, opened and focused', async () => {
@@ -1281,7 +1304,7 @@ test('a dialog can be closed with the keyboard, and gives focus back where it ca
   assert.equal(page.document.activeElement.id, 'account-open', 'focus comes back to what opened it')
 })
 
-test('removing an Agent says where its files stayed, and is refused while it runs', async () => {
+test('removing an Agent drains its owned roles and says where its files stayed', async () => {
   const rows = [instanceOf({ id: 'a', name: 'A', paired: true, open: true, hostPort: 9001, roles: ['agent', 'worker'], worker: true })]
   const page = await runPageScript(managerPage, { respond: async (path) => (path === '/manager/instances/forget'
     ? { body: { ...stateOf({ instances: [] }), directory: 'D:/instances/one' } }
@@ -1290,7 +1313,7 @@ test('removing an Agent says where its files stayed, and is refused while it run
       : { body: stateOf({ instances: rows }) }) })
   await page.choose('a'); await settle()
   page.openDialog('dlg-details')
-  assert.equal(page.$('forget').disabled, true, 'removing an Agent while it works would leave a process nobody lists')
+  assert.equal(page.$('forget').disabled, false, 'the manager drains owned roles before removing the profile')
 
   rows[0].worker = false
   page.render(stateOf({ instances: rows }))
@@ -1423,69 +1446,47 @@ test('reopening a saved document check shows its durable receipt and never offer
   assert.match(page.$('authoring-notice').textContent, /changed or been removed/)
 })
 
-test('a late readiness receipt clears only the matching unconfirmed-start notice', async () => {
-  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], ready: { agent: false, worker: false } })
-  const snapshot = () => stateOf({ device: linkedDevice(), instances: [row] })
-  const page = await runPageScript(managerPage, { respond: async path => {
-    if (path === '/manager/instances/control') {
-      row.agent = true
-      return { body: { ...snapshot(), ok: false, state: 'unconfirmed', teaching: 'Agent initialization is not yet confirmed.' } }
-    }
-    return { body: snapshot() }
-  } })
+test('an Agent without local tools shows no Worker setting or status', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', model: { ready: true }, workerSetting: { enabled: false, visible: false, state: 'offline' } })
+  const page = await openPage(stateOf({ device: linkedDevice(), instances: [row] }))
   await page.choose('a'); await settle()
-  await page.$('agent-toggle').onclick(); await settle()
-  assert.match(page.$('worker-notice').textContent, /not yet confirmed/)
-  page.render(snapshot())
-  assert.match(page.$('worker-notice').textContent, /not yet confirmed/, 'process liveness is not readiness')
-  row.ready.agent = true
-  page.render(snapshot())
-  assert.equal(page.$('worker-notice').textContent, '')
+  assert.equal(page.$('worker-setting-label').hidden, true)
+  assert.equal(page.$('worker-pill').hidden, true)
+  assert.equal(page.$('worker-note').hidden, true)
+  assert.equal(page.$('agent-readiness').hidden, true)
+  assert.doesNotMatch(managerPage, /id="(?:agent-toggle|worker-toggle|start-all|stop-all|model-save-start)"/)
 })
 
-test('the selected Agent offers the current next step without treating live processes as ready', async () => {
-  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], model: { ready: false }, ready: { agent: false, worker: false } })
+test('the selected Agent asks for model setup then leaves startup to its first message', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', model: { ready: false } })
   const snapshot = () => stateOf({ device: linkedDevice(), instances: [row] })
   const page = await openPage(snapshot())
   await page.choose('a'); await settle()
   assert.equal(page.$('agent-readiness-action').textContent, 'Set model')
   row.model.ready = true; page.render(snapshot())
-  assert.equal(page.$('agent-readiness-action').textContent, 'Start Agent')
-  row.agent = true; page.render(snapshot())
-  assert.equal(page.$('agent-pill').textContent, 'Agent starting')
-  assert.match(page.$('agent-readiness-copy').textContent, /initialization has not been confirmed/)
-  row.ready.agent = true; page.render(snapshot())
-  assert.equal(page.$('agent-readiness-action').textContent, 'Start Worker')
-  assert.match(page.$('agent-readiness-copy').textContent, /Chat is ready/)
-  row.worker = true; page.render(snapshot())
-  assert.equal(page.$('worker-pill').textContent, 'Starting')
-  assert.match(page.$('agent-readiness-copy').textContent, /initialization has not been confirmed/)
-  row.ready.worker = true; page.render(snapshot())
   assert.equal(page.$('agent-readiness').hidden, true)
+  row.agentReloading = true; page.render(snapshot())
+  assert.match(page.$('agent-readiness-copy').textContent, /between turns/)
+  assert.equal(page.$('agent-readiness-action').disabled, true)
   assert.equal(page.$('agent-runtime-link').href, ORIGIN + '/console/#/agents/agent-alpha?tab=runtime')
-  row.pendingAgentId = 'agent-alpha'; row.blocked = 'not attached'; page.render(snapshot())
+  row.agentReloading = false; row.pendingAgentId = 'agent-alpha'; row.blocked = 'not attached'; page.render(snapshot())
   assert.equal(page.$('agent-readiness-action').textContent, 'Continue setup')
   await page.$('agent-readiness-action').onclick()
   assert.equal(page.$('dlg-attach').hidden, false)
 })
 
-test('a Worker restart for a changed model service is the next step only for an Agent with attachments', async () => {
-  // Saving model settings while the Worker ran: only reads of attachments use the model service
-  // a Worker started with. The owner used none, and was told to stop the Worker anyway.
-  const row = configuredOf('agent-alpha', { id: 'a', open: true, hostPort: 9001, roles: ['agent', 'worker'], agent: true, worker: true,
-    ready: { agent: true, worker: true }, model: { ready: true, workerRestartRequired: true, workerRestartUrgent: false } })
+test('automatic Worker reload is explained while its executions drain', async () => {
+  const row = configuredOf('agent-alpha', { id: 'a', agent: true, worker: true, model: { ready: true },
+    workerSetting: { enabled: true, visible: true, state: 'offline', reloading: true } })
   const snapshot = () => stateOf({ device: linkedDevice(), instances: [row] })
   const page = await openPage(snapshot())
   await page.choose('a'); await settle()
-  assert.equal(page.$('agent-readiness').hidden, true, 'with no attachments nothing is put ahead of using the Agent')
-  assert.match(page.$('worker-note').textContent, /The model service changed since it started\. Stop and start this Worker before using new attachments\./)
-  assert.equal(page.$('worker-pill').textContent, 'Running')
-
-  row.model.workerRestartUrgent = true; page.render(snapshot())
-  assert.equal(page.$('agent-readiness').hidden, false)
-  assert.equal(page.$('agent-readiness-copy').textContent, 'The model service changed. Stop this Worker, then start it before using new attachments.')
-  assert.equal(page.$('agent-readiness-action').textContent, 'Stop Worker')
-  assert.equal(page.$('worker-note').textContent, 'Model service changed. Stop and start this Worker before using new attachments.')
+  assert.equal(page.$('agent-readiness').hidden, true)
+  assert.match(page.$('worker-note').textContent, /Reloading after running executions drain/)
+  assert.equal(page.$('worker-pill').textContent, 'offline')
+  row.workerSetting = { enabled: true, visible: true, state: 'online' }; page.render(snapshot())
+  assert.equal(page.$('worker-pill').textContent, 'online')
+  assert.doesNotMatch(page.$('worker-note').textContent, /Stop and start/)
 })
 
 test('sync errors and incomplete withdrawal stops have visible recovery without offering the old account link', async () => {
@@ -1503,26 +1504,22 @@ test('sync errors and incomplete withdrawal stops have visible recovery without 
   assert.equal(Boolean(page.$('agent-runtime-link').getAttribute('href')), false)
 })
 
-test('identical slow-start messages remain scoped to their Agent across switching and late readiness', async () => {
-  const rows = ['a','b'].map(id => configuredOf('agent-'+id, { id, name:id.toUpperCase(), agentName:id.toUpperCase(), open:true, hostPort:9001, roles:['agent','worker'], ready:{agent:false,worker:false} }))
-  const snapshot = () => stateOf({device:linkedDevice(rows.map(r=>({id:r.agentId,name:r.name}))),instances:rows})
-  const page = await runPageScript(managerPage,{respond:async (path,request)=>{
-    if(path==='/manager/instances/control'){
-      rows.find(r=>r.id===request.body.instanceId).agent=true
-      return {body:{...snapshot(),ok:false,state:'unconfirmed',teaching:'Same slow start message'}}
-    }
-    return {body:snapshot()}
-  }})
-  await page.choose('a'); await settle(); await page.$('agent-toggle').onclick(); await settle()
-  assert.match(page.$('worker-notice').textContent,/A · agent/)
+test('a late Worker-setting answer never writes into another Agent panel', async () => {
+  const rows = ['a', 'b'].map(id => configuredOf('agent-' + id, { id, name: id.toUpperCase() }))
+  const snapshot = () => stateOf({ device: linkedDevice(rows.map(r => ({ id: r.agentId, name: r.name }))), instances: rows })
+  let release
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/instances/worker-setting') await new Promise(done => { release = done })
+    return { body: { ...snapshot(), teaching: 'A local tools enabled.' } }
+  } })
+  await page.choose('a'); await settle()
+  page.$('worker-setting').checked = true
+  const pending = page.$('worker-setting').onchange(); await settle()
   await page.choose('b'); await settle()
-  assert.equal(page.$('worker-notice').textContent,'','A warning does not describe B')
-  await page.$('agent-toggle').onclick(); await settle()
-  assert.match(page.$('worker-notice').textContent,/B · agent/)
-  rows[0].ready.agent=true; page.render(snapshot())
-  assert.match(page.$('worker-notice').textContent,/B · agent/,'A becoming ready does not silence B')
-  rows[1].ready.agent=true; page.render(snapshot())
-  assert.equal(page.$('worker-notice').textContent,'')
+  release(); await pending; await settle()
+  assert.equal(page.$('worker-notice').textContent, '')
+  assert.equal(page.$('worker-setting').checked, false)
+  assert.equal(page.calls.find(c => c.path === '/manager/instances/worker-setting').body.instanceId, 'a')
 })
 
 test('document tools link to ordinary Console configuration without a second preparation call', async () => {

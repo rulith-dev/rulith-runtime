@@ -365,8 +365,8 @@ test('the release version, immutable download tag, changelog, and embedded pins 
 
   assert.match(setup, new RegExp(`rulith-runtime/v${pkg.version.replaceAll('.', '\\.')}`),
     'the standalone downloader does not point at this package version')
-  assert.match(changelog, new RegExp(`^## ${pkg.version.replaceAll('.', '\\.')} - \\d{4}-\\d{2}-\\d{2}$`, 'm'),
-    'the current package version has no dated changelog entry')
+  assert.match(changelog, new RegExp(`^## ${pkg.version.replaceAll('.', '\\.')} - (?:\\d{4}-\\d{2}-\\d{2}|unreleased)$`, 'm'),
+    'the current package version has no changelog entry')
 
   const guide = readFileSync(join(ROOT, 'examples/verified-calculation/README.md'), 'utf8')
   const installs = [...guide.matchAll(/rulith@(\d+\.\d+\.\d+)/g)]

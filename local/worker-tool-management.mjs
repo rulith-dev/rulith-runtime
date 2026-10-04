@@ -65,7 +65,7 @@ export function createWorkerToolManagement({ mcpServices, workerContext, setWork
       manifest.tools = Object.fromEntries([...Object.entries(manifest.tools).filter(([key]) => key !== id), [id, definition]])
       validateManifest(state, manifest)
       atomicJson(state.originalTools, manifest)
-      return { teaching: 'Tool definition saved locally. Start Worker to load it, then review and lock its contract in Console.' }
+      return { teaching: 'Tool definition saved locally. The enabled Worker reloads after execution drain; review and lock its contract in Console.' }
     },
     remove({ id, revision }) {
       const state = checked(revision), manifest = structuredClone(state.originalManifest)
@@ -80,7 +80,7 @@ export function createWorkerToolManagement({ mcpServices, workerContext, setWork
       const state = checked(revision)
       validateManifest(state, state.originalManifest, mode)
       setWorkspaceMode(mode)
-      return { teaching: 'Workspace tool mode saved. Start Worker to load it; this does not grant the Agent permission.' }
+      return { teaching: 'Workspace tool mode saved. The enabled Worker reloads after execution drain; this does not grant the Agent permission.' }
     },
   }
 }

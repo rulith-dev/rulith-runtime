@@ -141,11 +141,10 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
   assert.notEqual(alpha.entry.base, beta.entry.base, 'two instances must not share a loopback address')
   assert.notEqual(alpha.entry.key, beta.entry.key, 'two instances must not share a local access key')
 
-  for (const instance of [alpha, beta]) {
-    const start = await call('/manager/instances/start', { instanceId: instance.id })
-    assert.equal(start.status, 200, JSON.stringify(start.body))
-    assert.equal(start.body.started, true, JSON.stringify(start.body.results))
-  }
+  assert.equal(manager.instances.hosts.get(alpha.id).host.status().agent, false)
+  assert.equal(manager.instances.hosts.get(beta.id).host.status().agent, false)
+  const submitted = await localCall(alpha.entry, '/cases', { text: 'Open a Case for alpha.', caseType: 'exploration' })
+  assert.equal(submitted.status, 202, JSON.stringify(submitted.body))
 
   // 3 · Each instance drives its own Board, and looking at the other one changes nothing.
   const before = {
@@ -154,10 +153,7 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
     agentId: manager.instances.hosts.get(alpha.id).host.agentId,
   }
   assert.equal(before.agentId, 'agent-alpha', 'the running child reports the identity it was paired with')
-  assert.equal(manager.instances.hosts.get(beta.id).host.agentId, 'agent-beta')
-
-  const submitted = await localCall(alpha.entry, '/cases', { text: 'Open a Case for alpha.', caseType: 'exploration' })
-  assert.equal(submitted.status, 202, JSON.stringify(submitted.body))
+  assert.equal(manager.instances.hosts.get(beta.id).host.status().agent, false)
 
   // Switch views while that work is in flight. This is the gesture that must be inert.
   await call('/manager/instances/open', { instanceId: beta.id, page: '/' })
@@ -177,6 +173,7 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
 
   const secondTask = await localCall(beta.entry, '/cases', { text: 'Open a Case for beta.', caseType: 'exploration' })
   assert.equal(secondTask.status, 202, JSON.stringify(secondTask.body))
+  assert.equal(manager.instances.hosts.get(beta.id).host.agentId, 'agent-beta')
   await taskDone(manager, beta.id, secondTask.body.id)
   for (const [agentId, instance, expected, excluded] of [
     ['agent-alpha', alpha, 'Open a Case for alpha.', 'Open a Case for beta.'],

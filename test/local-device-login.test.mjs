@@ -13,6 +13,7 @@
  *   · sign-out is stop, then revoke, then forget, and a step that did not happen is reported
  *     as incomplete rather than as a sign-out.
  */
+import { startFixtureInstance } from './support/local-role-controls.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Socket } from 'node:net'
@@ -572,7 +573,7 @@ test('a device record that cannot be read is reported, not overwritten, and can 
     assert.equal(readFileSync(file, 'utf8'), damaged, 'a damaged device record must never be repaired by overwriting it')
 
     // Nothing runs under a grant that cannot be read.
-    await assert.rejects(manager.instances.start(instance.id), /cannot be read/)
+    await assert.rejects(startFixtureInstance(manager.instances, instance.id), /cannot be read/)
     // Signing in over it is refused too: that would abandon a grant that may still be live.
     const over = await call('/manager/device/start', { consoleUrl: gateway.origin, name: 'Test computer' })
     assert.equal(over.status, 400)

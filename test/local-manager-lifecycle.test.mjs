@@ -20,6 +20,7 @@
  * The workbench arms use real separate processes, because a claim that is only ever contended
  * inside one process is not a claim that has been tested.
  */
+import { startFixtureInstance, controlFixtureInstance } from './support/local-role-controls.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
@@ -311,18 +312,18 @@ async function addHistoryInstance(manager, name) {
 test('a conversation lock a stopped Agent left behind does not stop the next Agent, when its pid is now the Worker\'s or the workbench\'s', async (t) => {
   await withManager(t, async ({ manager }) => {
     const instance = await addHistoryInstance(manager, 'History')
-    assert.equal((await manager.instances.start(instance.id)).started, true)
+    assert.equal((await startFixtureInstance(manager.instances, instance.id)).started, true)
     assert.equal(JSON.parse(readFileSync(instance.lockFile, 'utf8')).pid, instance.pidOf('agent'), 'the Agent holds its history')
 
     for (const [holder, pid, script] of [['Worker', instance.pidOf('worker'), ECHO], ['workbench', process.pid, process.argv[1]]]) {
-      assert.equal((await manager.instances.control(instance.id, { role: 'agent', operation: 'stop' })).stopped, true, holder)
+      assert.equal((await controlFixtureInstance(manager.instances, instance.id, { role: 'agent', operation: 'stop' })).stopped, true, holder)
       // What a stopped Agent leaves on Windows, where every stop ends it outright: its lock, naming a
       // pid that Windows has since given to the Worker — **Prepare sample and start Worker** does
       // exactly that — or to this workbench. Stamped as the process now holding the pid would stamp
       // itself, so that nothing inside the next Agent tells this lock from one really held.
       writeFileSync(instance.lockFile, JSON.stringify(ticketFor(pid, { id: `left-behind-${holder}`,
         ...processStamp(pid, { script }), session: 'a-stopped-agent' })))
-      const started = await manager.instances.control(instance.id, { role: 'agent', operation: 'start' })
+      const started = await controlFixtureInstance(manager.instances, instance.id, { role: 'agent', operation: 'start' })
       assert.equal(started.started, true, `${holder}: ${JSON.stringify(started)}`)
       assert.equal(JSON.parse(readFileSync(instance.lockFile, 'utf8')).pid, instance.pidOf('agent'), `${holder}: the new Agent holds its history`)
     }
@@ -338,7 +339,7 @@ test('a conversation lock another running process holds is left in place, and th
     writeFileSync(instance.lockFile, JSON.stringify(held))
 
     // The host neither refuses nor waits: it leaves the lock and starts the Agent, which refuses.
-    const started = await manager.instances.control(instance.id, { role: 'agent', operation: 'start' })
+    const started = await controlFixtureInstance(manager.instances, instance.id, { role: 'agent', operation: 'start' })
     assert.equal(started.started, false, JSON.stringify(started))
     assert.match(started.teaching, /exited during startup/)
     assert.deepEqual(JSON.parse(readFileSync(instance.lockFile, 'utf8')), held, 'a lock that may still be held is left alone')
@@ -370,18 +371,16 @@ test('a reopened host has a new public generation independent of its browser cre
   })
 })
 
-test('a start held across sign-out finishes first, and is then stopped before anything is revoked', async (t) => {
+test('a Worker setting admitted before sign-out is saved and any child is observed stopped before revocation', async (t) => {
   await withManager(t, async ({ manager, gateway }) => {
     // Slow to stop, so "did the sign-out wait for it" has an observable answer.
     const instance = await addInstance(manager, 'Slow', { agentId: 'agent-alpha', stopDelayMs: 600 })
 
-    // The start is admitted; the sign-out arrives while it is still running.
-    const starting = manager.instances.start(instance.id)
-    await new Promise((done) => setTimeout(done, 30))
+    const setting = manager.instances.setWorkerEnabled(instance.id, true)
+    while (!manager.instances.hosts.has(instance.id)) await new Promise(done => setTimeout(done, 5))
     const out = manager.instances.signOut()
 
-    const started = await starting
-    assert.equal(started.started, true, JSON.stringify(started.results))
+    assert.equal((await setting).enabled, true)
     const result = await out
 
     // Either the sign-out waited and stopped it, or it refused — never "signed out" with the
@@ -389,7 +388,6 @@ test('a start held across sign-out finishes first, and is then stopped before an
     assert.equal(result.state, 'signed_out', JSON.stringify(result))
     const revoked = gateway.requests.filter((row) => row.path === '/local-devices/revoke')
     assert.equal(revoked.length, 1)
-    for (const child of started.results) assert.equal(child.ok, true)
     const row = manager.registry.instance(instance.id)
     assert.equal(row.runtime, undefined, 'nothing owned survives a completed sign-out')
     assert.equal(manager.instances.hosts.size, 0)
@@ -400,7 +398,7 @@ test('a start held across sign-out finishes first, and is then stopped before an
 test('nothing new is admitted while signing out, and the workbench is usable again afterwards', async (t) => {
   await withManager(t, async ({ manager, gateway }) => {
     const instance = await addInstance(manager, 'Draining', { agentId: 'agent-alpha', stopDelayMs: 600 })
-    await manager.instances.start(instance.id)
+    await startFixtureInstance(manager.instances, instance.id)
 
     const out = manager.instances.signOut()
     await new Promise((done) => setTimeout(done, 30))
@@ -410,8 +408,8 @@ test('nothing new is admitted while signing out, and the workbench is usable aga
       ['clear device', () => manager.instances.forgetDevice()],
       ['create', () => manager.instances.create({ name: 'New', mode: 'local_agent' })],
       ['open', () => manager.instances.open(instance.id)],
-      ['start', () => manager.instances.start(instance.id)],
-      ['scoped start', () => manager.instances.control(instance.id, { role: 'agent', operation: 'start' })],
+      ['start', () => startFixtureInstance(manager.instances, instance.id)],
+      ['scoped start', () => controlFixtureInstance(manager.instances, instance.id, { role: 'agent', operation: 'start' })],
       ['pair', () => manager.instances.pair(instance.id, { agentId: 'agent-beta' })],
       ['model copy', () => manager.instances.copyModelSettings(instance.id, instance.id)],
       ['device sign-in', () => manager.device.start({ consoleUrl: gateway.origin, name: 'x' })],
@@ -432,14 +430,17 @@ test('nothing new is admitted while signing out, and the workbench is usable aga
 test('an incomplete sign-out leaves the workbench ready, not wedged', async (t) => {
   await withManager(t, async ({ manager, gateway }) => {
     const instance = await addInstance(manager, 'Stubborn', { agentId: 'agent-alpha', stopDelayMs: 9000 })
-    await manager.instances.start(instance.id)
-    await manager.instances.control(instance.id, { role: 'agent', operation: 'stop' }).catch(() => undefined)
-
-    // A child that will not have exited inside the observation window: the sign-out reports
-    // incomplete rather than revoking.
+    await startFixtureInstance(manager.instances, instance.id)
+    const children = manager.instances.hosts.get(instance.id).host.children()
+    gateway.failNext('/local-devices/revoke')
+    // Slow owned roles are killed after bounded drain; an unconfirmed revoke still
+    // preserves the signed-in device and leaves the manager usable for a retry.
     const result = await manager.instances.signOut()
     assert.equal(result.state, 'incomplete')
-    assert.equal(gateway.requests.some((row) => row.path === '/local-devices/revoke'), false)
+    assert.equal(result.step, 'revoke')
+    assert.ok(result.stops[0].results.every(row => row.forced && row.state === 'stopped'))
+    assert.ok(children.every(child => !processAlive(child.pid)))
+    assert.equal(gateway.requests.filter((row) => row.path === '/local-devices/revoke').length, 1)
     assert.equal(manager.device.status().state, 'linked')
 
     // And the manager still works. A phase that stuck here would make an installation
@@ -447,11 +448,77 @@ test('an incomplete sign-out leaves the workbench ready, not wedged', async (t) 
     assert.equal(manager.instances.phase, 'ready')
     assert.ok((await manager.instances.create({ name: 'Still usable', mode: 'local_agent' })).id)
 
-    const workerPid = manager.registry.instance(instance.id).runtime.children[0]?.pid
-    const deadline = Date.now() + 15_000
-    while (workerPid !== undefined && processAlive(workerPid) && Date.now() < deadline) {
-      await new Promise((done) => setTimeout(done, 100))
+    assert.equal(manager.instances.hosts.size, 0)
+  })
+})
+
+for (const operation of ['stop', 'signOut', 'forget', 'forgetDevice']) {
+  test(`${operation} bounds a slow owned Agent drain, observes its forced exit and reports it`, async t => {
+    await withManager(t, async ({ manager, gateway }) => {
+      const instance = await addInstance(manager, 'Slow Agent', { agentId: 'agent-alpha', stopDelayMs: 30000 })
+      await controlFixtureInstance(manager.instances, instance.id, { role: 'agent', operation: 'start' })
+      const child = manager.instances.hosts.get(instance.id).host.children()[0]
+      if (operation === 'forgetDevice') {
+        gateway.expireDevice(manager.device.status().deviceId)
+        await manager.device.refresh().catch(() => undefined)
+      }
+      const result = await manager.instances[operation](instance.id)
+      const stops = operation === 'signOut' || operation === 'forgetDevice' ? result.stops[0].results : result.results
+      assert.equal(stops[0].state, 'stopped', JSON.stringify(result))
+      assert.equal(stops[0].forced, true)
+      assert.match(stops[0].teaching, /killed after the graceful drain bound/)
+      assert.equal(processAlive(child.pid), false)
+      assert.equal(manager.instances.hosts.has(instance.id), false)
+      if (operation === 'signOut') assert.equal(result.state, 'signed_out')
+      if (operation === 'forgetDevice') assert.equal(result.state, 'none')
+      if (operation === 'forget') {
+        assert.equal(manager.registry.instance(instance.id), undefined)
+        assert.equal(existsSync(instance.directory), true)
+      }
+    })
+  })
+}
+
+test('a Worker crash retry refused during a manager drain resumes afterwards without resetting its retry budget', async t => {
+  await withManager(t, async ({ manager }) => {
+    const instance = await addInstance(manager, 'Retry after drain', { agentId: 'agent-alpha' })
+    const config = loadInstanceConfig(instance.directory)
+    config.paths.worker = resolve(import.meta.dirname, 'support/lifecycle-role.mjs')
+    config.worker.enabled = true
+    config.worker.env = { ...config.worker.env, RULITH_TEST_LIFECYCLE_LOG: join(instance.directory, 'worker.jsonl'), RULITH_TEST_CRASH_MS: '120' }
+    saveInstanceConfig(instance.directory, config)
+    await manager.instances.open(instance.id)
+    const host = manager.instances.hosts.get(instance.id).host
+    let entered, release
+    const started = new Promise(done => { entered = done })
+    const hold = new Promise(done => { release = done })
+    const originalUpdate = manager.registry.update.bind(manager.registry)
+    let held = false
+    t.mock.method(manager.registry, 'update', async update => {
+      if (!held) { held = true; entered(); await hold }
+      return originalUpdate(update)
+    })
+    const creating = manager.instances.create({ name: 'Creation admitted before drain', mode: 'local_agent' })
+    await started
+    const forgetting = manager.instances.forgetDevice().then(() => undefined, error => error)
+    const deadline = Date.now() + 8000
+    try {
+      while (!/signing out/.test(host.status().workerSetting.failure)) {
+        if (Date.now() > deadline) throw new Error('Worker retry was not refused during the drain')
+        await new Promise(done => setTimeout(done, 15))
+      }
+      assert.equal(manager.instances.phase, 'signing_out')
+      assert.equal(host.status().workerSetting.failures, 1)
+    } finally { release() }
+    await creating
+    assert.match((await forgetting).message, /still signed in/)
+    assert.equal(manager.instances.phase, 'ready')
+    while (host.events().filter(event => event.src === 'worker' && event.type === 'spawn').length < 2) {
+      if (Date.now() > deadline) throw new Error('Worker retry did not resume after drain')
+      await new Promise(done => setTimeout(done, 15))
     }
+    assert.equal(host.status().workerSetting.failures, 1)
+    assert.equal(host.status().workerSetting.failure, '')
   })
 })
 
@@ -650,7 +717,7 @@ test('instances of different Agents still run in parallel while the workbench is
     // The admission gate counts; it does not queue. Two Agents starting together must overlap,
     // or the fix for the drain has cost the product the thing it exists for.
     const began = Date.now()
-    const [a, b] = await Promise.all([manager.instances.start(first.id), manager.instances.start(second.id)])
+    const [a, b] = await Promise.all([startFixtureInstance(manager.instances, first.id), startFixtureInstance(manager.instances, second.id)])
     assert.equal(a.started, true, JSON.stringify(a.results))
     assert.equal(b.started, true, JSON.stringify(b.results))
 

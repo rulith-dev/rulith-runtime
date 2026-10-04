@@ -81,7 +81,7 @@ const MCP_URL = `${URL_BASE}/mcp`
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
 const RULITH_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
-const RULITH_RUNTIME_VERSION = "0.10.1"
+const RULITH_RUNTIME_VERSION = "0.11.0"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v3'
@@ -1884,6 +1884,8 @@ function restoreOutcomes(store) {
   let restored = 0
   for (const [key, entries] of Object.entries(saved)) {
     const record = outcomesOf({ key })
+    // Process exit, reload and a round limit do not mean the user asked to stop a turn.
+    record.stoppedTurn = store.lastOutcome(key) === 'user-stopped'
     for (const entry of entries) {
       setEntry(record, entry, { state: entry.state, withheld: entry.withheld === true,
         phase: entry.unread ? 'pending' : 'open', restored: true, captured: undefined })
@@ -3813,7 +3815,7 @@ function openAIParameters(schema) {
   return expose(schema)
 }
 
-async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}) {
+async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage, signal } = {}) {
   const started = performance.now()
   const wire = openaiStyle(cfg) ? 'openai' : 'anthropic'
   // The optional shadow has its own endpoint/model; do not copy main-provider settings to it.
@@ -3851,16 +3853,18 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
   }
   let response
   try {
-    response = await fetch(cfg.url, { method: 'POST', headers, body: requestBody })
+    response = await fetch(cfg.url, { method: 'POST', headers, body: requestBody, signal })
   } catch (error) {
     // A user-facing tool does not print a raw stack: say who was called and how to change it.
     onUsage?.({ durationMs: Math.round(performance.now() - started), inputTokens: null, outputTokens: null,
       cachedInputTokens: null, uncachedInputTokens: null, httpStatus: null, ...requestSize })
+    if (signal?.aborted) return { text: '', toolCalls: [], interrupted: true }
     failTask(`Cannot reach model service ${cfg.url}: ${error?.cause?.code ?? error?.message ?? error}.
    Set RULITH_MODEL_URL for a self-hosted or proxy endpoint. Leave it unset when using the default provider endpoint.`)
     return { text: '', toolCalls: [] }
   }
   const raw = await response.text().catch(() => '')
+  if (signal?.aborted) return { text: '', toolCalls: [], interrupted: true }
   let payload
   try { payload = JSON.parse(raw) } catch { payload = {} }
   const tokenCount = n => Number.isSafeInteger(n) && n >= 0 ? n : null
@@ -3880,7 +3884,7 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
       // it is an agent that can no longer reach the Board.
       emulatedTools = true
       log(`The model endpoint refused a request carrying tool definitions. The same ${tools.length} tools are now described in the prompt; their names and schemas are unchanged.`)
-      return await ask(entries, system, { tools, cfg, onUsage })
+      return await ask(entries, system, { tools, cfg, onUsage, signal })
     }
     failTask(`Model service error (${response.status}): ${raw.replace(/\s+/g, ' ').slice(0, 300)}`)
     return { text: '', toolCalls: [] }
@@ -4581,6 +4585,7 @@ async function runCaseTurn(ctx, userText, {
   ].join('')))
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
+    if (ctx.turnInterrupt?.signal.aborted) break
     emitOn(ctx, 'round', { n: round, ...(policy === 'return' ? { conversational: true } : {}) })
     // The round number also reaches the terminal: it used to travel only in the event
     // stream, so any instrument counting rounds from stdout read zero forever.
@@ -4595,10 +4600,11 @@ async function runCaseTurn(ctx, userText, {
       messages.push(userEntry(`[User] ${interject}`))
     }
 
-    const reply = await ask(messages, SYSTEM_PROMPT, { tools: modelTools, onUsage: usage => {
+    const reply = await ask(messages, SYSTEM_PROMPT, { tools: modelTools, signal: ctx.turnInterrupt?.signal, onUsage: usage => {
       if (ctx.taskId && conversationStore) conversationStore.usage(ctx.taskId, usage)
       emitOn(ctx, 'model-usage', usage)
     } })
+    if (ctx.turnInterrupt?.signal.aborted) break
     if (reply.failure) {
       outcome = 'model-error'
       note = reply.failure
@@ -4671,6 +4677,12 @@ async function runCaseTurn(ctx, userText, {
     let materialBindingTeaching = ''
     let versionRefusal
     for (const call of reply.toolCalls) {
+      if (ctx.turnInterrupt?.signal.aborted) {
+        notSent += 1
+        results.push({ id: call.id, name: String(call.name ?? ''),
+          text: refusal('turn_stopped', 'Not sent: the user stopped this turn. Work already handed to Rulith is not withdrawn.', String(call.name ?? '')) })
+        continue
+      }
       if (suspended) {
         notSent += 1
         // Every tool_use still receives a tool_result: an unanswered one is a malformed
@@ -4719,6 +4731,8 @@ async function runCaseTurn(ctx, userText, {
     messages.push(resultsEntry(results))
     modelReadAll = false
 
+    if (ctx.turnInterrupt?.signal.aborted) break
+
     if (versionRefusal !== undefined) return versionStop(versionRefusal)
     if (materialBindingRefused) return blockedTurn({ state: 'material_binding_refused',
       teaching: `The selected material was refused before Case admission: ${materialBindingTeaching}`
@@ -4742,6 +4756,10 @@ async function runCaseTurn(ctx, userText, {
     }
   }
 
+  if (ctx.turnInterrupt?.signal.aborted) {
+    outcome = 'user-stopped'
+    note = 'Stopped by the user. Work already handed to Rulith is not withdrawn. Pause the Case or withdraw work before dispatch in Console.'
+  }
   if (note === '') note = `Stopped at the ${MAX_ROUNDS}-round limit.`
   if (closedCases.length > 0) {
     if (outcome === 'conversation' && board.roots.length === 0) note = 'Response delivered.'
@@ -4858,11 +4876,14 @@ if (SERVE) {
   let inFlight
   const pushRun = (r) => { runs.push(r); while (runs.length > SERVE_RUNS_MAX) runs.shift() }
   let acceptingTasks = true
+  let draining = false, ending = false
+  let observingStoppedWork = false
 
   // Conversation slots isolate local transcripts and queues, and nothing else. The
   // connection, the focus and the Board View belong to the Agent; a slot cannot hold a
   // Case of its own, and it cannot take the connection away from another slot.
   const sessions = new Map()
+  const pendingArchives = new Map()
   const detachedCases = new Map()
   const rememberDetachedCase = (session, recovery) => {
     detachedCases.delete(session)
@@ -4946,6 +4967,13 @@ if (SERVE) {
   /** Every slot (default first, session slots in LRU order): queueing, scheduling and
    *  snapshots all read this one view. */
   const allSlots = () => [defaultSlot, ...sessions.values()]
+  const applyPendingArchive = slot => {
+    if (slot.busy || slot.queue.length || !pendingArchives.has(slot.key)) return
+    const archived = pendingArchives.get(slot.key)
+    conversationStore?.archive(slot.key, archived)
+    pendingArchives.delete(slot.key)
+    emit('conversation-archived', { session: slot.key, archived })
+  }
   const snapshot = () => ({
     ok: true, agentId, url: URL_BASE,
     concurrency: 1,
@@ -4978,6 +5006,7 @@ if (SERVE) {
         emit('task-done', { ...rec, historyKey: `${item.id}:done` })
         log(`✗ ${rec.note} (task ${item.id})`)
       }
+      applyPendingArchive(slot)
     }
   }
 
@@ -4987,6 +5016,43 @@ if (SERVE) {
       res.end(JSON.stringify({ ok: false, teaching: why, ...details }))
     }
     const path = (req.url ?? '/').split('?')[0]
+    if (req.method === 'POST' && path === '/turn/stop') {
+      const bad = serveGate(req)
+      if (bad !== null || req.headers['x-rulith-serve'] !== SERVE_KEY) return deny(bad ?? 'The Agent service key is required.')
+      let body = '', over = false
+      req.on('data', chunk => { body += chunk; if (Buffer.byteLength(body) > 4096) { over = true; req.destroy() } })
+      req.on('end', () => {
+        if (over) return
+        try {
+          const input = JSON.parse(body)
+          if (typeof input.sessionKey !== 'string' || input.sessionKey.length > SESSION_KEY_MAX
+            || (input.id !== undefined && typeof input.id !== 'string')
+            || Object.keys(input).some(key => !['sessionKey', 'id'].includes(key))) return deny('Choose one conversation and its current turn.', 400)
+          const slot = input.sessionKey === '' ? defaultSlot : sessions.get(input.sessionKey)
+          let state = 'idle'
+          if (slot?.busy && (input.id === undefined || slot.taskId === input.id)) {
+            slot.turnInterrupt.abort()
+            state = 'stopping'
+            emitOn(slot, 'turn-stopping', { note: 'Stopping this turn; waiting for any Rulith call already sent to answer.' })
+          } else {
+            const at = slot?.queue.findIndex(item => input.id === undefined || item.id === input.id) ?? -1
+            if (at >= 0) {
+              const item = slot.queue.splice(at, 1)[0]
+              const rec = { id: item.id, sessionKey: slot.key, text: item.text, at: item.at, endedAt: Date.now(),
+                outcome: 'user-stopped', note: 'Stopped by the user before this turn started.' }
+              conversationStore?.finish(item.id, rec.note, rec.outcome)
+              pushRun(rec)
+              emit('task-done', { ...rec, session: slot.key, historyKey: `${item.id}:done` })
+              applyPendingArchive(slot)
+              state = 'stopped'
+            }
+          }
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, state, sessionKey: input.sessionKey }))
+        } catch (error) { deny(error.message, 400) }
+      })
+      return
+    }
     if (req.method === 'POST' && path === '/conversation/archive') {
       const bad = serveGate(req)
       if (bad !== null || req.headers['x-rulith-serve'] !== SERVE_KEY) return deny(bad ?? 'The Agent service key is required.')
@@ -4997,8 +5063,12 @@ if (SERVE) {
         try {
           const input = JSON.parse(body)
           if (!conversationStore || typeof input.sessionKey !== 'string' || typeof input.archived !== 'boolean') return deny('Choose a saved conversation to archive or restore.', 400)
-          conversationStore.archive(input.sessionKey, input.archived)
-          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, archived: input.archived }))
+          const slot = sessions.get(input.sessionKey)
+          const pending = !!(slot?.busy || slot?.queue.length)
+          if (pending) pendingArchives.set(input.sessionKey, input.archived)
+          else conversationStore.archive(input.sessionKey, input.archived)
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, archived: input.archived,
+            ...(pending ? { state: 'pending', teaching: 'This conversation will be archived after its accepted turns finish.' } : {}) }))
         } catch (error) { deny(error.message, 409) }
       })
       return
@@ -5006,6 +5076,7 @@ if (SERVE) {
     if (req.method === 'POST' && path === '/task') {
       const bad = serveGate(req)
       if (bad !== null) return deny(bad)
+      if (draining) return deny('The Agent is reloading between turns. Send again when it is ready.', 503)
       if (!acceptingTasks) return deny('The Agent credential was rejected. Rotate it in Console and restart Rulith Local.', 503)
       const ct = String(req.headers['content-type'] ?? '')
       if (!ct.startsWith('application/json')) return deny('Only application/json is accepted; plain-text bodies can bypass browser preflight checks.')
@@ -5108,6 +5179,7 @@ if (SERVE) {
         if (sessionKey.length > SESSION_KEY_MAX) {
           return deny(`sessionKey exceeds ${SESSION_KEY_MAX} characters (${sessionKey.length} received). It cannot be truncated because it identifies a local conversation slot. Use a short opaque identifier.`, 400)
         }
+        if (pendingArchives.get(sessionKey) === true) return deny('This conversation is being archived after its accepted turns finish. Restore it before sending another message.', 409)
         if (requestedCaseId.length > 256) return deny('caseId exceeds 256 characters. Use the exact Case ID returned by /runs or shown in Console.', 400)
         if (!sessions.has(sessionKey) && sessions.size >= SERVE_SLOTS_MAX
           && ![...sessions.values()].some(s => !s.busy && s.queue.length === 0))
@@ -5140,6 +5212,7 @@ if (SERVE) {
       const wantsStream = new URL(req.url, 'http://127.0.0.1').searchParams.get('stream') === '1'
         || String(req.headers.accept ?? '').includes('text/event-stream')
       if (!wantsStream) {
+        void observeStoppedWork()
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         return void res.end(JSON.stringify(snapshot()))
       }
@@ -5162,7 +5235,80 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
   Messages are ordinary conversation. The Agent opens or advances a Rulith Case only when it calls one of the Board tools.
   Inspect: curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
   The key is randomized on every start. Loopback alone is not an authorization boundary.`)
-  emit('start', { agentId, url: URL_BASE, task: '(task endpoint)', concurrency: 1 })
+  emit('start', { agentId, url: URL_BASE, task: '(task endpoint)', concurrency: 1, managedStop: true })
+  // A role reload finishes accepted turns before releasing the conversation writer.
+  // This is separate from the conversation-scoped interrupt, which aborts only the model.
+  async function finishIfDrained() {
+    if ((!acceptingTasks || draining) && inFlight === undefined && !observingStoppedWork
+      && allSlots().every(slot => slot.queue.length === 0) && !ending) {
+      ending = true
+      for (const client of clients) client.end()
+      serveSrv.close()
+      serveSrv.closeAllConnections()
+      reportUnshownDeliveries()
+      await endSession()
+      conversationStore?.close()
+      if (draining) process.exit(0)
+    }
+  }
+  if (process.env.RULITH_LOCAL_EVENTS === 'ipc') {
+    process.on('message', message => {
+      if (message?.protocol === 'rulith-local-control' && message.operation === 'observe') {
+        void observeStoppedWork()
+        return
+      }
+      if (message?.protocol !== 'rulith-local-control' || !['stop', 'reload'].includes(message.operation)) return
+      draining = true
+      if (message.operation === 'stop') {
+        acceptingTasks = false
+        for (const slot of allSlots()) slot.turnInterrupt?.abort()
+        terminalizeQueuedTasks('The workbench is stopping. Accepted messages will not be replayed.')
+      }
+      void finishIfDrained().catch(error => { console.error(error.message); process.exit(1) })
+    })
+    process.channel?.unref()
+  }
+
+  // The workbench's existing status refresh asks for this read. There is no idle timer:
+  // observation shares the Agent's execution gate and never requests another model turn.
+  // A result not yet read by a model must stay unacknowledged. Once a fresh strip delivers
+  // an outcome, keep it verbatim for the next turn, just like other host-owned reads.
+  async function observeStoppedWork() {
+    if (observingStoppedWork || inFlight || draining || !acceptingTasks || keptUnseen()
+      || (connection.delivery && !connection.delivery.read)) return
+    const waiting = [...conversationOutcomes.values()].filter(record => record.stoppedTurn
+      && [...record.entries.values()].some(entry => entry.phase === 'open'))
+    if (!waiting.length) return
+    observingStoppedWork = true
+    try {
+      const observed = await pingOperations()
+      if (!observed.ok || !Array.isArray(observed.states)) return
+      const settled = waiting.find(record => [...record.entries.values()].some(entry => {
+        if (entry.phase !== 'open') return false
+        const state = ownEntryOf(observed.states, entry)
+        return state === undefined || SETTLED_STATES.has(state.state)
+      }))
+      if (settled) {
+        const ctx = makeSlot(settled.key)
+        const answer = await callToolOnce(ctx, 'QueryBoard', {})
+        keepUnshownDelivery(ctx, 'observed work from a stopped turn', answer)
+      }
+    } catch (error) {
+      emit('error', { teaching: `Could not refresh operations from the stopped turn: ${error.message}` })
+      if (error instanceof AgentCredentialRejectedError || error instanceof McpConnectionReplacedError
+        || error instanceof McpProtocolVersionError || error instanceof McpSurfaceError) {
+        acceptingTasks = false
+        if (error instanceof AgentCredentialRejectedError || error instanceof McpConnectionReplacedError) {
+          process.exitCode = error instanceof AgentCredentialRejectedError ? 3 : 4
+        }
+        terminalizeQueuedTasks(error.message)
+      }
+    } finally {
+      observingStoppedWork = false
+      pump()
+      await finishIfDrained()
+    }
+  }
 
   /** Handle one item at the head of one conversation's queue. There is one of these
    *  running at a time for the whole Agent: `slot.busy` orders one conversation's own
@@ -5173,6 +5319,9 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     slot.busy = true
     slot.lastUsed = Date.now()
     slot.taskId = item.id
+    slot.turnInterrupt = new AbortController()
+    const earlierOutcomes = conversationOutcomes.get(slot.key)
+    if (earlierOutcomes) earlierOutcomes.stoppedTurn = false
     const flight = { id: item.id, text: item.text, startedAt: Date.now(),
       ...(slot.key === '' ? {} : { sessionKey: slot.key }) }
     inFlight = flight
@@ -5204,6 +5353,10 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       })
       note = seg.note
       outcome = seg.outcome
+      if (slot.turnInterrupt.signal.aborted) {
+        outcome = 'user-stopped'
+        note = 'Stopped by the user. Work already handed to Rulith is not withdrawn. Pause the Case or withdraw work before dispatch in Console.'
+      }
       pendingCaseId = seg.pendingCaseId
       activeCaseId = seg.activeCaseId
       activeCaseIds = seg.activeCaseIds
@@ -5217,6 +5370,10 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
         : connectionReplaced
           ? `Agent connection replaced by a newer authenticated client: ${e.message}`
           : `Task aborted with an unexpected error: ${e?.message ?? e}`
+      if (slot.turnInterrupt.signal.aborted && !credentialRejected && !connectionReplaced) {
+        outcome = 'user-stopped'
+        note = 'Stopped by the user. The Rulith call ended without a confirmed answer; check operations in Console before continuing.'
+      }
       actualCaseId = board.roots[0]?.caseId ?? null
       activeCaseId = actualCaseId
       activeCaseIds = board.roots.map((row) => row.caseId)
@@ -5245,6 +5402,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       if (inFlight === flight) inFlight = undefined
       slot.busy = false
       slot.taskId = undefined
+      delete slot.turnInterrupt
       slot.lastUsed = Date.now()
     }
     const rec = {
@@ -5270,24 +5428,19 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     }
     pushRun(rec)
     emit('task-done', { ...rec, historyKey: `${item.id}:done` })
+    const outcomes = conversationOutcomes.get(slot.key)
+    if (outcomes) outcomes.stoppedTurn = outcome === 'user-stopped'
+    applyPendingArchive(slot)
     log(`· ${note}${activeCaseId === null ? '' : ` · Active Rulith Case: ${activeCaseId}.`}${pendingLine(pendingCaseId)}${actualCaseId === null ? '' : ` · Verify in Console: ${consoleUrl}`}
 `)
-    if (!acceptingTasks && inFlight === undefined) {
-      for (const client of clients) client.end()
-      serveSrv.close()
-      serveSrv.closeAllConnections()
-      // Nothing further will be sent for this Agent, so the session goes back rather than
-      // being left for the Gateway to expire.
-      reportUnshownDeliveries()
-      await endSession()
-    }
+    await finishIfDrained()
   }
   // The scheduler: sweep the slots and start every idle slot that has work, up to the
   // cross-slot ceiling. A segment is async and is deliberately not awaited here —
   // awaiting one would pin concurrency back to 1. Each finished segment pumps again, so
   // "start the next one as soon as a place frees" needs no timer.
   function pump() {
-    if (!acceptingTasks) return
+    if (!acceptingTasks || observingStoppedWork) return
     for (const slot of allSlots()) {
       if (inFlight !== undefined) return
       if (slot.busy || slot.queue.length === 0) continue

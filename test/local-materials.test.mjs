@@ -15,6 +15,7 @@
  * `worker-material-delivery.test.mjs`.
  */
 import assert from 'node:assert/strict'
+import { startFixtureRoles } from './support/local-role-controls.mjs'
 import { createHash } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -54,7 +55,7 @@ async function startAgentHost(configFile, config, roles, registerMaterialSubmiss
       startConfirmMs: 8000, registerMaterialSubmission })
     let handedOff = false
     try {
-      await host.listen()
+      await host.listen(); await startFixtureRoles(host)
       const deadline = Date.now() + 8000
       while (!host.status().ready.agent && host.status().agent && Date.now() < deadline) {
         await new Promise((wait) => setTimeout(wait, 25))
@@ -137,7 +138,7 @@ async function withHost(run, {
     host = withAgent ? await startAgentHost(configFile, config, roles, registerMaterialSubmission) : createLocalHost({
       configFile, config, roles, port: 0, key: KEY, autoStart: withWorker, startConfirmMs: 8000,
     })
-    if (!withAgent) await host.listen()
+    if (!withAgent) { await host.listen(); await startFixtureRoles(host) }
     if (withWorker) {
       const deadline = Date.now() + 8000
       while (!host.events().some((event) => event.src === 'worker' && event.type === 'up') && Date.now() < deadline) {
@@ -751,7 +752,7 @@ test('the Agent child is given the delivery endpoint and the materials key, and 
     assert.match(environment.RULITH_MATERIALS_KEY, /^[0-9a-f]{32}$/u)
     assert.notEqual(host.materialsKey, KEY)
     assert.equal(Object.values(environment).includes(KEY), false,
-      'the Agent was handed this host\'s page key, which also opens /control and /setup')
+      'the Agent was handed this host\'s page key, which also opens /worker-setting and /setup')
     // The custodian binding belongs to the Worker, not to the Agent.
     assert.equal(environment.RULITH_MATERIALS_OWNER, undefined,
       'the Agent child was given a Worker material binding it has no use for')
@@ -761,8 +762,8 @@ test('the Agent child is given the delivery endpoint and the materials key, and 
 test('an exited Agent cannot leave its confirmed identity available for later local claims', async () => {
   await withHost(async ({ host, call, tasks }) => {
     assert.equal(host.agentId, AGENT_ID)
-    const stopped = await call('/control', { method: 'POST', body: JSON.stringify({ role: 'agent', operation: 'stop' }) })
-    assert.equal((await stopped.json()).state, 'stopped')
+    const stopped = await host.stopRole('agent')
+    assert.equal(stopped.body.state, 'stopped')
     const response = await fetch(`http://127.0.0.1:${host.port}/materials/deliver`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-material': host.materialsKey },
       body: JSON.stringify({ ticket: 'mlt_from_the_gateway', modelDestination: REMOTE_MODEL }),
@@ -793,7 +794,7 @@ test('the Worker child is given the material area and fingerprints, never the Ag
     config.paths = { agent: join(dir, 'absent-agent.mjs'), worker: join(import.meta.dirname, 'support', 'worker-probe.mjs') }
     const host = createLocalHost({ configFile, config, roles: ['worker'], port: 0, key: KEY, autoStart: true,
       startConfirmMs: 8000, getApprovedDeviceId: () => 'dev-confirmed' })
-    await host.listen()
+    await host.listen(); await startFixtureRoles(host)
     try {
       const deadline = Date.now() + 8000
       while (!existsSync(taskLog) && Date.now() < deadline) await new Promise((wait) => setTimeout(wait, 25))
@@ -819,7 +820,7 @@ test('the Worker child is given the material area and fingerprints, never the Ag
   }
 })
 
-test('a Worker started without a material area is never reported as needing a restart for the model', async () => {
+test('a Worker started without a material area carries no attachment model destination', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-local-materials-none-'))
   try {
     const configFile = join(dir, 'local.json')
@@ -836,12 +837,11 @@ test('a Worker started without a material area is never reported as needing a re
     const host = createLocalHost({ configFile, config, roles: ['worker'], port: 0, key: KEY, autoStart: false, startConfirmMs: 8000 })
     await host.listen()
     try {
-      const started = await fetch(`http://127.0.0.1:${host.port}/control`, { method: 'POST',
-        headers: { 'x-rulith-local': KEY, 'content-type': 'application/json' }, body: JSON.stringify({ role: 'worker', operation: 'start' }) })
-      assert.equal(started.status, 200, JSON.stringify(await started.json()))
+      const started = await host.startRole('worker')
+      assert.equal(started.status, 200, JSON.stringify(started.body))
       const observed = host.events().find((event) => event.src === 'worker' && event.type === 'up')?.observed
       assert.equal(observed?.RULITH_MATERIALS_ROOT, undefined, 'the Worker was started without a material area')
-      assert.equal(host.workerModelRestartRequired, false, 'a Worker with no attachments has no model destination to be out of date')
+      assert.equal(observed?.RULITH_MATERIALS_MODEL_DESTINATION, undefined, 'a Worker with no attachments holds no model destination')
     } finally {
       await host.close()
     }

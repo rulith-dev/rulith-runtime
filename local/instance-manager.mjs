@@ -177,6 +177,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     phase = next
     await idle
   }
+  // A crash-restart timer may have expired while admission was closed. Resume its
+  // existing retry budget once the manager is ready; each host checks its grant again.
+  const resumeWorkers = () => Promise.all([...hosts.values()].map(({ host }) => host.resumeWorker()))
 
   const record = (id) => {
     const row = registry.instance(id)
@@ -249,7 +252,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
    * Agent under an authorization nobody currently holds.
    *
    * It returns a teaching or null, and is deliberately the *same* function the instance
-   * host's own `/control` and `/setup` routes consult. Those routes are reachable by anyone
+   * host's own conversation, Worker setting and setup routes consult. Those routes are reachable by anyone
    * with that host's key, so a check that lived only in the manager's own endpoints would be
    * a check an instance page could walk around.
    */
@@ -348,10 +351,10 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
   /**
    * What a managed host may do without asking the manager.
    *
-   * Two routes on an instance host can change what is executing or what identity is being
-   * configured: `POST /control` with `start`, and `POST /setup/*`. Both are reachable from
+   * An instance host can change what is executing or what identity is being configured
+   * through first-message startup, `POST /worker-setting`, and `POST /setup/*`. All are reachable from
    * that instance's own page. For a *managed* instance that page is not the authority — the
-   * device grant is — so the host consults this before either one.
+   * device grant is — so the host consults this before each operation.
    *
    * Pairing is the sharper case: `/setup/pair/start` opened directly from an instance page
    * would begin a pairing the manager did not ask for and had no chance to reserve, which is
@@ -363,7 +366,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     // there too — otherwise signing out races a role somebody just started from a browser
     // tab. The manager's own calls are exempt: they belong to an operation that was already
     // admitted, and refusing them here would abandon work half-done. Stopping is not gated at
-    // all: `policyFor` is only consulted for `start` and for `/setup/*`.
+    // all: `policyFor` is consulted for automatic starts, settings and `/setup/*`.
     if (phase !== 'ready' && fromOwner !== true) return phaseTeaching()
     if (kind === 'start') {
       const refusal = grantRefusal(id, { requirePaired: true })
@@ -510,7 +513,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     }
     const build = (hostPort) => createLocalHost({
       configFile: instanceConfigFile(directory), config, roles: config.roles, port: hostPort,
-      autoStart: false, isolateEnvironment: true,
+      autoStart: true, isolateEnvironment: true,
       ...(row.origin && row.accountId && row.agentId ? { conversationOwner: { origin: row.origin, accountId: row.accountId, agentId: row.agentId } } : {}),
       setupApprover: device === undefined ? undefined : approverFor(id),
       registerMaterialSubmission: registerMaterialSubmissionFor(id),
@@ -537,7 +540,6 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         }
         const refusal = grantRefusal(id, { requirePaired: true, grant, row: current })
         if (refusal !== null) throw new Error('The account or Agent is no longer available for this Connection. Nothing was saved.')
-        if (runningRoles(id).includes('worker')) throw new Error('Worker started while the replacement key was being verified. Nothing was saved.')
       },
       modelOverlay: modelSource(row) === 'default' ? {
         RULITH_MODEL_URL: text(inherited?.url), RULITH_MODEL: text(inherited?.name),
@@ -791,8 +793,6 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const status = live?.host.status()
       if (runningRoles(row.id).length === 0) accessStopWarnings.delete(row.id)
       const model = publicModel(row, grant)
-      const workerRestartRequired = live?.host.workerModelRestartRequired === true
-      const currentDefault = modelSource(row) === 'default' ? defaultFor(row, grant) : undefined
       const worker = loadInstanceConfig(resolve(row.directory)).worker?.env ?? {}
       const manifest = readJson(text(worker.RULITH_TOOLS_FILE), { tools: {} })
       const toolDescriptors = Object.entries(manifest?.tools ?? {}).map(([id, value]) => ({
@@ -806,6 +806,10 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         agentName: row.agentName ?? '', connectionId: row.connectionId ?? '', paired: Boolean(row.agentId || row.connectionId),
         open: live !== undefined, roles: status?.roles ?? [],
         agent: status?.agent === true, worker: status?.worker === true,
+        workerSetting: status?.workerSetting ?? { enabled: loadInstanceConfig(resolve(row.directory)).worker.enabled === true,
+          visible: row.mode === 'existing_client' || loadInstanceConfig(resolve(row.directory)).worker.enabled === true || Object.keys(manifest?.tools ?? {}).length > 0,
+          state: row.connectionId ? 'offline' : 'needs setup' },
+        agentReloading: status?.agentReloading === true,
         ready: status?.ready ?? { agent: false, worker: false },
         // Everything a card needs to explain why a button is unavailable, computed from the
         // device grant rather than from what the page last saw.
@@ -814,15 +818,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         pendingReplace: row.pairing?.replaceAgentToken === true,
         pendingOrigin: row.pairing?.origin ?? '', pendingAccountId: row.pairing?.accountId ?? '',
         setupTarget: row.setupTarget ?? null,
-        // A running Worker keeps the model destination it started with, and only reads of local
-        // attachments use it: the Document assistant's and the material read Tool's. Restarting
-        // is the next thing to do only once this profile actually holds attachments; before
-        // that, the page mentions it quietly instead of putting it ahead of everything else.
-        // 只有本 profile 已有本地附件时才把"重启 Worker"作为下一步；没有附件时只低调提示。
-        model: { ...model, workerRestartRequired,
-          workerRestartUrgent: workerRestartRequired && live.host.attachmentsInUse === true,
-          restartRequired: model.source === 'default' && status?.agent === true
-            && live?.inheritedModelSignature !== modelSignature(currentDefault ?? {}) },
+        model,
         pendingApproved: row.pairing?.approvedAt !== undefined,
         blocked: grantRefusal(row.id, { requirePaired: true, grant, row }) ?? '',
         orphaned: row.orphaned ?? null,
@@ -856,7 +852,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
             const result = await manager.stop(row.id)
             ;(result.stopped ? stopped : stopping).push({ id: row.id, name: row.name, results: result.results })
             if (result.stopped) accessStopWarnings.delete(row.id)
-            else accessStopWarnings.set(row.id, 'Account access changed, but local processes have not exited. Open Agent settings and stop them before continuing.')
+            else accessStopWarnings.set(row.id, 'Account access changed. Local roles have been asked to stop and have not exited. Check their executions in Console.')
           } catch (error) {
             stopping.push({ id: row.id, name: row.name, teaching: String(error?.message ?? error) })
             accessStopWarnings.set(row.id, 'Account access changed and stopping local processes failed: ' + String(error?.message ?? error))
@@ -903,7 +899,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         const row = registry.instance(id)
         if (row === undefined || modelSource(row) !== 'default') continue
         const rowScope = scopeFor(row)
-        if (rowScope.origin !== scope.origin || rowScope.accountId !== scope.accountId || runningRoles(id).includes('agent')) continue
+        if (rowScope.origin !== scope.origin || rowScope.accountId !== scope.accountId) continue
         live.host.setAgentModel(saved)
         live.inheritedModelSignature = modelSignature(saved)
       }
@@ -928,7 +924,6 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       const refusal = grantRefusal(id, { requirePaired: true, grant: scope.grant, row })
       if (refusal !== null) throw new Error(refusal)
-      if (runningRoles(id).includes('worker')) throw new Error(`Instance ${row.name} is running its Worker. Stop Worker before replacing its Connection key.`)
       const key = text(body.key)
       if (key.trim() === '') throw new Error('Enter the replacement Connection key.')
       const { host } = await ensureHostLocked(id)
@@ -942,7 +937,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       if (text(answer.body.agentId) !== agentId || text(answer.body.connectionId) !== connectionId) {
         throw new Error('The replacement key verification did not confirm this Agent and Connection.')
       }
-      return { instanceId: id, agentId, connectionId, keyConfigured: true }
+      return { instanceId: id, agentId, connectionId, keyConfigured: true,
+        teaching: 'Connection key saved. The Worker reloads automatically after running executions drain.' }
     })),
 
     setInstanceModel: (id, body = {}) => admit(() => lifecycle(id, async () => {
@@ -951,8 +947,6 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       assertRowScope(row, scope)
       if (row.mode !== 'local_agent') throw new Error(`Instance ${row.name} uses an existing client for its Agent, so it has no model of its own to configure.`)
       if (!['default', 'custom'].includes(body.source)) throw new Error('Choose the account default model or a custom model.')
-      const busy = runningRoles(id)
-      if (busy.includes('agent')) throw new Error(`Instance ${row.name} is running its Agent. Stop Agent before changing its model configuration.`)
       if (body.source === 'default') {
         if (['url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'].some(field => body[field] !== undefined)) {
           throw new Error('A default model selection does not accept custom model fields.')
@@ -964,7 +958,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
           live.host.setAgentModel(inherited ?? {})
           live.inheritedModelSignature = modelSignature(inherited ?? {})
         }
-        return { instanceId: id, model: publicModel(record(id)) }
+        return { instanceId: id, model: publicModel(record(id)),
+          teaching: 'Model settings saved. The Agent applies them automatically between turns.' }
       }
       const input = checkedModelInput(body)
       // Leaving account inheritance is not a transfer of the account default credential.
@@ -989,7 +984,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
           key, clearKey: key === '', thinking: input.thinking, maxOutputTokens: budget })
         if (answer.status !== 200 || answer.body.ok === false) throw new Error(text(answer.body.teaching) || `Instance ${row.name} did not accept the model configuration.`)
       }
-      return { instanceId: id, model: publicModel(record(id)) }
+      return { instanceId: id, model: publicModel(record(id)), teaching: 'Model settings saved. The Agent restarts automatically between turns.' }
     })),
 
     create: ({ name, mode = 'local_agent', setupTarget } = {}) => admit(async () => {
@@ -1058,86 +1053,37 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const back = managerReturnUrl === undefined ? '' : '&manager=' + encodeURIComponent(managerReturnUrl())
       return { url: `http://127.0.0.1:${host.port}${page}?k=${encodeURIComponent(host.key)}${back}`, hostPort: host.port, hostGeneration }
     })),
-
-    /**
-     * Start the roles this instance is configured for, reporting each role's own answer.
-     *
-     * The device grant is re-checked here *and* by the host's own policy, on purpose. This
-     * check gives the operator one clear refusal instead of a per-role one; the host's is what
-     * makes the rule true for a request that never came through here at all.
-     *
-     * The host's `/control` route is what decides whether a role started, unchanged: it waits
-     * for the role's own readiness event, distinguishes a cancelled start from a failed one,
-     * and refuses to call an unconfirmed start a success.
-     */
-    // 工作台按角色控制；Worker 按钮不应停止 Agent，也不能因切换页面关闭其 Host。
-    control: (id, { role, operation } = {}) => {
-      if (!['agent', 'worker'].includes(role) || !['start', 'stop'].includes(operation)) {
-        return Promise.reject(new Error('Choose an Agent or Worker and a start or stop operation.'))
-      }
-      const run = () => lifecycle(id, () => manager.__control(id, { role, operation }))
-      return operation === 'start' ? admit(run) : run()
-    },
-
-    __control: async (id, { role, operation }) => {
-      const row = record(id)
-      if (operation === 'start') {
-        const refusal = grantRefusal(id, { requirePaired: true })
-        if (refusal !== null) throw new Error(refusal)
-        if (role === 'agent' && row.mode === 'local_agent' && !publicModel(row).ready) {
-          throw new Error(`Instance ${row.name} has no ready model configuration. Set a default model or choose a custom model before starting its Agent.`)
-        }
-      }
-      const live = hosts.get(id)
-      if (operation === 'stop' && live === undefined) {
-        if (survivingProcesses(row).length > 0) {
-          throw new Error('This Agent has processes outside this workbench. Stop them with their owning workbench before reporting them stopped.')
-        }
-        return { instanceId: id, role, state: 'stopped', stopped: true, results: [] }
-      }
-      const { host } = live ?? await ensureHostLocked(id)
-      if (!host.roles.includes(role)) throw new Error(`This Agent does not run a local ${role}.`)
-      const answer = await localCall(host, '/control', { role, operation })
-      await recordRuntime(id)
-      const result = { role, status: answer.status, state: text(answer.body.state) || 'unknown',
-        ok: answer.body.ok === true, teaching: text(answer.body.teaching) }
-      return { instanceId: id, role, ...answer.body, results: [result],
-        stopped: operation === 'stop' && result.state === 'stopped',
-        started: operation === 'start' && result.ok }
-    },
-
-    start: (id) => admit(() => lifecycle(id, async () => {
+    setWorkerEnabled: (id, enabled) => admit(() => lifecycle(id, async () => {
       const refusal = grantRefusal(id, { requirePaired: true })
       if (refusal !== null) throw new Error(refusal)
-      const row = record(id)
-      if (row.mode === 'local_agent' && !publicModel(row).ready) {
-        throw new Error(`Instance ${row.name} has no ready model configuration. Set a default model or choose a custom model before starting its Agent.`)
-      }
       const { host } = await ensureHostLocked(id)
-      const results = []
-      for (const role of host.roles) {
-        const answer = await localCall(host, '/control', { role, operation: 'start' })
-        results.push({ role, status: answer.status, state: text(answer.body.state) || (answer.body.ok ? 'ready' : 'failed'),
-          ok: answer.body.ok === true, teaching: text(answer.body.teaching) })
-      }
-      await recordRuntime(id)
-      return { instanceId: id, results, started: results.every((row) => row.ok) }
+      const answer = await localCall(host, '/worker-setting', { enabled })
+      if (!answer.body.ok) throw new Error(answer.body.teaching)
+      return { instanceId: id, ...answer.body }
     })),
+    restoreWorkers: () => admit(async () => {
+      for (const row of registry.read().instances) {
+        if (grantRefusal(row.id, { requirePaired: true }) !== null) continue
+        if (loadInstanceConfig(resolve(row.directory)).worker.enabled !== true) continue
+        await lifecycle(row.id, () => ensureHostLocked(row.id))
+      }
+    }),
 
     /**
      * Stop this instance's roles, then close its host.
      *
-     * `stopping` is a real answer and is passed through: a child that has been signalled and
-     * has not exited is not stopped, and the host is left open so the operator can watch it.
+     * Graceful drain is bounded for an explicit stop. Then only this host's owned child
+     * may be killed; an observed exit decides the result and permits closing the host.
      */
-    stop: (id, { close = true } = {}) => lifecycle(id, async () => {
+    stop: (id, { close = true, forceAfterDrain = true } = {}) => lifecycle(id, async () => {
       const live = hosts.get(id)
       if (live === undefined) return { instanceId: id, results: [], stopped: true, open: false }
       const results = []
       for (const role of runningRoles(id)) {
-        const answer = await localCall(live.host, '/control', { role, operation: 'stop' })
+        const answer = await live.host.stopRole(role, { forceAfterDrain })
         results.push({ role, status: answer.status, state: text(answer.body.state) || 'unknown',
-          ok: answer.body.ok === true && answer.body.state === 'stopped', teaching: text(answer.body.teaching) })
+          ok: answer.body.ok === true && answer.body.state === 'stopped', forced: answer.body.forced === true,
+          teaching: text(answer.body.teaching) })
       }
       const stopped = results.every((row) => row.ok)
       if (stopped && close) await closeHostLocked(id)
@@ -1367,15 +1313,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
      * The key is written into the target's configuration and is never returned; the response
      * says only which endpoint and model were applied.
      *
-     * **It never tears anything down.** An earlier version refused only while the *Agent* was
-     * running and then closed the host to make the new configuration take effect. For an
-     * instance whose Worker was mid-call — an `existing_client` profile, or one with only the
-     * Worker started — that closed the host, dropped the `hosts` entry and deleted the
-     * registry's record of the child, all while the child was still draining: after which
-     * `stop` answered `stopped` because there was no host to ask, and sign-out revoked the
-     * device while a Worker was still executing. So this refuses while *any* role is running,
-     * and applies the change through the instance's own `/setup/model` route when its host is
-     * open, which updates the live configuration without closing anything.
+     * The host stays open and keeps ownership of its children. Applying the change through
+     * its `/setup/model` route updates the live configuration and reloads the Agent between
+     * turns and the Worker after execution drain. A running role needs no manual stop.
      */
     copyModelSettings: (id, fromInstanceId) => admit(() => lifecycle(id, () => manager.__copyModelSettings(id, fromInstanceId))),
 
@@ -1391,11 +1331,6 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       if (grant.state !== 'linked') throw new Error('Sign in to a Rulith account in the manager before copying settings between instances.')
       for (const row of [source, target]) {
         assertRowScope(row, currentScope(grant))
-      }
-      const busy = runningRoles(id)
-      if (busy.length > 0) {
-        throw new Error(`Instance ${target.name} is running its ${busy.join(' and ')}. Stop it before changing its model configuration:`
-          + ' this manager will not close a host while a child may still be finishing work.')
       }
       const from = modelFor(source, grant)
       if (!text(from.url).trim() || !text(from.name).trim()) {
@@ -1440,11 +1375,18 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     forget: (id) => admit(() => lifecycle(id, () => manager.__forget(id))),
 
     __forget: async (id) => {
-      if (runningRoles(id).length > 0) throw new Error('Stop this instance before removing it from the list.')
+      const host = hosts.get(id)?.host
+      const results = []
+      for (const role of runningRoles(id)) {
+        const answer = await host.stopRole(role, { forceAfterDrain: true })
+        results.push({ role, state: answer.body.state, forced: answer.body.forced === true, teaching: text(answer.body.teaching) })
+      }
+      if (runningRoles(id).length > 0) throw new Error('The owned processes have been asked to end after the graceful drain bound, but their exit has not been observed. Nothing was removed; check Trace and retry.')
       await closeHostLocked(id)
       const row = record(id)
       await registry.update((state) => { state.instances = state.instances.filter((entry) => entry.id !== id); return state })
-      return { instanceId: id, directory: row.directory }
+      return { instanceId: id, directory: row.directory, results,
+        ...(results.some(row => row.forced) ? { teaching: 'Owned processes were killed after the graceful drain bound and their exits were observed. The instance directory was kept. Work already handed to Rulith may still be running; check Console.' } : {}) }
     },
 
     /**
@@ -1468,16 +1410,18 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         // Complete or not, this manager is usable again: an incomplete sign-out must not
         // leave an installation that refuses everything, and a finished one is a manager you
         // can sign back into.
-        if (phase === 'signing_out') phase = 'ready'
+        if (phase === 'signing_out') { phase = 'ready'; await resumeWorkers() }
       }
     },
 
     __signOut: async () => {
       const state = registry.read()
       const running = []
+      const stops = []
       for (const row of state.instances) {
         if (hosts.has(row.id)) {
           const result = await manager.stop(row.id)
+          stops.push({ id: row.id, name: row.name, results: result.results })
           if (!result.stopped) running.push({ id: row.id, name: row.name, results: result.results })
         } else {
           const results = survivingProcesses(row)
@@ -1487,7 +1431,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       if (running.length > 0) {
         const progress = { state: 'incomplete', step: 'stop', at: new Date().toISOString(), instances: running.map((row) => row.name) }
         await device.noteSignOut(progress)
-        return { state: 'incomplete', step: 'stop', running,
+        return { state: 'incomplete', step: 'stop', running, stops,
           teaching: `Still running: ${stillRunning(running)}. This device was not revoked and is still signed in. Stop them and sign out again.` }
       }
       // Asked again, right before the irreversible step. The drain is what makes this
@@ -1496,7 +1440,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const late = registry.read().instances.filter((row) => runningRoles(row.id).length > 0 || survivingProcesses(row).length > 0)
       if (late.length > 0) {
         const lateRunning = late.map((row) => ({ id: row.id, name: row.name, results: survivingProcesses(row) }))
-        return { state: 'incomplete', step: 'stop', running: lateRunning,
+        return { state: 'incomplete', step: 'stop', running: lateRunning, stops,
           teaching: `Started running while this sign-out was in progress: ${stillRunning(lateRunning)}. This device was not revoked.`
             + ' Nothing was revoked and nothing was cleared; sign out again.' }
       }
@@ -1504,7 +1448,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       try { revoked = await device.revoke() } catch (error) {
         const progress = { state: 'incomplete', step: 'revoke', at: new Date().toISOString(), teaching: String(error?.message ?? error) }
         await device.noteSignOut(progress)
-        return { state: 'incomplete', step: 'revoke', teaching: 'Every instance stopped, but the account service did not confirm the revocation, so this device is still signed in. Retry sign-out: it repeats the same revoke request.' + ` (${String(error?.message ?? error)})` }
+        return { state: 'incomplete', step: 'revoke', stops, teaching: 'Every instance stopped, but the account service did not confirm the revocation, so this device is still signed in. Retry sign-out: it repeats the same revoke request.' + ` (${String(error?.message ?? error)})` }
       }
       // `alreadyRevoked` is the browser having revoked this device first. The revocation this
       // computer wanted is a fact either way, so the rest of the sign-out proceeds; only the
@@ -1526,7 +1470,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         return current
       })
       device.clear()
-      return { state: 'signed_out', revokeState: revoked.state, alreadyRevoked: revoked.alreadyRevoked === true, cleared }
+      return { state: 'signed_out', revokeState: revoked.state, alreadyRevoked: revoked.alreadyRevoked === true, cleared, stops,
+        ...(stops.some(row => row.results.some(result => result.forced)) ? { teaching: 'Signed out. Owned processes were killed after the graceful drain bound and their exits were observed before revocation. Work already handed to Rulith may still be running; check Console.' } : {}) }
     },
 
     /**
@@ -1551,7 +1496,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       try {
         return await manager.__forgetDevice()
       } finally {
-        if (phase === 'signing_out') phase = 'ready'
+        if (phase === 'signing_out') { phase = 'ready'; await resumeWorkers() }
       }
     },
 
@@ -1563,9 +1508,11 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       if (state === 'none' || state === 'pending') { device.clear(); return { state: 'none', cleared: [], revoke: 'not_issued' } }
       const running = []
+      const stops = []
       for (const row of registry.read().instances) {
         if (hosts.has(row.id)) {
           const result = await manager.stop(row.id)
+          stops.push({ id: row.id, name: row.name, results: result.results })
           if (!result.stopped) running.push({ id: row.id, name: row.name, results: result.results })
         } else {
           const results = survivingProcesses(row)
@@ -1573,13 +1520,13 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         }
       }
       if (running.length > 0) {
-        return { state: 'incomplete', step: 'stop', running,
+        return { state: 'incomplete', step: 'stop', running, stops,
           teaching: `Still running: ${stillRunning(running)}. Stop them before clearing the credentials this authorization issued.` }
       }
       const late = registry.read().instances.filter((row) => runningRoles(row.id).length > 0 || survivingProcesses(row).length > 0)
       if (late.length > 0) {
         const lateRunning = late.map((row) => ({ id: row.id, name: row.name, results: survivingProcesses(row) }))
-        return { state: 'incomplete', step: 'stop', running: lateRunning,
+        return { state: 'incomplete', step: 'stop', running: lateRunning, stops,
           teaching: `Still running: ${stillRunning(lateRunning)}. Nothing was revoked or cleared; stop them and retry.` }
       }
       let revoke = 'not_issued'
@@ -1605,13 +1552,15 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         return current
       })
       device.clear()
-      return { state: 'none', cleared, revoke,
+      return { state: 'none', cleared, revoke, stops,
         ...(revoke === 'unconfirmed'
           ? { teaching: `The credentials this authorization issued were cleared from every instance, and the account service did not confirm the revocation (${revokeTeaching}). It had already refused this device, so nothing here can still execute; check the device list in Console.` }
           : revoke === 'unreadable'
             ? { teaching: 'The device record could not be read, so the credential that would have revoked this device could not be used.'
                 + ' Every instance was stopped and the credentials it issued were cleared from this computer; revoke this device in Console to withdraw it there.' }
-            : {}) }
+            : stops.some(row => row.results.some(result => result.forced))
+              ? { teaching: 'The authorization was cleared after owned processes were killed at the graceful drain bound and their exits were observed. Work already handed to Rulith may still be running; check Console.' }
+              : {}) }
     },
 
     /**

@@ -151,18 +151,18 @@ poll,refresh,signout,forget}`, `/manager/instances/{create,import,pair,pair/poll
 open,start,stop,forget}`. All writes are `POST` JSON with the `x-rulith-manager` header taken
 from this page's address.
 
-The integrated manager server implements both additional lifecycle routes:
+Runtime 0.11 replaces the original role-button routes with the per-Agent local-tools setting:
 
 | Route | Used for |
 | --- | --- |
-| `POST /manager/instances/control {instanceId, role, operation}` | Start or stop **one** role of the selected Agent from its controls in the Agent rail. |
+| `POST /manager/instances/worker-setting {instanceId, enabled}` | Save the selected Agent's local-tools setting and apply its Worker lifecycle automatically. |
 | `POST /manager/instances/pair/cancel {instanceId}` | Giving up an interrupted attachment. |
 
-The server authorizes both operations using the selected instance's normal policy. Errors display the server's actual teaching beside the control. There is deliberately **no
-fallback** onto `/manager/instances/start`: that route starts every role of an instance, and
-quietly starting a Worker because someone pressed "Start Agent" would be a false statement
-about the computer. `/manager/instances/{start,stop}` remain reachable, as "Start Agent and
-Worker" and "Stop everything", inside the settings dialog's technical disclosure.
+The server authorizes both operations using the selected instance's normal policy. Errors
+display the server's actual teaching beside the setting. The former
+`/manager/instances/{control,start,stop}` routes and the local `/control` route are removed.
+The first message starts the Agent; model changes reload it between turns. The per-turn
+Stop endpoint is scoped to one conversation and preserves work already sent to Rulith.
 
 The control response is read defensively: an optional `control` object contributes a state word
 and a teaching to the message, but whether a role is running is taken from the refreshed state

@@ -63,7 +63,7 @@ export function defaultLocalConfig() {
       RULITH_URL: 'https://api.rulith.ai', RULITH_TOKEN: '',
       RULITH_MODEL_URL: 'https://api.anthropic.com/v1/messages', RULITH_MODEL: 'claude-sonnet-5', RULITH_MODEL_KEY: '',
     } },
-    worker: { env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '' } },
+    worker: { enabled: false, env: { RULITH_WORK_URL: 'https://api.rulith.ai/work', RULITH_CONNECTION: '', RULITH_CONNECTION_KEY: '' } },
     paths: {},
   }
 }
@@ -222,7 +222,7 @@ export function createLocalHost({
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
   materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
   registerMaterialSubmission, acceptedMaterialBinding,
-  getApprovedDeviceId,
+  getApprovedDeviceId, workerRestartDelays = [250, 1000, 4000, 10000], workerStableMs = 60_000,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -252,7 +252,7 @@ export function createLocalHost({
    * A host launched by the manager is one *managed* instance: its Agent identity is frozen,
    * and whether it may run at all depends on a device grant that lives outside this process's
    * configuration file. The instance's own page is reachable by anyone holding this host's
-   * key, and `POST /control` and `POST /setup/*` are exactly the two routes that could
+   * key. First-message startup, the Worker setting and `POST /setup/*` could
    * otherwise start execution, or re-pair, or re-point a model, without the manager — and
    * therefore without the account lifecycle the manager is responsible for.
    *
@@ -278,11 +278,8 @@ export function createLocalHost({
   /**
    * Tell the owner, every time this host gains or loses a child process.
    *
-   * A supervisor that only learns about children through its own start and stop calls has a
-   * blind spot the size of this host's `/control` route: that route is reachable from the
-   * instance's own page, which is a perfectly ordinary thing for an operator to use. A child
-   * started that way existed only in this process's memory, so the record another manager
-   * reads after a crash said there were none. This fires on spawn and on exit, whoever asked.
+   * Automatic first-message startup and Worker restarts also change ownership. Record every
+   * spawn and exit so that a later manager knows which children may have survived a crash.
    */
   const announceChildren = () => {
     if (onChildChange === undefined) return
@@ -301,6 +298,29 @@ export function createLocalHost({
     agent: { child: null, serveKey: '', servePort: 7799, agentId: 'unconfigured' },
     worker: { child: null },
   }
+  const reloads = { agent: null, worker: null }
+  const reloadAgain = { agent: false, worker: false }
+  let agentStarting, workerRetryTimer, workerFailures = 0, workerFailure = '', workerCredentialRejected = false
+  const workerEnabled = () => selectedRoles.includes('worker') && config.worker?.enabled === true
+  const workerSetup = () => {
+    const env = effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
+    return !!(env.RULITH_CONNECTION && env.RULITH_CONNECTION_KEY)
+  }
+  const hasLocalTools = () => {
+    if (!selectedRoles.includes('worker')) return false
+    if (!selectedRoles.includes('agent') || ['read', 'read-write'].includes(config.worker?.env?.RULITH_WORKSPACE_TOOLS)
+      || mcpServices.overview().services.length > 0 || materials.inUse()) return true
+    try {
+      const toolsFile = resolve(configDir, config.worker?.env?.RULITH_TOOLS_FILE || 'worker-tools.json')
+      return Object.keys(JSON.parse(readFileSync(toolsFile, 'utf8')).tools ?? {}).length > 0
+    } catch { return false }
+  }
+  const workerView = () => ({ enabled: workerEnabled(), visible: workerEnabled() || hasLocalTools(),
+    state: !workerSetup() || (workerEnabled() && components.worker.availability === 'needs setup') ? 'needs setup'
+      : running('worker') && components.worker.readyAt !== undefined && !stopRequested.has(components.worker.child)
+        ? components.worker.availability ?? 'offline' : 'offline',
+    reloading: !!reloads.worker, failures: workerFailures, failure: workerFailure,
+    retryAt: components.worker.retryAt ?? null })
   /**
    * Who this host is, for the purposes of owning material.
    *
@@ -407,21 +427,6 @@ export function createLocalHost({
   } })
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
   /**
-   * Does the running Worker still carry a model destination other than the one in force?
-   *
-   * A Worker is given the Agent's model destination when it starts, and its reads of local
-   * attachments compare against that copy, so after a model change only a restarted Worker can
-   * deliver a newly added attachment. A Worker started without a material binding holds no
-   * attachments and uses no destination, so nothing about it is out of date: it used to be
-   * reported as needing a restart from the moment any model was configured.
-   */
-  let attachmentsSeen = false, attachmentsCheckedAt = -Infinity
-  const workerModelRestartRequired = () => {
-    if (!running('worker') || components.worker.materialDestination === undefined) return false
-    try { return components.worker.materialDestination !== materialIdentityNow().modelDestination }
-    catch { return false }
-  }
-  /**
    * The role processes this host owns right now, each with the stamp taken the moment it was
    * spawned (`process-identity.mjs`). The pid alone is what an owner used to record; the stamp is
    * what lets a later run tell this child from an unrelated process that got the same pid.
@@ -432,9 +437,9 @@ export function createLocalHost({
   const setup = createSetupService({ configFile, getConfig: () => config,
     effectiveEnv: () => effectiveChildEnv(baseEnv(), config.worker?.env ?? {}),
     agentCredentialConfigured: () => !!agentEnvironment().RULITH_TOKEN,
-    stopped: () => !running('agent') && !running('worker'), agentStopped: () => !running('agent'), workerStopped: () => !running('worker'), mcpServices, toolManagement,
+    workerStopped: () => !running('worker'), mcpServices, toolManagement,
     approvePairing: setupApprover,
-    onModelConfigured: async () => { activeModelOverlay = undefined; return await onModelConfigured?.() },
+    onModelConfigured: async () => { activeModelOverlay = undefined; requestReload('worker'); return await onModelConfigured?.() },
     // A stopped Worker leaves its last launch environment for diagnostics. It must not remain
     // the source of truth after a key rotation, or status could describe a credential that the
     // next Worker will no longer receive.
@@ -442,9 +447,13 @@ export function createLocalHost({
     authorizeConnectionKey,
     saveConfig: next => {
       const normalized = normalizeLocalConfig(next)
+      const agentChanged = JSON.stringify(normalized.agent) !== JSON.stringify(config.agent)
+      const workerChanged = JSON.stringify(normalized.worker?.env) !== JSON.stringify(config.worker?.env)
       saveConfig(configFile, normalized)
       config = normalized
       selectedRoles.splice(0, selectedRoles.length, ...rolesOf(config.roles))
+      if (agentChanged) requestReload('agent')
+      if (workerChanged) requestReload('worker')
     },
   })
   const emit = (src, type, data = {}) => {
@@ -463,7 +472,7 @@ export function createLocalHost({
    * The children an operator asked to stop, by process identity.
    *
    * A stopped child exits, and an exit is otherwise a startup failure. Without this the two
-   * are indistinguishable and the operator who pressed Stop while a start was still being
+   * are indistinguishable and an owner stopping the host while a start was still being
    * confirmed was told to "fix the missing local configuration" — advice about a defect that
    * does not exist, for something they did on purpose. Keyed on the child object rather than
    * on the role, so it can never be read against the process that replaced it.
@@ -495,6 +504,9 @@ export function createLocalHost({
         const settle = components[src].onReady
         components[src].onReady = undefined
         settle?.()
+      }
+      if (src === 'worker' && components.worker.child === child && event.type === 'availability') {
+        components.worker.availability = ['online', 'offline', 'needs setup'].includes(event.state) ? event.state : 'offline'
       }
       if (src === 'agent' && components.agent.child === child && !stopRequested.has(child)
         && event.type === 'start' && typeof event.agentId === 'string' && event.agentId.trim() !== '') {
@@ -528,7 +540,7 @@ export function createLocalHost({
   const closingRefusal = 'This Local host is closing, so nothing new is started. Open this Agent again to start it.'
   const startAgent = () => {
     if (closing) return closingRefusal
-    if (historyBusy) return 'Wait for the conversation archive operation to finish, then start the Agent.'
+    if (historyBusy) return 'The conversation archive is finishing. Send your message again once it finishes.'
     if (running('agent')) return 'Agent is already running.'
     const path = config.paths?.agent ? resolve(configDir, config.paths.agent) : resolve(HERE, '../agent/rulith-agent.mjs')
     if (!existsSync(path)) return `Agent runtime not found at ${path}. Set paths.agent in the Rulith configuration.`
@@ -549,12 +561,9 @@ export function createLocalHost({
      * A conversation lock an earlier Agent left behind is judged here, before the new Agent judges
      * it from inside itself.
      *
-     * The Agent does not advertise a managed stop, so every stop is `child.kill()`, and on Windows
-     * that ends it before it can release `<history>.lock`. The next Agent then asks whether the
-     * process that lock names still runs, and nothing inside that Agent says that its pid now
-     * belongs to this host, or to a child this host started: after a stop, **Prepare sample and
-     * start Worker** can hand the old Agent's pid to the new Worker, and the new Agent refused to
-     * start. This host knows its own pid and session and the children it started, so
+     * A crash or a stop of an older Agent can leave `<history>.lock`. Windows may give that pid
+     * to this host or its Worker before the next Agent starts. This host knows its own pid,
+     * session and the children it started, so
      * `clearStaleLock` removes the lock when that view proves its writer has ended. Nothing is
      * refused or waited for here: a lock that still looks held is left to the Agent, which says so.
      *
@@ -566,7 +575,7 @@ export function createLocalHost({
      * never does. Nor can this host's own archive lease be held at this point: an archive in
      * progress refuses the start above.
      *
-     * 中文说明：Agent 被 kill 后（Windows 上每次停止都是），对话历史的锁文件留在原地。新 Agent 在自己的进程里
+     * 中文说明：Agent 崩溃或旧版本被 kill 后，对话历史的锁文件可能留在原地。新 Agent 在自己的进程里
      * 判断这把锁，看不出锁上的 pid 现在属于本主机或它启动的 Worker；本主机知道，所以在启动前先清掉已被证明
      * 过期的锁。只有在没有 Agent 子进程运行时调用才安全。
      */
@@ -580,7 +589,7 @@ export function createLocalHost({
         RULITH_CONVERSATION_OWNER: historyFile ? JSON.stringify(conversationOwner) : '',
         RULITH_LOCAL_EVENTS: 'ipc', RULITH_SERVE_KEY: serveKey, RULITH_SERVE_PORT: String(servePort),
         // The Agent is given the delivery endpoint and the one key that opens it — never this
-        // host's page key, which would also open `/control` and `/setup/*`.
+        // host's page key, which would also open `/worker-setting` and `/setup/*`.
         RULITH_MATERIALS_CONNECTION: materialConnection,
         ...(materialConnection !== '' ? {
           RULITH_MATERIALS_DELIVER_URL: `http://127.0.0.1:${server.address()?.port ?? port}/materials/deliver`,
@@ -588,7 +597,7 @@ export function createLocalHost({
         } : {}) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     })
-    components.agent = { ...components.agent, child, stamp: processStamp(child.pid, { script: path }), serveKey, servePort, agentId: 'unconfigured', readyAt: undefined, onReady: undefined }
+    components.agent = { ...components.agent, child, stamp: processStamp(child.pid, { script: path }), serveKey, servePort, agentId: 'unconfigured', readyAt: undefined, onReady: undefined, managedStop: false }
     noteChildStarted(child.pid)
     wireChild('agent', child)
     child.on('exit', (code) => {
@@ -626,23 +635,54 @@ export function createLocalHost({
       env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc', ...materialEnv },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
-    components.worker = { ...components.worker, child, stamp: processStamp(child.pid, { script: path }), roleEnv, materialDestination: materialEnv.RULITH_MATERIALS_MODEL_DESTINATION,
-      readyAt: undefined, onReady: undefined, managedStop: false }
+    components.worker = { ...components.worker, child, stamp: processStamp(child.pid, { script: path }), roleEnv,
+      readyAt: undefined, onReady: undefined, managedStop: false, availability: 'offline' }
     noteChildStarted(child.pid)
     wireChild('worker', child)
-    child.on('exit', (code) => { noteChildExited(child.pid); emit('worker', 'exit', { code }); components.worker.child = null; announceChildren() })
+    child.on('exit', (code) => {
+      noteChildExited(child.pid)
+      emit('worker', 'exit', { code })
+      if (components.worker.child === child) components.worker.child = null
+      announceChildren()
+      if (closing || !workerEnabled() || stopRequested.has(child)) return
+      if (code === 3) {
+        components.worker.availability = 'needs setup'
+        workerCredentialRejected = true
+        workerFailures += 1
+        workerFailure = 'The Worker credential was rejected. Replace its Connection key before enabling local tools again.'
+        emit('worker', 'restart-failed', { note: workerFailure, code })
+        return
+      }
+      if (Date.now() - components.worker.startedAt >= workerStableMs) workerFailures = 0
+      const delay = workerRestartDelays[workerFailures++]
+      if (delay === undefined) {
+        workerFailure = 'The Worker repeatedly exited. Automatic retries have stopped. Review Trace and tool setup, then turn this setting on again.'
+        emit('worker', 'restart-failed', { note: workerFailure, failures: workerFailures })
+        return
+      }
+      components.worker.retryAt = Date.now() + delay
+      emit('worker', 'restart-wait', { delay, failures: workerFailures })
+      workerRetryTimer = setTimeout(() => {
+        workerRetryTimer = undefined
+        components.worker.retryAt = null
+        void ensureWorker().catch(error => { workerFailure = error.message; emit('local', 'error', { note: workerFailure }) })
+      }, delay)
+      workerRetryTimer.unref?.()
+    })
+    components.worker.startedAt = Date.now()
     emit('worker', 'spawn', { pid: child.pid })
     announceChildren()
     return null
   }
-  const stop = (role) => {
+  const stop = (role, { reload = false } = {}) => {
+    if (role === 'worker') { clearTimeout(workerRetryTimer); workerRetryTimer = undefined; components.worker.retryAt = null }
     const child = components[role]?.child
     if (child === null || child === undefined) return `${role} is not running.`
     stopRequested.add(child)
     // Windows 的 kill 会直接结束 Worker，来不及关闭它启动的 stdio MCP 子进程。
     // 只给明确广告了托管停止能力的当前子进程发 IPC；仍以 exit 事件确认停止。
     if (components[role].managedStop && child.connected) {
-      child.send({ protocol: 'rulith-local-control', operation: 'stop' }, error => { if (error) child.kill() })
+      child.send({ protocol: 'rulith-local-control', operation: reload && role === 'agent' ? 'reload' : 'stop' }, error => { if (error) child.kill() })
     } else child.kill()
     return null
   }
@@ -656,12 +696,10 @@ export function createLocalHost({
    *
    * So the exit event this host already receives is what decides, within a short bound. A
    * well-behaved role exits in milliseconds and still answers `stopped`; one that does not is
-   * answered `stopping`, truthfully. **Nothing is escalated**: no second signal, no SIGKILL, no
-   * supervisor. Whether a process that refuses to leave should be forced is a decision this
-   * host does not make, and reporting it accurately is what lets somebody else make it.
+   * answered `stopping`, truthfully. The manager's explicit exit/removal may then force its
+   * owned child to end, but still has to observe that exit before claiming it stopped.
    */
-  const observeExit = (role, waitMs = STOP_OBSERVE_MS) => new Promise((settle) => {
-    const child = components[role]?.child
+  const observeExit = (role, waitMs = STOP_OBSERVE_MS, child = components[role]?.child) => new Promise((settle) => {
     if (hasExited(child)) return void settle('stopped')
     const finish = (outcome) => { clearTimeout(timer); child.off('exit', onExit); settle(outcome) }
     const onExit = () => finish('stopped')
@@ -724,21 +762,17 @@ export function createLocalHost({
     state.onReady = finishReady
     child.once('exit', onExit)
   })
-  /**
-   * Start or stop one role, and answer with what actually happened: `POST /control` itself.
-   *
-   * It is a function so that the one other caller — preparing the calculation sample, which
-   * stops and starts the Worker for the operator — asks the owner's policy, waits for the same
-   * evidence and describes the outcome in exactly the words the Runtime controls use. The
-   * route's own gate (no start while configuration is being written) stays in the route: that
-   * sample step is the configuration being written.
-   *
-   * `stopWaitMs` only lengthens how long a stop watches for the exit. It never escalates.
-   */
-  const controlRole = async (role, operation, req, { stopWaitMs = STOP_OBSERVE_MS } = {}) => {
+  // Internal role ownership, shared by first-message startup, sample setup and global exit.
+  // Readiness and exit are confirmed by the child. There is no browser role-control route.
+  const controlRole = async (role, operation, req, { stopWaitMs = STOP_OBSERVE_MS, forceAfterDrain = false } = {}) => {
     if (operation === 'start') {
       const refused = await permitted({ kind: 'start', role }, req)
       if (refused !== null) return { status: 409, body: { ok: false, state: 'refused', teaching: refused } }
+    }
+    if (operation === 'stop' && selectedRoles.includes(role)) {
+      // Exit/removal supersedes a configuration reload waiting for this child's drain.
+      reloads[role] = null
+      reloadAgain[role] = false
     }
     let error = !selectedRoles.includes(role)
       ? `${role} is not enabled in mode ${modeOf(selectedRoles)}.`
@@ -746,16 +780,21 @@ export function createLocalHost({
         : operation === 'start' ? (role === 'agent' ? startAgent() : role === 'worker' ? startWorker() : 'role must be agent or worker.')
           : 'operation must be start or stop.'
     if (error === null && operation === 'stop') {
-      // The signal has been sent; whether it was obeyed is the process's answer, not this
-      // host's. `stopped` says an exit was observed. `stopping` says it was not — no second
-      // signal follows, and the role is still listed as running until it really goes.
-      const observed = await observeExit(role, stopWaitMs)
+      const child = components[role].child
+      let observed = await observeExit(role, stopWaitMs, child)
+      let forced = false
+      if (observed === 'stopping' && forceAfterDrain && !hasExited(child)) {
+        // Only this host's ChildProcess is eligible, never a pid recovered from a registry.
+        forced = child.kill('SIGKILL')
+        emit('local', 'role-forced-stop', { role, pid: child.pid, forced,
+          note: `The ${role === 'agent' ? 'Agent' : 'Worker'} did not exit within the graceful drain bound; forced termination was ${forced ? 'requested' : 'not sent'}.` })
+        observed = await observeExit(role, STOP_OBSERVE_MS, child)
+      }
       return { status: 200, body: observed === 'stopped'
-        ? { ok: true, state: 'stopped' }
-        : { ok: true, state: 'stopping', teaching:
-            `The stop signal was sent to ${role === 'agent' ? 'the Agent' : 'the Worker'}, and it has not exited yet.`
-            + ' Rulith does not force a process to end; it is still listed as running,'
-            + ' and its exit will appear in Trace if it does end.' } }
+        ? { ok: true, state: 'stopped', forced, ...(forced ? { teaching:
+          `The ${role === 'agent' ? 'Agent' : 'Worker'} was killed after the graceful drain bound; its exit was observed. Work already handed to Rulith may still be running; check Console.` } : {}) }
+        : { ok: true, state: 'stopping', forced, teaching:
+            `The ${forced ? 'forced termination' : 'stop'} request was sent to ${role === 'agent' ? 'the Agent' : 'the Worker'}, and its exit has not been observed. It is still listed as running; check Trace and Console.` } }
     }
     if (error === null && operation === 'start') {
       const named = role === 'agent' ? 'Agent' : 'Worker'
@@ -773,7 +812,7 @@ export function createLocalHost({
         return { status: 409, body: { ok: false, state: 'cancelled', teaching:
           `A stop was requested for the ${named} before this start finished, so this start is not confirmed. Nothing about it failed.`
           + (exited
-            ? ' It is not running; start it again when you want it running.'
+            ? ' It is not running; retry from the conversation or local tools setting when the workbench is ready.'
             : ' The stop signal was sent and it has not exited yet, so anything it reported'
               + ' after that is not a confirmation of this start. Watch Trace for its exit.') } }
       } else if (outcome === 'unconfirmed') {
@@ -794,6 +833,95 @@ export function createLocalHost({
     return { status: error === null ? 200 : 400,
       body: error === null ? { ok: true, state: 'ready' } : { ok: false, teaching: error } }
   }
+  // Reuse the role owner and its drain protocol; no second process manager or polling loop.
+  const ensureWorker = async () => {
+    if (closing || setup.busy || mcpServices.busy || !workerEnabled() || running('worker') || reloads.worker || workerRetryTimer
+      || workerCredentialRejected || workerFailures > workerRestartDelays.length) return
+    if (!workerSetup()) { workerFailure = 'Set up this Agent\'s Worker Connection before using local tools.'; return }
+    const refused = await permitted({ kind: 'start', role: 'worker' })
+    if (refused !== null) { workerFailure = refused; return }
+    if (closing || !workerEnabled() || running('worker')) return
+    workerFailure = ''
+    const error = startWorker()
+    if (error !== null) { workerFailure = error; emit('local', 'error', { role: 'worker', note: error }) }
+  }
+  const requestReload = (role, note) => {
+    if (closing) return null
+    if (reloads[role]) {
+      if (running(role) && !stopRequested.has(components[role].child)) reloadAgain[role] = true
+      return reloads[role]
+    }
+    const child = components[role].child
+    if (!running(role)) {
+      if (role === 'worker') { workerFailures = 0; workerFailure = ''; workerCredentialRejected = false; void ensureWorker() }
+      return null
+    }
+    emit('local', 'role-reloading', { role, note: note ?? (role === 'agent'
+      ? 'Model settings saved. The Agent restarts automatically after accepted turns finish.'
+      : 'Tool settings saved. The Worker reloads automatically after its running executions drain.') })
+    const exited = new Promise(done => child.once('exit', done))
+    stop(role, { reload: true })
+    const reload = exited.then(async () => {
+      if (reloads[role] !== reload || closing || !selectedRoles.includes(role) || (role === 'worker' && !workerEnabled())) return
+      const refused = await permitted({ kind: 'start', role })
+      if (refused !== null) throw new Error(refused)
+      if (reloads[role] !== reload || closing || (role === 'worker' && !workerEnabled())) return
+      const error = role === 'agent' ? startAgent() : startWorker()
+      if (error !== null) throw new Error(error)
+      const confirmation = await confirmStart(role)
+      if (confirmation.outcome !== 'ready') throw new Error(`${role === 'agent' ? 'Agent' : 'Worker'} reload is ${confirmation.outcome}. Review Trace and setup.`)
+      emit('local', 'role-reloaded', { role, note: `${role === 'agent' ? 'Agent' : 'Worker'} reloaded automatically.` })
+    }).catch(error => { workerFailure = role === 'worker' ? error.message : workerFailure; emit('local', 'error', { role, note: error.message }) })
+      .finally(() => {
+        if (reloads[role] !== reload) return
+        reloads[role] = null
+        if (reloadAgain[role]) { reloadAgain[role] = false; requestReload(role) }
+      })
+    reloads[role] = reload
+    return reload
+  }
+  const ensureAgent = async (req, sessionKey) => {
+    if (!selectedRoles.includes('agent')) throw new Error('This profile uses an existing Agent client.')
+    const refused = await permitted({ kind: 'start', role: 'agent' }, req)
+    if (refused !== null) throw new Error(refused)
+    while (reloads.agent) await reloads.agent
+    if (closing) throw new Error(closingRefusal)
+    if (!running('agent') || components.agent.readyAt === undefined) {
+      if (!agentStarting) {
+        emit('local', 'agent-starting', { session: sessionKey, note: 'Starting…' })
+        agentStarting = (async () => {
+          if (running('agent')) {
+            const ready = await confirmStart('agent')
+            if (ready.outcome !== 'ready') throw new Error('The Agent has not finished starting. Check Trace and model setup.')
+          } else {
+            const answer = await controlRole('agent', 'start', req)
+            if (!answer.body.ok) throw new Error(answer.body.teaching)
+          }
+        })().finally(() => { agentStarting = undefined })
+      }
+      await agentStarting
+    }
+  }
+  const setWorkerEnabled = async (enabled, req) => {
+    if (typeof enabled !== 'boolean' || !selectedRoles.includes('worker')) throw new Error('Choose whether this Agent uses this computer\'s tools and files.')
+    if (setup.busy || mcpServices.busy) throw new Error('Wait for this Agent\'s configuration to finish before changing its local tools setting.')
+    const refusal = await permitted({ kind: 'setup', path: '/worker-setting' }, req)
+    if (refusal !== null) throw new Error(refusal)
+    const next = { ...config, worker: { ...config.worker, enabled } }
+    saveConfig(configFile, next)
+    config = next
+    workerFailures = 0; workerFailure = ''
+    workerCredentialRejected = false
+    clearTimeout(workerRetryTimer); workerRetryTimer = undefined; components.worker.retryAt = null
+    if (enabled) {
+      if (running('worker') && stopRequested.has(components.worker.child)) requestReload('worker')
+      else await ensureWorker()
+    }
+    else if (running('worker')) requestReload('worker')
+    return { ...workerView(), teaching: enabled
+      ? 'This computer\'s tools and files are enabled for this Agent. The Worker runs with Rulith; permissions stay in Console.'
+      : 'Local tools are off. The Worker stops after its running executions drain.' }
+  }
   /**
    * The Worker controls the calculation sample step is given, bound to the request that asked.
    *
@@ -803,9 +931,16 @@ export function createLocalHost({
    * is refused while Worker tools are being changed, as the route refuses it.
    */
   const sampleWorkerControls = (req) => ({
-    stopWorker: () => controlRole('worker', 'stop', req, { stopWaitMs: sampleStopWaitMs }),
+    stopWorker: async () => {
+      const answer = await controlRole('worker', 'stop', req, { stopWaitMs: sampleStopWaitMs })
+      if (running('worker') && workerEnabled() && !closing) {
+        requestReload('worker', 'The enabled Worker resumes with its previous tools after execution drain; the sample has not been prepared.')
+        answer.body.resuming = true
+      }
+      return answer
+    },
     startWorker: async () => (mcpServices.busy
-      ? { status: 409, body: { ok: false, teaching: 'Worker tools are being changed. Start the Worker when that finishes.' } }
+      ? { status: 409, body: { ok: false, teaching: 'Worker tools are being changed. The enabled Worker resumes when configuration finishes.' } }
       : controlRole('worker', 'start', req)),
     /** A start already known to be refused, said before a running Worker is stopped for it. */
     startRefusal: async () => (closing ? closingRefusal : mcpServices.busy ? 'Worker tools are being changed.'
@@ -875,7 +1010,7 @@ export function createLocalHost({
        *
        * This route is answered **before** the page gate, deliberately. The Agent is the caller,
        * and handing the Agent this host's page key to reach one read endpoint would also hand it
-       * `/control`, `/setup/*` and every other route the key admits. It gets the materials key
+       * `/worker-setting`, `/setup/*` and every other route the key admits. It gets the materials key
        * instead, which admits exactly this. The rebinding and cross-origin protections are the
        * same ones every other route has — that is what `contextGate` is for — and a browser page
        * holding the page key does not hold this one.
@@ -914,7 +1049,6 @@ export function createLocalHost({
           const added = materials.add(await readMaterialJson(req))
           // This route is how an operator's attachment arrives, so the answer the page polls for
           // ("does this Agent have attachments?") changes here, not a few seconds later.
-          attachmentsSeen = true
           return void json(res, 200, { ok: true, ...added })
         } catch (error) { return materialFailure(res, error) }
       }
@@ -937,7 +1071,9 @@ export function createLocalHost({
         if (refused !== null) return void json(res, 409, { ok: false, teaching: refused })
         res.setHeader('cache-control', 'no-store')
         try {
-          return void json(res, 200, { ok: true, ...await operation(body) })
+          const result = await operation(body)
+          await ensureWorker()
+          return void json(res, 200, { ok: true, ...result })
         } catch (error) {
           // The service's own code travels back to the caller. Cancelling a pairing has to
           // tell "already approved" apart from "could not be confirmed", and a flattened
@@ -975,9 +1111,7 @@ export function createLocalHost({
         if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
           return void json(res, 403, { ok: false, teaching: 'Worker tool configuration requires the Local page key and the same origin.' })
         }
-        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Stop Agent and Worker in Runtime controls before changing Worker tools.' })
         const body = await readJson(req)
-        if (running('agent') || running('worker')) return void json(res, 409, { ok: false, teaching: 'Runtime started while reading the request. Stop it before configuring Worker tools.' })
         if (mcpServices.busy || setup.busy) return void json(res, 409, { ok: false, teaching: 'Wait for the current tool configuration operation to finish.' })
         const result = path === '/worker-tools/save' ? toolManagement.save(body)
           : path === '/worker-tools/remove' ? toolManagement.remove(body)
@@ -987,7 +1121,11 @@ export function createLocalHost({
           : path === '/mcp-services/probe' ? await mcpServices.probe(body)
             : path === '/mcp-services/apply' ? await mcpServices.apply(body)
               : path === '/mcp-services/remove' ? await mcpServices.remove(body.name) : undefined
-        if (result) return void json(res, 200, { ok: true, ...result })
+        if (result) {
+          if (!['/mcp-services/probe', '/mcp-services/prepare'].includes(path)) requestReload('worker')
+          return void json(res, 200, { ok: true, ...result,
+            teaching: (result.teaching || 'Tool configuration saved.') + ' The Worker reloads automatically after running executions drain.' })
+        }
       }
       if (path === '/' && req.method === 'GET') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
@@ -1016,7 +1154,7 @@ export function createLocalHost({
           const body = await readJson(req)
           if (typeof body.sessionKey !== 'string' || typeof body.archived !== 'boolean') return void json(res, 400, { ok: false, teaching: 'Choose a conversation and archive or restore it.' })
           if (running('agent')) {
-            if (components.agent.readyAt === undefined) return void json(res, 409, { ok: false, teaching: 'The Agent is still starting. Archive this conversation when it is ready, or stop it first.' })
+            if (components.agent.readyAt === undefined) await confirmStart('agent')
             const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/conversation/archive`, {
               method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey },
               body: JSON.stringify(body), signal: AbortSignal.timeout(10000),
@@ -1047,6 +1185,10 @@ export function createLocalHost({
         clients.add(res); return
       }
       if (path === '/status' && req.method === 'GET') {
+        if (running('agent') && components.agent.readyAt !== undefined && components.agent.child.connected
+          && !stopRequested.has(components.agent.child)) {
+          components.agent.child.send({ protocol: 'rulith-local-control', operation: 'observe' }, () => {})
+        }
         const agentEnv = agentEnvironment()
         const workerEnv = components.worker.roleEnv ?? effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
         const consoleOrigin = conversationOwner?.origin ? consoleOriginFor(conversationOwner.origin) : ''
@@ -1055,6 +1197,7 @@ export function createLocalHost({
           agent: running('agent'), worker: running('worker'),
           ready: Object.fromEntries(['agent', 'worker'].map(role => [role,
             running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])),
+          workerSetting: workerView(), agentReloading: !!reloads.agent,
           runtime: {
             configFile,
             ...(consoleOrigin && conversationOwner?.accountId
@@ -1078,21 +1221,26 @@ export function createLocalHost({
               connection: String(workerEnv.RULITH_CONNECTION ?? ''), credentialConfigured: String(workerEnv.RULITH_CONNECTION_KEY ?? '') !== '',
               workspaceTools: String(workerEnv.RULITH_WORKSPACE_TOOLS ?? 'read'),
               toolsFile: String(workerEnv.RULITH_TOOLS_FILE ?? ''), sourcesFile: String(workerEnv.RULITH_SECRETS_FILE ?? ''),
-              // The conversation page says this where it matters: beside files being attached.
-              modelRestartRequired: workerModelRestartRequired(),
             },
           },
         })
       }
-      if (path === '/control' && req.method === 'POST') {
+      if (path === '/worker-setting' && req.method === 'POST') {
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Changing this setting requires the Local page key and the same origin.' })
         const body = await readJson(req)
-        const role = String(body.role ?? '')
-        if (body.operation === 'start' && (mcpServices.busy || setup.busy)) return void json(res, 409, { ok: false, teaching: 'Wait for configuration to finish before starting Runtime.' })
-        const answer = await controlRole(role, body.operation, req)
-        return void json(res, answer.status, answer.body)
+        if (Object.keys(body).some(field => field !== 'enabled')) throw new Error('Unexpected Worker setting fields.')
+        return void json(res, 200, { ok: true, ...await setWorkerEnabled(body.enabled, req) })
+      }
+      if (path === '/turn/stop' && req.method === 'POST') {
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Stopping a turn requires the Local page key and the same origin.' })
+        const body = await readJson(req)
+        if (!running('agent')) return void json(res, 200, { ok: true, state: 'idle' })
+        const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/turn/stop`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(10000) })
+        return void json(res, response.status, await response.json())
       }
       if (path === '/cases' && req.method === 'POST') {
-        if (!running('agent')) return void json(res, 409, { ok: false, teaching: 'This Local runtime is not running the Agent role.' })
         const body = await readJson(req)
         if (body.requestId !== undefined && (typeof body.requestId !== 'string'
           || !/^[a-zA-Z0-9_-]{16,100}$/.test(body.requestId))) {
@@ -1110,6 +1258,12 @@ export function createLocalHost({
         const sessionKey = String(body.sessionKey ?? '').trim() || (body.requestId
           ? 'ctx-' + createHash('sha256').update(String(body.requestId)).digest('hex').slice(0, 32)
           : `ctx-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`)
+        const text = String(body.text ?? '')
+        if (text.trim() === '' && (body.attachments === undefined || (Array.isArray(body.attachments) && body.attachments.length === 0))) {
+          return void json(res, 400, { ok: false, teaching: 'A case submission needs a message, an attachment, or both.' })
+        }
+        // A durable proof must name the identity reported by a successfully started process.
+        await ensureAgent(req, sessionKey)
         // Membership, ownership and disclosure are settled here, before anything is forwarded.
         // A submission naming one material this profile does not own fails whole: honouring the
         // rest would hand the Agent a list that does not say which of the operator's selections
@@ -1162,24 +1316,37 @@ export function createLocalHost({
         // A person may attach files and write nothing. The host then says what was attached and
         // tells the model to go and find an authorized Action that reads it — it does not read
         // the files, and it puts no part of their content into the message.
-        const text = String(body.text ?? '')
-        if (text.trim() === '' && selected.attachments.length === 0) {
-          return void json(res, 400, { ok: false, teaching: 'A case submission needs a message, an attachment, or both.' })
-        }
-        const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/task`, {
+        const taskBody = JSON.stringify({
+          text: text.trim() === '' ? attachmentInstruction(selected.attachments) : text,
+          sessionKey,
+          ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
+          ...(selected.attachments.length === 0 ? {} : { attachments: selected.attachments }),
+          ...(body.caseId === undefined ? {} : { caseId: body.caseId }),
+          ...(body.historyModelDestination === undefined ? {} : { historyModelDestination: body.historyModelDestination }),
+          ...(body.caseType === undefined ? {} : { caseType: body.caseType }),
+          ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) })
+        const sendTask = () => fetch(`http://127.0.0.1:${components.agent.servePort}/task`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey,
             ...(taskProof ? { 'x-rulith-material-task-proof': taskProof } : {}),
             ...(selectionSecret ? { 'x-rulith-material-selection-key': selectionSecret } : {}) },
-          body: JSON.stringify({
-            text: text.trim() === '' ? attachmentInstruction(selected.attachments) : text,
-            sessionKey,
-            ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
-            ...(selected.attachments.length === 0 ? {} : { attachments: selected.attachments }),
-            ...(body.caseId === undefined ? {} : { caseId: body.caseId }),
-            ...(body.historyModelDestination === undefined ? {} : { historyModelDestination: body.historyModelDestination }),
-            ...(body.caseType === undefined ? {} : { caseType: body.caseType }),
-            ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) }),
+          body: taskBody,
         }).catch(() => undefined)
+        // Registration or another page can begin a reload after the first readiness check.
+        await ensureAgent(req, sessionKey)
+        if (selected.receipt && selected.receipt.agent !== components.agent.agentId) {
+          return void json(res, 409, { ok: false, errorCode: 'material_owner_changed',
+            teaching: 'The Agent identity changed during submission. Nothing was sent to its task endpoint; reopen the material selection.' })
+        }
+        const taskChild = components.agent.child
+        let response = await sendTask()
+        if (response?.status === 503 && (reloads.agent || taskChild !== components.agent.child)) {
+          await response.body?.cancel()
+          await ensureAgent(req, sessionKey)
+          if (selected.receipt && selected.receipt.agent !== components.agent.agentId) {
+            return void json(res, 409, { ok: false, errorCode: 'material_owner_changed', teaching: 'The Agent identity changed while reloading. Nothing was resubmitted.' })
+          }
+          response = await sendTask()
+        }
         if (response === undefined) return void json(res, 502, { ok: false, teaching: 'The Agent task endpoint did not respond.' })
         const answer = await response.json().catch(() => ({ ok: response.ok }))
         return void json(res, response.status, selected.receipt
@@ -1199,7 +1366,7 @@ export function createLocalHost({
      * The secret that opens local material delivery, and only that.
      *
      * It is deliberately a different value from `key`: the roles this host starts are given
-     * this one, and giving them the page key would also give them `/control` and `/setup/*`.
+     * this one, and giving them the page key would also give them `/worker-setting` and `/setup/*`.
      * It is never served over HTTP and never reaches a model.
      */
     materialsKey: materials.key,
@@ -1214,18 +1381,18 @@ export function createLocalHost({
     // claim about which Agent a running process is — exactly the claim that must come from
     // the process.
     get agentId() { return components.agent.agentId },
-    // Material-read tools retain the destination their Worker started with. Report a
-    // needed restart instead of moving an operator attachment's disclosure permission.
-    get workerModelRestartRequired() { return workerModelRestartRequired() },
     /** Manager-only in-memory model replacement for an inherited account default.
      * It intentionally does not write local.json: an inherited key must not become a
      * per-instance credential just because this host happened to be open. */
     setAgentModel: ({ url = '', name = '', key: modelKey = '', thinking = 'standard', maxOutputTokens = 6000 } = {}) => {
-      if (running('agent')) throw new Error('Stop Agent before changing its model.')
-      activeModelOverlay = {
+      const replacement = {
         RULITH_MODEL_URL: String(url), RULITH_MODEL: String(name), RULITH_MODEL_KEY: String(modelKey),
         RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(thinking) ? thinking : '',
         RULITH_MODEL_MAX_OUTPUT_TOKENS: String(maxOutputTokens) }
+      if (JSON.stringify(activeModelOverlay) === JSON.stringify(replacement)) return
+      activeModelOverlay = replacement
+      requestReload('agent')
+      requestReload('worker')
     },
     /**
      * The operating-system processes this host currently owns.
@@ -1237,40 +1404,26 @@ export function createLocalHost({
      * than about whichever process holds the pid by then.
      */
     children: ownChildren,
-    /**
-     * Does this profile hold local attachments, so a Worker restart for a new model matters now?
-     *
-     * Asked on every page poll while a restart is pending, so an answer is reused: attachments are
-     * only ever added, and once seen this stays true; one added through this host is seen at
-     * once, and any other "no" is asked again after a few seconds.
-     */
-    get attachmentsInUse() {
-      if (attachmentsSeen) return true
-      if (performance.now() - attachmentsCheckedAt < 5_000) return false
-      attachmentsCheckedAt = performance.now()
-      attachmentsSeen = materials.inUse()
-      return attachmentsSeen
-    },
-    status: () => ({ mode: modeOf(selectedRoles), roles: selectedRoles, agent: running('agent'), worker: running('worker'),
+    // Trusted in-process owner operations. Browser clients use /cases and /worker-setting.
+    startRole: (role, req) => controlRole(role, 'start', req),
+    stopRole: (role, options) => controlRole(role, 'stop', undefined, options),
+    status: () => ({ mode: modeOf(selectedRoles), roles: selectedRoles, agent: running('agent'), worker: running('worker'), workerSetting: workerView(), agentReloading: !!reloads.agent,
       ready: Object.fromEntries(['agent', 'worker'].map(role => [role,
-        running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])) }),
+          running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])) }),
+    reloadWorker: () => requestReload('worker'),
+    resumeWorker: () => ensureWorker().catch(error => { workerFailure = error.message; emit('local', 'error', { role: 'worker', note: workerFailure }) }),
     events: () => events.map((event) => ({ ...event })),
     listen: () => new Promise((accept, reject) => {
       server.once('error', reject)
       server.listen(port, '127.0.0.1', () => {
-        for (const role of autoStart ? selectedRoles : []) {
-          const error = role === 'agent' ? startAgent() : startWorker()
-          if (error !== null) {
-            emit('local', 'error', { role, note: error })
-            console.error(`[${role}] ${error}`)
-          }
-        }
+        if (autoStart) void ensureWorker()
         emit('local', 'start', { mode: modeOf(selectedRoles), roles: selectedRoles })
         accept()
       })
     }),
     close: async () => {
       closing = true
+      clearTimeout(workerRetryTimer)
       await mcpServices.close()
       const exits = []
       for (const role of ['agent', 'worker']) if (running(role)) {

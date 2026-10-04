@@ -57,7 +57,7 @@ export function sampleToolManifest(bytes) {
 }
 
 /** 本机保存模型配置和领取私钥；Cloud 只收到配对公钥、资源定位及无凭据工具定义。 */
-export function createSetupService({ configFile, getConfig, saveConfig, effectiveEnv, mcpServices, toolManagement, stopped, agentStopped = stopped, workerStopped = stopped, agentCredentialConfigured = () => !!getConfig().agent?.env?.RULITH_TOKEN, approvePairing, onModelConfigured, onConnectionKeyConfigured, authorizeConnectionKey }) {
+export function createSetupService({ configFile, getConfig, saveConfig, effectiveEnv, mcpServices, toolManagement, workerStopped = () => true, agentCredentialConfigured = () => !!getConfig().agent?.env?.RULITH_TOKEN, approvePairing, onModelConfigured, onConnectionKeyConfigured, authorizeConnectionKey }) {
   const stateFile = configFile + '.setup.json'
   let busy = false
   const state = () => read(stateFile, {})
@@ -87,11 +87,8 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
     return value
   }
   const configured = () => !!(connection().id && connection().key)
-  const persistConfiguration = (mutate, role = 'all') => {
-    const allowed = role === 'agent' ? agentStopped() : role === 'worker' ? workerStopped() : stopped()
-    if (!allowed) throw new Error(role === 'agent' ? 'Stop Agent before changing its model.'
-      : role === 'worker' ? 'Stop Worker before changing its configuration.'
-        : 'Stop Agent and Worker before changing local setup.')
+  const persistConfiguration = mutate => {
+    // The host applies changed role environments at its existing drain boundary.
     const current = read(configFile, getConfig()), next = structuredClone(current)
     mutate(next); saveConfig(next)
   }
@@ -130,7 +127,6 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       fields(body, ['expectedOrigin', 'expectedAccountId', 'expectedAgentId', 'expectedConnectionId', 'key'])
       const key = text(body.key)
       if (key.trim() === '') throw new Error('Enter the replacement Connection key.')
-      if (!workerStopped()) throw new Error('Stop Worker before replacing its Connection key.')
       const before = connection(), identity = state()
       if (!before.id || !before.key || !before.base || !identity.agentId) throw new Error('This Local has no complete Connection identity to replace.')
       let expectedOrigin
@@ -158,7 +154,6 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       await authorizeConnectionKey?.({ expectedOrigin, expectedAccountId: text(body.expectedAccountId),
         expectedAgentId: text(body.expectedAgentId), expectedConnectionId: text(body.expectedConnectionId) })
       const after = connection()
-      if (!workerStopped()) throw new Error('Worker started while the replacement key was being verified. Nothing was saved.')
       if (after.id !== before.id || after.key !== before.key || after.base !== before.base) {
         throw new Error('The local Connection identity changed while the replacement key was being verified. Nothing was saved.')
       }
@@ -168,13 +163,13 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
           throw new Error('The local Connection identity changed before the replacement key could be saved.')
         }
         next.worker = { ...next.worker, env: { ...worker, RULITH_CONNECTION_KEY: key } }
-      }, 'worker')
+      })
       await onConnectionKeyConfigured?.()
-      return { agentId: text(identity.agentId), connectionId: before.id }
+      return { agentId: text(identity.agentId), connectionId: before.id,
+        teaching: 'Connection key saved. The Worker reloads automatically after running executions drain.' }
     }),
     start: body => exclusive(async () => {
       fields(body, ['consoleUrl', 'name', 'clientMode'])
-      if (!stopped()) throw new Error('Stop Agent and Worker before pairing.')
       if (connection().id || connection().key) throw new Error('This Local already has a connection identity. Continue with it, or review the deployment configuration before pairing.')
       const base = setupOrigin(body.consoleUrl), name = text(body.name).trim() || hostname(), clientMode = body.clientMode
       if (!['existing_agent', 'local_agent'].includes(clientMode)) throw new Error('Choose an existing client or the Local agent.')
@@ -300,18 +295,16 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
           RULITH_MODEL_MAX_OUTPUT_TOKENS: String(body.maxOutputTokens === undefined
             ? maxOutputTokens(previous.RULITH_MODEL_MAX_OUTPUT_TOKENS) : input.maxOutputTokens),
           ...(body.thinking === undefined ? {} : { RULITH_MODEL_THINKING: ['enabled', 'disabled'].includes(input.thinking) ? input.thinking : '' }) } }
-      }, 'agent')
+      })
       await onModelConfigured?.()
-      return { teaching: 'Model configuration saved on this computer.' }
+      return { teaching: 'Model configuration saved on this computer. The Agent applies it automatically between turns; the Worker reloads after running executions drain.' }
     }),
     /**
      * Prepare the Verified Calculation sample as one action, and leave the Worker running with it.
      *
-     * One click used to be a refusal ("Stop Agent and Worker before preparing files"), a Stop,
-     * the preparation, "Send selection for authorization" and a Start, and nothing said so up
-     * front: a Worker already running without the calculation Tools left Console showing all
-     * three as Missing. The click on "Prepare sample and start Worker" is now the consent for
-     * those steps, in this order:
+     * A Worker already running without the calculation Tools left Console showing all
+     * three as Missing. Preparing the sample enables local tools and drains the owned
+     * Worker before reloading its configuration, in this order:
      *
      *   1. Everything that can refuse without touching anything: an empty target directory that
      *      the owner would let a Worker use, the Capability installed for this Agent, the packaged
@@ -333,7 +326,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
      * The answer states each outcome in one `teaching`. `roles` is supplied by the host this
      * service belongs to; without it, a running Worker is refused as before.
      *
-     * 中文说明：点击"准备示例并启动 Worker"即同意停止并重启 Worker。只改 Worker 配置，所以不动正在运行的
+     * 中文说明：准备示例会自动排空并重载 Worker。只改 Worker 配置，所以不动正在运行的
      * Agent；拒绝覆盖已有文件、清单核对、原子写入都保持不变；已有其他资源选择时不替用户发送。
      * 示例数据放在 Worker 根目录下的 runtime/，与 setup.mjs 相同，Release 默认的 Source 位置 "runtime"
      * 因而直接可用；发送给 Console 的是该目录的绝对路径，Worker 解析两者得到同一个目录。
@@ -353,16 +346,17 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       if (exposed) throw new Error(exposed)
       const wasRunning = !workerStopped()
       if (wasRunning) {
-        if (roles === undefined) throw new Error('Stop Worker before preparing files.')
+        if (roles === undefined) throw new Error('This host has no Worker drain controls. Prepare the sample through the local workbench.')
         // A start that is already known to be refused is said now, while the Worker still runs.
         const refused = await roles.startRefusal()
         if (refused) throw new Error(`The Worker could not be started again (${String(refused).trim().replace(/\.$/, '')}), so it was not stopped and nothing was prepared.`)
-        await roles.stopWorker()
+        const stopped = await roles.stopWorker()
         // Judged by the process, not by the answer: a Worker that exited on its own meanwhile
         // has stopped too, and one that is still draining has not.
         if (!workerStopped()) {
           throw new Error('The Worker was asked to stop and has not exited yet: it finishes any work it has claimed first.'
-            + ' Nothing was prepared. Prepare the sample again once the Worker shows as stopped.')
+            + ' Nothing was prepared.' + (stopped.body?.resuming ? ' The enabled Worker resumes automatically after drain.' : '')
+            + ' Prepare the sample again once its current work settles.')
         }
         // The stop can take tens of seconds. A host that began closing meanwhile gets nothing
         // written for a Worker it will not start, and the directory is looked at again.
@@ -385,7 +379,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
         writeFileSync(join(target,'worker-tools.json'),manifest,{flag:'wx',mode:0o600})
         // The governed Source contains only data, and the Worker writes output.json into it.
         writeFileSync(join(target,'.gitignore'),'/' + SAMPLE_DATA + '/\n',{flag:'wx'})
-        persistConfiguration(next => { next.worker = { ...next.worker, env: { ...next.worker?.env, RULITH_WORKER_ROOT: target, RULITH_TOOLS_FILE: join(target,'worker-tools.json') } } }, 'worker')
+        persistConfiguration(next => { next.worker = { ...next.worker, enabled: true, env: { ...next.worker?.env, RULITH_WORKER_ROOT: target, RULITH_TOOLS_FILE: join(target,'worker-tools.json') } } })
       } catch (error) {
         // The configuration is written last, so a failure here left the Worker's own settings as
         // they were: start it again on them rather than leave it stopped by this click.
@@ -419,7 +413,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       const workerReady = worker?.body?.ok === true
       const started = wasRunning ? 'restarted' : 'started'
       const teaching = [`Prepared the calculation sample in ${target}.`,
-        worker === undefined ? 'Start the Worker so it advertises the three calculation Tools.'
+        worker === undefined ? 'Enable this computer’s tools and files so the Worker advertises the three calculation Tools.'
           : workerReady ? `The Worker was ${started} with the three calculation Tools.`
             : worker.body?.state === 'unconfirmed'
               ? `The Worker was ${started} but has not reported that it finished initializing; open Trace to see what it printed.`

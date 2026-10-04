@@ -71,6 +71,7 @@ process.send?.({
     cwd: process.cwd(),
   },
 })
+if (!agentRole) process.send?.({ protocol: 'rulith-local-event', event: { type: 'availability', t: Date.now(), state: 'online' } })
 const beat = setInterval(() => {}, 1000)
 const leave = () => { clearInterval(beat); process.exit(0) }
 const drainThenLeave = () => {

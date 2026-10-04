@@ -75,8 +75,10 @@ async function startHost() {
   const control = { materialDelay: 0, materialStatus: 200, casesDelay: 0, cases: { ok: true, sessionKey: 's-1' }, sends: [], extraEvents: [],
     emit(event) { this.extraEvents.push(event);for (const stream of streams) stream.write('data: ' + JSON.stringify(event) + '\n\n') } }
   /** Two conversations the sidebar knows about, replayed as the real host replays its buffer. */
-  const REPLAY = ['s-alpha', 's-beta'].map((session, at) => ({ src: 'agent', type: 'task-start', session,
-    at: '2026-09-20T15:3' + at + ':00.000Z', text: 'Working in ' + session }))
+  const REPLAY = ['s-alpha', 's-beta'].flatMap((session, at) => [
+    { src: 'agent', type: 'task-start', id: 'old-' + session, session, at: '2026-09-20T15:3' + at + ':00.000Z', text: 'Working in ' + session },
+    { src: 'agent', type: 'task-done', id: 'old-' + session, session, outcome: 'conversation' },
+  ])
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
@@ -114,6 +116,7 @@ async function startHost() {
     if (path === '/cases' && req.method === 'POST') {
       control.sends.push(await readBody(req))
       if (control.casesDelay) await new Promise((done) => setTimeout(done, control.casesDelay))
+      control.answered = (control.answered ?? 0) + 1
       return void json(res, 200, control.cases)
     }
     json(res, 404, { ok: false, teaching: 'Not in this fixture.' })
@@ -289,7 +292,10 @@ arm('a send still in flight does not empty, re-select or take a file from the co
     await page.setInputFiles('#fileinput', [upload('beta.txt', 'text/plain', 'beta')])
     await page.waitForFunction(() => document.querySelectorAll('#attachlist .chip').length === 1)
 
-    await page.waitForFunction(() => document.getElementById('send').disabled === false, null, { timeout: 15000 })
+    // Send is held per conversation, so it is already usable here while alpha's send is open:
+    // wait for the host's answer itself, then give the page a moment to act on it.
+    for (let waited = 0; (host.control.answered ?? 0) < 1 && waited < 15000; waited += 50) await page.waitForTimeout(50)
+    assert.equal(host.control.answered, 1, 'the host never answered the send')
     await page.waitForTimeout(250)
     assert.equal(await page.inputValue('#prompt'), 'Something else entirely', 'the answer emptied a box it did not fill')
     assert.equal(await page.evaluate(() => document.querySelector('.case.active')?.dataset.case), 's-beta',

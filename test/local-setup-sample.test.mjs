@@ -244,7 +244,7 @@ test('the wizard refuses a sample manifest that does not state every contract, a
 
 test('with the Worker running, one click stops it, prepares the sample, sends its folder and starts it on the sample', async (t) => {
   const setup = await sampleHost(t, { echo: true })
-  for (const role of ['agent', 'worker']) assert.equal((await setup.call('/control', { role, operation: 'start' })).status, 200)
+  for (const role of ['agent', 'worker']) assert.equal((await setup.host.startRole(role)).status, 200)
   const before = { agent: setup.pidOf('agent'), worker: setup.pidOf('worker') }
   assert.notEqual(setup.workerStartedWith().RULITH_TOOLS_FILE, join(resolve(setup.target), 'worker-tools.json'))
 
@@ -273,7 +273,7 @@ test('with the Worker running, one click stops it, prepares the sample, sends it
 test('a Worker that has not exited in time leaves nothing prepared, and the same click works once it has', async (t) => {
   // Finishing claimed work: the stand-in takes 1.5 s to leave, and this host waits 0.3 s.
   const setup = await sampleHost(t, { echo: true, workerEnv: { RULITH_TEST_STOP_DELAY_MS: '1500' }, sampleStopWaitMs: 300 })
-  assert.equal((await setup.call('/control', { role: 'worker', operation: 'start' })).status, 200)
+  assert.equal((await setup.host.startRole('worker')).status, 200)
   const configured = readFileSync(setup.configFile, 'utf8')
 
   const early = await setup.call('/setup/example', { directory: setup.target })
@@ -290,6 +290,28 @@ test('a Worker that has not exited in time leaves nothing prepared, and the same
   assert.equal(again.status, 200, JSON.stringify(again.body))
   assert.match(again.body.teaching, /The Worker was started with the three calculation Tools\./)
   assert.equal(setup.host.status().worker, true)
+})
+
+test('an enabled Worker resumes its previous tools when sample preparation times out during drain', async (t) => {
+  const setup = await sampleHost(t, { echo: true, workerEnv: { RULITH_TEST_STOP_DELAY_MS: '600' }, sampleStopWaitMs: 100 })
+  assert.equal((await setup.call('/worker-setting', { enabled: true })).status, 200)
+  const readyDeadline = Date.now() + 10_000
+  while (setup.host.status().workerSetting.state !== 'online' && Date.now() < readyDeadline) await new Promise(done => setTimeout(done, 20))
+  assert.equal(setup.host.status().workerSetting.state, 'online')
+  const oldPid = setup.pidOf('worker'), configured = readFileSync(setup.configFile, 'utf8')
+  const early = await setup.call('/setup/example', { directory: setup.target })
+  assert.equal(early.status, 400)
+  assert.match(early.body.teaching, /enabled Worker resumes automatically after drain/)
+  assert.equal(existsSync(setup.target), false)
+  assert.equal(readFileSync(setup.configFile, 'utf8'), configured)
+  assert.deepEqual(setup.proposals, [])
+  const deadline = Date.now() + 10_000
+  while ((setup.pidOf('worker') === oldPid || setup.host.status().workerSetting.state !== 'online') && Date.now() < deadline) {
+    await new Promise(done => setTimeout(done, 20))
+  }
+  assert.notEqual(setup.pidOf('worker'), oldPid)
+  assert.equal(setup.host.status().workerSetting.enabled, true)
+  assert.equal(setup.host.status().workerSetting.state, 'online')
 })
 
 test('other selected resources are kept, and are not sent on the operator\'s behalf', async (t) => {
@@ -322,7 +344,7 @@ test('a selection Console did not accept still leaves the Worker running, and sa
 
 test('a selection that cannot even be recorded is reported, and the Worker is still started on the prepared sample', async (t) => {
   const setup = await sampleHost(t, { echo: true })
-  assert.equal((await setup.call('/control', { role: 'worker', operation: 'start' })).status, 200)
+  assert.equal((await setup.host.startRole('worker')).status, 200)
   // The setup state cannot be read: the files and the Worker configuration are written before it
   // is touched, and a failure here must not leave the Worker that this click stopped, stopped.
   mkdirSync(setup.configFile + '.setup.json')
@@ -337,7 +359,7 @@ test('a selection that cannot even be recorded is reported, and the Worker is st
 
 test('a selection can be sent while the roles run: it waits for authorization and changes nothing running', async (t) => {
   const setup = await sampleHost(t, { echo: true })
-  for (const role of ['agent', 'worker']) assert.equal((await setup.call('/control', { role, operation: 'start' })).status, 200)
+  for (const role of ['agent', 'worker']) assert.equal((await setup.host.startRole(role)).status, 200)
   const orders = join(setup.dir, 'orders')
   mkdirSync(orders)
   const sent = await setup.call('/setup/resources', { resources: [{ name: 'orders-local', access: orders }], services: [] })
@@ -351,7 +373,7 @@ test('a directory the workbench would not let a Worker use is refused before any
   // A managed profile lives inside the manager directory, which also holds the installation's
   // credentials: its Worker may use its own folder there, and nothing else in it.
   const setup = await sampleHost(t, { echo: true, protect: true })
-  assert.equal((await setup.call('/control', { role: 'worker', operation: 'start' })).status, 200)
+  assert.equal((await setup.host.startRole('worker')).status, 200)
   const worker = setup.pidOf('worker')
   const refused = await setup.call('/setup/example', { directory: setup.target })
   assert.equal(refused.status, 400)
@@ -369,7 +391,7 @@ test('a running Worker whose start would be refused is not stopped for the sampl
   let refuseStarts = false
   const setup = await sampleHost(t, { echo: true,
     managedPolicy: ({ kind }) => (kind === 'start' && refuseStarts ? 'This device authorization is revoked.' : null) })
-  assert.equal((await setup.call('/control', { role: 'worker', operation: 'start' })).status, 200)
+  assert.equal((await setup.host.startRole('worker')).status, 200)
   const worker = setup.pidOf('worker')
   refuseStarts = true
   const refused = await setup.call('/setup/example', { directory: setup.target })
@@ -383,7 +405,7 @@ test('a host that begins closing while the sample waits for its Worker starts no
   // The Worker takes a second and a half to finish; the host is closed meanwhile. A Worker the
   // step started after that would outlive the host, known only as an unobserved pid.
   const setup = await sampleHost(t, { echo: true, workerEnv: { RULITH_TEST_STOP_DELAY_MS: '1500' }, sampleStopWaitMs: 5000 })
-  assert.equal((await setup.call('/control', { role: 'worker', operation: 'start' })).status, 200)
+  assert.equal((await setup.host.startRole('worker')).status, 200)
   const preparing = setup.call('/setup/example', { directory: setup.target })
   await new Promise((done) => setTimeout(done, 200))
   const closed = setup.host.close()
@@ -396,7 +418,7 @@ test('a host that begins closing while the sample waits for its Worker starts no
 })
 
 test('the setup page asks for the stop and start in the button itself, and shows the one outcome it is told', async () => {
-  assert.match(setupPage, /<button id="sample-prepare">Prepare sample and start Worker<\/button>/)
+  assert.match(setupPage, /<button id="sample-prepare">Prepare calculation sample<\/button>/)
   assert.match(setupPage, /also stops this Agent's Worker while the files are written/)
   for (const selection of ['sent', 'kept']) {
     const teaching = `Prepared the calculation sample in D:\\Rulith\\calc. (${selection})`
@@ -422,7 +444,7 @@ test('the setup page asks for the stop and start in the button itself, and shows
 
 test('an existing file is never overwritten, and a refusal stops nothing', async (t) => {
   const setup = await sampleHost(t, { echo: true })
-  assert.equal((await setup.call('/control', { role: 'worker', operation: 'start' })).status, 200)
+  assert.equal((await setup.host.startRole('worker')).status, 200)
   const worker = setup.pidOf('worker')
   mkdirSync(setup.target)
   writeFileSync(join(setup.target, 'input.json'), '{"mine":true}')

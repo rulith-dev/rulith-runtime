@@ -10,9 +10,10 @@
  *
  * Instances here are *attached* before they are started, because that is now the rule: a
  * managed instance runs under a device grant, and both the manager's own endpoints and the
- * instance host's `/control` and `/setup` routes consult that grant rather than trusting
+ * instance host's conversation, Worker setting and setup routes consult that grant rather than trusting
  * whoever holds a loopback key.
  */
+import { startFixtureInstance, controlFixtureInstance } from './support/local-role-controls.mjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
@@ -164,6 +165,14 @@ async function addInstance(manager, name, { agentId, exit = false, mode = 'local
   return created
 }
 
+const waitUntil = async check => {
+  const deadline = Date.now() + 8000
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('Lifecycle did not settle')
+    await new Promise(done => setTimeout(done, 20))
+  }
+}
+
 const childEvents = (manager, id, src) => manager.instances.hosts.get(id).host.events().filter((row) => row.src === src)
 const observedEnv = (manager, id, src) => childEvents(manager, id, src).find((row) => row.observed !== undefined)?.observed
 
@@ -176,7 +185,7 @@ test('managed attachment registers its durable selection with the device before 
     config.agent.env = { ...config.agent.env, RULITH_TEST_AGENT_ID: 'agent-alpha',
       RULITH_TEST_TASK_LOG: taskLog }
     saveInstanceConfig(instance.directory, config)
-    assert.equal((await manager.instances.start(instance.id)).started, true)
+    assert.equal((await startFixtureInstance(manager.instances, instance.id)).started, true)
     assert.equal(observedEnv(manager, instance.id, 'worker')?.RULITH_MATERIALS_DEVICE_ID, deviceId)
     assert.equal(JSON.parse(readFileSync(join(instance.directory, 'materials', 'store.json'), 'utf8')).deviceFingerprint,
       materialDeviceFingerprint(deviceId))
@@ -328,7 +337,7 @@ test('each role receives only its own instance\'s configuration, and inherits no
     assert.deepEqual(Object.keys(isolatedEnvironmentBase({ PATH: 'p', RULITH_TOKEN: 't', ANTHROPIC_API_KEY: 'k' })), ['PATH'])
 
     const instance = await addInstance(manager, 'Isolated', { agentId: 'agent-alpha' })
-    const started = await manager.instances.start(instance.id)
+    const started = await startFixtureInstance(manager.instances, instance.id)
     assert.equal(started.started, true, JSON.stringify(started.results))
 
     const agentEnv = observedEnv(manager, instance.id, 'agent')
@@ -367,7 +376,7 @@ test('an instance pointed at the manager\'s own directory cannot start, but can 
     config.worker.env.RULITH_WORKER_ROOT = root
     saveInstanceConfig(instance.directory, config)
 
-    const refused = await manager.instances.start(instance.id).catch((error) => error)
+    const refused = await startFixtureInstance(manager.instances, instance.id).catch((error) => error)
     assert.match(refused.message, /overlaps the manager directory/)
     assert.match(refused.message, /device credential/)
     assert.match(manager.instances.overview()[0].blocked, /overlaps the manager directory/)
@@ -384,14 +393,14 @@ test('an instance pointed at the manager\'s own directory cannot start, but can 
     const nosy = loadInstanceConfig(instance.directory)
     nosy.worker.env.RULITH_WORKER_ROOT = sibling.directory
     saveInstanceConfig(instance.directory, nosy)
-    assert.match((await manager.instances.start(instance.id).catch((error) => error)).message, /overlaps the manager directory/)
+    assert.match((await startFixtureInstance(manager.instances, instance.id).catch((error) => error)).message, /overlaps the manager directory/)
 
     // Its own directory is fine (calibration).
     const own = loadInstanceConfig(instance.directory)
     own.worker.env.RULITH_WORKER_ROOT = join(instance.directory, 'workspace')
     saveInstanceConfig(instance.directory, own)
     await manager.instances.closeHost(instance.id)
-    assert.equal((await manager.instances.start(instance.id)).started, true)
+    assert.equal((await startFixtureInstance(manager.instances, instance.id)).started, true)
   })
 })
 
@@ -400,7 +409,7 @@ test('selecting or opening one instance does not start, stop or re-key another, 
     const working = await addInstance(manager, 'Working', { agentId: 'agent-alpha' })
     const idle = await addInstance(manager, 'Idle', { agentId: 'agent-beta' })
 
-    const started = await manager.instances.start(working.id)
+    const started = await startFixtureInstance(manager.instances, working.id)
     assert.equal(started.started, true, JSON.stringify(started.results))
     const workingHost = manager.instances.hosts.get(working.id).host
     const before = { key: workingHost.key, port: workingHost.port, agentId: workingHost.agentId, status: workingHost.status() }
@@ -431,13 +440,13 @@ test('a start that fails belongs to its own instance, and a stop is reported fro
     const broken = await addInstance(manager, 'Broken', { agentId: 'agent-alpha', exit: true })
     const healthy = await addInstance(manager, 'Healthy', { agentId: 'agent-beta' })
 
-    const failed = await manager.instances.start(broken.id)
+    const failed = await startFixtureInstance(manager.instances, broken.id)
     assert.equal(failed.started, false)
     assert.match(failed.results.find((row) => row.role === 'agent').teaching, /exited during startup/)
     assert.equal(failed.results.find((row) => row.role === 'worker').ok, true,
       'one role failing to start says nothing about the other')
 
-    const good = await manager.instances.start(healthy.id)
+    const good = await startFixtureInstance(manager.instances, healthy.id)
     assert.equal(good.started, true, JSON.stringify(good.results))
     const stopped = await manager.instances.stop(healthy.id)
     assert.equal(stopped.stopped, true, JSON.stringify(stopped.results))
@@ -452,13 +461,13 @@ test('a start that fails belongs to its own instance, and a stop is reported fro
 test('an unattached instance starts nothing, and neither does one with no signed-in device', async (t) => {
   await withManager(t, async ({ manager }) => {
     const unattached = await manager.instances.create({ name: 'Unattached', mode: 'local_agent' })
-    const refused = await manager.instances.start(unattached.id).catch((error) => error)
+    const refused = await startFixtureInstance(manager.instances, unattached.id).catch((error) => error)
     assert.match(refused.message, /not attached to an Agent yet/)
   })
   // The same, with nobody signed in at all.
   await withManager(t, async ({ manager }) => {
     const instance = await manager.instances.create({ name: 'No account', mode: 'local_agent' })
-    const refused = await manager.instances.start(instance.id).catch((error) => error)
+    const refused = await startFixtureInstance(manager.instances, instance.id).catch((error) => error)
     assert.match(refused.message, /Sign in to a Rulith account/)
     assert.match(manager.instances.overview()[0].blocked, /Sign in to a Rulith account/)
   }, { signIn: false })
@@ -467,12 +476,12 @@ test('an unattached instance starts nothing, and neither does one with no signed
 test('an Agent removed from the grant stops covering the instance it was attached to', async (t) => {
   await withManager(t, async ({ manager, gateway }) => {
     const instance = await addInstance(manager, 'Covered', { agentId: 'agent-alpha' })
-    assert.equal((await manager.instances.start(instance.id)).started, true)
+    assert.equal((await startFixtureInstance(manager.instances, instance.id)).started, true)
     await manager.instances.stop(instance.id)
 
     gateway.disableAgent('agent-alpha')
     await manager.device.refresh()
-    const dropped = await manager.instances.start(instance.id).catch((error) => error)
+    const dropped = await startFixtureInstance(manager.instances, instance.id).catch((error) => error)
     assert.match(dropped.message, /no longer enabled in this account/)
     assert.match(manager.instances.overview()[0].blocked, /no longer enabled in this account/)
   })
@@ -489,9 +498,9 @@ test('an instance page cannot start a role or re-pair around the manager', async
     }).then(async (response) => ({ status: response.status, body: await response.json().catch(() => ({})) }))
 
     // While the grant covers it, the page works exactly as a standalone Local page does.
-    const allowed = await call('/control', { role: 'agent', operation: 'start' })
+    const allowed = await call('/worker-setting', { enabled: true })
     assert.equal(allowed.status, 200, JSON.stringify(allowed.body))
-    assert.equal((await call('/control', { role: 'agent', operation: 'stop' })).status, 200)
+    assert.equal((await call('/worker-setting', { enabled: false })).status, 200)
 
     // Pairing from the page is refused: the manager reserves the Agent first, and a pairing
     // nobody reserved is the duplicate-attach hole reopened through the side door.
@@ -505,11 +514,11 @@ test('an instance page cannot start a role or re-pair around the manager', async
     await manager.instances.stop(instance.id)
     await manager.instances.signOut()
     const fresh = new URL((await manager.instances.open(instance.id)).url)
-    const afterSignOut = await fetch(fresh.origin + '/control', {
+    const afterSignOut = await fetch(fresh.origin + '/worker-setting', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-local': fresh.searchParams.get('k') },
-      body: JSON.stringify({ role: 'agent', operation: 'start' }),
+      body: JSON.stringify({ enabled: true }),
     }).then(async (response) => ({ status: response.status, body: await response.json().catch(() => ({})) }))
-    assert.equal(afterSignOut.status, 409, 'a signed-out device must not leave an instance page able to start execution')
+    assert.equal(afterSignOut.status, 400, 'a signed-out device must not leave an instance page able to start execution')
     assert.match(afterSignOut.body.teaching, /Sign in to a Rulith account|not attached/)
     assert.equal(manager.instances.overview()[0].agent, false)
   })
@@ -604,7 +613,7 @@ test('an issued credential can be collected after disable and refresh, without a
     assert.equal((await manager.instances.pairPoll(row.id)).agentId, 'agent-alpha')
     assert.equal(manager.registry.instance(row.id).pairing, undefined)
     assert.equal(gateway.agentTokens.size, 1)
-    await assert.rejects(manager.instances.start(row.id), /not authorized|no longer enabled|not enabled|does not authorize/i)
+    await assert.rejects(startFixtureInstance(manager.instances, row.id), /not authorized|no longer enabled|not enabled|does not authorize/i)
   })
 })
 }
@@ -947,14 +956,14 @@ test('simultaneous opens of one instance create one host, on one port', async (t
   })
 })
 
-test('opens, starts and stops of one instance interleave without losing a child or a host', async (t) => {
+test('opens, Worker settings and owned shutdown of one instance interleave without losing a child or a host', async (t) => {
   await withManager(t, async ({ manager }) => {
     const instance = await addInstance(manager, 'Interleaved', { agentId: 'agent-alpha' })
     await manager.instances.closeHost(instance.id)
 
     const results = await Promise.allSettled([
       manager.instances.open(instance.id),
-      manager.instances.start(instance.id),
+      manager.instances.setWorkerEnabled(instance.id, true),
       manager.instances.open(instance.id, '/setup'),
       manager.instances.stop(instance.id),
       manager.instances.open(instance.id, '/worker-tools'),
@@ -979,7 +988,7 @@ test('opens, starts and stops of one instance interleave without losing a child 
     // And the instance is still usable afterwards.
     const stopped = await manager.instances.stop(instance.id)
     assert.equal(stopped.stopped, true, JSON.stringify(stopped.results))
-    assert.equal((await manager.instances.start(instance.id)).started, true)
+    assert.equal((await startFixtureInstance(manager.instances, instance.id)).started, true)
   })
 })
 
@@ -987,10 +996,14 @@ test('a manager that closes with a draining child records it rather than claimin
   await withManager(t, async ({ manager, root }) => {
     const instance = await addDrainingInstance(manager, 'Shutdown', { agentId: 'agent-alpha', ms: 9000 })
     const url = new URL((await manager.instances.open(instance.id)).url)
-    await fetch(url.origin + '/control', {
+    await fetch(url.origin + '/worker-setting', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k') },
-      body: JSON.stringify({ role: 'worker', operation: 'start' }),
+      body: JSON.stringify({ enabled: true }),
     })
+    // The setting starts asynchronously. The fixture advertises managed drain on
+    // readiness; a spawned pid alone does not mean it has begun work it can drain.
+    await waitUntil(() => manager.instances.hosts.get(instance.id).host.status().ready.worker
+      && manager.registry.instance(instance.id).runtime.children.length === 1)
     const workerPid = manager.registry.instance(instance.id).runtime.children[0].pid
 
     // Shutting down is not licence to record a child as gone. `close()` here is a library
@@ -1041,11 +1054,7 @@ test('nothing tears down a host while a child is still finishing, and nothing ca
     // past a refusal written against the Agent alone.
     const instance = await addDrainingInstance(manager, 'Draining', { agentId: 'agent-alpha', ms: 9000 })
     const url = new URL((await manager.instances.open(instance.id)).url)
-    const control = (role, operation) => fetch(url.origin + '/control', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k') },
-      body: JSON.stringify({ role, operation }),
-    }).then(async (response) => ({ status: response.status, body: await response.json() }))
-    assert.equal((await control('worker', 'start')).status, 200)
+    assert.equal((await manager.instances.hosts.get(instance.id).host.startRole('worker')).status, 200)
     const workerPid = manager.registry.instance(instance.id).runtime.children.find((child) => child.role === 'worker').pid
     assert.equal(processAlive(workerPid), true)
     assert.equal(manager.instances.overview()[0].agent, false, 'only the Worker is running')
@@ -1056,9 +1065,9 @@ test('nothing tears down a host while a child is still finishing, and nothing ca
     const configured = loadInstanceConfig(other.directory)
     configured.agent.env = { ...configured.agent.env, RULITH_MODEL_URL: 'http://127.0.0.1:8080/v1', RULITH_MODEL: 'shared' }
     saveInstanceConfig(other.directory, configured)
-    const refusedCopy = await manager.instances.copyModelSettings(instance.id, other.id).catch((error) => error)
-    assert.match(refusedCopy.message, /is running its worker/)
-    assert.match(refusedCopy.message, /will not close a host while a child may still be finishing/)
+    const copied = await manager.instances.copyModelSettings(instance.id, other.id)
+    assert.equal(copied.model, 'shared')
+    assert.equal(manager.instances.hosts.get(instance.id).host.status().workerSetting.reloading, true)
     assert.equal(manager.instances.hosts.has(instance.id), true, 'the host was closed out from under a running child')
 
     // Closing directly is refused for the same reason.
@@ -1067,7 +1076,7 @@ test('nothing tears down a host while a child is still finishing, and nothing ca
 
     // A stop that has been asked for and not yet observed is `stopping`, and the instance is
     // still listed as running, still recorded, still there to be stopped.
-    const stopped = await manager.instances.stop(instance.id)
+    const stopped = await manager.instances.stop(instance.id, { forceAfterDrain: false })
     assert.equal(stopped.stopped, false, 'a child that has not exited must not be reported as stopped')
     assert.equal(stopped.results.find((row) => row.role === 'worker').state, 'stopping')
     assert.equal(manager.instances.hosts.has(instance.id), true)
@@ -1075,23 +1084,13 @@ test('nothing tears down a host while a child is still finishing, and nothing ca
     assert.deepEqual(manager.registry.instance(instance.id).runtime.children.map((child) => child.role), ['worker'],
       'a draining child is still this instance\'s child')
 
-    // And sign-out will not revoke the device while it is still there.
+    // Explicit sign-out bounds that drain, kills its owned child, and observes the exit
+    // before revoking the device. The ordinary reload never forces a running execution.
     const out = await manager.instances.signOut()
-    assert.equal(out.state, 'incomplete')
-    assert.equal(out.step, 'stop')
-    assert.equal(manager.device.status().state, 'linked')
-
-    // Once it really goes, everything agrees.
-    const deadline = Date.now() + 15_000
-    while (processAlive(workerPid) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 100))
+    assert.equal(out.state, 'signed_out', JSON.stringify(out))
+    assert.equal(out.stops.find(row => row.id === instance.id).results[0].forced, true)
+    assert.equal(manager.device.status().state, 'none')
     assert.equal(processAlive(workerPid), false)
-    // The OS can report process death before Node delivers ChildProcess's exit event.
-    // Wait for the host's independently observed exit too; no timing assumption may turn
-    // a truthful, still-unconfirmed stop into a failure under a busy full test run.
-    while (manager.instances.hosts.get(instance.id)?.host.status().worker && Date.now() < deadline) {
-      await new Promise(done => setTimeout(done, 25))
-    }
-    assert.equal(manager.instances.hosts.get(instance.id)?.host.status().worker, false)
     const after = await manager.instances.stop(instance.id)
     assert.equal(after.stopped, true)
     assert.equal(manager.instances.hosts.has(instance.id), false)
@@ -1105,11 +1104,12 @@ test('a role started from the instance page is recorded as this instance\'s chil
     assert.deepEqual(manager.registry.instance(instance.id).runtime.children, [], 'nothing is running yet')
 
     // Exactly what the instance's own page does. It never goes through the manager.
-    const answer = await fetch(url.origin + '/control', {
+    const answer = await fetch(url.origin + '/worker-setting', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k') },
-      body: JSON.stringify({ role: 'worker', operation: 'start' }),
+      body: JSON.stringify({ enabled: true }),
     })
     assert.equal(answer.status, 200, JSON.stringify(await answer.json()))
+    await waitUntil(() => manager.registry.instance(instance.id).runtime.children.length === 1)
 
     const recorded = manager.registry.instance(instance.id).runtime.children
     assert.deepEqual(recorded.map((child) => child.role), ['worker'],
@@ -1227,7 +1227,7 @@ test('a manager that died is only reclaimed once its children are gone too', asy
 test('a running instance records the pids it owns, so the next manager can ask the kernel', async (t) => {
   await withManager(t, async ({ manager }) => {
     const instance = await addInstance(manager, 'Recorded', { agentId: 'agent-alpha' })
-    await manager.instances.start(instance.id)
+    await startFixtureInstance(manager.instances, instance.id)
     const runtime = manager.registry.instance(instance.id).runtime
     assert.equal(runtime.pid, process.pid)
     assert.deepEqual(runtime.children.map((child) => child.role).sort(), ['agent', 'worker'])
@@ -1343,36 +1343,27 @@ test('an orphan marker clears by itself once its processes end, while the page i
   }, { orphanRecheckMs: 0 })
 })
 
-test('a Worker restart for a new model service becomes the next step only once the Agent has attachments', async (t) => {
+test('a new model service automatically reloads the enabled Worker and preserves material ownership', async t => {
   await withManager(t, async ({ manager, gateway }) => {
-    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
     const instance = await addInstance(manager, 'Attachments', { agentId: 'agent-alpha' })
-    assert.equal((await manager.instances.start(instance.id)).started, true)
-    const current = () => manager.instances.overview().find((row) => row.id === instance.id).model
-    assert.equal(current().workerRestartRequired, false)
-
-    assert.equal((await manager.instances.control(instance.id, { role: 'agent', operation: 'stop' })).stopped, true)
-    await manager.instances.setInstanceModel(instance.id, { ...scope, source: 'custom', url: 'http://127.0.0.1:11435/v1', name: 'another-model', key: '' })
-    assert.equal(current().workerRestartRequired, true, 'the running Worker still carries the previous model destination')
-    assert.equal(current().workerRestartUrgent, false, 'with no attachments, that is not the next thing to do')
-
+    await manager.instances.setWorkerEnabled(instance.id, true)
+    const host = manager.instances.hosts.get(instance.id).host
+    await waitUntil(() => host.status().workerSetting.state === 'online')
+    const previous = host.children().find(c => c.role === 'worker').pid
+    const scope = { expectedOrigin: gateway.origin, expectedAccountId: manager.device.status().account.id }
+    await manager.instances.setInstanceModel(instance.id, { ...scope, source: 'custom', url: 'http://localhost:9/v1', name: 'another-model', key: '' })
+    // Readiness confirms a loaded manifest; availability is a separate Worker report.
+    await waitUntil(() => !host.status().workerSetting.reloading && host.status().workerSetting.state === 'online')
+    assert.notEqual(host.children().find(c => c.role === 'worker').pid, previous)
+    assert.equal(host.status().workerSetting.state, 'online')
+    assert.equal(host.status().agent, false, 'model setup leaves the Agent for first-message startup')
     const url = new URL((await manager.instances.open(instance.id)).url)
     const added = await fetch(url.origin + '/materials', { method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k'), origin: url.origin },
+      headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k') },
       body: JSON.stringify({ name: 'notes.txt', mediaType: 'text/plain', bytes: Buffer.from('attached').toString('base64') }) })
-    assert.equal(added.status, 200, JSON.stringify(await added.clone().json()))
-    assert.equal(current().workerRestartUrgent, true, 'an Agent with attachments is told to restart its Worker first')
-    const status = await (await fetch(url.origin + '/status', { headers: { 'x-rulith-local': url.searchParams.get('k') } })).json()
-    assert.equal(status.runtime.worker.modelRestartRequired, true, 'the conversation page can say it beside the files')
-
-    await manager.instances.control(instance.id, { role: 'worker', operation: 'stop' })
-    await manager.instances.control(instance.id, { role: 'worker', operation: 'start' })
-    assert.equal(current().workerRestartRequired, false)
-    assert.equal(current().workerRestartUrgent, false)
+    assert.equal(added.status, 200, JSON.stringify(await added.json()))
   })
 })
-
-// ── Convenience that must not become a credential path ───────────────────────
 
 test('model settings can be reused between instances, and nothing else travels with them', async (t) => {
   await withManager(t, async ({ manager }) => {
@@ -1380,7 +1371,7 @@ test('model settings can be reused between instances, and nothing else travels w
     const target = await addInstance(manager, 'Fresh', { agentId: 'agent-beta' })
     const configured = loadInstanceConfig(source.directory)
     configured.agent.env = { ...configured.agent.env,
-      RULITH_MODEL_URL: 'http://127.0.0.1:8080/v1/messages', RULITH_MODEL: 'shared-model',
+      RULITH_MODEL_URL: 'http://localhost:9/v1', RULITH_MODEL: 'shared-model',
       RULITH_MODEL_KEY: 'provider-key', RULITH_MODEL_THINKING: 'enabled', RULITH_MODEL_MAX_OUTPUT_TOKENS: '12000' }
     saveInstanceConfig(source.directory, configured)
 
@@ -1390,7 +1381,7 @@ test('model settings can be reused between instances, and nothing else travels w
     assert.equal(JSON.stringify(result).includes('provider-key'), false, 'a model key must not come back in a response')
 
     const applied = loadInstanceConfig(target.directory).agent.env
-    assert.equal(applied.RULITH_MODEL_URL, 'http://127.0.0.1:8080/v1/messages')
+    assert.equal(applied.RULITH_MODEL_URL, 'http://localhost:9/v1')
     assert.equal(applied.RULITH_MODEL_KEY, 'provider-key')
     assert.equal(applied.RULITH_MODEL_THINKING, 'enabled')
     assert.equal(applied.RULITH_MODEL_MAX_OUTPUT_TOKENS, '12000')
@@ -1400,10 +1391,10 @@ test('model settings can be reused between instances, and nothing else travels w
     assert.notEqual(loadInstanceConfig(target.directory).worker.env.RULITH_CONNECTION,
       loadInstanceConfig(source.directory).worker.env.RULITH_CONNECTION)
 
-    // Not while the Agent it would change is running.
-    await manager.instances.start(target.id)
-    const busy = await manager.instances.copyModelSettings(target.id, source.id).catch((error) => error)
-    assert.match(busy.message, /Stop it before changing its model configuration/)
+    // A live Agent now applies the copied model automatically between turns.
+    await startFixtureInstance(manager.instances, target.id)
+    const copiedAgain = await manager.instances.copyModelSettings(target.id, source.id)
+    assert.equal(copiedAgain.model, 'shared-model')
   })
 })
 
@@ -1523,10 +1514,10 @@ test('the manager answers exactly its documented control-plane operations', asyn
     assert.deepEqual(routes, [
       '/manager/authoring/install-checker', '/manager/authoring/review', '/manager/authoring/save',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
-      '/manager/device/start', '/manager/instances/connection-key', '/manager/instances/control', '/manager/instances/create', '/manager/instances/forget',
+      '/manager/device/start', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
-      '/manager/instances/pair/cancel', '/manager/instances/pair/poll', '/manager/instances/start',
-      '/manager/instances/stop', '/manager/model/default',
+      '/manager/instances/pair/cancel', '/manager/instances/pair/poll',
+      '/manager/instances/worker-setting', '/manager/model/default',
     ], 'a new manager operation is a new way to act on this computer and must be deliberate')
     assert.equal(routes.some((route) => /tool|resource|source|grant/.test(route)), false,
       'granting tools stays in Console and in each instance\'s own setup; the manager adds no second path')
@@ -1544,7 +1535,7 @@ test('a stalled public checker installation cannot delay stopping and signing ou
   const installed = new Promise(resolve => { releaseInstall = resolve })
   await withManager(t, async ({ manager, gateway }) => {
     const row = await addInstance(manager, 'Download sign-out', { agentId: AGENTS[0] })
-    await manager.instances.start(row.id)
+    await startFixtureInstance(manager.instances, row.id)
     const pending = fetch(`http://127.0.0.1:${manager.port}/manager/authoring/install-checker`, {
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
       body: '{}',
@@ -1577,15 +1568,12 @@ test('the manager key must be a shape the Local pages will carry back', () => {
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-test('removing an instance from the list keeps its directory and refuses while it is running', async (t) => {
+test('removing an instance drains its owned roles and keeps its directory', async (t) => {
   await withManager(t, async ({ manager }) => {
     const instance = await addInstance(manager, 'Removable', { agentId: 'agent-alpha' })
-    await manager.instances.start(instance.id)
-    const refused = await manager.instances.forget(instance.id).catch((error) => error)
-    assert.match(refused.message, /Stop this instance/)
-
-    await manager.instances.stop(instance.id)
+    await startFixtureInstance(manager.instances, instance.id)
     const removed = await manager.instances.forget(instance.id)
+    assert.equal(manager.instances.hosts.has(instance.id), false)
     assert.equal(removed.directory, instance.directory)
     assert.equal(manager.registry.read().instances.length, 0)
     assert.equal(existsSync(join(instance.directory, 'local.json')), true,
@@ -1611,7 +1599,7 @@ test('the workbench has no import route and preserves existing imported profiles
     const state = next.state()
     assert.equal(Object.hasOwn(state, 'legacyInstall'), false)
     assert.equal(state.instances.find(row => row.id === instance.id).legacyImport.configFile, source)
-    assert.equal((await next.instances.start(instance.id)).started, true)
+    assert.equal((await startFixtureInstance(next.instances, instance.id)).started, true)
     assert.equal(observedEnv(next, instance.id, 'agent').RULITH_TEST_IDENTITY, 'agent-alpha')
     const response = await fetch('http://127.0.0.1:' + next.port + '/manager/instances/import', {
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
@@ -1656,39 +1644,46 @@ test('the manager page and its routes are gated against unauthenticated, cross-o
 })
 
 
-test('workbench Worker controls preserve its Agent and another instance, without replacing the conversation host', async t => {
+test('the Worker setting preserves its Agent and another instance, without replacing the conversation host', async t => {
   await withManager(t, async ({ manager }) => {
     const alpha = await addInstance(manager, 'alpha', { agentId: AGENTS[0] })
     const beta = await addInstance(manager, 'beta', { agentId: AGENTS[1] })
-    await manager.instances.start(alpha.id)
-    await manager.instances.start(beta.id)
+    await startFixtureInstance(manager.instances, alpha.id)
+    await startFixtureInstance(manager.instances, beta.id)
     const before = manager.instances.hosts.get(alpha.id).host
     const betaBefore = manager.instances.hosts.get(beta.id).host
-    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/control`, {
+    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/worker-setting`, {
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
-      body: JSON.stringify({ instanceId: alpha.id, role: 'worker', operation: 'stop' }),
+      body: JSON.stringify({ instanceId: alpha.id, enabled: false }),
     })
     const outcome = await response.json()
     assert.equal(response.status, 200)
-    assert.equal(outcome.stopped, true)
+    assert.equal(outcome.enabled, false)
+    await waitUntil(() => !before.status().worker)
     assert.equal(before.status().agent, true)
     assert.equal(before.status().worker, false)
     assert.equal(manager.instances.hosts.get(alpha.id).host, before)
     assert.equal(manager.instances.hosts.get(beta.id).host, betaBefore)
     assert.equal(betaBefore.status().agent, true)
     assert.equal(betaBefore.status().worker, true)
-    const restarted = await manager.instances.control(alpha.id, { role: 'worker', operation: 'start' })
-    assert.equal(restarted.started, true)
-    await assert.rejects(manager.instances.control(alpha.id, { role: 'all', operation: 'stop' }), /Choose/)
-    await assert.rejects(manager.instances.control(alpha.id, { role: 'worker', operation: 'restart' }), /Choose/)
+    const restarted = await manager.instances.setWorkerEnabled(alpha.id, true)
+    assert.equal(restarted.enabled, true)
+    await waitUntil(() => before.status().workerSetting.state === 'online')
+    for (const path of ['control', 'start', 'stop']) {
+      const retired = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/${path}`, {
+        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
+        body: JSON.stringify({ instanceId: alpha.id }),
+      })
+      assert.equal(retired.status, 404)
+    }
   })
 })
 
 test('Worker-only profiles cannot start a model Agent through workbench role controls', async t => {
   await withManager(t, async ({ manager }) => {
     const row = await addInstance(manager, 'external client', { agentId: AGENTS[0], mode: 'existing_client' })
-    await assert.rejects(manager.instances.control(row.id, { role: 'agent', operation: 'start' }), /does not run/)
-    assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'start' })).started, true)
+    await assert.rejects(controlFixtureInstance(manager.instances, row.id, { role: 'agent', operation: 'start' }), /does not run/)
+    assert.equal((await controlFixtureInstance(manager.instances, row.id, { role: 'worker', operation: 'start' })).started, true)
     assert.equal(manager.instances.hosts.get(row.id).host.status().agent, false)
   })
 })
@@ -1696,13 +1691,13 @@ test('Worker-only profiles cannot start a model Agent through workbench role con
 test('refreshing the enabled account directory stops a disabled Agent and refuses another start', async t => {
   await withManager(t, async ({ manager, gateway }) => {
     const row = await addInstance(manager, 'Disabled after refresh', { agentId: AGENTS[0] })
-    assert.equal((await manager.instances.start(row.id)).started, true)
+    assert.equal((await startFixtureInstance(manager.instances, row.id)).started, true)
     gateway.disableAgent(AGENTS[0])
     const refreshed = await manager.instances.refreshDevice()
     assert.deepEqual(refreshed.removedAgents.map(agent => agent.id), [AGENTS[0]])
     assert.deepEqual(refreshed.stoppedInstances.map(instance => instance.id), [row.id])
     assert.equal(manager.instances.hosts.has(row.id), false, 'the observed stop closes the host only after both roles exit')
-    await assert.rejects(manager.instances.start(row.id), /no longer enabled/)
+    await assert.rejects(startFixtureInstance(manager.instances, row.id), /no longer enabled/)
   })
 })
 
@@ -1711,9 +1706,9 @@ test('a directory network failure preserves live work, while confirmed revocatio
     const first = await addInstance(manager, 'First', { agentId: AGENTS[0] })
     const second = await addInstance(manager, 'Second', { agentId: AGENTS[1] })
     const third = await addInstance(manager, 'Third', { agentId: AGENTS[2] })
-    await manager.instances.start(first.id)
-    await manager.instances.start(second.id)
-    await manager.instances.start(third.id)
+    await startFixtureInstance(manager.instances, first.id)
+    await startFixtureInstance(manager.instances, second.id)
+    await startFixtureInstance(manager.instances, third.id)
     gateway.failNext('/local-devices/context')
     await assert.rejects(manager.instances.refreshDevice())
     assert.equal(manager.device.status().state, 'linked')
@@ -1754,10 +1749,8 @@ test('a Connection key replacement proves the fixed Worker identity before atomi
     const replacement = 'replacement-key-must-not-leak'
     gateway.replaceConnectionKey(connected.connectionId, replacement)
 
-    assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'start' })).started, true)
-    await assert.rejects(manager.instances.setConnectionKey(row.id, { ...scope, key: replacement }), /Stop Worker/)
-    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_CONNECTION_KEY, before, 'a running Worker prevents any local write')
-    assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'stop' })).stopped, true)
+    assert.equal((await controlFixtureInstance(manager.instances, row.id, { role: 'worker', operation: 'start' })).started, true)
+    await manager.instances.setWorkerEnabled(row.id, true)
 
     const rejected = await manager.instances.setConnectionKey(row.id, { ...scope, key: 'unverified-input-key' }).catch(error => error)
     assert.match(rejected.message, /could not verify the replacement Connection key/)
@@ -1765,11 +1758,11 @@ test('a Connection key replacement proves the fixed Worker identity before atomi
     assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_CONNECTION_KEY, before, 'failed verification leaves the old local value untouched')
 
     const saved = await manager.instances.setConnectionKey(row.id, { ...scope, key: replacement })
-    assert.deepEqual(saved, { instanceId: row.id, agentId: connected.agentId, connectionId: connected.connectionId, keyConfigured: true })
+    assert.deepEqual({ ...saved, teaching: undefined }, { instanceId: row.id, agentId: connected.agentId, connectionId: connected.connectionId, keyConfigured: true, teaching: undefined })
+    assert.match(saved.teaching, /reloads automatically/)
     assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_CONNECTION_KEY, replacement)
     assert.equal(JSON.stringify(manager.state()).includes(replacement), false, 'a manager state response never discloses a Connection key')
-    assert.equal(manager.instances.hosts.get(row.id).host.status().worker, false)
-    assert.equal((await manager.instances.control(row.id, { role: 'worker', operation: 'start' })).started, true)
+    await waitUntil(() => !manager.instances.hosts.get(row.id).host.status().workerSetting.reloading)
     assert.equal(childEvents(manager, row.id, 'worker').filter(event => event.observed !== undefined).at(-1).observed.RULITH_CONNECTION_KEY,
       replacement, 'the next Worker receives only the verified replacement')
 
@@ -1798,31 +1791,26 @@ test('account defaults are scoped, inherited at the next Agent start, and never 
     const config = loadInstanceConfig(defaulted.directory)
     config.paths = { agent: ECHO, worker: ECHO }
     saveInstanceConfig(defaulted.directory, config)
-    assert.equal((await manager.instances.start(defaulted.id)).started, true)
+    assert.equal((await startFixtureInstance(manager.instances, defaulted.id)).started, true)
     assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL, 'remote-default', 'the actual child received the inherited model')
     assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL_MAX_OUTPUT_TOKENS, '12000')
     assert.equal(observedEnv(manager, defaulted.id, 'agent').RULITH_MODEL_KEY, 'default-key-must-not-leak')
     assert.equal(observedEnv(manager, defaulted.id, 'worker').RULITH_MODEL_KEY, undefined, 'the Worker never receives the Agent model key')
     assert.equal(loadInstanceConfig(defaulted.directory).agent.env.RULITH_MODEL_KEY, '', 'an inherited key was not persisted in the profile')
-    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, false)
 
+    await manager.instances.setWorkerEnabled(defaulted.id, true)
     const changed = await call('/manager/model/default', { ...scope, url: 'http://127.0.0.1:11434/v1',
       name: 'second-local', key: '', maxOutputTokens: 16000 })
     assert.equal(changed.response.status, 200)
     assert.equal(changed.body.modelDefaults.configured, true, 'loopback models may omit a provider key')
-    assert.equal(changed.body.instances.find(row => row.id === defaulted.id).model.restartRequired, true)
-    assert.equal((await manager.instances.control(defaulted.id, { role: 'agent', operation: 'stop' })).stopped, true)
-    assert.equal(manager.instances.hosts.get(defaulted.id).host.status().worker, true, 'the Worker remains running while only Agent restarts')
-    assert.equal((await manager.instances.control(defaulted.id, { role: 'agent', operation: 'start' })).started, true)
+    await waitUntil(() => !manager.instances.hosts.get(defaulted.id).host.status().agentReloading
+      && !manager.instances.hosts.get(defaulted.id).host.status().workerSetting.reloading
+      && manager.instances.hosts.get(defaulted.id).host.status().workerSetting.state === 'online')
     assert.equal(childEvents(manager, defaulted.id, 'agent').filter(row => row.observed !== undefined).at(-1).observed.RULITH_MODEL,
       'second-local', 'a default change applies on the next Agent start')
     assert.equal(childEvents(manager, defaulted.id, 'agent').filter(row => row.observed !== undefined).at(-1).observed.RULITH_MODEL_MAX_OUTPUT_TOKENS,
       '16000', 'the changed budget applies on the next Agent start')
-    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, true,
-      'a Worker still bound to the old endpoint must be named as needing restart for new attachments')
-    await manager.instances.control(defaulted.id, { role: 'worker', operation: 'stop' })
-    await manager.instances.control(defaulted.id, { role: 'worker', operation: 'start' })
-    assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.workerRestartRequired, false)
+    assert.equal(manager.instances.hosts.get(defaulted.id).host.status().workerSetting.state, 'online')
     await manager.instances.stop(defaulted.id)
 
     const opened = await manager.instances.open(defaulted.id, '/setup')
@@ -1833,7 +1821,7 @@ test('account defaults are scoped, inherited at the next Agent start, and never 
     assert.equal(manual.status, 200)
     assert.equal(manager.instances.overview().find(row => row.id === defaulted.id).model.source, 'custom',
       'an existing Setup page write explicitly leaves inheritance')
-    await manager.instances.closeHost(defaulted.id)
+    await manager.instances.stop(defaulted.id)
 
     const custom = await call('/manager/instances/model', { ...scope, instanceId: defaulted.id, source: 'custom',
       url: 'https://provider.example/v1', name: 'remote', key: 'do-not-return-this-key', thinking: 'enabled' })
@@ -1876,11 +1864,11 @@ test('leaving a keyed account default needs an explicit custom key', async t => 
     assert.equal(model.source, 'custom')
     assert.equal(model.configured, false, 'a remote custom configuration without an entered key is not ready')
     assert.equal(loadInstanceConfig(row.directory).agent.env.RULITH_MODEL_KEY, '', 'the account default key was not copied into the profile')
-    await assert.rejects(manager.instances.start(row.id), /no ready model configuration/)
+    await assert.rejects(startFixtureInstance(manager.instances, row.id), /no ready model configuration/)
 
     await manager.instances.setInstanceModel(row.id, { ...scope, source: 'custom',
       url: 'https://provider.example/v1', name: 'custom-name', key: 'explicit-custom-key' })
-    assert.equal((await manager.instances.start(row.id)).started, true, 'an explicitly entered custom key starts the real Agent fixture')
+    assert.equal((await startFixtureInstance(manager.instances, row.id)).started, true, 'an explicitly entered custom key starts the real Agent fixture')
     await manager.instances.stop(row.id)
     await manager.instances.setInstanceModel(row.id, { ...scope, source: 'custom',
       url: 'https://provider.example/v1', name: 'renamed-custom', key: '', clearKey: false })
@@ -1901,7 +1889,7 @@ test('leaving a keyed account default needs an explicit custom key', async t => 
       url: 'https://provider.example/v1', name: 'new-custom', key: '', clearKey: false })
     assert.equal(loadInstanceConfig(live.directory).agent.env.RULITH_MODEL_KEY, '',
       'an open host cannot re-retain its old custom key after leaving the default')
-    await assert.rejects(manager.instances.start(live.id), /no ready model configuration/)
+    await assert.rejects(startFixtureInstance(manager.instances, live.id), /no ready model configuration/)
   })
 })
 

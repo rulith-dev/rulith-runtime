@@ -246,7 +246,12 @@ export function createManagerServer({
 
   const operations = {
     '/manager/device/start': (body) => instances.admit(() => device.start(onlyFields(body, ['consoleUrl', 'name']))),
-    '/manager/device/poll': (body) => { onlyFields(body, []); return instances.admit(() => device.poll()) },
+    '/manager/device/poll': async (body) => {
+      onlyFields(body, [])
+      const result = await instances.admit(() => device.poll())
+      if (device.status().state === 'linked') await instances.restoreWorkers()
+      return result
+    },
     '/manager/device/refresh': (body) => { onlyFields(body, []); return refreshDirectory() },
     '/manager/device/signout': (body) => { onlyFields(body, []); return instances.signOut() },
     '/manager/device/forget': (body) => { onlyFields(body, []); return instances.forgetDevice() },
@@ -273,7 +278,10 @@ export function createManagerServer({
     '/manager/authoring/install-checker': async (body) => {
       onlyFields(body, [])
       await installChecker()
-      return { ok: true, teaching: 'Local rule checker installed. Start or restart the Worker to advertise its tools.' }
+      if (instances.phase === 'ready') for (const { host } of instances.hosts.values()) {
+        if (host.status().workerSetting.enabled) host.reloadWorker()
+      }
+      return { ok: true, teaching: 'Local rule checker installed. Enable local tools; enabled Workers reload after running executions drain.' }
     },
     '/manager/authoring/save': (body) => {
       const fields = onlyFields(body, ['instanceId', 'resultId', 'caseId'])
@@ -305,12 +313,10 @@ export function createManagerServer({
       const fields = onlyFields(body, ['instanceId', 'page'])
       return instances.open(String(fields.instanceId ?? ''), String(fields.page ?? '/'))
     },
-    '/manager/instances/control': (body) => {
-      const fields = onlyFields(body, ['instanceId', 'role', 'operation'])
-      return instances.control(String(fields.instanceId ?? ''), { role: fields.role, operation: fields.operation })
+    '/manager/instances/worker-setting': (body) => {
+      const fields = onlyFields(body, ['instanceId', 'enabled'])
+      return instances.setWorkerEnabled(String(fields.instanceId ?? ''), fields.enabled)
     },
-    '/manager/instances/start': (body) => instances.start(String(onlyFields(body, ['instanceId']).instanceId ?? '')),
-    '/manager/instances/stop': (body) => instances.stop(String(onlyFields(body, ['instanceId']).instanceId ?? '')),
     '/manager/instances/forget': (body) => instances.forget(String(onlyFields(body, ['instanceId']).instanceId ?? '')),
   }
 
@@ -376,6 +382,7 @@ export function createManagerServer({
           server.listen(port, '127.0.0.1', accept)
         })
         scheduleDirectory()
+        await instances.restoreWorkers()
       } catch (error) {
         lease.release()
         lease = undefined
