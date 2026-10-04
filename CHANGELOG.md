@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## 0.11.0 - unreleased
+## 0.11.0 - 2026-10-05
 
 - The prompt no longer asks the model to follow a task structure by hand; it says Source results,
   Action receipts and a prepared task are already recorded by the Board, so they need no new
