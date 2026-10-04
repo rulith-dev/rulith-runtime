@@ -4,6 +4,9 @@ All notable changes to the local runtime are documented here.
 
 ## 0.11.0 - unreleased
 
+- The prompt no longer asks the model to follow a task structure by hand; it says Source results,
+  Action receipts and a prepared task are already recorded by the Board, so they need no new
+  assertion (owner D-1004b; a real-model run spent one extra round asserting its own input).
 - Removed Agent and Worker Start/Stop buttons from the local workbench. The first message starts the Agent; model changes restart it between turns.
 - Send becomes Stop during a turn. The authenticated, conversation-scoped `POST /turn/stop` endpoint aborts the model request, preserves in-flight Rulith calls and records user-stopped turns.
 - Added the per-Agent “Use this computer’s tools and files” setting. Enabled Workers start with Rulith, retry crashes with bounded backoff and reload after execution drain; turning the setting off stops the Worker.

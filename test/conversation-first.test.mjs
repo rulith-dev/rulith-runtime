@@ -128,6 +128,9 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
   // D-1004a ⑥：任务已由 OpenCase 备好时推进它而不是重建它；root 认证后才以 completed 结案。
   assert.match(system, /When OpenCase prepares the Case's task, the view lists its goals and whether each is met\./)
   assert.match(system, /do not rebuild the task with ApplyBatch/)
+  // D-1004b ①：Source 结果、动作回执与备好的任务已由 Board 记下，不再另写断言。
+  assert.match(system, /Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion./)
+  assert.doesNotMatch(system, /follow the capability's task structure/)
   assert.match(system, /When taskStatus shows the root certified, close it with CloseCase as completed\./)
 })
 
