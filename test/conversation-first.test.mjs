@@ -117,13 +117,18 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
   for (const forbidden of ['"kind":', '{"op"', 'DONE:', 'STOP:', 'VIEW:', '```']) {
     assert.equal(system.includes(forbidden), false, `the system prompt still teaches ${forbidden}`)
   }
-  // What it must say instead: the five shapes a step of reasoning may take.
-  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'record_result', 'retract_node', 'revise_fact']) {
+  // What it must say instead: facts, rules, goals and corrections.
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_goal', 'retract_node', 'revise_fact']) {
     assert.ok(system.includes(shape), `the prompt does not name the ${shape} shape`)
   }
+  assert.doesNotMatch(system, /declare_hypothesis|record_result/)
   assert.match(system, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
   assert.match(system, /call QueryBoard when you need a current view/,
     'reading the Board is now the model\'s own tool, so the prompt must say so')
+  // D-1004a ⑥：任务已由 OpenCase 备好时推进它而不是重建它；root 认证后才以 completed 结案。
+  assert.match(system, /When OpenCase prepares the Case's task, the view lists its goals and whether each is met\./)
+  assert.match(system, /do not rebuild the task with ApplyBatch/)
+  assert.match(system, /When taskStatus shows the root certified, close it with CloseCase as completed\./)
 })
 
 test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', async () => {
@@ -876,11 +881,42 @@ test('a focused Case persists across messages and is never advanced implicitly',
   assert.equal(run.verbs.filter((verb) => verb === 'OpenCase').length, 1,
     `a follow-up message opened another Case: ${run.verbs.join(', ')}`)
   assert.deepEqual(run.verbs, ['OpenCase'], 'the host advanced or re-read the Board during an ordinary conversational turn')
-  const followUp = JSON.stringify(run.modelRequests[2])
+  const followUp = run.modelRequests[2].messages.at(-1).content
   assert.match(followUp, /Cases in focus: CASE_1 \(root ROOT_1, running\)/,
     'the next conversational turn must receive the focus the authority reported')
-  assert.match(followUp, /last observed \(not refreshed/,
-    'a remembered view must be labelled as remembered, not presented as current')
+  const notice = 'The Board may have changed since your last tool result; QueryBoard reads its current position.'
+  assert.equal(followUp.split(notice).length - 1, 1,
+    'a follow-up user entry must carry exactly one current-position notice')
+  assert.doesNotMatch(followUp, /"directory"|Board View last observed/,
+    'the follow-up user entry must not repeat a previous Board View')
+})
+
+test('only a transcript that holds a tool result is told the Board may have changed, and no view is repeated', async () => {
+  const run = await runAgent({
+    argv: [],
+    chatLines: ['Hello.', 'Open a Case and look at it.', 'Thanks, that is all.'],
+    model: (round) => {
+      if (round === 1) return 'Hello! What would you like to work on?'
+      if (round === 2) return callTool('OpenCase', {})
+      if (round === 3) return callTool('QueryBoard', {})
+      if (round === 4) return 'The Case is open and I have looked at it.'
+      return 'You are welcome.'
+    },
+  })
+
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const entries = run.modelRequests.at(-1).messages
+    .map((entry) => entry.content)
+    .filter((content) => typeof content === 'string' && /^(User message|Task): /u.test(content))
+  assert.equal(entries.length, 3, 'each chat line enters the transcript once')
+  const notice = 'The Board may have changed since your last tool result; QueryBoard reads its current position.'
+  const count = (entry) => entry.split(notice).length - 1
+  // 前两条进入记录时还没有任何工具结果：模型上下文里没有旧局面，就不必提醒。
+  assert.deepEqual(entries.map(count), [0, 0, 1],
+    'the notice belongs only to entries after this transcript holds a tool result, exactly once')
+  for (const entry of entries)
+    assert.doesNotMatch(entry, /"directory"|"position"|Board View last observed/,
+      'a user entry must never repeat a previous Board View')
 })
 
 test('an unscoped write is carried and refused by the authority, not guessed at by the host', async () => {
@@ -1444,6 +1480,10 @@ test('the Anthropic transcript alternates roles even when the host adds its own 
   }
   // Calibration: the nudge really is in there, folded into the tool result turn.
   assert.match(JSON.stringify(last), /still running on the Board/)
+  const nudgeText = last.flatMap(message => message.content)
+    .filter(block => block.type === 'text').map(block => block.text).join('\n')
+  assert.doesNotMatch(nudgeText, /"directory"|Board View last observed/,
+    'the nudge must not repeat a previous Board View')
 })
 
 test('tool arguments that are not a JSON object are refused locally', async () => {

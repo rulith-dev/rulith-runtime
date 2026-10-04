@@ -166,7 +166,7 @@ that does not exist would pass as verified.
 | --- | --- |
 | `OpenCase` | Create a Case, or bring an existing one into this session's focus |
 | `ApplyBatch` | Apply one atomic batch of working-memory operations |
-| `ApplyAction` | Invoke one Action the Board View lists as available |
+| `ApplyAction` | Invoke one Action the Board View lists; each says ready or blocked |
 | `CloseCase` | Close a Case with an explicit disposition |
 | `QueryBoard` | Read the bounded Board View this Agent's Profile permits |
 | `ReadArtifact` | Read a bounded fragment of an already-generated result object |
@@ -417,23 +417,24 @@ Nothing about an unfinished call is kept on disk. Runtime 0.9 recorded such a ca
 `agent-sessions.json`; a record found there is named once at startup, with its request id, and
 removed, because the strip `initialize` carries already shows what became of the call.
 
-Inside `ApplyBatch`, a step of reasoning takes one of five shapes:
+Inside `ApplyBatch`, a step of reasoning takes one of four shapes:
 
 | Shape | What it puts on the Board |
 | --- | --- |
 | `assert_fact` | A material fact, with the source it came from |
 | `add_axiom` | A rule the Board may derive with |
-| `declare_hypothesis` | A claim under test; the Board reports its status |
-| `record_result` | A conclusion, with references to the evidence it rests on |
+| `declare_goal` | An outcome that must hold |
 | `retract_node` / `revise_fact` | Withdraw or correct one of your own assertions |
 
-Explanation and argument stay in the model's reply. They are not Board material.
+Let rules derive conclusions. Explanation and argument stay in the model's reply. They are not Board material.
 
 Every tool result carries one bounded **Board View**, computed by the Board for the
-operation the model just took and filtered to what the Agent Profile permits: the
-acceptance roots and their status, the open gaps, the nodes, and the available Actions
-with their parameters. It is not the complete Board history, and it carries no receipt,
-permission, program, Connection or commercial records. Reading it costs nothing extra —
+operation the model just took and filtered to what the Agent Profile permits: its
+position (whether writes, new Cases and rules are open), the acceptance roots and their
+status, the open gaps, the nodes, and the Actions with their parameters, each ready or
+blocked with a reason. It describes the Board when the result was made; calls check
+again. It is not the complete Board history, and it carries no receipt, permission,
+program, Connection or commercial records. Reading it costs nothing extra —
 it arrives with the answer to the step. When the model needs a *current* view rather than
 the one it last saw, it calls `QueryBoard`; the host never issues a read of its own, and
 in particular never refreshes an observation immediately before a write.

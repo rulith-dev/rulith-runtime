@@ -196,3 +196,14 @@ test('RT-CONTRACT-11 vendoring requires the contract repository\'s own verifier'
   const write = sync.indexOf('copyFileSync(source')
   assert.ok(proof > 0 && write > proof, 'the bundle is written before its provenance is proved')
 })
+
+test('the bundled ApplyBatch offers the model exactly eight operations', () => {
+  // D-1003a b（规范 ec6e77e）：declare_hypothesis 与 record_result 已退出模型批。
+  const tool = RAW.tools.find((row) => row.name === 'ApplyBatch')
+  const defs = tool.inputSchema.$defs
+  const resolve = (ref) => defs[ref.split('/').pop()]
+  const operation = resolve(tool.inputSchema.properties.operations.items.$ref)
+  assert.deepEqual(operation.oneOf.map((variant) => resolve(variant.$ref).properties.op.const),
+    ['assert_fact', 'declare_goal', 'add_axiom', 'define_action', 'apply_action', 'derive_aggregate',
+      'retract_node', 'revise_fact'])
+})

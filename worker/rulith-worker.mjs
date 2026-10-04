@@ -111,9 +111,9 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // Do not edit: `npm run check` regenerates this block and fails on any difference. Every
 // value below is the contract's, read from the bundle exported at the commit named here,
 // except the Runtime version from package.json.
-const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '5485b78319eaac481e610ba3f97cf31ef9110d16'
+const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.10.0"
+const RULITH_RUNTIME_VERSION = "0.10.1"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'

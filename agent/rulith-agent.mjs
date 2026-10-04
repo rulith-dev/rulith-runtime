@@ -80,8 +80,8 @@ const MCP_URL = `${URL_BASE}/mcp`
 // and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = '4c83bbf03b9e9d28633c12f807bc87a6363fd210'
-const RULITH_RUNTIME_VERSION = "0.10.0"
+const RULITH_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
+const RULITH_RUNTIME_VERSION = "0.10.1"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v3'
@@ -3950,17 +3950,19 @@ async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage } = {}
  * proposal, which shapes a step of reasoning may take, and which claims are never the
  * model's to make.
  */
-const SYSTEM_PROMPT = `You are a conversational assistant using Rulith for governed work. Answer greetings and general questions directly. Describe installed capabilities and business state from tool results. The Board derives, checks and certifies; you propose. Your tools are the only things you can say to it, and their schemas are the templates.
+const SYSTEM_PROMPT = `You are a conversational assistant using Rulith for governed work. Answer greetings and general questions directly. Describe installed capabilities and business state from tool results. The Board derives, checks and certifies; you propose. Your tools are the only things you can say to it; their schemas are the templates.
 
-Complete the user's request across as many tool calls as needed. If you announce an action, include its actual tool call. After results, continue to an answer, a concrete blocker or a necessary question. Plain text ends your turn; never stop at "Let me check".
+Complete the user's request, however many tool calls it takes. If you announce an action, include its actual tool call. After results, continue to an answer, a concrete blocker or a necessary question. Plain text ends your turn; never stop at "Let me check".
 
-Inside ApplyBatch, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_hypothesis puts a claim under test. declare_goal states an outcome; follow the capability's task structure and returned node IDs. record_result records a conclusion with evidence. retract_node or revise_fact corrects your assertion. Narration belongs in replies. Case Type alone grants no rule-writing permission. Closing a Case preserves shared knowledge.
+Inside ApplyBatch, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_goal states an outcome; follow the capability's task structure and returned node IDs. Let rules derive conclusions; retract_node or revise_fact corrects your assertion. Narrate in replies. Case Type alone grants no rule-writing permission. Closing a Case preserves shared knowledge.
 
 Never assert acceptance_met, test_result, certification or rulith.exploration.completed. Acceptance is the Board's decision.
 
-Every Board tool result carries the Board View the authority computed for that step. Read it before choosing the next step, and call QueryBoard when you need a current view. ReadArtifact reads referenced data in pieces; it does not change the Board.
+Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new Cases and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call QueryBoard when you need a current view.
 
-Every answer from the authority also shows operations: this Agent's recent operations, other conversations' included, newest first, each with how it stands. A call this Runtime did not send, or whose answer never arrived, shows no full list; QueryBoard does. running means still in progress; its outcome will show in operations, so do not send it again. unknown means its effect may already have happened; do not repeat it. A write sent while something runs is not executed. previous_result_undelivered means: read the previous outcome shown in operations, then decide.`
+When OpenCase prepares the Case's task, the view lists its goals and whether each is met. Work toward the unmet goals by calling ready Actions with the IDs the view returned; do not rebuild the task with ApplyBatch. When taskStatus shows the root certified, close it with CloseCase as completed. If no task was prepared, state the outcome with declare_goal as the capability describes.
+
+Every answer from the authority also shows operations: this Agent's recent operations, other conversations' included, newest first. A call this Runtime did not send, or whose answer never arrived, shows no full list; QueryBoard does. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.`
 
 // ── Main loop: propose → adjudicate → teach back ─────────────────────────────
 const log = (s) => console.log(s)
@@ -4575,7 +4577,7 @@ async function runCaseTurn(ctx, userText, {
     selectionNotice === '' ? '' : `\n\n${selectionNotice}`,
     takeTurnNotices(ctx),
     board.roots.length === 0 ? '' : `\n\nCases in focus: ${board.roots.map((row) => `${row.caseId} (root ${row.root}, ${row.status})`).join(' · ')}`,
-    board.lastView === undefined ? '' : `\n\nBoard View last observed (not refreshed; call QueryBoard for a current one):\n${viewText(board.lastView)}`,
+    !messages.some((entry) => entry.role === 'tool_results') ? '' : '\n\nThe Board may have changed since your last tool result; QueryBoard reads its current position.',
   ].join('')))
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
@@ -4644,7 +4646,7 @@ async function runCaseTurn(ctx, userText, {
       // guess about the prose: it is the lifecycle that says the work is not finished.
       nudged = true
       messages.push(userEntry(`These Cases are still running on the Board: ${live.map((row) => `${row.caseId} (root ${row.root})`).join(' · ')}.\n`
-        + `Board View last observed:\n${viewText(board.lastView)}\n\nTake the next step, read the current view with QueryBoard,`
+        + 'Take the next step, read the current view with QueryBoard,'
         + ' or close a Case with a disposition that says why it cannot be finished.'))
       continue
     }

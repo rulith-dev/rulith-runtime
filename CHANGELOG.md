@@ -2,6 +2,31 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.10.1 - 2026-10-03
+
+- Teach the model to read the position and each Action's readiness, reason and waits in
+  the Board View returned for a step. These describe the state when the result was made;
+  calls still check their inputs and current conditions. Later user turns carry only one
+  notice that the Board may have changed and QueryBoard reads its current position, and
+  the unfinished-Case nudge no longer repeats the last view. This keeps an earlier view
+  from being presented again as the current position. The last view remains available
+  for shadow review, the final log and Local UI.
+- Teach the model to work a task that OpenCase prepared: move its unmet goals with ready
+  Actions instead of rebuilding the task with ApplyBatch, and close the Case as completed once
+  its root is certified. Without a prepared task it still states the outcome with declare_goal.
+- Sync the MCP contract to spec commit `214242f`. QueryBoard now says that reading nodes,
+  gaps or taskStatus needs selector.roots, and ReadArtifact that only a ref supplied in a tool
+  result may be read, never an invented one. The Worker's vendored protocol is re-pinned to
+  the same commit: its protocol schema is unchanged, the ReadArtifact schema description
+  changed and its conformance fixture gained review-report cases. The model's ApplyBatch no longer offers
+  `declare_hypothesis` or `record_result`: it proposes facts, rules and goals, lets rules
+  derive conclusions, and corrects its own assertions. The prompt and README follow that
+  boundary; historical commands, receipts and nodes remain governed by the authority.
+- Pairs with the Rulith service release whose Board Views carry the position and Action
+  readiness and whose OpenCase can prepare a Case's task with its goals; the two are released
+  together. An older service sends neither, and the
+  notice and prompt then describe fields the view does not have.
+
 ## 0.10.0 - 2026-10-01
 
 - Speak the `rulith/v3` client protocol, which removes `ReadOperation`. The model sees six tools

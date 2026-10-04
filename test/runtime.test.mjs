@@ -118,7 +118,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.10.0')
+  assert.equal(pkg.version, '0.10.1')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -1476,10 +1476,16 @@ test('one system prompt explains reasoning without granting Case-specific author
   const prompt = /const SYSTEM_PROMPT = `([\s\S]*?)`\n/.exec(source)?.[1]
   assert.ok(prompt, 'the system prompt could not be found')
   const words = prompt.split(/\s+/).filter(Boolean).length
-  assert.ok(words > 100 && words < 300, `the prompt is ${words} words; it is meant to be about 200`)
-  for (const shape of ['assert_fact', 'add_axiom', 'declare_hypothesis', 'declare_goal', 'record_result', 'retract_node', 'revise_fact']) {
+  // 所有者 2026-10-04：本地模型 prefill 快且有前缀缓存，提示可放宽到 600 词；只在实测需要时加字。
+  assert.ok(words > 100 && words < 600, `the prompt is ${words} words; the owner set the budget at 600 (2026-10-04)`)
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_goal', 'retract_node', 'revise_fact']) {
     assert.ok(prompt.includes(shape), `the prompt does not name the ${shape} shape`)
   }
+  assert.doesNotMatch(prompt, /declare_hypothesis|record_result/)
+  assert.match(prompt, /Its position says whether writes, new Cases and rules are open/)
+  assert.match(prompt, /each Action says ready or blocked and why, or what it will wait for/)
+  assert.match(prompt, /not a promise: calls are checked again/)
+  assert.doesNotMatch(source, /last observed \(not refreshed/)
   assert.match(prompt, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
   // No JSON templates: the advertised tool schemas are the templates.
   assert.doesNotMatch(prompt, /"kind":|\{"op"|```/)
