@@ -147,6 +147,7 @@ function createNode(tag, doc) {
       child.parentNode = null; this.raw = null
       return child
     },
+    append(...next) { for (const child of next) this.appendChild(child) },
     replaceChildren(...next) {
       for (const child of this.children) child.parentNode = null
       this.children = []; this.text = ''; this.raw = null

@@ -75,7 +75,7 @@ const refusedAuthorization = (error) => error instanceof DeviceRefused && (error
 export class DeviceRecordUnreadableError extends Error {
   constructor(file, detail) {
     super(`The device record at ${file} cannot be read: ${detail}.`
-      + ' Nothing was changed. This computer cannot use or revoke that authorization until the file is repaired or cleared;'
+      + ' Nothing was changed. This environment cannot use or revoke that authorization until the file is repaired or cleared;'
       + ' "Clear it and sign in again" removes it here, and the device should then be revoked in Console because the'
       + ' credential that would have revoked it could not be read.')
     this.name = 'DeviceRecordUnreadableError'
@@ -300,13 +300,13 @@ export function createDeviceClient({ root } = {}) {
     start: ({ consoleUrl, name } = {}) => exclusive(async () => {
       const current = load()
       if (current.state === 'linked' || current.state === 'approved') {
-        throw new Error('This computer is already signed in. Sign out before connecting a different account.')
+        throw new Error('This environment is already signed in. Sign out before connecting a different account.')
       }
       // A grant the service stopped accepting still has credentials on this computer that it
       // issued. Signing in over it would leave those behind as unusable leftovers that later
       // refuse the very instance they belong to, so clearing it is its own deliberate step.
       if (['revoked', 'expired', 'unusable'].includes(current.state)) {
-        throw new Error('This device authorization is no longer usable, and the credentials it issued are still on this computer. Clear it first, then sign in again.')
+        throw new Error('This device authorization is no longer usable, and the credentials it issued are still in this environment. Clear it first, then sign in again.')
       }
       const origin = setupOrigin(consoleUrl)
       const deviceName = text(name).trim() || hostname()
@@ -361,7 +361,7 @@ export function createDeviceClient({ root } = {}) {
       const current = load()
       if (current.state === 'linked') return status()
       if (current.state !== 'pending' && current.state !== 'approved') {
-        throw new Error('There is no device sign-in in progress on this computer.')
+        throw new Error('There is no device sign-in in progress in this environment.')
       }
       let record = current
       if (record.state === 'pending') {
@@ -377,7 +377,7 @@ export function createDeviceClient({ root } = {}) {
         try {
           token = privateDecrypt({ key: record.privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
             Buffer.from(text(reply.encryptedDeviceToken), 'base64')).toString('utf8')
-        } catch { throw new Error('The approved device token could not be opened with this computer\'s key. Start the sign-in again.') }
+        } catch { throw new Error('The approved device token could not be opened with this environment\'s key. Start the sign-in again.') }
         if (!token.trim()) throw new Error('The account service delivered an empty device token.')
         const account = reply.account ?? {}
         const agents = Array.isArray(reply.agents) ? reply.agents : []
@@ -591,7 +591,7 @@ export function createDeviceClient({ root } = {}) {
      */
     revoke: () => exclusive(async () => {
       const current = load()
-      if (!text(current.token)) throw new Error('There is no signed-in device to revoke on this computer.')
+      if (!text(current.token)) throw new Error('There is no signed-in device to revoke in this environment.')
       const requestId = text(current.revokeRequestId) || randomUUID()
       if (requestId !== current.revokeRequestId) await mutate((latest) => ({ ...latest, revokeRequestId: text(latest.revokeRequestId) || requestId }))
       const stored = text(load().revokeRequestId) || requestId

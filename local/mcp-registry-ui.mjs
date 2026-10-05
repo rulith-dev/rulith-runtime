@@ -53,7 +53,7 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
         node('div', 'Version ' + server.version + ' · Registry status: ' + server.status),
         node('div', 'Declared formats: ' + (server.formats.join(' / ') || 'Not provided')),
         node('div', 'Registry updated: ' + dateLabel(server.updatedAt)))
-      const methods = [server.setup.local ? 'Local npm installation' : '', server.setup.remote ? 'Hosted HTTP connection' : ''].filter(Boolean)
+      const methods = [server.setup.local ? 'Local npm installation' : '', server.setup.remote ? 'Hosted HTTP service' : ''].filter(Boolean)
       card.append(node('p', server.setup.supported ? methods.join(' / ') : server.status !== 'active' ? 'Setup unavailable: directory status is ' + server.status : 'Manual setup required'))
       if (!server.setup.supported && server.setup.reason) card.append(node('div', server.setup.reason))
       const downloads = node('div'); downloads.className = 'package-downloads'; showDownloads(downloads, server.downloadPackage); card.append(downloads)
@@ -70,7 +70,7 @@ export function attachRegistryBrowser({ $, node, api, action, onPrepared, isBloc
     $('registry-inputs').replaceChildren()
     $('registry-limits').textContent = option?.unsupported || (option?.remote
       ? 'Static header credentials are supported. Services requiring an interactive OAuth sign-in need manual setup.'
-      : 'Installs this exact version locally with npm lifecycle scripts disabled. Discovery will start its program on your computer.')
+      : 'Installs this exact version locally with npm lifecycle scripts disabled. Discovery will start its program in this environment.')
     prepare.textContent = option?.remote ? 'Connect and discover tools' : 'Install and discover tools'
     showDownloads($('registry-downloads'), option?.npmPackage)
     if (option?.npmPackage) void loadDownloads([option.npmPackage])

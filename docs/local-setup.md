@@ -4,15 +4,19 @@ Run `rulith setup` and open the printed [workbench](local-manager.md). Sign in t
 
 1. Choose **existing agent / MCP client** or **run with Rulith**. The first uses your client's model; only the second needs local model settings.
 2. Attach the selected Agent from the signed-in account directory. Pairing alone grants no tool access.
-3. Select local resource locations or installed MCP services. Their credentials stay in the local vault. Send the selection for authorization and enable **Use this computer’s tools and files**.
-4. Review the resources and actual tools in Console. Authorize your selection and wait for Worker confirmation.
-5. For a Local agent, save your model endpoint/name/key on this computer and send the first message; the Agent starts automatically. For an existing client, use its MCP configuration from Console.
+3. Add shared tools and MCP services once under **This environment’s tools**. All Agents
+   using this environment see the library. Review and confirm each tool change once.
+   Choose resource locations or installed services for Console authorization and enable
+   **Use this environment’s tools and files**. Source keys stay in the environment vault.
+4. Review the resources and actual tools in Console. Authorize the Sources and tools this
+   Agent needs and wait for confirmation. Only keys for Sources granted to this Agent are used.
+5. For a Local agent, save your model endpoint/name/key in this environment and send the first message; the Agent starts automatically. For an existing client, use its MCP configuration from Console.
 
 HTTPS deployments and loopback development origins are supported. The wizard does not install Core/Gateway services. Model endpoints accept the Runtime's existing OpenAI-compatible and Anthropic interfaces; model keys may be omitted for loopback services.
 
 Existing credentials are preserved. Replacing an Agent's client token requires an explicit choice in the authorized pairing flow and invalidates all copies of the previous token. Configuration changes reload the affected role automatically after its accepted work finishes. Pairing expires after ten minutes; lost responses resume the same request. Only device proof can retrieve credentials, and proof/private keys are removed after local persistence is acknowledged.
 
-For the installed Verified Calculation capability, **Prepare calculation sample** writes the sample into a new empty directory, in the layout of `examples/verified-calculation/setup.mjs` (the Source's data in its `runtime` folder, the Release's default Source location), and points this Agent's Worker at it. It never overwrites existing files. The same click stops the Worker if it is running (a running Worker first finishes work it has claimed), sends its Source folder, `runtime`, for authorization when it is the only selected resource, enables local tools and reloads the Worker so Console can check its three calculation Tools. A running Agent keeps running. Other native tool/vault formats remain available under Worker tools and deployment configuration.
+For the installed Verified Calculation capability, **Prepare calculation sample** writes the sample into a new empty directory, in the layout of `examples/verified-calculation/setup.mjs` (the Source's data in its `runtime` folder, the Release's default Source location), and points this Agent's Worker at it. It never overwrites existing files. The same click stops the Worker if it is running (a running Worker first finishes work it has claimed), sends its Source folder, `runtime`, for authorization when it is the only selected resource, enables local tools and reloads the Worker so Console can check its three calculation Tools. A running Agent keeps running. Other native tool/vault formats remain available under Agent tools and deployment configuration.
 
 ## Reading the conversation
 

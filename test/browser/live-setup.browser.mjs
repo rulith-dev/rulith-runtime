@@ -65,6 +65,15 @@ try {
   }
   console.log(JSON.stringify({ phase: 'paired', agent: agentName, mode: result.mode, modelReady: result.model?.ready === true,
     agentRunning: result.agent === true, workerRunning: result.worker === true }))
+  if (result.tools?.source !== 'library') throw new Error('The QA Agent did not migrate to this environment’s tool library. Resolve its migration notice first.')
+  await page.click('#environment-open')
+  await page.locator('#page-loading').waitFor({ state: 'hidden' })
+  const tools = page.frameLocator('#page-frame')
+  await tools.locator('h1').filter({ hasText: 'This environment’s tools' }).waitFor()
+  if (await tools.locator('#worker-setting, #workspace-mode, option[value="run"]').count())
+    throw new Error('The environment page still offers Agent settings or a script template.')
+  await tools.locator('#keys').waitFor()
+  console.log(JSON.stringify({ phase: 'environment-tools', library: result.tools.source, pageLoaded: true }))
 } finally {
   try { await browser?.close() } finally {
     if (started) {

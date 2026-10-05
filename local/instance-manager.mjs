@@ -30,6 +30,7 @@ import { createLocalHost, defaultLocalConfig, normalizeLocalConfig } from './rul
 import { newInstanceId, writeJsonAtomic } from './manager-registry.mjs'
 import { instanceRecordedAt, processRecordRunning, processStamp } from './process-identity.mjs'
 import { checkedModelInput, createModelSettings, maxOutputTokens, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
+import { createToolLibrary } from './tool-library.mjs'
 
 export const INSTANCE_MODES = Object.freeze(['local_agent', 'existing_client'])
 /** Credentials a sign-out must remove from an instance; everything else is the operator's. */
@@ -107,6 +108,17 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
   const hosts = new Map()
   const instancesRoot = join(registry.root, 'instances')
   const modelSettings = createModelSettings({ root: registry.root })
+  /**
+   * The tools every Agent in this installation shares (`tool-library.mjs`), and the one place that
+   * turns "this Agent is on the environment's tools" into what its Worker is started with.
+   *
+   * It lives beside the instances, not in one of them: an instance is still the only home of what
+   * differs between two Agents — identity, workspace, materials, conversations — and the library
+   * holds what two Agents should not have to keep twice. An instance reaches it only through the
+   * composition its host runs at each Worker start, which is why `managerExposure` can go on
+   * refusing every path an instance names inside the manager directory.
+   */
+  const library = createToolLibrary({ registry, hosts, loadConfig: loadInstanceConfig })
 
   /**
    * One owner at a time, per instance.
@@ -511,6 +523,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       config.agent = { ...config.agent, env: { ...config.agent.env, RULITH_SERVE_PORT: String(servePort) } }
       saveInstanceConfig(directory, config)
     }
+    const toolLibrary = library.forInstance(id)
     const build = (hostPort) => createLocalHost({
       configFile: instanceConfigFile(directory), config, roles: config.roles, port: hostPort,
       autoStart: true, isolateEnvironment: true,
@@ -529,7 +542,20 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       managedPolicy: policyFor(id),
       managedCallToken,
       protectedPaths: [registry.root],
-      onChildChange: (children) => recordRuntime(id, children),
+      toolLibrary,
+      onChildChange: (children) => {
+        // The record of which processes this instance owns comes first, and nothing below can keep it
+        // from being written: it is what the next manager reads after a crash, and the host that calls
+        // this swallows whatever an owner throws.
+        const recorded = recordRuntime(id, children)
+        // The files a Worker was composed into hold service credentials, so they go with the Worker. A
+        // file that will not go (Windows can hold one open for a scanner) is retried by the library;
+        // that it is wrapped here is only so that this callback cannot throw.
+        if (!children.some((child) => child.role === 'worker')) {
+          try { toolLibrary.stopped() } catch { /* `stopped` retries what it could not remove and does not throw */ }
+        }
+        return recorded
+      },
       onModelConfigured: () => registry.patchInstance(id, () => ({ modelSource: 'custom' })),
       authorizeConnectionKey: async ({ expectedOrigin, expectedAccountId, expectedAgentId, expectedConnectionId }) => {
         const current = record(id), grant = device.status()
@@ -770,9 +796,14 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     } },
   } : {})
 
+  /** What a page may be told about how an Agent gets its tools: which way, and why not the library if it does not. */
+  const toolsView = (row) => (row.tools === undefined ? null
+    : { source: row.tools.source === 'library' ? 'library' : 'own', conflicts: row.tools.conflicts ?? [], notice: row.tools.notice ?? null })
+
   const manager = {
     hosts,
     instancesRoot,
+    library,
     /** The installation-wide phase, and the gate the device routes share with it. */
     get phase() { return phase },
     admit,
@@ -807,10 +838,12 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         open: live !== undefined, roles: status?.roles ?? [],
         agent: status?.agent === true, worker: status?.worker === true,
         workerSetting: status?.workerSetting ?? { enabled: loadInstanceConfig(resolve(row.directory)).worker.enabled === true,
-          visible: row.mode === 'existing_client' || loadInstanceConfig(resolve(row.directory)).worker.enabled === true || Object.keys(manifest?.tools ?? {}).length > 0,
+          visible: row.mode === 'existing_client' || loadInstanceConfig(resolve(row.directory)).worker.enabled === true || Object.keys(manifest?.tools ?? {}).length > 0
+            || (row.tools?.source === 'library' && library.hasTools()),
           state: row.connectionId ? 'offline' : 'needs setup' },
         agentReloading: status?.agentReloading === true,
         ready: status?.ready ?? { agent: false, worker: false },
+        tools: toolsView(row),
         // Everything a card needs to explain why a button is unavailable, computed from the
         // device grant rather than from what the page last saw.
         pendingAgentId: row.pairing?.agentId ?? '', pendingAgentName: row.pairing?.agentName ?? '',
@@ -838,6 +871,21 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     },
 
     modelDefaults: () => defaultView(),
+
+    /**
+     * Move every Agent whose tools can move into the environment's, once, as the workbench starts.
+     * Nothing is started or stopped by it, and an Agent it cannot move keeps working on its own files.
+     */
+    migrateTools: () => admit(async () => { const outcome = await library.migrateAll(); await library.reloadAffected(); return outcome }),
+    /**
+     * "Check again" for one Agent that kept its own tools: try to move it now, then reload the
+     * Workers the environment's new tools reach. Refused while this Agent's own Worker runs.
+     */
+    checkTools: (id) => admit(() => lifecycle(id, async () => {
+      const outcome = await library.migrateInstance(id)
+      const { pending } = await library.reloadAffected()
+      return { instanceId: id, teaching: outcome.teaching + library.pendingNote(pending, 'Checked;') }
+    })),
 
     /** Refresh the enabled account directory, then stop profiles whose Agent was disabled.
      * The refresh is not an authorization expansion: it records the service's current
@@ -988,7 +1036,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     })),
 
     create: ({ name, mode = 'local_agent', setupTarget } = {}) => admit(async () => {
-      if (!INSTANCE_MODES.includes(mode)) throw new Error('Choose the Local agent, or an existing client using this computer as a Worker.')
+      if (!INSTANCE_MODES.includes(mode)) throw new Error('Choose the local Agent, or an existing client using this environment\'s tools.')
       const display = text(name).trim()
       if (display === '' || display.length > 80) throw new Error('Give this instance a name of 1–80 characters.')
       // First-use intent survives a lost create response or a restart before pairing. It is
@@ -1024,7 +1072,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         const servePort = await freePort(new Set([...hosts.values()].map(entry => entry.servePort)))
         mkdirSync(join(directory, 'workspace'), { recursive: true, mode: 0o700 })
         saveInstanceConfig(directory, newInstanceConfig({ directory, mode, servePort }))
-        result = { id, name: display, mode, directory, servePort, createdAt: new Date().toISOString(),
+        // A new Agent has nothing of its own to carry over, so it starts on the environment's tools.
+        result = { id, name: display, mode, directory, servePort, createdAt: new Date().toISOString(), tools: { source: 'library', conflicts: [] },
           ...(target ? { setupTarget: target } : {}),
           ...(target && mode === 'local_agent' ? { modelSource: 'default' } : {}) }
         state.instances.push(result)
@@ -1224,7 +1273,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       if (['local_setup_unknown', 'local_setup_expired'].includes(answer.body.errorCode)) {
         throw new Error('The original pairing receipt is no longer available. This does not prove that no credential was issued.'
-          + ' Nothing was cleared here. Sign out and stop this computer, or revoke this device in Console, before connecting again.')
+          + ' Nothing was cleared here. Sign out and stop this environment, or revoke this device in Console, before connecting again.')
       }
       if (answer.status !== 200 || answer.body.ok === false) {
         throw new Error(String(text(answer.body.teaching) || 'The account service did not confirm the cancellation.')
@@ -1557,7 +1606,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
           ? { teaching: `The credentials this authorization issued were cleared from every instance, and the account service did not confirm the revocation (${revokeTeaching}). It had already refused this device, so nothing here can still execute; check the device list in Console.` }
           : revoke === 'unreadable'
             ? { teaching: 'The device record could not be read, so the credential that would have revoked this device could not be used.'
-                + ' Every instance was stopped and the credentials it issued were cleared from this computer; revoke this device in Console to withdraw it there.' }
+                + ' Every instance was stopped and the credentials it issued were cleared from this environment; revoke this device in Console to withdraw it there.' }
             : stops.some(row => row.results.some(result => result.forced))
               ? { teaching: 'The authorization was cleared after owned processes were killed at the graceful drain bound and their exits were observed. Work already handed to Rulith may still be running; check Console.' }
               : {}) }
@@ -1592,6 +1641,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         }
       }
       }
+      // The environment's own installs and discovery are the last thing in flight, and nothing
+      // that could start one is admitted any more.
+      await library.close()
       // Reported, not swallowed. A shutdown that could not record what it still owns, or that
       // left a child running, is a thing the next run needs to know and the operator may need
       // to act on; `close()` returning quietly would be this manager's last untrue statement.

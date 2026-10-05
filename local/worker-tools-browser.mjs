@@ -1,35 +1,83 @@
 // SPDX-License-Identifier: Apache-2.0
-/** Browser controller for the single Worker tool inventory. No Cloud credentials or authority state. */
-export function startWorkerToolsPage(attachRegistryBrowser) {
+/**
+ * Browser controller for the single Worker tool inventory. No Cloud credentials or authority state.
+ *
+ * One controller serves both pages that list tools (`worker-tools-ui.mjs`): one Agent's own, which
+ * talks to that Agent's host, and the environment's, which talks to the manager. `options` says
+ * which: `scope`, the name of the header that carries this page's key, and `routes`, the path each
+ * request maps to when it is not the one named here. The page passes it as JSON, because this
+ * function is inlined into the page and can see nothing outside itself.
+ */
+export function startWorkerToolsPage(attachRegistryBrowser, options = {}) {
   const $ = id => document.getElementById(id)
+  const environment = options.scope === 'environment'
   const key = new URLSearchParams(location.search).get('k') || ''
   const node = (tag, text) => { const result = document.createElement(tag); if (text !== undefined) result.textContent = text; return result }
   let view = { tools: [], services: [], presets: [] }, status = {}, busy = false, registry, loadedDirectory = false
   let originalName, originalToolId, originalToolRevision, preparationId = '', probeId = '', downloadService
-  const blocked = () => busy
+  let pendingChange, changeFocus
+  const blocked = () => busy || pendingChange !== undefined
   $('back').href = '/?k=' + encodeURIComponent(key)
   function say(message, error = false) { $('result').textContent = message; $('result').classList.toggle('error', error) }
   async function api(path, body) {
-    const response = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-rulith-local': key, 'content-type': 'application/json' },
+    // The path this page was written against, sent to the route that does the same thing for this scope.
+    const at = path.indexOf('?'), base = at < 0 ? path : path.slice(0, at)
+    const target = (options.routes?.[base] ?? base) + (at < 0 ? '' : path.slice(at))
+    const response = await fetch(target, { method: body === undefined ? 'GET' : 'POST', headers: { [options.header || 'x-rulith-local']: key, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     const result = await response.json()
     if (!response.ok || result.ok === false) throw new Error(result.teaching || 'Local request failed.')
     return result
   }
+  /** After a change that takes tools away or changes them: who has it, and when they lose it. */
+  function reach(result) {
+    const names = result.affected || []
+    return names.length ? ' Affected after running work finishes: ' + names.join(', ') + '.' : ''
+  }
   function buttons() {
     // Keep an in-flight discovery attached to the form that initiated it.
-    $('add').inert = busy; $('inventory').inert = busy
-    document.querySelectorAll('[data-panel]').forEach(button => { button.disabled = busy })
+    $('add').inert = blocked(); $('inventory').inert = blocked()
+    document.querySelectorAll('[data-panel]').forEach(button => { button.disabled = blocked() })
     document.querySelectorAll('[data-mutation]').forEach(button => { button.disabled = blocked() })
-    $('worker-setting').checked = status.workerSetting?.enabled === true
-    $('worker-setting').disabled = busy
-    $('runtime-note').textContent = 'Changes reload the Worker automatically after running executions drain. Tool and resource permissions stay in Console.'
+    if (!environment) {
+      $('worker-setting').checked = status.workerSetting?.enabled === true
+      $('worker-setting').disabled = busy
+      $('runtime-note').textContent = 'Changes reload the Worker automatically after running executions drain. Tool and resource permissions stay in Console.'
+    }
     registry?.updateButtons()
   }
   async function action(message, run) {
     if (busy) return
     busy = true; buttons(); say(message)
     try { await run() } catch (error) { say(error.message, true) } finally { busy = false; buttons() }
+  }
+  // One review inside the page also works in the workbench's sandboxed frame. Merely opening,
+  // typing, installing or discovering never changes a saved tool or service.
+  function reviewChange(title, details, run) {
+    if (blocked()) return
+    changeFocus = document.activeElement
+    $('change-title').textContent = title
+    $('change-details').textContent = details
+    $('change-impact').textContent = environment
+      ? 'This change reaches every Agent in this environment after running work finishes. Changed tools need to be locked again in Console.'
+      : 'This change reaches this Agent after running work finishes. Changed tools need to be locked again in Console.'
+    pendingChange = run; $('change-review').hidden = false; buttons(); $('change-confirm').focus()
+  }
+  function closeReview() {
+    pendingChange = undefined; $('change-review').hidden = true; buttons(); changeFocus?.focus()
+  }
+  $('change-cancel').onclick = closeReview
+  $('change-confirm').onclick = () => {
+    if (!pendingChange) return
+    const run = pendingChange; closeReview()
+    return action('Saving the confirmed change…', run)
+  }
+  $('change-review').onkeydown = event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeReview() }
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      ;(document.activeElement === $('change-confirm') ? $('change-cancel') : $('change-confirm')).focus()
+    }
   }
   function panel(name) {
     for (const id of ['inventory', 'add']) $(id).hidden = id !== name
@@ -68,7 +116,7 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
     $('directory').value = service.directory || ''; $('command').value = service.source.command || ''
     $('args').value = JSON.stringify(service.source.args || [], null, 2); $('cwd').value = service.source.cwd || ''; $('url').value = service.source.url || ''
     $('registry-configured').textContent = service.registry ? service.registry.name + ' · ' + service.registry.version + '. Discovery reuses the saved launch configuration.' : ''
-    $('secret-status').textContent = service.mode === 'registry' ? 'Launch configuration stays on this machine.' : service.secretConfigured ? 'Credentials are configured locally. Blank fields preserve them only for the same launch target.' : ''
+    $('secret-status').textContent = service.mode === 'registry' ? 'Launch configuration stays in this environment.' : service.secretConfigured ? 'Credentials are configured locally. Blank fields preserve them only for the same launch target.' : ''
     $('reconfigure-registry').hidden = !service.registry
     $('reconfigure-registry').onclick = () => {
       addMode('directory'); $('registry-source-name').value = service.name; $('registry-source-name').readOnly = true
@@ -76,10 +124,15 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
     }
     handoff(service)
   }
+  // An Agent that uses its environment's tools changes them in the workbench, not here: the host
+  // refuses these edits, so they are not offered. Its built-in settings are its own and stay.
+  const shared = () => !environment && view.library !== undefined
   function renderTools() {
     const query = $('tool-search').value.toLowerCase(), filter = $('tool-origin').value
     $('tool-rows').replaceChildren()
-    for (const tool of view.tools.filter(tool => (!filter || tool.origin === filter) && (tool.id + ' ' + tool.adapter + ' ' + (tool.service || '')).toLowerCase().includes(query))) {
+    // Built-in tools are each Agent's own file-tool setting, not part of what the environment shares.
+    const listed = view.tools.filter(tool => !(environment && tool.origin === 'builtin'))
+    for (const tool of listed.filter(tool => (!filter || tool.origin === filter) && (tool.id + ' ' + tool.adapter + ' ' + (tool.service || '')).toLowerCase().includes(query))) {
       const row = node('tr'), identity = node('td'), contract = node('details')
       identity.append(node('b', tool.id), node('div', tool.service ? 'MCP service: ' + tool.service : tool.origin === 'builtin' ? 'Built into Worker' : 'Tool manifest'))
       contract.append(node('summary', 'View contract'), node('pre', JSON.stringify({ digest: tool.digest, sourceTypes: tool.sourceTypes, params: tool.params, returns: tool.returns }, null, 2)))
@@ -91,27 +144,48 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
         else if (tool.origin === 'mcp') editService(view.services.find(service => service.name === tool.service))
         else { $('builtin-settings').open = true; $('builtin-settings').scrollIntoView({ block: 'center', behavior: 'smooth' }) }
       }
-      controls.append(edit)
-      row.append(identity, node('td', tool.adapter + ' · ' + tool.kind), node('td', tool.configured ? 'Configured for Worker' : 'Disabled locally'), controls)
+      if (!(shared() && tool.origin !== 'builtin')) controls.append(edit)
+      row.append(identity, node('td', tool.adapter + ' · ' + tool.kind),
+        node('td', environment ? 'Every Agent here' : tool.configured ? 'Configured for Worker' : 'Disabled locally'), controls)
       $('tool-rows').append(row)
     }
-    $('tool-count').textContent = view.tools.filter(tool => tool.configured).length + ' configured tools · ' + view.tools.filter(tool => !tool.configured).length + ' disabled built-ins'
+    $('tool-count').textContent = environment ? listed.length + ' tools'
+      : view.tools.filter(tool => tool.configured).length + ' configured tools · ' + view.tools.filter(tool => !tool.configured).length + ' disabled built-ins'
   }
   async function refresh() {
-    const [tools, runtime] = await Promise.all([api('/worker-tools/state'), api('/status')])
-    view = tools; status = runtime
-    $('runtime').textContent = 'Worker: ' + (status.workerSetting?.state || 'offline') + (status.workerSetting?.failure ? ' · ' + status.workerSetting.failure : '')
-    $('workspace-mode').value = view.workspaceMode; $('manifest-path').textContent = view.manifestFile; $('vault-path').textContent = view.vaultFile
+    if (environment) {
+      view = await api('/worker-tools/state')
+      $('used-by').textContent = view.usedBy?.length ? 'Used by: ' + view.usedBy.join(', ') + '.' : 'No Agent here uses this environment’s tools yet.'
+      $('keys').replaceChildren()
+      for (const entry of view.keys || []) { const row = node('div'); row.className = 'service'; row.append(node('b', entry.name), node('span', ' · ' + entry.type)); $('keys').append(row) }
+      if (!(view.keys || []).length) $('keys').textContent = 'No keys yet.'
+    } else {
+      const [tools, runtime] = await Promise.all([api('/worker-tools/state'), api('/status')])
+      view = tools; status = runtime
+      $('runtime').textContent = 'Worker: ' + (status.workerSetting?.state || 'offline') + (status.workerSetting?.failure ? ' · ' + status.workerSetting.failure : '')
+      $('workspace-mode').value = view.workspaceMode
+      const library = view.library !== undefined
+      $('library-banner').hidden = !library
+      $('library-banner').textContent = library ? 'This Agent uses this environment’s tools. Add or change them under “This environment’s tools” in the Rulith workbench.' + (view.library.notice ? ' ' + view.library.notice : '') : ''
+      document.querySelectorAll('[data-panel=add]').forEach(button => { button.hidden = library })
+      if (library && !$('add').hidden) panel('inventory')
+    }
+    $('manifest-path').textContent = view.manifestFile; $('vault-path').textContent = view.vaultFile
     $('services').replaceChildren()
     for (const service of view.services) {
       const card = node('div'); card.className = 'service'
       card.append(node('b', service.name), node('span', ' · ' + Object.keys(service.tools).length + ' selected tools '))
+      if (environment && service.directory) card.append(node('small', 'Folder ' + service.directory + ' is shared by every Agent in this environment.'))
       const edit = node('button', 'Configure service'); edit.onclick = () => editService(service)
       const remove = node('button', 'Remove local service'); remove.dataset.mutation = ''
-      remove.onclick = () => action('Removing local service configuration…', async () => {
-        const result = await api('/mcp-services/remove', { name: service.name }); await refresh(); say(result.teaching)
+      remove.onclick = () => {
+        const revision = view.revision
+        reviewChange('Remove ' + service.name + '?', 'Remove this service and its tools.', async () => {
+        const result = await api('/mcp-services/remove', { name: service.name, ...(environment ? { revision, confirmed: true } : {}) }); await refresh(); say(result.teaching + reach(result))
       })
-      card.append(edit, remove); $('services').append(card)
+      }
+      if (!shared()) card.append(edit, remove)
+      $('services').append(card)
     }
     if (!view.services.length) $('services').textContent = 'No MCP services configured.'
     const preset = view.presets[0]
@@ -123,10 +197,10 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
     http: { adapter: 'http', sourceTypes: ['http'], entry: '/path', fence: { method: 'GET' }, kind: 'read', params: {}, returns: [] },
     'db-query': { adapter: 'db-query', sourceTypes: ['db'], entry: 'SELECT value FROM records WHERE id={id}', kind: 'read', params: { id: 'string' }, returns: [] },
     'db-exec-fenced': { adapter: 'db-exec-fenced', sourceTypes: ['db'], entry: 'UPDATE records SET value={value} WHERE id={id}', kind: 'write', params: { id: 'string', value: 'string' }, returns: [] },
-    run: { adapter: 'run', sourceTypes: [], entry: 'adapters/tool.mjs', kind: 'run', params: {}, returns: [], env: { pass: [] } },
     mcp: { adapter: 'mcp', sourceTypes: ['mcp'], entry: 'tool_name', kind: 'read', params: {}, returns: [] },
     workspace: { adapter: 'workspace', sourceTypes: ['file'], entry: 'read_text' },
   }
+  if (!environment) templates.run = { adapter: 'run', sourceTypes: [], entry: 'adapters/tool.mjs', kind: 'run', params: {}, returns: [] }
   function editTool(tool) {
     addMode('manual'); originalToolId = tool?.id; originalToolRevision = view.revision
     $('tool-id').value = tool?.id || ''; $('tool-id').readOnly = !!tool
@@ -184,22 +258,33 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
     if (mode === 'mcp') resetService()
     if (mode === 'directory') { $('registry-source-name').readOnly = false; $('registry-source-name').value = '' }
   })
-  $('worker-setting').onchange = () => action('Saving local tools setting…', async () => {
-    const result = await api('/worker-setting', { enabled: $('worker-setting').checked }); await refresh(); say(result.teaching)
-  })
   $('tool-search').oninput = renderTools; $('tool-origin').onchange = renderTools
-  $('refresh').onclick = () => action('Refreshing configuration…', async () => { await refresh(); say('Configuration refreshed.') })
   $('adapter-template').onchange = () => { $('tool-definition').value = JSON.stringify(templates[$('adapter-template').value], null, 2) }
-  $('manual-form').onsubmit = event => { event.preventDefault(); action('Saving the Tool definition…', async () => {
-    const result = await api('/worker-tools/save', { id: $('tool-id').value, originalId: originalToolId, definition: JSON.parse($('tool-definition').value), revision: originalToolRevision })
-    await refresh(); panel('inventory'); say(result.teaching)
-  }) }
-  $('remove-tool').onclick = () => action('Removing the local Tool definition…', async () => {
-    const result = await api('/worker-tools/remove', { id: originalToolId, revision: originalToolRevision }); await refresh(); panel('inventory'); say(result.teaching)
-  })
-  $('workspace-save').onclick = () => action('Saving built-in workspace mode…', async () => {
-    const result = await api('/worker-tools/workspace', { mode: $('workspace-mode').value, revision: view.revision }); await refresh(); say(result.teaching)
-  })
+  $('manual-form').onsubmit = event => { event.preventDefault();
+    let definition
+    try { definition = JSON.parse($('tool-definition').value) } catch { say('Enter a valid JSON tool definition before reviewing it.', true); return }
+    const body = { id: $('tool-id').value, originalId: originalToolId, definition, revision: originalToolRevision }
+    reviewChange('Save ' + body.id + '?', JSON.stringify(definition, null, 2), async () => {
+      const result = await api('/worker-tools/save', { ...body, ...(environment ? { confirmed: true } : {}) })
+      await refresh(); panel('inventory'); say(result.teaching + reach(result))
+    })
+  }
+  $('remove-tool').onclick = () => {
+    const body = { id: originalToolId, revision: originalToolRevision }
+    reviewChange('Remove ' + body.id + '?', 'Remove this tool definition.', async () => {
+      const result = await api('/worker-tools/remove', { ...body, ...(environment ? { confirmed: true } : {}) }); await refresh(); panel('inventory'); say(result.teaching + reach(result))
+    })
+  }
+  if (!environment) {
+    // These belong to the Agent whose page this is: its own Worker, and its own file-tool mode.
+    $('worker-setting').onchange = () => action('Saving local tools setting…', async () => {
+      const result = await api('/worker-setting', { enabled: $('worker-setting').checked }); await refresh(); say(result.teaching)
+    })
+    $('refresh').onclick = () => action('Refreshing configuration…', async () => { await refresh(); say('Configuration refreshed.') })
+    $('workspace-save').onclick = () => action('Saving built-in workspace mode…', async () => {
+      const result = await api('/worker-tools/workspace', { mode: $('workspace-mode').value, revision: view.revision }); await refresh(); say(result.teaching)
+    })
+  }
   $('template-use').onclick = () => { addMode('mcp'); resetService('filesystem'); $('service-title').textContent = 'Filesystem template' }
   $('mode').onchange = () => { $('env').value = ''; $('token').value = ''; fields() }
   $('config').oninput = () => { probeId = ''; $('discovery').hidden = true }
@@ -207,11 +292,20 @@ export function startWorkerToolsPage(attachRegistryBrowser) {
     if ($('mode').value === 'filesystem') await api('/mcp-services/install', { catalogId: 'filesystem' })
     await discover()
   }) }
-  $('save').onclick = () => action('Saving selected tools…', async () => {
+  $('save').onclick = () => {
     const tools = [...$('tools').children].filter(row => row.querySelector('input').checked).map(row => ({ name: row.dataset.tool, kind: row.querySelector('select').value }))
-    const result = await api('/mcp-services/apply', { probeId, tools }); probeId = ''; preparationId = ''
-    await refresh(); editService(result.service); say(result.teaching)
-  })
+    const body = { probeId, tools }
+    const mode = $('mode').value
+    const launch = { name: $('name').value, mode,
+      ...(mode === 'stdio' ? { command: $('command').value, args: $('args').value, cwd: $('cwd').value }
+        : mode === 'filesystem' ? { directory: $('directory').value }
+          : mode === 'registry' ? { installation: $('registry-configured').textContent }
+            : { url: $('url').value }) }
+    reviewChange('Save ' + launch.name + '?', JSON.stringify({ ...launch, tools }, null, 2), async () => {
+      const result = await api('/mcp-services/apply', { ...body, ...(environment ? { confirmed: true } : {}) }); probeId = ''; preparationId = ''
+      await refresh(); editService(result.service); say(result.teaching + reach(result))
+    })
+  }
   $('download').onclick = () => {
     if (!downloadService) return
     const url = URL.createObjectURL(new Blob([JSON.stringify(downloadService.definition, null, 2) + '\n'], { type: 'application/json' }))

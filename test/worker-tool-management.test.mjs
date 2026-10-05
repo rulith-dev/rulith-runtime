@@ -116,3 +116,34 @@ test('management endpoints require the exact origin and persist only the existin
   assert.equal(saved.agent.env.RULITH_MODEL_KEY, 'preserve-model-secret')
   assert.doesNotMatch(JSON.stringify(before), /preserve-model-secret/)
 })
+
+test('a manifest owner can refuse a definition before anything is written, and the vault\'s names are part of what a page was shown', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'worker-management-refuse-'))
+  const file = join(directory, 'worker-tools.json'), vaultFile = join(directory, 'worker-secrets.json')
+  writeFileSync(file, JSON.stringify({ format: 'rulith-worker-tools/1', tools: {} }))
+  writeFileSync(vaultFile, JSON.stringify({ records: { type: 'db', dsn: 'postgres://never:shown@db/records' } }))
+  const environment = { RULITH_TOOLS_FILE: file, RULITH_SECRETS_FILE: vaultFile, RULITH_WORKSPACE_TOOLS: 'read' }
+  const workerContext = () => ({ environment, directory })
+  const mcpServices = createMcpServices(join(directory, 'local.json'), { workerContext })
+  const manager = createWorkerToolManagement({ mcpServices, workerContext, setWorkspaceMode: () => {},
+    refuse: definition => { if (definition.adapter === 'run') throw new Error('Scripts stay with one Agent.') } })
+  t.after(async () => { await mcpServices.close(); rmSync(directory, { recursive: true, force: true }) })
+
+  const before = manager.overview(), bytes = readFileSync(file, 'utf8')
+  assert.throws(() => manager.save({ id: 'acme.script@1', definition: { adapter: 'run', sourceTypes: [], entry: 'task.mjs' }, revision: before.revision }), /Scripts stay with one Agent/)
+  assert.equal(readFileSync(file, 'utf8'), bytes, 'a refused definition changed the manifest')
+  manager.save({ id: 'test.http@1', definition: http, revision: before.revision })
+
+  // The keys are the vault's own entries, by name and type; their contents are never returned.
+  assert.deepEqual(before.keys, [{ name: 'records', type: 'db' }])
+  assert.doesNotMatch(JSON.stringify(before), /never:shown/)
+  const probe = await mcpServices.probe({ name: 'mail', mode: 'stdio', command: process.execPath, args: [resolve(import.meta.dirname, 'support/local-mcp-server.mjs')] })
+  await mcpServices.apply({ probeId: probe.probeId, tools: [{ name: 'mail.read', kind: 'read' }] })
+  assert.deepEqual(manager.overview().keys, [{ name: 'records', type: 'db' }], 'an MCP service\'s Source is not one of the vault\'s keys')
+
+  // A key added by hand after a page loaded makes that page stale.
+  const shown = manager.overview()
+  writeFileSync(vaultFile, JSON.stringify({ records: { type: 'db', dsn: 'x' }, billing: { type: 'http', token: 'y' } }))
+  assert.notEqual(manager.overview().revision, shown.revision)
+  assert.throws(() => manager.remove({ id: 'test.http@1', revision: shown.revision }), /changed/)
+})

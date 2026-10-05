@@ -2,7 +2,7 @@
 
 1. Sign in to Rulith and select an enabled Agent with a model configured.
 2. Open **Document assistant → Install local checker**. This downloads the two pinned
-   public checker JARs to this computer; Java 25 is required. Enable **Use this computer’s tools and files**. An enabled Worker reloads automatically
+   public checker JARs to this environment; Java 25 is required. Enable **Use this environment’s tools and files**. An enabled Worker reloads automatically
    after running executions drain so that it advertises the installed tools.
 3. Open the Agent in Console. Install the ordinary `official_authoring@3.1.0` capability
    through Market / Agent Configuration. In **Runtime → Source bindings**, bind its file

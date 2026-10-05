@@ -2,13 +2,14 @@
 
 Rulith is a local multi-agent working environment. Run `rulith` (or `rulith setup`)
 and open the loopback address printed in the terminal. The address carries a fresh
-browser access key; keep it on this computer.
+browser access key; keep it in this environment.
 
 ## Three columns
 
 - **Agents, left:** this account's currently enabled Agents. Choose one to enter
-  its workspace or set it up on this computer for the first time. Each local profile
-  keeps its own model settings, credentials, tools and workspace.
+  its workspace or set it up in this environment for the first time. Each local profile
+  keeps its own model settings, identity credentials and workspace. Tools are shared by
+  every Agent through the environment’s library.
 - **Conversation, center:** the original conversation, Trace and composer. Changing
   Agents preserves each open conversation page and its unsent input.
   Switching conversations also preserves each draft's text, attachments and Case
@@ -22,17 +23,17 @@ browser access key; keep it on this computer.
 
 The account is anchored at the lower left. Local tool settings, connection setup,
 model configuration and technical details open when needed. The local tool setting
-belongs to the selected Agent's profile on this computer. On a small screen the
+belongs to the selected Agent's profile in this environment. On a small screen the
 Agent list and execution information open on demand. Presentation uses the same
 neutral gray style as Console.
 
 ## Sign in and connect
 
 1. Open the account menu at the bottom left and choose **Sign in**. Rulith opens the browser sign-in page.
-   A different Console address and computer name are optional settings under **Advanced local settings**.
+   A different Console address and environment name are optional settings under **Advanced local settings**.
 2. The browser shows a dedicated **Sign in to Rulith** page, without Console navigation.
-   Sign in to connect this computer to the account. Rulith then shows every Agent currently
-   enabled in that account; no per-Agent selection is retained on this computer. The link carries
+   Sign in to connect this environment to the account. Rulith then shows every Agent currently
+   enabled in that account; no per-Agent selection is retained in this environment. The link carries
    the authorization request; no code needs to be copied or typed. Return to Rulith:
    your Agents appear automatically. No cloud account cookie reaches the local runtime.
    While the sign-in request is valid, Rulith collects the authorization even while its tab is in the background. After
@@ -47,7 +48,7 @@ neutral gray style as Console.
    If the default has not been configured, the same dialog asks for its endpoint, model
    name and API key. **Save** saves the settings. Sending the first message starts that Agent automatically; the conversation shows **Starting…** while it comes up.
    Existing MCP clients keep their own model configuration.
-6. Enable **Use this computer’s tools and files** when this Agent needs local tools. Tool and resource authorization remains in Console.
+6. Enable **Use this environment’s tools and files** when this Agent needs local tools. Tool and resource authorization remains in Console.
 
 While Rulith is running, the workbench checks the account directory every 30 seconds,
 including when its browser is closed. Account shows when the list was received and any
@@ -69,7 +70,7 @@ share a display name but never Agent/Connection credentials or a mutable working
 credentials are stored privately and never sent to models or role subprocesses.
 Execution credentials are sent to their configured Gateway for authentication;
 model credentials are sent to the configured model service. Model defaults are local settings,
-scoped to the signed-in account and Console origin on this computer. They are not uploaded to Console.
+scoped to the signed-in account and Console origin in this environment. They are not uploaded to Console.
 
 ## Default model and Agent overrides
 
@@ -128,7 +129,7 @@ installing capabilities, governing resource access, publishing and billing remai
 ## Interrupted connection attempts
 
 If sign-in cannot start, Account shows **Retry sign-in**. The Console address
-and computer name remain editable under **Advanced local settings**. Retrying the same request retains its original
+and environment name remain editable under **Advanced local settings**. Retrying the same request retains its original
 proof. A Console without device sign-in support needs a compatible Gateway or the
 correct Console address. Approval is checked automatically after the request is ready.
 If the browser blocks or closes the sign-in tab, use **Reopen sign-in page** to return
@@ -174,7 +175,7 @@ cancelled. Expired requests are not replaced or retargeted unless the Gateway fi
 the original unapproved request was cancelled.
 
 If credentials were issued or issuance can no longer be determined, use **Sign out
-and stop this computer** or revoke this device in Console before signing in and
+and stop this environment** or revoke this device in Console before signing in and
 connecting again. This revokes the exact credentials that device issued, without
 changing later replacement credentials or unrelated Connections.
 
@@ -192,7 +193,7 @@ says **Stopped by the user**. Other conversations remain unaffected. Its tooltip
 pause the Case or withdraw work before dispatch in Console. An Action still running
 can report its eventual outcome in operations.
 
-**Use this computer’s tools and files** is saved in each Agent's local profile as
+**Use this environment’s tools and files** is saved in each Agent's local profile as
 `worker.enabled`. When enabled, its Worker starts with Rulith and restarts after a crash
 with bounded backoff (250 ms, 1 s, 4 s, 10 s). Repeated failures stop automatic retries
 and appear beside the setting. A minute of stable operation resets the failure count.
@@ -207,7 +208,7 @@ This setting grants no Gateway permissions; tool and resource authorization stay
 
 Opening settings or choosing another Agent leaves accepted work with its owning role.
 
-**Sign out and stop this computer** gives each owned process two seconds to drain,
+**Sign out and stop this environment** gives each owned process two seconds to drain,
 then kills an owned child still running and observes its exit before confirming device
 revocation at the Gateway and clearing issued credentials. Explicit manager stop and
 **Remove from Rulith** use the same bound. The response and Trace report forced termination;
@@ -230,8 +231,35 @@ Starting the workbench does not read or change an unrelated single-instance conf
 
 ## Files and limits
 
+**This environment’s tools** at the bottom of the Agent list opens the shared library in a
+workbench dialog. Add tool definitions or MCP services there once; every Agent using this
+environment sees all library tools. There is no local selection of tools per Agent. Editing or
+removing a definition or service asks for one review and confirmation, then applies the change
+after running work finishes. Changed contracts need to be locked again in Console.
+
+Source keys stay once in the environment vault; an Agent uses a key only for a Source granted
+to it in Console, and a key supplies only secret material for that Source (a token, headers, a
+database DSN at the address granted there): it cannot say what the Source is, or where or how it
+connects, so an entry that does is refused and stays in an Agent’s own vault when its tools move.
+The page lists key names and types and the file to edit, without exposing
+values. A key added for a Source an Agent’s
+running Worker has already loaded is read when that Worker reloads. Each Agent retains its
+workspace, file-tool mode, materials, conversations and private script tools. Its **Tools** page
+shows the shared inventory and edits its own file-tool mode.
+
+A tool’s own credentials, installed in this environment, are available to the tool processes of every Agent that uses the environment; Rulith only sends each Agent the calls it is authorized for. Put tools whose credentials some Agents must not reach into a separate environment (a separate manager directory, `RULITH_MANAGER_HOME`).
+
+The library is `~/.rulith/manager/library` by default. Older profiles move their tools, MCP
+services, installs and keys there at startup. Equal definitions merge; conflicts preserve the
+profile’s own files and show **Check again** after the conflict is resolved and its local tools
+are turned off. Originals of what the move rewrote or removed stay in `tools-before-environment/`,
+which keeps the old keys and service credentials in plain text until you delete it; see the tool
+library for when and how.
+Migrated Agents see the full library while their Console permissions stay as granted. See
+[the tool library](local-mcp-setup.md) for formats, private composition and migration recovery.
+
 Profiles live under `~/.rulith/manager/instances/<id>` by default. Each contains
-`local.json`, MCP service state, Worker configuration, Source vault, workspace and
+`local.json`, private script definitions and non-secret Source locations, workspace and
 `conversations/<owner-hash>.json` with its `.d` directory, which preserve accepted
 messages, attachment names and visible replies. An `agent-sessions.json` left by Runtime 0.9
 held a record of an unfinished call; the Agent names such a record once at startup and removes
@@ -259,7 +287,7 @@ Archiving unfinished work applies automatically after its accepted turns finish.
 Archiving does not cancel a Board Case.
 Active history is limited to 1,000 turns and 256 MiB, including 8 MiB reserved for each
 unfinished turn. A single stored turn is limited to 32 MiB. No history is silently deleted.
-For a private backup, sign out and stop this computer, then copy both the owner JSON and its `.d` directory.
+For a private backup, sign out and stop this environment, then copy both the owner JSON and its `.d` directory.
 Never overwrite history while the Agent is running. Windows protects atomic replacement
 against process interruption, but does not provide a directory-fsync guarantee on power loss.
 Archive releases active capacity, not disk space. List indexing still scans file metadata
@@ -287,7 +315,19 @@ exports the loaded events across conversations. The file explicitly marks incomp
 history; it is not a backup, original material contents, or Board proof. Unsent drafts
 are never included. Load earlier messages before exporting if they are needed.
 
-Run `node --test test/browser/workbench-ui.browser.mjs` for browser behavior, separately
-from `npm test`. For installations outside the development workspace, set
+Run `node --test test/browser/workbench-ui.browser.mjs test/browser/materials-ui.browser.mjs`
+for browser behavior, separately from `npm test`. This covers the environment tools
+dialog on desktop and narrow screens, its single confirmation and cancellation,
+the Agent's library notice, and migration's **Check again** action. For installations
+outside the development workspace, set
 `RULITH_PLAYWRIGHT_MODULE` to the Playwright entry file and `RULITH_CHROMIUM_EXECUTABLE`
-to a Chromium executable. The runner reports a skip if its browser dependencies are absent.
+to a Chromium executable. The runner reports a skip if its browser dependencies are absent;
+a release browser check must execute the tests with both dependencies present.
+
+For the first-use smoke check against an already signed-in, dedicated QA environment,
+set `RULITH_LIVE_RUN=1`, `RULITH_LIVE_AGENT` to its enabled Agent name, and
+`RULITH_LIVE_PACKAGE_ROOT` to this checkout, then run
+`node test/browser/live-setup.browser.mjs`. It pairs the QA Agent when needed and checks that it uses
+the environment library and that its tools page loads. This smoke check does not edit
+library tools or keys. The document workflow's separate acceptance procedure remains
+in [document-authoring-acceptance.md](document-authoring-acceptance.md).

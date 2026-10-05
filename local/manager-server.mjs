@@ -20,6 +20,7 @@ import { acquireWorkbenchLease, createManagerRegistry, defaultManagerRoot } from
 import { createDeviceClient } from './device-client.mjs'
 import { createInstanceManager } from './instance-manager.mjs'
 import { managerPage } from './manager-ui.mjs'
+import { environmentToolsPage } from './worker-tools-ui.mjs'
 import { installAuthoringChecker } from './authoring-checker.mjs'
 import { materialIdentity, openMaterialStore, MATERIAL_ID_PATTERN, RESULT_ID_PATTERN } from '../worker/material-store.mjs'
 import { proposalDigest, readLocalAuthoringResults } from '../worker/local-authoring.mjs'
@@ -318,6 +319,28 @@ export function createManagerServer({
       return instances.setWorkerEnabled(String(fields.instanceId ?? ''), fields.enabled)
     },
     '/manager/instances/forget': (body) => instances.forget(String(onlyFields(body, ['instanceId']).instanceId ?? '')),
+    // "Check again": try once more to move an Agent that kept its own tools into this environment's.
+    '/manager/instances/tools': (body) => instances.checkTools(String(onlyFields(body, ['instanceId']).instanceId ?? '')),
+    // This environment's tools. Changes go through admission, so a sign-out waits for them and
+    // nothing is edited once the workbench is signing out or closing. Installing, preparing and
+    // discovering do not: they reach the network or start a program, can take as long as they
+    // take, and must not be what a sign-out waits for. None of these routes grants anything; what
+    // an Agent may call is still Console's lock on its own Connection.
+    '/manager/tools/save': (body) => instances.admit(() => instances.library.save(onlyFields(body, ['id', 'originalId', 'definition', 'revision', 'confirmed']))),
+    '/manager/tools/remove': (body) => instances.admit(() => instances.library.remove(onlyFields(body, ['id', 'revision', 'confirmed']))),
+    '/manager/tools/mcp-install': (body) => instances.library.install(onlyFields(body, ['catalogId']).catalogId),
+    '/manager/tools/mcp-prepare': (body) => instances.library.prepare(onlyFields(body, ['serverName', 'version', 'optionId', 'reviewToken', 'values'])),
+    '/manager/tools/mcp-probe': (body) => instances.library.probe(onlyFields(body, ['name', 'mode', 'originalName', 'isNew', 'preparationId',
+      'directory', 'command', 'args', 'cwd', 'clearSecrets', 'env', 'url', 'token'])),
+    '/manager/tools/mcp-apply': (body) => instances.admit(() => instances.library.apply(onlyFields(body, ['probeId', 'tools', 'confirmed']))),
+    '/manager/tools/mcp-remove': (body) => instances.admit(() => instances.library.removeService(onlyFields(body, ['name', 'revision', 'confirmed']))),
+  }
+  /** What this environment's tools page reads. Authenticated like everything else, and it changes nothing. */
+  const reads = {
+    '/manager/tools/state': () => instances.library.state(),
+    '/manager/tools/mcp-search': (query) => instances.library.search(query.get('q') ?? '', query.get('cursor') ?? ''),
+    '/manager/tools/mcp-detail': (query) => instances.library.detail(query.get('name'), query.get('version') ?? 'latest'),
+    '/manager/tools/mcp-downloads': (query) => instances.library.downloads(query.get('package')),
   }
 
   const server = http.createServer(async (req, res) => {
@@ -340,7 +363,14 @@ export function createManagerServer({
         // response is not a working credential.
         return void res.end(managerPage)
       }
+      if (path === '/tools' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+        return void res.end(environmentToolsPage)
+      }
       if (path === '/manager/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...state() })
+      if (Object.hasOwn(reads, path) && req.method === 'GET') {
+        return void json(res, 200, { ok: true, ...await reads[path](new URL(req.url ?? '/', 'http://127.0.0.1').searchParams) })
+      }
       if (Object.hasOwn(operations, path) && req.method === 'POST') {
         if (!sameOrigin(req)) return void json(res, 403, { ok: false, teaching: 'Manager operations require the manager page key and the same origin.' })
         const body = await readJsonBody(req)
@@ -382,6 +412,10 @@ export function createManagerServer({
           server.listen(port, '127.0.0.1', accept)
         })
         scheduleDirectory()
+        // Before any Worker is restored, so that each starts on the tools it will keep. The Agents
+        // it cannot move say so themselves and keep working on their own files; a failure here is
+        // theirs to show, and is not a reason for the workbench not to open.
+        await instances.migrateTools().catch(() => undefined)
         await instances.restoreWorkers()
       } catch (error) {
         lease.release()

@@ -28,7 +28,7 @@ remote endpoints require a provider key. The five-minute run assumes those prere
 PowerShell:
 
 ```powershell
-npm.cmd install --global rulith@0.11.0
+npm.cmd install --global rulith@0.12.0
 node "$(npm.cmd root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -36,7 +36,7 @@ rulith start
 Bash:
 
 ```bash
-npm install --global rulith@0.11.0
+npm install --global rulith@0.12.0
 node "$(npm root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -60,7 +60,7 @@ this Agent's settings. Tool configuration reloads the Worker automatically after
    absolute paths printed by setup. Preserve the rest of the profile, including its
    credentials, model and session settings. Do not use an Agent with unrelated tool
    configuration for this demo. On Windows, escape backslashes in JSON or use `/`.
-2. Run `rulith start` again, select the same Agent, and enable **Use this computer’s tools and files**.
+2. Run `rulith start` again, select the same Agent, and enable **Use this environment’s tools and files**.
    In Console, open the same Agent's Runtime and confirm its
    Connection advertises the three verified-calculation Tools.
 3. Bind `verified-calculation-local` to that Connection. Keep the Release's default
@@ -72,7 +72,7 @@ this Agent's settings. Tool configuration reloads the Worker automatically after
    authorized Source the first time it is given work there, so it needs no restart. That
    holds for a newly bound Source only: when you bind a Source the running Worker already
    knows to another location (for example from a 0.9.1 absolute path to `runtime`), it
-   keeps the old location until you turn **Use this computer’s tools and files** off and back on. The workbench keeps the same
+   keeps the old location until you turn **Use this environment’s tools and files** off and back on. The workbench keeps the same
    profile, Connection and conversation throughout; no separate CLI configuration is needed.
 
 Steps 1 and 2 can also be done from the workbench in one click, without the setup script.

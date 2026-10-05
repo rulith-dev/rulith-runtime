@@ -51,6 +51,50 @@ const openPage = (state) => runPageScript(managerPage, { respond: async () => ({
 /** Let promises the page started settle before inspecting what it did. */
 const settle = async () => { for (let i = 0; i < 4; i += 1) await new Promise((done) => setImmediate(done)) }
 
+test('the environment library opens without an Agent host and survives Agent removal', async () => {
+  const page = await openPage(stateOf())
+  page.$('environment-open').onclick(); await settle()
+  assert.equal(page.$('dlg-page').hidden, false)
+  assert.equal(page.$('page-title').textContent, 'This environment’s tools')
+  const url = new URL(page.$('page-frame').src)
+  assert.equal(url.pathname, '/tools')
+  assert.equal(url.searchParams.get('k'), 'page-test-key')
+  assert.equal(page.calls.filter(call => call.path === '/manager/instances/open').length, 0)
+  page.render(stateOf({ instances: [] })); await settle()
+  assert.equal(page.$('page-retry').disabled, false)
+})
+
+test('a migration conflict offers Check again without selecting tools for the Agent', async () => {
+  const row = configuredOf('agent-alpha', { model: { ready: true }, tools: { source: 'own', conflicts: ['acme.lookup@1'],
+    notice: { kind: 'conflict', text: 'Alpha keeps its own tools for now: acme.lookup@1 differs.' } } })
+  const state = stateOf({ device: linkedDevice(), instances: [row] })
+  const page = await openPage(state)
+  await page.choose(row.id); await settle()
+  assert.equal(page.$('agent-readiness-action').textContent, 'Check again')
+  assert.match(page.$('agent-readiness-copy').textContent, /keeps its own tools/)
+  await page.$('agent-readiness-action').onclick(); await settle()
+  assert.deepEqual(page.calls.find(call => call.path === '/manager/instances/tools').body, { instanceId: row.id })
+  assert.equal(page.calls.some(call => /selection/.test(call.path)), false)
+})
+
+test('an Agent that moved but could not remove its old files offers the same Check again, and a plain moved note offers nothing', async () => {
+  const untidy = configuredOf('agent-alpha', { model: { ready: true }, tools: { source: 'library', conflicts: [],
+    notice: { kind: 'untidy', text: 'Alpha now uses this environment’s tools, but its old files could not all be removed: EBUSY.' } } })
+  const page = await openPage(stateOf({ device: linkedDevice(), instances: [untidy] }))
+  await page.choose(untidy.id); await settle()
+  assert.equal(page.$('agent-readiness-action').textContent, 'Check again')
+  assert.match(page.$('agent-readiness-copy').textContent, /old files could not all be removed/)
+  await page.$('agent-readiness-action').onclick(); await settle()
+  assert.deepEqual(page.calls.find(call => call.path === '/manager/instances/tools').body, { instanceId: untidy.id })
+
+  // Nothing needs doing once it moved: the note is shown where the Agent's own tools are, not as a next step.
+  const moved = configuredOf('agent-beta', { model: { ready: true }, tools: { source: 'library', conflicts: [],
+    notice: { kind: 'moved', text: 'Moved this Agent’s tools into this environment.' } } })
+  const quiet = await openPage(stateOf({ device: linkedDevice(), instances: [moved] }))
+  await quiet.choose(moved.id); await settle()
+  assert.equal(quiet.$('agent-readiness').hidden, true)
+})
+
 test('Connection key replacement stays available while the Worker runs and preserves the exact identity scope', async () => {
   const row = configuredOf('agent-alpha', { connectionId: 'conn-alpha', open: true, roles: ['agent', 'worker'],
     agent: true, worker: true, workerSetting: { enabled: true, visible: true, state: 'online' } })
@@ -197,7 +241,7 @@ test('the list is the account directory, named by the Agent and joined to what i
   assert.ok(markup.includes('Worker only'), 'a computer that only does the work says so')
   assert.ok(markup.includes('data-instance="inst-1"'), 'a configured Agent keeps its instance row id')
   // Authorized and not configured here: offered, but as something to set up, not to open.
-  assert.ok(markup.includes('data-agent="agent-gamma"') && markup.includes('Not set up on this computer'))
+  assert.ok(markup.includes('data-agent="agent-gamma"') && markup.includes('Not set up in this environment'))
   assert.equal(markup.includes('data-instance="inst-000000000001"'), false)
   assert.equal(page.$('agents-empty').hidden, true)
 })
@@ -319,7 +363,7 @@ test('a signed-in account shows its own name, its Agents, and an unfinished sign
     signOut: { state: 'incomplete', step: 'revoke' },
   }) }))
   assert.equal(page.$('account-name').textContent, 'Test Account')
-  assert.equal(page.$('device-tag').textContent, 'This computer: Work laptop')
+  assert.equal(page.$('device-tag').textContent, 'This environment: Work laptop')
   assert.match(page.$('agent-summary').textContent, /Alpha, Beta/)
   assert.match(page.$('account-line').textContent, /Test Account/, 'the rail says who is signed in without a dialog')
   assert.match(page.$('signout-state').textContent, /incomplete at the revoke step/)
@@ -466,7 +510,7 @@ test('Worker availability and drain teaching come from the saved setting rather 
   assert.equal(page.$('notice').textContent, '')
 })
 
-test('a role this computer does not run is described, not offered', async () => {
+test('a role this environment does not run is described, not offered', async () => {
   const page = await openPage(stateOf({ device: linkedDevice(), instances: [
     instanceOf({ id: 'a', name: 'Desk', mode: 'existing_client', paired: true, connectionId: 'conn-1' }),
   ] }))
@@ -543,7 +587,7 @@ test('consent to replace a credential belongs to one Agent and one cloud Agent, 
   page.render(stateOf({ device: linkedDevice(agents), instances: rows }))
   assert.equal(page.$('replace').checked, true, 'a refresh must not take back a decision')
 
-  // Another Agent on this computer is another credential; the tick does not come with it.
+  // Another Agent in this environment is another credential; the tick does not come with it.
   await page.choose('b')
   assert.equal(page.$('replace').checked, false, 'consent given for A must not be spent on B')
 
@@ -912,7 +956,7 @@ test('settings open inside the workbench, with a real link out, and never a pop-
   await page.$('tools-open').onclick(); await settle()
   assert.deepEqual(page.opened, [], 'a window.open after an await is a pop-up with no gesture behind it')
   assert.equal(page.$('dlg-page').hidden, false)
-  assert.equal(page.$('page-title').textContent, 'Worker tools')
+  assert.equal(page.$('page-title').textContent, 'Agent tools')
   assert.equal(page.$('page-sub').textContent, 'A')
   const settingsUrl = new URL(page.$('page-frame').src)
   assert.equal(settingsUrl.searchParams.has('manager'), false)
@@ -1060,10 +1104,10 @@ test('a dialog whose Agent disappeared says so rather than showing nothing at al
   assert.equal(page.$('attach-form').hidden, true)
   assert.equal(page.$('attach-pending').hidden, true)
   assert.equal(page.$('attach-blocked').hidden, false, 'an empty dialog is a dialog that tells you nothing')
-  assert.match(page.$('attach-blocked').textContent, /no longer on this computer/)
+  assert.match(page.$('attach-blocked').textContent, /no longer in this environment/)
   page.openDialog('dlg-details')
   assert.equal(page.$('detail-attention').hidden, false)
-  assert.match(page.$('detail-attention').textContent, /no longer on this computer/)
+  assert.match(page.$('detail-attention').textContent, /no longer in this environment/)
 })
 
 test('signing in sends what the operator typed, and nothing else', async () => {
@@ -1520,6 +1564,47 @@ test('a late Worker-setting answer never writes into another Agent panel', async
   assert.equal(page.$('worker-notice').textContent, '')
   assert.equal(page.$('worker-setting').checked, false)
   assert.equal(page.calls.find(c => c.path === '/manager/instances/worker-setting').body.instanceId, 'a')
+})
+
+test('the Worker box shows what was asked for while the change is in flight, then what the manager reports', async () => {
+  const rows = ['a', 'b'].map(id => configuredOf('agent-' + id, { id, name: id.toUpperCase() }))
+  const snapshot = () => stateOf({ device: linkedDevice(rows.map(r => ({ id: r.agentId, name: r.name }))), instances: rows })
+  let release, refusal = ''
+  const page = await runPageScript(managerPage, { respond: async (path, request) => {
+    if (path !== '/manager/instances/worker-setting') return { body: snapshot() }
+    await new Promise(done => { release = done })
+    if (refusal) return { status: 409, body: { ...snapshot(), ok: false, teaching: refusal } }
+    const row = rows.find(r => r.id === request.body.instanceId)
+    row.workerSetting = { enabled: request.body.enabled, visible: true, state: request.body.enabled ? 'online' : 'offline' }
+    return { body: snapshot() }
+  } })
+  const box = () => page.$('worker-setting')
+  await page.choose('a'); await settle()
+
+  // Accepted. Starting the Worker can take seconds; a box that un-ticks itself while it works
+  // reads as "that did nothing", so it keeps the request and only the control is disabled.
+  box().checked = true
+  const accepted = box().onchange(); await settle()
+  assert.equal(box().disabled, true)
+  assert.equal(box().checked, true, 'the box must not go back to the old state before the manager has answered')
+  // The request belongs to the Agent that made it: another Agent shows its own state.
+  await page.choose('b'); await settle()
+  assert.equal(box().checked, false)
+  await page.choose('a'); await settle()
+  assert.equal(box().checked, true)
+  release(); await accepted; await settle()
+  assert.equal(box().checked, true)
+  assert.equal(box().disabled, false)
+  assert.equal(page.$('worker-pill').textContent, 'online')
+
+  // Refused. What was asked for is shown while it is in flight; the answer undoes it.
+  refusal = 'Reconnect this Agent before starting it.'
+  box().checked = false
+  const refused = box().onchange(); await settle()
+  assert.equal(box().checked, false)
+  release(); await refused; await settle()
+  assert.equal(box().checked, true, 'a refused change leaves the box at what the manager reports')
+  assert.match(page.$('worker-notice').textContent, /Reconnect this Agent/)
 })
 
 test('document tools link to ordinary Console configuration without a second preparation call', async () => {

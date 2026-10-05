@@ -512,7 +512,7 @@ test('RT-EXAMPLE-11 the guide starts a configured Case through Local without scr
   const contract = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/verified-calculation-recipe.json'), 'utf8')).capability.caseContracts[0]
   assert.ok(guide.includes(contract.caseType))
   for (const argument of contract.businessKey.arguments) assert.ok(guide.includes(argument))
-  assert.match(guide, /Use this computer’s tools and files/)
+  assert.match(guide, /Use this environment’s tools and files/)
   assert.match(guide, /first message.*starts the Agent automatically/)
   assert.match(guide, /preferred Case Type at \*\*Automatic\*\*/)
   assert.match(guide, /`exploration` intake/)

@@ -119,6 +119,67 @@ const openAgent = async (page, id) => {
   return page.frames().find((frame) => frame.url() === src)
 }
 
+arm('environment tools open in the workbench and an edit has one cancellable confirmation',
+  { width: 1440, height: 900 }, async ({ page, fixture }) => {
+    await openAgent(page, 'inst-1')
+    const conversation = await page.getAttribute('#stage iframe', 'src')
+    await page.click('#environment-open')
+    await page.waitForSelector('#page-loading', { state: 'hidden' })
+    const src = await page.getAttribute('#page-frame', 'src')
+    const tools = page.frames().find(frame => frame.url() === src)
+    assert.equal(new URL(src).origin, new URL(fixture.managerUrl).origin)
+    assert.match(await page.locator('#page-title').innerText(), /This environment’s tools/)
+    await tools.locator('#used-by').filter({ hasText: 'Alpha, Beta' }).waitFor()
+    assert.equal(await tools.locator('#workspace-mode, #worker-setting, option[value="run"]').count(), 0)
+    await tools.click('[data-panel="add"]')
+    await tools.click('[data-add="manual"]')
+    await tools.fill('#tool-id', 'acme.lookup@1')
+    const definition = { adapter: 'http', sourceTypes: ['http'], entry: '/orders', fence: { method: 'GET' }, kind: 'read', params: {}, returns: [] }
+    await tools.fill('#tool-definition', JSON.stringify(definition))
+    await tools.click('#manual-form button[type="submit"], #manual-form button:not([type])')
+    await tools.locator('#change-review').waitFor({ state: 'visible' })
+    assert.equal(fixture.control.toolRequests.length, 0)
+    await tools.click('#change-cancel')
+    assert.equal(fixture.control.toolRequests.length, 0)
+    await tools.click('#manual-form button:not([type])')
+    await tools.click('#change-confirm')
+    await tools.locator('#tool-rows').filter({ hasText: 'acme.lookup@1' }).waitFor()
+    assert.equal(fixture.control.toolRequests.length, 1)
+    assert.equal(fixture.control.toolRequests[0].confirmed, true)
+    assert.deepEqual(fixture.control.toolRequests[0].definition, definition)
+    await page.click('#page-close')
+    assert.equal(await page.getAttribute('#stage iframe', 'src'), conversation)
+    await page.click('#tools-open')
+    // An Agent's tools are opened by first asking the manager for that Agent's address, so the panel
+    // and its "Opening…" status appear only once that answer arrives. Until then `#page-loading` is as
+    // hidden as it is after the page has confirmed it loaded, and waiting for "hidden" alone returns at
+    // once and reads a frame that has not navigated yet. The environment's page above opens
+    // synchronously (its address is this page's own), which is why it needed no such wait.
+    await page.waitForSelector('#dlg-page:not([hidden])')
+    await page.waitForSelector('#page-loading', { state: 'hidden' })
+    const ownSrc = await page.getAttribute('#page-frame', 'src')
+    const own = page.frames().find(frame => frame.url() === ownSrc)
+    await own.locator('#library-banner').waitFor({ state: 'visible' })
+    assert.equal(await own.locator('[data-panel="add"]').isHidden(), true)
+    assert.equal(await own.locator('#workspace-mode').count(), 1)
+  })
+
+arm('a legacy conflict shows Check again and checking recovers the shared library',
+  { width: 415, height: 896 }, async ({ page, fixture }) => {
+    fixture.rows[0].model = { ready: true }
+    fixture.rows[0].tools = { source: 'own', conflicts: ['acme.lookup@1'],
+      notice: { kind: 'conflict', text: 'Alpha keeps its own tools for now: acme.lookup@1 differs. Remove or change one side, then check again.' } }
+    // Below 980px the Agent list is a drawer: inert and translated off-screen until it is opened,
+    // so its rows are "outside of the viewport" to a click. Opening it is the only way to an
+    // Agent at this width, exactly as in the other narrow arms.
+    await page.click('#rail-open')
+    await openAgent(page, 'inst-1')
+    await page.locator('#agent-readiness-copy').filter({ hasText: 'keeps its own tools' }).waitFor()
+    await page.getByRole('button', { name: 'Check again', exact: true }).click()
+    await page.waitForFunction(() => document.getElementById('notice').textContent.includes('Moved'))
+    assert.deepEqual(fixture.control.migrationRequests, [{ instanceId: 'inst-1' }])
+  })
+
 arm('historical reads show closure observations without acquiring Case focus or leaking across Agents',
   { width: 1440, height: 900 }, async ({ page }) => {
     const child = await openAgent(page, 'inst-1')
@@ -897,7 +958,7 @@ arm('standalone Local keeps its evidence accessible when the inspector cannot fi
 
 /* The list is the account's directory of Agents, not a list of local profiles. These arms are
    about what a press does: opening an Agent that is configured here, and explaining first use
-   for one that is authorized but has never run on this computer — without allocating anything
+   for one that is authorized but has never run in this environment — without allocating anything
    until a person says so. */
 
 /** Every manager write the page made, so an arm can prove that a press did nothing. */
@@ -1021,7 +1082,7 @@ arm('the list names the account Agents, and one that is not set up here opens fi
     assert.ok(markup.includes('data-instance="inst-1"') && markup.includes('<b>Alpha</b>'))
     assert.ok(markup.includes('data-instance="inst-2"') && markup.includes('<b>Beta</b>'))
     // Authorized, never run here: offered as something to set up, and named by the account.
-    assert.ok(markup.includes('<b>Gamma</b>') && markup.includes('Not set up on this computer'))
+    assert.ok(markup.includes('<b>Gamma</b>') && markup.includes('Not set up in this environment'))
     assert.equal(await page.isVisible('#add-open'), false, 'adding an Agent is not an ordinary concept any more')
 
     await page.click('button[data-agent="agent-gamma"]')
@@ -1077,7 +1138,7 @@ arm('an unconfirmed attachment is finished where its proof lives, and opens noth
 
 arm('an existing runtime key requires an explicit confirmed replacement before the first workspace opens',
   { width: 1440, height: 960 }, async ({ page, fixture }) => {
-    fixture.control.pairCredentialRefusal = 'This Agent already has a runtime credential on this computer.'
+    fixture.control.pairCredentialRefusal = 'This Agent already has a runtime credential in this environment.'
     await page.click('button[data-agent="agent-gamma"]')
     await page.waitForSelector('#dlg-setup:not([hidden])')
     await page.click('#setup-start')

@@ -2,6 +2,50 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.12.0 - unreleased
+
+- Tools live once in the environment. Add and edit tool definitions and MCP services under
+  **This environment’s tools** (`~/.rulith/manager/library`). Every Agent using the environment
+  sees all library tools; Console still decides which tools and Sources each Agent may use.
+- Tool and service changes have one review and confirmation before saving. Stale edits are
+  refused. Changed contracts need to be locked again in Console; affected local tools reload
+  after running work finishes.
+- Source keys live once in the environment vault named by `RULITH_ENVIRONMENT_SECRETS_FILE`.
+  An Agent uses a key only for a Source granted to it, and a key supplies only secret material
+  (credentials, tokens, passwords, the userinfo of a database DSN) for that Source: it cannot say
+  what the Source is, or where or how it connects. Its `type`, if stated, is the Source’s type; a
+  `url` or `access` it states is the granted address (it cannot add one); a database `dsn` has the
+  granted host, port and database; it states no `command`, `args` or `cwd`, and no `transport`
+  other than the one the granted address implies. An entry that breaks one of these is left out
+  whole and the Worker’s log says which part, and a field that is not a credential is ignored and
+  named there. Keys are listed by name and type, never returned to the page or copied into the
+  composed files. A Worker reads the vault when it starts and when work first names a newly
+  granted Source, so a key added for a Source its running Worker has already loaded is read after
+  that Agent’s Worker reloads.
+- Shared trust: A tool's own credentials, installed in this environment, are available to the tool processes of every Agent that uses the environment; Rulith only sends each Agent the calls it is authorized for. Put tools whose credentials some Agents must not reach into a separate environment.
+  (An MCP service’s env, headers or token are composed into every Agent’s Worker files; Source
+  keys are not.)
+- First start merges existing per-instance definitions, MCP services, installs and keys.
+  Equal entries deduplicate; differing entries under one name keep their Agent on its own
+  files with a notice and **Check again**. A vault entry moves into the environment’s keys only
+  if it holds a credential and states nothing but `type`, `token`, `headers` and `dsn`; one that
+  says where or how to connect (a `url`, `access`, `transport`, `command`, `args` or `cwd`) or
+  carries a field the environment ignores stays in that Agent’s own vault, and its notice names
+  it. Originals of what the move rewrote or removed stay in `tools-before-environment/`, which
+  keeps the old keys and service credentials in plain text until you delete it (the tool library
+  documentation says when and how); interrupted migration resumes on the next start. An Agent
+  that moved but could not remove its old files says so, with **Check again**, and **Check
+  again** says why when it cannot remove them either (its Agent is running, an old copy differs
+  from the environment’s, a file cannot be read). Migrated Agents see the full library.
+- A change that is saved stays saved when one Agent’s Worker cannot be reloaded for it: the
+  answer is “Saved; reload pending for …”. The files composed for a Worker go when it stops; one
+  that cannot be removed at once is retried and named if it never goes. MCP launch checks allow
+  what lies inside the library’s `workspaces` and `packages` folders, not those folders themselves.
+- Script (`run`) tools, workspace roots, file-tool mode, materials and conversations stay
+  with their Agent. MCP discovery scratch is remapped to each Agent’s own folder; an explicitly
+  configured shared folder is identified on the tools page.
+- The model’s prompt and tools, Gateway, Kernel and protocols are unchanged.
+
 ## 0.11.0 - 2026-10-05
 
 - The prompt no longer asks the model to follow a task structure by hand; it says Source results,

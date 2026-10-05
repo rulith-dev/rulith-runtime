@@ -13,8 +13,18 @@ const atomicJson = (file, value) => {
   finally { rmSync(temporary, { force: true }) }
 }
 
-/** 统一清单不创造第二套执行权限：只编辑部署输入，实际广告、锁定和执行仍由原 Worker/Core 路径决定。 */
-export function createWorkerToolManagement({ mcpServices, workerContext, setWorkspaceMode }) {
+/**
+ * 统一清单不创造第二套执行权限：只编辑部署输入，实际广告、锁定和执行仍由原 Worker/Core 路径决定。
+ *
+ * `refuse(definition)` lets the owner of a manifest turn away a definition that does not belong in
+ * it, before anything is written: the environment's shared manifest cannot hold a script (`run`)
+ * tool, because a script resolves under one Agent's own folder and sharing the definition would
+ * not share the code.
+ */
+export function createWorkerToolManagement({ mcpServices, workerContext, setWorkspaceMode, refuse }) {
+  /** Names and types only: what the page lists, never what the vault holds. */
+  const namedSources = vault => Object.entries(vault).map(([name, source]) =>
+    ({ name, type: typeof source?.type === 'string' ? source.type : 'configured locally' }))
   const load = () => {
     const { environment, directory } = workerContext()
     const inputs = mcpServices.projectWorkerInputs(environment, directory)
@@ -22,9 +32,12 @@ export function createWorkerToolManagement({ mcpServices, workerContext, setWork
     const materialsRoot = String(environment.RULITH_MATERIALS_ROOT ?? '')
     const tools = configuredWorkerTools(inputs.manifest, workspaceMode, materialsRoot)
     const services = mcpServices.overview().services
+    const sources = namedSources(inputs.vault)
+    // The vault's names and types are part of what a page was shown: a key added by hand after
+    // the page loaded must make that page stale, not be discovered when its save lands.
     const revision = revisionOf({ manifest: inputs.originalManifest, managed: services, workspaceMode, materialsRoot,
-      file: inputs.originalTools, vaultFile: inputs.originalVault })
-    return { ...inputs, workspaceMode, materialsRoot, tools, services, revision }
+      file: inputs.originalTools, vaultFile: inputs.originalVault, sources })
+    return { ...inputs, workspaceMode, materialsRoot, tools, services, sources, revision }
   }
   const checked = revision => {
     const state = load()
@@ -53,10 +66,13 @@ export function createWorkerToolManagement({ mcpServices, workerContext, setWork
         ...workerToolDescriptor(id, definition), adapter: definition.adapter, origin: 'builtin', configured: false })
       return { tools: rows.map(tool => ({ ...tool, automaticActionProblem: automaticActionProblem(tool.kind, tool.params) })), revision: state.revision, workspaceMode: state.workspaceMode,
         manifestFile: state.originalTools, vaultFile: state.originalVault,
-        sources: Object.entries(state.vault).map(([name, source]) => ({ name, type: typeof source?.type === 'string' ? source.type : 'configured locally' })),
+        sources: state.sources,
+        // The vault's own entries: what is left once the MCP services' Sources are taken out.
+        keys: state.sources.filter(source => !state.services.some(service => service.name === source.name)),
         services: state.services, presets: mcpServices.overview().catalog }
     },
     save({ id, originalId, definition, revision }) {
+      refuse?.(definition)
       const state = checked(revision), manifest = structuredClone(state.originalManifest)
       if (originalId !== undefined ? originalId !== id || !Object.hasOwn(manifest.tools, id) : Object.hasOwn(manifest.tools, id)) {
         throw new Error('Keep the existing Tool ID when editing, or choose an unused ID when adding a Tool.')

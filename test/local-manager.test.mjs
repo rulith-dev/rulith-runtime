@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { Socket, createServer as createNetServer } from 'node:net'
 import { tmpdir, uptime } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { createManagerServer, localAuthoringSaveRequestId, localAuthoringResultVersions } from '../local/manager-server.mjs'
 import { processAlive } from '../local/manager-registry.mjs'
@@ -847,6 +847,7 @@ test('a pairing started under a different client mode than was reserved is refus
 test('a configured MCP server cannot be pointed at the manager directory through any of the three modes', async (t) => {
   await withManager(t, async ({ manager, root }) => {
     const instance = await addInstance(manager, 'Tools', { agentId: 'agent-alpha' })
+    await manager.registry.patchInstance(instance.id, () => ({ tools: { source: 'own' } }))
     const url = new URL((await manager.instances.open(instance.id, '/worker-tools')).url)
     const probe = (body) => fetch(url.origin + '/mcp-services/probe', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k') },
@@ -878,11 +879,16 @@ test('a configured MCP server cannot be pointed at the manager directory through
 
     // A directory outside Rulith's own state is not refused by this check (it fails later, on
     // discovery, because this command is not an MCP server).
-    const project = mkdtempSync(join(tmpdir(), 'rulith-project-'))
-    t.after(() => rmSync(project, { recursive: true, force: true }))
+    const project = dirname(process.execPath)
     const elsewhere = await probe({ name: 'nosy', mode: 'stdio', isNew: true, command: process.execPath,
       args: [project], env: {} })
     assert.doesNotMatch(String(elsewhere.body.teaching ?? ''), /overlaps Rulith's own configuration/)
+    const environment = await fetch(`http://127.0.0.1:${manager.port}/manager/tools/mcp-probe`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-manager': KEY },
+      body: JSON.stringify({ name: 'nosy', mode: 'stdio', isNew: true, command: process.execPath, args: [root], env: {} }),
+    })
+    assert.equal(environment.status, 400)
+    assert.match((await environment.json()).teaching, /overlaps Rulith's own configuration/)
   })
 })
 
@@ -1517,10 +1523,13 @@ test('the manager answers exactly its documented control-plane operations', asyn
       '/manager/device/start', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll',
-      '/manager/instances/worker-setting', '/manager/model/default',
+      '/manager/instances/tools', '/manager/instances/worker-setting', '/manager/model/default',
+      '/manager/tools/mcp-apply', '/manager/tools/mcp-detail', '/manager/tools/mcp-downloads', '/manager/tools/mcp-install',
+      '/manager/tools/mcp-prepare', '/manager/tools/mcp-probe', '/manager/tools/mcp-remove', '/manager/tools/mcp-search',
+      '/manager/tools/remove', '/manager/tools/save', '/manager/tools/state',
     ], 'a new manager operation is a new way to act on this computer and must be deliberate')
-    assert.equal(routes.some((route) => /tool|resource|source|grant/.test(route)), false,
-      'granting tools stays in Console and in each instance\'s own setup; the manager adds no second path')
+    assert.equal(routes.some((route) => /resource|source|grant|authorize/.test(route)), false,
+      'the library configures local tools; only Console grants permission')
 
     const unknown = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/delete?k=${KEY}`, {
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}',

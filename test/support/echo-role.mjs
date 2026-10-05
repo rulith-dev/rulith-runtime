@@ -12,6 +12,8 @@
  * `RULITH_TEST_*` variables come from the instance configuration, so they survive the
  * manager's environment isolation exactly as any other configured value does.
  */
+import { readFileSync } from 'node:fs'
+
 const agentRole = process.argv.includes('--serve')
 const observed = Object.fromEntries(Object.entries(process.env)
   .filter(([name]) => /^(RULITH_|ANTHROPIC_)/.test(name)))
@@ -24,6 +26,31 @@ const credentialNames = Object.entries(process.env)
   .filter(([, value]) => /^rlt_(dev|agt)_/.test(String(value)))
   .map(([name]) => name)
   .sort()
+
+/**
+ * What this Worker was composed from, for the arms about an environment's tools.
+ *
+ * The two files a Worker is given are read the way it would read them, and reported by name:
+ * which tools its manifest holds, which Sources its vault holds, and where its three file
+ * variables point. `RULITH_TEST_MARKERS` is a comma-separated list of strings an arm plants in
+ * a key or a credential; each one found in this process's environment, or anywhere in the two
+ * files, is reported, so "this value never reached the Worker" is something the Worker says.
+ * The variable that carries the list is left out of what it searches, or it would find itself.
+ */
+const readJson = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return undefined } }
+const manifest = readJson(process.env.RULITH_TOOLS_FILE ?? ''), vault = readJson(process.env.RULITH_SECRETS_FILE ?? '')
+const markers = String(process.env.RULITH_TEST_MARKERS ?? '').split(',').filter(Boolean)
+const found = (text) => markers.filter((marker) => text.includes(marker))
+const composed = {
+  tools: Object.keys(manifest?.tools ?? {}).sort(),
+  vault: Object.keys(vault ?? {}).sort(),
+  manifest: manifest?.tools ?? {},
+  sources: vault ?? {},
+  files: { tools: process.env.RULITH_TOOLS_FILE ?? '', vault: process.env.RULITH_SECRETS_FILE ?? '',
+    environmentVault: process.env.RULITH_ENVIRONMENT_SECRETS_FILE ?? '' },
+  markersInEnvironment: found(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'RULITH_TEST_MARKERS')))),
+  markersInFiles: found(JSON.stringify({ manifest, vault })),
+}
 
 if (process.env.RULITH_TEST_EXIT === '1') {
   console.error('echo-role: refusing to start, as this scenario asked')
@@ -68,6 +95,7 @@ process.send?.({
     identity: String(process.env.RULITH_TEST_IDENTITY ?? ''),
     observed,
     credentialNames,
+    ...(agentRole ? {} : { composed }),
     cwd: process.cwd(),
   },
 })

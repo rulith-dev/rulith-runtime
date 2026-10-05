@@ -14,10 +14,10 @@ import assert from 'node:assert/strict'
 import { localThemeCss, managerReturnHref } from '../local/theme.mjs'
 import { localPage } from '../local/local-ui.mjs'
 import { setupPage } from '../local/setup-ui.mjs'
-import { workerToolsPage } from '../local/worker-tools-ui.mjs'
+import { workerToolsPage, environmentToolsPage } from '../local/worker-tools-ui.mjs'
 import { attachRegistryBrowser } from '../local/mcp-registry-ui.mjs'
 
-const PAGES = [['local', localPage], ['setup', setupPage], ['worker tools', workerToolsPage]]
+const PAGES = [['local', localPage], ['setup', setupPage], ['Agent tools', workerToolsPage], ['environment tools', environmentToolsPage]]
 
 test('every Local page takes its palette from the one shared sheet', () => {
   for (const [name, page] of PAGES) {

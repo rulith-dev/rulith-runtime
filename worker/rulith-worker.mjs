@@ -13,6 +13,11 @@
  *   RULITH_CONNECTION       Agent-owned Connection id
  *   RULITH_CONNECTION_KEY   Connection credential shown once at registration
  *   RULITH_TOOLS_FILE    Worker Tool Manifest JSON, default ./worker-tools.json
+ *   RULITH_ENVIRONMENT_SECRETS_FILE   A Source vault shared with other Workers (a Rulith
+ *                        environment's keys). Read only for a Source the Gateway grants this
+ *                        Connection, only where this Worker's own vault has no entry, and then
+ *                        only its secret material (a token, headers, a database DSN at the
+ *                        granted address): never what the Source is or where or how it connects
  *   RULITH_WORKSPACE_TOOLS   Enable fixed workspace Tools: read or read-write
  *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
@@ -113,7 +118,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.11.0"
+const RULITH_RUNTIME_VERSION = "0.12.0"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -219,6 +224,17 @@ const WORKER_ROOT = resolve(process.env.RULITH_WORKER_ROOT ?? dirname(fileURLToP
  *  版本对不上时能问出「你那台跑的是哪一版」——在此之前这句话问不出答案。 */
 export const WORKER_VERSION = '2026-09-01'
 const SECRETS_FILE = process.env.RULITH_SECRETS_FILE ?? './worker-secrets.json'
+/**
+ * A vault this Worker shares with the other Workers of one Rulith environment, beside its own.
+ *
+ * The launching host sets it, and only it: it holds keys that belong to the environment rather
+ * than to any one Agent. This Worker therefore never loads the file whole. For each Source the
+ * authority names in `/work/sources` it takes that one entry — and only when its own vault has
+ * none under that name, and only its secret material, for a Source of the type and at the address
+ * that were granted — and drops the rest, so a key reaches a Worker exactly when Console has
+ * bound its Source to that Worker's Connection, and no earlier, and cannot move that Source.
+ */
+const ENVIRONMENT_SECRETS_FILE = (process.env.RULITH_ENVIRONMENT_SECRETS_FILE ?? '').trim()
 /**
  * The material area this Worker was launched against, and the owner binding it reads under.
  *
@@ -333,6 +349,163 @@ function resolveSourceCreds(route, vault) {
   }
   return merged
 }
+/**
+ * The environment's shared vault as the file holds it right now, or nothing.
+ *
+ * Read at each refresh and never kept: the caller copies out the entries the authority granted and
+ * lets this object go, so an entry nobody granted is not held in this process between refreshes. A
+ * missing file is an environment with no keys yet and is not worth a line; one that exists and
+ * cannot be used is said, without its content — a parse error can quote the text it choked on.
+ */
+function readEnvironmentVault() {
+  if (ENVIRONMENT_SECRETS_FILE === '') return {}
+  let raw
+  try { raw = readFileSync(ENVIRONMENT_SECRETS_FILE, 'utf8') } catch (error) {
+    if (error?.code !== 'ENOENT') console.error(`· Could not read the environment vault (${error?.code ?? 'unreadable'}). Its keys are not used.`)
+    return {}
+  }
+  try {
+    const vault = JSON.parse(raw)
+    if (vault !== null && typeof vault === 'object' && !Array.isArray(vault)) return vault
+  } catch { /* said below, in words that cannot carry the file's text */ }
+  console.error('· The environment vault is not a JSON object. Its keys are not used.')
+  return {}
+}
+const isVaultEntry = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+/**
+ * The fields an environment entry can carry and the Worker honours in full: what kind of Source it
+ * is for, and its secret material (`token`, `headers`, and a database `dsn` whose address is the
+ * granted one). An entry with anything else is not one the environment can speak for: it states
+ * where or how to connect, which only this Worker's own vault may say. Exported for the code that
+ * decides which of an Agent's keys may move into the environment.
+ */
+export const ENVIRONMENT_KEY_FIELDS = Object.freeze(['type', 'token', 'headers', 'dsn'])
+/** What an environment entry may say only to repeat the grant: where the Source is, and how it is reached. */
+const ENVIRONMENT_ECHO_FIELDS = Object.freeze(['access', 'url', 'transport'])
+/** What starts a process. The authority grants none of it, so an environment entry may state none of it. */
+const ENVIRONMENT_LAUNCH_FIELDS = Object.freeze(['command', 'args', 'cwd'])
+/** A database URL's own words for where it connects, in place of the authority's: they are address, not secret. */
+const DATABASE_LOCATING_PARAMETERS = new Set(['host', 'hostaddr', 'port', 'dbname', 'database', 'service', 'servicefile'])
+/**
+ * Where a database URL connects, without who connects or how: its scheme, host, port and database.
+ * Undefined when that cannot be told (not a URL, no host), which is never taken to match anything.
+ */
+function databaseLocation(text) {
+  let url
+  try { url = new URL(text) } catch { return undefined }
+  if (url.hostname === '') return undefined
+  const scheme = url.protocol === 'postgresql:' ? 'postgres:' : url.protocol
+  return { place: `${scheme}//${url.hostname.toLowerCase()}:${url.port || (scheme === 'postgres:' ? '5432' : '')}${url.pathname.replace(/\/+$/u, '')}`,
+    parameters: [...url.searchParams.keys()].map((name) => name.toLowerCase()) }
+}
+/**
+ * Does this DSN connect where the authority granted this Source? Its userinfo is the secret and may
+ * be anything; its host, port and database are the address and must be the granted ones, and so
+ * must everything else that can say where: a query that names a `host` or a `dbname` of its own is
+ * a second address in the same URL, and is refused as one.
+ */
+function dsnConnectsTo(grantedAccess, dsn) {
+  if (typeof grantedAccess !== 'string' || typeof dsn !== 'string') return false
+  const granted = databaseLocation(grantedAccess), stated = databaseLocation(dsn)
+  return granted !== undefined && stated !== undefined && granted.place === stated.place
+    && !stated.parameters.some((name) => DATABASE_LOCATING_PARAMETERS.has(name))
+}
+/** How a granted MCP Source is reached, as its address says: the only `transport` an environment entry may repeat. */
+function grantedTransport(granted) {
+  if (granted.type !== 'mcp' || typeof granted.access !== 'string') return undefined
+  if (/^https?:\/\//iu.test(granted.access)) return 'streamable-http'
+  return /^stdio:/iu.test(granted.access) ? 'stdio' : undefined
+}
+/**
+ * What the environment's entry under a Source's name may give the Source the authority granted
+ * under that name: `{ credentials, ignored }`, or `{ refused }` naming the part that does not fit.
+ *
+ * The vault is shared by every Agent in the environment and an entry is found by name alone, so the
+ * same name can be a different Source for another Agent. An entry therefore supplies secret
+ * material for the granted Source and nothing that says what the Source is, or where or how it
+ * connects:
+ *   · `type`, if stated, is the granted type. Without this an `http` Source met an environment `db`
+ *     entry of the same name and became a `db` Source holding the environment's DSN.
+ *   · `url` and `access`, if stated, are the granted address, and `transport`, if stated, is the one
+ *     that address implies. A credential belongs to the address it was entered for, so it is neither
+ *     sent to another nor allowed to redirect the Source; where the authority granted no address
+ *     there is none to repeat, and an entry that names one is adding it.
+ *   · a database `dsn` has the granted host, port and database (`dsnConnectsTo`); its userinfo is
+ *     what it supplies.
+ *   · `command`, `args` and `cwd` are never stated: that is how a process is started, and an HTTP
+ *     Source granted by name became a local `/bin/sh` when an entry could say it.
+ *   · `token`, `headers` and the checked `dsn` are the credentials, and the only fields taken. Any
+ *     other field the entry carries is `ignored`, said by name so that nobody believes it applied.
+ */
+function environmentCredentials(granted, entry) {
+  if (entry.type !== undefined && entry.type !== granted.type) return { refused: 'type' }
+  const address = typeof granted.access === 'string' && granted.access !== '' ? granted.access : undefined
+  if (['access', 'url'].some((field) => entry[field] !== undefined && entry[field] !== address)) return { refused: 'address' }
+  if (entry.dsn !== undefined && !dsnConnectsTo(address, entry.dsn)) return { refused: 'address' }
+  if (ENVIRONMENT_LAUNCH_FIELDS.some((field) => entry[field] !== undefined)
+      || (entry.transport !== undefined && entry.transport !== grantedTransport(granted))) return { refused: 'launch' }
+  const credentials = {}
+  if (typeof entry.token === 'string') credentials.token = entry.token
+  if (isVaultEntry(entry.headers)) credentials.headers = entry.headers
+  if (typeof entry.dsn === 'string') credentials.dsn = entry.dsn
+  const repeated = new Set(['type', ...ENVIRONMENT_ECHO_FIELDS])
+  return { credentials, ignored: Object.keys(entry).filter((field) => !Object.hasOwn(credentials, field) && !repeated.has(field)) }
+}
+/**
+ * Whose word a granted Source's credentials are: this Worker's own vault entry as it stands, or,
+ * when it has none, the credentials of the environment's entry under that name, or `refused` when
+ * that entry would say what the Source is or where or how it connects (`environmentCredentials`).
+ * `fromEnvironment` says which of the two `entry` is, and `ignored` names what the environment's
+ * entry carried that is not a credential. The one choice both the Source context and a selected HTTP
+ * write make, so that the two cannot disagree; exported so that this is checked, not read off the source.
+ */
+export function localSourceEntry(granted, ownVault, environmentVault) {
+  if (Object.hasOwn(ownVault, granted.name)) return { entry: ownVault[granted.name] ?? {}, fromEnvironment: false, ignored: [] }
+  if (Object.hasOwn(environmentVault, granted.name) && isVaultEntry(environmentVault[granted.name])) {
+    const verdict = environmentCredentials(granted, environmentVault[granted.name])
+    if (verdict.refused !== undefined) return { entry: {}, refused: verdict.refused, fromEnvironment: false, ignored: [] }
+    return { entry: verdict.credentials, fromEnvironment: true, ignored: verdict.ignored }
+  }
+  return { entry: {}, fromEnvironment: false, ignored: [] }
+}
+/**
+ * The Sources this Worker can use: its own vault, plus one entry for each Source the authority
+ * granted it.
+ *
+ * Credentials for a granted Source come from this Worker's own vault when it has an entry under
+ * that name and from the environment's vault otherwise; the cloud's non-secret half (type and
+ * address) underlies either, as before. Nothing in `environmentVault` reaches the result except
+ * under a name the authority granted — an environment key for a Source this Connection is not
+ * bound to is not an input to anything here.
+ *
+ * An environment entry is secret material for the granted Source and nothing else
+ * (`environmentCredentials`): only its credentials reach the result, so it cannot change what the
+ * Source is or where or how it connects. An entry that tries is left out whole and reported in
+ * `refused` (`type`, `address` or `launch`, by name), and fields it carries that are not
+ * credentials are reported in `ignored`, so that the caller can say so without quoting the entry.
+ * `shared` counts the Sources that took a credential from the environment. Exported so that this is
+ * checked, not read off the source.
+ */
+export function grantedSourceContext(granted, ownVault, environmentVault = {}) {
+  const context = { ...ownVault }
+  let count = 0, shared = 0
+  const refused = [], ignored = []
+  for (const s of granted) {
+    if (!s || typeof s.name !== 'string' || s.name === '') continue
+    const chosen = localSourceEntry(s, ownVault, environmentVault)
+    if (chosen.refused !== undefined) refused.push({ name: s.name, mismatch: chosen.refused })
+    if (chosen.ignored.length > 0) ignored.push({ name: s.name, fields: chosen.ignored })
+    const local = chosen.entry
+    const remote = typeof s.access === 'string' && s.access !== ''
+      ? { type: s.type, access: s.access, url: s.access, dsn: s.access }
+      : { type: s.type }
+    context[s.name] = { ...remote, ...local,
+      ...(remote.headers || local.headers ? { headers: { ...(remote.headers ?? {}), ...(local.headers ?? {}) } } : {}) }
+    count++
+    if (chosen.fromEnvironment && Object.keys(local).length > 0) shared++
+  }
+  return { context, count, shared, refused, ignored }
+}
 /** Refresh only the non-secret Source metadata when a newly bound Source is first dispatched.
  * The original vault remains local; a refresh never merges a stale cloud snapshot into a new one. */
 async function refreshSourceDefinitions() {
@@ -350,20 +523,21 @@ async function refreshSourceDefinitions() {
         // advertisement filter; the Connection lock in Console is the only authority,
         // and a Worker that also decided made the two disagree invisibly.
         if (!j || !Array.isArray(j.sources)) return
-        const next = { ...LOCAL_SOURCE_CONTEXT }
-        let n = 0
-        for (const s of j.sources) {
-          if (!s || typeof s.name !== 'string' || s.name === '') continue
-          const local = LOCAL_SOURCE_CONTEXT[s.name] ?? {}
-          const remote = typeof s.access === 'string' && s.access !== ''
-            ? { type: s.type, access: s.access, url: s.access, dsn: s.access }
-            : { type: s.type }
-          next[s.name] = { ...remote, ...local,
-            ...(remote.headers || local.headers ? { headers: { ...(remote.headers ?? {}), ...(local.headers ?? {}) } } : {}) }
-          n++
+        const { context, count: n, shared, refused, ignored } = grantedSourceContext(j.sources, LOCAL_SOURCE_CONTEXT, readEnvironmentVault())
+        SOURCE_CONTEXT = context
+        if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`
+          + (shared > 0 ? ` ${shared} of them use the environment's keys.` : ''))
+        // Said by name and by which part did not fit, never with the entry's values: the vault holds
+        // keys, and the Source name comes from the wire.
+        for (const { name, mismatch } of refused) {
+          console.error(`· The environment's key for Source "${flatPeerText(name, 80)}" is not used: it `
+            + (mismatch === 'type' ? 'is for a different type of Source than the one the Gateway granted under that name.'
+              : mismatch === 'launch' ? 'says how to start or reach the Source (a transport, command, arguments or folder), which only this Worker\'s own vault may say.'
+                : 'names a different address than the Source the Gateway granted under that name.'))
         }
-        SOURCE_CONTEXT = next
-        if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`)
+        for (const { name, fields } of ignored) {
+          console.error(`· The environment's key for Source "${flatPeerText(name, 80)}" supplies credentials only; ignored: ${flatPeerText(fields.join(', '), 160)}.`)
+        }
       }).catch((e) => {
         if (e instanceof CredentialRejectedError) throw e
         console.error(`· Could not reach Rulith Cloud for source definitions (${e.message}). Continuing with local secrets.`)
@@ -393,7 +567,14 @@ async function selectedHttpSourceSnapshot(sourceRecordId, expectedAccess) {
   if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) {
     throw new Error('selected HTTP Source has no valid Gateway endpoint')
   }
-  const local = LOCAL_SOURCE_CONTEXT[sourceRecordId] ?? {}
+  // The Source was just confirmed as granted above, so the environment's vault may speak for it
+  // exactly where it does everywhere else (`localSourceEntry`): only when this Worker's own vault
+  // has no entry, and only with its credentials. A write is not run on a guess, so an entry that
+  // would say what the Source is or where or how it connects refuses it here, where the Source
+  // context would leave the entry out; and nothing but credentials of an entry is frozen with it.
+  const chosen = localSourceEntry(matches[0], LOCAL_SOURCE_CONTEXT, readEnvironmentVault())
+  if (chosen.refused !== undefined) throw new Error('local Source endpoint differs from the current Gateway Source')
+  const local = chosen.entry
   if (local.type !== undefined && local.type !== 'http'
       || local.url !== undefined && local.url !== access
       || local.access !== undefined && local.access !== access) {
@@ -2364,6 +2545,7 @@ function protectedRuntimeFiles() {
   return [
     resolve(TOOLS_FILE),
     resolve(SECRETS_FILE),
+    ...(ENVIRONMENT_SECRETS_FILE === '' ? [] : [resolve(ENVIRONMENT_SECRETS_FILE)]),
     localConfig,
     resolve(dirname(localConfig), 'mcp/services.json'),
   ].filter((path) => existsSync(path))

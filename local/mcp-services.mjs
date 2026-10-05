@@ -4,7 +4,7 @@ import { dirname, join, resolve, isAbsolute, relative } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { invokeMcp, closeMcpClients } from '../worker/mcp-client.mjs'
-import { adapterEnv, workerToolsOf, configuredWorkerTools } from '../worker/rulith-worker.mjs'
+import { adapterEnv, canonicalJson, workerToolsOf, configuredWorkerTools } from '../worker/rulith-worker.mjs'
 import { createMcpRegistry } from './mcp-registry.mjs'
 
 export const MCP_CATALOG = Object.freeze([Object.freeze({
@@ -31,6 +31,16 @@ function stringMap(value, label) {
   if (!record(value) || Object.entries(value).some(([key, text]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || /^RULITH_/i.test(key) || typeof text !== 'string')) throw new Error(label + ' must be a string map without Rulith credentials.')
   return value
 }
+
+/**
+ * What makes two saved services the same service, wherever each was saved.
+ *
+ * The launch line, where it came from, and the tools it exposes. What discovery printed
+ * (`discovered`, `definition`) is a description of those and may differ in wording, and
+ * `directory` is only the allowed folder already inside `source.args`. Moving services between
+ * stores (see `tool-library.mjs`) merges the ones this says are equal and refuses the rest.
+ */
+export const serviceIdentity = row => canonicalJson({ mode: row.mode, source: row.source, registry: row.registry, tools: row.tools })
 
 /** MCP schema 只投影现有参数类型，不猜业务含义；保留完整 schema 供人审阅与服务端验证。 */
 export function parametersOf(schema) {
@@ -144,6 +154,16 @@ function overlapsProtected(target, guarded) {
  * An argument that is not a plain path — a URL, a glob, a flag with an
  * embedded root — is not checked, and cannot be. That limit is documented rather than papered
  * over.
+ *
+ * `allowed` names the places inside Rulith's own tree that a server is meant to be given: its
+ * scratch folders and the packages Local installed for it. Both sit under the MCP directory,
+ * which is itself a private path, so without naming them this guard refused the very entry
+ * script it had just installed (`node <packages>/…/dist/index.js <directory>`) as a "file
+ * argument" inside Rulith's own state. Only what is *strictly inside* an allowed place is
+ * permitted: a folder in `workspaces`, an installed package in `packages`. Those two folders
+ * themselves, the directory that contains them, and everything else beside them stay refused, so
+ * that a server given `workspaces` as its working directory cannot reach every other service's
+ * scratch, nor one given `packages` the code Local installed for all of them.
  */
 function refuseProtectedLaunch(source, guarded, allowed = [], privateFiles = guarded) {
   const permitted = (value) => {
@@ -151,7 +171,7 @@ function refuseProtectedLaunch(source, guarded, allowed = [], privateFiles = gua
     return allowed.some((path) => {
       const root = existsSync(path) ? realpathSync(path) : resolve(path)
       const rel = relative(root, actual)
-      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+      return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
     })
   }
   const named = (label, value, boundaries = guarded) => {
@@ -189,6 +209,8 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
   /** Rulith's own state, plus whatever the host added — the manager tree, for an instance. */
   const privatePaths = () => [resolve(configFile), root, ...protectedPaths.map(path => resolve(path))]
   const guardedPaths = () => [...privatePaths(), resolve(import.meta.dirname, '..')]
+  /** Inside the private MCP directory, the two places a server may be pointed at: scratch and installed code. */
+  const allowedPaths = () => [join(root, 'workspaces'), join(root, 'packages')]
   const stateFile = join(root, 'services.json')
   const toolsFile = join(root, 'worker-tools.json'), vaultFile = join(root, 'worker-secrets.json')
   let busy = false, closed = false, installChild = null, pending = Promise.resolve()
@@ -242,6 +264,18 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
     }
     workerToolsOf(manifest)
     return { manifest, originalManifest, vault, originalTools, originalVault }
+  }
+  /**
+   * Refuse a saved service whose launch line points at protected configuration.
+   *
+   * Checked again at each start, because that is the moment a server is actually launched. A
+   * saved configuration can predate the guard or be edited by hand in the file, and the check
+   * that only ran when somebody used the page would never see either.
+   */
+  const assertLaunch = row => {
+    try { refuseProtectedLaunch(row.source, guardedPaths(), allowedPaths(), privatePaths()) } catch (error) {
+      throw new Error(`MCP service ${row.name} cannot be started: ${error.message}`)
+    }
   }
   return {
     get busy() { return busy }, overview,
@@ -316,7 +350,7 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
       // Every branch above ends here, including the two that build the same `node <server>
       // <directory>` line the Filesystem branch does. Checking once, on the launch line that
       // was actually assembled, is what stops one dropdown refusing what the next accepts.
-      refuseProtectedLaunch(source, guardedPaths(), [join(root, 'workspaces')], privatePaths())
+      refuseProtectedLaunch(source, guardedPaths(), allowedPaths(), privatePaths())
       let discovered
       try {
         discovered = await invokeMcp({ sourceName: 'local-probe-' + randomUUID(), source, discovering: true, environment: adapterEnv(process.env, []) })
@@ -373,19 +407,38 @@ export function createMcpServices(configFile, { registry = createMcpRegistry(), 
       delete current.services[name]; save(current); probes.clear()
       return { removed: true, teaching: 'Local configuration removed. Existing Cloud grants and historical receipts are unchanged.' }
     }),
+    /**
+     * The saved services exactly as stored, credentials and all. For the code that composes
+     * what a Worker is started with (`tool-library.mjs`); no route may return this, because
+     * `publicService` exists to keep exactly these fields out of a browser.
+     */
+    rows: () => Object.values(state().services),
+    /**
+     * Add services that were saved somewhere else, or accept the ones already here.
+     *
+     * A name that is already saved must be the same service (`serviceIdentity`); a different one
+     * is refused whole and nothing is written, so a merge can never replace a launch line or a
+     * credential. The caller decides beforehand what a refusal means, so that a merge that
+     * reaches this point has nothing left to refuse. Saving goes through the same validation as
+     * every other edit, which is what keeps the merged tools consistent with the manifest.
+     */
+    merge(rows) {
+      const next = state(), added = []
+      for (const row of rows) {
+        const old = next.services[row.name]
+        if (old === undefined) { next.services[row.name] = row; added.push(row.name) }
+        else if (serviceIdentity(old) !== serviceIdentity(row)) throw new Error('A different MCP service is already saved as ' + row.name + '.')
+      }
+      if (added.length) { save(next); probes.clear() }
+      return added
+    },
+    assertLaunch,
     /** 合并原 manifest/vault 的只读输入；撞名拒绝，绝不覆盖已有来源或已审定工具。 */
     workerEnvironment(environment, workerDirectory) {
       if (busy) throw new Error('Wait for MCP configuration to finish before starting Worker.')
       const services = Object.values(state().services)
       if (!services.length) return environment
-      // Checked again here, because this is the moment a server is actually launched. A saved
-      // configuration can predate the guard or be edited by hand in the file, and the check
-      // that only ran when somebody used the page would never see either.
-      for (const row of services) {
-        try { refuseProtectedLaunch(row.source, guardedPaths(), [join(root, 'workspaces')], privatePaths()) } catch (error) {
-          throw new Error(`MCP service ${row.name} cannot be started: ${error.message}`)
-        }
-      }
+      for (const row of services) assertLaunch(row)
       const { manifest, vault } = project(environment, workerDirectory)
       write(toolsFile, manifest); write(vaultFile, vault)
       return { ...environment, RULITH_TOOLS_FILE: toolsFile, RULITH_SECRETS_FILE: vaultFile }

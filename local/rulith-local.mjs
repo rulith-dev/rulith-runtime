@@ -222,7 +222,7 @@ export function createLocalHost({
   isolateEnvironment = false, setupApprover, managedPolicy, managedCallToken, protectedPaths = [], onChildChange,
   materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
   registerMaterialSubmission, acceptedMaterialBinding,
-  getApprovedDeviceId, workerRestartDelays = [250, 1000, 4000, 10000], workerStableMs = 60_000,
+  getApprovedDeviceId, workerRestartDelays = [250, 1000, 4000, 10000], workerStableMs = 60_000, toolLibrary,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -309,7 +309,8 @@ export function createLocalHost({
   const hasLocalTools = () => {
     if (!selectedRoles.includes('worker')) return false
     if (!selectedRoles.includes('agent') || ['read', 'read-write'].includes(config.worker?.env?.RULITH_WORKSPACE_TOOLS)
-      || mcpServices.overview().services.length > 0 || materials.inUse()) return true
+      || mcpServices.overview().services.length > 0 || materials.inUse()
+      || (toolLibrary?.active() === true && toolLibrary.hasTools())) return true
     try {
       const toolsFile = resolve(configDir, config.worker?.env?.RULITH_TOOLS_FILE || 'worker-tools.json')
       return Object.keys(JSON.parse(readFileSync(toolsFile, 'utf8')).tools ?? {}).length > 0
@@ -419,12 +420,49 @@ export function createLocalHost({
     directory: dirname(config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')) })
   const mcpServices = createMcpServices(configFile, { workerContext, protectedPaths })
   const toolManagement = createWorkerToolManagement({ mcpServices, workerContext, setWorkspaceMode: mode => {
+    if (toolLibrary?.active() === true) {
+      const { environment, directory } = workerContext(), own = mcpServices.projectWorkerInputs(environment, directory)
+      toolLibrary.check({ tools: own.manifest.tools, vault: own.vault }, { ...environment, RULITH_WORKSPACE_TOOLS: mode })
+    }
     // 只更新既有部署字段，保留文件中的其他配置；不在此编辑 Agent/模型凭据。
     const next = existsSync(configFile) ? JSON.parse(readFileSync(configFile, 'utf8')) : structuredClone(config)
     next.worker = { ...next.worker, env: { ...next.worker?.env, RULITH_WORKSPACE_TOOLS: mode } }
     saveConfig(configFile, next)
     config.worker = { ...config.worker, env: { ...config.worker?.env, RULITH_WORKSPACE_TOOLS: mode } }
   } })
+  /**
+   * What this Agent's Worker would start with now, composed from its own inputs and its
+   * environment's and checked, but written nowhere: a digest that is equal to the one it started
+   * with means nothing it runs has changed. Throws the teaching a start would be refused with.
+   */
+  const libraryDigest = () => {
+    const { environment, directory } = workerContext()
+    const own = mcpServices.projectWorkerInputs(environment, directory)
+    return toolLibrary.check({ tools: own.manifest.tools, vault: own.vault }, environment)
+  }
+  const toolOverview = () => {
+    const own = toolManagement.overview()
+    if (toolLibrary?.active() !== true) return own
+    const library = toolLibrary.inventory()
+    return { ...own,
+      tools: [...new Map([...library.tools.filter(tool => tool.origin !== 'builtin'), ...own.tools].map(tool => [tool.id, tool])).values()],
+      services: [...new Map([...library.services, ...own.services].map(service => [service.name, service])).values()],
+      library: { notice: toolLibrary.notice() } }
+  }
+  /**
+   * What Setup is shown, for an Agent on its environment's tools: the services it has include the
+   * environment's, and a selection is checked against the composition its Worker will start with.
+   * Setup itself is unchanged and does not know there is an environment.
+   */
+  const setupServices = { overview: () => {
+    const own = mcpServices.overview()
+    return toolLibrary?.active() === true ? { ...own, services: [...own.services, ...toolLibrary.services()] } : own
+  } }
+  const setupTools = { overview: () => {
+    const view = toolOverview()
+    if (toolLibrary?.active() === true) libraryDigest()
+    return view
+  } }
   const running = (role) => components[role].child !== null && components[role].child.exitCode === null
   /**
    * The role processes this host owns right now, each with the stamp taken the moment it was
@@ -437,7 +475,7 @@ export function createLocalHost({
   const setup = createSetupService({ configFile, getConfig: () => config,
     effectiveEnv: () => effectiveChildEnv(baseEnv(), config.worker?.env ?? {}),
     agentCredentialConfigured: () => !!agentEnvironment().RULITH_TOKEN,
-    workerStopped: () => !running('worker'), mcpServices, toolManagement,
+    workerStopped: () => !running('worker'), mcpServices: setupServices, toolManagement: setupTools,
     approvePairing: setupApprover,
     onModelConfigured: async () => { activeModelOverlay = undefined; requestReload('worker'); return await onModelConfigured?.() },
     // A stopped Worker leaves its last launch environment for diagnostics. It must not remain
@@ -626,6 +664,19 @@ export function createLocalHost({
     let roleEnv
     try { roleEnv = mcpServices.workerEnvironment(effectiveChildEnv(baseEnv(), config.worker?.env ?? {}), dirname(path)) }
     catch (error) { return error.message }
+    if (toolLibrary !== undefined) {
+      // Where an environment's keys live is for composition to say and for nothing else to: a value
+      // from this profile's own configuration is dropped, so that no setting can point a Worker at a
+      // vault file the manager did not name. The manager directory is otherwise off limits to an
+      // instance's paths (`managerExposure`); this is the one path into it a Worker is given.
+      delete roleEnv.RULITH_ENVIRONMENT_SECRETS_FILE
+      if (toolLibrary.active()) {
+        // After the Agent's own inputs are in place, the environment's tools and services are added to
+        // them, and the Worker is pointed at the two files that result. A refusal is its teaching.
+        try { roleEnv = toolLibrary.workerEnvironment({ ...roleEnv, ...materialChildEnv() }, dirname(path)) }
+        catch (error) { return error.message }
+      }
+    }
     // The Worker is told where the material area is and whose it is, and is given neither the
     // Agent credential nor anything it could reconstruct one from: the two bindings travel as
     // sha256 fingerprints, which it compares and never inverts. The same values the Worker
@@ -903,7 +954,7 @@ export function createLocalHost({
     }
   }
   const setWorkerEnabled = async (enabled, req) => {
-    if (typeof enabled !== 'boolean' || !selectedRoles.includes('worker')) throw new Error('Choose whether this Agent uses this computer\'s tools and files.')
+    if (typeof enabled !== 'boolean' || !selectedRoles.includes('worker')) throw new Error('Choose whether this Agent uses this environment\'s tools and files.')
     if (setup.busy || mcpServices.busy) throw new Error('Wait for this Agent\'s configuration to finish before changing its local tools setting.')
     const refusal = await permitted({ kind: 'setup', path: '/worker-setting' }, req)
     if (refusal !== null) throw new Error(refusal)
@@ -919,8 +970,8 @@ export function createLocalHost({
     }
     else if (running('worker')) requestReload('worker')
     return { ...workerView(), teaching: enabled
-      ? 'This computer\'s tools and files are enabled for this Agent. The Worker runs with Rulith; permissions stay in Console.'
-      : 'Local tools are off. The Worker stops after its running executions drain.' }
+      ? 'Tools and files are enabled for this Agent. Permissions stay in Console.'
+      : 'Local tools are off after running work finishes.' }
   }
   /**
    * The Worker controls the calculation sample step is given, bound to the request that asked.
@@ -1097,7 +1148,9 @@ export function createLocalHost({
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
         return void res.end(workerToolsPage)
       }
-      if (path === '/worker-tools/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...toolManagement.overview() })
+      if (path === '/worker-tools/state' && req.method === 'GET') {
+        return void json(res, 200, { ok: true, ...toolOverview() })
+      }
       if (path === '/mcp-services/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...mcpServices.overview() })
       if (req.method === 'GET' && ['/mcp-services/search', '/mcp-services/detail', '/mcp-services/downloads'].includes(path)) {
         const params = new URL(req.url, 'http://localhost').searchParams
@@ -1110,6 +1163,11 @@ export function createLocalHost({
         // Installing executables requires the page's key header and its exact origin, not any loopback origin.
         if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
           return void json(res, 403, { ok: false, teaching: 'Worker tool configuration requires the Local page key and the same origin.' })
+        }
+        // An Agent on its environment's tools does not edit them from here: they are shared by every
+        // Agent, so the workbench is where they change. Its file-tool mode is its own and still saves here.
+        if (toolLibrary?.active() === true && path !== '/worker-tools/workspace') {
+          return void json(res, 409, { ok: false, teaching: `This Agent uses this environment's tools. Add or change them under "This environment's tools" in the Rulith workbench.` })
         }
         const body = await readJson(req)
         if (mcpServices.busy || setup.busy) return void json(res, 409, { ok: false, teaching: 'Wait for the current tool configuration operation to finish.' })
@@ -1411,6 +1469,7 @@ export function createLocalHost({
       ready: Object.fromEntries(['agent', 'worker'].map(role => [role,
           running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])) }),
     reloadWorker: () => requestReload('worker'),
+    toolsDigest: () => (toolLibrary?.active() === true ? libraryDigest() : undefined),
     resumeWorker: () => ensureWorker().catch(error => { workerFailure = error.message; emit('local', 'error', { role: 'worker', note: workerFailure }) }),
     events: () => events.map((event) => ({ ...event })),
     listen: () => new Promise((accept, reject) => {

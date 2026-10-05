@@ -18,7 +18,7 @@ import http from 'node:http'
 import { managerPage } from '../../local/manager-ui.mjs'
 import { localPage } from '../../local/local-ui.mjs'
 import { setupPage } from '../../local/setup-ui.mjs'
-import { workerToolsPage } from '../../local/worker-tools-ui.mjs'
+import { workerToolsPage, environmentToolsPage } from '../../local/worker-tools-ui.mjs'
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
@@ -40,6 +40,7 @@ const instanceOf = (overrides = {}) => ({
   origin: '', accountId: '', agentId: '', agentName: '', connectionId: '', paired: true,
   open: false, roles: [], agent: false, worker: false, runningAgentId: '', pendingAgentId: '',
   workerSetting: { enabled: false, visible: true, state: 'offline' },
+  tools: { source: 'library', conflicts: [], notice: null },
   blocked: '', orphaned: null, legacyImport: null, hostPort: 0, servePort: 0,
   signedOutAt: '', createdAt: '', importedFrom: '', ...overrides,
 })
@@ -61,6 +62,10 @@ export async function startMockWorkbench({ instances, agents, events = [], model
   const CONSOLE = 'https://console.example', ACCOUNT = 'acct-1'
   /** Flipped by a test: what the conversation host answers when a message is sent. */
   const control = { pageStatus: {}, pairPending: false, pairRefusal: '', pairCredentialRefusal: '', pairCancelUnknown: false, pairCancelAccountChange: false, pairRequests: [], pairCancels: [], refreshAgents: null, refreshRequests: [], modelRefusal: '', modelRequests: [], authoringQuestions: true, authoringCompileErrors: [], checkerInstallRequests: [], authoringReviewRefusal: '', authoringReviewRequests: [], authoringVersions: null, authoringSaveRefusal: '', authoringSaveDropResponse: false, authoringSaveRequests: [], authoringSaves: [], caseRequests: [], stopRequests: [], caseDelay: 0, cases: { ok: false, teaching: 'Reconnect this Agent before sending a message.' } }
+  control.toolRequests = []; control.migrationRequests = []
+  control.library = { tools: [], services: [], keys: [], revision: 'library-1',
+    manifestFile: 'fixture/library/worker-tools.json', vaultFile: 'fixture/library/worker-secrets.json',
+    presets: [{ package: 'fixture-filesystem', version: '1.0.0', installed: true }] }
 
   // Configured Agents, as the manager reports them once pairing has completed: the directory
   // joins a profile to an Agent by account, Console origin and Agent id together.
@@ -122,7 +127,8 @@ export async function startMockWorkbench({ instances, agents, events = [], model
     }
     if (path === '/setup/state') return void json(res, 200, { ok: true, linked: true, code: '', expiresAt: '', consoleUrl: 'https://console.example', clientMode: 'local_agent', resources: [], services: [], machineName: 'Work laptop', model: { url: '', name: '' }, agentId: 'agent-alpha' })
     if (path === '/setup/context') return void json(res, 200, { ok: true, agentName: 'Alpha', agentId: 'agent-alpha', sources: [] })
-    if (path === '/worker-tools/state') return void json(res, 200, { ok: true, tools: [], workspace: 'read', services: [] })
+    if (path === '/worker-tools/state') return void json(res, 200, { ok: true, ...control.library, workspaceMode: 'read',
+      ...(row.tools?.source === 'library' ? { library: { notice: '' } } : {}) })
     if (path === '/mcp-services/state') return void json(res, 200, { ok: true, services: [] })
     json(res, 404, { ok: false, teaching: 'Not in this fixture.' })
   })
@@ -143,9 +149,32 @@ export async function startMockWorkbench({ instances, agents, events = [], model
     const presented = req.headers['x-rulith-manager'] ?? url.searchParams.get('k') ?? ''
     if (presented !== MANAGER_KEY) return void json(res, 401, { ok: false, teaching: 'Missing or invalid Rulith manager key.' })
     if (path === '/' && req.method === 'GET') return void html(res, managerPage)
+    if (path === '/tools' && req.method === 'GET') {
+      if (control.pageStatus[path]) return void json(res, control.pageStatus[path], { ok: false, teaching: 'The expected page is unavailable.' })
+      return void html(res, environmentToolsPage)
+    }
+    if (path === '/manager/tools/state') return void json(res, 200, { ok: true, ...control.library,
+      usedBy: rows.filter(row => row.tools?.source === 'library').map(row => row.agentName || row.name) })
     if (path === '/manager/state') return void json(res, 200, state())
     const body = req.method === 'POST' ? await readBody(req) : {}
     const row = find(String(body.instanceId ?? ''))
+    if (path === '/manager/instances/tools') {
+      control.migrationRequests.push(body)
+      row.tools = { source: 'library', conflicts: [], notice: { kind: 'moved', text: 'Moved this Agent’s tools into this environment.' } }
+      return void json(res, 200, { ...state(), teaching: row.tools.notice.text })
+    }
+    if (['/manager/tools/save', '/manager/tools/remove'].includes(path)) {
+      control.toolRequests.push({ path, ...body })
+      if (req.headers['x-rulith-manager'] !== MANAGER_KEY || body.confirmed !== true)
+        return void json(res, 400, { ok: false, teaching: 'Review and confirm this change once before saving it.' })
+      if (body.revision !== control.library.revision)
+        return void json(res, 400, { ok: false, teaching: 'This environment’s tools changed. Reopen this list before saving.' })
+      control.library.tools = control.library.tools.filter(tool => tool.id !== body.id)
+      if (path.endsWith('/save')) control.library.tools.push({ id: body.id, ...body.definition, definition: body.definition,
+        origin: 'manifest', configured: true })
+      control.library.revision += '-next'
+      return void json(res, 200, { ...state(), teaching: 'Tool configuration saved.', affected: rows.map(row => row.agentName || row.name) })
+    }
     if (path === '/manager/device/refresh') {
       control.refreshRequests.push(body)
       const before = new Set(device.agents.map((agent) => agent.id))

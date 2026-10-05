@@ -73,6 +73,8 @@ body{overflow:hidden}
 .acct-menu{margin-left:auto;flex:none;color:var(--faint);letter-spacing:1px}
 .accountbtn:hover .acct-menu{color:var(--fg)}
 .railempty{color:var(--dim);font-size:var(--fs-4);padding:10px}
+#environment-open{width:100%;text-align:left;color:var(--dim)}
+#environment-open:hover{color:var(--fg)}
 /* A profile the directory does not claim. It is reachable, and it looks nothing like a row in
    the Agent list, because it is not one of the Agents this account authorizes. */
 .profilerow{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:8px 10px;margin:6px 0;color:var(--dim);font-size:var(--fs-4)}
@@ -190,8 +192,8 @@ export const managerPage = String.raw`<!doctype html>
   <div class="railsel" id="railsel" hidden>
     <div class="railcap"><span>Selected Agent</span><span class="spacer"></span><button class="iconbtn" id="details-open" aria-label="Agent settings and details" aria-haspopup="dialog">⚙</button></div>
     <div class="railrow"><span class="pill" id="agent-pill" hidden></span></div>
-    <div class="railrow"><span class="pill" id="worker-pill">No Agent selected</span><label id="worker-setting-label" hidden><input id="worker-setting" type="checkbox">Use this computer’s tools and files</label><button id="tools-open" hidden>Tools</button><button id="authoring-open" hidden>Document assistant</button></div>
-    <p class="muted" id="worker-note">Choose an Agent to see the Worker on this computer.</p>
+    <div class="railrow"><span class="pill" id="worker-pill">No Agent selected</span><label id="worker-setting-label" hidden><input id="worker-setting" type="checkbox">Use this environment’s tools and files</label><button id="tools-open" hidden>Tools</button><button id="authoring-open" hidden>Document assistant</button></div>
+    <p class="muted" id="worker-note">Choose an Agent to see the Worker in this environment.</p>
     <div id="worker-notice" class="notice" role="status" aria-live="polite"></div>
     <details id="worker-details"><summary>Connection and details</summary>
       <div class="kv"><span>Attached Agent</span><b id="worker-agent">—</b></div>
@@ -201,6 +203,7 @@ export const managerPage = String.raw`<!doctype html>
     </details>
   </div>
   <div class="railfoot">
+    <button id="environment-open" aria-haspopup="dialog">This environment’s tools</button>
     <button class="accountbtn" id="account-open" aria-haspopup="dialog"><span class="avatar"><span id="account-initial">·</span><span class="dot" id="account-dot"></span></span><span class="acct"><span class="word" id="account-line">Not signed in</span><span class="word" id="account-sub">Sign in with your browser</span></span><span class="acct-menu" aria-hidden="true">⋯</span></button>
   </div>
 </aside>
@@ -231,7 +234,7 @@ export const managerPage = String.raw`<!doctype html>
   <div class="modal-body">
     <div id="account-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
     <div id="signed-out">
-      <p>Sign in with your browser to choose which Agents this computer may run.</p>
+      <p>Sign in with your browser to choose which Agents this environment may run.</p>
       <p id="signin-recovery" class="notice" role="status" hidden></p>
       <div class="actions"><button class="btn" id="sign-in">Sign in</button></div>
     </div>
@@ -247,7 +250,7 @@ export const managerPage = String.raw`<!doctype html>
       <p class="muted" id="directory-sync" role="status"></p>
       <p class="muted" id="default-model-summary"></p>
       <div class="actions"><button id="default-model-open">Default model</button></div>
-      <div class="actions"><button id="refresh-account">Refresh enabled Agents</button><button class="btn danger" id="sign-out">Sign out and stop this computer</button></div>
+      <div class="actions"><button id="refresh-account">Refresh enabled Agents</button><button class="btn danger" id="sign-out">Sign out and stop this environment</button></div>
       <p id="signout-state" class="muted"></p>
     </div>
     <div id="unusable" hidden>
@@ -261,10 +264,10 @@ export const managerPage = String.raw`<!doctype html>
     <details id="local-settings"><summary>Advanced local settings</summary>
     <div id="signin-settings">
       <label>Console address<input id="console-url" type="url" value="https://console.rulith.ai" autocomplete="url"></label>
-      <label>This computer's name<input id="device-name" maxlength="120" placeholder="This computer"></label>
+      <label>This environment's name<input id="device-name" maxlength="120" placeholder="This environment"></label>
     </div>
     <h3>Local profiles</h3>
-    <p class="muted">Profiles on this computer that are not one of the Agents above: not connected yet, imported, or connected under another account or Console. They are kept so nothing is lost, and they are never offered as an Agent this account authorizes.</p>
+    <p class="muted">Profiles in this environment that are not one of the Agents above: not connected yet, imported, or connected under another account or Console. They are kept so nothing is lost, and they are never offered as an Agent this account authorizes.</p>
     <div id="profiles"></div>
     <p class="muted" id="profiles-empty" hidden>No other local profiles.</p>
     </details>
@@ -272,19 +275,19 @@ export const managerPage = String.raw`<!doctype html>
 </div></div>
 
 <div class="modal" id="dlg-setup" role="dialog" aria-modal="true" aria-labelledby="setup-title" hidden><div class="modal-card">
-  <div class="modal-head"><div><b id="setup-title">Set up on this computer</b><span class="subline" id="setup-sub"></span></div><button class="modal-close" id="setup-close" aria-label="Close set up Agent">×</button></div>
+  <div class="modal-head"><div><b id="setup-title">Set up in this environment</b><span class="subline" id="setup-sub"></span></div><button class="modal-close" id="setup-close" aria-label="Close set up Agent">×</button></div>
   <div class="modal-body">
     <div id="setup-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
     <p id="setup-blocked" hidden></p>
     <div id="setup-form">
-      <p class="muted">This Agent already exists in your account. Setting it up here gives it a profile of its own on this computer and connects that profile to it. Nothing is created in Console, and no other Agent is touched.</p>
-      <label for="setup-mode">How should this computer run it?</label>
-      <select id="setup-mode" aria-label="How this computer runs this Agent">
+      <p class="muted">This Agent already exists in your account. Setting it up here gives it a profile of its own in this environment and connects that profile to it. Nothing is created in Console, and no other Agent is touched.</p>
+      <label for="setup-mode">How should this environment run it?</label>
+      <select id="setup-mode" aria-label="How this environment runs this Agent">
         <option value="local_agent">Rulith runs the Agent here, with a model you configure</option>
         <option value="existing_client">Only the Worker runs here, for an MCP client you run yourself</option>
       </select>
       <p class="muted" id="setup-existing" hidden></p>
-      <div class="actions"><button class="btn" id="setup-start">Set up on this computer</button></div>
+      <div class="actions"><button class="btn" id="setup-start">Set up in this environment</button></div>
     </div>
   </div>
 </div></div>
@@ -305,7 +308,7 @@ export const managerPage = String.raw`<!doctype html>
       <p id="pair-error" class="notice error" role="alert" hidden></p>
       <p id="pair-replacement-pending" class="notice" hidden>You approved replacing this Agent’s previous key. Continuing retries that replacement; clients using the old key will lose access when it completes.</p>
       <div id="pair-conflict" hidden>
-        <p>This Agent already has an active key. Replacing it connects this computer and invalidates the previous key, including clients still using it.</p>
+        <p>This Agent already has an active key. Replacing it connects this environment and invalidates the previous key, including clients still using it.</p>
         <label class="checkline"><input type="checkbox" id="pair-replace-confirm">Replace this Agent’s existing key</label>
         <button class="btn" id="pair-replace">Replace key and connect</button>
       </div>
@@ -339,7 +342,7 @@ export const managerPage = String.raw`<!doctype html>
       <p class="muted" id="detail-legacy" hidden></p>
     </details>
     <h3>Remove</h3>
-    <p class="muted">Removes this Agent from the list on this computer. Its folder, settings and credentials are left exactly where they are.</p>
+    <p class="muted">Removes this Agent from the list in this environment. Its folder, settings and credentials are left exactly where they are.</p>
     <div class="actions"><button class="btn danger" id="forget">Remove from Rulith</button></div>
   </div>
 </div></div>
@@ -387,7 +390,7 @@ export const managerPage = String.raw`<!doctype html>
   <div class="modal-body"><div id="authoring-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
     <p id="authoring-copy">Install the local rule checker (Java 25 required), then install the Document Authoring Assistant capability in Console. Use the Agent’s Runtime page to lock its Source to this Worker and configure material delivery.</p>
     <p id="authoring-worker-status" role="status"></p>
-    <button id="authoring-tools-enable" hidden>Use this computer’s tools and files</button>
+    <button id="authoring-tools-enable" hidden>Use this environment’s tools and files</button>
     <p class="sub">This Worker’s material area: <code id="authoring-material-root"></code></p>
     <div class="actions"><button class="btn" id="authoring-install-checker">Install local checker</button><button id="authoring-review-open">Review checked draft</button><a class="btn" id="authoring-configure" target="_blank" rel="noopener noreferrer">Open Agent in Console</a></div>
     <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><label id="authoring-result-row" hidden>Checked version<select id="authoring-result-choice"></select></label><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
@@ -408,6 +411,10 @@ let offline='',pollFails=0;
 /* The exact (Agent here, cloud Agent) pair the replacement tick was given for. */
 let replaceFor='',authoringResult=null,authoringRenderedFor=null,authoringFor='',authoringScope='';
 const busy=new Set(),frames=new Map(),dialogs=[],lastMarkup={};
+/* While the manager works on an Agent's local-tools change, that Agent's box shows the value
+   that was asked for rather than the old state, which has not changed yet. Keyed by Agent, so
+   choosing another Agent still shows that Agent's own state. */
+const requestedWorker=new Map();
 const rowOf=id=>(state.instances||[]).find(r=>r.id===id)||null, sel=()=>rowOf(selected);
 const hasRole=(row,role)=>(row.open&&(row.roles||[]).length?(row.roles||[]).includes(role):(role==='agent'?row.mode!=='existing_client':true));
 const lost=message=>{const error=Object.assign(Error(message),{offline:true});unreachableNow(error);return error;};
@@ -417,7 +424,7 @@ async function api(path,body,signal){
   try{
     r=await fetch(path,{method:body===undefined?'GET':'POST',cache:'no-store',signal,
       headers:{'x-rulith-manager':key,'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
-  }catch(e){if(signal?.aborted)throw Error('Sign-in took too long. You can retry, or reopen the sign-in page when its link appears.');throw lost('Rulith on this computer did not answer.');}
+  }catch(e){if(signal?.aborted)throw Error('Sign-in took too long. You can retry, or reopen the sign-in page when its link appears.');throw lost('Rulith in this environment did not answer.');}
   const v=await r.json().catch(()=>({}));
   if(r.status===401||r.status===403)throw lost(v.teaching||'This page is no longer authorized for the manager. Open the address it printed at startup.');
   if(v&&Array.isArray(v.instances)){
@@ -488,6 +495,8 @@ function controlSpec(){
     'agent-readiness-action':[nextStep(row)?.scope||'readiness',Boolean(nextStep(row)?.action)],
     'worker-setting':['worker-setting:'+selected,Boolean(row)&&row.paired&&!row.blocked&&!row.orphaned],
     'tools-open':[windowScope(selected),Boolean(row)],
+    // The environment's tools belong to the installation, not to the selected Agent or the account.
+    'environment-open':['environment-tools',true],
     'authoring-open':['authoring:'+selected,Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned],
     'authoring-install-checker':['authoring:'+selected,Boolean(row)&&row.paired],
     'authoring-tools-enable':['role:'+selected+':worker',Boolean(row)&&row.paired&&hasRole(row,'worker')&&!row.blocked&&!row.orphaned&&!busy.has('authoring:'+selected)],
@@ -497,7 +506,7 @@ function controlSpec(){
     // program.id is the private pack identity: one checked result can be saved only once.
     // The Case choice names that pack's certification, not a way to mint several packs.
     'authoring-save':['authoring:'+selected,Boolean(row)&&authoringResult&&!authoringResult.savedPackId&&!authoringResult.saveOutcomeUnknown&&String($('authoring-case').value||'')!==''&&String(authoringResult.resultId||'')!==''&&authoringResult.report?.compiled===true&&authoringResult.report?.examples?.total>0&&authoringResult.report?.examples?.passed===authoringResult.report?.examples?.total&&authoringResult.report?.citations?.total>0&&authoringResult.report?.citations?.verified===authoringResult.report?.citations?.total&&!(authoringResult.draft?.questions||[]).length ],
-    'page-retry':[windowScope(pageEntry?.id||''),Boolean(pageEntry&&rowOf(pageEntry.id))],
+    'page-retry':[windowScope(pageEntry?.id||''),Boolean(pageEntry&&(pageEntry.environment||rowOf(pageEntry.id)))],
     'open-setup':[windowScope(selected),Boolean(row)],
     'model-copy':['model:'+selected,Boolean(row)&&row.mode==='local_agent'&&modelSources(row).length>0],
     'agent-model-open':['model-settings',Boolean(row)&&row.mode==='local_agent'&&linked&&!row.blocked],
@@ -528,7 +537,7 @@ const modeWord=row=>row.mode==='existing_client'?'Worker only':'';
 /* A next step is a projection of observed state, not another readiness state machine. */
 function nextStep(row){
   if(!row)return null;
-  const step=(copy,action,label)=>({copy,action,label,scope:action==='agent'||action==='worker'?'role:'+row.id+':'+action:'readiness'});
+  const step=(copy,action,label)=>({copy,action,label,scope:action==='agent'||action==='worker'?'role:'+row.id+':'+action:action==='tools'?'tools:'+row.id:'readiness'});
   if(row.orphaned)return step('An earlier process is still running. Review its state before continuing.','details','Review settings');
   if(row.pendingAgentId)return step('Connection setup is unfinished. Continue the same attempt or cancel it.','attach','Continue setup');
   if(row.blocked)return step(row.blocked,'details','Review settings');
@@ -536,6 +545,13 @@ function nextStep(row){
   if(row.mode==='local_agent'&&!row.model?.ready)return step('Choose a model before sending the first message.','model','Set model');
   if(row.agentReloading)return step('Model settings saved. The Agent restarts automatically between turns.','','');
   if(row.workerSetting?.enabled&&row.workerSetting?.failure)return step(row.workerSetting.failure,'details','Review settings');
+  /* An Agent whose tools could not move into the environment says why and offers the one thing
+     that can change it, and so does one that moved but could not remove its old files, which is
+     the same "Check again" finishing the tidying; one whose tools stopped composing says what to
+     review. A note that the move happened is shown where the Agent's own tools are, not here,
+     since nothing needs doing. */
+  if(row.tools?.notice?.kind==='conflict'||row.tools?.notice?.kind==='untidy')return step(row.tools.notice.text,'tools','Check again');
+  if(row.tools?.notice?.kind==='failed')return step(row.tools.notice.text,'environment','Review tools');
   return null;
 }
 function modelSources(row){return (state.instances||[]).filter(r=>r.id!==row.id&&r.mode==='local_agent');}
@@ -605,18 +621,18 @@ function renderModel(){
   const valid=modelTargetValid(),row=modelTarget.instanceId?rowOf(modelTarget.instanceId):null;
   const inherited=Boolean(modelTarget.instanceId)&&$('model-source').value==='default';
   const editingDefault=modelEditsDefault();
-  $('model-title').textContent=modelTarget.instanceId?'Model for '+(row?.name||'this Agent'):'Default model on this computer';
+  $('model-title').textContent=modelTarget.instanceId?'Model for '+(row?.name||'this Agent'):'Default model in this environment';
   $('model-sub').textContent=modelTarget.instanceId?'':(state.device?.account?.name||'');
   $('model-source-label').hidden=!modelTarget.instanceId;
   $('model-fields').hidden=inherited&&!editingDefault;
   $('model-inherited').hidden=!inherited||editingDefault;
   $('model-inherited-summary').textContent=modelDescription(state.modelDefaults);
   $('model-explanation').textContent=editingDefault
-    ?'Agents set to use the default will use this model. Settings and the key stay on this computer, under this account.'
-    :'Only this Agent uses these settings. The key stays on this computer.';
+    ?'Agents set to use the default will use this model. Settings and the key stay in this environment, under this account.'
+    :'Only this Agent uses these settings. The key stays in this environment.';
   $('model-key-hint').textContent=modelOriginal?.keyConfigured
     ?'A key is saved. Leave blank to keep it for the same service. Enter a new key when changing services.'
-    :'Enter your model API key. A local model on this computer can run without one.';
+    :'Enter your model API key. A local model in this environment can run without one.';
   $('model-clear-label').hidden=!modelOriginal?.keyConfigured;
   $('model-effect').textContent='Model changes apply automatically between turns.';
   $('model-save').textContent=editingDefault?'Save default model':'Save';
@@ -667,7 +683,7 @@ function fillSelect(id,markup){
   const wanted=options.find(o=>o.value===keep&&o.disabled!==true)||options.find(o=>o.disabled!==true);
   el.value=wanted?wanted.value:'';
 }
-/* The list is the account's own directory of Agents, joined to what this computer has
+/* The list is the account's own directory of Agents, joined to what this environment has
    configured — not a list of local profiles with cloud names attached to them.
  *
  * An entry is one Agent the device grant authorizes. A local profile joins it only when it is
@@ -703,7 +719,7 @@ function renderAgents(){
     const attaching=Boolean(row&&row.pendingAgentId===agent.id);
     return '<button type="button" class="agentrow" data-agent="'+esc(agent.id)+'" aria-current="false">'
       +'<b>'+esc(agent.name)+'</b><small><span class="dot '+(attaching?'wait':'')+'"></span><span class="word">'
-      +(attaching?(row.pendingReplace?'Key replacement pending':row.pendingError?'Action needed':'Finishing setup'):'Not set up on this computer')+'</span></small></button>';
+      +(attaching?(row.pendingReplace?'Key replacement pending':row.pendingError?'Action needed':'Finishing setup'):'Not set up in this environment')+'</span></small></button>';
   }).join('');
   $('agents-empty').hidden=entries.length>0;
   $('agents-empty').textContent=linked
@@ -722,9 +738,9 @@ function renderAgents(){
     if(focused===id+'/'+agentId&&focused!=='/'&&node.focus&&$('rail').inert!==true)node.focus();
   }
 }
-/* First use of an enabled Agent on this computer. The target is captured when the dialog
+/* First use of an enabled Agent in this environment. The target is captured when the dialog
    opens and never re-chosen: a person picks the Agent once, in the list, and chooses only how
-   this computer should run it. */
+   this environment should run it. */
 let setupFor=null;const setupProfiles=new Map();
 const setupIdentity=agent=>JSON.stringify([agent.origin,agent.accountId,agent.id]);
 const setupAuthorized=agent=>{const device=state.device||{};return Boolean(agent)&&device.state==='linked'
@@ -751,14 +767,14 @@ function renderSetup(){
   $('setup-sub').textContent=agent?agent.name:'';
   const known=setupAuthorized(agent);
   const reason=!agent?''
-    :!linked?'This computer is not signed in to an account any more. Sign in again before setting up an Agent.'
+    :!linked?'This environment is not signed in to an account any more. Sign in again before setting up an Agent.'
       :!known?'This Agent is no longer enabled in this account. Refresh Agents and choose again.':'';
   $('setup-blocked').hidden=reason==='';$('setup-blocked').textContent=reason;
   $('setup-form').hidden=!agent||reason!=='';
   const existing=agent?setupProfile(agent):null;
   $('setup-existing').hidden=existing==null;
   if(existing){
-    $('setup-existing').textContent='A profile for this Agent already exists on this computer ('+existing.name
+    $('setup-existing').textContent='A profile for this Agent already exists in this environment ('+existing.name
       +'). Setting up again finishes that one rather than creating a second.';
     $('setup-mode').value=existing.mode;
   }
@@ -776,14 +792,14 @@ function renderAccount(){
   // The avatar is the account's initial once there is an account, and a placeholder before
   // there is one; the second line says which computer this is, or what is waiting to happen.
   $('account-initial').textContent=linked?(who.trim().charAt(0).toUpperCase()||'?'):pending?'…':broken?'!':'·';
-  $('account-sub').textContent=linked?(device.deviceName||'This computer')
+  $('account-sub').textContent=linked?(device.deviceName||'This environment')
     :broken?'Reset sign-in':pending?'Continue in your browser':incomplete?'Retry sign-in':'Connect your account';
   $('signin-recovery').hidden=!incomplete;
   $('signin-recovery').textContent=incomplete?(device.teaching||'Sign-in did not finish. Check the Console address and retry.'):'';
   if($('signin-poll-error').textContent!==signInPollError)$('signin-poll-error').textContent=signInPollError;
   $('signin-poll-error').hidden=!signInPollError;
   $('signin-reset').hidden=!(broken||(pending&&Boolean(signInPollError)));
-  $('signin-reset-copy').textContent=device.state==='pending'?'Resetting clears this sign-in request.':device.state==='approved'?'Resetting stops local Agents and revokes this computer\'s authorization before clearing it.':'Resetting stops local Agents and clears this computer\'s stored authorization.';
+  $('signin-reset-copy').textContent=device.state==='pending'?'Resetting clears this sign-in request.':device.state==='approved'?'Resetting stops local Agents and revokes this environment\'s authorization before clearing it.':'Resetting stops local Agents and clears this environment\'s stored authorization.';
   $('sign-in').textContent=incomplete?'Retry sign-in':'Sign in';
   $('signin-settings').hidden=linked||pending||broken;
   const attempt=JSON.stringify([device.origin,device.deviceName]);
@@ -794,7 +810,7 @@ function renderAccount(){
   $('console-link').hidden=!device.consoleUrl;
   $('signin-reopen-hint').hidden=!device.consoleUrl;
   $('account-name').textContent=device.account?device.account.name:'';
-  $('device-tag').textContent=device.deviceName?('This computer: '+device.deviceName):'';
+  $('device-tag').textContent=device.deviceName?('This environment: '+device.deviceName):'';
   $('agent-summary').textContent=(device.agents||[]).length
     ?'Agents you may run here: '+device.agents.map(a=>a.name).join(', ')
     :'No enabled Agents are available in this account.';
@@ -852,7 +868,7 @@ function renderAttach(){
   const linked=(state.device||{}).state==='linked',offers=((state.device||{}).agents||[]).length>0;
   /* A control that is simply unavailable teaches nothing, so the one reason it is unavailable
      is written out: gone, not signed in, nothing authorized, or already connected. */
-  const reason=!row?'This Agent is no longer on this computer. Close this and choose another.'
+  const reason=!row?'This Agent is no longer in this environment. Close this and choose another.'
     :row.pendingAgentId?''
       :row.paired?'This Agent is already connected to '+(row.agentName||row.agentId||'a cloud Agent')
         +'. One cloud Agent runs in one Agent here; add another instead.'
@@ -877,7 +893,7 @@ function renderAttach(){
 function renderDetails(){
   const row=sel();
   $('details-sub').textContent=row?row.name:'';
-  const attention=!row?'This Agent is no longer on this computer. Close this and choose another.'
+  const attention=!row?'This Agent is no longer in this environment. Close this and choose another.'
     :row.orphaned?'Processes from a manager that is gone are still running: '
       +((row.orphaned.children||[]).map(c=>c.role+' pid '+c.pid).join(', '))+'. Stop them before using this Agent.'
     :row.accessStopWarning?row.accessStopWarning:row.blocked?row.blocked:'';
@@ -891,7 +907,7 @@ function renderDetails(){
   $('detail-legacy').hidden=legacy==null;
   if(legacy)$('detail-legacy').textContent='Imported from '+legacy.configFile
     +((legacy.credentialsLeftInPlace||[]).length?'. Its original credentials ('+legacy.credentialsLeftInPlace.join(', ')
-      +') stayed with that installation and are not covered by signing this computer out.':'.');
+      +') stayed with that installation and are not covered by signing this environment out.':'.');
   $('model-row').hidden=!row||row.mode!=='local_agent';
   $('connection-key-open').hidden=!row||!row.paired||!row.connectionId;
   $('connection-key-open').disabled=Boolean(row?.blocked);
@@ -902,7 +918,7 @@ function renderDetails(){
   $('agent-model-summary').textContent=row?.model
     ?(row.model.source==='default'?'Using the default model. ':'')+modelDescription(row.model)
       +(row.agentReloading?' The Agent applies this model automatically between turns.':'')
-    :'Configure the model this Agent uses on this computer.';
+    :'Configure the model this Agent uses in this environment.';
   if(row&&row.mode==='local_agent')fillSelect('model-from',modelSources(row).map(r=>'<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>').join(''));
 }
 function renderCenter(){
@@ -916,7 +932,7 @@ function renderCenter(){
   $('agent-readiness-action').textContent=step?.label||'';
   $('center-title').textContent=row?row.name:'Rulith';
   $('center-sub').textContent=row
-    ?(row.mode==='existing_client'?'This computer does the work for an Agent you run elsewhere.'
+    ?(row.mode==='existing_client'?'This environment does the work for an Agent you run elsewhere.'
       :row.agentName||row.agentId||'Not connected to a cloud Agent yet.')
     :((state.instances||[]).length?'Choose an Agent to open its workspace.':'A local working environment for your Agents.');
   // The controls for one Agent exist only while there is one selected; an empty panel of
@@ -934,7 +950,7 @@ function renderWorker(){
   $('worker-setting-label').hidden=!row;$('tools-open').hidden=!row;$('authoring-open').hidden=!row;
   if(!row){
     $('worker-pill').textContent='No Agent selected';$('worker-pill').className='pill';
-    $('worker-note').textContent='Choose an Agent to see the Worker on this computer.';
+    $('worker-note').textContent='Choose an Agent to see the Worker in this environment.';
     for(const id of ['worker-agent','worker-connection','worker-address','worker-dir'])$(id).textContent='—';
     return;
   }
@@ -945,7 +961,7 @@ function renderWorker(){
   $('worker-note').hidden=!has;
   $('worker-details').hidden=!has;
   $('worker-note').textContent=row.blocked||(row.orphaned?'An earlier process still needs attention. Review settings.':row.workerSetting?.failure)||(row.workerSetting?.reloading?'Reloading after running executions drain.':'The Worker runs with Rulith when local tools are enabled. Permissions stay in Console.');
-  $('worker-setting').checked=row.workerSetting?.enabled===true;
+  $('worker-setting').checked=requestedWorker.has(row.id)?requestedWorker.get(row.id):row.workerSetting?.enabled===true;
   $('worker-agent').textContent=row.agentName||row.agentId||'Not connected';
   $('worker-connection').textContent=row.connectionId||'Not authorized yet';
   $('worker-address').textContent=row.open&&row.hostPort?('127.0.0.1:'+row.hostPort):'Not open';
@@ -958,7 +974,7 @@ function renderAuthoring(){
   }
   const row=sel();$('authoring-sub').textContent=row?.name||'';
   $('authoring-tools-enable').hidden=!row||Boolean(row.worker);
-  $('authoring-worker-status').textContent=!row?'Choose an Agent first.':!row.worker?'Enable this computer’s tools and files after installing the checker.':'Local tools are enabled. The Worker reloads after running executions drain.';
+  $('authoring-worker-status').textContent=!row?'Choose an Agent first.':!row.worker?'Enable this environment’s tools and files after installing the checker.':'Local tools are enabled. The Worker reloads after running executions drain.';
   $('authoring-material-root').textContent=row?.authoring?.materialRoot||'Unavailable';
   const ready=authoringResult&&typeof authoringResult==='object';$('authoring-review').hidden=!ready;
   const versions=ready&&Array.isArray(authoringResult.availableResults)?authoringResult.availableResults:[];
@@ -1012,12 +1028,12 @@ function renderStage(){
   // selected without being one of the directory rows, and it still has a workspace to open.
   const entries=directory();
   if(!row&&entries.length===0&&(state.device||{}).state!=='linked'){title='Welcome to Rulith';
-    copy='Sign in with your browser to see the Agents your account authorizes for this computer.';label='Account';mode='account';}
+    copy='Sign in with your browser to see the Agents your account authorizes for this environment.';label='Account';mode='account';}
   else if(!row&&entries.length===0){title='No enabled Agents yet';
     copy='Agents are created and enabled in Console. Refresh this account when one is ready.';label='Account';mode='account';}
   else if(!row){title='Choose an Agent';copy='Your Agents are listed beside this conversation.';label='Show Agents';mode='rail';}
   else if(row.pendingAgentId){title='Finish connecting '+(row.pendingAgentName||row.name);
-    copy=row.pendingError?.teaching||'This Agent is not connected on this computer yet.';label='Review connection';mode='attach';}
+    copy=row.pendingError?.teaching||'This Agent is not connected in this environment yet.';label='Review connection';mode='attach';}
   else if(frame&&frame.failed){title=row.name;copy=frame.failed;label='Try again';mode='retry';}
   else if(frame&&frame.loaded){note.hidden=true;action.hidden=true;showFrames();return;}
   else if(frame&&frame.slow){title='Workspace not ready';copy='The workspace has not confirmed it is ready. It may be unavailable or failed to initialise. Try again.';label='Try again';mode='retry';}
@@ -1060,7 +1076,7 @@ function render(next){
 
   pruneFrames();renderAgents();renderCenter();renderWorker();renderStage();
   renderAccount();renderProfiles();renderSetup();renderAttach();renderDetails();renderModel();renderConnectionKey();renderAuthoring();applyControls();
-  if(pageEntry&&!rowOf(pageEntry.id)){$('page-status').hidden=false;$('page-loading').hidden=false;$('page-loading').textContent='This Agent is no longer available. Close this panel and select another Agent.';$('page-retry').disabled=true;}
+  if(pageEntry&&!pageEntry.environment&&!rowOf(pageEntry.id)){$('page-status').hidden=false;$('page-loading').hidden=false;$('page-loading').textContent='This Agent is no longer available. Close this panel and select another Agent.';$('page-retry').disabled=true;}
 }
 
 /* The address an Agent's page is loaded at carries that host's own loopback key, exactly as
@@ -1087,7 +1103,7 @@ function acceptReady(event){
   if(!event.data||event.data.type!=='rulith-ui-ready')return;
   for(const entry of [...frames.values(),...(pageEntry?[pageEntry]:[])]){
     if(event.source!==entry.el.contentWindow||event.origin!==entry.origin||event.data.view!==entry.view)continue;
-    if(entry===pageEntry&&!rowOf(entry.id))continue;
+    if(entry===pageEntry&&!entry.environment&&!rowOf(entry.id))continue;
     entry.loaded=true;entry.slow=false;entry.failed='';if(entry.timer)clearTimeout(entry.timer);
     if(entry===pageEntry){$('page-status').hidden=true;$('page-loading').textContent='';$('page-loading').hidden=true;$('page-retry').hidden=true;}
     else render();
@@ -1121,7 +1137,7 @@ function ensureFrame(id,retry){
 function choose(id){
   if(!rowOf(id)){
     /* One entry point for choosing a row. A row that names an Agent the account authorizes but
-       this computer has not configured opens first use and does nothing else: no profile is
+       this environment has not configured opens first use and does nothing else: no profile is
        allocated and no credential is asked for until a person presses Set up. */
     if(((state.device||{}).agents||[]).some(a=>a.id===id))openSetup(id);
     return Promise.resolve();
@@ -1135,7 +1151,7 @@ function choose(id){
    for a person to act on. */
 function openSettings(id,page,noticeId){
   const row=rowOf(id);if(!row){say(noticeId,'This Agent is no longer available. Close this panel and select another Agent.',true);return Promise.resolve();}
-  const name=row.name,label=page==='/setup'?'Setup':'Worker tools';
+  const name=row.name,label=page==='/setup'?'Setup':'Agent tools';
   return run(windowScope(id),noticeId,async()=>{
     const v=await api('/manager/instances/open',{instanceId:id,page:page});
     const url=withoutManager(v.url);
@@ -1152,7 +1168,24 @@ function openSettings(id,page,noticeId){
     openDialog('dlg-page','page-close');
   });
 }
-$('page-retry').onclick=()=>{if(offline){say('page-notice',offline,true);return Promise.resolve();}if(pageEntry)return openSettings(pageEntry.id,pageEntry.page,'page-notice');};
+/* The environment's tools are served by this manager, not by an Agent's host, so opening them asks
+   nobody for an address: it is this page's own origin and key. It is a settings page like the others
+   — same dialog, same readiness receipt, same way out to a tab of its own. */
+function openEnvironmentTools(){
+  const url=location.origin+'/tools?k='+encodeURIComponent(key);
+  $('page-title').textContent='This environment’s tools';
+  $('page-sub').textContent='';
+  $('page-frame').setAttribute('title','This environment’s tools');
+  $('page-tab').href=url;$('page-tab').hidden=false;
+  if(pageEntry?.timer)clearTimeout(pageEntry.timer);
+  pageEntry={el:$('page-frame'),loaded:false,id:'',page:'/tools',noticeId:'notice',environment:true};
+  const entry=pageEntry;
+  $('page-status').hidden=false;$('page-loading').hidden=false;$('page-loading').textContent='Opening This environment’s tools…';$('page-retry').hidden=true;say('page-notice','');
+  entry.timer=setTimeout(()=>{if(pageEntry===entry&&!entry.loaded){$('page-loading').textContent='This page has not confirmed that it loaded. Try again or open it in a new tab.';$('page-retry').hidden=false;}},8000);
+  $('page-frame').src=readyUrl(url,entry);
+  openDialog('dlg-page','page-close');
+}
+$('page-retry').onclick=()=>{if(offline){say('page-notice',offline,true);return Promise.resolve();}if(pageEntry?.environment)return openEnvironmentTools();if(pageEntry)return openSettings(pageEntry.id,pageEntry.page,'page-notice');};
 /* What a control reports is the state that came back, not the fact that a request was
    answered: a role that was asked to stop and has not exited is still running, and saying
    otherwise would be a claim about a process this page cannot see. */
@@ -1271,16 +1304,16 @@ function signIn(){
 $('sign-in').onclick=signIn;
 $('refresh-account').onclick=()=>run('account','account-notice',()=>api('/manager/device/refresh',{}).then(v=>{
   const added=(v.addedAgents||[]).map(a=>a.name||a.id), removed=(v.removedAgents||[]).map(a=>a.name||a.id), stopped=(v.stoppedInstances||[]).map(i=>i.name), stopping=(v.stoppingInstances||[]).map(i=>i.name);
-  const parts=[];if(added.length)parts.push('Added: '+added.join(', ')+'.');if(removed.length)parts.push('No longer enabled: '+removed.join(', ')+'.');if(stopped.length)parts.push('Stopped on this computer: '+stopped.join(', ')+'.');if(stopping.length)parts.push('Stopping: '+stopping.join(', ')+'.');
+  const parts=[];if(added.length)parts.push('Added: '+added.join(', ')+'.');if(removed.length)parts.push('No longer enabled: '+removed.join(', ')+'.');if(stopped.length)parts.push('Stopped in this environment: '+stopped.join(', ')+'.');if(stopping.length)parts.push('Stopping: '+stopping.join(', ')+'.');
   say('account-notice',parts.join(' ')||'Enabled Agent list is up to date.',stopping.length>0);
 }));
 $('start-over').onclick=()=>run('account','account-notice',()=>api(state.device?.state==='approved'?'/manager/device/signout':'/manager/device/forget',{}).then(v=>{
   say('account-notice',v.state==='incomplete'?(v.teaching||'Some Agents are still running.')
-    :v.revoke==='unconfirmed'?(v.teaching||'Cleared on this computer; the revocation was not confirmed.')
+    :v.revoke==='unconfirmed'?(v.teaching||'Cleared in this environment; the revocation was not confirmed.')
       :(v.teaching||'This authorization was cleared. Sign in again to choose Agents.'),v.state==='incomplete'||v.revoke==='unconfirmed');}));
 $('sign-out').onclick=()=>run('account','account-notice',()=>api('/manager/device/signout',{}).then(v=>{
   say('account-notice',v.state==='signed_out'
-    ?(v.teaching||(v.alreadyRevoked?'Signed out. Every Agent was stopped; this computer had already been revoked in Console.':'Signed out. Every Agent was stopped and this computer was revoked.'))
+    ?(v.teaching||(v.alreadyRevoked?'Signed out. Every Agent was stopped; this environment had already been revoked in Console.':'Signed out. Every Agent was stopped and this environment was revoked.'))
     :(v.teaching||'Sign-out is incomplete.'),v.state!=='signed_out');}));
 /* A new Agent cannot work until a cloud Agent is connected to it, so the next step is offered
    rather than left to be found. Its workspace is not opened: there is nothing in it yet, and
@@ -1302,10 +1335,10 @@ $('setup-start').onclick=()=>{
     if(id===''){
       const created=await api('/manager/instances/create',{name:agent.name,mode:$('setup-mode').value,setupTarget:{origin:agent.origin,accountId:agent.accountId,agentId:agent.id}});
       id=String((created||{}).id||'');
-      if(id==='')throw Error('This computer did not name the profile it created for that Agent.');
+      if(id==='')throw Error('This environment did not name the profile it created for that Agent.');
       setupProfiles.set(setupIdentity(agent),id);
     }
-    if(!setupAuthorized(agent))throw Error('The account changed or this Agent is no longer enabled. The unconnected profile remains in this computer settings.');
+    if(!setupAuthorized(agent))throw Error('The account changed or this Agent is no longer enabled. The unconnected profile remains in this environment settings.');
     try{await api('/manager/instances/pair',{instanceId:id,agentId:agent.id,replaceAgentToken:false});}
     catch(error){
       if(rowOf(id)?.pendingAgentId&&setupFor===agent&&!$('dlg-setup').hidden){
@@ -1313,7 +1346,7 @@ $('setup-start').onclick=()=>{
       }
       throw error;
     }
-    if(!rowOf(id))throw Error('That profile is no longer on this computer.');
+    if(!rowOf(id))throw Error('That profile is no longer in this environment.');
     if(setupFor!==agent||$('dlg-setup').hidden)return;
     selected=id;render();
     // The outcome proof is the one the attach dialog already carries: a pairing that has not
@@ -1371,11 +1404,24 @@ $('agent-readiness-action').onclick=()=>{const action=nextStep(sel())?.action;
   if(action==='model')return openModel(selected);
   if(action==='attach')return $('attach-open').onclick();
   if(action==='details')return $('details-open').onclick();
+  if(action==='tools')return checkTools();
+  if(action==='environment')return openEnvironmentTools();
 };
 $('access-stop-open').onclick=()=>{openDialog('dlg-account','account-close');$('local-settings').open=true;};
-/* The local tools setting stays with its Agent, including in the rail on a phone. */
-$('worker-setting').onchange=()=>{const id=selected,enabled=$('worker-setting').checked;return run('worker-setting:'+id,'worker-notice',()=>api('/manager/instances/worker-setting',{instanceId:id,enabled}).then(v=>{if(id===selected)say('worker-notice',v.teaching);}));};
+/* The local tools setting stays with its Agent, including in the rail on a phone. The box shows
+   what was asked for while the manager works, because starting the Worker can take seconds and
+   a box that un-ticks itself and greys out reads as "that did nothing". The answer, whichever
+   it is, puts it back to what the manager reports, which is also how a refusal undoes it. */
+$('worker-setting').onchange=()=>{const id=selected,enabled=$('worker-setting').checked,scope='worker-setting:'+id;
+  if(!busy.has(scope))requestedWorker.set(id,enabled);
+  return run(scope,'worker-notice',()=>api('/manager/instances/worker-setting',{instanceId:id,enabled})
+    .then(v=>{if(id===selected)say('worker-notice',v.teaching);})
+    .finally(()=>requestedWorker.delete(id)));};
 $('tools-open').onclick=()=>openSettings(selected,'/worker-tools','worker-notice');
+$('environment-open').onclick=openEnvironmentTools;
+/* "Check again" for an Agent that kept its own tools: the manager tries to move them into the
+   environment now, and says what it found. It does not start or stop anything. */
+function checkTools(){const id=selected;return run('tools:'+id,'notice',()=>api('/manager/instances/tools',{instanceId:id}).then(v=>say('notice',v.teaching||'Checked.')));}
 $('authoring-tools-enable').onclick=()=>{const id=selected;run('worker-setting:'+id,'authoring-notice',()=>api('/manager/instances/worker-setting',{instanceId:id,enabled:true}).then(v=>say('authoring-notice',v.teaching)));};
 $('authoring-open').onclick=()=>{
   const row=sel();authoringFor=selected;authoringScope=(row?.origin||'')+'/'+(row?.accountId||'');authoringResult=null;

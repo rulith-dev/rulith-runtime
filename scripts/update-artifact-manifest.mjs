@@ -49,6 +49,7 @@ const files = [
   'local/model-settings.mjs',
   'local/device-client.mjs',
   'local/instance-manager.mjs',
+  'local/tool-library.mjs',
   'local/manager-server.mjs',
   'local/manager-ui.mjs',
   'docs/local-manager.md',

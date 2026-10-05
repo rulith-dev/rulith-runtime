@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.11.0')
+  assert.equal(pkg.version, '0.12.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -1560,7 +1560,7 @@ test('Rulith Local presents a conversation-first Agent workbench with optional R
   assert.match(localPage, /Runtime details/)
   assert.match(localPage, /Read-only projection of the single-Agent Runtime configuration/)
   assert.doesNotMatch(localPage, /Start Agent|Stop Agent|Start Worker|Stop Worker/)
-  assert.match(localPage, /Use this computer’s tools and files/)
+  assert.match(localPage, /Use this environment’s tools and files/)
   assert.match(localPage, /Stops this turn\. Work already handed to Rulith is not withdrawn\./)
   assert.match(localPage, /id="detailconfig"/)
   assert.match(localPage, /id="caseoptions"/)

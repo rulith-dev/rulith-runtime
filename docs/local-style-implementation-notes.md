@@ -58,7 +58,7 @@ name must alias it.
 
 Deliberate separations kept from the Console decision: brand teal is the sidebar/header mark
 and nothing else; a primary action is a light surface with dark ink; blue means navigable or
-informational; a pressed secondary control (`My tools`, `MCP directory`, the setup step tabs)
+informational; a pressed secondary control (the `Tools` and `My tools` tabs, `MCP directory`, the setup step tabs)
 gets a blue outline rather than being promoted to a primary button, because a row of controls
 that all look like the main action tells a reader nothing.
 

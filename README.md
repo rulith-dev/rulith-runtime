@@ -1,13 +1,17 @@
 # Rulith
 
-Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in with your browser and choose a default model for this account on this computer. Local lists the account's enabled Agents; Refresh Agents includes newly created or re-enabled Agents. Each Agent can use the default model, override it, or run through an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
+Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in with your browser and choose a default model for this account in this environment. Local lists the account's enabled Agents; Refresh Agents includes newly created or re-enabled Agents. Each Agent can use the default model, override it, or run through an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
 
 Rulith is a local multi-agent working environment. One installation manages multiple
 fixed-identity Agents: choose an Agent on the left, work in its conversation in the
 center, and follow that conversation's Cases and Worker activity on the right.
 The account sits at the lower left; settings open when needed. Each Agent keeps its
-own credentials, model settings, tools and working
-directory; switching views leaves other running tasks alone.
+own identity credentials, model settings and working directory; switching views leaves
+other running tasks alone. Tool definitions and MCP services live once in the
+environment’s [tool library](docs/local-mcp-setup.md), available to every Agent here.
+Console decides what each Agent may call and which Source keys it may use. A tool’s own
+credentials are shared by every Agent that uses the environment; see
+[shared trust](docs/local-mcp-setup.md#shared-trust-in-an-environment).
 
 Use **+ → Add files** in a conversation to retain a document in that Agent's local
 Worker material area. Adding a file supplies metadata; an authorized material-read
@@ -98,12 +102,12 @@ npm test
 ```
 
 No build step is required. Run `npm start` for the workbench, select an Agent, and
-send the first message to start that Agent automatically. Enable **Use this computer’s tools and files** when the Agent needs a local Worker. The roles remain separate child
+send the first message to start that Agent automatically. Enable **Use this environment’s tools and files** when the Agent needs a local Worker. The roles remain separate child
 processes. Model changes restart the Agent between turns; Worker configuration reloads after
 running executions drain. During a turn, Send becomes Stop: it aborts the model request,
 records a user stop, and waits for any Rulith call already sent without withdrawing it.
 Pause the Case or withdraw work before dispatch in Console to stop Board work.
-**Sign out and stop this computer** remains the global exit. Database tools load the
+**Sign out and stop this environment** remains the global exit. Database tools load the
 optional `pg` package only when used.
 
 ## Agent Runtime
@@ -677,7 +681,14 @@ must still be approved as its own versioned local Tool and governed Action.
 
 ### Connect a local MCP server
 
-The Local web page has **Worker tools · manage**, a single inventory for built-ins, manifest tools and selected MCP tools. Inspect contracts, edit native tool definitions or manage MCP services; built-in workspace availability uses its existing mode setting. Under **Add tools**, search the official MCP Registry, connect an existing service, declare a tool, or use a template such as Filesystem. MCP setup discovers and selects tools, then exports a credential-free Source definition for Console authorization. See [Local Worker tool management](docs/local-mcp-setup.md) for supported formats and boundaries. This batch is pending publication and requires the matching Gateway update.
+Open **This environment’s tools** in the workbench to inspect contracts, edit declared tools,
+or install and configure MCP services once for every Agent. Under **Add tools**, search the
+official MCP Registry, connect an existing service, declare a tool, or use a Filesystem template.
+Review each change and confirm it once; it applies after running work finishes. MCP discovery
+selects which tools the service contributes to the environment and exports a credential-free
+Source definition for Console authorization. Each Agent’s **Tools** page shows this shared
+inventory and its own file-tool mode. Script tools stay in that Agent’s own tool file.
+See [the environment’s tool library](docs/local-mcp-setup.md) for storage, keys and migration.
 
 Rulith's Worker is an outbound MCP client. It supports local **stdio** processes
 and **Streamable HTTP** endpoints, including initialization, session headers, JSON/SSE
@@ -694,7 +705,7 @@ copying only `rulith-worker.mjs` is insufficient.
    attest. Declare its access modes and versioned Tool references. A stdio Source's
    public access address can be a non-secret locator such as `stdio:local-mail`;
    its actual process configuration stays local. HTTP uses its non-secret endpoint.
-3. Declare the named remote Tool in the Worker manifest, select its Agent in the workbench and enable **Use this computer’s tools and files**,
+3. Declare the named remote Tool in the Worker manifest, select its Agent in the workbench and enable **Use this environment’s tools and files**,
    then bind and lock the Source and its required advertised Tools in Console.
    If Rulith also supplies the model, configure it and send the first message.
 4. Use the existing `rulith.mcp.discover@1` through a governed read Action to inspect

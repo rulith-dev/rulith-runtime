@@ -569,7 +569,7 @@ test('the chip says the filename and how far along it is, and nothing technical'
 })
 
 test('the page says where the files are and what reading them takes', async () => {
-  const copy = 'Files are kept on this computer. Reading them requires the Agent’s authorized tools. Content sent to your selected model follows its data permissions.'
+  const copy = 'Files are kept in this environment. Reading them requires the Agent’s authorized tools. Content sent to your selected model follows its data permissions.'
   assert.ok(localPage.includes(copy), 'the disclosure is the one that was agreed')
   const page = await load()
   assert.equal(page.$('attachnote').hidden, true, 'it appears where files are, not as permanent furniture')

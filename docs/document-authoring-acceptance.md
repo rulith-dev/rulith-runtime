@@ -18,7 +18,7 @@ material and still does not replace the signed-in browser journey.
 
 1. Start the installed `rulith` workbench, open its printed loopback URL, sign in if
    needed, and select the enabled QA Agent. Verify the account and Agent names before
-   configuring its default or per-Agent model. Enable **Use this computer’s tools and files**;
+   configuring its default or per-Agent model. Enable **Use this environment’s tools and files**;
    the first message starts the Agent automatically.
 2. Open **Document assistant**. Prepare the local checker and Source. Verify that the
    selected Agent, Connection, material area and permissions are shown. For this synthetic
