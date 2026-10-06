@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## 0.12.0 - unreleased
+## 0.12.0 - 2026-10-06
 
 - Worker: `RULITH_WORKER_RUN_TIMEOUT_SECONDS` sets how long a `run` Adapter may take (1 s to
   7 days; default 60). An invalid value stops the Worker at start with one message.
