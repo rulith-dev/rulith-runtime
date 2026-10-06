@@ -4,6 +4,17 @@ All notable changes to the local runtime are documented here.
 
 ## 0.12.0 - unreleased
 
+- Worker: `RULITH_WORKER_RUN_TIMEOUT_SECONDS` sets how long a `run` Adapter may take (1 s to
+  7 days; default 60). An invalid value stops the Worker at start with one message.
+- Worker: a lease renewal with no definite answer — including transport failures, HTTP 429 or
+  5xx, and unreadable or truncated responses — is retried with backoff inside the validity
+  window, measured from request send time with a safety margin. Claims and finished receipts
+  wait for renewal; a definite refusal or an expired window stops new claims. Work already run
+  still offers its receipt under the generation it was dispatched under for the Gateway to decide.
+- Worker: when the Board rejects a success receipt with `ingest_rejected`, and every earlier send
+  got a definite answer, the Worker sends one failure receipt (`result_not_recorded`) so the call
+  does not stay dispatched. The action already ran and is not repeated.
+
 - Tools live once in the environment. Add and edit tool definitions and MCP services under
   **This environment’s tools** (`~/.rulith/manager/library`). Every Agent using the environment
   sees all library tools; Console still decides which tools and Sources each Agent may use.

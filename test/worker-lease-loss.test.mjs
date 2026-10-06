@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Losing the line mid-work: what stops, and what the receipt still says.
+ * Losing the line mid-work: no new claim uses the lost lease, while completed work still
+ * offers a receipt under the generation it was dispatched under for the Gateway to decide.
  *
  * These arms exist because a green suite said the opposite. `RT-WK-LEASE-5` stopped the
  * child at the first warning, which is *before* the slow adapter returns — so it asserted
@@ -15,11 +16,8 @@
  *
  *   · nothing further is claimed once the line is gone — the leftovers stay dispatchable and
  *     come back to whoever holds the line, rather than being taken by a process that does not;
- *   · the work that did run reports under the identity it was **dispatched under**. A receipt
- *     that quietly drops its generation is this Worker awarding itself a permission it no
- *     longer has. Stating the captured identity truthfully is the Worker's job; deciding
- *     whether a late receipt may land is the Gateway's, and it cannot decide on a field that
- *     was not sent.
+ *   · work that did run still offers its receipt under the captured dispatch generation;
+ *     the Gateway decides whether to accept it after the Worker loses its lease.
  *
  * Nothing here re-executes anything. A receipt retry is the same bytes and the same identity
  * — one dispatch, one execution, one document sent more than once.
@@ -42,7 +40,14 @@ const SLOW_ADAPTER = {
 const SLOW_TOOL = { 'acme.slow@1': { adapter: 'run', sourceTypes: ['file'], entry: 'slow-adapter.mjs' } }
 const slowRow = () => slowActionRow()
 /** A lease whose heartbeat falls due while the slow adapter is still running. */
-const shortLease = (operation) => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 })
+const shortLease = (operation) => activeLease({ workerId: operation.workerId, windowMs: 14_000, heartbeatAfterMs: 200 })
+/** Identity carried on both the operation and the protected headers. */
+const identityOf = entry => ({
+  body: entry.operation.workerGeneration,
+  header: entry.headers['x-rulith-worker-generation'],
+  workerId: entry.operation.workerId,
+  workerIdHeader: entry.headers['x-rulith-worker'],
+})
 
 test('late same-generation Poll snapshots cannot roll back a renewed lease', () => {
   const current = { workerGeneration: 7, serverTime: '2026-09-28T10:00:01.000Z',
@@ -95,12 +100,12 @@ test('short empty Polls keep one lease renewed across the whole idle window', as
           refusals++
           return { status: 409, body: { accepted: false, errorCode: 'worker_lease_expired' } }
         }
-        if (!expires || Date.now() >= expires) { generation++; expires = Date.now() + 2400 }
+        if (!expires || Date.now() >= expires) { generation++; expires = Date.now() + 12_400 }
         return { delayMs: 25, body: { accepted: true, lease: lease(operation), payload: { work: [] } } }
       }
       if (operation.kind === 'RenewLease') {
         renewals++
-        expires = Date.now() + 2400
+        expires = Date.now() + 12_400
         return { body: { accepted: true, lease: lease(operation) } }
       }
       return { body: { accepted: true } }
@@ -120,10 +125,10 @@ test('repeated identical Poll snapshots cannot extend a locally expired lease', 
     reply: operation => {
       if (operation.kind === 'Poll') {
         if (!snapshot) {
-          snapshot = activeLease({ workerId: operation.workerId, windowMs: 2100, heartbeatAfterMs: 200 })
+          snapshot = activeLease({ workerId: operation.workerId, windowMs: 12_100, heartbeatAfterMs: 200 })
           firstLeaseAt = Date.now()
         }
-        const offer = Date.now() - firstLeaseAt >= 2700
+        const offer = Date.now() - firstLeaseAt >= 12_700
         if (offer && !offeredAt) offeredAt = Date.now()
         return { delayMs: 25, body: { accepted: true, lease: snapshot,
           payload: { work: offer ? [actionRow()] : [] } } }
@@ -133,7 +138,7 @@ test('repeated identical Poll snapshots cannot extend a locally expired lease', 
     },
     done: seen => seen.some(row => row.operation.kind === 'ClaimWork')
       || (offeredAt > 0 && Date.now() - offeredAt >= 350),
-    timeoutMs: 5000,
+    timeoutMs: 21_000,
   })
   assert.equal(run.timedOut, false, run.output)
   assert.ok(run.of('RenewLease').length >= 1, 'the duplicate snapshot never exercised renewal')
@@ -148,11 +153,11 @@ test('a generation change retires the old keeper before renewing the new lease',
       if (operation.kind === 'Poll') {
         if (++polls === 5) switched = true
         return { delayMs: 25, body: { accepted: true, lease: activeLease({ workerId: operation.workerId,
-          workerGeneration: switched ? 8 : 7, windowMs: 4000, heartbeatAfterMs: 200 }), payload: { work: [] } } }
+          workerGeneration: switched ? 8 : 7, windowMs: 14_000, heartbeatAfterMs: 200 }), payload: { work: [] } } }
       }
       if (operation.kind === 'RenewLease') return { body: { accepted: true,
         lease: activeLease({ workerId: operation.workerId, workerGeneration: operation.workerGeneration,
-          windowMs: 4000, heartbeatAfterMs: 200 }) } }
+          windowMs: 14_000, heartbeatAfterMs: 200 }) } }
       return { body: { accepted: true } }
     },
     done: seen => seen.some(row => row.operation.kind === 'RenewLease'
@@ -171,10 +176,10 @@ test('managed stop joins a pending renewal before releasing the lease', async ()
   let sentStop = false, releaseSeenAt = 0
   const run = await driveWorker({
     ipc: true,
-    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
+    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 14_000, heartbeatAfterMs: 200 }),
     reply: operation => operation.kind === 'Poll' ? { body: { accepted: true, payload: { work: [] } } }
       : operation.kind === 'RenewLease' ? { delayMs: 400, body: { accepted: true,
-        lease: activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }) } }
+        lease: activeLease({ workerId: operation.workerId, windowMs: 14_000, heartbeatAfterMs: 200 }) } }
         : operation.kind === 'ReleaseLease' ? { delayMs: 1800, body: { accepted: true } }
           : { body: { accepted: true } },
     done: (seen, _output, control) => {
@@ -197,14 +202,14 @@ test('a Poll already in flight cannot adopt a lease after managed stop begins', 
   let polls = 0, sentStop = false, releaseSeenAt = 0
   const run = await driveWorker({
     ipc: true,
-    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
+    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 14_000, heartbeatAfterMs: 200 }),
     reply: operation => {
       if (operation.kind === 'Poll') return ++polls === 1
         ? { body: { accepted: true, payload: { work: [] } } }
         : { delayMs: 1200, body: { accepted: true, payload: { work: [] } } }
       if (operation.kind === 'ReleaseLease') return { delayMs: 2500, body: { accepted: true } }
       if (operation.kind === 'RenewLease') return { body: { accepted: true,
-        lease: activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }) } }
+        lease: activeLease({ workerId: operation.workerId, windowMs: 14_000, heartbeatAfterMs: 200 }) } }
       return { body: { accepted: true } }
     },
     done: (seen, _output, control) => {
@@ -308,7 +313,7 @@ test('a refused renewal retires the keeper and the next Poll acquires without an
   let refused = false
   const run = await driveWorker({
     ipc: true, env: { RULITH_LOCAL_EVENTS: 'ipc' },
-    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
+    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 14_000, heartbeatAfterMs: 200 }),
     reply: operation => {
       if (operation.kind === 'Poll') return { delayMs: 25, body: { accepted: true, payload: { work: [] } } }
       if (operation.kind === 'RenewLease') {
@@ -351,14 +356,6 @@ test('a late Poll response cannot restore a lease refused by a concurrent renewa
   assert.equal(run.of('ClaimWork').length, 0, 'a late inbox answer must not resurrect execution authority')
 })
 
-/** The identity one hop stated, in both places it has to state it. */
-const identityOf = (entry) => ({
-  body: entry.operation.workerGeneration,
-  header: entry.headers['x-rulith-worker-generation'],
-  workerId: entry.operation.workerId,
-  workerIdHeader: entry.headers['x-rulith-worker'],
-})
-
 test('RT-WK-LOSS-1 a lost lease stops the rest of the batch, and the receipt keeps its own identity', async () => {
   // Root's counterexample, kept. Two items in one poll answer; the renewal is refused while
   // the first is executing; the run is driven until the batch drains.
@@ -396,9 +393,7 @@ test('RT-WK-LOSS-1 a lost lease stops the rest of the batch, and the receipt kee
   assert.deepEqual(reports.map((entry) => entry.operation.id), ['inv_slow'])
   assert.deepEqual(identityOf(reports[0]), {
     body: 7, header: '7', workerId: claims[0].operation.workerId, workerIdHeader: claims[0].operation.workerId,
-  }, 'the receipt for the execution that ran dropped the identity it was dispatched under')
-  assert.equal(reports[0].operation.workerGeneration, claims[0].operation.workerGeneration,
-    'the receipt and the claim for one execution state two different generations')
+  }, 'the already-run receipt must be offered under the generation it was dispatched under')
 
   // And the leftover is said out loud, as unclaimed rather than as done or as lost.
   assert.match(run.output, /Stopping this batch with 1 item\(s\) unclaimed/)
@@ -412,7 +407,7 @@ test('RT-WK-LOSS-2 the receipt retry after a lost lease is the same bytes and th
   let receipts = 0
   const run = await driveWorker({
     reply: (operation) => {
-      if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [slowRow()] } } } : HOLD
+      if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
       if (operation.kind === 'RenewLease') return { body: { accepted: false, errorCode: 'worker_lease_lost' } }
       if (operation.kind === 'ReportWork') return ++receipts <= 2 ? RESET : { body: { accepted: true, revision: 'b13' } }
       return { body: { accepted: true, revision: 'b12' } }
@@ -424,20 +419,20 @@ test('RT-WK-LOSS-2 the receipt retry after a lost lease is the same bytes and th
     timeoutMs: 30_000,
   })
   assert.equal(run.timedOut, false, run.output)
-  assert.equal(run.ran('slow'), 1, 'the ladder re-ran the executor instead of resending its receipt')
+  assert.equal(run.ran('ship'), 1, 'the ladder must never re-run the executor')
 
   const attempts = run.of('ReportWork')
   assert.ok(attempts.length >= 3, `the ladder did not retry: ${attempts.length} attempt(s)`)
   const [first] = attempts
   for (const attempt of attempts) {
-    assert.equal(attempt.raw, first.raw, 'a retry changed the request bytes, which would key a different idempotency slot')
-    assert.deepEqual(identityOf(attempt), identityOf(first), 'a retry changed the identity it reported under')
+    assert.equal(attempt.raw, first.raw, 'a retry changed the receipt request bytes')
+    assert.deepEqual(identityOf(attempt), identityOf(first), 'a retry changed the dispatch identity')
   }
   assert.equal(first.operation.workerGeneration, 7, 'the receipt did not state the generation it was dispatched under')
   assert.match(run.output, /receipt committed/)
 })
 
-test('RT-WK-LOSS-3 a long verification keeps its lease alive, and keeps its identity when it goes', async () => {
+test('RT-WK-LOSS-3 a long verification renews its lease and offers its report under the original generation after loss', async () => {
   // Verification claims too, and its probe is a long call. Before this arm it renewed
   // nothing: a probe slower than one lease window lost the line silently, and then reported
   // as a process that had never held one.
@@ -452,7 +447,7 @@ test('RT-WK-LOSS-3 a long verification keeps its lease alive, and keeps its iden
         // "never renewed and lost it anyway" — and the second is refused.
         renewals += 1
         return renewals === 1
-          ? { body: { accepted: true, lease: activeLease({ workerId: operation.workerId, windowMs: 6000, heartbeatAfterMs: 200 }) } }
+          ? { body: { accepted: true, lease: activeLease({ workerId: operation.workerId, windowMs: 16_000, heartbeatAfterMs: 200 }) } }
           : { body: { accepted: false, errorCode: 'worker_lease_lost' } }
       }
       return { body: { accepted: true, revision: 'b12' } }
@@ -472,10 +467,9 @@ test('RT-WK-LOSS-3 a long verification keeps its lease alive, and keeps its iden
   assert.ok(renewals >= 2, `a long verification renewed ${renewals} time(s); it must keep its lease alive while it runs`)
   assert.equal(run.ran('check'), 1)
 
-  const [report] = run.of('ReportWork')
-  assert.ok(report, 'the verification produced no report at all')
-  assert.equal(report.operation.workerGeneration, 7, 'the verification report dropped the generation it was claimed under')
-  assert.equal(report.headers['x-rulith-worker-generation'], '7')
+  assert.equal(run.of('ReportWork').length, 1, 'the completed verification must still offer its report')
+  assert.equal(run.of('ReportWork')[0].operation.workerGeneration, 7)
+  assert.equal(run.of('ReportWork')[0].headers['x-rulith-worker-generation'], '7')
   assert.match(run.output, /The lease was lost while verification work/)
 })
 
@@ -494,7 +488,7 @@ test('RT-WK-LOSS-4 a long material fetch does the same, and stops the batch behi
       if (operation.kind === 'RenewLease') {
         renewals += 1
         return renewals === 1
-          ? { body: { accepted: true, lease: activeLease({ workerId: operation.workerId, windowMs: 6000, heartbeatAfterMs: 200 }) } }
+          ? { body: { accepted: true, lease: activeLease({ workerId: operation.workerId, windowMs: 16_000, heartbeatAfterMs: 200 }) } }
           : { body: { accepted: false, errorCode: 'worker_lease_lost' } }
       }
       return { body: { accepted: true, revision: 'b12' } }
@@ -515,9 +509,9 @@ test('RT-WK-LOSS-4 a long material fetch does the same, and stops the batch behi
   assert.equal(run.ran('fetch'), 1, 'the second material request was fetched after the line was lost')
   assert.equal(run.of('ClaimWork').length, 0, 'material work claims nothing')
 
-  const [report] = run.of('ReportWork')
-  assert.ok(report, 'the material fetch produced no report')
-  assert.equal(report.operation.workerGeneration, 7, 'the material report dropped the generation that fetched it')
+  assert.equal(run.of('ReportWork').length, 1, 'the completed fetch must still offer its report')
+  assert.equal(run.of('ReportWork')[0].operation.workerGeneration, 7)
+  assert.equal(run.of('ReportWork')[0].headers['x-rulith-worker-generation'], '7')
   assert.match(run.output, /Stopping this batch with 1 item\(s\) unclaimed/)
 })
 
@@ -545,9 +539,8 @@ test('RT-WK-LOSS-5 a rejected credential during renewal is not an unhandled reje
   assert.doesNotMatch(run.output, /UnhandledPromiseRejection|ERR_UNHANDLED_REJECTION|unhandledRejection/,
     'a background renewal took the process down with an unhandled rejection')
   assert.equal(run.ran('slow'), 1)
-  const [report] = run.of('ReportWork')
-  assert.ok(report, 'the execution ran and its receipt was never sent')
-  assert.equal(report.operation.workerGeneration, 7)
+  assert.equal(run.of('ReportWork').length, 1, 'the completed action must still offer its receipt')
+  assert.equal(run.of('ReportWork')[0].operation.workerGeneration, 7)
   assert.match(run.output, /Renewals stopped/)
   assert.ok(run.messages.some(message => message.event?.type === 'availability' && message.event.state === 'needs setup'))
 })
@@ -576,5 +569,6 @@ test('RT-WK-LOSS-6 stopping mid-batch leaves the rest unclaimed rather than half
   assert.equal(run.timedOut, false, run.output)
   assert.deepEqual(run.of('ClaimWork').map((entry) => entry.operation.id), ['inv_slow'])
   assert.equal(run.ran('ship'), 0)
+  assert.equal(run.of('ReportWork').length, 1, 'the in-flight action must report before the batch stops')
   assert.match(run.output, /Stopping this batch with 1 item\(s\) unclaimed/)
 })

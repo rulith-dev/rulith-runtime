@@ -1732,6 +1732,9 @@ function runtimeEnvNamesSupported(root = ROOT) {
     const source = codeOnly(readFileSync(file, 'utf8'))
     for (const m of source.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1])
     for (const m of source.matchAll(/process\.env\[\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
+    // A checked helper may accept a supplied environment object, as the Worker's
+    // run-timeout parser does, instead of reading process.env directly.
+    for (const m of source.matchAll(/\benv\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1])
     // The Agent's numeric knobs are read through one checked reader, by name.
     for (const m of source.matchAll(/\benvNumber\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1])
     // A name written into a child's environment as an object key — Rulith Local's spawns.

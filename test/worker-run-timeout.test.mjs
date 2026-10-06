@@ -1,0 +1,248 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { performance } from 'node:perf_hooks'
+import { leaseIsLive, parseLease, runAdapterTimeoutMs } from '../worker/rulith-worker.mjs'
+import { DONE, HOLD, RESET, actionRow, activeLease, driveWorker, slowActionRow } from './support/worker-harness.mjs'
+
+test('a run Adapter keeps the 60 s stop unless this Worker sets RULITH_WORKER_RUN_TIMEOUT_SECONDS', () => {
+  assert.equal(runAdapterTimeoutMs({}), 60_000)
+  assert.equal(runAdapterTimeoutMs({ RULITH_WORKER_RUN_TIMEOUT_SECONDS: '' }), 60_000)
+  assert.equal(runAdapterTimeoutMs({ RULITH_WORKER_RUN_TIMEOUT_SECONDS: '3600' }), 3_600_000)
+  assert.equal(runAdapterTimeoutMs({ RULITH_WORKER_RUN_TIMEOUT_SECONDS: '604800' }), 604_800_000)
+  for (const bad of ['0', '-5', '1.5', '60s', '604801', 'NaN'])
+    assert.throws(() => runAdapterTimeoutMs({ RULITH_WORKER_RUN_TIMEOUT_SECONDS: bad }), /whole number of seconds/)
+})
+
+test('an invalid run timeout refuses startup with one message and exit code 2', () => {
+  const child = spawnSync(process.execPath, ['worker/rulith-worker.mjs'], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8',
+    env: { ...process.env, RULITH_WORKER_RUN_TIMEOUT_SECONDS: '60s' },
+  })
+  assert.equal(child.status, 2)
+  assert.equal(child.stdout, '')
+  assert.equal(child.stderr.trim(), 'RULITH_WORKER_RUN_TIMEOUT_SECONDS must be a whole number of seconds from 1 to 604800')
+})
+
+test('a late renewal answer cannot extend leaseIsLive beyond the Gateway expiry', () => {
+  const startedAt = performance.now() - 9000
+  const answer = activeLease({ workerId: 'wkr_late_renewal', windowMs: 60_000 })
+  const held = parseLease(answer, startedAt)
+  assert.equal(held.heldSince, startedAt)
+  assert.equal(leaseIsLive(held, startedAt + 59_999), true)
+  assert.equal(leaseIsLive(held, startedAt + 60_000), false)
+  assert.equal(leaseIsLive(held, startedAt + 65_000), false)
+})
+
+test('a wall clock jump forward expires the lease even if the monotonic clock barely moved', () => {
+  const startedAt = performance.now()
+  const wallStartedAt = Date.now()
+  const held = parseLease(activeLease({ workerId: 'wkr_suspender', windowMs: 60_000 }), startedAt, wallStartedAt)
+  assert.equal(held.wallClockSince, wallStartedAt)
+  assert.equal(leaseIsLive(held, startedAt + 1000, wallStartedAt + 60_000), false)
+})
+
+const slowAdapters = {
+  'slow-adapter.mjs': "import { appendFileSync } from 'node:fs'\n"
+    + "appendFileSync(process.env.P2_EFFECT_LOG, 'slow\\n')\n"
+    + "await new Promise(done => setTimeout(done, 1400))\n"
+    + "process.stdout.write(JSON.stringify({ rows: [] }))\n",
+}
+const slowTools = { 'acme.slow@1': { adapter: 'run', sourceTypes: ['file'], entry: 'slow-adapter.mjs' } }
+// A 5 s window: renewal must be confirmed by 3.75 s (a quarter of a window shorter than 40 s is kept in reserve).
+const shortLease = operation => activeLease({ workerId: operation.workerId, windowMs: 5_000, heartbeatAfterMs: 200 })
+
+for (const scenario of ['recover', 'expire', '409', 'timeout', 'late', '503-recover', '429-recover', '503-expire', 'truncated-recover']) {
+  test(`renewal ${scenario}: finished receipts wait for pending confirmation`, async () => {
+    let polls = 0, renewals = 0, recovered = false
+    const run = await driveWorker({
+      lease: shortLease,
+      extraAdapters: slowAdapters, extraTools: slowTools,
+      timeoutMs: 9000,
+      reply: (operation) => {
+        if (operation.kind === 'Poll') return ++polls === 1
+          ? { body: { accepted: true, payload: { work: [slowActionRow(), actionRow()] } } } : HOLD
+        if (operation.kind === 'RenewLease') {
+          renewals++
+          if (scenario === '409') return { status: 409, body: { accepted: false, errorCode: 'worker_lease_superseded' } }
+          if (scenario === 'timeout') return HOLD
+          if (scenario === 'late') return { delayMs: 4200, body: { accepted: true, lease: shortLease(operation) } }
+          if (scenario === '503-recover' && renewals === 1) return { status: 503, body: { errorCode: 'temporarily_unavailable' } }
+          if (scenario === '429-recover' && renewals === 1) return { status: 429, body: { errorCode: 'rate_limited' } }
+          if (scenario === '503-expire') return { status: 503, body: { errorCode: 'temporarily_unavailable' } }
+          if (scenario === 'truncated-recover' && renewals === 1) return { partial: '{"accepted":true' }
+          if (scenario === 'expire' || renewals === 1) return RESET
+          recovered = true
+          return { body: { accepted: true, lease: shortLease(operation) } }
+        }
+        if (operation.kind === 'ClaimWork' && operation.id !== 'inv_slow') {
+          assert.equal(recovered, true, 'the Worker claimed before renewal confirmed its lease')
+        }
+        if (operation.kind === 'ReportWork' && ['recover', '503-recover', '429-recover', 'truncated-recover'].includes(scenario)) {
+          assert.equal(recovered, true, 'the Worker reported before renewal confirmed its lease')
+        }
+        return { body: { accepted: true } }
+      },
+      done: seen => seen.filter(row => row.operation.kind === 'Poll').length >= 2,
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.ran('slow'), 1, 'renewal must never repeat the external action')
+    if (['recover', '503-recover', '429-recover', 'truncated-recover'].includes(scenario)) {
+      assert.ok(renewals >= 2)
+      assert.equal(run.of('ReportWork').length, 2)
+      assert.equal(run.ran('ship'), 1, 'the confirmed lease should remain usable')
+      assert.match(run.output, /receipt committed/)
+      for (const row of [...run.of('ClaimWork'), ...run.of('ReportWork')]) {
+        assert.equal(row.operation.workerGeneration, 7)
+        assert.equal(row.headers['x-rulith-worker-generation'], '7')
+      }
+    } else {
+      const reports = run.of('ReportWork')
+      assert.equal(reports.length, 1, 'the already-run slow item must be offered once after renewal is refused or expires')
+      assert.equal(reports[0].operation.id, 'inv_slow')
+      assert.equal(reports[0].operation.workerGeneration, 7)
+      assert.equal(reports[0].headers['x-rulith-worker-generation'], '7')
+      assert.equal(run.of('ClaimWork').length, 1)
+      assert.equal(run.ran('ship'), 0)
+      assert.match(run.output, /Stopping this batch with 1 item\(s\) unclaimed/)
+      if (scenario === 'expire' || scenario === '503-expire') assert.ok(renewals >= 2, 'unavailable answers should retry until the safe deadline')
+      else assert.equal(renewals, 1, 'a refusal or request exceeding the window must not start another renewal')
+    }
+  })
+}
+
+const resultFacts = [{ predicate: 'demo.recorded', args: { value: 7 } }]
+for (const errorCode of ['ingest_rejected', 'bad_command', 'not_claimer', 'worker_lease_expired', 'worker_fenced', 'already_reported']) {
+  test(`receipt rejection ${errorCode}: only result-recording failures get one failure receipt`, async () => {
+    let polls = 0
+    const teaching = 'Rejected secret fact value: PRIVATE_RESULT_123. ' + 'x'.repeat(400)
+    const run = await driveWorker({
+      extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'\n"
+        + "appendFileSync(process.env.P2_EFFECT_LOG, 'ship\\n')\n"
+        + "process.stdout.write(JSON.stringify({ rows: [{ value: 7 }] }))\n" },
+      reply: (operation, seen) => {
+        if (operation.kind === 'Poll') return ++polls === 1
+          ? { body: { accepted: true, payload: { work: [actionRow({ toolSpec: JSON.stringify({
+            impl: 'worker-tool', exec: 'acme.ship@1', kind: 'act', params: {}, sourceTypes: ['file'],
+            returns: [{ predicate: 'demo.recorded', args: { value: '$value' } }],
+          }) })] } } } : HOLD
+        if (operation.kind === 'ReportWork') return seen.filter(row => row.operation.kind === 'ReportWork').length === 1
+          ? { body: { accepted: false, errorCode, teaching } } : { body: { accepted: true } }
+        return { body: { accepted: true } }
+      },
+      done: (_seen, output) => DONE.action.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.ran('ship'), 1)
+    const reports = run.of('ReportWork')
+    assert.deepEqual(reports[0].operation.facts, resultFacts)
+    const fallback = errorCode === 'ingest_rejected'
+    assert.equal(reports.length, fallback ? 2 : 1)
+    if (fallback) {
+      const first = reports[0].operation, last = reports[1].operation
+      assert.equal(first.ok, true)
+      assert.equal(last.ok, false)
+      assert.equal(last.id, first.id)
+      assert.equal(last.executionGrant, first.executionGrant)
+      assert.equal(last.workerGeneration, first.workerGeneration)
+      assert.equal(last.result, '')
+      assert.equal(last.facts, undefined)
+      assert.equal(last.artifacts, undefined)
+      assert.equal(last.reason, `result_not_recorded: ${errorCode}. The Board did not record this result; the action already ran; do not repeat it.`)
+      assert.doesNotMatch(run.output, /PRIVATE_RESULT_123|executor succeeded/)
+      assert.match(run.output, /result not recorded; failure receipt sent/)
+      assert.match(run.output, /receipt committed/)
+    }
+  })
+}
+
+for (const prior of ['HTTP', 'reset', 'truncated body']) {
+  const uncertain = prior !== 'HTTP'
+  test(`ingest rejection after ${prior} retry preserves receipt history`, async () => {
+    let polls = 0, reports = 0
+    const run = await driveWorker({
+      ipc: true, env: { RULITH_LOCAL_EVENTS: 'ipc' },
+      reply: operation => {
+        if (operation.kind === 'Poll') return ++polls === 1
+          ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+        if (operation.kind === 'ReportWork') {
+          if (++reports === 1) return prior === 'reset' ? RESET
+            : prior === 'truncated body' ? { partial: '{"accepted":true' }
+              : { status: 503, text: 'Unavailable' }
+          if (reports === 2) return { body: { accepted: false, errorCode: 'ingest_rejected', teaching: 'PRIVATE_RESULT_123' } }
+          return { body: { accepted: true } }
+        }
+        return { body: { accepted: true } }
+      },
+      done: (_seen, _output, { messages }) => messages.some(message => message.event?.type === 'reported'),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.ran('ship'), 1)
+    const receipts = run.of('ReportWork')
+    assert.equal(receipts.length, uncertain ? 2 : 3)
+    assert.equal(receipts[0].raw, receipts[1].raw, 'success retries must stay byte-identical')
+    const event = run.messages.find(message => message.event?.type === 'reported').event
+    if (uncertain) {
+      assert.equal(event.landed, false)
+      assert.equal(event.failureReceiptSent, undefined)
+      assert.ok(receipts.every(row => row.operation.ok === true))
+    } else {
+      assert.equal(receipts[2].operation.ok, false)
+      assert.equal(event.ok, false)
+      assert.equal(event.resultRecorded, false)
+      assert.equal(event.failureReceiptSent, true)
+      assert.equal(event.result, undefined)
+      assert.match(event.reason, /The Board did not record this result/)
+    }
+    assert.doesNotMatch(JSON.stringify(run.messages), /PRIVATE_RESULT_123/)
+  })
+}
+
+test('a rejected fallback failure receipt is left for reconciliation without another submission', async () => {
+  let polls = 0
+  const run = await driveWorker({
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1
+        ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+      if (operation.kind === 'ReportWork') return { body: { accepted: false, errorCode: 'ingest_rejected' } }
+      return { body: { accepted: true } }
+    },
+    done: (_seen, output) => DONE.action.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.deepEqual(run.of('ReportWork').map(row => row.operation.ok), [true, false])
+  assert.match(run.output, /receipt not committed \(Board rejected: ingest_rejected\)/)
+})
+
+test('bad_command without result facts does not authorize a fallback receipt', async () => {
+  let polls = 0
+  const run = await driveWorker({
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1
+        ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+      if (operation.kind === 'ReportWork') return { body: { accepted: false, errorCode: 'bad_command' } }
+      return { body: { accepted: true } }
+    },
+    done: (_seen, output) => DONE.action.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.of('ReportWork').length, 1)
+  assert.equal(run.of('ReportWork')[0].operation.ok, true)
+})
+
+test('a rejected executor failure receipt does not trigger another failure receipt', async () => {
+  let polls = 0
+  const run = await driveWorker({
+    extraAdapters: { 'ship-adapter.mjs': 'process.exit(1)\n' },
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1
+        ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+      if (operation.kind === 'ReportWork') return { body: { accepted: false, errorCode: 'ingest_rejected' } }
+      return { body: { accepted: true } }
+    },
+    done: (_seen, output) => DONE.action.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.of('ReportWork').length, 1)
+  assert.equal(run.of('ReportWork')[0].operation.ok, false)
+})

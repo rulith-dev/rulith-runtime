@@ -532,6 +532,10 @@ $env:RULITH_WORKSPACE_TOOLS = 'read-write' # optional; bounded read is the defau
 node worker/rulith-worker.mjs
 ```
 
+`RULITH_WORKER_RUN_TIMEOUT_SECONDS` optionally sets the maximum time for a `run` Adapter
+in whole seconds from `1` to `604800` (7 days); the default is `60`. An invalid value stops
+the Worker at startup.
+
 Each work item names a governed file Source bound to this Agent Connection and configured
 with an allowed root directory. Presenting a Tool never authorizes it: a Tool is usable only
 while it is locked on this Connection in Console.
@@ -553,10 +557,13 @@ Nothing happens without a **confirmed active lease**. Without one this Worker cl
 work, executes no Tool and changes nothing about what it advertises; with one, every hop
 states the instance and the fencing generation it holds, in the two protected headers and in
 the operation. A long execution keeps its lease alive with `RenewLease`, which renews only
-the lease already held and never acquires one — a refused or unreachable renewal stops this
-instance taking further work rather than assuming it still holds anything. Shutdown releases
-the lease, which says this instance is finished and never that an invocation already
-dispatched did not happen.
+the lease already held and never acquires one. A definite refusal ends that lease; transport
+failures, HTTP 429 or 5xx responses, and unreadable answers are retried with backoff while its
+window remains. Claims and finished receipts wait for a pending renewal. Once the lease is lost,
+this instance claims no more work, while any work that already ran is still reported under the
+generation it was dispatched under for the Gateway to decide. Shutdown releases the lease,
+which says this instance is finished and never that an invocation already dispatched did not
+happen.
 
 A dispatched action row is checked against the contract's own **closed shape** before anything
 is claimed: every mandatory field present, each of the stated kind, and nothing else carried

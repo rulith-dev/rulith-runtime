@@ -19,6 +19,7 @@
  *                        only its secret material (a token, headers, a database DSN at the
  *                        granted address): never what the Source is or where or how it connects
  *   RULITH_WORKSPACE_TOOLS   Enable fixed workspace Tools: read or read-write
+ *   RULITH_WORKER_RUN_TIMEOUT_SECONDS  How long a run Adapter may take (seconds; default 60)
  *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
  *
@@ -79,6 +80,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { lstat, mkdir, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { performance } from 'node:perf_hooks'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -696,6 +698,14 @@ class PollRefusedError extends Error {
   }
 }
 
+const RUN_ADAPTER_TIMEOUT_MS = (() => {
+  try { return runAdapterTimeoutMs() } catch (error) {
+    if (!IS_MAIN) throw error
+    console.error(error.message)
+    process.exit(2)
+  }
+})()
+
 if (IS_MAIN && (!CONNECTION_ID || !CONNECTION_KEY)) {
   console.error('Missing RULITH_CONNECTION / RULITH_CONNECTION_KEY. Register a Connection in Console; its key is shown once.')
   process.exit(2)
@@ -1135,13 +1145,18 @@ if (IS_MAIN) {
  * `identity` is normally the lease this process holds right now. A receipt is the one caller
  * that passes something else: it states the generation the execution was *dispatched under*,
  * captured at claim time, because that is the identity the authority granted and the one the
- * Gateway has to judge. Reading the live lease there would silently drop the generation from
- * a receipt whose lease lapsed mid-execution — the report would arrive looking like a hop
- * from a process that never held a line, which is the Worker quietly awarding itself a
- * permission it no longer has. Whether a late receipt may land is the Gateway's to decide;
- * stating it truthfully is this Worker's.
+ * Gateway has to judge. A pending renewal must settle before any claim or report; after a
+ * loss, a report still carries that captured generation for the Gateway to decide.
  */
-async function work(operation, identity = lease) {
+async function work(operation, identity = lease, { signal } = {}) {
+  if (operation.kind === 'ClaimWork' || operation.kind === 'ReportWork') {
+    await keepLeaseAlive()()
+    if (operation.kind === 'ClaimWork'
+      && (!leaseIsLive() || identity === undefined || lease.workerGeneration !== identity.workerGeneration)) {
+      return { accepted: false, errorCode: 'worker_lease_lost',
+        teaching: 'No claim was sent: this Worker no longer holds the confirmed dispatch lease.' }
+    }
+  }
   const identified = {
     ...operation,
     workerId: WORKER_ID,
@@ -1156,12 +1171,33 @@ async function work(operation, identity = lease) {
       ...(identity === undefined ? {} : { [WORKER_HEADER_GENERATION]: String(identity.workerGeneration) }),
     },
     body: JSON.stringify({ operation: identified }),
+    signal,
   })
   // A body that is not one JSON object (JSON null, an array, bad JSON) says nothing; reading
   // fields off it must not turn a 401 into an endless "polling failed" loop.
-  const parsed = await r.json().catch(() => undefined)
+  const parsed = await r.json().catch(error => {
+    // A truncated response is transport-uncertain even if its headers arrived.
+    // Complete non-JSON HTTP answers still take the existing unchanged retry path.
+    const definiteRenewalRefusal = r.status >= 400 && r.status < 500 && r.status !== 429
+    if (operation.kind === 'RenewLease' && !definiteRenewalRefusal) throw error
+    if (operation.kind === 'ReportWork' && r.status !== 401 && !(error instanceof SyntaxError)) throw error
+    return undefined
+  })
   const j = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   if (r.status === 401) throw new CredentialRejectedError(j.teaching, j.reason, j.requiredClient)
+  if (operation.kind === 'RenewLease') {
+    // Rate limits and server-side failures cannot tell this Worker that its lease was
+    // refused. Leave the lease in place while renewLease retries inside its safe window.
+    if (r.status === 429 || (!r.ok && !(r.status >= 400 && r.status < 500))) {
+      throw new Error(`RenewLease got no definite answer (HTTP ${r.status})`)
+    }
+    // A client refusal is definitive even when its body is unreadable; 401 was handled above.
+    if (r.status >= 400 && r.status < 500) return { ...j, lease: undefined }
+    if (j.accepted === false) {
+      if (typeof j.errorCode === 'string' && j.errorCode.trim() !== '') return { ...j, lease: undefined }
+      throw new Error('RenewLease returned an incomplete refusal')
+    }
+  }
   // Poll refusal is a readiness failure and must never masquerade as an empty
   // queue. Mutating calls deliberately return their body/status to the caller:
   // ReportWork owns byte-identical transport retry after the executor ran.
@@ -1538,6 +1574,22 @@ export function adapterEnv(base = process.env, pass) {
  */
 class ResultDeliveryError extends Error {}
 
+/**
+ * How long a `run` Adapter may take before this Worker stops it: 60 s unless the operator sets
+ * RULITH_WORKER_RUN_TIMEOUT_SECONDS (1 s to 7 days) on this Worker. It is this computer's operating
+ * setting, like the Worker root: it never travels in a work item or a Tool advertisement, and a
+ * value that is not a whole number of seconds in range is refused at start, not silently replaced.
+ */
+export function runAdapterTimeoutMs(env = process.env) {
+  const raw = env.RULITH_WORKER_RUN_TIMEOUT_SECONDS
+  if (raw === undefined || raw === '') return 60_000
+  const seconds = Number(raw)
+  if (!/^[0-9]+$/.test(String(raw)) || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > 7 * 86_400) {
+    throw new Error('RULITH_WORKER_RUN_TIMEOUT_SECONDS must be a whole number of seconds from 1 to 604800')
+  }
+  return seconds * 1000
+}
+
 function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
   return new Promise((finish, reject) => {
     const argv = [...(t.args ?? []), ...(t.passArgs === true ? [JSON.stringify(args ?? {})] : [])]
@@ -1568,7 +1620,7 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       ...(source.sourceType ? { [ADAPTER_CONTEXT.sourceType]: String(source.sourceType) } : {}),
     }
     const maxBuffer = Number.isSafeInteger(context.resultBytes) && context.resultBytes > 0 ? context.resultBytes : 1_048_576
-    execFile(t.cmd, argv, { timeout: 60_000, env, maxBuffer }, (err, stdout) => {
+    execFile(t.cmd, argv, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout) => {
       if (err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return reject(new ResultDeliveryError('adapter_output_exceeds_object_budget'))
       if (err) return reject(new Error(String(err.message)))
       // Capture stays bounded; Artifact routing sees the complete result, never a silent prefix.
@@ -1586,6 +1638,8 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
  * it is what the Gateway most recently confirmed, judged only by the Gateway.
  */
 let lease
+// Retain the last fence/window even after loss so an acquiring Poll cannot replay it.
+let lastLeaseSnapshot
 let leaseKeeper
 let leaseClosing = false
 
@@ -1600,7 +1654,7 @@ function retireLeaseKeeper() {
 
 /** One second is the local floor on renewal, so a tiny window cannot become a busy loop. */
 const RENEW_FLOOR_MS = 1000
-
+const RENEW_ATTEMPT_TIMEOUT_MS = 10_000
 /**
  * A canonical RFC3339 UTC instant that is also a real one.
  *
@@ -1629,7 +1683,7 @@ function utcInstant(text) {
  * that fills it leaves no room to renew, so the first renewal would already be due at
  * expiry.
  */
-export function parseLease(value) {
+export function parseLease(value, startedAt = performance.now(), wallStartedAt = Date.now()) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const allowed = ['workerId', 'workerGeneration', 'expiresAt', 'serverTime', 'heartbeatAfterMs']
   if (Object.keys(value).some((key) => !allowed.includes(key))) return undefined
@@ -1648,9 +1702,10 @@ export function parseLease(value) {
     serverTime: value.serverTime,
     expiresAt: value.expiresAt,
     heartbeatAfterMs,
-    // Measured against this machine's clock at the moment the answer arrived, so a renewal
-    // is scheduled from the window the server described rather than from a shared clock.
-    heldSince: Date.now(),
+    // Both clocks start before sending, conservatively including travel and Gateway
+    // processing time. A delayed answer cannot extend the Gateway's window.
+    heldSince: startedAt,
+    wallClockSince: wallStartedAt,
   }
 }
 
@@ -1668,9 +1723,9 @@ export function leaseSnapshotRegresses(current, next) {
     && Date.parse(next.expiresAt) <= Date.parse(current.expiresAt))
 }
 
-function adoptLease(value, why) {
+function adoptLease(value, why, startedAt, wallStartedAt) {
   if (leaseClosing) return undefined
-  const next = parseLease(value)
+  const next = parseLease(value, startedAt, wallStartedAt)
   if (next === undefined) {
     if (lease !== undefined) {
       console.error(`⚠ ${why}: the answer carried no usable active lease, so this Worker is holding none.`
@@ -1687,14 +1742,15 @@ function adoptLease(value, why) {
     lease = undefined
     return undefined
   }
-  if (lease !== undefined && next.workerGeneration < lease.workerGeneration) {
-    console.error(`⚠ ${why}: generation ${next.workerGeneration} is older than the ${lease.workerGeneration} this process holds.`
+  const previous = lease ?? lastLeaseSnapshot
+  if (previous !== undefined && next.workerGeneration < previous.workerGeneration) {
+    console.error(`⚠ ${why}: generation ${next.workerGeneration} is older than the ${previous.workerGeneration} this process last held.`
       + ' A fence only moves forward, so this answer is a late one from a generation that has been replaced.')
     retireLeaseKeeper()
     lease = undefined
     return undefined
   }
-  if (leaseSnapshotRegresses(lease, next)) {
+  if (leaseSnapshotRegresses(previous, next)) {
     // A Poll can return after a concurrent RenewLease. An older or identical
     // same-generation snapshot cannot reset the locally measured lease window.
     return lease
@@ -1702,6 +1758,7 @@ function adoptLease(value, why) {
   const replaced = lease !== undefined && next.workerGeneration > lease.workerGeneration
   if (replaced) retireLeaseKeeper()
   lease = next
+  lastLeaseSnapshot = next
   keepLeaseAlive()
   if (replaced) {
     wev('lease', { state: 'generation-advanced', workerGeneration: next.workerGeneration })
@@ -1709,44 +1766,80 @@ function adoptLease(value, why) {
   return lease
 }
 
+const leaseWindowMs = held => Date.parse(held.expiresAt) - Date.parse(held.serverTime)
+const leaseElapsedMs = (held, now = performance.now(), wallNow = Date.now()) => Math.max(
+  now - held.heldSince,
+  Number.isFinite(held.wallClockSince) ? wallNow - held.wallClockSince : 0,
+)
+
 /** Whether the lease this process holds is still inside the window the Gateway described. */
-const leaseIsLive = () => lease !== undefined
-  && Date.now() - lease.heldSince < Date.parse(lease.expiresAt) - Date.parse(lease.serverTime)
+export const leaseIsLive = (held = lease, now = performance.now(), wallNow = Date.now()) => held !== undefined
+  && leaseElapsedMs(held, now, wallNow) < leaseWindowMs(held)
+
+/** Remaining time before the reserved renewal attempt must be finished. */
+const renewRemainingMs = (held, now = performance.now(), wallNow = Date.now()) => {
+  const windowMs = leaseWindowMs(held)
+  const marginMs = Math.min(RENEW_ATTEMPT_TIMEOUT_MS, Math.floor(windowMs / 4))
+  return windowMs - marginMs - leaseElapsedMs(held, now, wallNow)
+}
 
 /** When the next renewal is due, from the server's own heartbeat hint. */
-const renewDueInMs = () => (lease === undefined ? undefined
-  : Math.max(RENEW_FLOOR_MS, lease.heartbeatAfterMs - (Date.now() - lease.heldSince)))
+const renewDueInMs = () => {
+  if (lease === undefined) return undefined
+  const now = performance.now(), wallNow = Date.now()
+  const elapsed = leaseElapsedMs(lease, now, wallNow)
+  return Math.max(0, Math.min(renewRemainingMs(lease, now, wallNow),
+    Math.max(RENEW_FLOOR_MS, lease.heartbeatAfterMs - elapsed)))
+}
 
 /**
  * Renew the lease this process holds — and only that one.
  *
  * `RenewLease` never acquires and never revives: a Worker whose lease has gone must stop,
- * not re-enter through the renewal door. A refusal or an unreadable answer therefore drops
- * the lease rather than keeping the old one alive locally, and an unreachable Gateway is
- * treated the same way, because a lease this process cannot confirm is one it does not have.
+ * not re-enter through the renewal door. A definite refusal drops the lease. An unavailable,
+ * unreadable or truncated answer is uncertain: retry inside the confirmed window, with a
+ * safety margin, while callers wait on the keeper's in-flight promise.
  */
 async function renewLease(keeper) {
   if (keeper.stopped || leaseKeeper !== keeper || lease === undefined || leaseClosing) return undefined
   const held = lease
-  let answer
-  try {
-    answer = await work({ kind: 'RenewLease' }, held)
-  } catch (e) {
-    if (keeper.stopped || leaseKeeper !== keeper || leaseClosing) return undefined
-    if (e instanceof CredentialRejectedError) throw e
-    console.error(`⚠ Renewing the lease failed (${String(e?.message ?? e).slice(0, 160)}).`
-      + ' This Worker stops taking work: a lease it cannot confirm is a lease it does not hold.')
+  const current = () => !keeper.stopped && leaseKeeper === keeper && !leaseClosing
+    && lease?.workerGeneration === held.workerGeneration
+  const expire = () => {
+    console.error('⚠ Renewing the lease could not be confirmed inside its validity window. This Worker stops taking work; no further claim or receipt will be sent.')
     retireLeaseKeeper()
     lease = undefined
-    wev('lease', { state: 'renew-unreachable' })
+    wev('lease', { state: 'renew-expired' })
     reportAvailability('offline')
     return undefined
+  }
+  let answer, startedAt, wallStartedAt, backoffMs = 1000
+  while (current()) {
+    const remaining = renewRemainingMs(held)
+    if (remaining <= 0) return expire()
+    try {
+      startedAt = performance.now()
+      wallStartedAt = Date.now()
+      answer = await work({ kind: 'RenewLease' }, held,
+        { signal: AbortSignal.timeout(Math.max(1, Math.min(RENEW_ATTEMPT_TIMEOUT_MS, Math.floor(remaining)))) })
+      break
+    } catch (e) {
+      if (!current()) return undefined
+      if (e instanceof CredentialRejectedError) throw e
+      const waitMs = Math.min(backoffMs, Math.max(0, renewRemainingMs(held)))
+      console.error(`⚠ Renewing the lease got no HTTP answer (${String(e?.message ?? e).slice(0, 160)}).`
+        + ` Claims and receipts wait for confirmation; retrying in ${waitMs / 1000}s while the lease remains valid.`)
+      wev('lease', { state: 'renew-unreachable' })
+      await new Promise(done => setTimeout(done, waitMs))
+      backoffMs = Math.min(backoffMs * 2, 4000)
+    }
   }
   // A response to a retired holder is history, never a fresh lease. In particular,
   // Release must not be followed by a late Renew that starts another keeper.
   if (keeper.stopped || leaseKeeper !== keeper || leaseClosing
     || lease?.workerGeneration !== held.workerGeneration) return undefined
-  const renewed = adoptLease(answer?.lease, 'RenewLease')
+  if (renewRemainingMs(held) <= 0) return expire()
+  const renewed = adoptLease(answer?.lease, 'RenewLease', startedAt, wallStartedAt)
   if (renewed === undefined) {
     reportAvailability('offline')
     console.error(`⚠ The Gateway did not renew the lease for generation ${held.workerGeneration}`
@@ -1761,10 +1854,9 @@ async function renewLease(keeper) {
  *
  * Only one keeper exists for the current generation, regardless of how many Polls or work
  * calls use it. A caller's returned function waits for an in-flight renewal before judging
- * its lease, but does not cancel the keeper on a short Poll response. If renewal fails it
- * stops and the
- * lease is dropped — the hand cannot be un-run, so what stops is everything after it: no
- * further claim, and no pretence that the report will be accepted.
+ * its lease, but does not cancel the keeper on a short Poll response. Transport retries
+ * remain in flight until confirmation or the safe deadline; refusal or expiry drops the
+ * lease. The hand cannot be un-run, so everything after it requires the confirmed lease.
  *
  * Two things this loop must not do, both of them learned the hard way:
  *
@@ -3975,13 +4067,11 @@ async function handleAction(w) {
     wev('reported', { kind: 'action', id: action, landed: false, reason: undeliverable })
     return
   }
-  // The lease may have gone while the hand was moving. That does not un-run the executor and
-  // it is not reported as if it had: the receipt is still attempted, because the Board owes
-  // this invocation an outcome, and the authority decides whether a fenced instance may
-  // still deliver one. What stops is everything after it — see the poll loop.
-  if (!leaseIsLive()) {
+  // The action already ran. Offer its receipt under the dispatch identity and let the
+  // Gateway decide whether a lease lost during execution may still report this outcome.
+  if (!leaseIsLive() || lease.workerGeneration !== dispatchedUnder.workerGeneration) {
     console.error(`⚠ The lease for ${action} was lost while it was executing. The executor already ran, so this is not`
-      + ' reported as though nothing happened; the receipt is still offered under the generation it was dispatched'
+      + ' reported as though nothing happened; its receipt is still offered under the generation it was dispatched'
       + ` under (${dispatchedUnder.workerGeneration}), and the authority decides whether to take it.`
       + ' No further work will be claimed by this instance.')
     wev('lease', { state: 'lost-mid-execution', invocationId: invocation, workerGeneration: dispatchedUnder.workerGeneration })
@@ -4004,9 +4094,11 @@ async function handleAction(w) {
   // 落进轮询那个 catch —— 于是这条 invocation 的**手已经动过而回执一次都没重发**,
   // 与 500 空正文那一发是同一个后果,只是走了另一条通道。
   // 判据仍是那一条: 没有 errorCode = 板没裁决 = 原样重发。
+  let transportUncertain = false
   const sendReceipt = async (payload) => {
     try { return await work(payload, dispatchedUnder) } catch (e) {
       if (e instanceof CredentialRejectedError) throw e
+      transportUncertain = true
       return { accepted: false, transport: String(e?.message ?? e).slice(0, 200) }
     }
   }
@@ -4046,11 +4138,27 @@ async function handleAction(w) {
     await new Promise((r) => setTimeout(r, RETRY_MS[i]))
     rep = await sendReceipt(body)
   }
+  // Only named result-recording errors authorize a different outcome document.
+  // Ownership/fence refusals and transport uncertainty never authorize this fallback.
+  let failureReceiptSent = false
+  if (body.ok === true && rep.accepted !== true && !transportUncertain
+      && rep.errorCode === 'ingest_rejected') {
+    const recordingReason = `result_not_recorded: ${rep.errorCode}. The Board did not record this result; the action already ran; do not repeat it.`
+    console.error(`⚠ The success receipt for ${action} was rejected (${rep.errorCode}); sending one failure receipt for the result that could not be recorded.`)
+    rep = await sendReceipt({ kind: 'ReportWork', workType: 'action', id: invocation,
+      executionGrant: w.executionGrant, ok: false, result: '', reason: recordingReason })
+    failureReceiptSent = true
+    ok = false
+    result = ''
+    reason = recordingReason
+  }
   const landed = rep.accepted === true
   wev('reported', { kind: 'action', id: action, ok, landed,
+    ...(failureReceiptSent ? { resultRecorded: false, failureReceiptSent: true } : {}),
     ...(ok && result ? { result: String(result).slice(0, 90) } : {}), ...(reason !== undefined ? { reason } : {}) })
   if (!WEV_ON) {
-    const handSaid = ok ? `succeeded · ${result.slice(0, 60)}` : `failed · ${reason}`
+    const handSaid = failureReceiptSent ? 'result not recorded; failure receipt sent'
+      : ok ? `succeeded · ${result.slice(0, 60)}` : `failed · ${reason}`
     const ledger = landed ? 'receipt committed'
       : typeof rep.errorCode === 'string' ? `receipt not committed (Board rejected: ${rep.errorCode})`
         : 'receipt not committed (transport unavailable; retry limit reached)'
@@ -4799,8 +4907,10 @@ if (IS_MAIN) {
       // while waiting, without claiming or executing a second piece of work.
       const beforePoll = lease
       const stopPollRenewal = keepLeaseAlive()
-      let r
+      let r, pollStartedAt, pollWallStartedAt
       try {
+        pollStartedAt = performance.now()
+        pollWallStartedAt = Date.now()
         r = await work({ kind: POLL_KIND, tools: advertised,
           ...(inputAdoption ? { inputAdoption } : {}) })
       } finally {
@@ -4814,7 +4924,7 @@ if (IS_MAIN) {
       // does nothing: it does not claim, it does not execute, and it does not change what
       // its Tools advertise. A quiet endpoint is not a lease, and neither is the one this
       // process held a moment ago.
-      const held = adoptLease(r?.lease, POLL_KIND)
+      const held = adoptLease(r?.lease, POLL_KIND, pollStartedAt, pollWallStartedAt)
       if (held === undefined) {
         reportAvailability('offline')
         if (!leaseAnnounced) {

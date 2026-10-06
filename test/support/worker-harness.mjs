@@ -492,12 +492,17 @@ export async function driveWorker({
         entry.reply = { reset: true }
         return void response.socket.destroy()
       }
+      if (out.partial !== undefined) {
+        response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
+        response.write(out.partial)
+        return void setTimeout(() => response.destroy(), 25)
+      }
       if (out.text !== undefined) {
         response.writeHead(out.status ?? 500, { 'content-type': 'text/plain' })
         return void response.end(out.text)
       }
       const send = () => {
-        response.writeHead(200, { 'content-type': 'application/json' })
+        response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
         response.end(JSON.stringify(out.body))
       }
       if (out.delayMs) setTimeout(send, out.delayMs)
