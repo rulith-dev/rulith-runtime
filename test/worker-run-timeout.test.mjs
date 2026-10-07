@@ -145,15 +145,17 @@ test('a lease acquired by a long-held Poll is renewed at once instead of given u
   assert.match(run.output, /receipt committed/)
 })
 
-test('workspace list and search stop at half the inline budget and say they were truncated', async () => {
+test('workspace list and search stop at a quarter of the inline budget and say they were truncated', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-ws-budget-'))
   for (let i = 0; i < 40; i++) writeFileSync(join(dir, `f${String(i).padStart(2, '0')}.txt`), `needle ${'x'.repeat(250)}\n`)
   const sources = { docs: { type: 'file', access: dir } }
   const search = await handWorkspace({ operation: 'search', source: 'docs' }, { query: 'needle' }, sources, { inlineBytes: 4096 })
   assert.ok(search.rows.length > 0 && search.rows.length < 40, `${search.rows.length} matches`)
-  assert.ok(Buffer.byteLength(JSON.stringify(search.rows)) <= 2048 + search.rows.length)
+  assert.ok(Buffer.byteLength(JSON.stringify(search.rows)) <= 1024 + search.rows.length)
+  // The rows travel twice (result text and facts); both copies together stay well inside the budget.
+  assert.ok(Buffer.byteLength(search.result) + Buffer.byteLength(JSON.stringify(search.rows)) < 4096 / 2 + 200)
   assert.equal(JSON.parse(search.result).truncated, true)
-  const list = await handWorkspace({ operation: 'list', source: 'docs' }, {}, sources, { inlineBytes: 1024 })
+  const list = await handWorkspace({ operation: 'list', source: 'docs' }, {}, sources, { inlineBytes: 2048 })
   assert.ok(list.rows.length > 0 && list.rows.length < 40)
   assert.equal(JSON.parse(list.result).truncated, true)
   // Calibration: without a stated budget nothing changes.
@@ -192,6 +194,42 @@ for (const kind of ['read', 'act']) {
       assert.equal(reports[0].operation.ok, false)
       assert.equal(reports[0].operation.facts, undefined)
       assert.equal(reports[0].operation.reason, 'result_too_large: the result does not fit in one receipt; ask for a narrower path or query.')
+      assert.match(run.output, /receipt committed/)
+    } else {
+      assert.equal(reports.length, 0)
+      assert.match(run.output, /remains pending for operator reconciliation/)
+    }
+  })
+}
+
+for (const kind of ['read', 'run']) {
+  test(`a ${kind} result too large to report inline and with nowhere to register it ${kind === 'read' ? 'settles with one failure receipt' : 'stays pending'}`, async () => {
+    // Small facts, large result text: the report needs a registered object, and this Worker has no
+    // material area to hold one (production: a Source without material permission).
+    let polls = 0
+    const pad = 'z'.repeat(actionRow().artifactPolicy.inlineBytes + 500)
+    const run = await driveWorker({
+      extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'\n"
+        + "if (process.env.P2_EFFECT_LOG) appendFileSync(process.env.P2_EFFECT_LOG, 'ship\\n')\n"
+        + `process.stdout.write(JSON.stringify({ rows: [{ value: 7 }], pad: '${pad}' }))\n` },
+      reply: (operation) => {
+        if (operation.kind === 'Poll') return ++polls === 1
+          ? { body: { accepted: true, payload: { work: [actionRow({ toolSpec: JSON.stringify({
+            impl: 'worker-tool', exec: 'acme.ship@1', kind, params: {}, sourceTypes: ['file'],
+            returns: [{ predicate: 'demo.recorded', args: { value: '$value' } }],
+          }) })] } } } : HOLD
+        return { body: { accepted: true } }
+      },
+      done: (_seen, output) => DONE.action.test(output) || /remains pending for operator reconciliation/.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.of('ClaimWork').length, 1)
+    const reports = run.of('ReportWork')
+    if (kind === 'read') {
+      assert.equal(reports.length, 1, run.output.replace(/z{50,}/g, 'zzz…'))
+      assert.equal(reports[0].operation.ok, false)
+      assert.equal(reports[0].operation.facts, undefined)
+      assert.match(reports[0].operation.reason, /^result_not_delivered: [a-z_]+\. The read ran, but its result could not be delivered; ask for a narrower path or query\.$/)
       assert.match(run.output, /receipt committed/)
     } else {
       assert.equal(reports.length, 0)

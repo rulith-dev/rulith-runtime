@@ -120,7 +120,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.12.1"
+const RULITH_RUNTIME_VERSION = "0.12.2"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -2764,12 +2764,13 @@ export async function handWorkspace(t, args, sources = SOURCE_CONTEXT, context =
   const root = await workspaceRootOf(t, sources)
   const operation = String(t.operation ?? t.entry ?? '')
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
-  // Every row becomes a required fact, and a receipt's facts must fit the inline budget the
-  // dispatch states. Listing and search stop adding rows at half of it (the other half covers
-  // the facts' own wrapping) and say they were truncated, instead of producing a result that
-  // can never be reported.
+  // Every row is reported twice, as the result text and as a required fact, and the whole
+  // receipt must fit the inline budget the dispatch states: a larger result would need a
+  // registered object, which a Source without material permission cannot hold. Listing and
+  // search stop adding rows at a quarter of the budget (the rest covers the second copy and
+  // the facts' wrapping) and say they were truncated.
   const rowBudget = Number.isSafeInteger(context.inlineBytes) && context.inlineBytes > 0
-    ? Math.floor(context.inlineBytes / 2) : Infinity
+    ? Math.floor(context.inlineBytes / 4) : Infinity
   let rowBytes = 0
   const fitsBudget = (row) => {
     const bytes = Buffer.byteLength(JSON.stringify(row), 'utf8')
@@ -4090,6 +4091,21 @@ async function handleAction(w) {
     // would be reading a race, not a state.
     await stopRenewing()
   }
+  // A read changed nothing outside this computer, so a result it cannot deliver is reported as a
+  // failure: the call settles and the caller can ask again for less, instead of the invocation
+  // waiting for an operator. Writes and runs keep the pending path. The kind is the governed
+  // Tool's own, as dispatched (the compiled local route does not carry it).
+  const readOnly = JSON.parse(w.toolSpec).kind === 'read'
+  if (undeliverable && readOnly) {
+    console.error(`⚠ Result data for ${action} could not be delivered (${undeliverable}). It is a read, so a failure receipt is sent instead.`)
+    ok = false
+    result = ''
+    reason = 'result_not_delivered: the read ran, but its result could not be delivered; ask for a narrower path or query.'
+    resultFacts = []
+    localArtifact = undefined
+    companionArtifacts = undefined
+    undeliverable = undefined
+  }
   if (undeliverable) {
     console.error(`⚠ Result data for ${action} could not be delivered (${undeliverable}). The action may already have changed the world; no outcome receipt was manufactured. The invocation remains pending for operator reconciliation after Worker fencing; do not rerun it.`)
     wev('reported', { kind: 'action', id: action, landed: false, reason: undeliverable })
@@ -4150,16 +4166,16 @@ async function handleAction(w) {
       },
     })
   } finally { await stopUploadRenewing() }
-  // A read changed nothing outside this computer, so a result too large for one receipt is
-  // reported as a failure: the call settles and the caller can ask for less, instead of the
-  // invocation waiting for an operator. Writes and runs keep the pending path below. The kind
-  // is the governed Tool's own, as dispatched (the compiled local route does not carry it).
-  if (JSON.parse(w.toolSpec).kind === 'read'
-      && ['required_facts_exceed_inline_budget', 'artifact_object_limit'].includes(prepared.unavailable)) {
-    console.error(`⚠ Result data for ${action} does not fit in one receipt (${prepared.unavailable}). It is a read, so a failure receipt is sent instead.`)
+  // The same rule for a result that cannot be reported: too large for one receipt, or too large to
+  // report inline where the Source holds no material (2026-10-06: `source_material_absent` left a
+  // workspace search pending after 0.12.1 handled only the size codes). Any such read settles.
+  if (readOnly && prepared.unavailable) {
+    console.error(`⚠ Result data for ${action} could not be delivered (${prepared.unavailable}). It is a read, so a failure receipt is sent instead.`)
     ok = false
     result = ''
-    reason = 'result_too_large: the result does not fit in one receipt; ask for a narrower path or query.'
+    reason = ['required_facts_exceed_inline_budget', 'artifact_object_limit'].includes(prepared.unavailable)
+      ? 'result_too_large: the result does not fit in one receipt; ask for a narrower path or query.'
+      : `result_not_delivered: ${prepared.unavailable}. The read ran, but its result could not be delivered; ask for a narrower path or query.`
     prepared = { body: { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant,
       ok: false, result: '', reason } }
   }

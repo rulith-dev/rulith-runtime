@@ -2,6 +2,18 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.12.2 - 2026-10-06
+
+- Worker: a `read` Tool whose result cannot be delivered for any reason now settles with one
+  failure receipt instead of staying pending for operator reconciliation. 0.12.1 covered only
+  results too large for a receipt; a result too large to report inline for a Source without
+  material permission (`source_material_absent`) still left the call pending and blocked every
+  later call of the Agent. The reason is `result_too_large: ...` for size and
+  `result_not_delivered: <code>. ...` otherwise. Write and run Tools keep the pending path.
+- Worker: built-in workspace `list` and `search` stop adding rows at a quarter of the dispatch's
+  inline budget, because every row travels twice (result text and fact), so their reports fit
+  inline without a registered object.
+
 ## 0.12.1 - 2026-10-06
 
 - Worker: a lease that arrives with little of its window left is renewed at once. The Gateway
