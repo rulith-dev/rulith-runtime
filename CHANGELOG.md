@@ -2,6 +2,14 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.12.4 - 2026-10-07
+
+- Local: every JSON record the manager and the local Agent keep (the device sign-in record,
+  the instance registry, instance and model settings, Worker tool and MCP settings) is flushed
+  to disk before it replaces the old one. A rename alone could survive a forced restart while
+  the data did not, leaving a record of zero bytes: a restart left `device.json` unreadable, the
+  device credential was lost and the computer had to be signed in again.
+
 ## 0.12.3 - 2026-10-07
 
 - Worker: the built-in workspace `search` result separates its two limits. `truncated` now means

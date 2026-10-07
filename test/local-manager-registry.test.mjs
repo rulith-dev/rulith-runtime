@@ -18,11 +18,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { createManagerRegistry, RegistryLockedError, RegistryUnreadableError, validateRegistry, processAlive } from '../local/manager-registry.mjs'
+import { createManagerRegistry, RegistryLockedError, RegistryUnreadableError, validateRegistry, processAlive, writeJsonAtomic } from '../local/manager-registry.mjs'
 
 const HOLDER = resolve(import.meta.dirname, 'support', 'registry-lock-holder.mjs')
 const instance = (id, directory, extra = {}) => ({ id, name: id, directory, mode: 'local_agent', ...extra })
@@ -224,4 +224,19 @@ test('a missing registry is not corruption, and concurrent edits still keep ever
   await registry.update((state) => { state.instances.push(instance('inst-aaaaaaaaaaaa', join(root, 'after'))); return state })
   assert.equal(registry.read().instances.length, 21, 'one failed edit wedged the ones behind it')
   assert.equal(existsSync(registry.lockFile), false)
+})
+
+test('a JSON record is replaced whole, flushed before the rename, and leaves no temporary file', t => {
+  // The flush itself cannot be observed without cutting the power; this pins what can be: the
+  // record is written through a temporary file that is gone afterwards, whether the write
+  // succeeded or failed, and an earlier record survives a failed write untouched.
+  const root = withRoot(t)
+  const file = join(root, 'nested', 'device.json')
+  writeJsonAtomic(file, { format: 'x', state: 'linked' })
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { format: 'x', state: 'linked' })
+  writeJsonAtomic(file, { format: 'x', state: 'revoked' })
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { format: 'x', state: 'revoked' })
+  assert.throws(() => writeJsonAtomic(file, { value: 1n }))
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { format: 'x', state: 'revoked' })
+  assert.deepEqual(readdirSync(join(root, 'nested')), ['device.json'])
 })

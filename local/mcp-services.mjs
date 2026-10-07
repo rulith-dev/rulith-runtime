@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import { invokeMcp, closeMcpClients } from '../worker/mcp-client.mjs'
 import { adapterEnv, canonicalJson, workerToolsOf, configuredWorkerTools } from '../worker/rulith-worker.mjs'
 import { createMcpRegistry } from './mcp-registry.mjs'
+import { writeJsonAtomic } from './manager-registry.mjs'
 
 export const MCP_CATALOG = Object.freeze([Object.freeze({
   id: 'filesystem', title: 'Filesystem', package: '@modelcontextprotocol/server-filesystem', version: '2026.8.31',
@@ -15,14 +16,8 @@ export const MCP_CATALOG = Object.freeze([Object.freeze({
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const read = (file, fallback) => existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : fallback
-function write(file, value) {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  const temporary = file + '.' + randomUUID() + '.tmp'
-  try {
-    writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
-    renameSync(temporary, file)
-  } finally { rmSync(temporary, { force: true }) }
-}
+// Flushed to disk before the rename (see writeJsonAtomic).
+const write = (file, value) => writeJsonAtomic(file, value)
 function sourceName(value) {
   if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]{0,39}$/.test(value)) throw new Error('Source name needs 1–40 lowercase letters, digits, _ or -, starting with a letter.')
   return value

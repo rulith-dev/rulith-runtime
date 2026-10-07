@@ -11,13 +11,14 @@ import { createConversationReader } from '../agent/conversation-reader.mjs'
 import { DEFAULT_MODEL_URL } from './model-settings.mjs'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { localPage, projectOperations } from './local-ui.mjs'
 import { createMcpServices } from './mcp-services.mjs'
 import { workerToolsPage } from './worker-tools-ui.mjs'
 import { createWorkerToolManagement } from './worker-tool-management.mjs'
+import { writeJsonAtomic } from './manager-registry.mjs'
 import { createSetupService } from './setup-service.mjs'
 import { setupPage } from './setup-ui.mjs'
 import { attachmentInstruction, createMaterialService } from './material-service.mjs'
@@ -115,12 +116,8 @@ export function isolatedEnvironmentBase(env = process.env) {
     !/^RULITH_/i.test(name) && !INHERITED_CREDENTIAL_VARIABLES.includes(name)))
 }
 
-function saveConfig(configFile, config) {
-  mkdirSync(dirname(resolve(configFile)), { recursive: true, mode: 0o700 })
-  const temporary = configFile + '.' + randomUUID() + '.tmp'
-  try { writeFileSync(temporary, JSON.stringify(config, null, 2), { mode: 0o600, flag: 'wx' }); renameSync(temporary, configFile) }
-  finally { rmSync(temporary, { force: true }) }
-}
+// Flushed to disk before the rename (see writeJsonAtomic).
+const saveConfig = (configFile, config) => writeJsonAtomic(configFile, config)
 
 const readJsonUpTo = (req, limit, over) => new Promise((accept, reject) => {
   const chunks = []

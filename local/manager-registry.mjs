@@ -42,7 +42,7 @@
  * keeps on its conversation history (see `rulith-local.mjs`).
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, openSync, fsyncSync, closeSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { instanceRecordedAt, processRecordRunning, processStamp } from './process-identity.mjs'
@@ -62,10 +62,29 @@ const delay = (ms) => new Promise((done) => { const timer = setTimeout(done, ms)
 export function writeJsonAtomic(file, value, mode = 0o600) {
   mkdirSync(dirname(resolve(file)), { recursive: true, mode: 0o700 })
   const temporary = file + '.' + randomUUID() + '.tmp'
+  // The new bytes reach the disk before the rename. A rename alone can outlive a power loss or a
+  // forced restart while the data does not: the name then points at a file of zero bytes
+  // (2026-10-07: a restart left device.json as 1496 zero bytes, the device credential was lost
+  // and the computer had to be signed in again).
+  let fd
   try {
-    writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { mode, flag: 'wx' })
+    fd = openSync(temporary, 'wx', mode)
+    writeFileSync(fd, JSON.stringify(value, null, 2) + '\n')
+    fsyncSync(fd)
+    closeSync(fd); fd = undefined
     renameSync(temporary, file)
-  } finally { rmSync(temporary, { force: true }) }
+    syncDirectory(dirname(resolve(file)))
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+    rmSync(temporary, { force: true })
+  }
+}
+
+/** Make a rename in this directory durable. Windows cannot flush a directory; NTFS journals the rename itself. */
+function syncDirectory(directory) {
+  if (process.platform === 'win32') return
+  const fd = openSync(directory, 'r')
+  try { fsyncSync(fd) } finally { closeSync(fd) }
 }
 
 /**

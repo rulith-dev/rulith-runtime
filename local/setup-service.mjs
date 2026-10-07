@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 import { randomBytes, randomUUID, createHash, generateKeyPairSync, privateDecrypt, constants } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, readdirSync, copyFileSync, realpathSync, statSync, constants as fsConstants } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync, realpathSync, statSync, constants as fsConstants } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { hostname } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { checkedModelInput, maxOutputTokens, resolvedKey } from './model-settings.mjs'
+import { writeJsonAtomic } from './manager-registry.mjs'
 
 const read = (path, fallback) => existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : fallback
 const digest = value => createHash('sha256').update(value).digest('hex')
 const text = value => typeof value === 'string' ? value : ''
 const displayedOutputTokens = value => { try { return maxOutputTokens(value) } catch { return null } }
 const fields = (value, allowed) => { if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !allowed.includes(key))) throw new Error('Unexpected setup fields.') }
-function atomic(path, data) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-  const temporary = path + '.' + randomUUID() + '.tmp'
-  writeFileSync(temporary, JSON.stringify(data, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); renameSync(temporary, path)
-}
+// Flushed to disk before the rename (see writeJsonAtomic).
+const atomic = (path, data) => writeJsonAtomic(path, data)
 export function setupOrigin(raw) {
   const url = new URL(raw)
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw new Error('Use a Console HTTPS origin, or a loopback origin for local testing.')

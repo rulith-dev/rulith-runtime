@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { createHash } from 'node:crypto'
+import { writeJsonAtomic } from './manager-registry.mjs'
 import { configuredWorkerTools, workerToolDescriptor, builtinWorkspaceTools, builtinSourceTools, builtinMaterialTools } from '../worker/rulith-worker.mjs'
 import { automaticActionProblem } from './mcp-services.mjs'
 
 const revisionOf = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
-const atomicJson = (file, value) => {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  const temporary = file + '.' + randomUUID() + '.tmp'
-  try { writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' }); renameSync(temporary, file) }
-  finally { rmSync(temporary, { force: true }) }
-}
+// Flushed to disk before the rename (see writeJsonAtomic).
+const atomicJson = (file, value) => writeJsonAtomic(file, value)
 
 /**
  * 统一清单不创造第二套执行权限：只编辑部署输入，实际广告、锁定和执行仍由原 Worker/Core 路径决定。
