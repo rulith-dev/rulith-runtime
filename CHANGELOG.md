@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## 0.12.5 - unreleased
+## 0.12.5 - 2026-10-07
 
 - Worker: an executor that failed always settles with a failure receipt. When even the failure
   report cannot be delivered (an inline budget smaller than its reason, nowhere to register an
