@@ -18,7 +18,7 @@
       "sha256": "cd6ed912e94b30174a4d7f2a1dbee02ce2f3b2ccaf4d0d0f45e30e213b464302"
     },
     "protocol/worker-contract.json": {
-      "sha256": "0a9b8a5169ceab299610f3bb42978c89138af872760b28c19f7f87ad1ba9bc5d"
+      "sha256": "beb403e6b8d190756f9ca4856aa424824b313e84fe99390d423072cf295ff7db"
     },
     "protocol/worker-material.json": {
       "sha256": "497c57d8b12fe7f2acefb22a9f27d00229158c2ccb144a47573fb09e3c0ef97c"
@@ -45,16 +45,16 @@
       "sha256": "f7a0e3ea90f8d94d1698b469d9bc7c75a956c51000399a7876d9506782e173f6"
     },
     "protocol/worker-selected-material-overlay-pin.json": {
-      "sha256": "26c5a5cab666b73f88dddd2c8d57f076d1d637ab7642e6eecca80064b9583108"
+      "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "protocol/worker-selected-material-overlay-pin-v1.json": {
-      "sha256": "65445c66b1f94cb4770186cbde9e83387abbb5d11b8f14e85f6001274880bfab"
+      "sha256": "0aabd5cae79485c9e0e92858e9ede62df98835f6bf46d86a95d841e1e86b7a6c"
     },
     "protocol/worker-selected-material-overlay-pin-v2.json": {
-      "sha256": "616cbe6b498bcd2e7fecdddc1dcd015779b9c3ff3c7469fc92e821100b48640f"
+      "sha256": "d48f5884161aac490aa0af6b3390b8a1ff8102c71019bab12f92007ec5c029bf"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "b95c15ada3770f1ca1aa64f9735bc323315c92e1c7d6c50515a695d6048866e4"
+      "sha256": "cd734c63c3e3907f43ce6d10c6a1a38c7b0f4f4f2a79422e64a9e5bd8a2e834b"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"

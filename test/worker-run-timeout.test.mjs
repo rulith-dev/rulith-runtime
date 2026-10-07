@@ -176,8 +176,8 @@ test('a search that stopped at the file limit says it was partial, and an empty 
   assert.match(out.partial, /^searched only the first 500 files/)
 })
 
-for (const kind of ['read', 'act']) {
-  test(`a ${kind} result whose facts exceed the inline budget ${kind === 'read' ? 'settles with one failure receipt' : 'stays pending'}`, async () => {
+for (const kind of ['read', 'write', 'run']) {
+  test(`a ${kind} result whose facts exceed the inline budget ${kind === 'read' ? 'settles with one failure receipt' : 'requests reconciliation once'}`, async () => {
     let polls = 0
     const row = actionRow()
     const big = 'y'.repeat(row.artifactPolicy.inlineBytes + 100)
@@ -195,7 +195,7 @@ for (const kind of ['read', 'act']) {
           }) })] } } } : HOLD
         return { body: { accepted: true } }
       },
-      done: (_seen, output) => DONE.action.test(output) || /remains pending for operator reconciliation/.test(output),
+      done: (_seen, output) => DONE.action.test(output) || /Reconciliation requested|remains pending for operator reconciliation/.test(output),
     })
     assert.equal(run.timedOut, false, run.output)
     assert.equal(run.of('ClaimWork').length, 1)
@@ -208,14 +208,17 @@ for (const kind of ['read', 'act']) {
       assert.equal(reports[0].operation.reason, 'result_too_large: the result does not fit in one receipt; ask for a narrower path or query.')
       assert.match(run.output, /receipt committed/)
     } else {
-      assert.equal(reports.length, 0)
-      assert.match(run.output, /remains pending for operator reconciliation/)
+      assert.equal(reports.length, 1, run.output)
+      assert.equal(reports[0].operation.undeliverable, 'required_facts_exceed_inline_budget')
+      assert.equal(reports[0].operation.ok, undefined)
+      assert.equal(reports[0].operation.facts, undefined)
+      assert.match(run.output, /Reconciliation requested/)
     }
   })
 }
 
 for (const kind of ['read', 'run']) {
-  test(`a ${kind} result too large to report inline and with nowhere to register it ${kind === 'read' ? 'settles with one failure receipt' : 'stays pending'}`, async () => {
+  test(`a ${kind} result too large to report inline and with nowhere to register it ${kind === 'read' ? 'settles with one failure receipt' : 'requests reconciliation once'}`, async () => {
     // Small facts, large result text: the report needs a registered object, and this Worker has no
     // material area to hold one (production: a Source without material permission).
     let polls = 0
@@ -232,7 +235,7 @@ for (const kind of ['read', 'run']) {
           }) })] } } } : HOLD
         return { body: { accepted: true } }
       },
-      done: (_seen, output) => DONE.action.test(output) || /remains pending for operator reconciliation/.test(output),
+      done: (_seen, output) => DONE.action.test(output) || /Reconciliation requested|remains pending for operator reconciliation/.test(output),
     })
     assert.equal(run.timedOut, false, run.output)
     assert.equal(run.of('ClaimWork').length, 1)
@@ -244,8 +247,11 @@ for (const kind of ['read', 'run']) {
       assert.match(reports[0].operation.reason, /^result_not_delivered: [a-z_]+\. The read ran, but its result could not be delivered; ask for a narrower path or query\.$/)
       assert.match(run.output, /receipt committed/)
     } else {
-      assert.equal(reports.length, 0)
-      assert.match(run.output, /remains pending for operator reconciliation/)
+      assert.equal(reports.length, 1, run.output)
+      assert.equal(reports[0].operation.undeliverable, 'materials_not_configured')
+      assert.equal(reports[0].operation.ok, undefined)
+      assert.equal(reports[0].operation.facts, undefined)
+      assert.match(run.output, /Reconciliation requested/)
     }
   })
 }
@@ -429,5 +435,6 @@ test('a failed write whose failure report cannot be delivered still settles as a
   assert.equal(reports[0].operation.ok, false)
   assert.equal(reports[0].operation.facts, undefined)
   assert.match(reports[0].operation.reason, /^failure_detail_not_delivered: [a-z_]+\. The action failed; its detail could not be delivered\.$/)
+  assert.equal(reports[0].operation.undeliverable, undefined)
   assert.doesNotMatch(run.output, /remains pending for operator reconciliation/)
 })

@@ -294,5 +294,7 @@ test('missing terminal Source evidence leaves the selected invocation unresolved
   assert.equal(run.timedOut, false, run.output)
   assert.equal(run.of('ClaimWork').length, 1)
   assert.equal(requests.length, 1)
-  assert.equal(run.of('ReportWork').length, 0)
+  assert.equal(run.of('ReportWork').length, 1, run.output)
+  assert.equal(run.of('ReportWork')[0].operation.undeliverable, 'http_write_terminal_unconfirmed')
+  assert.equal(run.of('ReportWork')[0].operation.ok, undefined)
 })

@@ -137,7 +137,9 @@ test('real Worker preserves a lost MCP result without reporting false success or
     done: (_seen, output) => /could not be delivered|receipt committed/.test(output),
   })
   assert.equal(run.timedOut, false, run.output)
-  assert.equal(run.of('ReportWork').length, 0, run.output)
+  assert.equal(run.of('ReportWork').length, 1, run.output)
+  assert.equal(run.of('ReportWork')[0].operation.undeliverable, 'mcp_execution_unknown')
+  assert.equal(run.of('ReportWork')[0].operation.ok, undefined)
   assert.equal(peer.calls.filter(method => method === 'tools/call').length, 1, run.output)
-  assert.match(run.output, /remains pending.*do not rerun/)
+  assert.match(run.output, /Reconciliation requested.*do not rerun/)
 })

@@ -3,6 +3,6 @@
   "schemaPath": "docs/specs/schemas/rulith-worker-selected-material-v3.schema.json",
   "schemaSha256": "sha256:9b2a4f87d7cd0ce18520bcd06606e7896ba3f919b5b25186db43baf7a1b0f2e5",
   "baseSchemaPath": "docs/specs/schemas/rulith-worker-protocol-v2.schema.json",
-  "baseSchemaSha256": "sha256:7419793b427750f74a959b4978c3d229a6eb16480d858cafc1add2609f98c986",
+  "baseSchemaSha256": "sha256:6b8d46675c2104ca814ec54c466133474a7160d04214a2d3d51fc389ff5d16be",
   "productionAdopted": false
 }

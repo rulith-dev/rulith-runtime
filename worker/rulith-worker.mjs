@@ -118,7 +118,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // Do not edit: `npm run check` regenerates this block and fails on any difference. Every
 // value below is the contract's, read from the bundle exported at the commit named here,
 // except the Runtime version from package.json.
-const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
+const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = 'edd1d6294c3a01aa0fa7eefedaa79d56d77155fd'
 /** This package's own release: a refusal that names a newer one gets an install line. */
 const RULITH_RUNTIME_VERSION = "0.12.6"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
@@ -197,6 +197,7 @@ const ACTION_ROW_CONST = Object.freeze({"workType":"action"})
 const SOURCE_UPLOAD_FIELDS = Object.freeze({"sourceRecordId":{"required":true,"rules":[{"type":"string"}]},"permission":{"required":true,"rules":[{"enum":["granted","denied","absent"]}]},"upload":{"required":true,"rules":[{"type":"boolean"}]},"refusal":{"required":false,"rules":[{"type":"string","minLength":1},{"type":"null"}]}})
 const ARTIFACT_POLICY_FIELDS = Object.freeze({"inlineBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"readBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"objectBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"totalBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"temporaryRetentionMs":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]}})
 const ARTIFACT_REF_PATTERN = /^art_[a-f0-9]{32}$/
+const UNDELIVERABLE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/
 // ── END GENERATED WORKER PROTOCOL PROJECTION ────────────────────────────────
 
 /**
@@ -1180,11 +1181,17 @@ async function work(operation, identity = lease, { signal } = {}) {
     // Complete non-JSON HTTP answers still take the existing unchanged retry path.
     const definiteRenewalRefusal = r.status >= 400 && r.status < 500 && r.status !== 429
     if (operation.kind === 'RenewLease' && !definiteRenewalRefusal) throw error
-    if (operation.kind === 'ReportWork' && r.status !== 401 && !(error instanceof SyntaxError)) throw error
+    if (operation.kind === 'ReportWork' && r.status !== 401 && !(error instanceof SyntaxError)
+        && !(operation.undeliverable !== undefined && [400, 422].includes(r.status))) throw error
     return undefined
   })
   const j = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   if (r.status === 401) throw new CredentialRejectedError(j.teaching, j.reason, j.requiredClient)
+  // An older Gateway can refuse this new shape without a readable refusal body. Its
+  // HTTP verdict is final for this report, even when no errorCode made it through.
+  if (operation.kind === 'ReportWork' && operation.undeliverable !== undefined && [400, 422].includes(r.status)) {
+    return { accepted: false, errorCode: 'undeliverable_not_supported' }
+  }
   if (operation.kind === 'RenewLease') {
     // Rate limits and server-side failures cannot tell this Worker that its lease was
     // refused. Leave the lease in place while renewLease retries inside its safe window.
@@ -1397,21 +1404,21 @@ async function handHttp(t, args, sources = SOURCE_CONTEXT, context = {}) {
   } catch (error) {
     // Once a write is sent, a lost response or unreadable body says nothing about
     // whether the remote system already changed. Do not report known failure.
-    if (effectful) throw new ResultDeliveryError(`HTTP write outcome unknown after transport error: ${String(error?.message ?? error).slice(0, 160)}`)
+    if (effectful) throw new ResultDeliveryError(`HTTP write outcome unknown after transport error: ${String(error?.message ?? error).slice(0, 160)}`, 'http_write_transport_unknown')
     throw error
   }
   if (effectful) {
     // A transport status is not a business completion claim. Only the fixed
     // terminal response evidence in the pinned local Tool may settle this call.
     if (!completion.statuses.includes(r.status)) {
-      throw new ResultDeliveryError(`HTTP write terminal outcome unconfirmed: status=${r.status}`)
+      throw new ResultDeliveryError(`HTTP write terminal outcome unconfirmed: status=${r.status}`, 'http_write_terminal_unconfirmed')
     }
     let envelope
     try { envelope = JSON.parse(text) } catch { /* malformed terminal evidence stays unknown */ }
     if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)
         || !Object.hasOwn(envelope, completion.json.field)
         || envelope[completion.json.field] !== completion.json.equals) {
-      throw new ResultDeliveryError(`HTTP write terminal outcome unconfirmed: status=${r.status}, terminal evidence absent`)
+      throw new ResultDeliveryError(`HTTP write terminal outcome unconfirmed: status=${r.status}, terminal evidence absent`, 'http_write_terminal_unconfirmed')
     }
   }
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`)
@@ -1572,7 +1579,12 @@ export function adapterEnv(base = process.env, pass) {
  *  `passArgs:true` 只把动态实参序列化成**一个 JSON argv**追加给固定程序；
  *  它不会改变 cmd，也不会拆成多个参数。程序自己校验这份数据。
  */
-class ResultDeliveryError extends Error {}
+class ResultDeliveryError extends Error {
+  constructor(message, code = message) {
+    super(message)
+    this.code = code
+  }
+}
 
 /**
  * How long a `run` Adapter may take before this Worker stops it: 60 s unless the operator sets
@@ -3120,10 +3132,10 @@ export async function pgRunV2UpdateWithClient(client, sql, values, validateResul
     } catch (error) {
       // A lost COMMIT response cannot prove whether PostgreSQL committed.
       if (commitAttempted) {
-        throw new ResultDeliveryError(`Action v2 database outcome is unknown after COMMIT: ${String(error?.message ?? error).slice(0, 160)}`)
+        throw new ResultDeliveryError(`Action v2 database outcome is unknown after COMMIT: ${String(error?.message ?? error).slice(0, 160)}`, 'database_commit_unknown')
       }
       try { await client.query('ROLLBACK') } catch (rollbackError) {
-        throw new ResultDeliveryError(`Action v2 database outcome is unknown because ROLLBACK was not confirmed: ${String(rollbackError?.message ?? rollbackError).slice(0, 160)}`)
+        throw new ResultDeliveryError(`Action v2 database outcome is unknown because ROLLBACK was not confirmed: ${String(rollbackError?.message ?? rollbackError).slice(0, 160)}`, 'database_rollback_unconfirmed')
       }
       // Only a confirmed rollback makes the rejected UPDATE a known failure.
       throw error
@@ -3392,7 +3404,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
           ? localAuthoringIngestCue(companionArtifacts) : out.safeInlineGuidance } : {}) }
     } catch (error) {
       if (t.impl === 'mcp' && t.operation !== 'discover') throw new McpExecutionUnknownError(`MCP result cannot supply the declared facts (${error.message}); do not repeat the external action`)
-      if (t.impl === 'http' && t.kind !== 'read') throw new ResultDeliveryError(`HTTP write result cannot supply the declared facts (${error.message}); do not repeat the external action`)
+      if (t.impl === 'http' && t.kind !== 'read') throw new ResultDeliveryError(`HTTP write result cannot supply the declared facts (${error.message}); do not repeat the external action`, 'http_write_facts_unavailable')
       throw error
     }
   }
@@ -4104,7 +4116,9 @@ async function handleAction(w) {
       completionStage = 'terminal'
     }
   } catch (e) {
-    if (e instanceof ResultDeliveryError || e instanceof McpExecutionUnknownError) undeliverable = e.message
+    if (e instanceof ResultDeliveryError || e instanceof McpExecutionUnknownError) {
+      undeliverable = e instanceof McpExecutionUnknownError ? 'mcp_execution_unknown' : e.code
+    }
     else { ok = false; reason = actionFailureReason(e) }
   } finally {
     // The rendezvous matters: reading the lease below while a renewal is still in flight
@@ -4113,7 +4127,7 @@ async function handleAction(w) {
   }
   // A read changed nothing outside this computer, so a result it cannot deliver is reported as a
   // failure: the call settles and the caller can ask again for less, instead of the invocation
-  // waiting for an operator. Writes and runs keep the pending path. The kind is the governed
+  // waiting for an operator. Writes and runs with undeliverable receipts request reconciliation. The kind is the governed
   // Tool's own, as dispatched (the compiled local route does not carry it).
   const readOnly = JSON.parse(w.toolSpec).kind === 'read'
   if (undeliverable && readOnly) {
@@ -4125,11 +4139,6 @@ async function handleAction(w) {
     localArtifact = undefined
     companionArtifacts = undefined
     undeliverable = undefined
-  }
-  if (undeliverable) {
-    console.error(`⚠ Result data for ${action} could not be delivered (${undeliverable}). The action may already have changed the world; no outcome receipt was manufactured. The invocation remains pending for operator reconciliation after Worker fencing; do not rerun it.`)
-    wev('reported', { kind: 'action', id: action, landed: false, reason: undeliverable })
-    return
   }
   // The action already ran. Offer its receipt under the dispatch identity and let the
   // Gateway decide whether a lease lost during execution may still report this outcome.
@@ -4170,9 +4179,15 @@ async function handleAction(w) {
   // 于是已提交的回执被答成 `already_reported`(RT-WK-RID-1)。所以 body 与身份都在循环外定死:
   // 一次派发只有一份请求字节和一个身份, 重发是同一发, 不是新的一发。
   const stopUploadRenewing = keepLeaseAlive()
+  const undeliverableReport = code => ({ body: { kind: 'ReportWork', workType: 'action', id: invocation,
+    executionGrant: w.executionGrant,
+    undeliverable: UNDELIVERABLE_CODE_PATTERN.test(code) ? code : 'result_delivery_unavailable' } })
   let prepared
   try {
-    prepared = await prepareActionReport(w, { ok, result, reason, facts: resultFacts,
+    // D-1008c applies when no outcome receipt can be delivered, including known success.
+    // Deliverable receipts keep their normal path; known failures keep O3a's fallback below.
+    prepared = undeliverable ? undeliverableReport(undeliverable)
+      : await prepareActionReport(w, { ok, result, reason, facts: resultFacts,
       localArtifact, companionArtifacts, safeInlineGuidance, completionStage, optionalArtifact: Boolean(selectedMaterial) }, {
       custody: data => takeCustody({ ...data,
         ...(selectedMaterial ? { production: selectedResultProduction(grant, selectedMaterial.input) } : {}) }),
@@ -4210,9 +4225,7 @@ async function handleAction(w) {
       ok: false, result: '', reason } }
   }
   if (prepared.unavailable) {
-    console.error(`⚠ Result data for ${action} could not be delivered (${prepared.unavailable}). The action already ran; no success or failure receipt was manufactured. This invocation remains pending for operator reconciliation after Worker fencing; do not rerun it.`)
-    wev('reported', { kind: 'action', id: action, landed: false, reason: prepared.unavailable })
-    return
+    prepared = undeliverableReport(prepared.unavailable)
   }
   const body = prepared.body
   let rep = await sendReceipt(body)
@@ -4224,6 +4237,14 @@ async function handleAction(w) {
       + (rep.transport ? ` Transport: ${rep.transport}` : ''))
     await new Promise((r) => setTimeout(r, RETRY_MS[i]))
     rep = await sendReceipt(body)
+  }
+  if (body.undeliverable !== undefined) {
+    const landed = rep.accepted === true
+    console.error(`⚠ Result data for ${action} could not be delivered (${body.undeliverable}).`
+      + (landed ? ' Reconciliation requested; a person must check the external effect in Console; do not rerun it.'
+        : ' The invocation remains pending for operator reconciliation after Worker fencing; do not rerun it.'))
+    wev('reported', { kind: 'action', id: action, landed, undeliverable: body.undeliverable })
+    return
   }
   // Only named result-recording errors authorize a different outcome document.
   // Ownership/fence refusals and transport uncertainty never authorize this fallback.

@@ -2,6 +2,16 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Worker: claimed writes and runs whose outcome receipt cannot be delivered
+  request reconciliation through an outcome-free `ReportWork{undeliverable: <code>}`
+  (D-1008c). Reports retry unchanged; a Gateway that refuses the new shape with HTTP
+  400 or 422 emits a local warning and keeps the invocation pending without retries.
+  Known successes with custody, registration or budget failures also request
+  reconciliation, naming the delivery cause; deliverable success receipts, O3a minimal
+  receipts for known failures, and read receipt handling retain their existing paths.
+
 ## 0.12.6 - 2026-10-08
 
 - Local: Health shows device authorization, Agent keys, Worker Connections, Sources, program

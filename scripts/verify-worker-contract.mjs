@@ -44,6 +44,7 @@ export const WORKER_CONTRACT_FILES = [WORKER_SCHEMA_FILE, ARTIFACT_SCHEMA_FILE, 
 const REQUIRED_DEFS = [
   'WorkerId', 'Generation', 'Digest', 'CanonicalizationRule', 'Lease', 'LeasePolicy',
   'RenewLease', 'ReleaseLease', 'PollRequest', 'ClaimWorkRequest', 'ReportWorkAction',
+  'ReportWorkUndeliverable',
   'ToolDigest', 'SourceType', 'WorkerToolDescriptor', 'WorkerActionWorkItem',
   'ExecutionRequestVector', 'ExecutionResultVector', 'ExecutionGrant', 'WorkerHeaderNames',
 ]
@@ -434,6 +435,10 @@ export function readWorkerContract(bundle, { path = WORKER_BUNDLE_PATH } = {}) {
   advertisement.artifactPolicyFields = objectFields(artifactDefs?.ArtifactPolicy, 'ArtifactPolicy')
   advertisement.artifactRefPattern = artifactDefs?.ArtifactRef?.pattern
   if (typeof advertisement.artifactRefPattern !== 'string') throw new WorkerContractError(`${path}: ArtifactRef has no pattern`)
+  advertisement.undeliverableCodePattern = defs.ReportWorkUndeliverable?.properties?.undeliverable?.pattern
+  if (typeof advertisement.undeliverableCodePattern !== 'string') {
+    throw new WorkerContractError(`${path}: ReportWorkUndeliverable has no code pattern`)
+  }
   advertisement.digestPattern = defs.Digest?.pattern
   advertisement.generationMaximum = defs.Generation?.maximum
   advertisement.headerGenerationPattern = defs.WorkerHeaderValues?.properties?.workerGeneration?.pattern

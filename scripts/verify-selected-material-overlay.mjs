@@ -18,7 +18,7 @@ const fail = message => { throw new Error(`selected material overlay: ${message}
 const CANONICAL_OVERLAY_SHA256 = 'sha256:9b2a4f87d7cd0ce18520bcd06606e7896ba3f919b5b25186db43baf7a1b0f2e5'
 const CANONICAL_PRIOR_OVERLAY_SHA256 = 'sha256:f7a0e3ea90f8d94d1698b469d9bc7c75a956c51000399a7876d9506782e173f6'
 const CANONICAL_OLD_OVERLAY_SHA256 = 'sha256:4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e'
-const CANONICAL_BASE_SHA256 = 'sha256:7419793b427750f74a959b4978c3d229a6eb16480d858cafc1add2609f98c986'
+const CANONICAL_BASE_SHA256 = 'sha256:6b8d46675c2104ca814ec54c466133474a7160d04214a2d3d51fc389ff5d16be'
 
 if (pin.version !== 'rulith-worker-selected-material-overlay-pin/3'
     || pin.schemaPath !== 'docs/specs/schemas/rulith-worker-selected-material-v3.schema.json'

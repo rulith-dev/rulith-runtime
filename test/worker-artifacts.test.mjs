@@ -8,8 +8,8 @@
  *
  *   · Does the receipt carry a reference rather than data, and do the required facts stay the
  *     exact business values they were? A reference cannot stand in for a fact.
- *   · Does a failure to register leave **no** receipt at all? The executor already changed the
- *     world; a manufactured outcome is worse than a pending invocation.
+ *   · Does a failure to register send one outcome-free reconciliation report? The executor
+ *     already changed the world; its undeliverable receipt must not leave the call silent.
  *   · Does anything fall back to sending the bytes? Nothing may, and the absence of that path
  *     is what these arms check by making every failure mode visible instead.
  *
@@ -30,6 +30,18 @@ import { LOCAL_AUTHORING_MODERN_CUE, LOCAL_AUTHORING_REFERENCE_CUE } from '../wo
 
 const contract = loadWorkerContract()
 const ref = `art_${'a'.repeat(32)}`
+
+function assertUndeliverable(run, code) {
+  const reports = run.of('ReportWork')
+  assert.equal(reports.length, 1, run.output)
+  const claim = run.of('ClaimWork')[0].operation
+  assert.deepEqual(reports[0].operation, {
+    kind: 'ReportWork', workType: 'action', id: claim.id, executionGrant: claim.executionGrant,
+    workerId: claim.workerId, workerGeneration: claim.workerGeneration, undeliverable: code,
+  })
+  assert.match(code, /^[a-z][a-z0-9_]{0,63}$/)
+  assert.match(run.output, /Reconciliation requested.*do not rerun/)
+}
 
 /** A real material area, so "durable before it is referenced" is answered by the filesystem. */
 async function withArea(run) {
@@ -207,7 +219,7 @@ test('ART-WK-3: nested policy and permission shapes are checked from the committ
   }
 })
 
-for (const fail of [false, true]) test(`ART-WK-4: the real Worker registers before its receipt; registration failure=${fail}`, async () => {
+for (const kind of ['write', 'run', 'read']) for (const fail of [false, true]) test(`ART-WK-4: the real Worker registers before its ${kind} receipt; registration failure=${fail}`, async () => {
   await withArea(async ({ env }) => {
     let polls = 0
     const registrations = []
@@ -215,7 +227,9 @@ for (const fail of [false, true]) test(`ART-WK-4: the real Worker registers befo
       env,
       extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'; import { join } from 'node:path'; appendFileSync(join(process.env.RULITH_SOURCE_ACCESS, 'effects.log'), 'ship\\n'); console.log(JSON.stringify({result:'x'.repeat(12000)}));" },
       reply: operation => operation.kind === 'Poll'
-        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow({ toolSpec: JSON.stringify({
+          impl: 'worker-tool', exec: 'acme.ship@1', kind, params: {}, sourceTypes: ['file'],
+        }) })] } } } : HOLD
         : { body: { accepted: true, revision: 'r2' } },
       materialReply: (path, payload) => {
         if (path === '/artifact/delivery') return { body: { accepted: true, delivery: null } }
@@ -227,7 +241,7 @@ for (const fail of [false, true]) test(`ART-WK-4: the real Worker registers befo
             ref, mediaType: payload.mediaType, encoding: payload.encoding,
             totalBytes: payload.totalBytes, digest: payload.digest } } }
       },
-      done: (seen, output) => seen.some(entry => entry.operation.kind === 'ReportWork') || /could not be delivered/.test(output),
+      done: (_seen, output) => /Reconciliation requested|\| receipt (?:not )?committed|remains pending/.test(output),
     })
     assert.equal(run.timedOut, false, run.output)
     assert.deepEqual(run.effects, ['ship'], 'the actual external effect happens exactly once')
@@ -240,12 +254,18 @@ for (const fail of [false, true]) test(`ART-WK-4: the real Worker registers befo
     assert.equal(run.of('ArtifactUpload').length, 0, 'the retired payload upload route was called')
 
     const reports = run.of('ReportWork')
-    assert.equal(reports.length, fail ? 0 : 1, run.output)
+    assert.equal(reports.length, 1, run.output)
     if (!fail) {
       assert.deepEqual(reports[0].operation.artifacts, [{ ref }])
       assert.equal(reports[0].operation.result, '')
       assert.equal(reports[0].operation.executionGrant, registrations[0].executionGrant)
-    } else assert.match(run.output, /remains pending.*do not rerun/)
+      assert.equal(reports[0].operation.ok, true)
+      assert.equal(reports[0].operation.undeliverable, undefined)
+    } else if (kind === 'read') {
+      assert.equal(reports[0].operation.ok, false)
+      assert.equal(reports[0].operation.undeliverable, undefined)
+      assert.match(reports[0].operation.reason, /^result_not_delivered: artifact_index_unconfirmed\./)
+    } else assertUndeliverable(run, 'artifact_index_unconfirmed')
   })
 })
 
@@ -267,12 +287,63 @@ test('ART-WK-5: capture overflow is unavailable data, never a fabricated executo
     assert.deepEqual(run.effects, ['ship'])
     assert.equal(run.seen.some((entry) => entry.path === '/artifact/register'), false,
       'an object over the policy ceiling was registered anyway')
-    assert.equal(run.of('ReportWork').length, 0, run.output)
+    assert.equal(run.of('ReportWork').length, 1, run.output)
+    assert.equal(run.of('ReportWork')[0].operation.undeliverable, 'adapter_output_exceeds_object_budget')
+    assert.equal(run.of('ReportWork')[0].operation.ok, undefined)
     assert.match(run.output, /adapter_output_exceeds_object_budget/)
   })
 })
 
-test('ART-WK-6: a Worker with no custody has no fallback that sends the bytes instead', async () => {
+for (const refusal of ['source_material_denied', 'Invalid registration detail!']) {
+  test(`a known success with registration refusal ${refusal} sends a valid outcome-free code`, async () => {
+    await withArea(async ({ env }) => {
+      let polls = 0
+      const run = await driveWorker({
+        env,
+        extraAdapters: { 'ship-adapter.mjs': "console.log('x'.repeat(12000))" },
+        reply: operation => operation.kind === 'Poll'
+          ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+          : { body: { accepted: true } },
+        materialReply: path => path === '/artifact/register'
+          ? { status: 422, body: { accepted: false, reason: refusal } }
+          : path === '/artifact/delivery' ? { body: { accepted: true, delivery: null } } : undefined,
+        done: (_seen, output) => /Reconciliation requested|\| receipt (?:not )?committed|remains pending/.test(output),
+      })
+      assert.equal(run.timedOut, false, run.output)
+      assertUndeliverable(run, refusal === 'source_material_denied' ? refusal : 'result_delivery_unavailable')
+    })
+  })
+}
+
+test('a known failure with refused diagnostic registration keeps O3a', async () => {
+  await withArea(async ({ env }) => {
+    let polls = 0
+    const row = actionRow()
+    row.artifactPolicy = { ...row.artifactPolicy, inlineBytes: 600, objectBytes: 8192 }
+    const run = await driveWorker({
+      env,
+      extraAdapters: { 'ship-adapter.mjs': "process.stderr.write('rejected ' + 'y'.repeat(1500)); process.exit(2)" },
+      reply: operation => operation.kind === 'Poll'
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [row] } } } : HOLD
+        : { body: { accepted: true } },
+      materialReply: path => path === '/artifact/register'
+        ? { status: 422, body: { accepted: false, reason: 'source_material_denied' } }
+        : path === '/artifact/delivery' ? { body: { accepted: true, delivery: null } } : undefined,
+      done: (_seen, output) => /Reconciliation requested|\| receipt (?:not )?committed|remains pending/.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    const reports = run.of('ReportWork')
+    assert.equal(reports.length, 1, run.output)
+    assert.equal(reports[0].operation.ok, false)
+    assert.equal(reports[0].operation.undeliverable, undefined)
+    assert.equal(reports[0].operation.facts, undefined)
+    assert.equal(reports[0].operation.artifacts, undefined)
+    assert.match(reports[0].operation.reason, /^failure_detail_not_delivered:/)
+    assert.match(run.output, /receipt committed/)
+  })
+})
+
+for (const kind of ['write', 'run']) test(`ART-WK-6: a ${kind} with no custody requests reconciliation without sending bytes`, async () => {
   // The absence of a byte-upload path is the point of the cutover, so it is asserted where it
   // would have been used: an over-budget result on a Worker that holds custody of nothing has
   // nowhere to put its object, and says so rather than putting it on the wire.
@@ -280,7 +351,9 @@ test('ART-WK-6: a Worker with no custody has no fallback that sends the bytes in
   const run = await driveWorker({
     extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'; import { join } from 'node:path'; appendFileSync(join(process.env.RULITH_SOURCE_ACCESS, 'effects.log'), 'ship\\n'); console.log(JSON.stringify({result:'x'.repeat(12000)}));" },
     reply: operation => operation.kind === 'Poll'
-      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow({ toolSpec: JSON.stringify({
+        impl: 'worker-tool', exec: 'acme.ship@1', kind, params: {}, sourceTypes: ['file'],
+      }) })] } } } : HOLD
       : { body: { accepted: true, revision: 'r2' } },
     done: (_seen, output) => /could not be delivered|receipt committed/.test(output),
   })
@@ -289,9 +362,29 @@ test('ART-WK-6: a Worker with no custody has no fallback that sends the bytes in
   // Named precisely: "this Worker was never given a material area" rather than a generic
   // custody failure, because the operator's fix is a deployment setting rather than a retry.
   assert.match(run.output, /materials_not_configured/)
-  assert.equal(run.of('ReportWork').length, 0, 'a receipt was manufactured for an object nobody holds')
+  assertUndeliverable(run, 'materials_not_configured')
   assert.equal(run.of('ArtifactUpload').length, 0)
   assert.equal(run.seen.some((entry) => String(entry.path ?? '').startsWith('/artifact/')), false)
+})
+
+test('a read with capture overflow keeps its failure receipt instead of requesting reconciliation', async () => {
+  const row = actionRow({ toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.ship@1',
+    kind: 'read', params: {}, sourceTypes: ['file'] }) })
+  row.artifactPolicy.objectBytes = 1024
+  let polls = 0
+  const run = await driveWorker({
+    extraAdapters: { 'ship-adapter.mjs': "process.stdout.write('x'.repeat(12000))\n" },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [row] } } } : HOLD
+      : { body: { accepted: true } },
+    done: (_seen, output) => /receipt committed|Reconciliation requested/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  const reports = run.of('ReportWork')
+  assert.equal(reports.length, 1, run.output)
+  assert.equal(reports[0].operation.ok, false)
+  assert.equal(reports[0].operation.undeliverable, undefined)
+  assert.match(reports[0].operation.reason, /^result_not_delivered:/)
 })
 
 
