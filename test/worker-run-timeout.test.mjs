@@ -407,3 +407,27 @@ test('a failed run reports what the command said, bounded, never its command lin
   assert.ok(Buffer.byteLength(reports[0].operation.reason) <= 2048)
   assert.doesNotMatch(reports[0].operation.reason, /Command failed|ship-adapter/)
 })
+
+test('a failed write whose failure report cannot be delivered still settles as a failure, without its detail', async () => {
+  // An inline budget smaller than the bounded reason and nowhere to register an object: before,
+  // the known failure stayed pending for an operator as though its outcome were unknown.
+  let polls = 0
+  const tiny = actionRow()
+  tiny.artifactPolicy = { ...tiny.artifactPolicy, inlineBytes: 600 }
+  const run = await driveWorker({
+    extraAdapters: { 'ship-adapter.mjs': "process.stderr.write('file digest changed ' + 'y'.repeat(1500))\nprocess.exit(2)\n" },
+    reply: operation => {
+      if (operation.kind === 'Poll') return ++polls === 1
+        ? { body: { accepted: true, payload: { work: [{ ...tiny, toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.ship@1', kind: 'write', params: {}, sourceTypes: ['file'] }) }] } } } : HOLD
+      return { body: { accepted: true } }
+    },
+    done: (_seen, output) => DONE.action.test(output) || /remains pending for operator reconciliation/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output.replace(/y{50,}/g, 'yyy…'))
+  const reports = run.of('ReportWork')
+  assert.equal(reports.length, 1, run.output.replace(/y{50,}/g, 'yyy…'))
+  assert.equal(reports[0].operation.ok, false)
+  assert.equal(reports[0].operation.facts, undefined)
+  assert.match(reports[0].operation.reason, /^failure_detail_not_delivered: [a-z_]+\. The action failed; its detail could not be delivered\.$/)
+  assert.doesNotMatch(run.output, /remains pending for operator reconciliation/)
+})

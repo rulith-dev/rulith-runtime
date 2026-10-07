@@ -4199,6 +4199,16 @@ async function handleAction(w) {
     prepared = { body: { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant,
       ok: false, result: '', reason } }
   }
+  // An executor that failed has a known outcome: it failed. When even its failure report cannot be
+  // delivered, the failure is reported without its detail, instead of the invocation waiting for an
+  // operator as though its outcome were unknown (2026-10-07: a refused write left its Case able to
+  // end only as not completed). A failure receipt carries no facts, so nothing is manufactured.
+  if (!ok && prepared.unavailable) {
+    console.error(`⚠ The failure report for ${action} could not be delivered (${prepared.unavailable}). The executor failed, so a failure receipt without its detail is sent instead.`)
+    reason = `failure_detail_not_delivered: ${prepared.unavailable}. The action failed; its detail could not be delivered.`
+    prepared = { body: { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant,
+      ok: false, result: '', reason } }
+  }
   if (prepared.unavailable) {
     console.error(`⚠ Result data for ${action} could not be delivered (${prepared.unavailable}). The action already ran; no success or failure receipt was manufactured. This invocation remains pending for operator reconciliation after Worker fencing; do not rerun it.`)
     wev('reported', { kind: 'action', id: action, landed: false, reason: prepared.unavailable })

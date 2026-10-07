@@ -54,7 +54,7 @@
       "sha256": "616cbe6b498bcd2e7fecdddc1dcd015779b9c3ff3c7469fc92e821100b48640f"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "5433e64afafc4bcfbc9ccb6865d870c9c999061b31c8817429b73ee5d98bfac6"
+      "sha256": "c6aaeef2b52131ff0dd3238fa2774ed698234b5cece4067eb2b1c54850e7313d"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"

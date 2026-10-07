@@ -2,6 +2,14 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.12.5 - unreleased
+
+- Worker: an executor that failed always settles with a failure receipt. When even the failure
+  report cannot be delivered (an inline budget smaller than its reason, nowhere to register an
+  object), the receipt says `failure_detail_not_delivered: <code>` and carries no facts, instead of
+  the invocation waiting for an operator as though its outcome were unknown (operations
+  convergence O3a).
+
 ## 0.12.4 - 2026-10-07
 
 - Local: every JSON record the manager and the local Agent keep (the device sign-in record,
