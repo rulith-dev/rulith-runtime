@@ -34,6 +34,14 @@ const MAX_RESPONSE_BYTES = 262_144
 const REQUEST_TIMEOUT_MS = 15_000
 const digest = (value) => createHash('sha256').update(value).digest('hex')
 const text = (value) => (typeof value === 'string' ? value : '')
+const reconnectable = (rows) => (Array.isArray(rows) ? rows : [])
+  .filter((row) => row !== null && typeof row === 'object' && !Array.isArray(row)
+    && text(row.connectionId).trim() && text(row.name).trim() && typeof row.createdAt === 'string')
+  .slice(0, 16)
+  .map((row) => ({ connectionId: row.connectionId, name: row.name,
+    ...(text(row.displayName).trim() ? { displayName: row.displayName } : {}), createdAt: row.createdAt }))
+const agentView = (row) => ({ id: String(row.id), name: String(row.name ?? row.id),
+  reconnectable: reconnectable(row.reconnectable) })
 
 /**
  * A refusal from the account service, carrying what the service said rather than a
@@ -266,7 +274,7 @@ export function createDeviceClient({ root } = {}) {
       codeExpiresAt: current.state === 'pending' ? text(current.codeExpiresAt) : '',
       consoleUrl: current.state === 'pending' ? text(current.consoleUrl) : '',
       account: current.account ?? null,
-      agents: Array.isArray(current.agents) ? current.agents.map((row) => ({ id: String(row.id), name: String(row.name ?? row.id) })) : [],
+      agents: Array.isArray(current.agents) ? current.agents.map(agentView) : [],
       expiresAt: text(current.expiresAt),
       directoryCheckedAt: text(current.refreshedAt) || text(current.linkedAt),
       signOut: current.signOut ?? null,
@@ -386,7 +394,7 @@ export function createDeviceClient({ root } = {}) {
         if (!text(account.id)) throw new Error('The approval did not name an account.')
         record = { ...record, state: 'approved', token,
           account: { id: String(account.id), name: String(account.name ?? account.id) },
-          agents: agents.map((row) => ({ id: String(row.id), name: String(row.name ?? row.id) })),
+          agents: agents.map(agentView),
           expiresAt: text(reply.expiresAt), approvedAt: new Date().toISOString() }
         record = await mutate((latest) => ({ ...latest, ...record }))
       }
@@ -423,7 +431,7 @@ export function createDeviceClient({ root } = {}) {
       const reply = await call(current.origin, '/local-devices/context', { bearer: current.token }).catch(deviceRouteRefusal)
       if (text(reply.deviceId) !== current.deviceId) throw new Error('The account service answered for a different device record.')
       if (text(reply.account?.id) !== text(current.account?.id)) throw new Error('The account service answered for a different account.')
-      const agents = (Array.isArray(reply.agents) ? reply.agents : []).map((row) => ({ id: String(row.id), name: String(row.name ?? row.id) }))
+      const agents = (Array.isArray(reply.agents) ? reply.agents : []).map(agentView)
       await mutate((latest) => {
         if (latest.state !== 'linked' || latest.origin !== current.origin || latest.deviceId !== current.deviceId
             || latest.token !== current.token || text(latest.account?.id) !== text(current.account?.id))
@@ -443,17 +451,23 @@ export function createDeviceClient({ root } = {}) {
      * instance's own key — the device token is authority to approve, not a way to carry
      * somebody else's credential.
      */
-    pair: ({ pairingId, deviceSecret, agentId, replaceAgentToken = false } = {}) => {
+    pair: ({ pairingId, deviceSecret, agentId, replaceAgentToken = false, reconnectConnectionId } = {}) => {
       const current = linked()
       if (!text(pairingId) || !text(deviceSecret) || !text(agentId)) throw new Error('Pairing approval needs the pairing id, its proof and the chosen Agent.')
       if (!current.agents?.some((row) => row.id === agentId)) {
         throw new Error('That Agent is not enabled in this account. Refresh Agents after enabling it in Console.')
       }
+      const reconnect = text(reconnectConnectionId)
+      if (reconnect && !reconnectable(current.agents.find((row) => row.id === agentId)?.reconnectable)
+        .some((row) => row.connectionId === reconnect)) {
+        throw new Error('That Connection is no longer available to reconnect. Refresh Agents and choose a Connection again.')
+      }
       // An operation route: a refusal here is usually about the Agent or the pairing, and
       // only the account service naming a device-level code — or the device route itself
       // refusing — may conclude that this computer is signed out.
       return call(current.origin, '/local-devices/pair', { bearer: current.token,
-        body: { pairingId, deviceSecret, agentId, replaceAgentToken: replaceAgentToken === true } }).catch(operationRefusal)
+        body: { pairingId, deviceSecret, agentId, replaceAgentToken: replaceAgentToken === true,
+          ...(reconnect ? { reconnectConnectionId: reconnect } : {}) } }).catch(operationRefusal)
     },
 
     // The manager supplies only the selected Agent's Worker projection. Document bytes never

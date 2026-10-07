@@ -259,8 +259,9 @@ export function createManagerServer({
     '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'])),
     '/manager/instances/create': (body) => instances.create(onlyFields(body, ['name', 'mode', 'setupTarget'])),
     '/manager/instances/pair': (body) => {
-      const fields = onlyFields(body, ['instanceId', 'agentId', 'replaceAgentToken'])
-      return instances.pair(String(fields.instanceId ?? ''), { agentId: fields.agentId, replaceAgentToken: fields.replaceAgentToken })
+      const fields = onlyFields(body, ['instanceId', 'agentId', 'replaceAgentToken', 'reconnectConnectionId'])
+      return instances.pair(String(fields.instanceId ?? ''), { agentId: fields.agentId,
+        replaceAgentToken: fields.replaceAgentToken, reconnectConnectionId: fields.reconnectConnectionId })
     },
     '/manager/instances/pair/poll': (body) => instances.pairPoll(String(onlyFields(body, ['instanceId']).instanceId ?? '')),
     '/manager/instances/pair/cancel': (body) => instances.cancelPairing(String(onlyFields(body, ['instanceId']).instanceId ?? '')),

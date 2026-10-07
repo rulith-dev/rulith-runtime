@@ -423,7 +423,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     if (reservation.clientMode !== undefined && clientMode !== reservation.clientMode) {
       throw new Error(`This pairing was started as ${clientMode}, and the manager reserved ${reservation.clientMode} for this instance.`)
     }
-    const approved = await device.pair({ pairingId, deviceSecret, agentId: reservation.agentId, replaceAgentToken: reservation.replaceAgentToken === true })
+    const approved = await device.pair({ pairingId, deviceSecret, agentId: reservation.agentId,
+      replaceAgentToken: reservation.replaceAgentToken === true, reconnectConnectionId: reservation.reconnectConnectionId })
     const agentId = text(approved?.agentId).trim() || reservation.agentId
     if (agentId !== reservation.agentId) throw new Error('The account service approved a different Agent than this instance reserved.')
     await registry.patchInstance(id, (row) => ({ pairing: { ...row.pairing, lastError: undefined, pairingId, approvedAt: new Date().toISOString() } }))
@@ -716,6 +717,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
   /** Is this the same attachment request, in every part that decides what gets issued? */
   const sameTarget = (existing, target) => ['agentId', 'origin', 'accountId', 'clientMode'].every((field) => existing[field] === target[field])
     && existing.replaceAgentToken === target.replaceAgentToken
+    && text(existing.reconnectConnectionId) === text(target.reconnectConnectionId)
 
   /** The roles this instance is actually running right now, if its host is open. */
   const runningRoles = (id) => {
@@ -849,6 +851,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         pendingAgentId: row.pairing?.agentId ?? '', pendingAgentName: row.pairing?.agentName ?? '',
         pendingError: row.pairing?.lastError ?? null,
         pendingReplace: row.pairing?.replaceAgentToken === true,
+        pendingReconnect: text(row.pairing?.reconnectConnectionId),
         pendingOrigin: row.pairing?.origin ?? '', pendingAccountId: row.pairing?.accountId ?? '',
         setupTarget: row.setupTarget ?? null,
         model,
@@ -1150,7 +1153,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
      * Nothing about the device token reaches the instance, and the Agent credential is
      * delivered encrypted to the key this instance just generated.
      */
-    pair: (id, { agentId, replaceAgentToken = false } = {}) => admit(() => lifecycle(id, async () => {
+    pair: (id, { agentId, replaceAgentToken = false, reconnectConnectionId } = {}) => admit(() => lifecycle(id, async () => {
       const grant = device.peek()
       if (grant.state !== 'linked') throw new Error('Sign in to a Rulith account from the manager before attaching an Agent.')
       const chosen = text(agentId).trim()
@@ -1182,7 +1185,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       // token is minted at all, and a delivery under the wrong one silently rewrites the
       // instance's roles.
       const target = { agentId: chosen, agentName: known.name, origin: grant.origin, accountId, clientMode,
-        replaceAgentToken: replaceAgentToken === true }
+        replaceAgentToken: replaceAgentToken === true,
+        ...(text(reconnectConnectionId) ? { reconnectConnectionId } : {}) }
       await registry.update((state) => {
         const entry = state.instances.find((candidate) => candidate.id === id)
         if (entry === undefined) throw new Error(`No local instance ${id} is registered.`)

@@ -51,6 +51,84 @@ const openPage = (state) => runPageScript(managerPage, { respond: async () => ({
 /** Let promises the page started settle before inspecting what it did. */
 const settle = async () => { for (let i = 0; i < 4; i += 1) await new Promise((done) => setImmediate(done)) }
 
+for (const choice of ['conn-old', '']) {
+  test('reconnect candidates require an explicit choice before Connect: ' + (choice || 'new'), async () => {
+    const connection = { connectionId: 'conn-old', name: 'Fallback', displayName: '<Office & computer>', createdAt: '2026-10-01T00:00:00Z' }
+    const device = linkedDevice([{ id: 'agent-alpha', name: 'Alpha', reconnectable: [connection] }])
+    const row = instanceOf(), state = stateOf({ device, instances: [row] })
+    const page = await openPage(state)
+    await page.choose(row.id)
+    page.$('attach-open').onclick()
+    assert.equal(page.$('pair-connections').hidden, false)
+    assert.equal(page.$('pair').disabled, true)
+    const options = page.$('pair-connection-options').innerHTML
+    assert.match(options, /type="radio".*required/)
+    assert.equal(options.includes(' checked'), false, 'no Connection decision is made for the person')
+    assert.match(options, /Reconnect “&lt;Office &amp; computer&gt;” \(created /)
+    assert.match(options, /Create a new connection/)
+    await page.$('pair').onclick(); await settle()
+    assert.equal(page.calls.some(call => call.path === '/manager/instances/pair'), false)
+    page.$('pair-connections').onchange({ target: { name: 'reconnect-choice', value: choice, checked: true } })
+    assert.equal(page.$('pair').disabled, false)
+    page.render(state)
+    assert.equal(page.$('pair').disabled, false, 'an unchanged refresh preserves the explicit choice')
+    await page.$('pair').onclick(); await settle()
+    const body = page.calls.find(call => call.path === '/manager/instances/pair').body
+    assert.deepEqual(body, { instanceId: row.id, agentId: 'agent-alpha', replaceAgentToken: false,
+      ...(choice ? { reconnectConnectionId: choice } : {}) })
+  })
+}
+
+test('Agents without reconnect candidates keep the ordinary attach dialog', async () => {
+  const row = instanceOf(), page = await openPage(stateOf({ device: linkedDevice(), instances: [row] }))
+  await page.choose(row.id)
+  page.$('attach-open').onclick()
+  assert.equal(page.$('pair-connections').hidden, true)
+  assert.equal(page.$('pair-connection-options').innerHTML, '')
+  assert.equal(page.$('pair').disabled, false)
+  await page.$('pair').onclick(); await settle()
+  assert.deepEqual(page.calls.find(call => call.path === '/manager/instances/pair').body,
+    { instanceId: row.id, agentId: 'agent-alpha', replaceAgentToken: false })
+})
+
+test('reconnect consent resets when the Agent, profile, account or offered list changes', async () => {
+  const connection = { connectionId: 'conn-old', name: 'Old computer', createdAt: '' }
+  const device = linkedDevice(['agent-alpha', 'agent-beta'].map(id => ({ id, name: id, reconnectable: [connection] })))
+  const rows = [instanceOf({ id: 'a' }), instanceOf({ id: 'b' })], state = stateOf({ device, instances: rows })
+  for (const change of ['agent', 'profile', 'account', 'connections']) {
+    const page = await openPage(state)
+    await page.choose('a')
+    page.$('pair-connections').onchange({ target: { name: 'reconnect-choice', value: 'conn-old', checked: true } })
+    assert.equal(page.$('pair').disabled, false)
+    if (change === 'agent') { page.$('agent-select').value = 'agent-beta'; page.$('agent-select').onchange() }
+    if (change === 'profile') await page.choose('b')
+    if (change === 'account') page.render({ ...state, device: { ...device, account: { id: 'another-account' } } })
+    if (change === 'connections') page.render({ ...state, device: { ...device,
+      agents: device.agents.map(agent => ({ ...agent, reconnectable: [{ ...connection, connectionId: 'conn-other' }] })) } })
+    assert.equal(page.$('pair').disabled, true, change + ' cannot inherit another reconnect decision')
+    assert.equal(page.$('pair-connection-options').innerHTML.includes(' checked'), false)
+  }
+})
+
+test('first-use setup opens the explicit reconnect choice before asking to pair', async () => {
+  const device = linkedDevice([{ id: 'agent-alpha', name: 'Alpha', reconnectable: [{ connectionId: 'conn-old', name: 'Old computer', createdAt: '' }] }])
+  const rows = []
+  const page = await runPageScript(managerPage, { respond: async path => {
+    if (path === '/manager/instances/create') {
+      rows.push(instanceOf())
+      return { body: { ...stateOf({ device, instances: rows }), id: rows[0].id } }
+    }
+    return { body: stateOf({ device, instances: rows }) }
+  } })
+  await page.choose('agent-alpha')
+  await page.$('setup-start').onclick(); await settle()
+  assert.equal(page.$('dlg-setup').hidden, true)
+  assert.equal(page.$('dlg-attach').hidden, false)
+  assert.equal(page.$('pair-connections').hidden, false)
+  assert.equal(page.$('pair').disabled, true)
+  assert.equal(page.calls.some(call => call.path === '/manager/instances/pair'), false)
+})
+
 test('the environment library opens without an Agent host and survives Agent removal', async () => {
   const page = await openPage(stateOf())
   page.$('environment-open').onclick(); await settle()
@@ -730,8 +808,8 @@ test('reopening a pending replacement discloses the previously approved key repl
 for (const cancellation of ['confirmed', 'unconfirmed', 'account-changed']) {
   test('key replacement requires explicit choice and confirmed cancellation: ' + cancellation, async () => {
     const row = instanceOf({ pendingAgentId: 'agent-alpha', pendingAgentName: 'Alpha', pendingOrigin: ORIGIN, pendingAccountId: ACCOUNT,
-      pendingError: { code: 'runtime_credential_exists', teaching: 'Agent already has an active credential' } })
-    let device = linkedDevice()
+      pendingReconnect: 'conn-old', pendingError: { code: 'runtime_credential_exists', teaching: 'Agent already has an active credential' } })
+    let device = linkedDevice([{ id: 'agent-alpha', name: 'Alpha', reconnectable: [{ connectionId: 'conn-old', name: 'Old computer', createdAt: '' }] }])
     const page = await runPageScript(managerPage, { respond: async (path, request) => {
       const body = () => stateOf({ device, instances: [row] })
       if (path === '/manager/instances/pair/cancel') {
@@ -742,6 +820,7 @@ for (const cancellation of ['confirmed', 'unconfirmed', 'account-changed']) {
       }
       if (path === '/manager/instances/pair') {
         assert.equal(request.body.replaceAgentToken, true)
+        assert.equal(request.body.reconnectConnectionId, 'conn-old', 'replacing the Agent key preserves the Connection decision')
         Object.assign(row, { paired: true, agentId: 'agent-alpha', origin: ORIGIN, accountId: ACCOUNT })
         return { body: body() }
       }

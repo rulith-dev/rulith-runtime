@@ -105,19 +105,19 @@
       "sha256": "d4af81e6663d5b19c32da69c5550ac52afdad021c3ef774a5f27d7f83f4f8236"
     },
     "local/device-client.mjs": {
-      "sha256": "bdd074cd43b1c426e93094f94659f801964be494efc9e3e0f28da877f0705988"
+      "sha256": "b4e3835c2143b3ceaa0ad1289c6b6172b6d0a4f8b7ccd8be7d997670efdb988e"
     },
     "local/instance-manager.mjs": {
-      "sha256": "e412c775c3078c90af8ed91a939fd26a63dca276f285fe5d0c0b312727afc8c7"
+      "sha256": "9fce3a1fef45af91d1a260d151ce7c830a73523389ea04ae5cfead0e9e4d73b4"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"
     },
     "local/manager-server.mjs": {
-      "sha256": "7655be6f6067d57d2613027536ea6192d05f84007c1cd79f80ec560a0ad93dc1"
+      "sha256": "6ebec88897e31a247c90b5e6aa5ba2595b8b417cb647c934601b2c5595229b7c"
     },
     "local/manager-ui.mjs": {
-      "sha256": "7cb38ab0d99603c756997ab5e342dee5e67608d3148cb559437244304bbd679e"
+      "sha256": "d2a087fe863d686c068995c157811e5b1c0a8f2b4487a14e6bb68d25bd5d3d4f"
     },
     "docs/local-manager.md": {
       "sha256": "e755070e1772e8687c26c2b2467b9845f83de4b3b0a924eee0aca60476afd76e"

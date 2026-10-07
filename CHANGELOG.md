@@ -9,6 +9,11 @@ All notable changes to the local runtime are documented here.
   object), the receipt says `failure_detail_not_delivered: <code>` and carries no facts, instead of
   the invocation waiting for an operator as though its outcome were unknown (operations
   convergence O3a).
+- Local: attaching an Agent can reconnect one of its existing Worker Connections that has no
+  active Worker instead of creating a new one (PSC SYS-CONN-01, D-1007b). The manager lists them
+  after sign-in and asks the person to choose explicitly: reconnect a named Connection, or create a
+  new one. Reconnecting keeps the Connection's identity, Source bindings and Tool selection; the
+  Gateway rotates its secret and delivers it to this computer, and the old key stops working.
 
 ## 0.12.4 - 2026-10-07
 

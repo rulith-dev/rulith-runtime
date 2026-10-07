@@ -60,6 +60,59 @@ async function signIn(gateway, call, agentIds = ['agent-alpha', 'agent-beta']) {
   return approved.deviceId
 }
 
+test('sign-in and refresh retain only bounded, sanitized reconnectable Connections', async t => {
+  await withManager(t, async ({ gateway, call, manager }) => {
+    const connection = { connectionId: 'conn-old', name: 'Old computer', displayName: 'Office', createdAt: '2026-10-01T00:00:00Z' }
+    const rows = [null, [], {}, { ...connection, connectionId: 42 }, { ...connection, connectionId: ' ' },
+      { ...connection, name: false }, { ...connection, createdAt: 42 },
+      { ...connection, extra: 'drop-me' }, { ...connection, connectionId: 'conn-other', displayName: ' ' }]
+    gateway.setReconnectable('agent-alpha', rows)
+    await signIn(gateway, call)
+    const expected = [connection, { connectionId: 'conn-other', name: connection.name, createdAt: connection.createdAt }]
+    assert.deepEqual(manager.device.peek().agents[0].reconnectable, expected, 'the sign-in reply is sanitized before storage')
+    assert.deepEqual(manager.device.status().agents[0].reconnectable, expected)
+    assert.deepEqual(manager.device.status().agents[1].reconnectable, [])
+
+    const many = Array.from({ length: 20 }, (_, i) => ({ ...connection, connectionId: 'conn-' + i, displayName: 7, extra: true }))
+    gateway.setReconnectable('agent-alpha', [...rows.slice(0, 7), ...many])
+    const refreshed = await call('/manager/device/refresh', {})
+    assert.equal(refreshed.status, 200)
+    const bounded = many.slice(0, 16).map(({ connectionId, name, createdAt }) => ({ connectionId, name, createdAt }))
+    assert.deepEqual(manager.device.peek().agents[0].reconnectable, bounded)
+    assert.deepEqual(refreshed.body.device.agents[0].reconnectable, bounded)
+    gateway.setReconnectable('agent-alpha', {})
+    await manager.device.refresh()
+    assert.deepEqual(manager.device.status().agents[0].reconnectable, [])
+  })
+})
+
+test('a reconnect choice must belong to the selected Agent before any approval request', async t => {
+  await withManager(t, async ({ gateway, call, manager }) => {
+    gateway.setReconnectable('agent-alpha', [{ connectionId: 'conn-alpha', name: 'Alpha computer', createdAt: '' }])
+    await signIn(gateway, call)
+    const before = gateway.requests.length
+    for (const [agentId, reconnectConnectionId] of [['agent-alpha', 'conn-missing'], ['agent-beta', 'conn-alpha']]) {
+      assert.throws(() => manager.device.pair({ pairingId: 'pair-test', deviceSecret: 'proof-test', agentId, reconnectConnectionId }), /Refresh Agents/)
+    }
+    assert.equal(gateway.requests.length, before, 'invalid reconnect choices send no HTTP request')
+    assert.equal(manager.device.status().state, 'linked')
+  })
+})
+
+test('a valid reconnect choice reaches the Gateway and retains the Connection identity', async t => {
+  await withManager(t, async ({ gateway, call, manager }) => {
+    gateway.setReconnectable('agent-alpha', [{ connectionId: 'conn-alpha', name: 'Alpha computer', createdAt: '' }])
+    await signIn(gateway, call)
+    const row = await manager.instances.create({ name: 'Reconnect' })
+    await manager.instances.pair(row.id, { agentId: 'agent-alpha', reconnectConnectionId: 'conn-alpha' })
+    assert.equal(gateway.requests.find(row => row.path === '/local-devices/pair').body.reconnectConnectionId, 'conn-alpha')
+    assert.equal(manager.registry.instance(row.id).connectionId, 'conn-alpha')
+    const other = await manager.instances.create({ name: 'New' })
+    await manager.instances.pair(other.id, { agentId: 'agent-beta' })
+    assert.equal(Object.hasOwn(gateway.requests.filter(row => row.path === '/local-devices/pair').at(-1).body, 'reconnectConnectionId'), false)
+  })
+})
+
 test('an approved login with a failed acknowledgement can reset only through confirmed sign-out', async (t) => {
   await withManager(t, async ({ gateway, call }) => {
     const start = await call('/manager/device/start', { consoleUrl: gateway.origin, name: 'Reset computer' })

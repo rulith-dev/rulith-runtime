@@ -599,6 +599,38 @@ test('a reservation outlives the process that made it, and only its Agent may be
   })
 })
 
+test('the manager route persists a reconnect choice and resumes its approval after restart', async t => {
+  await withManager(t, async ({ manager, gateway, root }) => {
+    gateway.setReconnectable('agent-alpha', [{ connectionId: 'conn-old', name: 'Old computer', createdAt: '' }])
+    await manager.device.refresh()
+    const row = await manager.instances.create({ name: 'Reconnect after restart' })
+    gateway.failNext('/local-devices/pair')
+    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/pair`, {
+      method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
+      body: JSON.stringify({ instanceId: row.id, agentId: 'agent-alpha', reconnectConnectionId: 'conn-old' }),
+    })
+    assert.equal(response.status, 400)
+    assert.equal((await response.json()).instances.find(entry => entry.id === row.id).pendingReconnect, 'conn-old')
+    assert.equal(manager.registry.instance(row.id).pairing.reconnectConnectionId, 'conn-old')
+    const requests = gateway.requests.length
+    await assert.rejects(manager.instances.pair(row.id, { agentId: 'agent-alpha', reconnectConnectionId: 'conn-other' }), /already attaching/)
+    await assert.rejects(manager.instances.pair(row.id, { agentId: 'agent-alpha' }), /already attaching/)
+    assert.equal(gateway.requests.length, requests, 'an existing reservation cannot silently change its Connection target')
+    await manager.close()
+    const restarted = createManagerServer({ root, port: 0, key: KEY })
+    try {
+      await restarted.listen()
+      assert.equal(restarted.instances.overview()[0].pendingReconnect, 'conn-old')
+      assert.equal((await restarted.instances.pairPoll(row.id)).agentId, 'agent-alpha')
+      const approvals = gateway.requests.filter(entry => entry.path === '/local-devices/pair')
+      assert.equal(approvals.length, 2)
+      assert.deepEqual(approvals[1].body, approvals[0].body, 'recovery asks for the same Connection with the original proof')
+      assert.equal(restarted.registry.instance(row.id).connectionId, 'conn-old')
+      assert.equal(restarted.instances.overview()[0].pendingReconnect, '')
+    } finally { await restarted.close() }
+  })
+})
+
 for (const lostApprovalReceipt of [false, true]) {
 test('an issued credential can be collected after disable and refresh, without allowing execution (lost receipt: ' + lostApprovalReceipt + ')', async t => {
   await withManager(t, async ({ manager, gateway }) => {

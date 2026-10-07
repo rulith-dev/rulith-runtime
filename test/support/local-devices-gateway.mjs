@@ -88,7 +88,8 @@ export function createDevicesGateway({
   /** The device bearer returns its account's current enabled Agent directory. */
   const grantedAgents = (_device) => [...enabled.values()]
     .filter((row) => row !== undefined && row.enabled)
-    .map((row) => ({ id: row.id, name: row.name }))
+    .map((row) => ({ id: row.id, name: row.name,
+      ...(row.reconnectable === undefined ? {} : { reconnectable: row.reconnectable }) }))
 
   const deviceRoutes = {
     'POST /local-devices/start': (body) => {
@@ -183,7 +184,7 @@ export function createDevicesGateway({
       return { cases: [] }
     },
     'POST /local-devices/pair': (body, { bearer }) => {
-      onlyFields(body, ['pairingId', 'deviceSecret', 'agentId', 'replaceAgentToken'])
+      onlyFields(body, ['pairingId', 'deviceSecret', 'agentId', 'replaceAgentToken', 'reconnectConnectionId'])
       const device = grantUsable(deviceByToken(bearer))
       const pairing = pairings.get(String(body.pairingId ?? ''))
       if (pairing === undefined) refuse(404, 'No such pairing request.')
@@ -199,7 +200,13 @@ export function createDevicesGateway({
       if (pairing.state === 'approved') {
         if (pairing.agentId !== agentId) refuse(409, 'This pairing was already approved for a different Agent.', 'pairing_conflict')
         if (pairing.deviceId !== device.id) refuse(409, 'This pairing was already approved for a different device.', 'pairing_conflict')
+        if (body.reconnectConnectionId !== undefined && body.reconnectConnectionId !== pairing.connectionId)
+          refuse(409, 'This pairing was already approved for a different Connection.', 'pairing_conflict')
         return { pairingId: pairing.id, agentId, connectionId: pairing.connectionId, state: 'approved', alreadyApproved: true }
+      }
+      if (body.reconnectConnectionId !== undefined
+        && !(enabled.get(agentId)?.reconnectable ?? []).some(row => row?.connectionId === body.reconnectConnectionId)) {
+        refuse(409, 'That Connection is no longer available to reconnect.', 'connection_unavailable')
       }
       const issued = [...agentTokens.values()].find((row) => row.agentId === agentId && !row.revoked)
       if (issued !== undefined && body.replaceAgentToken !== true) {
@@ -211,9 +218,10 @@ export function createDevicesGateway({
       const token = 'rlt_agt_' + randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '')
       const jti = 'jti-' + randomUUID().slice(0, 8)
       agentTokens.set(token, { jti, agentId, deviceId: device.id, revoked: false })
-      const connectionId = 'conn-' + randomUUID().slice(0, 8)
+      const connectionId = body.reconnectConnectionId ?? 'conn-' + randomUUID().slice(0, 8)
       const connectionKey = randomUUID().replace(/-/g, '')
-      connections.set(connectionId, { id: connectionId, key: connectionKey, agentId, deviceId: device.id, revoked: false })
+      connections.set(connectionId, { ...connections.get(connectionId),
+        id: connectionId, key: connectionKey, agentId, deviceId: device.id, revoked: false })
       Object.assign(pairing, { state: 'approved', agentId, token, connectionId, connectionKey, deviceId: device.id, jti })
       device.issued = [...(device.issued ?? []), { jti, connectionId, agentId }]
       return { pairingId: pairing.id, agentId, connectionId, state: 'approved' }
@@ -459,6 +467,7 @@ export function createDevicesGateway({
     /** Console-side directory changes after this device signed in. */
     disableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = false },
     enableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = true },
+    setReconnectable(agentId, rows) { enabled.get(agentId).reconnectable = rows },
     /** Console has already invalidated the old key; Local must prove and save this replacement. */
     replaceConnectionKey(connectionId, key) {
       const row = connections.get(connectionId)

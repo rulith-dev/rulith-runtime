@@ -142,6 +142,8 @@ body{overflow:hidden}
 .inlinefield{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
 .inlinefield select{flex:1 1 220px;min-width:0}
 .checkline{display:inline-flex;align-items:center;gap:7px;margin:0;color:var(--dim);font-size:var(--fs-4)}
+#pair-connections{margin:12px 0;border:1px solid var(--line);border-radius:6px}
+#pair-connection-options{display:grid;gap:8px}
 .scrim[hidden]{display:none}
 /* Setup and the tools page open here rather than in a window that a pop-up blocker can eat
    without telling anybody. The anchor beside the title is a real link, so a person who wants
@@ -300,6 +302,9 @@ export const managerPage = String.raw`<!doctype html>
     <div id="attach-form">
       <label for="agent-select">Agent</label>
       <div class="inlinefield"><select id="agent-select" aria-label="Agent to connect"></select><button class="btn" id="pair">Connect</button></div>
+      <fieldset id="pair-connections" hidden><legend>Connection</legend><div id="pair-connection-options"></div>
+        <p class="muted">Reconnecting keeps that Connection's Source bindings and Tool selection. Its old key stops working.</p>
+      </fieldset>
       <label class="checkline"><input type="checkbox" id="replace">Replace the credential this Agent already has</label>
     </div>
     <div id="attach-pending" hidden>
@@ -403,7 +408,7 @@ const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
    per-Agent loopback keys it never sees: opening an Agent asks the manager for that Agent's
    address and loads it. Nothing is written to storage and no address is logged. */
 let state={instances:[],device:{state:'none'}},selected='',drawer='',pollTimer,signInPollError='',polling=null,pendingReplaceFor='',lastStateRevision=0,lastStateServerId='',requestSequence=0,lastStateRequest=0;
-const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendingAccountId,row.pendingAgentId]):'';
+const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendingAccountId,row.pendingAgentId,row.pendingReconnect||'']):'';
 /* What this page currently knows about the manager itself. While the connection is lost, the state
    on screen is the last one that arrived and nothing may be changed from it: a control acting
    on a picture that may be minutes old is worse than a control that says why it is waiting. */
@@ -487,7 +492,8 @@ function controlSpec(){
       setupAuthorized(setupFor)],
     // Once the profile exists its mode is a fact about files on disk, not a choice any more.
     'setup-mode':['setup:'+(setupFor?setupFor.id:''),Boolean(setupFor)&&setupProfile(setupFor)==null],
-    'pair':['attach:'+selected,Boolean(row)&&linked&&!row.paired&&!row.pendingAgentId&&agents.length>0&&[...$('agent-select').options].some(option=>!option.disabled&&option.value===$('agent-select').value)],
+    'pair':['attach:'+selected,Boolean(row)&&linked&&!row.paired&&!row.pendingAgentId&&agents.length>0&&[...$('agent-select').options].some(option=>!option.disabled&&option.value===$('agent-select').value)&&reconnectChosen()],
+    'pair-connections':['attach:'+selected,Boolean(row)&&linked&&!row.paired&&!row.pendingAgentId],
     'pair-poll':['attach:'+selected,Boolean(row&&row.pendingAgentId)],
     'pair-replace':['attach:'+selected,Boolean(linked&&row?.pendingAgentId&&row.pendingError?.code==='runtime_credential_exists'
       &&$('pair-replace-confirm').checked&&pendingReplaceFor===pendingTarget(row))],
@@ -862,6 +868,25 @@ function syncReplace(){
   if($('replace').checked&&replaceFor!==attachTarget()){$('replace').checked=false;}
   if(!$('replace').checked)replaceFor='';
 }
+let reconnectFor='',reconnectChoice=null;
+const reconnectRows=()=>((state.device||{}).agents||[]).find(a=>a.id===$('agent-select').value)?.reconnectable||[];
+const reconnectTarget=()=>JSON.stringify([selected,state.device?.origin,state.device?.account?.id,$('agent-select').value,reconnectRows()]);
+const reconnectChosen=()=>reconnectRows().length===0||(reconnectFor===reconnectTarget()
+  &&(reconnectChoice===''||reconnectRows().some(row=>row.connectionId===reconnectChoice)));
+function renderReconnect(){
+  const rows=reconnectRows(),target=reconnectTarget();
+  // Consent belongs to this account, profile, Agent and offered Connections. A refresh that
+  // changes that choice must not spend a decision made for an earlier list.
+  if(reconnectFor!==target){reconnectFor=target;reconnectChoice=null;}
+  $('pair-connections').hidden=rows.length===0;
+  const option=(id,label)=>'<label class="checkline"><input type="radio" name="reconnect-choice" value="'+esc(id)+'" required'
+    +(reconnectChoice===id?' checked':'')+'>'+esc(label)+'</label>';
+  const markup=rows.length?rows.map(row=>{
+    const date=new Date(row.createdAt),created=Number.isNaN(date.getTime())?row.createdAt:date.toLocaleDateString();
+    return option(row.connectionId,'Reconnect “'+(row.displayName||row.name)+'” (created '+created+')');
+  }).join('')+option('','Create a new connection'):'';
+  if($('pair-connection-options').innerHTML!==markup)$('pair-connection-options').innerHTML=markup;
+}
 function renderAttach(){
   const row=sel();
   $('attach-sub').textContent=row?row.name:'';
@@ -889,6 +914,7 @@ function renderAttach(){
   if(row&&row.pendingAgentId)$('pair-agent').textContent='Connecting to '+(row.pendingAgentName||row.pendingAgentId);
   if(row)fillSelect('agent-select',agentOptions(row));
   syncReplace();
+  renderReconnect();
 }
 function renderDetails(){
   const row=sel();
@@ -1339,6 +1365,11 @@ $('setup-start').onclick=()=>{
       setupProfiles.set(setupIdentity(agent),id);
     }
     if(!setupAuthorized(agent))throw Error('The account changed or this Agent is no longer enabled. The unconnected profile remains in this environment settings.');
+    // First use reaches the same explicit Connection choice as attaching an existing profile.
+    if((state.device.agents||[]).find(a=>a.id===agent.id)?.reconnectable?.length){
+      selected=id;render();$('agent-select').value=agent.id;renderAttach();applyControls();
+      closeDialog('dlg-setup');openDialog('dlg-attach','attach-close');return;
+    }
     try{await api('/manager/instances/pair',{instanceId:id,agentId:agent.id,replaceAgentToken:false});}
     catch(error){
       if(rowOf(id)?.pendingAgentId&&setupFor===agent&&!$('dlg-setup').hidden){
@@ -1367,11 +1398,19 @@ $('setup-start').onclick=()=>{
    this cloud Agent — the pair that was on screen when it was ticked. Anything else and it is
    somebody's old intent applied to a credential they were not looking at. */
 $('replace').onchange=()=>{replaceFor=$('replace').checked?attachTarget():'';};
-$('agent-select').onchange=()=>{syncReplace();};
+$('agent-select').onchange=()=>{syncReplace();renderReconnect();applyControls();};
+$('pair-connections').onchange=event=>{
+  const input=event.target;
+  if(input.name!=='reconnect-choice'||!input.checked||$('pair-connections').disabled)return;
+  if(input.value!==''&&!reconnectRows().some(row=>row.connectionId===input.value))return;
+  reconnectFor=reconnectTarget();reconnectChoice=input.value;applyControls();
+};
 $('pair').onclick=()=>{const id=selected,agentId=$('agent-select').value;
+  if($('pair').disabled||!reconnectChosen())return;
   const replace=$('replace').checked&&replaceFor===id+' '+agentId;
+  const reconnectConnectionId=reconnectRows().length?reconnectChoice:'';
   run('attach:'+id,'attach-notice',()=>api('/manager/instances/pair',
-    {instanceId:id,agentId:agentId,replaceAgentToken:replace})
+    {instanceId:id,agentId:agentId,replaceAgentToken:replace,...(reconnectConnectionId?{reconnectConnectionId}: {})})
     .then(()=>{$('replace').checked=false;replaceFor='';}));};
 async function showConnected(id){
   if(selected===id&&rowOf(id)?.paired){closeDialog('dlg-attach');await ensureFrame(id);}
@@ -1382,7 +1421,7 @@ $('pair-poll').onclick=()=>{const id=selected;return run('attach:'+id,'attach-no
 $('pair-replace-confirm').onchange=()=>{pendingReplaceFor=$('pair-replace-confirm').checked?pendingTarget(sel()):'';applyControls();};
 $('pair-replace').onclick=()=>{
   if($('pair-replace').disabled)return;
-  const row=sel(),id=selected,agentId=row.pendingAgentId,origin=row.pendingOrigin,accountId=row.pendingAccountId;
+  const row=sel(),id=selected,agentId=row.pendingAgentId,origin=row.pendingOrigin,accountId=row.pendingAccountId,reconnectConnectionId=row.pendingReconnect||'';
   return run('attach:'+id,'attach-notice',async()=>{
     // A confirmed cancellation is the only way to release the old non-replacement request.
     // If it was already approved, no replacement starts and its original delivery survives.
@@ -1390,7 +1429,7 @@ $('pair-replace').onclick=()=>{
     const device=state.device||{};
     if(device.state!=='linked'||device.origin!==origin||device.account?.id!==accountId
       ||!(device.agents||[]).some(a=>a.id===agentId))throw Error('The account or Agent changed. Choose the Agent again.');
-    await api('/manager/instances/pair',{instanceId:id,agentId,replaceAgentToken:true});
+    await api('/manager/instances/pair',{instanceId:id,agentId,replaceAgentToken:true,...(reconnectConnectionId?{reconnectConnectionId}: {})});
     await showConnected(id);
   });
 };
