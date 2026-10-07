@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.12.6 - 2026-10-08
 
 - Local: Health shows device authorization, Agent keys, Worker Connections, Sources, program
   status and pending calls alongside local process and pairing state. Repairs reuse sign-in,
