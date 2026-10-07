@@ -162,6 +162,18 @@ test('workspace list and search stop at a quarter of the inline budget and say t
   const unbounded = await handWorkspace({ operation: 'search', source: 'docs' }, { query: 'needle' }, sources)
   assert.equal(unbounded.rows.length, 40)
   assert.equal(JSON.parse(unbounded.result).truncated, false)
+  assert.equal(JSON.parse(unbounded.result).partial, undefined)
+})
+
+test('a search that stopped at the file limit says it was partial, and an empty result is not called truncated', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-ws-partial-'))
+  for (let i = 0; i < 520; i++) writeFileSync(join(dir, `f${String(i).padStart(3, '0')}.txt`), 'nothing here\n')
+  const sources = { docs: { type: 'file', access: dir } }
+  const out = JSON.parse((await handWorkspace({ operation: 'search', source: 'docs' }, { query: 'needle' }, sources, { inlineBytes: 8192 })).result)
+  assert.deepEqual(out.matches, [])
+  assert.equal(out.truncated, false)
+  assert.equal(out.filesSearched, 500)
+  assert.match(out.partial, /^searched only the first 500 files/)
 })
 
 for (const kind of ['read', 'act']) {

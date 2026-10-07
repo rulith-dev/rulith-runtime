@@ -2866,7 +2866,13 @@ export async function handWorkspace(t, args, sources = SOURCE_CONTEXT, context =
       }
       if (overBudget || matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
     }
-    return { result: JSON.stringify({ matches, truncated: overBudget || matches.length >= WORKSPACE_MAX_SEARCH_MATCHES || files.length >= WORKSPACE_MAX_LIST_ENTRIES }), rows: matches }
+    // `truncated` says matches were left out; `partial` says files were never searched. An empty result with
+    // `partial` is "not in the files searched", never "not in the tree" (2026-10-06: a model read an empty, truncated
+    // search of a large checkout as proof that a string was absent).
+    const partial = files.length >= WORKSPACE_MAX_LIST_ENTRIES
+    return { result: JSON.stringify({ matches, truncated: overBudget || matches.length >= WORKSPACE_MAX_SEARCH_MATCHES,
+      filesSearched: files.length,
+      ...(partial ? { partial: `searched only the first ${WORKSPACE_MAX_LIST_ENTRIES} files (breadth-first, at most 8 levels deep); search a narrower path` } : {}) }), rows: matches }
   }
   if (operation === 'read_text' || operation === 'read_json' || operation === 'hash') {
     const target = await existingWorkspaceTarget(root, input.path)

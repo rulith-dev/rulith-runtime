@@ -2,6 +2,13 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.12.3 - unreleased
+
+- Worker: the built-in workspace `search` result separates its two limits. `truncated` now means
+  only that matches were left out; `partial` (with `filesSearched`) says the search stopped at its
+  file limit (the first 500 files, breadth-first, at most 8 levels deep), so an empty partial result
+  reads as "not in the files searched", not "not in the tree".
+
 ## 0.12.2 - 2026-10-06
 
 - Worker: a `read` Tool whose result cannot be delivered for any reason now settles with one
