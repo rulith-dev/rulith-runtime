@@ -875,6 +875,23 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
 
     modelDefaults: () => defaultView(),
 
+    /** Private input to the health projection. The redaction values are never served. */
+    healthSnapshot: () => {
+      const secrets = []
+      const rows = manager.overview().map(row => {
+        const config = loadInstanceConfig(resolve(row.directory))
+        for (const role of ['agent', 'worker']) for (const [name, value] of Object.entries(config[role]?.env ?? {})) {
+          if (/(?:TOKEN|KEY|SECRET|PASSWORD)$/.test(name)) secrets.push(value)
+        }
+        const model = modelFor(record(row.id), device.status())
+        secrets.push(model.key, hosts.get(row.id)?.host.key)
+        const outside = survivingProcesses(record(row.id))
+        return { ...row, agent: row.agent || outside.some(child => child.role === 'agent'),
+          worker: row.worker || outside.some(child => child.role === 'worker') }
+      })
+      return { instances: rows, secrets }
+    },
+
     /**
      * Move every Agent whose tools can move into the environment's, once, as the workbench starts.
      * Nothing is started or stopped by it, and an Agent it cannot move keeps working on its own files.
@@ -1162,7 +1179,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const accountId = text(grant.account?.id)
       const row = record(id)
       const config = loadInstanceConfig(resolve(row.directory))
-      if (text(config.worker?.env?.RULITH_CONNECTION_KEY) || text(config.agent?.env?.RULITH_TOKEN)) {
+      const repair = row.agentId === chosen && row.origin === grant.origin && row.accountId === accountId
+        && (replaceAgentToken === true || Boolean(text(reconnectConnectionId)))
+      if ((text(config.worker?.env?.RULITH_CONNECTION_KEY) || text(config.agent?.env?.RULITH_TOKEN)) && !repair) {
         throw new Error(`Instance ${row.name} already holds execution credentials. Create a new instance rather than replacing them here.`)
       }
       const clientMode = row.mode === 'existing_client' ? 'existing_agent' : 'local_agent'
@@ -1186,6 +1205,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       // instance's roles.
       const target = { agentId: chosen, agentName: known.name, origin: grant.origin, accountId, clientMode,
         replaceAgentToken: replaceAgentToken === true,
+        ...(repair ? { repair: true } : {}),
         ...(text(reconnectConnectionId) ? { reconnectConnectionId } : {}) }
       await registry.update((state) => {
         const entry = state.instances.find((candidate) => candidate.id === id)
@@ -1211,6 +1231,10 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         return state
       })
       try {
+        // Repair only the identity already attached here, after the same explicit pairing
+        // choice. Reserve first; a crash or refused drain must keep that choice recoverable.
+        // Never edit credentials under a live process or a host owned by another manager.
+        await manager.__preparePairRepair(id)
         // An attachment the account service already approved does not ask again. The
         // credential for that pairing exists; what is left is collecting it, and a second
         // approval would be a second request for something already granted.
@@ -1308,6 +1332,28 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
     })),
 
+    __preparePairRepair: async (id) => {
+      const row = record(id), reservation = row.pairing
+      if (!reservation?.repair || reservation.repairPreparedAt) return
+      const directory = resolve(row.directory), setupFile = instanceConfigFile(directory) + '.setup.json'
+      // Only a completed old delivery may be retired locally. An unfinished delivery
+      // still has its proof and must be collected or cancelled at the authority.
+      if (readJson(setupFile, {}).deviceSecret) throw new Error('Finish the previous credential delivery before repairing this instance.')
+      const outside = survivingProcesses(hosts.has(id) ? { ...row, runtime: undefined } : row)
+      if (outside.length) throw new Error('Stop this instance in its other workbench before repairing it.')
+      const live = hosts.get(id)
+      for (const role of runningRoles(id)) await live.host.stopRole(role)
+      if (runningRoles(id).length) throw new Error('Local processes are still stopping. Check the attachment again after they exit.')
+      await closeHostLocked(id)
+      const fresh = loadInstanceConfig(directory)
+      fresh.agent.env.RULITH_TOKEN = ''
+      fresh.worker.env.RULITH_CONNECTION = ''
+      fresh.worker.env.RULITH_CONNECTION_KEY = ''
+      saveInstanceConfig(directory, fresh)
+      writeJsonAtomic(setupFile, {})
+      await registry.patchInstance(id, entry => ({ pairing: { ...entry.pairing, repairPreparedAt: new Date().toISOString() } }))
+    },
+
     __pairPoll: async (id) => {
       const row = record(id)
       const reservation = row.pairing
@@ -1316,6 +1362,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       if (text(grant.origin) !== reservation.origin || text(grant.account?.id) !== reservation.accountId) {
         throw new Error(`Instance ${row.name} reserved an Agent under a different account or Console address than the one signed in now. Attach it again.`)
       }
+      await manager.__preparePairRepair(id)
       const { host } = await ensureHostLocked(id)
       let polled = await localCall(host, '/setup/pair/poll', {})
       // Collect first: an approval may have succeeded even if its receipt was lost, and its

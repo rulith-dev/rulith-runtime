@@ -2,6 +2,14 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Local: Health shows device authorization, Agent keys, Worker Connections, Sources, program
+  status and pending calls alongside local process and pairing state. Repairs reuse sign-in,
+  confirmed key replacement, named Connection reconnection and Worker start; account decisions
+  open the Agent's Console page. Checks run on open or Refresh, with local facts still available
+  on services that do not yet offer health checks (operations convergence O2).
+
 ## 0.12.5 - 2026-10-07
 
 - Worker: an executor that failed always settles with a failure receipt. When even the failure

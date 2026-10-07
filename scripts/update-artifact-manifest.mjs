@@ -52,6 +52,7 @@ const files = [
   'local/tool-library.mjs',
   'local/manager-server.mjs',
   'local/manager-ui.mjs',
+  'local/manager-health.mjs',
   'docs/local-manager.md',
   'docs/local-materials.md',
   'local/markdown.mjs',

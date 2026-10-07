@@ -123,7 +123,9 @@ async function call(origin, path, { body, bearer, method } = {}) {
   let value
   try { value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { value = {} }
   if (!response.ok) {
-    const teaching = text(value.teaching) || `The account service refused this step (HTTP ${response.status}).`
+    let teaching = text(value.teaching) || `The account service refused this step (HTTP ${response.status}).`
+    // Even a refusal from the configured service must not reflect its bearer into a page.
+    if (bearer) teaching = teaching.split(bearer).join('[redacted]')
     throw new DeviceRefused(teaching, { status: response.status, errorCode: text(value.errorCode) || undefined })
   }
   return value
@@ -441,6 +443,27 @@ export function createDeviceClient({ root } = {}) {
       })
       return status()
     }),
+
+    /** An on-demand operator read. Older services have no health route. */
+    health: async () => {
+      const current = linked()
+      let reply
+      try { reply = await call(current.origin, '/local-devices/health', { bearer: current.token }) }
+      catch (error) {
+        if (error instanceof DeviceRefused && error.status === 404) return null
+        return deviceRouteRefusal(error)
+      }
+      const latest = linked()
+      if (latest.origin !== current.origin || latest.deviceId !== current.deviceId || latest.token !== current.token
+          || text(reply.device?.deviceId) !== current.deviceId) {
+        throw new Error('The account service health read did not match this device. Refresh Health again.')
+      }
+      if (['revoked', 'expired'].includes(reply.device?.state)) {
+        await markUnusable('This device authorization is no longer usable. Sign in again from the manager.', reply.device.state)
+        linked()
+      }
+      return reply
+    },
 
     /**
      * Approve one instance's own pairing with this device's authority.

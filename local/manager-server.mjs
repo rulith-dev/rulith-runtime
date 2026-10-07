@@ -20,6 +20,7 @@ import { acquireWorkbenchLease, createManagerRegistry, defaultManagerRoot } from
 import { createDeviceClient } from './device-client.mjs'
 import { createInstanceManager } from './instance-manager.mjs'
 import { managerPage } from './manager-ui.mjs'
+import { mergeManagerHealth } from './manager-health.mjs'
 import { environmentToolsPage } from './worker-tools-ui.mjs'
 import { installAuthoringChecker } from './authoring-checker.mjs'
 import { materialIdentity, openMaterialStore, MATERIAL_ID_PATTERN, RESULT_ID_PATTERN } from '../worker/material-store.mjs'
@@ -338,6 +339,18 @@ export function createManagerServer({
   }
   /** What this environment's tools page reads. Authenticated like everything else, and it changes nothing. */
   const reads = {
+    '/manager/health': async () => {
+      let gateway, gatewayState = 'unavailable'
+      if (device.status().state === 'linked') {
+        try {
+          gateway = await instances.admit(() => device.health())
+          gatewayState = gateway === null ? 'unsupported' : 'available'
+        } catch { /* Refusals update device status; transport failures prove no new state. */ }
+      }
+      const grant = device.peek(), local = instances.healthSnapshot()
+      return { health: mergeManagerHealth({ device: device.status(), instances: local.instances,
+        gateway, gatewayState, secrets: [key, grant.token, grant.deviceSecret, grant.privateKey, grant.publicKey, ...local.secrets] }) }
+    },
     '/manager/tools/state': () => instances.library.state(),
     '/manager/tools/mcp-search': (query) => instances.library.search(query.get('q') ?? '', query.get('cursor') ?? ''),
     '/manager/tools/mcp-detail': (query) => instances.library.detail(query.get('name'), query.get('version') ?? 'latest'),
@@ -380,6 +393,7 @@ export function createManagerServer({
       }
       json(res, 404, { ok: false, teaching: 'Endpoint not found.' })
     } catch (error) {
+      if (path === '/manager/health') return void json(res, 400, { ok: false, teaching: 'Health could not be read. Refresh Health again.' })
       // A failed operation still answers with the current state, so a page never has to guess
       // whether a refused step changed anything. Reachable only after the gate above.
       let snapshot = {}

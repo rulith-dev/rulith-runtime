@@ -267,8 +267,8 @@ test('the shell is the Agent list and the stage, and the third column belongs to
   const rail = managerPage.slice(managerPage.indexOf('<aside class="rail"'), managerPage.indexOf('<main class="center"'))
   for (const id of ['railsel', 'details-open', 'worker-setting', 'tools-open', 'account-open'])
     assert.ok(rail.includes('id="' + id + '"'), id + ' belongs in the Agent rail, beside the Agent it acts on')
-  assert.equal((managerPage.match(/role="dialog" aria-modal="true"/g) ?? []).length, 8,
-    'account, add, connect, Connection key, model, settings, document assistant and the settings page are dialogs, not a homepage')
+  assert.equal((managerPage.match(/role="dialog" aria-modal="true"/g) ?? []).length, 9,
+    'Health, account, add, connect, Connection key, model, settings, document assistant and the settings page are dialogs, not a homepage')
 })
 
 test('on a desk the shell adds no second activity header', () => {

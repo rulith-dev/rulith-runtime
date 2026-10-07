@@ -1552,7 +1552,7 @@ test('the manager answers exactly its documented control-plane operations', asyn
     assert.deepEqual(routes, [
       '/manager/authoring/install-checker', '/manager/authoring/review', '/manager/authoring/save',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
-      '/manager/device/start', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
+      '/manager/device/start', '/manager/health', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll',
       '/manager/instances/tools', '/manager/instances/worker-setting', '/manager/model/default',

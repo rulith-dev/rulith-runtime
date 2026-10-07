@@ -72,6 +72,21 @@ Execution credentials are sent to their configured Gateway for authentication;
 model credentials are sent to the configured model service. Model defaults are local settings,
 scoped to the signed-in account and Console origin in this environment. They are not uploaded to Console.
 
+## Health and recovery
+
+Open **Health** at the lower left to check this computer's sign-in, Agent keys, Worker
+Connections, Sources, program status and pending calls. Problems appear first; healthy
+items collapse into a line for each Agent. The service is read when Health opens or you
+press **Refresh**. Older services still show local processes and unfinished pairings.
+
+**Sign in** opens the account recovery flow. **Replace key and connect** asks for the
+existing replacement confirmation and repairs the same local profile after its processes
+stop. **Reconnect a Connection** opens the named Connection choice, preserving its Source
+bindings and Tool selection. **Start Worker** reuses the local tools setting for an enabled,
+stopped Worker; a running Worker that the service cannot see says **Restart Rulith**.
+Source configuration, a rejected program and calls requiring a person open the matching
+Agent tab in Console. Health never displays credentials or retries a Rulith call.
+
 ## Default model and Agent overrides
 
 The **Thinking** option distinguishes **Provider default**, **Off**, and **On**. Provider

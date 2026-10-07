@@ -31,6 +31,7 @@
  * shared tokens instead of naming colours.
  */
 import { localThemeCss } from './theme.mjs'
+import { managerHealthGroups } from './manager-health.mjs'
 
 const WORKBENCH_CSS = String.raw`
 /* An application shell, not a document: the page never scrolls, its columns do.
@@ -205,6 +206,7 @@ export const managerPage = String.raw`<!doctype html>
     </details>
   </div>
   <div class="railfoot">
+    <button id="health-open" aria-haspopup="dialog">Health</button>
     <button id="environment-open" aria-haspopup="dialog">This environment’s tools</button>
     <button class="accountbtn" id="account-open" aria-haspopup="dialog"><span class="avatar"><span id="account-initial">·</span><span class="dot" id="account-dot"></span></span><span class="acct"><span class="word" id="account-line">Not signed in</span><span class="word" id="account-sub">Sign in with your browser</span></span><span class="acct-menu" aria-hidden="true">⋯</span></button>
   </div>
@@ -230,6 +232,16 @@ export const managerPage = String.raw`<!doctype html>
 
 </div>
 <div class="scrim" id="scrim" hidden></div>
+
+<div class="modal modal-wide" id="dlg-health" role="dialog" aria-modal="true" aria-labelledby="health-title" hidden><div class="modal-card">
+  <div class="modal-head"><b id="health-title">Health</b><button class="modal-close" id="health-close" aria-label="Close Health">×</button></div>
+  <div class="modal-body">
+    <div class="actions"><button id="health-refresh">Refresh</button></div>
+    <div id="health-notice" class="notice dlgnotice" role="status" aria-live="polite"></div>
+    <p id="health-service" class="muted"></p>
+    <div id="health-items"></div>
+  </div>
+</div></div>
 
 <div class="modal" id="dlg-account" role="dialog" aria-modal="true" aria-labelledby="account-title" hidden><div class="modal-card">
   <div class="modal-head"><div><b id="account-title">Account</b></div><button class="modal-close" id="account-close" aria-label="Close account">×</button></div>
@@ -301,6 +313,7 @@ export const managerPage = String.raw`<!doctype html>
     <p id="attach-blocked" hidden>Sign in first; enabled Agents from this account appear here.</p>
     <div id="attach-form">
       <label for="agent-select">Agent</label>
+      <p id="attach-repair-copy" hidden>Replacing the key connects this environment with a new key. The previous key stops working, including in clients still using it.</p>
       <div class="inlinefield"><select id="agent-select" aria-label="Agent to connect"></select><button class="btn" id="pair">Connect</button></div>
       <fieldset id="pair-connections" hidden><legend>Connection</legend><div id="pair-connection-options"></div>
         <p class="muted">Reconnecting keeps that Connection's Source bindings and Tool selection. Its old key stops working.</p>
@@ -401,7 +414,7 @@ export const managerPage = String.raw`<!doctype html>
     <div id="authoring-review" hidden><h3>Review draft</h3><p class="sub">These are the Worker’s reported draft checks. Review before saving a private draft.</p><label id="authoring-result-row" hidden>Checked version<select id="authoring-result-choice"></select></label><div id="authoring-result"></div><label id="authoring-case-row">Certified Case<select id="authoring-case"></select></label><div class="actions"><button class="btn" id="authoring-save">Save private draft</button><a class="btn" id="authoring-publication" target="_blank" rel="noopener noreferrer" hidden>Review publication in Console</a></div></div>
   </div>
 </div></div>
-<script>
+<script>` + managerHealthGroups.toString() + String.raw`
 const $=id=>document.getElementById(id), key=new URLSearchParams(location.search).get('k')||'';
 const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 /* One manager key, read from this page's own address. The page ships with no secret, and the
@@ -415,6 +428,12 @@ const pendingTarget=row=>row?JSON.stringify([row.id,row.pendingOrigin,row.pendin
 let offline='',pollFails=0;
 /* The exact (Agent here, cloud Agent) pair the replacement tick was given for. */
 let replaceFor='',authoringResult=null,authoringRenderedFor=null,authoringFor='',authoringScope='';
+let healthState=null,healthActions=[],healthScope='',healthSequence=0,repairFor=null;
+const healthIdentity=()=>JSON.stringify([state.device?.origin,state.device?.account?.id,state.device?.deviceId]);
+const repairTargetValid=()=>Boolean(repairFor&&repairFor.id===selected&&state.device?.state==='linked'
+  &&repairFor.origin===state.device.origin&&repairFor.accountId===state.device.account?.id
+  &&sel()?.agentId===repairFor.agentId&&sel()?.origin===repairFor.origin&&sel()?.accountId===repairFor.accountId
+  &&state.device.agents?.some(agent=>agent.id===repairFor.agentId));
 const busy=new Set(),frames=new Map(),dialogs=[],lastMarkup={};
 /* While the manager works on an Agent's local-tools change, that Agent's box shows the value
    that was asked for rather than the old state, which has not changed yet. Keyed by Agent, so
@@ -492,8 +511,11 @@ function controlSpec(){
       setupAuthorized(setupFor)],
     // Once the profile exists its mode is a fact about files on disk, not a choice any more.
     'setup-mode':['setup:'+(setupFor?setupFor.id:''),Boolean(setupFor)&&setupProfile(setupFor)==null],
-    'pair':['attach:'+selected,Boolean(row)&&linked&&!row.paired&&!row.pendingAgentId&&agents.length>0&&[...$('agent-select').options].some(option=>!option.disabled&&option.value===$('agent-select').value)&&reconnectChosen()],
-    'pair-connections':['attach:'+selected,Boolean(row)&&linked&&!row.paired&&!row.pendingAgentId],
+    'pair':['attach:'+selected,Boolean(row)&&linked&&(!row.paired||repairTargetValid())&&!row.pendingAgentId&&agents.length>0&&[...$('agent-select').options].some(option=>!option.disabled&&option.value===$('agent-select').value)&&reconnectChosen()
+      &&(!repairFor?.replace||($('replace').checked&&replaceFor===attachTarget()))],
+    'pair-connections':['attach:'+selected,Boolean(row)&&linked&&(!row.paired||repairTargetValid())&&!row.pendingAgentId],
+    'health-open':['health',true],
+    'health-refresh':['health',true],
     'pair-poll':['attach:'+selected,Boolean(row&&row.pendingAgentId)],
     'pair-replace':['attach:'+selected,Boolean(linked&&row?.pendingAgentId&&row.pendingError?.code==='runtime_credential_exists'
       &&$('pair-replace-confirm').checked&&pendingReplaceFor===pendingTarget(row))],
@@ -895,7 +917,7 @@ function renderAttach(){
      is written out: gone, not signed in, nothing authorized, or already connected. */
   const reason=!row?'This Agent is no longer in this environment. Close this and choose another.'
     :row.pendingAgentId?''
-      :row.paired?'This Agent is already connected to '+(row.agentName||row.agentId||'a cloud Agent')
+      :row.paired&&!repairTargetValid()?'This Agent is already connected to '+(row.agentName||row.agentId||'a cloud Agent')
         +'. One cloud Agent runs in one Agent here; add another instead.'
           :!linked?'Sign in first; this account’s enabled Agents appear here.'
           :!offers?'No enabled Agents are available in this account. Create or enable one in Console, then refresh it here.':'';
@@ -912,7 +934,10 @@ function renderAttach(){
   // The Agent's own name when the reservation carries one; its identifier is a fallback, not
   // the thing a person recognises.
   if(row&&row.pendingAgentId)$('pair-agent').textContent='Connecting to '+(row.pendingAgentName||row.pendingAgentId);
-  if(row)fillSelect('agent-select',agentOptions(row));
+  if(row)fillSelect('agent-select',repairTargetValid()?'<option value="'+esc(repairFor.agentId)+'">'+esc(row.agentName||row.agentId)+'</option>':agentOptions(row));
+  $('agent-select').disabled=repairTargetValid();
+  $('attach-repair-copy').hidden=!repairTargetValid()||!repairFor.replace;
+  $('pair').textContent=repairTargetValid()&&repairFor.replace?'Replace key and connect':'Connect';
   syncReplace();
   renderReconnect();
 }
@@ -1102,6 +1127,7 @@ function render(next){
 
   pruneFrames();renderAgents();renderCenter();renderWorker();renderStage();
   renderAccount();renderProfiles();renderSetup();renderAttach();renderDetails();renderModel();renderConnectionKey();renderAuthoring();applyControls();
+  renderHealth();
   if(pageEntry&&!pageEntry.environment&&!rowOf(pageEntry.id)){$('page-status').hidden=false;$('page-loading').hidden=false;$('page-loading').textContent='This Agent is no longer available. Close this panel and select another Agent.';$('page-retry').disabled=true;}
 }
 
@@ -1225,7 +1251,7 @@ function openDialog(id,focusId){
   const first=focusId?$(focusId):null;if(first&&first.focus)first.focus();
 }
 function closeDialog(id){
-  if(id==='dlg-attach'){$('pair-replace-confirm').checked=false;pendingReplaceFor='';}
+  if(id==='dlg-attach'){$('pair-replace-confirm').checked=false;pendingReplaceFor='';repairFor=null;$('replace').checked=false;replaceFor='';}
   const at=dialogs.map(d=>d.id).indexOf(id);if(at<0)return;
   const entry=dialogs.splice(at,1)[0];$(id).hidden=true;
   if(id==='dlg-model'){$('model-key').value='';modelTarget=null;modelOriginal=null;}
@@ -1256,7 +1282,7 @@ if(typeof window.matchMedia==='function'){
   if(query.addEventListener)query.addEventListener('change',()=>applyShell());
   else if(query.addListener)query.addListener(()=>applyShell());
 }
-for(const pair of [['dlg-account','account-close'],['dlg-setup','setup-close'],['dlg-attach','attach-close'],['dlg-details','details-close'],['dlg-connection-key','connection-key-close'],['dlg-model','model-close'],['dlg-page','page-close'],['dlg-authoring','authoring-close']]){
+for(const pair of [['dlg-health','health-close'],['dlg-account','account-close'],['dlg-setup','setup-close'],['dlg-attach','attach-close'],['dlg-details','details-close'],['dlg-connection-key','connection-key-close'],['dlg-model','model-close'],['dlg-page','page-close'],['dlg-authoring','authoring-close']]){
   $(pair[1]).onclick=()=>closeDialog(pair[0]);
   $(pair[0]).onclick=event=>{if(event.target===$(pair[0]))closeDialog(pair[0]);};
 }
@@ -1458,6 +1484,74 @@ $('worker-setting').onchange=()=>{const id=selected,enabled=$('worker-setting').
     .finally(()=>requestedWorker.delete(id)));};
 $('tools-open').onclick=()=>openSettings(selected,'/worker-tools','worker-notice');
 $('environment-open').onclick=openEnvironmentTools;
+/* Health has no timer. The ordinary workbench poll may invalidate a snapshot when the
+   account changes, but only opening this view or Refresh asks for another service read. */
+function renderHealth(){
+  if(healthState&&healthScope!==healthIdentity())healthState=null;
+  healthActions=[];
+  if(!healthState){$('health-items').innerHTML='';lastMarkup.health='';$('health-service').textContent='Open Health or press Refresh to check this computer.';return;}
+  $('health-service').textContent=healthState.gatewayState==='unsupported'
+    ?'This Rulith service does not offer the health check yet'
+    :healthState.gatewayState==='unavailable'?'Service health could not be read. Local facts are shown.'
+      :healthState.truncated?'The service returned a partial health check. Some Agents may be missing.':'';
+  const rowMarkup=row=>{
+    let action='';
+    if(row.action?.kind==='console')action=' <a class="btn" href="'+esc(row.action.url)+'" target="_blank" rel="noopener noreferrer">Open in Console</a>';
+    else if(row.action){const index=healthActions.push(row.action)-1;action=' <button data-health-action="'+index+'"'+(offline||busy.has('health')?' disabled':'')+'>'+esc(row.action.label)+'</button>';}
+    return '<p'+(row.problem?' class="notice"':'')+'><b>'+esc(row.label)+'</b> · '+esc(row.value)+action+'</p>';
+  };
+  const markup=managerHealthGroups(healthState).map(group=>{
+    const problems=group.rows.filter(row=>row.problem),healthy=group.rows.filter(row=>!row.problem);
+    const summary=esc(group.name)+' · Healthy · '+healthy.length+' checks';
+    return problems.length?'<section><h3>'+esc(group.name)+'</h3>'+problems.map(rowMarkup).join('')
+      +(healthy.length?'<details><summary>Healthy · '+healthy.length+'</summary>'+healthy.map(rowMarkup).join('')+'</details>':'')+'</section>'
+      :'<details><summary>'+summary+'</summary>'+healthy.map(rowMarkup).join('')+'</details>';
+  }).join('');
+  // Preserve expanded healthy rows and keyboard focus across ordinary workbench polls.
+  if(lastMarkup.health!==markup){$('health-items').innerHTML=markup;lastMarkup.health=markup;}
+}
+function readHealth(){
+  return run('health','health-notice',async()=>{
+    const sequence=++healthSequence,scope=healthIdentity();
+    const answer=await api('/manager/health');
+    await api('/manager/state');
+    if(sequence!==healthSequence||scope!==healthIdentity())throw Error('The account changed. Refresh Health again.');
+    healthState=answer.health;healthScope=scope;renderHealth();
+  });
+}
+$('health-open').onclick=()=>{openDialog('dlg-health','health-close');return readHealth();};
+$('health-refresh').onclick=readHealth;
+$('health-items').onclick=event=>{
+  const index=event.target?.dataset?.healthAction;
+  if(index===undefined||offline||busy.has('health')||healthScope!==healthIdentity())return;
+  const action=healthActions[Number(index)];if(!action)return;
+  if(action.kind==='signin')return openDialog('dlg-account','account-close');
+  if(action.kind==='setup')return run('health','health-notice',async()=>{
+    await api('/manager/device/refresh',{});
+    if(!state.device?.agents?.some(agent=>agent.id===action.agentId))throw Error('This Agent is no longer available. Refresh Health again.');
+    openSetup(action.agentId);
+  });
+  if(action.kind==='attachment'){selected=action.instanceId;render();return openDialog('dlg-attach','attach-close');}
+  return run('health','health-notice',async()=>{
+    // Pairing consults the existing device directory, including the Gateway's reconnect
+    // offer. Refresh it once before opening its ordinary, explicit choice dialog.
+    if(action.kind==='pair')await api('/manager/device/refresh',{});
+    const row=rowOf(action.instanceId),device=state.device||{};
+    if(!row||device.state!=='linked'||row.origin!==device.origin||row.accountId!==device.account?.id
+      ||!device.agents?.some(agent=>agent.id===row.agentId)||row.orphaned||row.pendingAgentId||row.blocked)
+      throw Error('This Agent is no longer available for repair. Refresh Health again.');
+    if(action.kind==='worker'){
+      if(!row.workerSetting?.enabled)throw Error('Local tools are off. Refresh Health again.');
+      await api('/manager/instances/worker-setting',{instanceId:row.id,enabled:true});
+      healthState=null;say('health-notice','Worker start requested. Refresh Health to check it.');return;
+    }
+    if(action.kind==='pair'&&row.agentId===action.agentId){
+      selected=row.id;repairFor={id:row.id,agentId:row.agentId,origin:row.origin,accountId:row.accountId,replace:action.replaceAgentToken};
+      $('replace').checked=false;replaceFor='';reconnectChoice=null;reconnectFor='';
+      render();openDialog('dlg-attach','attach-close');
+    }
+  });
+};
 /* "Check again" for an Agent that kept its own tools: the manager tries to move them into the
    environment now, and says what it found. It does not start or stop anything. */
 function checkTools(){const id=selected;return run('tools:'+id,'notice',()=>api('/manager/instances/tools',{instanceId:id}).then(v=>say('notice',v.teaching||'Checked.')));}

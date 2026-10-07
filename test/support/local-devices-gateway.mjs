@@ -73,6 +73,8 @@ export function createDevicesGateway({
   /** An Agent id the next pairing delivery claims instead of the approved one. */
   let mispair
   let modelAnswer = model
+  let healthReply
+  let healthRefusal
 
   const boardFor = (agentId) => {
     if (!boards.has(agentId)) boards.set(agentId, defaultGateway())
@@ -92,6 +94,13 @@ export function createDevicesGateway({
       ...(row.reconnectable === undefined ? {} : { reconnectable: row.reconnectable }) }))
 
   const deviceRoutes = {
+    'GET /local-devices/health': (_body, { bearer }) => {
+      const device = grantUsable(deviceByToken(bearer))
+      if (healthRefusal) refuse(401, healthRefusal, 'device_unauthorized')
+      if (healthReply === undefined) refuse(404, 'Health is not offered by this service.')
+      return { device: { deviceId: device.id, name: device.name, state: device.state, expiresAt: device.expiresAt },
+        agents: [], truncated: false, ...healthReply }
+    },
     'POST /local-devices/start': (body) => {
       onlyFields(body, ['requestId', 'deviceDigest', 'name', 'publicKey'])
       if (!/^[0-9a-f]{64}$/.test(String(body.deviceDigest ?? ''))) refuse(400, 'deviceDigest must be a SHA-256 hex digest.')
@@ -468,6 +477,8 @@ export function createDevicesGateway({
     disableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = false },
     enableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = true },
     setReconnectable(agentId, rows) { enabled.get(agentId).reconnectable = rows },
+    setHealth(reply) { healthReply = reply },
+    refuseHealth(teaching) { healthRefusal = teaching },
     /** Console has already invalidated the old key; Local must prove and save this replacement. */
     replaceConnectionKey(connectionId, key) {
       const row = connections.get(connectionId)
