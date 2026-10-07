@@ -281,10 +281,10 @@ test('RT-EXAMPLE-5 the writer refuses a total the board did not derive, and leav
   assert.equal(receipts.length, 3, output)
   const [refused, written] = receipts
   assert.equal(refused.ok, false, 'a total that does not match the Source inputs must not be written')
-  // The receipt names the Adapter that refused. It does not carry the Adapter's own
-  // diagnostic: `handRun` rejects with the child-process error and the reason is capped at
-  // 200 characters, which the command line alone exceeds. The Worker's stdout has the line.
-  assert.match(String(refused.reason), /write-output\.mjs/, output)
+  // The receipt carries the Adapter's own diagnostic, not the child-process command line
+  // (before 0.12.3 the command line crowded the diagnostic out of the reason).
+  assert.match(String(refused.reason), /^calculation output rejected: board result does not match source inputs/, output)
+  assert.doesNotMatch(String(refused.reason), /write-output\.mjs|Command failed/, output)
   assert.match(output, /write_calculation_result: executor failed/, output)
   // The proof that the refusal wrote nothing is the *next* row: the writer refuses to
   // overwrite an output belonging to a different result, so a correct write landing after a

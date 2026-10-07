@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## 0.12.3 - unreleased
+## 0.12.3 - 2026-10-07
 
 - Worker: the built-in workspace `search` result separates its two limits. `truncated` now means
   only that matches were left out; `partial` (with `filesSearched`) says the search stopped at its
