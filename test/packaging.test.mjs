@@ -19,6 +19,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
 import { carriageReturnOffenders, controlByteOffenders, controlByteTeaching, teaching } from '../scripts/check-line-endings.mjs'
+import { extractTgz } from './support/untar.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
@@ -26,13 +27,17 @@ test('the packed npm artifact prepares the demo offline and refuses a missing bu
   const dir = mkdtempSync(join(tmpdir(), 'rulith-npm-demo-'))
   try {
     const npm = process.env.npm_execpath ?? join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')
-    const pack = spawnSync(process.execPath, [npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', dir], { cwd: ROOT, encoding: 'utf8', windowsHide: true })
+    const npmrc = join(dir, 'empty.npmrc')
+    const globalNpmrc = join(dir, 'empty-global.npmrc')
+    writeFileSync(npmrc, '')
+    writeFileSync(globalNpmrc, '')
+    const pack = spawnSync(process.execPath, [npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', dir], {
+      cwd: ROOT, encoding: 'utf8', windowsHide: true,
+      env: { ...process.env, npm_config_cache: join(dir, 'npm-cache'), npm_config_userconfig: npmrc, npm_config_globalconfig: globalNpmrc },
+    })
     assert.equal(pack.status, 0, pack.stderr)
     const filename = JSON.parse(pack.stdout)[0].filename
-    // A relative archive name works with both BSD tar and GNU tar on Windows; GNU tar
-    // interprets the colon in an absolute C:/... filename as a remote host selector.
-    const extracted = spawnSync('tar', ['-xf', filename, '-C', dir], { cwd: dir, encoding: 'utf8', windowsHide: true })
-    assert.equal(extracted.status, 0, extracted.stderr)
+    extractTgz(join(dir, filename), dir)
     const unpacked = join(dir, 'package')
     const manifest = JSON.parse(readFileSync(join(unpacked, 'artifact-manifest.json'), 'utf8'))
     for (const [file, entry] of Object.entries(manifest.files)) {

@@ -23,13 +23,7 @@ npm test
 
 `npm run manifest` is an explicit source update whose diff must be reviewed and
 committed. Packaging never runs it automatically. To cut a release, run
-`npm run release:prepare -- <version>`, add the changelog entry, run
-`npm run manifest` and `npm run release:verify`, commit, then run
-`npm run release:tag`. Push the commit and annotated tag explicitly before publishing.
-After npm confirms publication, run `npm run release:verify-published -- <version>`.
-That gate fetches the registry tarball, compares its integrity and manifest-listed file hashes,
-installs it into a disposable directory, and starts the installed workbench on loopback.
-It verifies the public artifact rather than assuming the tagged source was published.
+For the release sequence, see [docs/releasing.md](docs/releasing.md).
 For document-assistant releases, follow the published-account browser run in
 `docs/document-authoring-acceptance.md` and keep its evidence separate from the
 simulated-Gateway Chromium tests.
