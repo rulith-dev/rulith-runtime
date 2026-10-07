@@ -81,7 +81,7 @@ const MCP_URL = `${URL_BASE}/mcp`
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
 const RULITH_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
-const RULITH_RUNTIME_VERSION = "0.12.0"
+const RULITH_RUNTIME_VERSION = "0.12.1"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v3'

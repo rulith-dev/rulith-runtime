@@ -120,7 +120,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.12.0"
+const RULITH_RUNTIME_VERSION = "0.12.1"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -1776,19 +1776,28 @@ const leaseElapsedMs = (held, now = performance.now(), wallNow = Date.now()) => 
 export const leaseIsLive = (held = lease, now = performance.now(), wallNow = Date.now()) => held !== undefined
   && leaseElapsedMs(held, now, wallNow) < leaseWindowMs(held)
 
-/** Remaining time before the reserved renewal attempt must be finished. */
-const renewRemainingMs = (held, now = performance.now(), wallNow = Date.now()) => {
-  const windowMs = leaseWindowMs(held)
-  const marginMs = Math.min(RENEW_ATTEMPT_TIMEOUT_MS, Math.floor(windowMs / 4))
-  return windowMs - marginMs - leaseElapsedMs(held, now, wallNow)
-}
+/** Time left before the lease this process holds stops being live (the bound `leaseIsLive` uses). */
+const leaseLiveRemainingMs = (held, now = performance.now(), wallNow = Date.now()) =>
+  leaseWindowMs(held) - leaseElapsedMs(held, now, wallNow)
 
-/** When the next renewal is due, from the server's own heartbeat hint. */
+/**
+ * When the next renewal is due: at the server's heartbeat hint, and at the latest when only the
+ * reserve (a complete attempt, or a quarter of a shorter window) is left before the lease stops
+ * being live.
+ *
+ * The reserve decides when renewal *starts*, never when the Worker gives up. A lease can be
+ * adopted with less than the reserve left: the Gateway grants it when a long Poll starts and
+ * states the window that remains when the answer is built, while this process measures that
+ * window from when the Poll was sent. Such a lease is renewed at once, and the attempt may use
+ * whatever time is still live (2026-10-06: the production Gateway holds a Poll for 25 s of a
+ * 60 s lease, and 0.12.0 gave every lease acquired that way up before renewing it).
+ */
 const renewDueInMs = () => {
   if (lease === undefined) return undefined
   const now = performance.now(), wallNow = Date.now()
   const elapsed = leaseElapsedMs(lease, now, wallNow)
-  return Math.max(0, Math.min(renewRemainingMs(lease, now, wallNow),
+  const reserveMs = Math.min(RENEW_ATTEMPT_TIMEOUT_MS, Math.floor(leaseWindowMs(lease) / 4))
+  return Math.max(0, Math.min(leaseLiveRemainingMs(lease, now, wallNow) - reserveMs,
     Math.max(RENEW_FLOOR_MS, lease.heartbeatAfterMs - elapsed)))
 }
 
@@ -1797,8 +1806,8 @@ const renewDueInMs = () => {
  *
  * `RenewLease` never acquires and never revives: a Worker whose lease has gone must stop,
  * not re-enter through the renewal door. A definite refusal drops the lease. An unavailable,
- * unreadable or truncated answer is uncertain: retry inside the confirmed window, with a
- * safety margin, while callers wait on the keeper's in-flight promise.
+ * unreadable or truncated answer is uncertain: retry while the held lease is still live, each
+ * attempt bounded by the time it has left, while callers wait on the keeper's in-flight promise.
  */
 async function renewLease(keeper) {
   if (keeper.stopped || leaseKeeper !== keeper || lease === undefined || leaseClosing) return undefined
@@ -1815,7 +1824,7 @@ async function renewLease(keeper) {
   }
   let answer, startedAt, wallStartedAt, backoffMs = 1000
   while (current()) {
-    const remaining = renewRemainingMs(held)
+    const remaining = leaseLiveRemainingMs(held)
     if (remaining <= 0) return expire()
     try {
       startedAt = performance.now()
@@ -1826,7 +1835,7 @@ async function renewLease(keeper) {
     } catch (e) {
       if (!current()) return undefined
       if (e instanceof CredentialRejectedError) throw e
-      const waitMs = Math.min(backoffMs, Math.max(0, renewRemainingMs(held)))
+      const waitMs = Math.min(backoffMs, Math.max(0, leaseLiveRemainingMs(held)))
       console.error(`⚠ Renewing the lease got no HTTP answer (${String(e?.message ?? e).slice(0, 160)}).`
         + ` Claims and receipts wait for confirmation; retrying in ${waitMs / 1000}s while the lease remains valid.`)
       wev('lease', { state: 'renew-unreachable' })
@@ -1838,7 +1847,7 @@ async function renewLease(keeper) {
   // Release must not be followed by a late Renew that starts another keeper.
   if (keeper.stopped || leaseKeeper !== keeper || leaseClosing
     || lease?.workerGeneration !== held.workerGeneration) return undefined
-  if (renewRemainingMs(held) <= 0) return expire()
+  if (leaseLiveRemainingMs(held) <= 0) return expire()
   const renewed = adoptLease(answer?.lease, 'RenewLease', startedAt, wallStartedAt)
   if (renewed === undefined) {
     reportAvailability('offline')
@@ -2751,10 +2760,23 @@ async function atomicWorkspaceWrite(target, text) {
 }
 
 /** Fixed, path-fenced local implementations used by versioned workspace Tools. */
-async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
+export async function handWorkspace(t, args, sources = SOURCE_CONTEXT, context = {}) {
   const root = await workspaceRootOf(t, sources)
   const operation = String(t.operation ?? t.entry ?? '')
   const input = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+  // Every row becomes a required fact, and a receipt's facts must fit the inline budget the
+  // dispatch states. Listing and search stop adding rows at half of it (the other half covers
+  // the facts' own wrapping) and say they were truncated, instead of producing a result that
+  // can never be reported.
+  const rowBudget = Number.isSafeInteger(context.inlineBytes) && context.inlineBytes > 0
+    ? Math.floor(context.inlineBytes / 2) : Infinity
+  let rowBytes = 0
+  const fitsBudget = (row) => {
+    const bytes = Buffer.byteLength(JSON.stringify(row), 'utf8')
+    if (rowBytes + bytes > rowBudget) return false
+    rowBytes += bytes
+    return true
+  }
   if (operation === 'list') {
     const target = await existingWorkspaceTarget(root, input.path, true)
     const entries = await readdir(target, { withFileTypes: true })
@@ -2762,12 +2784,14 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
     for (const entry of entries.slice(0, WORKSPACE_MAX_LIST_ENTRIES)) {
       const absolute = resolve(target, entry.name)
       const info = entry.isSymbolicLink() ? undefined : await stat(absolute)
-      rows.push({
+      const row = {
         source: t.source,
         path: relative(root, absolute).replace(/\\/g, '/'),
         entry_type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other',
         ...(info?.isFile() ? { size: info.size } : {}),
-      })
+      }
+      if (!fitsBudget(row)) break
+      rows.push(row)
     }
     return { result: JSON.stringify({ entries: rows, truncated: entries.length > rows.length }), rows }
   }
@@ -2823,6 +2847,7 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
       }
     }
     const matches = []
+    let overBudget = false
     for (const file of files) {
       let text
       try { text = await boundedText(file) } catch { continue }
@@ -2831,14 +2856,16 @@ async function handWorkspace(t, args, sources = SOURCE_CONTEXT) {
         while (matches.length < WORKSPACE_MAX_SEARCH_MATCHES) {
           const column = line.indexOf(input.query, from)
           if (column < 0) break
-          matches.push({ source: t.source, path: relative(root, file).replace(/\\/g, '/'), line: index + 1, column: column + 1, text: line.slice(0, 300) })
+          const match = { source: t.source, path: relative(root, file).replace(/\\/g, '/'), line: index + 1, column: column + 1, text: line.slice(0, 300) }
+          if (!fitsBudget(match)) { overBudget = true; break }
+          matches.push(match)
           from = column + Math.max(1, input.query.length)
         }
-        if (matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
+        if (overBudget || matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
       }
-      if (matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
+      if (overBudget || matches.length >= WORKSPACE_MAX_SEARCH_MATCHES) break
     }
-    return { result: JSON.stringify({ matches, truncated: matches.length >= WORKSPACE_MAX_SEARCH_MATCHES || files.length >= WORKSPACE_MAX_LIST_ENTRIES }), rows: matches }
+    return { result: JSON.stringify({ matches, truncated: overBudget || matches.length >= WORKSPACE_MAX_SEARCH_MATCHES || files.length >= WORKSPACE_MAX_LIST_ENTRIES }), rows: matches }
   }
   if (operation === 'read_text' || operation === 'read_json' || operation === 'hash') {
     const target = await existingWorkspaceTarget(root, input.path)
@@ -3306,7 +3333,7 @@ async function execute(action, args, tools = TOOLS, sources = SOURCE_CONTEXT, co
   try {
   if (t.impl === 'http') out = await handHttp(t, args, sources, context)
   else if (t.impl === 'run') out = await handRun(t, args, context, sources)
-  else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources)
+  else if (t.impl === 'workspace') out = await handWorkspace(t, args, sources, context)
   else if (t.impl === 'material') out = await handMaterial(t, args, sources)
   else if (t.impl === 'local-authoring') out = await executeLocalAuthoring(t, t._args ?? args, { materialRoot: await materialRootOf(t, sources), binding: materialIdentityFromFingerprints(MATERIALS_BINDING) })
   else if (t.impl === 'mcp') out = await handMcp(t, args, sources)
@@ -4026,6 +4053,7 @@ async function handleAction(w) {
     const executed = await execute(action, invocationArgs(resolved, w), { [action]: resolved },
       selectedSource ? { [w.sourceRecordId]: selectedSource } : SOURCE_CONTEXT,
       { boardId: requestVector.boardId, invocationId: invocation, resultBytes: w.artifactPolicy.objectBytes,
+        inlineBytes: w.artifactPolicy.inlineBytes,
         ...(selectedMaterial ? { selectedMaterial, selectedSourceAccess: selectedSource.url,
           captureSelectedResponse: w.sourceUpload?.upload === true,
           selectedResponseInlineBytes: w.artifactPolicy.inlineBytes,
@@ -4122,6 +4150,19 @@ async function handleAction(w) {
       },
     })
   } finally { await stopUploadRenewing() }
+  // A read changed nothing outside this computer, so a result too large for one receipt is
+  // reported as a failure: the call settles and the caller can ask for less, instead of the
+  // invocation waiting for an operator. Writes and runs keep the pending path below. The kind
+  // is the governed Tool's own, as dispatched (the compiled local route does not carry it).
+  if (JSON.parse(w.toolSpec).kind === 'read'
+      && ['required_facts_exceed_inline_budget', 'artifact_object_limit'].includes(prepared.unavailable)) {
+    console.error(`⚠ Result data for ${action} does not fit in one receipt (${prepared.unavailable}). It is a read, so a failure receipt is sent instead.`)
+    ok = false
+    result = ''
+    reason = 'result_too_large: the result does not fit in one receipt; ask for a narrower path or query.'
+    prepared = { body: { kind: 'ReportWork', workType: 'action', id: invocation, executionGrant: w.executionGrant,
+      ok: false, result: '', reason } }
+  }
   if (prepared.unavailable) {
     console.error(`⚠ Result data for ${action} could not be delivered (${prepared.unavailable}). The action already ran; no success or failure receipt was manufactured. This invocation remains pending for operator reconciliation after Worker fencing; do not rerun it.`)
     wev('reported', { kind: 'action', id: action, landed: false, reason: prepared.unavailable })

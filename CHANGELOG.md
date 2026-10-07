@@ -2,6 +2,20 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.12.1 - 2026-10-06
+
+- Worker: a lease that arrives with little of its window left is renewed at once. The Gateway
+  grants a lease when a long Poll starts and states the window left when it answers, while the
+  Worker measures that window from when it sent the Poll; 0.12.0 gave every such lease up before
+  renewing it, so a Worker behind a 25-second Poll hold kept losing its lease and took work only
+  when a Poll returned early. The renewal reserve now decides when renewal starts; attempts and
+  retries may use the time until the lease stops being live.
+- Worker: built-in workspace `list` and `search` stop adding rows at half of the dispatch's inline
+  budget and mark the result truncated, instead of producing facts that cannot be reported.
+- Worker: a `read` Tool whose result does not fit in one receipt now settles with one failure
+  receipt (`result_too_large`) instead of staying pending for operator reconciliation; a read has
+  no external effect. Write and run Tools keep the pending path.
+
 ## 0.12.0 - 2026-10-06
 
 - Worker: `RULITH_WORKER_RUN_TIMEOUT_SECONDS` sets how long a `run` Adapter may take (1 s to

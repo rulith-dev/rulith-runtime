@@ -1,8 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
-import { leaseIsLive, parseLease, runAdapterTimeoutMs } from '../worker/rulith-worker.mjs'
+import { handWorkspace, leaseIsLive, parseLease, runAdapterTimeoutMs } from '../worker/rulith-worker.mjs'
 import { DONE, HOLD, RESET, actionRow, activeLease, driveWorker, slowActionRow } from './support/worker-harness.mjs'
 
 test('a run Adapter keeps the 60 s stop unless this Worker sets RULITH_WORKER_RUN_TIMEOUT_SECONDS', () => {
@@ -49,7 +52,8 @@ const slowAdapters = {
     + "process.stdout.write(JSON.stringify({ rows: [] }))\n",
 }
 const slowTools = { 'acme.slow@1': { adapter: 'run', sourceTypes: ['file'], entry: 'slow-adapter.mjs' } }
-// A 5 s window: renewal must be confirmed by 3.75 s (a quarter of a window shorter than 40 s is kept in reserve).
+// A 5 s window, measured from the Poll's send: renewal starts by 3.75 s at the latest (a quarter
+// of a window shorter than 40 s is kept in reserve) and may be confirmed until the window ends.
 const shortLease = operation => activeLease({ workerId: operation.workerId, windowMs: 5_000, heartbeatAfterMs: 200 })
 
 for (const scenario of ['recover', 'expire', '409', 'timeout', 'late', '503-recover', '429-recover', '503-expire', 'truncated-recover']) {
@@ -66,7 +70,8 @@ for (const scenario of ['recover', 'expire', '409', 'timeout', 'late', '503-reco
           renewals++
           if (scenario === '409') return { status: 409, body: { accepted: false, errorCode: 'worker_lease_superseded' } }
           if (scenario === 'timeout') return HOLD
-          if (scenario === 'late') return { delayMs: 4200, body: { accepted: true, lease: shortLease(operation) } }
+          // Answered after the held lease's live end: the attempt is abandoned at that end.
+          if (scenario === 'late') return { delayMs: 6000, body: { accepted: true, lease: shortLease(operation) } }
           if (scenario === '503-recover' && renewals === 1) return { status: 503, body: { errorCode: 'temporarily_unavailable' } }
           if (scenario === '429-recover' && renewals === 1) return { status: 429, body: { errorCode: 'rate_limited' } }
           if (scenario === '503-expire') return { status: 503, body: { errorCode: 'temporarily_unavailable' } }
@@ -105,8 +110,92 @@ for (const scenario of ['recover', 'expire', '409', 'timeout', 'late', '503-reco
       assert.equal(run.of('ClaimWork').length, 1)
       assert.equal(run.ran('ship'), 0)
       assert.match(run.output, /Stopping this batch with 1 item\(s\) unclaimed/)
-      if (scenario === 'expire' || scenario === '503-expire') assert.ok(renewals >= 2, 'unavailable answers should retry until the safe deadline')
+      if (scenario === 'expire' || scenario === '503-expire') assert.ok(renewals >= 2, 'unavailable answers should retry until the lease stops being live')
       else assert.equal(renewals, 1, 'a refusal or request exceeding the window must not start another renewal')
+    }
+  })
+}
+
+test('a lease acquired by a long-held Poll is renewed at once instead of given up', async () => {
+  // The production Gateway grants the lease when a Poll arrives, holds the Poll, and states the
+  // window left when it answers. Measured from the Poll's send, the Worker then has less than
+  // its renewal reserve left: 0.12.0 gave such a lease up before sending a single RenewLease.
+  const windowMs = 8_000, holdMs = 3_500
+  let polls = 0
+  const run = await driveWorker({
+    timeoutMs: 15_000,
+    reply: (operation) => {
+      if (operation.kind === 'RenewLease' || operation.kind === 'ReleaseLease') return undefined
+      if (operation.kind !== 'Poll') return { body: { accepted: true } }
+      polls++
+      if (polls === 1) {
+        const granted = Date.now()
+        return { delayMs: holdMs, body: { accepted: true, payload: { work: [] }, lease: activeLease({
+          workerId: operation.workerId, heartbeatAfterMs: 1_000,
+          serverTime: new Date(granted + holdMs).toISOString(), expiresAt: new Date(granted + windowMs).toISOString() }) } }
+      }
+      return polls === 2 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+    },
+    done: (_seen, output) => DONE.action.test(output) || /could not be confirmed inside its validity window/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.doesNotMatch(run.output, /could not be confirmed inside its validity window/)
+  assert.ok(run.of('RenewLease').length >= 1, 'the adopted lease was never renewed')
+  assert.equal(run.ran('ship'), 1, 'work offered after the acquisition was not executed')
+  assert.match(run.output, /receipt committed/)
+})
+
+test('workspace list and search stop at half the inline budget and say they were truncated', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rulith-ws-budget-'))
+  for (let i = 0; i < 40; i++) writeFileSync(join(dir, `f${String(i).padStart(2, '0')}.txt`), `needle ${'x'.repeat(250)}\n`)
+  const sources = { docs: { type: 'file', access: dir } }
+  const search = await handWorkspace({ operation: 'search', source: 'docs' }, { query: 'needle' }, sources, { inlineBytes: 4096 })
+  assert.ok(search.rows.length > 0 && search.rows.length < 40, `${search.rows.length} matches`)
+  assert.ok(Buffer.byteLength(JSON.stringify(search.rows)) <= 2048 + search.rows.length)
+  assert.equal(JSON.parse(search.result).truncated, true)
+  const list = await handWorkspace({ operation: 'list', source: 'docs' }, {}, sources, { inlineBytes: 1024 })
+  assert.ok(list.rows.length > 0 && list.rows.length < 40)
+  assert.equal(JSON.parse(list.result).truncated, true)
+  // Calibration: without a stated budget nothing changes.
+  const unbounded = await handWorkspace({ operation: 'search', source: 'docs' }, { query: 'needle' }, sources)
+  assert.equal(unbounded.rows.length, 40)
+  assert.equal(JSON.parse(unbounded.result).truncated, false)
+})
+
+for (const kind of ['read', 'act']) {
+  test(`a ${kind} result whose facts exceed the inline budget ${kind === 'read' ? 'settles with one failure receipt' : 'stays pending'}`, async () => {
+    let polls = 0
+    const row = actionRow()
+    const big = 'y'.repeat(row.artifactPolicy.inlineBytes + 100)
+    const run = await driveWorker({
+      // A read Adapter runs without the scenario's effect log in its environment, so for a
+      // read the claim and the receipt, not the log, are what this arm checks.
+      extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'\n"
+        + "if (process.env.P2_EFFECT_LOG) appendFileSync(process.env.P2_EFFECT_LOG, 'ship\\n')\n"
+        + `process.stdout.write(JSON.stringify({ rows: [{ value: '${big}' }] }))\n` },
+      reply: (operation) => {
+        if (operation.kind === 'Poll') return ++polls === 1
+          ? { body: { accepted: true, payload: { work: [actionRow({ toolSpec: JSON.stringify({
+            impl: 'worker-tool', exec: 'acme.ship@1', kind, params: {}, sourceTypes: ['file'],
+            returns: [{ predicate: 'demo.recorded', args: { value: '$value' } }],
+          }) })] } } } : HOLD
+        return { body: { accepted: true } }
+      },
+      done: (_seen, output) => DONE.action.test(output) || /remains pending for operator reconciliation/.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.of('ClaimWork').length, 1)
+    if (kind !== 'read') assert.equal(run.ran('ship'), 1)
+    const reports = run.of('ReportWork')
+    if (kind === 'read') {
+      assert.equal(reports.length, 1)
+      assert.equal(reports[0].operation.ok, false)
+      assert.equal(reports[0].operation.facts, undefined)
+      assert.equal(reports[0].operation.reason, 'result_too_large: the result does not fit in one receipt; ask for a narrower path or query.')
+      assert.match(run.output, /receipt committed/)
+    } else {
+      assert.equal(reports.length, 0)
+      assert.match(run.output, /remains pending for operator reconciliation/)
     }
   })
 }
