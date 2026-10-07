@@ -3414,6 +3414,20 @@ function weakerTier(a, b) {
  * Worker must never infer success from a payload it cannot classify.
  * `not_satisfied` is a completed business decision, not an infrastructure error.
  */
+// The reason a failed action reports. A local command's error message begins with Node's
+// "Command failed: <the whole command line>", and that line carries the call's arguments — for a
+// write, the text being written. It is not the reason, it would copy the arguments into the
+// receipt, and a long one exceeds the inline budget: the report then could not be delivered and
+// a failure whose outcome is known would wait for an operator (2026-10-07, a refused write of a
+// script). The reason is what the command itself reported, bounded in bytes.
+const ACTION_REASON_BYTES = 2048
+function actionFailureReason(error) {
+  const message = String(error?.message ?? error)
+  let reason = message.replace(/^Command failed:[^\n]*\n?/, '').trim() || 'The command failed and reported no reason.'
+  while (Buffer.byteLength(reason, 'utf8') > ACTION_REASON_BYTES) reason = reason.slice(0, Math.floor(reason.length * 0.9))
+  return reason
+}
+
 function verificationResult(raw) {
   let value
   if (typeof raw === 'string') {
@@ -4091,7 +4105,7 @@ async function handleAction(w) {
     }
   } catch (e) {
     if (e instanceof ResultDeliveryError || e instanceof McpExecutionUnknownError) undeliverable = e.message
-    else { ok = false; reason = String(e.message) }
+    else { ok = false; reason = actionFailureReason(e) }
   } finally {
     // The rendezvous matters: reading the lease below while a renewal is still in flight
     // would be reading a race, not a state.

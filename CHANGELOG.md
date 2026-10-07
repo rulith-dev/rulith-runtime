@@ -8,6 +8,10 @@ All notable changes to the local runtime are documented here.
   only that matches were left out; `partial` (with `filesSearched`) says the search stopped at its
   file limit (the first 500 files, breadth-first, at most 8 levels deep), so an empty partial result
   reads as "not in the files searched", not "not in the tree".
+- Worker: a failed action reports what the command itself said, at most 2 KiB, instead of Node's
+  `Command failed: <whole command line>` message. That line carried the call's arguments (for a
+  write, the text being written) into the receipt, and a long one exceeded the inline budget, so a
+  failure whose outcome was known stayed pending for operator reconciliation and blocked the Agent.
 
 ## 0.12.2 - 2026-10-06
 
