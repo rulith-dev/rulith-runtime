@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.12.7 - 2026-10-08
 
 - Worker: claimed writes and runs whose outcome receipt cannot be delivered
   request reconciliation through an outcome-free `ReportWork{undeliverable: <code>}`
