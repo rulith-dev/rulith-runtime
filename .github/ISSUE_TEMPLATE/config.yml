@@ -3,3 +3,6 @@ contact_links:
   - name: Workflow design and setup questions
     url: https://github.com/rulith-dev/rulith-runtime/issues/new?template=question.yml
     about: Ask a setup or workflow-design question.
+  - name: Community discussions
+    url: https://github.com/rulith-dev/community/discussions
+    about: Ideas, show-and-tell and general talk about Rulith and its products.
