@@ -37,18 +37,23 @@ test('RT-CONTRACT-1 the vendored bundle is what this Runtime speaks', () => {
   assert.deepEqual(MODEL_TOOLS, bundle.tools.map((tool) => tool.name))
   // Everything the Runtime compiles in comes from here, not from a constant beside it.
   assert.equal(typeof bundle.protocolVersion, 'string')
-  assert.equal(bundle.metadataNamespace, 'rulith/v3')
+  assert.equal(bundle.metadataNamespace, 'rulith/v4')
   // The held-call contract: seven outcome classes, always shown; no operation-read tool.
   assert.deepEqual(bundle.operationStates,
     ['running', 'waiting_for_decision', 'done', 'failed', 'refused', 'unknown', 'needs_person'])
   assert.deepEqual(bundle.runningStages, ['not_dispatched', 'at_worker'])
-  assert.deepEqual(bundle.operationTools, ['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase', 'ReadArtifact'])
-  assert.equal(bundle.tools.some((tool) => tool.name === 'ReadOperation'), false)
+  // Package A (D-1008i): five tools, OpenCase and CloseCase gone with no alias, EndGoal new.
+  assert.deepEqual(MODEL_TOOLS, ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal'])
+  assert.deepEqual(bundle.operationTools, ['ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal'])
+  for (const retired of ['ReadOperation', 'OpenCase', 'CloseCase']) {
+    assert.equal(bundle.tools.some((tool) => tool.name === retired), false, `${retired} is still on the surface`)
+  }
+  // The declaration keeps the C1 shape (heldCalls, seat); this Runtime states only the constant.
   assert.deepEqual(bundle.clientCapabilities, { heldCalls: 1 })
   assert.deepEqual(bundle.serverCapabilities, { heldCalls: 1 })
   const observation = bundle.tools.find((tool) => tool.name === 'QueryBoard')
   assert.equal(observation.resultSchemaRef,
-    'docs/specs/schemas/rulith-board-observation-v2.schema.json#/$defs/QueryBoardResult')
+    'docs/specs/schemas/rulith-board-observation-v3.schema.json#/$defs/QueryBoardResult')
   assert.ok(bundle.schemas.find((schema) => schema.name === 'QueryBoard')?.resultSchema,
     'the committed Board observation result schema was dropped from the verified bundle')
   for (const { inputSchema } of bundle.schemas) {
@@ -132,7 +137,7 @@ test('RT-CONTRACT-6 a rewritten tool projection cannot ride along on unchanged f
   })
   // The same for a requirement that quietly disappears.
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    bundle.tools.find((tool) => tool.name === 'CloseCase').inputSchema.required = []
+    bundle.tools.find((tool) => tool.name === 'EndGoal').inputSchema.required = []
   })), /materialized schema no longer matches/)
 })
 
@@ -197,13 +202,40 @@ test('RT-CONTRACT-11 vendoring requires the contract repository\'s own verifier'
   assert.ok(proof > 0 && write > proof, 'the bundle is written before its provenance is proved')
 })
 
-test('the bundled ApplyBatch offers the model exactly eight operations', () => {
-  // D-1003a b（规范 ec6e77e）：declare_hypothesis 与 record_result 已退出模型批。
+test('the bundled ApplyBatch offers the model exactly nine operations', () => {
+  // D-1003a b（规范 ec6e77e）：declare_hypothesis 与 record_result 已退出模型批。C1（D-1008h）加入 sign_off。
   const tool = RAW.tools.find((row) => row.name === 'ApplyBatch')
   const defs = tool.inputSchema.$defs
   const resolve = (ref) => defs[ref.split('/').pop()]
   const operation = resolve(tool.inputSchema.properties.operations.items.$ref)
   assert.deepEqual(operation.oneOf.map((variant) => resolve(variant.$ref).properties.op.const),
     ['assert_fact', 'declare_goal', 'add_axiom', 'define_action', 'apply_action', 'derive_aggregate',
-      'retract_node', 'revise_fact'])
+      'retract_node', 'revise_fact', 'sign_off'])
+  // A-4: a goal declared without parent starts new work; with parent it breaks a goal down.
+  const declare = operation.oneOf.map((variant) => resolve(variant.$ref)).find((row) => row.properties.op.const === 'declare_goal')
+  assert.deepEqual(Object.keys(declare.properties).sort(), ['desired', 'id', 'label', 'op', 'parent'])
+  assert.deepEqual(declare.required, ['op', 'desired'])
+})
+
+test('the bundled EndGoal takes a goal, a non-completed disposition and a reason', () => {
+  const tool = RAW.tools.find((row) => row.name === 'EndGoal')
+  assert.deepEqual(tool.inputSchema.required, ['goal', 'disposition', 'reason'])
+  assert.deepEqual(tool.inputSchema.properties.disposition.enum, ['cancelled', 'failed', 'abandoned', 'superseded'])
+  assert.equal(tool.inputSchema.additionalProperties, false)
+})
+
+test('RT-CONTRACT-12 a client declaration this Runtime cannot state completely is refused', () => {
+  // A declaration that requires a member with no constant value (C1's seat) leaves nothing a
+  // Runtime could send without guessing an Agent's configuration.
+  assert.throws(() => readContractBundle(bundleWith((bundle) => {
+    bundle.metadata.$defs.ClientCapabilities.required = ['seat']
+  })), /leaves this Runtime no complete declaration of constant members \(it requires seat\)/)
+  // One with no constant member at all leaves nothing to declare.
+  assert.throws(() => readContractBundle(bundleWith((bundle) => {
+    delete bundle.metadata.$defs.ClientCapabilities.properties.heldCalls
+  })), /no complete declaration of constant members/)
+  // And an open one is not a declaration shape at all.
+  assert.throws(() => readContractBundle(bundleWith((bundle) => {
+    bundle.metadata.$defs.ClientCapabilities.additionalProperties = true
+  })), /ClientCapabilities must be a closed object/)
 })

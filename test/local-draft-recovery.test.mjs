@@ -11,16 +11,15 @@ async function setup(respond) {
 }
 const choose=(p,key)=>p.click(p.find('[data-case="'+key+'"]'))
 
-test('text and advanced fields stay with their conversation when switching drafts',async()=>{
+test('text stays with its conversation when switching drafts',async()=>{
+  // rulith/v4 retired the advanced Case fields (Case Type, business key): only text is a draft's own.
   const page=await setup()
   await choose(page,'alpha');await page.type('private alpha draft')
-  page.$('casetype').value='alpha_type';page.$('businesskey').value='{"order":"alpha"}'
+  assert.equal(page.$('casetype'),undefined);assert.equal(page.$('businesskey'),undefined)
   await choose(page,'beta')
   assert.equal(page.$('prompt').value,'')
-  assert.equal(page.$('casetype').value,'');assert.equal(page.$('businesskey').value,'')
   await page.type('beta draft');await choose(page,'alpha')
   assert.equal(page.$('prompt').value,'private alpha draft')
-  assert.equal(page.$('casetype').value,'alpha_type');assert.equal(page.$('businesskey').value,'{"order":"alpha"}')
 })
 
 test('an unsent new conversation remains selectable and late acceptance clears only the submitted text',async()=>{
@@ -100,12 +99,10 @@ test('a visible accepted session preserves input typed there before its original
   const session=page.calls.find(c=>c.path.startsWith('/cases')).body.sessionKey
   await page.emit({src:'agent',type:'task-start',session,text:'initial message',id:'new-turn'})
   await choose(page,session);await page.type('typed before acknowledgement')
-  page.$('casetype').value='next_type';page.$('businesskey').value='{"next":true}'
-  await choose(page,'alpha') // saves all input fields of the already-visible session
+  await choose(page,'alpha') // saves the input of the already-visible session
   hold.resolve({body:{ok:true,sessionKey:session}});await page.flush()
   await choose(page,session)
   assert.equal(page.$('prompt').value,'typed before acknowledgement')
-  assert.equal(page.$('casetype').value,'next_type');assert.equal(page.$('businesskey').value,'{"next":true}')
 })
 
 test('two independently edited drafts are retained when the send acknowledgement joins their identity',async()=>{

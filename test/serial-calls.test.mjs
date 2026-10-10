@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { HOP_FAILURE, TEST_TOKEN, callTool, defaultGateway, freePort, runAgent } from './support/agent-harness.mjs'
+import { HOP_FAILURE, TEST_TOKEN, callTool, defaultGateway, freePort, runAgent, declareGoal } from './support/agent-harness.mjs'
 
 test('RT-REC-5 nothing outstanding costs nothing: no ping, no read, no Board call', async () => {
   // The strip must not become a tax on ordinary conversation. The handshake already showed the
@@ -50,27 +50,32 @@ test('RT-REC-5b an operation a previous client left running costs a greeting not
   assert.equal(run.modelRequests.length, 1)
 })
 
-test('RT-REC-10 a `--case` focus whose answer is lost is said so, and not sent again', async () => {
-  // `--case` and the Local UI reach the same public `OpenCase` over the same connection, so a
-  // focus request whose answer never arrived is a transport failure like any other: named to
-  // the model, never re-sent, and never claimed as focus.
-  const run = await runAgent({
-    argv: ['--case', 'CASE_X'], env: { RULITH_MAX_ROUNDS: '4' },
-    chatLines: ['Carry on with that Case.'],
-    captureLocalEvents: true,
-    tool: (name) => (name === 'OpenCase' ? HOP_FAILURE : undefined),
-    model: () => 'I could not confirm that Case.',
-    timeoutMs: 25_000,
+for (const [named, option] of [['--case', { argv: ['--case', 'CASE_X'] }],
+  ['--case-type', { argv: ['--case-type', 'verified_calculation'] }],
+  ['--business-key', { argv: ['--business-key', '{"job_id":"calc-001"}'] }],
+  ['RULITH_RESUME_CASE', { env: { RULITH_RESUME_CASE: 'CASE_X' } }],
+  ['RULITH_CASE_TYPE', { env: { RULITH_CASE_TYPE: 'verified_calculation' } }],
+  ['RULITH_BUSINESS_KEY_JSON', { env: { RULITH_BUSINESS_KEY_JSON: '{"job_id":"calc-001"}' } }]]) {
+  test(`RT-REC-10 ${named} was retired with rulith/v4: the run stops before anything is sent`, async () => {
+    // Each of these steered OpenCase, which rulith/v4 retired with no alias: there is no focus
+    // operation, and a capability goal follows from the goal the model declares. Rewriting the
+    // model's declarations, or dropping the operator's choice, would both be silent; neither is done.
+    const run = await runAgent({
+      argv: [...(option.argv ?? []), 'Carry on with that work.'], env: option.env ?? {},
+      model: () => 'The model must never be asked.',
+      timeoutMs: 20_000,
+    })
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stderr, new RegExp(`${named} was retired with rulith/v4 \\(Runtime 0\\.13\\.0\\), and nothing was sent`))
+    assert.match(run.stderr, /there is no focus operation for it to call/)
+    assert.deepEqual(run.methods, [], 'a retired option still reached the authority')
+    assert.equal(run.modelRequests.length, 0)
   })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const sent = run.requests.filter((request) => request.method === 'tools/call')
-  assert.equal(sent.length, 1, `the focus request was sent again: ${run.verbs.join(', ')}`)
-  const told = JSON.stringify(run.modelRequests[0].messages)
-  assert.match(told, /could not be brought into focus/)
-  assert.match(told, /may or may not have run/)
-  assert.match(told, /do not claim that Case is active/)
-  assert.doesNotMatch(run.stdout, /Case "CASE_X" is in focus/)
-})
+}
+
+/** The shadow reviewer's own write: the only ApplyBatch that asserts a shadow finding. */
+const shadowWrites = (run) => run.toolCalls.filter((call) => call.name === 'ApplyBatch'
+  && (call.args.operations ?? []).some((operation) => operation.predicate === 'shadow_finding'))
 
 test('RT-REC-11 the shadow reviewer does not write while an operation is unresolved', async () => {
   // `--shadow` asserts a finding on the Board. While an operation still keeps the execution
@@ -82,14 +87,14 @@ test('RT-REC-11 the shadow reviewer does not write while an operation is unresol
     captureLocalEvents: true,
     hold: (name) => (name === 'ApplyAction' ? { answer: 'needs_person' } : undefined),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyAction', { action: 'demo.ship', args: {} })
       return 'Stopping.'
     },
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.toolCalls.some((call) => call.name === 'ApplyBatch'), false,
+  assert.equal(shadowWrites(run).length, 0,
     'the shadow reviewer wrote a finding while an operation needed reconciliation')
   assert.match(run.stdout, /ApplyAction is waiting for a person to reconcile it in Console/)
 })
@@ -99,11 +104,11 @@ test('RT-REC-11b with nothing unresolved the shadow reviewer does write (calibra
     argv: ['Do the governed work', '--shadow'],
     env: { RULITH_MAX_ROUNDS: '4', RULITH_SHADOW_MODEL: 'shadow-model' },
     model: (round, body) => (body.model === 'shadow-model' ? 'FINDING: the total is unsupported'
-      : round === 1 ? callTool('OpenCase', {}) : 'Stopping.'),
+      : round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Stopping.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.toolCalls.some((call) => call.name === 'ApplyBatch'), true, 'the shadow finding was never written')
+  assert.equal(shadowWrites(run).length, 1, 'the shadow finding was never written')
 })
 
 test('RT-REC-17 a lost answer is not sold to the model as a de-duplicated retry', async () => {
@@ -135,7 +140,7 @@ test('RT-REC-5c a turn that ends in text after a write acknowledges its result w
   // unacknowledged, and after a restart the next write would be refused with it.
   const run = await runAgent({
     argv: [], chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -149,7 +154,7 @@ test('RT-REC-5c a turn that ends in text after a write acknowledges its result w
   const pinged = run.order.findIndex((step) => step.kind === 'mcp' && step.method === 'ping')
   const read = run.order.findIndex((step) => step.kind === 'model' && step.n === 2)
   assert.ok(read >= 0 && pinged > read, `the ping came before the model read the result: ${JSON.stringify(run.order)}`)
-  assert.equal(run.operations.find((op) => op.tool === 'OpenCase').acked, true)
+  assert.equal(run.operations.find((op) => op.tool === 'ApplyBatch').acked, true)
 })
 
 test('RT-REC-5d a turn cut off at its round limit does not acknowledge the result it never showed the model', async () => {
@@ -157,13 +162,13 @@ test('RT-REC-5d a turn cut off at its round limit does not acknowledge the resul
   // model has read it. Nothing may count it as read — the model reads it in the next turn.
   const run = await runAgent({
     argv: [], chatLines: ['Open a Case.'], env: { RULITH_MAX_ROUNDS: '1' },
-    model: () => callTool('OpenCase', {}),
+    model: () => callTool('ApplyBatch', declareGoal()),
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stdout, /Stopped at the 1-round limit/)
   assert.equal(run.pings, 0, 'a ping acknowledged a result the model never read')
-  assert.equal(run.operations.find((op) => op.tool === 'OpenCase').acked, false)
+  assert.equal(run.operations.find((op) => op.tool === 'ApplyBatch').acked, false)
 })
 
 /** The strip a host notice showed the model, parsed from the text of a user message. */
@@ -173,40 +178,6 @@ const relayedStrip = (text) => {
   return at < 0 ? undefined : JSON.parse(text.slice(at + marker.length).split('\n')[0]).operations
 }
 
-test('RT-REC-12 a Case focus refused with an earlier outcome shows the model that outcome before it decides anything', async () => {
-  // An earlier write's answer never reached this client. The operator's Case selection is this
-  // host's own OpenCase, and the write gate refuses it with that earlier result — delivering it
-  // to this session, after which the model's next write would run. So the model is shown that
-  // result, verbatim, in the message it reads first; and the focus, asked for once more, runs.
-  const earlier = { accepted: true, result: { action: 'demo.ship', done: true, ok: true, status: 'confirmed' } }
-  const run = await runAgent({
-    argv: ['--case', 'CASE_X'], env: { RULITH_MAX_ROUNDS: '4' },
-    chatLines: ['Carry on with that Case.'], captureLocalEvents: true,
-    gateway: defaultGateway({ cases: [{ caseId: 'CASE_X', root: 'ROOT_X' }], queryIndependent: true }),
-    priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'done', core: earlier }],
-    model: (round) => (round === 1
-      ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
-      : 'Recorded, after reading the earlier shipment.'),
-    timeoutMs: 25_000,
-  })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase', 'OpenCase', 'ApplyBatch'], 'the focus was not asked for once more, or was asked too often')
-  const [first] = run.modelRequests[0].messages.filter((message) => message.role === 'user')
-  const text = String(first.content)
-  assert.match(text, /This Agent's recent operations, as the authority showed them to this Runtime while it brought Case "CASE_X" into focus/)
-  assert.match(text, /not a call you made and not the user's words/)
-  const shown = relayedStrip(text)?.find((entry) => entry.label === 'ApplyAction demo.ship')
-  assert.equal(JSON.parse(shown.result.content[0].text).result.status, 'confirmed', 'the earlier outcome was not shown in full')
-  // Shown once, in that first message, and not as a tool result of the model's own.
-  assert.equal(run.modelRequests[0].messages.filter((message) => message.role === 'tool').length, 0)
-  const notices = run.modelRequests[1].messages.filter((message) => message.role === 'user'
-    && relayedStrip(String(message.content)) !== undefined)
-  assert.equal(notices.length, 1)
-  // The focus ran on the second request, and the model's write after it.
-  assert.match(run.stdout, /Case "CASE_X" is in focus for this conversation/)
-  assert.equal(run.operations.find((op) => op.tool === 'ApplyBatch')?.state, 'done')
-})
-
 test('RT-REC-11c the shadow reviewer does not write after a call of the turn lost its answer', async () => {
   // Its write would be judged — and could be refused carrying an outcome — while the model has
   // not read what became of its own call.
@@ -215,13 +186,13 @@ test('RT-REC-11c the shadow reviewer does not write after a call of the turn los
     env: { RULITH_MAX_ROUNDS: '4', RULITH_SHADOW_MODEL: 'shadow-model' },
     tool: (name) => (name === 'ApplyBatch' ? HOP_FAILURE : undefined),
     model: (round, body) => (body.model === 'shadow-model' ? 'FINDING: the total is unsupported'
-      : round === 1 ? callTool('OpenCase', {})
+      : round === 1 ? callTool('ApplyBatch', declareGoal())
         : round === 2 ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
           : 'Stopping.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.toolCalls.filter((call) => call.name === 'ApplyBatch').length, 1,
+  assert.equal(shadowWrites(run).length, 0,
     'the shadow reviewer wrote after a call of the turn lost its answer')
 })
 
@@ -232,12 +203,12 @@ test('RT-REC-11d the shadow reviewer does not write when the turn ended with res
     argv: ['Do the governed work', '--shadow'],
     env: { RULITH_MAX_ROUNDS: '2', RULITH_SHADOW_MODEL: 'shadow-model' },
     model: (round, body) => (body.model === 'shadow-model' ? 'FINDING: the total is unsupported'
-      : round === 1 ? callTool('OpenCase', {}) : callTool('ApplyAction', { action: 'demo.ship', args: {} })),
+      : round === 1 ? callTool('ApplyBatch', declareGoal()) : callTool('ApplyAction', { action: 'demo.ship', args: {} })),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.match(run.stdout, /Stopped at the 2-round limit/)
-  assert.equal(run.toolCalls.some((call) => call.name === 'ApplyBatch'), false,
+  assert.equal(shadowWrites(run).length, 0,
     'the shadow reviewer wrote while a result was still unread')
 })
 

@@ -45,7 +45,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 export const BUNDLE_SCHEMA = 'rulith-mcp-contract-bundle/v1'
-export const SURFACE_SCHEMA = 'rulith-mcp-surface/v3'
+export const SURFACE_SCHEMA = 'rulith-mcp-surface/v4'
 export const BUNDLE_PATH = 'protocol/mcp-contract.json'
 export const SURFACE_FILE = 'protocol/mcp-surface.json'
 
@@ -159,7 +159,7 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
       throw new ContractError(`${path}: materialized tool ${JSON.stringify(tool?.name)} does not match the declared`
         + ` ${JSON.stringify(entry?.name)} (${JSON.stringify(entry?.target)}/${JSON.stringify(entry?.operation ?? null)}).`)
     }
-    // Two targets, and no third: the v3 surface has no operation-read tool. An outcome
+    // Two targets, and no third: the v4 surface has no operation-read tool. An outcome
     // reaches a Host through the recent-operations strip every result carries.
     if (entry.target !== 'core' && entry.target !== 'artifact') {
       throw new ContractError(`${path}: ${entry.name} declares dispatch target ${JSON.stringify(entry.target)}.`)
@@ -233,7 +233,33 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
       return [name, property.const]
     }))
   }
-  const clientCapabilities = constantCapabilities('ClientCapabilities')
+  /**
+   * What this Runtime declares at initialize: the constant-valued members of the closed client
+   * declaration, and nothing else. Since C1 (D-1008h), carried unchanged into `rulith/v4`
+   * (package A, A-3), the declaration is `heldCalls:1`, `seat`, or both, with at least one
+   * present. `seat` picks among the seats configured for an Agent and has no value a Runtime
+   * could know from the contract, so it is optional here and never declared: this Runtime's
+   * session is on `main`. A shape that would require a member the Runtime cannot state, or
+   * that leaves no constant to declare, is refused rather than guessed at.
+   */
+  const clientDeclaration = label => {
+    const shape = bundle.metadata.$defs?.[label]
+    if (!isObject(shape) || shape.type !== 'object' || !isObject(shape.properties)
+      || shape.additionalProperties !== false) {
+      throw new ContractError(`${path}: ${label} must be a closed object.`)
+    }
+    const constants = Object.entries(shape.properties)
+      .filter(([, property]) => isObject(property) && Object.hasOwn(property, 'const'))
+    const required = Array.isArray(shape.required) ? shape.required : []
+    const unstated = required.filter((name) => !constants.some(([constant]) => constant === name))
+    if (constants.length === 0 || unstated.length > 0
+      || (Number.isInteger(shape.minProperties) && shape.minProperties > constants.length)) {
+      throw new ContractError(`${path}: ${label} leaves this Runtime no complete declaration of constant members`
+        + `${unstated.length === 0 ? '' : ` (it requires ${unstated.join(', ')})`}.`)
+    }
+    return Object.fromEntries(constants.map(([name, property]) => [name, property.const]))
+  }
+  const clientCapabilities = clientDeclaration('ClientCapabilities')
   const serverCapabilities = constantCapabilities('ServerCapabilities')
 
   if (!isObject(bundle.queryProfiles)) {

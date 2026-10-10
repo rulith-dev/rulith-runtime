@@ -231,7 +231,7 @@ export async function openConversations(directory, owner, { recoverInterrupted =
         update(id, t => { index = t.replies.length; t.replies.push({ text: String(text), at: Date.now() }) })
         return `${id}:reply:${index}`
       },
-      finish(id, note, outcome, details = {}) { update(id, t => { t.state = 'finished'; t.note = note; t.outcome = outcome; t.endedAt = Date.now(); t.caseIds = [...new Set(details.caseIds ?? [])].filter(id => typeof id === 'string' && id); if (details.modelService) t.modelService = details.modelService }) },
+      finish(id, note, outcome, details = {}) { update(id, t => { t.state = 'finished'; t.note = note; t.outcome = outcome; t.endedAt = Date.now(); const ids = list => [...new Set(list ?? [])].filter(id => typeof id === 'string' && id); if (details.caseIds !== undefined) t.caseIds = ids(details.caseIds); t.goals = ids(details.goals); if (details.modelService) t.modelService = details.modelService }) },
       archive(sessionKey, archived, { stopped = false } = {}) {
         const rows = data.turns.filter(t => t.sessionKey === sessionKey)
         if (!rows.length) throw new ConversationStoreError('This conversation could not be found.')
@@ -285,6 +285,8 @@ export function conversationEvents(data, stopped = false) {
     const rows = [{ ...base, type: 'task-start', deliveryState: t.state, id: t.id, text: t.text, attachments: t.attachments, t: t.at, historyKey: `${t.id}:user` },
       ...t.replies.map((r, i) => ({ ...base, type: 'propose', say: r.text, t: r.at, historyKey: `${t.id}:reply:${i}` }))]
     if (t.caseIds?.length) rows.push({ ...base, type: 'history-cases', caseIds: t.caseIds, t: t.at, historyKey: `${t.id}:cases` })
+    // rulith/v4 (Runtime 0.13.0) records the top-level goal IDs a turn worked on; earlier records keep their Case IDs.
+    if (t.goals?.length) rows.push({ ...base, type: 'history-goals', goals: t.goals, t: t.at, historyKey: `${t.id}:goals` })
     if (t.usage) rows.push({ ...base, type: 'model-summary', ...t.usage, t: t.endedAt ?? t.at, historyKey: `${t.id}:usage` })
     if (['finished', 'interrupted'].includes(t.state) || stopped) rows.push({ ...base, type: 'task-done', id: t.id,
       outcome: t.state === 'finished' ? t.outcome : 'interrupted', t: t.endedAt ?? Date.now(), historyKey: `${t.id}:done`,

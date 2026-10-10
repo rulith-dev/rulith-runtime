@@ -2,7 +2,7 @@
 
 This is the smallest complete Rulith workflow: a local Worker reads a JSON input, the
 Board derives an exact total, the Worker writes the result, and an independent read-back
-must match before the Case can close. The model coordinates the work; it does not supply
+must match before the goal can complete. The model coordinates the work; it does not supply
 trusted prices or computed totals.
 
 **Verified Calculation 1.0.3** is a free Capability, available in Market only after the
@@ -28,7 +28,7 @@ remote endpoints require a provider key. The five-minute run assumes those prere
 PowerShell:
 
 ```powershell
-npm.cmd install --global rulith@0.12.7
+npm.cmd install --global rulith@0.13.0
 node "$(npm.cmd root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -36,7 +36,7 @@ rulith start
 Bash:
 
 ```bash
-npm install --global rulith@0.12.7
+npm install --global rulith@0.13.0
 node "$(npm root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -88,12 +88,14 @@ pins. It does not create credentials, install a Capability, or grant access to a
 
 ## Run and verify
 
-In the Local composer, keep the preferred Case Type at **Automatic** and the business key
-empty. The Agent first reads the trusted input through an `exploration` intake, then opens
-`verified_calculation` using the returned `job_id`. Send:
+Rulith Runtime 0.13.0 speaks `rulith/v4`: the Agent declares goals inside `ApplyBatch`,
+and the Board completes a goal by itself in the commit that certifies it. The Agent first
+reads the trusted input under an `exploration` intake goal it declares, then declares the
+`verified_calculation` capability's goal with the returned `job_id`. In the Local
+composer, send:
 
 ```text
-Complete a verified_calculation Case for job calc-001 using the installed Capability. Read the configured input, open the Case with the returned job_id, continue with its returned task node, write and independently read back the exact total, then close the Case as completed.
+Complete a verified_calculation goal for job calc-001 using the installed Capability. Read the configured input, declare the capability's goal with the returned job_id, continue with the steps it returns, and write and independently read back the exact total.
 ```
 
 The sample input contains `batch_id: calc-batch-a`, `job_id: calc-001`, price 129900,
@@ -110,87 +112,85 @@ quantity 2 and shipping 3000. The Board uses exact `mul` and `add` rules. The ex
 ```
 
 Completion requires the Board-derived result, the write receipt and the independent
-read-back to agree. Check the closed Case and its terminal receipt in Console; a model
-answer or output file alone is not acceptance. In 1.0.3, `OpenCase` plants the calculation
-leaf, its direct relationship to the Case root and its `job_id` acceptance test from the
-frozen contract. Use the returned Goal handle; the model does not add this structure.
-Actions expose the logical Source and `job_id`; the Capability binds calculated values
-from trusted Board premises. The model must not supply internal bound fields.
+read-back to agree. Check the completed Case and its terminal receipt in Console; a model
+answer or output file alone is not acceptance. In 1.0.3, declaring the capability's goal
+plants the steps its capability prepared from the frozen contract. Use the goal IDs the
+result returned; the model does not add this structure. Actions expose the logical Source
+and `job_id`; the Capability binds calculated values from trusted Board premises. The
+model must not supply internal bound fields.
 
-Keep the sample files synthetic. Ordinary conversation does not implicitly open a Case.
+Keep the sample files synthetic. Ordinary conversation does not implicitly declare a goal.
 The order-processing example and paid billing are separate acceptance paths.
 
 ## Protocol troubleshooting (optional)
 
 The normal run uses the Local composer. Inspect `QueryBoard` for the installed Action
-schemas and descriptions. These examples apply to Capability 1.0.3; existing installations
-remain pinned until their operator installs the new version.
+schemas and descriptions, and for the capability goals this Agent can declare
+(`goalTypes`). These examples apply to Capability 1.0.3; existing installations remain
+pinned until their operator installs the new version.
 
 ```json
 {"tool":"ApplyAction","input":{"action":"load_calculation_input","args":{"source":"verified-calculation-local"}}}
 ```
 
-Read `job_id` and `node` from the actual intake result, then open the Case with that key.
+Read `job_id` from the actual intake result, then declare the capability's goal with that
+key value. A goal declared without `parent` starts new work; declaring the same goal again
+while it is open returns it (`opened:false`).
 
 ```json
-{"tool":"OpenCase","input":{"caseType":"verified_calculation","businessKey":{"job_id":"calc-001"}}}
+{"tool":"ApplyBatch","input":{"operations":[{"op":"declare_goal","desired":[{"predicate":"rulith.verified_calculation.calculation_completed","args":{"job_id":"calc-001"}}]}]}}
 ```
 
-Use the calculation task node in the Goal returned by `OpenCase` (for this sample,
-`CALC_calc-001`). Inspect the returned root:
+`result.goals[0].goal` is the goal's ID; `result.goals[0].children`, when present, lists
+the steps the capability prepared. Inspect the goal:
 
 ```json
-{"tool":"QueryBoard","input":{"selector":{"roots":["<the root OpenCase returned>"]},"include":["nodes","taskStatus"]}}
+{"tool":"QueryBoard","input":{"selector":{"goals":["<the goal ApplyBatch returned>"]},"include":["nodes","taskStatus"]}}
 ```
 
-Initially the leaf has `met:false`, the root has `certified:false`, and `close:"ready"`
-means no running work or unresolved gap blocks a close attempt. It does not certify
-completion. An early `completed` attempt is refused with `case_acceptance_missing` or
-`case_not_certified` and leaves the Case open. No manual structure batch is needed.
+Initially its `taskStatus` row has `certified:false`. Nothing is closed by hand: the goal
+completes in the commit that certifies it, and the goal directory then shows
+`status:"completed"`. No manual structure batch is needed, and the Board refuses one
+(goals and their structure are written only by `declare_goal`).
 
 The write and read-back expose only `source` and `job_id`. Their declared bindings obtain
 the exact input, total and write receipt from trusted Board premises. Missing or ambiguous
 bindings are refused before execution; copying model-calculated totals is not a substitute.
+Use a prepared step's goal ID as `target` when the result listed one, and the goal's own
+ID otherwise.
 
 ```json
-{"tool":"ApplyAction","input":{"action":"write_calculation_result","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the calculation task node OpenCase returned>"}}
+{"tool":"ApplyAction","input":{"action":"write_calculation_result","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the step or goal ID ApplyBatch returned>"}}
 ```
 
 ```json
-{"tool":"ApplyAction","input":{"action":"verify_calculation_output","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the calculation task node OpenCase returned>"}}
+{"tool":"ApplyAction","input":{"action":"verify_calculation_output","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the step or goal ID ApplyBatch returned>"}}
 ```
 
 ```json
-{"tool":"QueryBoard","input":{"selector":{"roots":["<the root OpenCase returned>"]},"include":["nodes","taskStatus"]}}
+{"tool":"QueryBoard","input":{"include":["goals"]}}
 ```
 
-After the independent read-back agrees, check `met:true` and `certified:true`, then close:
+After the independent read-back agrees, the goal's row shows `status:"completed"`. If it
+does not, inspect the returned gaps and goals. A goal you will not pursue further is ended
+with a disposition and a reason instead; that is never a completion:
 
 ```json
-{"tool":"CloseCase","input":{"root":"<the root OpenCase returned>","disposition":"completed"}}
+{"tool":"EndGoal","input":{"goal":"<the goal ApplyBatch returned>","disposition":"abandoned","reason":"The input job was withdrawn."}}
 ```
 
-If closure is refused, inspect the returned gaps and task structure. A model answer,
-a derived result or an output file alone does not prove completion. Console must show
-a certified completed Case and its immutable receipt, backed by independent read-back.
-Verify that its proof and receipt bind the exact result digests and remain unchanged
-after closing the intake Case.
+A model answer, a derived result or an output file alone does not prove completion. Console
+must show a certified completed Case and its immutable receipt, backed by independent
+read-back. Verify that its proof and receipt bind the exact result digests and remain
+unchanged after the intake goal ends.
 
 ### Capability 1.0.2 (historical)
 
-For an installation still pinned to 1.0.2, load the input and open the business Case with
-its returned `job_id` as above. That version attests raw input but does not plant the task
-structure. The Agent must declare the calculation Goal, connect it to the root returned
-by `OpenCase`, and declare its acceptance test before writing and independently reading
-back the result:
-
-```json
-{"tool":"ApplyBatch","input":{"operations":[{"op":"declare_goal","id":"CALC_calc-001","desired":{"predicate":"rulith.verified_calculation.calculation_completed","args":{"job_id":"calc-001"}}},{"op":"assert_fact","predicate":"goal_node","args":{"node":"CALC_calc-001"}},{"op":"assert_fact","predicate":"subgoal_of","args":{"child":"CALC_calc-001","parent":"<the root OpenCase returned>"}},{"op":"assert_fact","predicate":"acceptance","args":{"node":"CALC_calc-001","test":"calc-001"}}]}}
-```
-
-Use `CALC_calc-001` as the target of the same write and verify Actions, passing only
-`job_id` and `source`. Inspect the root and close it as `completed` only after independent
-read-back certifies it. This manual batch belongs only to the historical 1.0.2 flow.
+An installation still pinned to 1.0.2 attests raw input but prepares no steps. Under
+`rulith/v4` the same goal declaration opens its contract, and the goal's own `desired` is
+the acceptance test, so the manual structure batch that earlier Runtimes used for 1.0.2 is
+neither needed nor accepted. Use the goal's own ID as the target of the write and verify
+Actions, passing only `job_id` and `source`.
 
 ## Publishing 1.0.3 (operator only)
 

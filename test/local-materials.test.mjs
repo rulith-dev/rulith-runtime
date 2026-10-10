@@ -442,22 +442,24 @@ test('private proof crosses only the confirmed Host-to-Agent header and exact re
   } })
 })
 
-test('missing or mismatched proof confirmation blocks both supplemental and new Case material', async () => {
+test('missing or mismatched proof confirmation blocks new-work material, and an existing-Case target is retired', async () => {
   let registerCalls = 0
   const targets = []
   await withHost(async ({ call, tasks }) => {
     const added = (await (await add(call, { name: 'a.txt', mediaType: 'text/plain', text: 'secret' })).json()).material
+    // rulith/v4 has no call that binds files to an existing goal: a Case target is refused
+    // before anything is registered or kept.
     const focused = await call('/cases', { method: 'POST', body: JSON.stringify({
       text: 'read', requestId: 'focus-click-request-1', caseId: 'CASE_1', attachments: [added.id] }) })
-    assert.equal(focused.status, 503)
-    assert.equal((await focused.json()).errorCode, 'material_registration_unconfirmed')
-    assert.equal(registerCalls, 1)
-    assert.deepEqual(targets, ['CASE_1'])
+    assert.equal(focused.status, 400)
+    assert.equal((await focused.json()).errorCode, 'case_selection_retired')
+    assert.equal(registerCalls, 0)
     const unconfirmed = await call('/cases', { method: 'POST', body: JSON.stringify({
       text: 'read', requestId: 'unconfirmed-proof-1', attachments: [added.id] }) })
     assert.equal(unconfirmed.status, 503)
     assert.equal((await unconfirmed.json()).errorCode, 'material_registration_unconfirmed')
-    assert.equal(registerCalls, 2)
+    assert.equal(registerCalls, 1)
+    assert.deepEqual(targets, [''])
     assert.deepEqual(tasks().filter(row => row.kind === 'task'), [])
   }, { withAgent: true, registerMaterialSubmission: async receipt => {
     registerCalls++
@@ -537,12 +539,26 @@ test('a text-only case submission is unchanged by the attachment path', async ()
   await withHost(async ({ call, tasks }) => {
     const response = await call('/cases', {
       method: 'POST',
-      body: JSON.stringify({ text: 'plain question', sessionKey: 'ctx-plain', caseType: 'exploration', businessKey: { id: 'x' } }),
+      body: JSON.stringify({ text: 'plain question', sessionKey: 'ctx-plain' }),
     })
     assert.equal(response.status, 202)
     const body = tasks().filter((entry) => entry.kind === 'task').at(-1).body
-    assert.deepEqual(body, { text: 'plain question', sessionKey: 'ctx-plain', caseType: 'exploration', businessKey: { id: 'x' } },
+    assert.deepEqual(body, { text: 'plain question', sessionKey: 'ctx-plain' },
       'a submission with no attachments gained or lost a field')
+  }, { withAgent: true })
+})
+
+test('a Case Type, business key or existing Case is refused whole, because rulith/v4 retired them', async () => {
+  await withHost(async ({ call, tasks }) => {
+    for (const extra of [{ caseType: 'exploration' }, { businessKey: { id: 'x' } }, { caseId: 'CASE_1' }]) {
+      const response = await call('/cases', { method: 'POST',
+        body: JSON.stringify({ text: 'plain question', sessionKey: 'ctx-plain', ...extra }) })
+      assert.equal(response.status, 400, JSON.stringify(extra))
+      const refused = await response.json()
+      assert.equal(refused.errorCode, 'case_selection_retired')
+      assert.match(refused.teaching, /retired with rulith\/v4; nothing was sent/)
+    }
+    assert.deepEqual(tasks().filter((entry) => entry.kind === 'task'), [], 'a retired selection reached the Agent')
   }, { withAgent: true })
 })
 

@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * What Local shows about Cases, and what it refuses to infer.
+ * What Local shows about goals (the Cases Console names), and what it refuses to infer.
  *
- * A conversation holds a set of acceptance roots with independent lifecycles, so the
+ * A conversation holds a set of top-level goals with independent lifecycles, so the
  * projection is a list, not one active Case. Every arm here is about the same defect
- * family: local display state — a task finishing, a slot being reclaimed, a root leaving
- * focus — quietly rewriting a lifecycle only the Board can report.
+ * family: local display state — a task finishing, a slot being reclaimed, a goal leaving
+ * focus — quietly rewriting a lifecycle only the Board can report. Under rulith/v4 the
+ * Agent's events carry goal IDs (a top-level goal's ID is its contract's root) and the goal
+ * directory's lifecycle words: running, paused, completed, ended.
  */
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
@@ -25,38 +27,49 @@ function activityReducer() {
 
 test('a pending event from one-shot mode never invents a paused Case, even after task-done', () => {
   const page = activityReducer()
-  page.send({ src: 'agent', type: 'case-open', session: 'conversation', caseId: 'CASE_1', ok: true })
-  page.send({ src: 'agent', type: 'case-pending', session: 'conversation', caseId: 'CASE_1', note: 'Stopped at the round limit.' })
-  page.send({ src: 'agent', type: 'task-done', session: 'conversation', activeCaseId: 'CASE_1' })
+  page.send({ src: 'agent', type: 'case-open', session: 'conversation', goal: 'GOAL_1', ok: true })
+  page.send({ src: 'agent', type: 'case-pending', session: 'conversation', goal: 'GOAL_1', note: 'Stopped at the round limit.' })
+  page.send({ src: 'agent', type: 'task-done', session: 'conversation', activeGoal: 'GOAL_1' })
   const row = page.state.cases.get('conversation')
-  assert.equal(row.caseId, 'CASE_1')
+  assert.equal(row.goal, 'GOAL_1')
   assert.equal(row.status, 'Waiting')
   assert.notEqual(row.status, 'Paused')
 })
 
 test('the reducer defensively ignores a rejected case-open display event', () => {
   const page = activityReducer()
-  page.send({ src: 'agent', type: 'case-open', session: 'conversation', caseId: 'rejected-case', ok: false })
-  assert.equal(page.state.cases.get('conversation').caseId, '')
+  page.send({ src: 'agent', type: 'case-open', session: 'conversation', goal: 'rejected-goal', ok: false })
+  assert.equal(page.state.cases.get('conversation').goal, '')
 })
 
 test('a new message does not reactivate a detached Case in the sidebar', () => {
   const page = activityReducer()
   for (const event of [
-    { type: 'case-open', caseId: 'CASE_1', ok: true },
-    { type: 'session-detached', caseId: 'CASE_1' },
+    { type: 'case-open', goal: 'GOAL_1', ok: true },
+    { type: 'session-detached', goal: 'GOAL_1' },
     { type: 'task-start', text: 'hello again' },
-    { type: 'task-done', activeCaseId: null },
+    { type: 'task-done', activeGoal: null },
   ]) page.send({ src: 'agent', session: 'conversation', ...event })
   assert.equal(page.state.cases.get('conversation').status, 'Detached')
 })
 
 test('task completion cannot overwrite a lifecycle observation in the sidebar', () => {
-  for (const [caseStatus, expected] of [['paused', 'Case paused'], ['unavailable', 'Case state unavailable']]) {
+  for (const [status, expected] of [['paused', 'Case paused'], ['unavailable', 'Case state unavailable']]) {
     const page = activityReducer()
-    page.send({ src: 'agent', session: 'conversation', type: 'case-state', caseId: 'CASE_1', caseStatus })
-    page.send({ src: 'agent', session: 'conversation', type: 'task-done', activeCaseId: 'CASE_1' })
+    page.send({ src: 'agent', session: 'conversation', type: 'case-state', goal: 'GOAL_1', status })
+    page.send({ src: 'agent', session: 'conversation', type: 'task-done', activeGoal: 'GOAL_1' })
     assert.equal(page.state.cases.get('conversation').status, expected)
+  }
+})
+
+test('a goal the Board completed or ended releases the conversation in the sidebar', () => {
+  for (const status of ['completed', 'ended']) {
+    const page = activityReducer()
+    page.send({ src: 'agent', session: 'conversation', type: 'case-open', goal: 'GOAL_1', ok: true })
+    page.send({ src: 'agent', session: 'conversation', type: 'case-state', goal: 'GOAL_1', status })
+    const row = page.state.cases.get('conversation')
+    assert.equal(row.goal, '', status)
+    assert.equal(row.status, 'Ready', status)
   }
 })
 
@@ -64,64 +77,67 @@ test('a focus statement does not overwrite the lifecycle the Board reported', ()
   // The Agent emits per-root observations and then the focus set. Reading focus as a
   // status would relabel a paused root as active on every tool call.
   const page = activityReducer()
-  page.send({ src: 'agent', session: 'conversation', type: 'case-state', caseId: 'CASE_1', caseStatus: 'paused' })
-  page.send({ src: 'agent', session: 'conversation', type: 'focus', roots: [{ caseId: 'CASE_1', root: 'ROOT_1', status: 'paused' }] })
+  page.send({ src: 'agent', session: 'conversation', type: 'case-state', goal: 'GOAL_1', status: 'paused' })
+  page.send({ src: 'agent', session: 'conversation', type: 'focus', goals: [{ goal: 'GOAL_1', status: 'paused' }] })
   assert.equal(page.state.cases.get('conversation').status, 'Case paused')
   assert.equal(page.state.cases.get('conversation').roots, 1)
 })
 
 test('an empty focus set releases the conversation without claiming a Case transition', () => {
   const page = activityReducer()
-  page.send({ src: 'agent', session: 'conversation', type: 'case-open', caseId: 'CASE_1', ok: true })
-  page.send({ src: 'agent', session: 'conversation', type: 'case-unfocused', caseId: 'CASE_1' })
-  page.send({ src: 'agent', session: 'conversation', type: 'focus', roots: [] })
+  page.send({ src: 'agent', session: 'conversation', type: 'case-open', goal: 'GOAL_1', ok: true })
+  page.send({ src: 'agent', session: 'conversation', type: 'case-unfocused', goal: 'GOAL_1' })
+  page.send({ src: 'agent', session: 'conversation', type: 'focus', goals: [] })
   const row = page.state.cases.get('conversation')
-  assert.equal(row.caseId, '')
+  assert.equal(row.goal, '')
   assert.equal(row.status, 'Ready')
 })
 
 test('the inspector uses only explicit Agent observations of Case lifecycle', () => {
-  const pending = { src: 'agent', type: 'case-pending', session: 'conversation', caseId: 'CASE_1' }
+  const pending = { src: 'agent', type: 'case-pending', session: 'conversation', goal: 'GOAL_1' }
   assert.equal(ui.projectCaseRoots([pending])[0].lifecycle, 'unavailable')
-  const running = { src: 'agent', type: 'case-state', caseId: 'CASE_1', root: 'ROOT_1', caseStatus: 'running' }
+  const running = { src: 'agent', type: 'case-state', goal: 'GOAL_1', status: 'running' }
   assert.equal(ui.projectCaseRoots([running, pending])[0].lifecycle, 'running')
-  const paused = { ...running, caseStatus: 'paused' }
+  const paused = { ...running, status: 'paused' }
   assert.equal(ui.projectCaseRoots([running, pending, paused])[0].lifecycle, 'paused')
-  // A Worker event is not an Agent observation of a Case.
+  // A Worker event is not an Agent observation of a goal.
   assert.equal(ui.projectCaseRoots([running, { ...paused, src: 'worker' }])[0].lifecycle, 'running')
-  assert.equal(ui.projectCaseRoots([running, { ...running, caseStatus: 'closed' }])[0].label, 'Closed')
-  // The authority's lifecycle set is running / paused / closed. Anything else is neither
-  // labelled nor guessed at — including the words the retired per-Case model used.
-  for (const invented of ['invented', 'open', 'archived']) {
-    assert.equal(ui.projectCaseRoots([{ ...running, caseStatus: invented }])[0].label, 'Unavailable',
+  assert.equal(ui.projectCaseRoots([running, { ...running, status: 'completed' }])[0].label, 'Completed')
+  assert.equal(ui.projectCaseRoots([running, { ...running, status: 'ended' }])[0].label, 'Ended')
+  // The authority's lifecycle set is running / paused / completed / ended. Anything else is
+  // neither labelled nor guessed at — including the words the retired models used.
+  for (const invented of ['invented', 'open', 'archived', 'closed']) {
+    assert.equal(ui.projectCaseRoots([{ ...running, status: invented }])[0].label, 'Unavailable',
       `${invented} is not a lifecycle this authority reports and must not be displayed as one`)
   }
-  // A second Case with no observation of its own is unavailable, not the first one's state.
-  const two = ui.projectCaseRoots([running, { src: 'agent', type: 'case-open', caseId: 'CASE_2', ok: true }])
-  assert.deepEqual(two.map((row) => [row.caseId, row.label]), [['CASE_1', 'Running'], ['CASE_2', 'Unavailable']])
+  // A v3 event naming a Case, not a goal, describes nothing here.
+  assert.deepEqual(ui.projectCaseRoots([{ src: 'agent', type: 'case-state', caseId: 'CASE_1', caseStatus: 'running' }]), [])
+  // A second goal with no observation of its own is unavailable, not the first one's state.
+  const two = ui.projectCaseRoots([running, { src: 'agent', type: 'case-open', goal: 'GOAL_2', ok: true }])
+  assert.deepEqual(two.map((row) => [row.goal, row.label]), [['GOAL_1', 'Running'], ['GOAL_2', 'Unavailable']])
 })
 
-test('the inspector reports several roots with independent lifecycles', () => {
+test('the inspector reports several goals with independent lifecycles', () => {
   const rows = ui.projectCaseRoots([
-    { src: 'agent', type: 'case-state', caseId: 'CASE_1', root: 'ROOT_1', caseStatus: 'running', gaps: 2 },
-    { src: 'agent', type: 'case-state', caseId: 'CASE_2', root: 'ROOT_2', caseStatus: 'paused' },
-    { src: 'agent', type: 'focus', roots: [{ caseId: 'CASE_1', root: 'ROOT_1' }, { caseId: 'CASE_2', root: 'ROOT_2' }] },
+    { src: 'agent', type: 'case-state', goal: 'GOAL_1', status: 'running', gaps: 2 },
+    { src: 'agent', type: 'case-state', goal: 'GOAL_2', status: 'paused' },
+    { src: 'agent', type: 'focus', goals: [{ goal: 'GOAL_1' }, { goal: 'GOAL_2' }] },
   ])
-  assert.deepEqual(rows.map((row) => [row.caseId, row.root, row.label, row.gaps, row.focused]), [
-    ['CASE_1', 'ROOT_1', 'Running', 2, true],
-    ['CASE_2', 'ROOT_2', 'Paused', null, true],
+  assert.deepEqual(rows.map((row) => [row.goal, row.label, row.gaps, row.focused]), [
+    ['GOAL_1', 'Running', 2, true],
+    ['GOAL_2', 'Paused', null, true],
   ])
 })
 
-test('a root released from focus keeps its last observed lifecycle and is marked released', () => {
+test('a goal released from focus keeps its last observed lifecycle and is marked released', () => {
   const rows = ui.projectCaseRoots([
-    { src: 'agent', type: 'case-state', caseId: 'CASE_1', root: 'ROOT_1', caseStatus: 'closed' },
-    { src: 'agent', type: 'case-state', caseId: 'CASE_2', root: 'ROOT_2', caseStatus: 'running' },
-    { src: 'agent', type: 'focus', roots: [{ caseId: 'CASE_2', root: 'ROOT_2' }] },
+    { src: 'agent', type: 'case-state', goal: 'GOAL_1', status: 'completed' },
+    { src: 'agent', type: 'case-state', goal: 'GOAL_2', status: 'running' },
+    { src: 'agent', type: 'focus', goals: [{ goal: 'GOAL_2' }] },
   ])
-  assert.deepEqual(rows.map((row) => [row.caseId, row.label, row.focused]), [
-    ['CASE_2', 'Running', true],
-    ['CASE_1', 'Closed', false],
+  assert.deepEqual(rows.map((row) => [row.goal, row.label, row.focused]), [
+    ['GOAL_2', 'Running', true],
+    ['GOAL_1', 'Completed', false],
   ])
 })
 
@@ -139,31 +155,31 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   assert.ok(renderer)
   vm.runInContext(renderer, context)
 
-  const actual = vm.runInContext("projectCaseRoots([{src:'agent',type:'case-pending',caseId:'CASE_1'}])", context)
+  const actual = vm.runInContext("projectCaseRoots([{src:'agent',type:'case-pending',goal:'GOAL_1'}])", context)
   assert.equal(actual[0].lifecycle, 'unavailable')
 
-  context.events = [{ src: 'agent', type: 'case-state', caseId: 'CASE_1', root: 'ROOT_1', caseStatus: 'closed' }]
+  context.events = [{ src: 'agent', type: 'case-state', goal: 'GOAL_1', status: 'completed' }]
   vm.runInContext('renderInspector(events)', context)
   assert.equal(elements.get('casecount').textContent, '1 in focus')
-  assert.match(elements.get('roots').innerHTML, /CASE_1 — Closed/)
+  assert.match(elements.get('roots').innerHTML, /GOAL_1 — Completed/)
 
   context.events = [
-    { src: 'agent', type: 'case-state', caseId: 'CASE_1', root: 'ROOT_1', caseStatus: 'running' },
-    { src: 'agent', type: 'session-detached', caseId: 'CASE_1' },
+    { src: 'agent', type: 'case-state', goal: 'GOAL_1', status: 'running' },
+    { src: 'agent', type: 'session-detached', goal: 'GOAL_1' },
   ]
   vm.runInContext('renderInspector(events)', context)
-  assert.match(elements.get('roots').innerHTML, /CASE_1 — Running/, 'detachment is not a Case transition')
+  assert.match(elements.get('roots').innerHTML, /GOAL_1 — Running/, 'detachment is not a goal transition')
   assert.match(elements.get('roots').innerHTML, /Detached · last observed/)
 
   context.events = [
-    { src: 'agent', type: 'case-state', caseId: 'CASE_1', root: 'ROOT_1', caseStatus: 'running', gaps: 3 },
-    { src: 'agent', type: 'case-state', caseId: 'CASE_2', root: 'ROOT_2', caseStatus: 'paused' },
-    { src: 'agent', type: 'focus', roots: [{ caseId: 'CASE_2', root: 'ROOT_2' }] },
+    { src: 'agent', type: 'case-state', goal: 'GOAL_1', status: 'running', gaps: 3 },
+    { src: 'agent', type: 'case-state', goal: 'GOAL_2', status: 'paused' },
+    { src: 'agent', type: 'focus', goals: [{ goal: 'GOAL_2' }] },
   ]
   vm.runInContext('renderInspector(events)', context)
   assert.equal(elements.get('casecount').textContent, '1 in focus · 1 released')
-  assert.match(elements.get('roots').innerHTML, /CASE_2 — Paused/)
-  assert.match(elements.get('roots').innerHTML, /CASE_1 — Running.*3 open gap\(s\).*released from focus/)
+  assert.match(elements.get('roots').innerHTML, /GOAL_2 — Paused/)
+  assert.match(elements.get('roots').innerHTML, /GOAL_1 — Running.*3 open gap\(s\).*released from focus/)
 
   // A running operation is neither an error nor idleness, and the panel says which it is.
   // Shown as idle, a person concludes the Runtime is stuck or that nothing was dispatched.
@@ -196,21 +212,21 @@ test('the shipped inspector separates lifecycle, focus and detached observations
 
   context.events = [{ src: 'agent', type: 'operations', operations: [
     { tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', at: 'a', since: 'b' },
-    { tool: 'CloseCase', label: 'CloseCase ROOT_1', state: 'unknown', contentWithheld: true, at: 'c', since: 'd' },
+    { tool: 'EndGoal', label: 'EndGoal GOAL_1', state: 'unknown', contentWithheld: true, at: 'c', since: 'd' },
   ] }, { src: 'agent', type: 'exit' }]
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('operations').innerHTML, /Reported before the Agent process changed/)
   assert.match(elements.get('operations').innerHTML, /ApplyBatch<small>Done/)
   assert.match(elements.get('operations').innerHTML, /Reconciled, external effect unknown · content withheld/)
 
-  // Looking at a closed Case is an observation, not focus or a new lifecycle transition.
+  // Looking at an ended goal is an observation, not focus or a new lifecycle transition.
   context.events = [{ src: 'agent', type: 'tool-result', cmd: 'QueryBoard', authoritative: true,
-    accepted: true, boardRead: { observed: true, history: { root: 'ROOT-OLD', caseId: 'CASE<OLD>',
+    accepted: true, boardRead: { observed: true, history: { goal: 'GOAL<OLD>',
       status: 'available', disposition: 'completed', certified: true, factsOnPage: 7, morePages: true } } }]
   vm.runInContext('renderInspector(events)', context)
   assert.equal(elements.get('casecount').textContent, '0 in focus · 1 histories read')
   assert.match(elements.get('roots').innerHTML, /History viewed/)
-  assert.match(elements.get('roots').innerHTML, /CASE&lt;OLD&gt; — completed/)
+  assert.match(elements.get('roots').innerHTML, /GOAL&lt;OLD&gt; — completed/)
   assert.match(elements.get('roots').innerHTML, /At closure · certified/)
   assert.match(elements.get('roots').innerHTML, /Last page: 7 fact\(s\) · more pages available/)
   assert.doesNotMatch(elements.get('roots').innerHTML, /released from focus|has not been used/)
@@ -218,8 +234,8 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   assert.equal(vm.runInContext('projectCaseRoots(events).length', context), 0)
 
   context.events.push({ ...context.events[0], boardRead: { observed: true,
-    history: { root: 'ROOT-OLD', status: 'unavailable' } } })
+    history: { goal: 'GOAL<OLD>', status: 'unavailable' } } })
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('roots').innerHTML, /History unavailable/)
-  assert.doesNotMatch(elements.get('roots').innerHTML, /CASE&lt;OLD&gt;|certified|completed/)
+  assert.doesNotMatch(elements.get('roots').innerHTML, /certified|completed/)
 })

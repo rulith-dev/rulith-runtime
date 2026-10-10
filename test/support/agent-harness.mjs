@@ -11,13 +11,12 @@
  *
  * There is exactly one path: `/mcp`. The gateway speaks the MCP 2025-11-25 lifecycle
  * (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`, plus `ping`
- * and a resumable GET stream), mints a session id per initialize, and answers the six tools
- * — `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard` and
- * `ReadArtifact`. Each answers with JSON text carrying the result and this Agent's
- * recent-operations strip, and carries host metadata beside it in `_meta`, never inside the
- * text.
+ * and a resumable GET stream), mints a session id per initialize, and answers the five tools
+ * — `QueryBoard` / `ApplyBatch` / `ApplyAction` / `ReadArtifact` and `EndGoal`. Each answers
+ * with JSON text carrying the result and this Agent's recent-operations strip, and carries host
+ * metadata beside it in `_meta`, never inside the text.
  *
- * The `rulith/v3` half of the contract is modelled because it is where the interesting
+ * The `rulith/v4` half of the contract is modelled because it is where the interesting
  * defects live. Every call but QueryBoard becomes an operation with a host-only ordinal; the
  * strip in every result shows the recent ones, and `initialize` and `ping` show their state
  * form, ordinals included. A scenario's `hold` plan makes a call be held — answered
@@ -158,43 +157,45 @@ export const requiredHostFieldTools = () => advertisedTools().map((tool) => (too
  * A Board that answers every tool this runtime calls, so a scenario only has to describe
  * what it actually cares about.
  *
- * It keeps just enough state to be honest about what the loop depends on: Core mints Case
- * ids and acceptance roots, focus is per authenticated session, `ApplyAction` reports
- * pending work that a later read clears, and `CloseCase completed` is refused while a gap
- * is still open.
+ * It keeps just enough state to be honest about what the loop depends on (`rulith/v4`): Core
+ * mints goal IDs when a goal declared without a parent opens its contract inside `ApplyBatch`,
+ * the same desired outcome declared again returns the open goal (`opened:false`), focus is per
+ * authenticated session, `ApplyAction` reports pending work that a later read clears, and
+ * `EndGoal` ends a goal with a non-completed disposition. A goal completes only when the
+ * Board certifies it: with `certifyAfterBatch`, a later `ApplyBatch` that leaves no gap
+ * completes the focused goals in that commit, as Core does (A-13).
  *
  * There is no observation token and no first-write exception. A write presents no view and
  * pins no revision; the authority judges it against the state in force when it runs.
  *
  * @param {object} options
- * @param {Array}  [options.cases]        Pre-existing Cases: {caseId, root, status, caseType}.
- * @param {string} [options.caseType]     Default Case Type recorded on creation.
+ * @param {Array}  [options.goals]        Pre-existing top-level goals: {goal, status, type}.
  * @param {boolean}[options.settleAfterBatch] Whether a batch clears the open gap.
+ * @param {boolean}[options.certifyAfterBatch] Whether a non-declaring batch that leaves no gap completes the focused goals.
  * @param {boolean}[options.actionSettles]    Whether the next read clears dispatched work.
  * @param {object} [options.artifacts]        ref -> {mediaType, text} readable by ReadArtifact.
  */
 export function defaultGateway({
-  cases = [], caseType = 'exploration', settleAfterBatch = true, actionSettles = true,
+  goals = [], settleAfterBatch = true, certifyAfterBatch = false, actionSettles = true,
   artifacts = {}, queryIndependent = false,
 } = {}) {
   const state = {
-    cases: new Map(cases.map((row) => [String(row.caseId), {
-      caseId: String(row.caseId), root: String(row.root ?? row.caseId),
-      status: String(row.status ?? 'running'), caseType: String(row.caseType ?? caseType),
+    goals: new Map(goals.map((row) => [String(row.goal), {
+      goal: String(row.goal), label: String(row.label ?? 'existing goal'), status: String(row.status ?? 'running'),
+      ...(row.type === undefined ? {} : { type: String(row.type) }), identity: `existing:${row.goal}`,
     }])),
-    revision: 0, caseSeq: 0, pending: 0, gaps: [],
+    revision: 0, goalSeq: 0, pending: 0, gaps: [],
     artifacts: new Map(Object.entries(artifacts).map(([ref, value]) => [ref, {
       mediaType: String(value?.mediaType ?? 'text/plain'), text: String(value?.text ?? ''),
     }])),
   }
-  const directory = () => [...state.cases.values()].map((row) => ({ caseId: row.caseId, root: row.root, status: row.status }))
+  const directory = () => [...state.goals.values()].map((row) => ({ goal: row.goal, label: row.label, status: row.status,
+    ...(row.type === undefined ? {} : { type: row.type }) }))
   const focusRows = (session) => [...session.focus]
-    .map((caseId) => state.cases.get(caseId))
-    .filter(Boolean)
-    .map((row) => ({ caseId: row.caseId, root: row.root, status: row.status }))
+    .map((goal) => state.goals.get(goal))
+    .filter((row) => row !== undefined && ['running', 'paused'].includes(row.status))
   const view = (session, extra = {}) => ({
-    roots: focusRows(session),
-    cases: { directory: directory(), total: state.cases.size },
+    goals: { directory: directory(), total: state.goals.size },
     gaps: state.gaps.slice(),
     nodes: [],
     actions: [],
@@ -215,66 +216,67 @@ export function defaultGateway({
       return {
         agentId: TEST_AGENT_ID,
         boardRevision: `r${state.revision}`,
-        focusedRoots: focusRows(session).map((row) => ({ caseId: row.caseId, root: row.root })),
+        focusedGoals: focusRows(session).map((row) => row.goal),
         ...extra,
       }
     },
     tool(name, args, session) {
       switch (name) {
-        case 'OpenCase': {
-          const focusForm = typeof args.caseId === 'string' && args.caseId.trim() !== ''
-          const createForm = typeof args.caseType === 'string' || args.businessKey !== undefined
-          if (focusForm && createForm) {
-            return refuse(session, 'bad_command', 'OpenCase takes {caseType, businessKey?} to create, or {caseId} to focus. A mixed form is refused.')
-          }
-          if (focusForm) {
-            const row = state.cases.get(args.caseId.trim())
-            if (row === undefined) return refuse(session, 'unknown_case', `No Case ${args.caseId} exists on this Board.`)
-            if (row.status === 'closed' || row.status === 'archived') {
-              return refuse(session, 'case_closed', `Case ${row.caseId} is ${row.status} and cannot be focused.`)
-            }
-            if (row.status === 'paused') {
-              return refuse(session, 'case_paused', 'This Case is paused. The operator or policy that holds it must release its pause before the Agent can continue.')
-            }
-            session.focus.add(row.caseId)
-            return accept(session)
-          }
-          state.caseSeq += 1
-          const row = {
-            caseId: `CASE_${state.caseSeq}`, root: `ROOT_${state.caseSeq}`, status: 'running',
-            caseType: String(args.caseType ?? caseType),
-          }
-          state.cases.set(row.caseId, row)
-          session.focus.add(row.caseId)
-          state.gaps = ['acceptance']
-          return accept(session)
-        }
         case 'ApplyBatch': {
-          // `case_context_required` is a retired code: under one shared graph a write is
-          // not scoped by focus. What it still needs is somewhere to land — this fixture's
-          // Board has no roots until one is opened.
-          if (session.focus.size === 0) return refuse(session, 'no_acceptance_root', 'This Board has no acceptance root for this write to reach.')
-          if (settleAfterBatch && state.pending === 0) state.gaps = []
-          return accept(session)
+          const operations = Array.isArray(args.operations) ? args.operations : []
+          const declared = []
+          for (const operation of operations) {
+            if (operation?.op !== 'declare_goal' || Object.hasOwn(operation, 'parent')) continue
+            // The identity of a goal declared without a parent is its normalized desired outcome.
+            const identity = JSON.stringify(operation.desired ?? [])
+            const open = [...state.goals.values()].find((row) => row.identity === identity
+              && ['running', 'paused'].includes(row.status))
+            if (open !== undefined) {
+              session.focus.add(open.goal)
+              declared.push({ goal: open.goal, opened: false })
+              continue
+            }
+            state.goalSeq += 1
+            const row = { goal: `GOAL_${state.goalSeq}`, label: String(operation.label ?? operation.desired?.[0]?.predicate ?? 'goal'),
+              status: 'running', identity }
+            state.goals.set(row.goal, row)
+            session.focus.add(row.goal)
+            state.gaps = ['acceptance']
+            declared.push({ goal: row.goal, opened: true })
+          }
+          // `case_context_required` is a retired code: under one shared graph a write is not
+          // scoped by focus. What it still needs is somewhere to land — this fixture's Board has
+          // no goal until one is declared.
+          if (session.focus.size === 0) return refuse(session, 'no_acceptance_root', 'This Board has no goal for this write to reach.')
+          if (declared.length === 0 && settleAfterBatch && state.pending === 0) {
+            state.gaps = []
+            if (certifyAfterBatch) {
+              for (const goal of focusRows(session)) {
+                if (goal.status !== 'running') continue
+                goal.status = 'completed'
+                session.focus.delete(goal.goal)
+              }
+            }
+          }
+          return accept(session, { result: { nodeIds: operations.map((_, index) => `N_${state.revision + 1}_${index}`),
+            ...(declared.length === 0 ? {} : { goals: declared }) } })
         }
         case 'ApplyAction': {
-          if (session.focus.size === 0) return refuse(session, 'no_acceptance_root', 'This Board has no acceptance root for this Action to advance.')
+          if (session.focus.size === 0) return refuse(session, 'no_acceptance_root', 'This Board has no goal for this Action to advance.')
           state.pending += 1
           state.gaps = [`invocation:inv_${state.pending}`]
           return accept(session, { receipt: { invocation: `inv_${state.pending}`, done: false } })
         }
-        case 'CloseCase': {
-          const disposition = String(args.disposition ?? 'completed')
-          const target = [...session.focus].map((id) => state.cases.get(id)).find((row) =>
-            row !== undefined && (args.root === undefined || row.root === args.root))
-          if (target === undefined) return refuse(session, 'unknown_case', 'No such acceptance root is open for this session.')
-          if (disposition === 'completed' && state.gaps.length > 0) {
-            return refuse(session, 'case_not_certified',
-              'The Case is not certified, so it cannot be closed as completed. Close the remaining acceptance obligations first.')
+        case 'EndGoal': {
+          const target = state.goals.get(String(args.goal ?? ''))
+          if (target === undefined) return refuse(session, 'unknown_goal', 'No such goal is visible to this Agent.')
+          if (target.status === 'paused') {
+            return refuse(session, 'goal_paused', 'A paused goal cannot be ended by the Agent; an authorized operator may record a non-completed disposition with a reason')
           }
-          target.status = 'closed'
-          session.focus.delete(target.caseId)
-          return accept(session, { receipt: { disposition, completedAt: '2026-09-06T00:00:00Z' } })
+          if (!['running'].includes(target.status)) return refuse(session, 'goal_ended', 'This goal has ended; declare a new goal for more work')
+          target.status = 'ended'
+          session.focus.delete(target.goal)
+          return accept(session, { result: { goal: target.goal, disposition: String(args.disposition ?? '') } })
         }
         case 'QueryBoard': {
           if (!queryIndependent && state.pending > 0 && actionSettles) { state.pending = 0; state.gaps = [] }
@@ -304,6 +306,11 @@ export function defaultGateway({
     },
   }
 }
+
+/** One goal declaration without a parent, in the shape the model writes it inside ApplyBatch. */
+export const declareGoal = (predicate = 'task_done', args = {}, extra = {}) => ({
+  operations: [{ op: 'declare_goal', desired: [{ predicate, args }], ...extra }],
+})
 
 /**
  * The response text the provider sends. A raw tool input (`rawInput`, a JSON text) is
@@ -386,7 +393,9 @@ function renderModelAnswer(answer, provider) {
  * @param {string}   [options.sessionFile] Durable session store path handed to the Agent.
  * @param {string}   [options.protocolVersion] The version the endpoint negotiates in initialize.
  * @param {object|false|null} [options.serverCapabilities] What initialize advertises under
- *   `experimental["rulith/v3"]`; the contract's own by default, `false` to advertise nothing.
+ *   `experimental["rulith/v4"]`; the contract's own by default, `false` to advertise nothing.
+ * @param {object}   [options.extraServerCapabilities] More `experimental` keys initialize advertises
+ *   beside it, such as an earlier `rulith/v3` block.
  * @param {Function} [options.hold] (name, args, counters) => plan | undefined makes that call be held.
  *   A plan is `{ answer, stage, holdMs, progressMs, sendOrdinal, settle, settlesAsAnswered }`: the
  *   held call is answered `answer` (`running` by default) after `holdMs`, sending progress for its
@@ -441,7 +450,7 @@ export async function runAgent({
   omitAgentId = false, sseResults = false, corruptResponse, swapSessionOnCall,
   dropSessionHeader = false, rotateSession = false, oversizeMcpResponse = false,
   rejectAllCredential = false, rejectToolAfter, sessionFile, listenPort = 0,
-  protocolVersion = MCP_PROTOCOL_VERSION, serverCapabilities, hold, priorOperations = [], omitStrip, replaceDuringHold,
+  protocolVersion = MCP_PROTOCOL_VERSION, serverCapabilities, extraServerCapabilities = {}, hold, priorOperations = [], omitStrip, replaceDuringHold,
   refuseInitialize, replaceAfter, conflictBody, conflictSessionId,
   expireSessionAfter, breakStreamOnCall, refuseResume = false, pageTools, refusePing, hideOperation,
   serveTasks = [], serveTaskHeaders = {}, waitForServeCompletion = false, waitForServeReady = false,
@@ -514,7 +523,7 @@ export async function runAgent({
   // makes a later request.
   const SETTLED = new Set(['done', 'failed', 'refused', 'unknown'])
   const UNRESOLVED = new Set(['running', 'waiting_for_decision', 'needs_person'])
-  const WRITES = new Set(['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase'])
+  const WRITES = new Set(['ApplyBatch', 'ApplyAction', 'EndGoal'])
   const operations = priorOperations.map((row, index) => ({ ordinal: index + 1,
     at: new Date(Date.now() - 60_000 + index).toISOString(), since: new Date().toISOString(),
     delivered: new Map(), acked: false, ...row }))
@@ -528,9 +537,10 @@ export async function runAgent({
   let queries = 0
   let requestSeq = 0
   const counters = () => ({ pings, queries, toolCalls: toolCalls.length, requests: requests.length })
+  // Taken only from the call's own input (meta v4 Label): a declaring ApplyBatch is labelled by its tool name alone.
   const labelOf = (name, args) => [name,
-    name === 'ApplyAction' ? args.action : name === 'OpenCase' ? (args.caseId ?? args.caseType ?? '')
-      : name === 'CloseCase' ? args.root : name === 'ReadArtifact' ? args.ref : ''].filter(Boolean).join(' ')
+    name === 'ApplyAction' ? args.action : name === 'EndGoal' ? args.goal : name === 'ReadArtifact' ? args.ref : '']
+    .filter(Boolean).join(' ')
   /** How a decoded result ends, as a strip state. */
   const outcomeOf = (core) => {
     const status = core?.result?.status
@@ -805,11 +815,12 @@ export async function runAgent({
       })
       return send({
         protocolVersion,
-        capabilities: { tools: {}, ...(serverCapabilities === false ? {} : { experimental: {
-          [RULITH_META]: serverCapabilities === undefined ? CONTRACT.serverCapabilities : serverCapabilities,
-        } }) },
+        capabilities: { tools: {}, ...(serverCapabilities === false && Object.keys(extraServerCapabilities).length === 0 ? {} : {
+          experimental: { ...extraServerCapabilities, ...(serverCapabilities === false ? {} : {
+            [RULITH_META]: serverCapabilities === undefined ? CONTRACT.serverCapabilities : serverCapabilities }) },
+        }) },
         serverInfo: { name: 'rulith-gateway-test', version: '0' },
-        _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [], ...hostStrip('initialize') } },
+        _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedGoals: [], ...hostStrip('initialize') } },
       })
     }
     if (input.method === 'ping') {
@@ -822,7 +833,7 @@ export async function runAgent({
         return void response.end(JSON.stringify({ jsonrpc: '2.0', id: input.id,
           error: { code: -32603, message: 'ping could not be answered now' } }))
       }
-      return send({ _meta: { [RULITH_META]: { agentId: TEST_AGENT_ID, focusedRoots: [], ...hostStrip('ping') } } })
+      return send({ _meta: { [RULITH_META]: { agentId: TEST_AGENT_ID, focusedGoals: [], ...hostStrip('ping') } } })
     }
     if (input.method === 'notifications/initialized') {
       response.writeHead(202, sessionHeaders)
@@ -846,12 +857,12 @@ export async function runAgent({
         return send({
           tools: page,
           ...(next < all.length ? { nextCursor: String(next) } : {}),
-          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [] } },
+          _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedGoals: [] } },
         })
       }
       return send({
         tools: all,
-        _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedRoots: [] } },
+        _meta: { [RULITH_META]: { ...(omitAgentId ? {} : { agentId: TEST_AGENT_ID }), focusedGoals: [] } },
       })
     }
     if (input.method !== 'tools/call') {
@@ -1019,7 +1030,10 @@ export async function runAgent({
       ANTHROPIC_API_KEY: '',
       RULITH_SESSION_FILE: store,
       RULITH_MAX_ROUNDS: '3',
+      // Retired with rulith/v4: a value here stops the Agent, so the fixture never inherits one.
       RULITH_CASE_TYPE: '',
+      RULITH_BUSINESS_KEY_JSON: '',
+      RULITH_RESUME_CASE: '',
       RULITH_MODEL_TOOLS: '',
       RULITH_SERVE: '',
       ...(captureLocalEvents ? { RULITH_LOCAL_EVENTS: 'ipc' } : {}),
@@ -1115,7 +1129,7 @@ export async function runAgent({
     operations,
     /** Model-facing tool names actually called, in order. */
     verbs: toolCalls.map((call) => call.name),
-    /** The `_meta["rulith/v3"]` block each tool call carried, in order. */
+    /** The `_meta["rulith/v4"]` block each tool call carried, in order. */
     sentMeta: toolCalls.map((call) => call.meta),
   }
   } finally {

@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { TEST_TOKEN, callTool, freePort, runAgent } from './support/agent-harness.mjs'
+import { TEST_TOKEN, callTool, declareGoal, freePort, runAgent } from './support/agent-harness.mjs'
 
 const running = [{ tool: 'ApplyBatch', label: 'ApplyBatch', state: 'running', stage: 'not_dispatched' }]
 
@@ -125,7 +125,7 @@ test('RT-ID-5 nothing is written for a call whose answer was lost, and a retired
       chatLines: ['Write once through a broken stream.'],
       sseResults: true, breakStreamOnCall: 2, refuseResume: true,
       model: (round) => {
-        if (round === 1) return callTool('OpenCase', {})
+        if (round === 1) return callTool('ApplyBatch', declareGoal())
         if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
         return 'The answer was lost.'
       },

@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
 
-import { MODEL_TOOLS, callTool, defaultGateway, runAgent } from './support/agent-harness.mjs'
+import { MODEL_TOOLS, callTool, defaultGateway, runAgent, declareGoal } from './support/agent-harness.mjs'
 
 // ── D. The model may not speak governance, lifecycle selection, or receipts ──
 
@@ -59,22 +59,22 @@ test('the five Board tools the tool list advertises are still forwarded (calibra
     argv: ['apply an action'],
     env: { RULITH_MAX_ROUNDS: '7' },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
       if (round === 3) return callTool('ApplyAction', { action: 'acme.ship', target: 'L1' })
-      if (round === 4) return callTool('QueryBoard', { include: ['cases'] })
-      if (round === 5) return callTool('CloseCase', { disposition: 'abandoned', reason: 'demonstration only' })
+      if (round === 4) return callTool('QueryBoard', { include: ['goals'] })
+      if (round === 5) return callTool('EndGoal', { goal: 'GOAL_1', disposition: 'abandoned', reason: 'demonstration only' })
       return 'Done.'
     },
   })
   assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
   assert.deepEqual(run.verbs.filter((verb) => MODEL_TOOLS.includes(verb)),
-    ['OpenCase', 'ApplyBatch', 'ApplyAction', 'QueryBoard', 'CloseCase'])
+    ['ApplyBatch', 'ApplyBatch', 'ApplyAction', 'QueryBoard', 'EndGoal'])
   assert.doesNotMatch(run.stdout, /Refused locally/)
 })
 
 test('a Cloud endpoint that advertises fewer tools than the contract names stops startup instead of inventing them', async () => {
-  const run = await runAgent({ advertise: ['OpenCase', 'ApplyBatch', 'ApplyAction', 'CloseCase'] })
+  const run = await runAgent({ advertise: ['ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal'] })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0)
   assert.match(run.stderr, /does not advertise QueryBoard/)
@@ -97,7 +97,7 @@ test('an oversized public MCP response is refused before the Agent buffers it wi
 
 // ── E. One task's failure is not the process's ───────────────────────────────
 
-test('an Agent credential rejection terminates the process and never invents a pending Case id', async () => {
+test('an Agent credential rejection terminates the process and never invents a pending goal', async () => {
   const probe = createServer()
   let servePort
   await new Promise((ready) => probe.listen(0, '127.0.0.1', () => { servePort = probe.address().port; ready() }))
@@ -107,7 +107,7 @@ test('an Agent credential rejection terminates the process and never invents a p
     env: { RULITH_SERVE_PORT: String(servePort), RULITH_SERVE_KEY: 'credential-test-key' },
     // The credential is rejected on the first model tool call, which is the first thing a
     // governed turn does and the surface every client crosses.
-    model: () => callTool('OpenCase', {}),
+    model: () => callTool('ApplyBatch', declareGoal()),
     rejectToolAfter: 1,
     serveTasks: ['first accepted task', 'second accepted task'],
   })
@@ -118,8 +118,8 @@ test('an Agent credential rejection terminates the process and never invents a p
   assert.match(`${run.stdout}\n${run.stderr}`, /Agent MCP token rejected \(401\)/)
   assert.match(run.stdout, /Task never started: Agent credential rejected/,
     'the already-accepted queued task vanished without a terminal run record')
-  assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /pending_case_id|Case remains open/,
-    'no Case was opened, so the failure must not manufacture a resumable Case identity')
+  assert.doesNotMatch(`${run.stdout}\n${run.stderr}`, /pending_goal|Goal remains open|pending_case_id|Case remains open/,
+    'no goal was declared, so the failure must not manufacture a resumable goal')
 })
 
 test('a token rejected by the MCP handshake exits 3 instead of masquerading as an identity parse failure', async () => {
@@ -134,7 +134,7 @@ test('interactive mode reports a mid-session credential rejection without an unh
   const run = await runAgent({
     argv: [],
     chatLines: ['do the work'],
-    model: () => callTool('OpenCase', {}),
+    model: () => callTool('ApplyBatch', declareGoal()),
     rejectToolAfter: 1,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -145,33 +145,35 @@ test('interactive mode reports a mid-session credential rejection without an unh
   assert.match(run.stdout, /Stopped\./)
 })
 
-test('a one-shot run whose Case never opened exits non-zero', async () => {
+test('a one-shot run whose goal was never declared exits non-zero', async () => {
   const run = await runAgent({
     argv: ['do the work'],
-    tool: (name) => (name === 'OpenCase'
-      ? { accepted: false, errorCode: 'case_admission_refused', teaching: 'the Capability Release is not installed on this Board' }
+    tool: (name) => (name === 'ApplyBatch'
+      ? { accepted: false, errorCode: 'commercial_admission_rejected', teaching: 'Configured but not in effect yet; it opens after the configuration takes effect.' }
       : undefined),
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The Case could not be opened, so nothing ran.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The goal could not be declared, so nothing ran.'),
   })
   assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
   assert.equal(run.code, 1,
-    `a task that never opened a Case must not report success; exit was ${run.code}:\n${run.stdout}\n${run.stderr}`)
-  assert.match(run.stderr, /No Case Context was opened, so this task never started/)
+    `a task that never declared a goal must not report success; exit was ${run.code}:\n${run.stdout}\n${run.stderr}`)
+  assert.match(run.stderr, /No goal was declared, so this task never started/)
 })
 
-test('a one-shot run that the model closes as completed exits zero (calibration)', async () => {
+test('a one-shot run whose goal the Board certifies exits zero without a closing call (calibration)', async () => {
+  // rulith/v4 (A-13): a certified goal ends as completed in the very commit that certifies it.
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '5' },
+    gateway: defaultGateway({ certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
-      if (round === 3) return callTool('CloseCase', { disposition: 'completed' })
       return 'Finished.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.match(run.stdout, /Closed Case .* with disposition "completed"/)
+  assert.match(run.stdout, /Goal "GOAL_1" completed: the Board certified it/)
+  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'])
 })
 
 test('autopilot nudges once with the lifecycle the Board reported, then stops rather than looping', async () => {
@@ -179,50 +181,51 @@ test('autopilot nudges once with the lifecycle the Board reported, then stops ra
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '8' },
     gateway: defaultGateway({ settleAfterBatch: false }),
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'I have nothing further to add.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'I have nothing further to add.'),
   })
 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.modelRequests.length, 3,
     `the host must nudge exactly once and then stop; it made ${run.modelRequests.length} model calls`)
-  assert.match(JSON.stringify(run.modelRequests[2]), /still running on the Board/)
-  assert.match(run.stdout, /The model stopped while "CASE_1" is still running on the Board/)
+  assert.match(JSON.stringify(run.modelRequests[2]), /These goals are still open on the Board: GOAL_1\./)
+  assert.match(JSON.stringify(run.modelRequests[2]), /or end a goal with a disposition that says why it cannot be finished/)
+  assert.match(run.stdout, /The model stopped while "GOAL_1" is still running on the Board/)
   assert.match(run.stdout, /remain in focus/)
-  assert.equal(run.verbs.includes('CloseCase'), false, 'the host closed a Case the model never closed')
+  assert.equal(run.verbs.includes('EndGoal'), false, 'the host ended a goal the model never ended')
   // The nudge reuses what the Board already said. A host read here would be an implicit
   // Board query in the middle of a conversation the model had already ended.
-  assert.deepEqual(run.verbs, ['OpenCase'])
+  assert.deepEqual(run.verbs, ['ApplyBatch'])
 })
 
-test('autopilot stops when no focused root is still running, without another model turn', async () => {
+test('autopilot stops when no focused goal is still running, without another model turn', async () => {
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '8' },
+    gateway: defaultGateway({ certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
-      if (round === 3) return callTool('CloseCase', { disposition: 'completed' })
       return 'The Board has what it needs.'
     },
   })
 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.modelRequests.length, 3, 'an explicit close must not be followed by another model turn')
-  assert.match(run.stdout, /The Board accepted closure and the Case is completed/)
+  assert.equal(run.modelRequests.length, 2, 'a goal the Board completed must not be followed by another model turn')
+  assert.match(run.stdout, /The Board certified the goal and it is completed\./)
 })
 
-test('a stopped model turn is not a paused Case', async () => {
+test('a stopped model turn is not a paused goal', async () => {
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '8' },
     captureLocalEvents: true,
     gateway: defaultGateway({ settleAfterBatch: false }),
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'I have nothing further to add.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'I have nothing further to add.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   const observations = run.localEvents.filter((event) => event.type === 'case-state')
   assert.ok(observations.length > 0)
-  assert.ok(observations.every((event) => event.caseStatus === 'running'),
+  assert.ok(observations.every((event) => event.status === 'running'),
     `the host reported a lifecycle the Board never did: ${JSON.stringify(observations)}`)
   assert.equal(run.verbs.includes('PauseCase'), false)
   assert.doesNotMatch(run.stdout, /paused/i)
@@ -234,17 +237,17 @@ test('a void disposition ends the autopilot run as an explicit stop', async () =
     env: { RULITH_MAX_ROUNDS: '8' },
     gateway: defaultGateway({ settleAfterBatch: false }),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
-      if (round === 2) return callTool('CloseCase', { disposition: 'abandoned', reason: 'the required Source is not configured' })
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 2) return callTool('EndGoal', { goal: 'GOAL_1', disposition: 'abandoned', reason: 'the required Source is not configured' })
       return 'unreachable'
     },
   })
 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.modelRequests.length, 2, 'an explicit stop must not be followed by another model turn')
-  assert.match(run.stdout, /The Case was closed as abandoned/)
-  const closed = run.toolCalls.find((call) => call.name === 'CloseCase')
-  assert.equal(closed.args.reason, 'the required Source is not configured')
+  assert.match(run.stdout, /The goal ended as abandoned\./)
+  const ended = run.toolCalls.find((call) => call.name === 'EndGoal')
+  assert.equal(ended.args.reason, 'the required Source is not configured')
 })
 
 // ── J. A numeric knob with a typo falls back loudly ──────────────────────────
@@ -253,7 +256,7 @@ test('a non-numeric RULITH_MAX_ROUNDS warns and falls back instead of becoming N
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: 'twelve' },
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Nothing further.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.match(run.stderr, /RULITH_MAX_ROUNDS="twelve" is not an integer between 1 and 1000; using the default 12/)
@@ -288,13 +291,13 @@ test('the runtime uploads no trace and opens no second cloud channel', async () 
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '4' },
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Nothing further.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Nothing further.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   // Every request the endpoint saw was either the model service or an approved tool
   // over the MCP handshake. A client-side trace uploader would appear here as a method or
   // a tool name that is neither. The one `ping` is the base protocol's own: it acknowledges,
-  // on the same session, the OpenCase result the model has read (AIS §5.2).
+  // on the same session, the ApplyBatch result the model has read (AIS §5.2).
   assert.deepEqual([...new Set(run.methods)].sort(),
     ['initialize', 'notifications/initialized', 'ping', 'tools/call', 'tools/list'])
   assert.equal(run.pings, 1)

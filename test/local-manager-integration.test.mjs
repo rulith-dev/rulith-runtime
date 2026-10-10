@@ -41,15 +41,17 @@ const KEY = 'manager-integration-key'
 const wait = (ms) => new Promise((done) => setTimeout(done, ms))
 
 /**
- * A model that opens one Case and then stops.
+ * A model that declares one goal and then stops.
  *
- * The first answer for a task is a `OpenCase` tool call; once the transcript carries the tool
- * result, the next answer is plain text, which ends the round. Both instances share this
- * endpoint, so the answers must not depend on who is asking.
+ * The first answer for a task is an `ApplyBatch` declaring a goal without a parent, which opens
+ * its contract (rulith/v4); once the transcript carries the tool result, the next answer is plain
+ * text, which ends the round. Both instances share this endpoint, so the answers must not depend
+ * on who is asking.
  */
 const openOneCase = (body) => (JSON.stringify(body).includes('tool_result')
-  ? { text: 'The Case is open. Nothing further is needed.' }
-  : { text: 'Opening a Case.', toolCalls: [{ name: 'OpenCase', input: { caseType: 'exploration' } }] })
+  ? { text: 'The goal is declared. Nothing further is needed.' }
+  : { text: 'Declaring a goal.', toolCalls: [{ name: 'ApplyBatch',
+    input: { operations: [{ op: 'declare_goal', desired: [{ predicate: 'task_done', args: {} }] }] } }] })
 
 /** Read this instance's loopback address the way the page does: by asking the manager. */
 async function instanceEntry(call, instanceId, page = '/') {
@@ -143,7 +145,7 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
 
   assert.equal(manager.instances.hosts.get(alpha.id).host.status().agent, false)
   assert.equal(manager.instances.hosts.get(beta.id).host.status().agent, false)
-  const submitted = await localCall(alpha.entry, '/cases', { text: 'Open a Case for alpha.', caseType: 'exploration' })
+  const submitted = await localCall(alpha.entry, '/cases', { text: 'Open a Case for alpha.' })
   assert.equal(submitted.status, 202, JSON.stringify(submitted.body))
 
   // 3 · Each instance drives its own Board, and looking at the other one changes nothing.
@@ -168,10 +170,10 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
   assert.equal(after.agentId, before.agentId, 'a runtime process must never switch identity in flight')
   assert.equal(after.status().agent, true, 'viewing the other instance stopped the one that was working')
 
-  assert.equal(gateway.boards.get('agent-alpha').state.cases.size, 1, 'alpha opened a Case on its own Board')
+  assert.equal(gateway.boards.get('agent-alpha').state.goals.size, 1, 'alpha declared a goal on its own Board')
   assert.equal(gateway.boards.has('agent-beta'), false, 'beta touched no Board while alpha was working')
 
-  const secondTask = await localCall(beta.entry, '/cases', { text: 'Open a Case for beta.', caseType: 'exploration' })
+  const secondTask = await localCall(beta.entry, '/cases', { text: 'Open a Case for beta.' })
   assert.equal(secondTask.status, 202, JSON.stringify(secondTask.body))
   assert.equal(manager.instances.hosts.get(beta.id).host.agentId, 'agent-beta')
   await taskDone(manager, beta.id, secondTask.body.id)
@@ -185,8 +187,8 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
     assert.equal(history.turns[0].text, expected)
     assert.equal(JSON.stringify(history).includes(excluded), false)
   }
-  assert.equal(gateway.boards.get('agent-beta').state.cases.size, 1)
-  assert.equal(gateway.boards.get('agent-alpha').state.cases.size, 1, 'beta\'s work did not land on alpha\'s Board')
+  assert.equal(gateway.boards.get('agent-beta').state.goals.size, 1)
+  assert.equal(gateway.boards.get('agent-alpha').state.goals.size, 1, 'beta\'s work did not land on alpha\'s Board')
 
   // Nothing answered under the wrong identity, in either direction.
   const alphaCalls = gateway.requests.filter((row) => row.path === '/mcp' && row.body?.method === 'tools/call')

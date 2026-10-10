@@ -7,11 +7,11 @@
  * External execution belongs to the Worker. Configuration and governance
  * belong to Console. The Agent remains a normal conversational Agent; Rulith
  * is an optional tool it may call when work benefits from governed state,
- * evidence, Actions, or an auditable conclusion. A conversation may use no
- * Case, or may advance persistent Cases one explicit tool step at a time.
+ * evidence, Actions, or an auditable conclusion. A conversation may declare no
+ * goal, or may advance persistent goals one explicit tool step at a time.
  *
- * There is one endpoint — `/mcp` — and one surface: the six tools the unified
- * MCP surface list projects — five Board operations and an artifact read. This
+ * There is one endpoint — `/mcp` — and one surface (`rulith/v4`): the five tools the
+ * unified MCP surface list projects — four Board operations and an artifact read. This
  * runtime is an ordinary MCP client of that surface. It does not carry a privileged
  * host path, it does not issue arbitrary Board operations, and it does not run a
  * second discharge or wait state machine: holding a call until its outcome,
@@ -21,7 +21,8 @@
  * recent-operations strip, and the model is answered with the call's own result.
  *
  * The transcript and model credential remain local. The Board stores work,
- * evidence, decisions, receipts, and the Case lifecycle.
+ * evidence, decisions, receipts, and the lifecycle of every goal (a top-level goal is
+ * what Console and receipts still call a Case).
  */
 import http from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
@@ -80,11 +81,11 @@ const MCP_URL = `${URL_BASE}/mcp`
 // and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = '214242fe20cc9419f43ec028a9797decce5eb3eb'
-const RULITH_RUNTIME_VERSION = "0.12.7"
+const RULITH_CONTRACT_SOURCE_COMMIT = '7c0407cfb57aaba1589dcae90582c282b00aa575'
+const RULITH_RUNTIME_VERSION = "0.13.0"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
-const RULITH_META = 'rulith/v3'
+const RULITH_META = 'rulith/v4'
 /**
  * What this host declares at initialize: the compatibility statement the contract's
  * `ClientCapabilities` defines — it sends a progress token and waits past the Gateway's
@@ -98,12 +99,11 @@ const OPERATION_STATES = new Set(['running', 'waiting_for_decision', 'done', 'fa
 /** The stages a running operation may report. */
 const RUNNING_STAGES = new Set(['not_dispatched', 'at_worker'])
 const RULITH_MCP_SURFACE = Object.freeze([
-  Object.freeze({ name: 'OpenCase', target: 'core', operation: 'OpenCase' }),
+  Object.freeze({ name: 'QueryBoard', target: 'core', operation: 'QueryBoard', resultSchemaRef: 'docs/specs/schemas/rulith-board-observation-v3.schema.json#/$defs/QueryBoardResult' }),
   Object.freeze({ name: 'ApplyBatch', target: 'core', operation: 'ApplyBatch' }),
   Object.freeze({ name: 'ApplyAction', target: 'core', operation: 'ApplyAction' }),
-  Object.freeze({ name: 'CloseCase', target: 'core', operation: 'CloseCase' }),
-  Object.freeze({ name: 'QueryBoard', target: 'core', operation: 'QueryBoard', resultSchemaRef: 'docs/specs/schemas/rulith-board-observation-v2.schema.json#/$defs/QueryBoardResult' }),
   Object.freeze({ name: 'ReadArtifact', target: 'artifact' }),
+  Object.freeze({ name: 'EndGoal', target: 'core', operation: 'EndGoal' }),
 ])
 // ── END GENERATED CONTRACT PROJECTION ───────────────────────────────────────
 const TOKEN = process.env.RULITH_TOKEN ?? ''
@@ -118,8 +118,8 @@ const SERVE_KEY = (process.env.RULITH_SERVE_KEY ?? '').trim() || randomUUID().re
 const SERVE_RUNS_MAX = envNumber('RULITH_SERVE_RUNS', 200, { min: 1, max: 100_000 })
 // Bounded conversation slots. One process serving tens of thousands of clients with ~1%
 // of them active is the normal shape, and an in-memory transcript must have a ceiling.
-// At the limit an idle slot without focused Cases is evicted first; if only an abandoned
-// idle conversation can be reclaimed, its Case ids are recorded before the local
+// At the limit an idle slot without focused goals is evicted first; if only an abandoned
+// idle conversation can be reclaimed, its goal IDs are recorded before the local
 // transcript is released. Board state is never changed to make room. A running slot is
 // never evicted, and when every slot is busy a new conversation fails visibly.
 const SERVE_SLOTS_MAX = envNumber('RULITH_SERVE_SLOTS_MAX', 64, { min: 1, max: 10_000 })
@@ -136,9 +136,6 @@ Usage:
 
 Options:
   --serve            Accept tasks through the local service endpoint
-  --case <id>        Add an existing running or paused Case to this conversation's focus
-  --case-type <id>   Case Type from the installed Capability catalog (default: exploration)
-  --business-key <json>  Contract business-key values, for example {"job_id":"calc-001"}
   --shadow           Run the configured shadow verification path
   -h, --help         Show this help without requiring credentials
 
@@ -165,32 +162,45 @@ Common optional environment:
 }
 let withShadow = false
 let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
-/** Add one existing Case to the first segment's focus. */
-let resumeCase = (process.env.RULITH_RESUME_CASE ?? '').trim()
-let selectedCaseType = (process.env.RULITH_CASE_TYPE ?? 'exploration').trim() || 'exploration'
 /**
- * Whether the operator pinned a Case Type, rather than falling back to the default.
+ * Host options that `rulith/v4` retired, and why each has nothing left to stand on.
  *
- * `OpenCase` offers `caseType` on the model surface, and with nothing pinned the model
- * may choose from its Agent's catalogue. But a Case Type is a governance contract, so an
- * operator who named one on the command line or in the environment has selected it: a
- * model turn — which can carry a task description, a document, or a tool result — must
- * not be able to move governed work onto a different contract by asking.
+ * Each of them steered `OpenCase`, which package A (D-1008i) took off the model surface with
+ * no alias: `--case` focused an existing Case through `OpenCase({caseId})`, and `--case-type`
+ * and `--business-key` were written into the create form of `OpenCase` so that an operator,
+ * not a model turn, chose the contract. In `rulith/v4` the model declares a goal inside
+ * `ApplyBatch`; a capability goal is recognised by the atom it declares, and there is no
+ * focus operation at all (AIS §4). A host that kept accepting these would either rewrite the
+ * model's own declarations — a second contract nobody approved — or quietly drop the
+ * operator's choice. Neither is done: naming one stops the run before anything is sent.
  */
-let caseTypePinned = (process.env.RULITH_CASE_TYPE ?? '').trim() !== ''
-let selectedBusinessKeyRaw = (process.env.RULITH_BUSINESS_KEY_JSON ?? '').trim()
+const RETIRED_OPTIONS = Object.freeze({
+  '--case': 'RULITH_RESUME_CASE',
+  '--case-type': 'RULITH_CASE_TYPE',
+  '--business-key': 'RULITH_BUSINESS_KEY_JSON',
+})
+const retiredOptionTeaching = (named) => `${named} was retired with rulith/v4 (Runtime 0.13.0), and nothing was sent.`
+  + ' The model declares goals inside ApplyBatch: a capability\'s goal is chosen by the goal it declares, so there is no'
+  + ' Case Type or business key for this host to pin, and there is no focus operation for it to call.'
+  + ' State the work, and any goal ID or key values it concerns, in the task text instead.'
 const rest = []
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--serve') { withServe = true; continue }
   if (argv[i] === '--shadow') { withShadow = true; continue }
-  if (argv[i] === '--case' && argv[i + 1] !== undefined) { resumeCase = argv[++i]; continue }
-  if (argv[i] === '--case-type' && argv[i + 1] !== undefined) { selectedCaseType = argv[++i]; caseTypePinned = true; continue }
-  if (argv[i] === '--business-key' && argv[i + 1] !== undefined) { selectedBusinessKeyRaw = argv[++i]; continue }
+  if (Object.hasOwn(RETIRED_OPTIONS, argv[i])) {
+    console.error(`\n✗ ${retiredOptionTeaching(argv[i])}\n`)
+    process.exit(1)
+  }
   if (argv[i].startsWith('-')) {
     console.error(`Unknown option: ${argv[i]}. Run with --help to see the supported execution surface.`)
     process.exit(1)
   }
   rest.push(argv[i])
+}
+for (const variable of Object.values(RETIRED_OPTIONS)) {
+  if ((process.env[variable] ?? '').trim() === '') continue
+  console.error(`\n✗ ${retiredOptionTeaching(variable)} Unset ${variable}.\n`)
+  process.exit(1)
 }
 const TASK = rest.join(' ').trim()
 const SERVE = withServe
@@ -201,7 +211,7 @@ class AgentCredentialRejectedError extends Error {}
  *
  * Outside `--serve` a model-provider outage is the whole run, so exiting non-zero is
  * the honest answer for CI and scripts. Inside `--serve` the same outage used to call
- * `process.exit(1)` from inside one queued task: every other queued and in-flight Case
+ * `process.exit(1)` from inside one queued task: every other queued and in-flight turn
  * was discarded, the HTTP callers that received `202 Queued` never heard anything, and
  * the supervisor saw a clean exit. An unattended server's first duty is to stay up and
  * report the failure of the one thing that failed — `runOne` already records a thrown
@@ -211,20 +221,6 @@ const failTask = (msg) => {
   if (SERVE) throw new Error(msg)
   die(msg)
 }
-
-const businessKeyOf = (raw, label = 'businessKey') => {
-  if (raw === '' || raw === undefined || raw === null) return undefined
-  let value = raw
-  if (typeof raw === 'string') {
-    try { value = JSON.parse(raw) } catch { die(`${label} must be a JSON object of finite scalar values.`) }
-  }
-  if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0
-    || !Object.values(value).every((v) => typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)))) {
-    die(`${label} must be a non-empty JSON object whose values are strings, booleans, or finite numbers.`)
-  }
-  return value
-}
-const selectedBusinessKey = businessKeyOf(selectedBusinessKeyRaw, 'RULITH_BUSINESS_KEY_JSON / --business-key')
 
 if (TOKEN === '') die('RULITH_TOKEN is missing. Create this Agent\'s MCP token under Agent → Runtime in Console; it is shown only once.')
 let agentId = ''
@@ -297,7 +293,7 @@ const modelDestinationOf = (raw) => {
 const MODEL_DESTINATION = modelDestinationOf(MODEL_URL_INPUT)
 // No task = a multi-turn conversation; a task on the command line = an explicit one-shot
 // autopilot run that finishes and exits (CI/script compatible). `--serve` is
-// conversational too: an HTTP message is not authority to create a Case. The model
+// conversational too: an HTTP message is not authority to declare a goal. The model
 // chooses whether to call the optional Rulith tools, one step at a time.
 const CHAT = TASK === '' && !SERVE
 let taskSeq = 0
@@ -313,7 +309,7 @@ const clients = new Set()
 function emit(type, data) {
   const ev = { t: Date.now(), type, ...data }
   if (process.env.RULITH_LOCAL_EVENTS === 'ipc' && typeof process.send === 'function') {
-    try { process.send({ protocol: 'rulith-local-event', event: ev }) } catch { /* Local display must never block a Case. */ }
+    try { process.send({ protocol: 'rulith-local-event', event: ev }) } catch { /* Local display must never block a goal. */ }
     return
   }
   events.push(ev)
@@ -936,8 +932,12 @@ const connection = {
  * how two transcripts came to believe in two different Boards.
  */
 const board = {
-  /** Core-derived {caseId, root, status} focus pairs for this Agent. */
-  roots: [],
+  /**
+   * The top-level goals in this Agent's focus, `{goal, status, contact}`: membership is the
+   * authority's `focusedGoals`, status the goal directory's row. A top-level goal's ID is its
+   * contract's root; no Case identity reaches this host (package A, A-21).
+   */
+  goals: [],
   /** The Board View the last Board tool result carried. */
   lastView: undefined,
   /**
@@ -949,7 +949,7 @@ const board = {
   /** The last state form `initialize` or `ping` carried, host-only ordinals included. */
   operationStates: undefined,
   lastOperationsPublished: '',
-  lastRootObservation: new Map(),
+  lastGoalObservation: new Map(),
   lastFocusPublished: '[]',
   workerGapReported: false,
 }
@@ -1196,7 +1196,7 @@ const hostMetaOf = (result) => {
  *
  * The Agent identity arrives here, in host metadata, and nowhere else. It is not decoded
  * out of the bearer secret — a client that reads its own token has authenticated nothing
- * — and it is not discovered by opening a Case or reading the Board. An ordinary
+ * — and it is not discovered by declaring a goal or reading the Board. An ordinary
  * conversation, including "hello", must reach the model without the Board being touched.
  *
  * Two things are settled before any business can run. The negotiated protocol version has
@@ -1227,12 +1227,21 @@ async function openSession() {
     }
     // Held calls and the recent-operations strip are what this client is built on: a Gateway
     // that does not promise them would end calls this client waits on in ways it cannot read.
+    // `rulith/v4` is a one-shot cutover (package A, A-2): this Runtime speaks no earlier contract,
+    // and an endpoint that advertises only `rulith/v3` (or older) is a Gateway that has not been
+    // cut over. It is refused here exactly as any other missing server contract is, before a
+    // tool is listed; the earlier key is named so that nobody reads it as a credential problem.
     const serverHolds = result?.capabilities?.experimental?.[RULITH_META]
     if (serverHolds === null || typeof serverHolds !== 'object' || Array.isArray(serverHolds)
       || Object.keys(serverHolds).length !== Object.keys(SERVER_CAPABILITIES).length
       || Object.entries(SERVER_CAPABILITIES).some(([name, value]) => serverHolds[name] !== value)) {
+      const experimental = result?.capabilities?.experimental
+      const earlier = experimental !== null && typeof experimental === 'object' && !Array.isArray(experimental)
+        ? Object.keys(experimental).filter((key) => /^rulith\/v[0-9]+$/.test(key) && key !== RULITH_META) : []
       throw new McpProtocolVersionError(`Rulith ${RULITH_RUNTIME_VERSION} requires ${RULITH_META} server capabilities`
-        + ` ${JSON.stringify(SERVER_CAPABILITIES)}. This endpoint did not advertise that contract.`
+        + ` ${JSON.stringify(SERVER_CAPABILITIES)}. This endpoint did not advertise that contract`
+        + (earlier.length === 0 ? '.' : `; it advertises ${earlier.map((key) => plainPeerText(key, 40)).join(', ')},`
+          + ` an earlier Rulith contract that this Runtime no longer speaks.`)
         + ` Install the matching Gateway release before starting this Runtime. ${nothingCalled()}`
         + ' Do not replace credentials or retry an unfinished action to resolve this version mismatch.')
     }
@@ -1283,6 +1292,12 @@ const HOST_OWNED_TOOL_FIELDS = [...RETIRED_TOOL_FIELDS, ...HOST_METADATA_FIELDS]
 const RETIRED_TOOL_NAMES = ['agent_protocol', 'GetCompletion', 'GetBoardManifest', 'RunDischarge', 'GetProjection', 'GetChanges']
 /** Retired by `rulith/v3`: an outcome now reaches the model on the strip every result carries. */
 const RETIRED_V2_TOOL_NAMES = ['ReadOperation']
+/**
+ * Retired by `rulith/v4` (package A, D-1008i), with no alias: a goal declared inside
+ * `ApplyBatch` without a parent starts new work, a certified goal ends as completed by itself,
+ * and `EndGoal` ends a goal that will not be pursued.
+ */
+const RETIRED_V3_TOOL_NAMES = ['OpenCase', 'CloseCase']
 
 /**
  * Project the advertised schema onto what the model may say — at the envelope boundary
@@ -1306,7 +1321,7 @@ function projectToolSchema(name, schema) {
     return { schema: { type: 'object', properties: {} }, conflict: undefined }
   }
   // A schema may state its shape in composition branches rather than in one property map —
-  // the contract's own `OpenCase` is a `oneOf` of a create form and a focus form. Envelope
+  // the retired `OpenCase` was a `oneOf` of a create form and a focus form. Envelope
   // metadata inside a branch is the same contract violation as at the top level, and this
   // client cannot rewrite a branch without changing which forms validate, so it refuses
   // rather than editing.
@@ -1376,6 +1391,7 @@ function toolMembershipConflicts(tools) {
   const extra = [...seen.keys()].filter((name) => !MODEL_TOOLS.includes(name))
   const retired = extra.filter((name) => RETIRED_TOOL_NAMES.includes(name))
   const retiredV2 = extra.filter((name) => RETIRED_V2_TOOL_NAMES.includes(name))
+  const retiredV3 = extra.filter((name) => RETIRED_V3_TOOL_NAMES.includes(name))
   if (missing.length > 0) conflicts.push(`it does not advertise ${missing.join(', ')}`)
   if (duplicates.size > 0) conflicts.push(`it advertises ${[...duplicates].join(', ')} more than once`)
   if (retired.length > 0) {
@@ -1383,10 +1399,15 @@ function toolMembershipConflicts(tools) {
       + ' which means this endpoint has not been cut over to the single-MCP contract')
   }
   if (retiredV2.length > 0) {
-    conflicts.push(`it still advertises ${retiredV2.join(', ')}, which ${RULITH_META} removed,`
+    conflicts.push(`it still advertises ${retiredV2.join(', ')}, which rulith/v3 removed,`
       + ' which means this endpoint has not been cut over to held calls and the recent-operations strip')
   }
-  const unknown = extra.filter((name) => !RETIRED_TOOL_NAMES.includes(name) && !RETIRED_V2_TOOL_NAMES.includes(name))
+  if (retiredV3.length > 0) {
+    conflicts.push(`it still advertises ${retiredV3.join(', ')}, which ${RULITH_META} removed,`
+      + ' which means this endpoint has not been cut over to goals declared in ApplyBatch and EndGoal')
+  }
+  const unknown = extra.filter((name) => !RETIRED_TOOL_NAMES.includes(name) && !RETIRED_V2_TOOL_NAMES.includes(name)
+    && !RETIRED_V3_TOOL_NAMES.includes(name))
   if (unknown.length > 0) {
     conflicts.push(`it advertises ${unknown.join(', ')}, which is not part of the approved surface`)
   }
@@ -1474,58 +1495,55 @@ const newSubmission = () => ({ requestId: randomUUID(), sessionId: connection.id
 //
 // Every tool result carries the profile-filtered Board View the authority computed for
 // that operation. The host never reads the Board a second time to learn what just
-// happened, and it ranks nothing locally: `status` per root and `gaps` are the
+// happened, and it ranks nothing locally: `status` per goal and `gaps` are the
 // authority's own words. A local ladder over them had to be edited whenever Core added a
 // tier, and an unknown tier read as the weakest — a silent downgrade in the direction
 // that looks safe.
 const boardViewOf = (result) => {
   // Gateway 的模型投影把 Board View 放在 view；旧 Core 直回形状放在 payload。
-  // 有明确 view 时只读取它，不能把缺失状态猜成案件已结束。
+  // 有明确 view 时只读取它，不能把缺失状态猜成目标已结束。
   const payload = result && Object.hasOwn(result, 'view') ? result.view : result?.payload
   if (payload !== null && typeof payload === 'object' && !Array.isArray(payload)) return payload
   return undefined
 }
 const viewText = (view) => (view === undefined ? '(no Board View was returned)' : JSON.stringify(view, null, 2))
 /**
- * Root rows the authority reported.
+ * Goal directory rows the authority reported (package A, A-17).
  *
- * Both carriers are read, directory first: `roots` describes what this session is focused
- * on, and the bounded Case directory describes Cases beyond it — including the one that
- * just closed and therefore left focus. Reading only the first made a closed Case
- * indistinguishable from one that had merely been released.
+ * `view.goals.directory[]` lists the open and the recently ended top-level goals, each as
+ * `{goal, label, status, ...}`. It is the one carrier of a goal's lifecycle: a goal that just
+ * completed or ended has left focus, and only the directory still says how it ended. Reading
+ * focus alone made an ended goal indistinguishable from one that had merely been released.
  */
-function reportedRootsOf(view) {
-  const rows = [
-    ...(Array.isArray(view?.cases?.directory) ? view.cases.directory : []),
-    ...(Array.isArray(view?.roots) ? view.roots : []),
-  ]
+function reportedGoalsOf(view) {
+  const rows = Array.isArray(view?.goals?.directory) ? view.goals.directory : []
   return rows.filter((row) => row !== null && typeof row === 'object')
     .map((row) => ({
-      caseId: String(row.caseId ?? ''),
-      root: String(row.root ?? ''),
+      goal: String(row.goal ?? ''),
       status: LIFECYCLE.includes(row.status) ? String(row.status) : 'unavailable',
     }))
-    .filter((row) => row.caseId !== '' || row.root !== '')
+    .filter((row) => row.goal !== '')
 }
 /**
- * Roots the authority declined to describe.
+ * Goals the authority declined to describe: `view.goals.unavailableGoals` (formerly
+ * `unavailableRoots`, renamed by V0).
  *
  * The entry is deliberately neutral: it does not distinguish "never existed" from "deleted"
  * from "not visible to you", and neither does anything here. What matters locally is that
- * an unavailable root must *lose* whatever status it last had rather than keep it — a root
+ * an unavailable goal must *lose* whatever status it last had rather than keep it — a goal
  * shown as running because the last answer that mentioned it said so is the same defect as
  * inventing a status outright, only slower.
  */
-const unavailableRootsOf = (view) => (Array.isArray(view?.unavailableRoots)
-  ? view.unavailableRoots.map(String).filter((root) => root !== '')
+const unavailableGoalsOf = (view) => (Array.isArray(view?.goals?.unavailableGoals)
+  ? view.goals.unavailableGoals.map(String).filter((goal) => goal !== '')
   : [])
 const gapsOf = (view) => (Array.isArray(view?.gaps) ? view.gaps.length : undefined)
 
 /**
  * Where the authority says a bounded view dropped rows.
  *
- * Core's published Board View reports truncation **per limb** (`cases.truncated` beside
- * `cases.total`) and once at the top level for the node limbs (`truncated` beside `total`).
+ * Core's published Board View reports truncation **per limb** (`goals.truncated` beside
+ * `goals.total`) and once at the top level for the node limbs (`truncated` beside `total`).
  * An earlier version of this client read a single aggregate `loss` object that a Core draft
  * had proposed and the published schema does not contain — so against the real authority it
  * saw no truncation at all and presented a partial view as a complete one. Both published
@@ -1537,8 +1555,8 @@ const gapsOf = (view) => (Array.isArray(view?.gaps) ? view.gaps.length : undefin
  */
 function truncatedLimbsOf(view) {
   const limbs = []
-  if (view?.cases?.truncated === true) {
-    limbs.push({ limb: 'cases', total: Number.isFinite(view.cases.total) ? Number(view.cases.total) : undefined })
+  if (view?.goals?.truncated === true) {
+    limbs.push({ limb: 'goals', total: Number.isFinite(view.goals.total) ? Number(view.goals.total) : undefined })
   }
   if (view?.truncated === true) {
     limbs.push({ limb: 'nodes', total: Number.isFinite(view?.total) ? Number(view.total) : undefined })
@@ -1551,10 +1569,14 @@ function truncatedLimbsOf(view) {
 }
 const viewIsTruncated = (view) => truncatedLimbsOf(view).length > 0
 
-/** The lifecycle words the authority uses. Anything else is `unavailable`, never guessed. */
-const LIFECYCLE = ['running', 'paused', 'closed']
-const TERMINAL_LIFECYCLE = new Set(['closed'])
-const liveRootsOf = (ctx) => board.roots.filter((row) => row.status === 'running')
+/**
+ * The lifecycle words of the goal directory (A-17). `completed` is a goal the Board certified,
+ * ended in the same commit; `ended` is a goal `EndGoal` or a person ended with another
+ * disposition. Anything else is `unavailable`, never guessed.
+ */
+const LIFECYCLE = ['running', 'paused', 'completed', 'ended']
+const TERMINAL_LIFECYCLE = new Set(['completed', 'ended'])
+const liveGoalsOf = () => board.goals.filter((row) => row.status === 'running')
 
 // ── The recent-operations strip ─────────────────────────────────────────────
 //
@@ -1689,7 +1711,7 @@ function noteOperations(states, { stateForm = false } = {}) {
 /** Whether the strip last shown holds an operation that still keeps the execution slot. */
 const unresolvedOperation = () => board.operations?.find((entry) => UNRESOLVED_STATES.has(entry.state))
 
-/** The writes: OpenCase, ApplyBatch, ApplyAction and CloseCase, whose settled result the write gate guards. */
+/** The writes: ApplyBatch, ApplyAction and EndGoal, whose settled result the write gate guards. */
 const WRITE_TOOLS = new Set([...BOARD_TOOLS].filter((name) => name !== 'QueryBoard'))
 
 /** An entry's identity on the strip: its tool, label and admission time, which is strictly increasing. */
@@ -1784,7 +1806,7 @@ const answerDelivers = (ctx, name, result, held) => (WRITE_TOOLS.has(name) && re
 // With conversation history configured (Rulith Local), the identities — tool, label, admission time,
 // outcome class, never content — are written beside the history, atomically, whenever they change,
 // so a reclaimed slot and a restarted process both come back to them. Strips this host's own calls
-// fetched for a conversation — its Case focus, the shadow review's finding — are kept for that
+// fetched for a conversation — a stopped turn's observation, the shadow review's finding — are kept for that
 // conversation's next message (`kept`), in memory. None of this is the authority's record or stands
 // in for it: the Gateway's own gate still judges every write this host sends.
 
@@ -2244,8 +2266,8 @@ function unseenOutcomesNotice(ctx) {
  * Keep the strip of an answer to this host's own call when it delivered a result this
  * conversation's model has not been shown (AIS §5.2; TOOL-06). Returns whether it did.
  *
- * Two calls are this host's rather than the model's: bringing the Case the operator selected into
- * focus, and recording the shadow review's findings. Either can deliver an outcome the model has
+ * Two calls are this host's rather than the model's: observing the work a stopped turn left, and
+ * recording the shadow review's findings. Either can deliver an outcome the model has
  * not seen — a write refused with `previous_result_undelivered` carries it in full — and after that
  * the gate lets the next write on this session through. So the strip is kept, verbatim, for the
  * conversation the call was made for, and put in front of its model in the next message it reads,
@@ -2328,7 +2350,7 @@ function reportUnshownDeliveries() {
  * The authority counts a delivered result as acknowledged once that session makes another
  * request that arrives after the delivery was written (AIS §5.2). A turn that ends in text after a
  * write makes none; the result would stay unacknowledged, and after a restart the next write —
- * often this host's own request to focus the Case the operator selected — would be refused with
+ * often this host's own write for the shadow review — would be refused with
  * it. One `ping` settles that: it returns at once, reads no Board and delivers nothing. It is sent
  * only once the model of the conversation that answer went to has replied to a request carrying
  * it, only while no kept strip waits for any model, and only on the session the result was
@@ -2361,17 +2383,21 @@ function publicActionOutcome(publicResult, expectedAction) {
   return { action, status, ...(status === 'unknown' ? {} : { ok: outcome.ok }) }
 }
 
-/** Display-only summary of an authorized public read, never Case focus or proof. */
+/**
+ * Display-only summary of an authorized public read, never focus or proof.
+ *
+ * `view.history` answers `include:["history"]` for exactly one goal (A-19): the facts frozen
+ * when that goal ended, keyed by `goal`, as of `asOf:"goal_end"`, with no Case identity.
+ */
 function publicBoardRead(result) {
   if (result?.accepted !== true || !result.view || typeof result.view !== 'object') return undefined
-  const history = result.view.caseHistory
-  if (!history || typeof history.root !== 'string' || !history.root) return { observed: true }
-  if (history.status === 'unavailable') return { observed: true, history: { root: history.root, status: 'unavailable' } }
-  if (history.status !== 'available' || history.asOf !== 'case_close'
-    || typeof history.caseId !== 'string' || !history.caseId
+  const history = result.view.history
+  if (!history || typeof history.goal !== 'string' || !history.goal) return { observed: true }
+  if (history.status === 'unavailable') return { observed: true, history: { goal: history.goal, status: 'unavailable' } }
+  if (history.status !== 'available' || history.asOf !== 'goal_end'
     || typeof history.disposition !== 'string' || typeof history.certified !== 'boolean'
     || !Array.isArray(history.facts) || typeof history.truncated !== 'boolean') return { observed: true }
-  return { observed: true, history: { root: history.root, caseId: history.caseId,
+  return { observed: true, history: { goal: history.goal,
     status: 'available', disposition: history.disposition, certified: history.certified,
     factsOnPage: history.facts.length, morePages: history.truncated } }
 }
@@ -2385,8 +2411,8 @@ function reportActionOutcome(ctx, outcome, { callId } = {}) {
  * Take what the authority said about identity, focus and operations — and nothing the model
  * or a previous run said.
  *
- * `focusedRoots` is the authoritative membership of this session's focus; the runtime never
- * derives a {caseId, root} pair itself. `boardRevision` is an audit string: it locates a
+ * `focusedGoals` is the authoritative membership of this session's focus; the runtime never
+ * derives a focused goal itself. `boardRevision` is an audit string: it locates a
  * displayed view in the commit order and is never presented back as a precondition. The
  * state-only strip arrives here on `initialize` and `ping`; a tool result carries the strip in
  * its text instead, where the model reads it.
@@ -2399,116 +2425,125 @@ function absorbHostMeta(meta) {
   return meta
 }
 
-/** Focus pairs are Core-derived. An entry the authority did not return is not focus. */
-function focusPairsOf(meta) {
-  if (!Array.isArray(meta?.focusedRoots)) return undefined
-  return meta.focusedRoots
-    .filter((pair) => pair !== null && typeof pair === 'object')
-    .map((pair) => ({ caseId: String(pair.caseId ?? ''), root: String(pair.root ?? '') }))
-    .filter((pair) => pair.caseId !== '' && pair.root !== '')
+/**
+ * The focused top-level goals, as the authority reported them (`focusedGoals`, A-21; formerly
+ * the v3 {caseId, root} focus pairs). An ID the authority did not return is not focus.
+ */
+function focusedGoalsOf(meta) {
+  if (!Array.isArray(meta?.focusedGoals)) return undefined
+  return [...new Set(meta.focusedGoals.filter((goal) => typeof goal === 'string' && goal !== ''))]
 }
 
-// ── Local Case observations ─────────────────────────────────────────────────
+// ── Local goal observations ─────────────────────────────────────────────────
 //
 // Lifecycle is the Board's, and it is distinct from conversation progress: a model that
-// stopped talking has not paused a Case, and a conversation that was reclaimed has not
-// closed one. Every observation below comes from something the authority returned.
-function observeRoot(ctx, row, contact = 'observed') {
+// stopped talking has not paused a goal, and a conversation that was reclaimed has not
+// ended one. Every observation below comes from something the authority returned.
+function observeGoal(ctx, row, contact = 'observed') {
   const observation = {
-    caseId: row.caseId, root: row.root, caseStatus: row.status,
+    goal: row.goal, status: row.status,
     ...(typeof row.gaps === 'number' ? { gaps: row.gaps } : {}),
     ...(contact === 'observed' ? {} : { contact }),
   }
   const identity = JSON.stringify(observation)
-  if (board.lastRootObservation.get(row.caseId) === identity) return
-  board.lastRootObservation.set(row.caseId, identity)
-  while (board.lastRootObservation.size > 64) board.lastRootObservation.delete(board.lastRootObservation.keys().next().value)
+  if (board.lastGoalObservation.get(row.goal) === identity) return
+  board.lastGoalObservation.set(row.goal, identity)
+  while (board.lastGoalObservation.size > 64) board.lastGoalObservation.delete(board.lastGoalObservation.keys().next().value)
   emitOn(ctx, 'case-state', observation)
 }
 
-/** Publish the focus set itself, so Local can show several roots rather than one. */
+/** Publish the focus set itself, so Local can show several goals rather than one. */
 function publishFocus(ctx) {
-  const identity = JSON.stringify(board.roots)
+  const identity = JSON.stringify(board.goals)
   if (board.lastFocusPublished === identity) return
   board.lastFocusPublished = identity
-  emitOn(ctx, 'focus', { roots: board.roots.map((row) => ({ caseId: row.caseId, root: row.root,
+  emitOn(ctx, 'focus', { goals: board.goals.map((row) => ({ goal: row.goal,
     status: row.status, contact: row.contact ?? 'not-refreshed' })) })
 }
 
 /**
  * Reconcile this conversation's focus with what the authority just reported.
  *
- * Membership comes from `focusedRoots`; status comes from the Board View's own root rows.
+ * Membership comes from `focusedGoals`; status comes from the goal directory's own rows.
  * Three states are kept apart, because collapsing any two of them is a way of showing a
  * number the authority did not say:
  *
- *   · **refreshed** — this answer described the root. It is observed, now.
- *   · **unavailable** — the authority listed the root in `unavailableRoots`. It loses
+ *   · **refreshed** — this answer described the goal. It is observed, now.
+ *   · **unavailable** — the authority listed the goal in `unavailableGoals`. It loses
  *     whatever status it had; that is a statement, not an absence.
- *   · **not refreshed** — the answer was bounded and simply did not reach this root. The
+ *   · **not refreshed** — the answer was bounded and simply did not reach this goal. The
  *     previous status is retained but is no longer an observation of the present, so it is
  *     republished as `contact: 'not-refreshed'` rather than passed back through as if the
  *     authority had just confirmed it.
  *
- * Roots leave focus only because the authority stopped listing them; leaving focus is not
- * itself a lifecycle transition, and only an observed terminal status closes a Case.
+ * Goals leave focus only because the authority stopped listing them; leaving focus is not
+ * itself a lifecycle transition. Only an observed terminal status says a goal ended: the
+ * directory's `completed` — the Board certified it and ended it in that commit (A-13) — or
+ * `ended`. `declared` names the goals the command itself declared (`result.goals`), so that
+ * one which completed in the very commit that declared it is not missed for never having been
+ * seen open. Each goal seen to end is recorded once on the conversation (`ctx.goalsEnded`).
  */
-function trackFocus(ctx, meta, view, command) {
-  const pairs = focusPairsOf(meta)
-  const reported = new Map(reportedRootsOf(view).map((row) => [row.caseId || row.root, row]))
-  const unavailable = new Set(unavailableRootsOf(view))
+function trackFocus(ctx, meta, view, command, declared = []) {
+  const focused = focusedGoalsOf(meta)
+  const reported = new Map(reportedGoalsOf(view).map((row) => [row.goal, row]))
+  const unavailable = new Set(unavailableGoalsOf(view))
   const truncated = viewIsTruncated(view)
   const gaps = gapsOf(view)
-  const previous = new Map(board.roots.map((row) => [row.caseId, row]))
+  const previous = new Map(board.goals.map((row) => [row.goal, row]))
   /** `{ status, contact }` — never a bare status, so the caller cannot lose the distinction. */
-  const stateOf = (caseId, root, before) => {
-    if (unavailable.has(root)) return { status: 'unavailable', contact: 'observed' }
-    const seen = reported.get(caseId) ?? reported.get(root)
+  const stateOf = (goal, before) => {
+    if (unavailable.has(goal)) return { status: 'unavailable', contact: 'observed' }
+    const seen = reported.get(goal)
     if (seen !== undefined && seen.status !== 'unavailable') return { status: seen.status, contact: 'observed' }
     if (before?.status !== undefined && truncated) return { status: before.status, contact: 'not-refreshed' }
     if (before?.status !== undefined && seen === undefined) return { status: before.status, contact: before.contact ?? 'not-refreshed' }
     return { status: 'unavailable', contact: 'observed' }
   }
-  if (pairs !== undefined) {
-    board.roots = pairs.map((pair) => {
-      const before = previous.get(pair.caseId)
-      const { status, contact } = stateOf(pair.caseId, pair.root, before)
-      return { caseId: pair.caseId, root: pair.root, status, contact,
-        ...(before?.caseType === undefined ? {} : { caseType: before.caseType }) }
+  if (focused !== undefined) {
+    board.goals = focused.map((goal) => {
+      const before = previous.get(goal)
+      return { goal, ...stateOf(goal, before) }
     })
   } else {
     // No focus statement: keep membership and refresh only what this answer described.
-    board.roots = board.roots.map((row) => {
-      const { status, contact } = stateOf(row.caseId, row.root, row)
-      return { ...row, status, contact }
-    })
+    board.goals = board.goals.map((row) => ({ ...row, ...stateOf(row.goal, row) }))
   }
-  for (const row of board.roots) {
-    // `gaps` is one count over the view, not a per-root figure. With a single focused root
-    // the attribution is unambiguous; with several it would be a number attached to a root
-    // it does not describe, so it is left off rather than divided or repeated. A root this
+  for (const row of board.goals) {
+    // `gaps` is one count over the view, not a per-goal figure. With a single focused goal
+    // the attribution is unambiguous; with several it would be a number attached to a goal
+    // it does not describe, so it is left off rather than divided or repeated. A goal this
     // answer did not refresh gets no gap count at all: the number would be from elsewhere.
     const fresh = row.contact === 'observed'
-    observeRoot(ctx, { ...row, ...(fresh && board.roots.length === 1 && typeof gaps === 'number' ? { gaps } : {}) },
+    observeGoal(ctx, { ...row, ...(fresh && board.goals.length === 1 && typeof gaps === 'number' ? { gaps } : {}) },
       row.contact ?? 'observed')
   }
-  for (const [caseId, before] of previous) {
-    if (board.roots.some((row) => row.caseId === caseId)) continue
-    const seen = reported.get(caseId) ?? reported.get(before.root)
+  const candidates = [...new Set([...previous.keys(), ...declared])]
+  for (const goal of candidates) {
+    const before = previous.get(goal)
+    if (before !== undefined && TERMINAL_LIFECYCLE.has(before.status)) continue
+    const now = board.goals.find((row) => row.goal === goal)
+    const seen = now?.contact === 'observed' && TERMINAL_LIFECYCLE.has(now.status) ? now : reported.get(goal)
     if (seen !== undefined && TERMINAL_LIFECYCLE.has(seen.status)) {
-      observeRoot(ctx, seen)
-      // The disposition is the one this host sent on the accepted CloseCase — a fact it
-      // knows — not a `receipt.disposition` read back out of the result. Core's published
-      // result envelope has no such field, so reading one meant printing "closed" for every
-      // close regardless of what was actually asked for.
-      const asked = command?.name === 'CloseCase' ? String(command.input?.disposition ?? '').trim() : ''
-      const disposition = asked === '' ? 'closed' : asked
-      log(`◎ Closed Case "${caseId}" with disposition "${disposition}". Its record remains available in Console.`)
-      emitOn(ctx, 'case-closed', { caseId, root: before.root, disposition })
+      if (now === undefined) observeGoal(ctx, seen)
+      // `completed` is the Board's own verdict. For `ended`, the disposition is the one this
+      // host sent on the accepted EndGoal for this goal — a fact it knows — and not one read
+      // back out of the result; anything else ended it, and it is said only to have ended.
+      const asked = seen.status === 'ended' && command?.name === 'EndGoal' && command.input?.goal === goal
+        ? String(command.input?.disposition ?? '').trim() : ''
+      const disposition = seen.status === 'completed' ? 'completed' : asked === '' ? 'ended' : asked
+      log(seen.status === 'completed'
+        ? `◎ Goal "${goal}" completed: the Board certified it. Its record remains available in Console.`
+        : `◎ Goal "${goal}" ended as "${disposition}". Its record remains available in Console.`)
+      emitOn(ctx, 'case-closed', { goal, disposition })
+      // Recorded whatever ended it. A goal something else ended carries the bare disposition
+      // `ended`, which the turn outcome below never reads as completed.
+      if (Array.isArray(ctx.goalsEnded) && !ctx.goalsEnded.some((row) => row.goal === goal)) {
+        ctx.goalsEnded.push({ goal, disposition })
+      }
       continue
     }
     // Focus loss without an observed terminal status says nothing about the lifecycle.
-    emitOn(ctx, 'case-unfocused', { caseId, root: before.root })
+    if (before !== undefined && now === undefined) emitOn(ctx, 'case-unfocused', { goal })
   }
   publishFocus(ctx)
 }
@@ -2802,7 +2837,7 @@ function forgetSession() {
  * call's own.
  *
  * `heldCall` is given only to the `QueryBoard` a wait reads the position with: the held call it
- * reads for, so that a Case that call closed is logged with the disposition it asked for.
+ * reads for, so that a goal that call ended is logged with the disposition it asked for.
  */
 async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   try {
@@ -2819,13 +2854,13 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
     return { result, text: JSON.stringify(result), authoritative: false, refusedLocally: true, notExecuted: true, notSent: true }
   }
   const identity = newSubmission()
-  // This Host proof is private to the current attached task and its first create-form
-  // OpenCase RPC. It is never an argument, result, event, transcript or durable call key.
+  // This Host proof is private to the current attached task and to its first request that
+  // opens work: under `rulith/v3` the create form of `OpenCase`; under `rulith/v4` the
+  // `ApplyBatch` that declares a goal without a parent, which is where the contract is opened
+  // and where the rules that applied to `OpenCase` now apply (AIS §4). It is never an argument,
+  // result, event, transcript or durable call key, and it rides on one RPC only.
   let materialTaskProof
-  if (name === 'OpenCase' && ctx.materialTaskProof
-    && (ctx.materialTargetCaseId
-      ? input.caseId === ctx.materialTargetCaseId
-      : !Object.hasOwn(input, 'caseId'))) {
+  if (name === 'ApplyBatch' && ctx.materialTaskProof && declaresTopLevelGoal(input)) {
     if (!ctx.materialTaskProofRequestId) ctx.materialTaskProofRequestId = identity.requestId
     if (ctx.materialTaskProofRequestId === identity.requestId) materialTaskProof = ctx.materialTaskProof
   }
@@ -2937,7 +2972,7 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   // answer says the request never executed.
   if (transportFailed(result)) authoritative = false
   if (authoritative && name === 'QueryBoard'
-    && (hostMeta?.agentId !== agentId || !Array.isArray(hostMeta?.focusedRoots) || !validBoardObservation(result))) {
+    && (hostMeta?.agentId !== agentId || !Array.isArray(hostMeta?.focusedGoals) || !validBoardObservation(result))) {
     authoritative = false
     result = { accepted: false, errorCode: 'board_observation_malformed',
       teaching: 'QueryBoard returned no valid committed observation.' }
@@ -2975,12 +3010,13 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
     if (states !== undefined) dropUnlisted(result.operations)
     noteOperations(states)
     if (BOARD_TOOLS.has(name)) {
-      trackFocus(ctx, hostMeta, boardViewOf(result), commandBehind(name, input, heldCall, result))
-      // `affectedCases` is complete and causal, and the empty array is a statement: no live
-      // root advanced. Reporting it only when non-empty would erase the difference between
-      // "nothing was affected" and "the authority did not say".
-      if (Array.isArray(hostMeta?.affectedCases)) {
-        emitOn(ctx, 'affected', { cmd: name, affectedCases: hostMeta.affectedCases.map(String) })
+      trackFocus(ctx, hostMeta, boardViewOf(result), commandBehind(name, input, heldCall, result),
+        name === 'ApplyBatch' && result?.accepted === true ? declaredGoalsOf(result) : [])
+      // `affectedGoals` (V43, the v3 Case list renamed) is complete and causal, and the empty
+      // array is a statement: no top-level goal advanced. Reporting it only when non-empty would
+      // erase the difference between "nothing was affected" and "the authority did not say".
+      if (Array.isArray(hostMeta?.affectedGoals)) {
+        emitOn(ctx, 'affected', { cmd: name, affectedGoals: hostMeta.affectedGoals.map(String) })
       }
       reportLoss(ctx, name, boardViewOf(result))
     }
@@ -2992,7 +3028,7 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
     text = JSON.stringify(result)
   } else {
     text = JSON.stringify({ ...result, teaching: transportFailureTeaching(result, { admitted: heldOrdinal !== undefined }) })
-    for (const row of board.roots) observeRoot(ctx, row, 'unknown')
+    for (const row of board.goals) observeGoal(ctx, row, 'unknown')
   }
   // Authorized local delivery, and only after everything above it.
   //
@@ -3043,18 +3079,42 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
     ...(transportDetail === undefined ? {} : { transportDetail }),
     ...(stopTurn === undefined ? {} : { stopTurn }),
     ...(sentAfter === undefined ? {} : { sentAfter }),
+    ...(materialTaskProof === undefined ? {} : { carriedMaterialProof: true }),
     notExecuted: authoritative && result?.requestExecuted === false,
     transportFailed: !authoritative && name !== 'QueryBoard',
     readUnavailable: name === 'QueryBoard' && !authoritative }
 }
 
 /**
- * The command a Board answer's focus change follows from, for the log line of a Case it closed.
+ * Whether an `ApplyBatch` input declares a goal without a parent: the one way new work starts
+ * under `rulith/v4` (A-4, A-5). A declaration with `parent` breaks an existing goal down and
+ * opens nothing.
+ */
+function declaresTopLevelGoal(input) {
+  const operations = isRecord(input) && Array.isArray(input.operations) ? input.operations : []
+  return operations.some((operation) => isRecord(operation) && operation.op === 'declare_goal'
+    && !Object.hasOwn(operation, 'parent'))
+}
+
+/**
+ * The goal IDs an accepted `ApplyBatch` reported in `result.goals` (A-9): one `{goal, opened}`
+ * per `declare_goal`, in declaration order. A missing or malformed list is no list.
+ */
+function declaredGoalsOf(answer) {
+  const goals = answer?.result?.goals
+  return Array.isArray(goals)
+    ? [...new Set(goals.filter((row) => isRecord(row) && typeof row.goal === 'string' && row.goal !== '')
+      .map((row) => row.goal))]
+    : []
+}
+
+/**
+ * The command a Board answer's focus change follows from, for the log line of a goal it ended.
  *
  * Usually the call itself. For the `QueryBoard` a wait reads the position with, it is the held
  * call the wait is for — but only when that call's own entry on this very strip says it settled
- * `done`: then a Case it asked to close, seen closed here, was closed as it asked. Anything else
- * seen closed was closed by something this host cannot name, and is logged as closed.
+ * `done`: then a goal it asked to end, seen ended here, was ended as it asked. Anything else
+ * seen ended was ended by something this host cannot name, and is logged as ended.
  */
 function commandBehind(name, input, heldCall, result) {
   if (name !== 'QueryBoard' || heldCall === undefined) return { name, input }
@@ -3365,7 +3425,7 @@ async function answerFromStrip(ctx, name, input, first, own, look, { atBound = f
     if (readable) {
       const result = { ...parsed, operations: stripWithoutResult(operations, entry.raw),
         ...(view === undefined ? {} : { currentView: view }) }
-      // The strip carries a call's public result without its host metadata, so the Cases it
+      // The strip carries a call's public result without its host metadata, so the goals it
       // affected are not known here. That is said, rather than left to read as "none".
       if (BOARD_TOOLS.has(name)) emitOn(ctx, 'affected', { cmd: name, unreported: true })
       return answer(result, { isError: entry.result.isError })
@@ -3554,7 +3614,7 @@ function requestEntries(entries) {
       if (result.name !== 'QueryBoard') continue
       let parsed
       try { parsed = JSON.parse(result.text) } catch { continue }
-      const field = parsed?.view?.cases ? 'view' : parsed?.payload?.cases ? 'payload' : ''
+      const field = parsed?.view?.goals ? 'view' : parsed?.payload?.goals ? 'payload' : ''
       if (parsed?.accepted === true && field !== '' && typeof parsed[field] === 'object' && !viewIsTruncated(parsed[field])) {
         const identity = field + ':' + JSON.stringify(parsed[field])
         const observation = { index, resultIndex, parsed, field, identity, id: result.id }
@@ -3958,13 +4018,13 @@ const SYSTEM_PROMPT = `You are a conversational assistant using Rulith for gover
 
 Complete the user's request, however many tool calls it takes. If you announce an action, include its actual tool call. After results, continue to an answer, a concrete blocker or a necessary question. Plain text ends your turn; never stop at "Let me check".
 
-Inside ApplyBatch, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_goal states an outcome. Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion. Let rules derive conclusions; retract_node or revise_fact corrects your assertion. Narrate in replies. Case Type alone grants no rule-writing permission. Closing a Case preserves shared knowledge.
+Inside ApplyBatch, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down. Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion. Let rules derive conclusions; retract_node or revise_fact corrects your assertion. Narrate in replies. A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.
 
-Never assert acceptance_met, test_result, certification or rulith.exploration.completed. Acceptance is the Board's decision.
+Never assert acceptance_met, test_result or certification. Acceptance is the Board's decision.
 
-Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new Cases and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call QueryBoard when you need a current view.
+Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new goals and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call QueryBoard when you need a current view.
 
-When OpenCase prepares the Case's task, the view lists its goals and whether each is met. Work toward the unmet goals by calling ready Actions with the IDs the view returned; do not rebuild the task with ApplyBatch. When taskStatus shows the root certified, close it with CloseCase as completed. If no task was prepared, state the outcome with declare_goal as the capability describes.
+When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason.
 
 Every answer from the authority also shows operations: this Agent's recent operations, other conversations' included, newest first. A call this Runtime did not send, or whose answer never arrived, shows no full list; QueryBoard does. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.`
 
@@ -3978,7 +4038,7 @@ const log = (s) => console.log(s)
 // slot (`conversationOutcomes`), so that reclaiming the slot does not forget it.
 const makeSlot = (key) => ({
   key,                              // sessionKey; '' is the local/default conversation
-  detachedCase: undefined,          // bounded recovery hint after local transcript reclamation
+  detachedGoal: undefined,          // bounded recovery hint after local transcript reclamation
   messages: [],                     // transcript (local only; never written to the Board)
   segmentTrail: [],                 // compaction leaves one line per dropped segment
   queue: [],                        // this conversation's FIFO
@@ -4012,7 +4072,7 @@ try {
   if (agentId === '') {
     throw new McpSurfaceError('The public MCP endpoint authenticated this token but returned no Agent identity in'
       + ` initialize or tools/list _meta["${RULITH_META}"].agentId. Upgrade the Cloud endpoint: this Runtime will not`
-      + ' decode the bearer secret, and it will not open a Case or read the Board merely to learn who it is.')
+      + ' decode the bearer secret, and it will not declare a goal or read the Board merely to learn who it is.')
   }
 } catch (error) {
   startupFailed = true
@@ -4079,13 +4139,13 @@ consoleUrl = consoleUrlOf(agentId)
       + ' Its outcome will show in operations of the next result; nothing is re-sent.')
   }
 }
-/** The one sentence every face uses when a segment stops with Cases still open. */
-const pendingLine = (id) => (id === null || id === undefined ? '' : ` · Case remains open: pending_case_id=${id}. Resume with --case ${id}, or resolve it in Console.`)
+/** The one sentence every face uses when a segment stops with goals still open. */
+const pendingLine = (id) => (id === null || id === undefined ? '' : ` · Goal remains open: pending_goal=${id}. Continue it in a later message, or resolve it in Console.`)
 
 // ── Transcript compaction: rolling window plus segment markers ───────────────
 //
 // In conversation form `messages` accumulates across segments. A process that runs all
-// day and handles dozens of Cases will otherwise grow without bound, and the failure
+// day and handles dozens of goals will otherwise grow without bound, and the failure
 // shape is a 400 from the model service, not a clean error.
 //
 // A rolling window rather than summarization: a summary costs another model call on every
@@ -4131,13 +4191,10 @@ let pollInterject = null
 // `return` is a conversation: the model may take tool steps, and the moment it answers
 // with text and no tool call, control goes back to the user. `continue` is the autopilot
 // (`--task`): the same loop, the same tools, the same refusals. What differs is only
-// what the host does when the model falls silent while a Case is still running.
+// what the host does when the model falls silent while a goal is still running.
 //
 // These were two loops with two grammars. A defect fixed in one survived, silently, in
 // the other — and neither could be exercised by the other's tests.
-
-/** Dispositions that say the work did not succeed. In autopilot they end the run. */
-const VOID_DISPOSITIONS = new Set(['cancelled', 'failed', 'abandoned', 'superseded'])
 
 
 /**
@@ -4159,10 +4216,10 @@ const unknownToolTeaching = (name) => `${name === '' ? '(missing tool name)' : n
  * `case: {id, expectedRevision}` and its relatives addressed a Case and pinned a write
  * revision. Both meanings are gone. Stripping them silently would let a model formed
  * against the old contract believe its scoping took effect; the honest answer is that the
- * command was not sent.
+ * command was not sent. (The teaching speaks of goals, by V0 of package A.)
  */
 const retiredFieldTeaching = (name, fields) => `${name} carried the retired field(s) ${fields.join(', ')}, so nothing was sent.`
-  + ' Case identity, write revisions and the Board shared epoch are no longer command arguments:'
+  + ' Goal identity, write revisions and the Board shared epoch are no longer command arguments:'
   + ' focus is per authenticated session, and the authority judges each command against the premises,'
   + ' grounding and policy in force when it executes. Reissue the step without them.'
 
@@ -4279,13 +4336,14 @@ function workerActivityGap(ctx) {
 /**
  * Execute one model-chosen tool call.
  *
- * What the host owns is attached here and nowhere else: the metadata block and the
- * governance selection that decides which contract a *new* Case runs under. The tool
+ * Nothing of the model's input is rewritten. Under `rulith/v3` this was where the operator's
+ * pinned Case Type and business key were written into `OpenCase`; `rulith/v4` has no such
+ * call, and a goal's contract follows from the goal the model declares (A-5). The tool
  * result text handed back is the authority's own JSON, unedited — it already carries the
  * Board View, and a client that summarised it would be teaching the model a picture of
  * the Board rather than the Board.
  */
-async function executeToolCall(ctx, call, options) {
+async function executeToolCall(ctx, call) {
   const name = String(call.name ?? '')
   if (!MODEL_TOOLS.includes(name)) {
     const teaching = unknownToolTeaching(name)
@@ -4317,27 +4375,7 @@ async function executeToolCall(ctx, call, options) {
     emitOn(ctx, 'verdict', { accepted: false, cmd: name, teaching, refusedLocally: true })
     return { text: refusal(retired.length > 0 ? 'retired_wire_field' : 'host_owned_field', teaching, name), accepted: false }
   }
-  let input = { ...call.input }
-  let openedCaseType
-  if (name === 'OpenCase') {
-    // Two public shapes: {caseType, businessKey?} creates, {caseId} focuses or resumes.
-    // A mixed form is the authority's to reject, and it is left intact so that the model
-    // is told which rule it broke rather than having one half silently removed.
-    const focusForm = typeof input.caseId === 'string' && input.caseId.trim() !== ''
-    if (!focusForm) {
-      // Governance selection is the operator's, not the model's: when a Case Type is
-      // pinned on the command line or in the environment, that is the contract the Case
-      // opens under. With nothing pinned the model may choose from its Agent's catalogue
-      // and the host only supplies the default.
-      const asked = typeof input.caseType === 'string' && input.caseType.trim() !== '' ? input.caseType.trim() : ''
-      openedCaseType = options.caseTypePinned || asked === '' ? options.caseType : asked
-      input = {
-        ...input,
-        caseType: openedCaseType,
-        ...(options.businessKey === undefined ? {} : { businessKey: options.businessKey }),
-      }
-    }
-  }
+  const input = { ...call.input }
   // A write is not sent while an outcome of this conversation's own calls waits to be read by its
   // model: one that settled after it last saw it, while another conversation was served, or one
   // whose transcript was lost before the model read it (see `conversationOutcomes`). On one
@@ -4352,8 +4390,7 @@ async function executeToolCall(ctx, call, options) {
         ...(refused.stopTurn === undefined ? {} : { stopTurn: refused.stopTurn }) }
     }
   }
-  const beforeRoots = board.roots.map((row) => ({ ...row }))
-  const before = new Set(beforeRoots.map((row) => row.caseId))
+  const before = new Set(board.goals.map((row) => row.goal))
   const localCallId = randomUUID()
   emitOn(ctx, 'tool-call', { callId: localCallId, cmd: name, input: localToolSnapshot(input) })
   const answer = await callTool(ctx, name, input)
@@ -4373,23 +4410,17 @@ async function executeToolCall(ctx, call, options) {
   // A refusal the host already announced is not announced again as though the Board had spoken.
   if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer, localCallId, input.action)
   const accepted = answer.result?.accepted === true
-  if (name === 'OpenCase' && accepted) {
-    for (const row of board.roots) {
-      if (before.has(row.caseId)) continue
-      if (openedCaseType !== undefined) row.caseType = openedCaseType
-      log(`\nCase Context in focus: "${row.caseId}" · acceptance root "${row.root}" on Agent Board "${agentId}".`)
-      emitOn(ctx, 'case-open', { caseId: row.caseId, root: row.root, caseType: row.caseType ?? '', ok: true })
-      ctx.detachedCase = undefined
+  if (name === 'ApplyBatch' && accepted) {
+    // A goal declared without a parent opens its contract in this very batch, or returns the
+    // open goal it is (A-5, A-6); either way the authority puts it into focus. Only what
+    // `focusedGoals` now lists and did not before is announced: the authority's own statement.
+    for (const row of board.goals) {
+      if (before.has(row.goal)) continue
+      log(`\nGoal in focus: "${row.goal}" (${row.status}) on Agent Board "${agentId}".`)
+      emitOn(ctx, 'case-open', { goal: row.goal, ok: true })
+      ctx.detachedGoal = undefined
     }
   }
-  const closed = [...before].filter((caseId) => !board.roots.some((row) => row.caseId === caseId))
-  // Only the accepted CloseCase target has a terminal outcome here. A root leaving
-  // focus is not by itself closure.
-  const closedCases = name === 'CloseCase' && accepted && answer.authoritative === true
-    ? beforeRoots.filter((row) => closed.includes(row.caseId)
-      && (row.root === input.root || (input.root === undefined && beforeRoots.length === 1)))
-      .map((row) => ({ caseId: row.caseId, root: row.root, disposition: String(input.disposition ?? 'completed') }))
-    : []
   // Whether this answer's strip delivered an earlier outcome the model has not been shown, or
   // carries one captured for it. A call's own entry never carries its result in its own answer,
   // so this is only ever about an operation from before the model chose this turn's calls.
@@ -4402,7 +4433,9 @@ async function executeToolCall(ctx, call, options) {
     text: answer.text,
     accepted,
     view: answer.view,
-    materialBindingRefused: name === 'OpenCase' && ctx.materialTaskProof !== undefined
+    // The private material proof rode on this very call, and the Gateway refused the binding
+    // before anything executed: the model must not go on to reason about those files.
+    materialBindingRefused: answer.carriedMaterialProof === true
       && answer.result?.errorCode === 'material_proof_unavailable'
       && answer.result?.requestExecuted === false && answer.authoritative === true,
     materialBindingTeaching: answer.result?.teaching,
@@ -4417,53 +4450,7 @@ async function executeToolCall(ctx, call, options) {
     readUnavailable: answer.readUnavailable === true,
     // Sent, answered as far as it can be, and then the Gateway stopped taking this release.
     ...(answer.stopTurn === undefined ? {} : { stopTurn: answer.stopTurn }),
-    closedCases,
   }
-}
-
-/**
- * Add one existing Case to this conversation's focus.
- *
- * This is the operator's choice, reached through `--case` and the Local UI, and it is the
- * same public tool the model calls: `OpenCase({caseId})` is a focus, and for a paused Case
- * a resume. There is no private lifecycle route left, and the runtime does not read the
- * Board first to decide whether the Case is running or paused — that decision, and the
- * policy behind it, belongs to the authority.
- *
- * It is a write, so the authority's write gate judges it like any other. When the gate refuses
- * it with `previous_result_undelivered`, that refusal carries an earlier outcome the model has
- * not seen, and delivers it to this session: the strip is kept for the model's next message
- * (`keepUnshownDelivery`), and the focus is asked for once more, which now runs. It is not asked
- * again when files are bound to this Case through its first focus request: the material proof
- * belongs to that request alone, so the person submits the files again instead.
- */
-async function focusExistingCase(ctx, caseId) {
-  const why = `brought Case ${JSON.stringify(caseId)} into focus for the operator`
-  let answer = await callTool(ctx, 'OpenCase', { caseId })
-  keepUnshownDelivery(ctx, why, answer)
-  const materialBound = ctx.materialTaskProof !== undefined && ctx.materialTargetCaseId === caseId
-  if (answer.stopTurn === undefined && answer.notExecuted === true && !materialBound
-    && answer.result?.errorCode === 'previous_result_undelivered') {
-    log(`◌ Focusing Case "${caseId}" was not executed: an earlier outcome had not been shown yet. The refusal carried it,`
-      + ' and the model is shown it with this message; asking for the focus once more.')
-    answer = await callTool(ctx, 'OpenCase', { caseId })
-    keepUnshownDelivery(ctx, why, answer)
-  }
-  if (answer.stopTurn !== undefined) return { ok: false, versionStop: answer.stopTurn }
-  if (answer.result?.accepted === true) {
-    const row = board.roots.find((entry) => entry.caseId === caseId)
-    log(`◎ Case "${caseId}" is in focus for this conversation${row === undefined ? '' : ` (acceptance root "${row.root}", ${row.status})`}.`)
-    return { ok: true }
-  }
-  const teaching = answer.transportFailed === true
-    ? transportFailureTeaching(answer.result, { admitted: answer.admitted !== undefined })
-    : answer.held !== undefined ? `OpenCase is ${heldLine(answer.held)}.`
-      : String(answer.result?.teaching ?? answer.result?.errorCode ?? 'the authority refused the focus request')
-  log(`✗ Case "${caseId}" could not be brought into focus: ${teaching.slice(0, 240)}`)
-  // A host feature is not an exemption from anything. `--case` and the Local UI reach the
-  // same public tool over the same connection, so the authority judges and gates a focus
-  // request exactly as it does one the model chose.
-  return { ok: false, teaching, transportFailed: answer.transportFailed === true }
 }
 
 /**
@@ -4472,38 +4459,33 @@ async function focusExistingCase(ctx, caseId) {
  * `policy: 'return'` hands control back as soon as the model answers with text.
  * `policy: 'continue'` keeps going while the Board still has something to say — but the
  * continuation condition is never "the model did not say DONE". It is the authority's own
- * lifecycle: a focused root that is still running, an explicit close, or the round budget.
+ * lifecycle: a focused goal that is still running, a goal seen to end, or the round budget.
+ * Under `rulith/v4` a goal is never closed by a call meaning "done": the Board ends it as
+ * `completed` in the commit that certifies it (A-13), and `EndGoal` ends one with another
+ * disposition. Either way the goal directory says so, and `trackFocus` records it here
+ * (`ctx.goalsEnded`).
  *
- * Returns the turn status, focused Case IDs and its accepted `closedCases` outcomes.
- * `opened` is the machine-readable half of `note`: callers used to have to read prose to
- * tell "the Case ran and did not finish" from "no Case ever existed", and the one-shot CLI
- * did not read it at all — it exited 0 for a task that never started.
+ * Returns the turn status, the focused goal IDs and the goals seen to end this turn
+ * (`endedGoals`, each `{goal, disposition}`). `opened` is the machine-readable half of `note`:
+ * callers used to have to read prose to tell "the work ran and did not finish" from "no goal
+ * was ever declared", and the one-shot CLI did not read it at all — it exited 0 for a task
+ * that never started.
  */
-async function runCaseTurn(ctx, userText, {
-  policy = 'return',
-  caseType = selectedCaseType,
-  caseTypePinnedForTurn = caseTypePinned,
-  businessKey = selectedBusinessKey,
-  requestedCaseId = '',
-  attachments = [],
-} = {}) {
+async function runTurn(ctx, userText, { policy = 'return', attachments = [] } = {}) {
   compactTranscript(ctx)
   const messages = ctx.messages
-  let opened = board.roots.length > 0
+  let opened = board.goals.length > 0
   let note = ''
   let outcome = 'stopped'
   let nudged = false
-  let selectionNotice = ''
-  let lastCaseId = board.roots[0]?.caseId ?? null
-  const closedCases = []
+  let lastGoal = board.goals[0]?.goal ?? null
+  const endedGoals = []
+  ctx.goalsEnded = endedGoals
   /** A call this turn was still held, not executed, or lost its answer: the model has more to look at. */
   let unsettled = false
   /** The model's latest reply came after every result this turn produced: it has read them all. */
   let modelReadAll = false
-  const detachedPendingCaseId = ctx.detachedCase?.caseId ?? null
-  const configuredResume = resumeCase
-  resumeCase = '' // Resume applies to the first segment only.
-  const explicitResume = requestedCaseId || configuredResume
+  const detachedPendingGoal = ctx.detachedGoal?.goal ?? null
 
   // Nothing is settled before the model is asked. A call an earlier turn — or an earlier
   // process — left running is the authority's to finish: the model finds it on the strip of
@@ -4514,11 +4496,12 @@ async function runCaseTurn(ctx, userText, {
     log(`\n⚠ ${settled.teaching}`)
     emitOn(ctx, 'blocked', { reason: settled.state, teaching: settled.teaching })
     ctx.segmentTrail.push(`[blocked · ${settled.state}] ${userText.slice(0, 60)}`)
-    const heldCaseIds = board.roots.map((row) => row.caseId)
+    const heldGoals = board.goals.map((row) => row.goal)
+    delete ctx.goalsEnded
     return {
-      note: settled.teaching, outcome: 'blocked', caseId: heldCaseIds[0] ?? lastCaseId,
-      activeCaseId: heldCaseIds[0] ?? null, activeCaseIds: heldCaseIds,
-      pendingCaseId: heldCaseIds[0] ?? detachedPendingCaseId, opened,
+      note: settled.teaching, outcome: 'blocked', goal: heldGoals[0] ?? lastGoal,
+      activeGoal: heldGoals[0] ?? null, activeGoals: heldGoals,
+      pendingGoal: heldGoals[0] ?? detachedPendingGoal, opened, endedGoals,
     }
   }
   /**
@@ -4528,39 +4511,6 @@ async function runCaseTurn(ctx, userText, {
    */
   const versionStop = (error) => blockedTurn({ state: 'version_mismatch',
     teaching: `${error.message}\n   Any earlier call keeps its identity at the authority.` })
-
-  // Bringing a Case into focus is a host feature, reached through `--case` and the Local
-  // UI. Which Cases this conversation is on is not a decision a model turn may make on
-  // the operator's behalf, and focus is additive: a session may hold several roots.
-  if (explicitResume !== '') {
-    if (board.roots.some((row) => row.caseId === explicitResume)
-      && !(attachments.length > 0 && ctx.materialTargetCaseId === explicitResume)) {
-      selectionNotice = `Rulith Case ${JSON.stringify(explicitResume)} is already in this conversation's focus.`
-    } else {
-      let focused
-      try {
-        focused = await focusExistingCase(ctx, explicitResume)
-      } catch (error) {
-        if (error instanceof McpProtocolVersionError) return versionStop(error)
-        throw error
-      }
-      if (focused.versionStop !== undefined) return versionStop(focused.versionStop)
-      if (focused.ok) {
-        opened = true
-        lastCaseId = explicitResume
-        ctx.detachedCase = undefined
-      } else if (attachments.length > 0 && ctx.materialTargetCaseId === explicitResume) {
-        // The model must not read or reason from a supplement whose Case binding was refused,
-        // not executed, or whose answer never arrived.
-        return blockedTurn({ state: focused.transportFailed ? 'material_binding_unconfirmed' : 'material_binding_refused',
-          teaching: `The selected material was not confirmed bound to Case ${JSON.stringify(explicitResume)}: ${focused.teaching}`
-            + ' Submit the files again once the Case can be brought into focus.' })
-      } else {
-        selectionNotice = `The requested existing Rulith Case ${JSON.stringify(explicitResume)} could not be brought into focus:`
-          + ` ${focused.teaching.slice(0, 200)} Answer the user normally; do not claim that Case is active.`
-      }
-    }
-  }
 
   // Attachments enter the transcript as **metadata**: a name, a media type, a length, a digest
   // and the opaque id an authorized read would name. No content, and no summary of content —
@@ -4578,9 +4528,8 @@ async function runCaseTurn(ctx, userText, {
   messages.push(userEntry([
     `${policy === 'continue' ? 'Task' : 'User message'}: ${userText}`,
     attachmentNotice,
-    selectionNotice === '' ? '' : `\n\n${selectionNotice}`,
     takeTurnNotices(ctx),
-    board.roots.length === 0 ? '' : `\n\nCases in focus: ${board.roots.map((row) => `${row.caseId} (root ${row.root}, ${row.status})`).join(' · ')}`,
+    board.goals.length === 0 ? '' : `\n\nGoals in focus: ${board.goals.map((row) => `${row.goal} (${row.status})`).join(' · ')}`,
     !messages.some((entry) => entry.role === 'tool_results') ? '' : '\n\nThe Board may have changed since your last tool result; QueryBoard reads its current position.',
   ].join('')))
 
@@ -4627,33 +4576,37 @@ async function runCaseTurn(ctx, userText, {
       // would acknowledge them on this session: one ping does.
       await acknowledgeShownResults()
       modelReadAll = true
-      // A plain answer is a complete conversational turn. Focused Cases are deliberately
+      // A plain answer is a complete conversational turn. Focused goals are deliberately
       // left exactly as they are; the next user message may continue one, ask about it,
       // or ignore it. The host never continues merely because work is unfinished.
       if (policy === 'return') {
         outcome = 'conversation'
-        note = board.roots.length === 0
-          ? 'Response delivered without opening a Rulith Case.'
-          : `Response delivered; Rulith Case(s) ${board.roots.map((row) => `"${row.caseId}"`).join(', ')} remain in focus.`
+        note = board.goals.length === 0
+          ? 'Response delivered without declaring a Rulith goal.'
+          : `Response delivered; Rulith goal(s) ${board.goals.map((row) => `"${row.goal}"`).join(', ')} remain in focus.`
         break
       }
-      if (board.roots.length === 0) { outcome = 'no-case'; note = 'Response only; no Case was opened on the Board.'; break }
-      const live = liveRootsOf(ctx)
+      if (board.goals.length === 0 && endedGoals.length === 0) {
+        outcome = 'no-goal'; note = 'Response only; no goal was declared on the Board.'; break
+      }
+      const live = liveGoalsOf()
       if (live.length === 0) {
         outcome = 'completed'
-        note = `No focused Case is still running (${board.roots.map((row) => `${row.caseId}=${row.status}`).join(' · ')}).`
+        note = `No focused goal is still running (${[...board.goals.map((row) => `${row.goal}=${row.status}`),
+          ...endedGoals.filter((row) => !board.goals.some((focused) => focused.goal === row.goal))
+            .map((row) => `${row.goal}=${row.disposition}`)].join(' · ')}).`
         break
       }
       if (nudged) {
-        note = `The model stopped while ${live.map((row) => `"${row.caseId}"`).join(', ')} ${live.length === 1 ? 'is' : 'are'} still running on the Board.`
+        note = `The model stopped while ${live.map((row) => `"${row.goal}"`).join(', ')} ${live.length === 1 ? 'is' : 'are'} still running on the Board.`
         break
       }
       // One nudge, once — never an unbounded retry. The judgement is the Board's, not a
       // guess about the prose: it is the lifecycle that says the work is not finished.
       nudged = true
-      messages.push(userEntry(`These Cases are still running on the Board: ${live.map((row) => `${row.caseId} (root ${row.root})`).join(' · ')}.\n`
+      messages.push(userEntry(`These goals are still open on the Board: ${live.map((row) => row.goal).join(' · ')}.\n`
         + 'Take the next step, read the current view with QueryBoard,'
-        + ' or close a Case with a disposition that says why it cannot be finished.'))
+        + ' or end a goal with a disposition that says why it cannot be finished.'))
       continue
     }
 
@@ -4699,7 +4652,7 @@ async function runCaseTurn(ctx, userText, {
       }
       let executed
       try {
-        executed = await executeToolCall(ctx, call, { caseType, caseTypePinned: caseTypePinnedForTurn, businessKey })
+        executed = await executeToolCall(ctx, call)
       } catch (error) {
         if (!(error instanceof McpProtocolVersionError)) throw error
         versionRefusal = error
@@ -4721,11 +4674,8 @@ async function runCaseTurn(ctx, userText, {
         materialBindingRefused = true
         materialBindingTeaching = String(executed.materialBindingTeaching ?? '')
       }
-      if (board.roots.length > 0) { opened = true; lastCaseId = board.roots[0].caseId }
-      for (const closed of executed.closedCases ?? []) {
-        if (!closedCases.some((prior) => prior.root === closed.root)) closedCases.push(closed)
-        lastCaseId = closed.caseId
-      }
+      if (board.goals.length > 0) { opened = true; lastGoal = board.goals[0].goal }
+      if (endedGoals.length > 0) { opened = true; lastGoal ??= endedGoals[endedGoals.length - 1].goal }
       if (materialBindingRefused || executed.stopsBatch || executed.readUnavailable) suspended = true
     }
     messages.push(resultsEntry(results))
@@ -4735,8 +4685,8 @@ async function runCaseTurn(ctx, userText, {
 
     if (versionRefusal !== undefined) return versionStop(versionRefusal)
     if (materialBindingRefused) return blockedTurn({ state: 'material_binding_refused',
-      teaching: `The selected material was refused before Case admission: ${materialBindingTeaching}`
-        + ' No Case was opened for these files. Submit the files again after correcting this computer\'s Agent connection.' })
+      teaching: `The selected material was refused before the goal was declared: ${materialBindingTeaching}`
+        + ' No goal was declared for these files. Submit the files again after correcting this computer\'s Agent connection.' })
 
     if (notSent > 0) {
       log(`◌ ${notSent} further call(s) proposed in this turn were not sent: an earlier result needs`
@@ -4745,25 +4695,28 @@ async function runCaseTurn(ctx, userText, {
     }
 
     if (policy !== 'continue' && round < MAX_ROUNDS) continue
-    if (closedCases.length > 0 && liveRootsOf(ctx).length === 0) {
-      outcome = closedCases.some((row) => VOID_DISPOSITIONS.has(row.disposition)) ? 'void' : 'completed'
-      note = closedCases.length === 1
+    if (endedGoals.length > 0 && liveGoalsOf().length === 0) {
+      // Only the Board's certification is completion; any other ending, including one this
+      // host did not send and so knows only as `ended`, is void for this turn.
+      outcome = endedGoals.every((row) => row.disposition === 'completed') ? 'completed' : 'void'
+      note = endedGoals.length === 1
         ? outcome === 'void'
-          ? `The Case was closed as ${closedCases[0].disposition}.`
-          : 'The Board accepted closure and the Case is completed.'
-        : outcome === 'completed' ? 'All Cases closed this turn completed.' : 'Not all Cases closed this turn completed.'
+          ? endedGoals[0].disposition === 'ended' ? 'The goal ended.' : `The goal ended as ${endedGoals[0].disposition}.`
+          : 'The Board certified the goal and it is completed.'
+        : outcome === 'completed' ? 'All goals ended this turn completed.' : 'Not all goals ended this turn completed.'
       break
     }
   }
+  delete ctx.goalsEnded
 
   if (ctx.turnInterrupt?.signal.aborted) {
     outcome = 'user-stopped'
-    note = 'Stopped by the user. Work already handed to Rulith is not withdrawn. Pause the Case or withdraw work before dispatch in Console.'
+    note = 'Stopped by the user. Work already handed to Rulith is not withdrawn. Pause the goal or withdraw work before dispatch in Console.'
   }
   if (note === '') note = `Stopped at the ${MAX_ROUNDS}-round limit.`
-  if (closedCases.length > 0) {
-    if (outcome === 'conversation' && board.roots.length === 0) note = 'Response delivered.'
-    note += ` Case outcomes this turn: ${closedCases.map((row) => `${row.caseId} (${row.root})=${row.disposition}`).join(' · ')}.`
+  if (endedGoals.length > 0) {
+    if (outcome === 'conversation' && board.goals.length === 0) note = 'Response delivered.'
+    note += ` Goal outcomes this turn: ${endedGoals.map((row) => `${row.goal}=${row.disposition}`).join(' · ')}.`
   }
   if (policy === 'continue') {
     // The shadow persona (`--shadow`): an adversarial review at the end of a segment. It
@@ -4775,9 +4728,9 @@ async function runCaseTurn(ctx, userText, {
     // Nor does it write after a call of this turn was left held, unexecuted or unanswered: its
     // write would be judged, and could be refused, with an outcome the model has not read.
     // And it writes only once the model has read every result of the turn: a turn cut off at the
-    // round limit, or ended by a close, still has results nobody read, and this write would
+    // round limit, or ended by a goal ending, still has results nobody read, and this write would
     // acknowledge them.
-    if (withShadow && board.roots.length > 0 && !unsettled && modelReadAll
+    if (withShadow && board.goals.length > 0 && !unsettled && modelReadAll
       && !['blocked', 'model-error'].includes(outcome) && unresolvedOperation() === undefined) {
       try {
         await shadowReview(ctx, userText)
@@ -4790,17 +4743,17 @@ async function runCaseTurn(ctx, userText, {
       log(`\n⚠ ${note} Increase RULITH_MAX_ROUNDS only after reviewing why the workflow did not converge.`)
     }
   }
-  const activeCaseIds = board.roots.map((row) => row.caseId)
-  const activeCaseId = activeCaseIds[0] ?? null
-  const pendingCaseId = policy === 'continue' ? (liveRootsOf(ctx)[0]?.caseId ?? null) : detachedPendingCaseId
-  if (policy === 'continue' && activeCaseId !== null) {
-    log(`\nCase(s) ${activeCaseIds.map((id) => `"${id}"`).join(', ')} remain in focus: ${note}\n`
-      + '   Stopping is not completion. Resume with --case <id>, or resolve them in Console.')
-    emitOn(ctx, 'case-pending', { caseId: activeCaseId, activeCaseIds, reason: note, note })
+  const activeGoals = board.goals.map((row) => row.goal)
+  const activeGoal = activeGoals[0] ?? null
+  const pendingGoal = policy === 'continue' ? (liveGoalsOf()[0]?.goal ?? null) : detachedPendingGoal
+  if (policy === 'continue' && activeGoal !== null) {
+    log(`\nGoal(s) ${activeGoals.map((id) => `"${id}"`).join(', ')} remain in focus: ${note}\n`
+      + '   Stopping is not completion. Continue them in a later message, or resolve them in Console.')
+    emitOn(ctx, 'case-pending', { goal: activeGoal, activeGoals, reason: note, note })
   }
-  ctx.segmentTrail.push(`[${policy === 'continue' ? 'case' : 'conversation'}${activeCaseId === null ? '' : ` · case ${activeCaseId} in focus`}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
+  ctx.segmentTrail.push(`[${policy === 'continue' ? 'goal' : 'conversation'}${activeGoal === null ? '' : ` · goal ${activeGoal} in focus`}] ${userText.slice(0, 60)}${userText.length > 60 ? '…' : ''} → ${note}`)
   if (ctx.segmentTrail.length > 40) ctx.segmentTrail.splice(0, ctx.segmentTrail.length - 40)
-  return { note, outcome, caseId: activeCaseId ?? lastCaseId, activeCaseId, activeCaseIds, pendingCaseId, opened, closedCases }
+  return { note, outcome, goal: activeGoal ?? lastGoal, activeGoal, activeGoals, pendingGoal, opened, endedGoals }
 }
 
 /** Shadow review: an adversarial reading of the last observed Board View and this
@@ -4858,7 +4811,7 @@ if (SERVE) {
   // ── The intake loop: accept over loopback, run per slot, keep a bounded ledger ──
   //
   // This is the minimal unattended shape a web backend can embed: it reads no stdin and
-  // opens no window, it just puts `runCaseTurn` behind one HTTP port. Nothing below the
+  // opens no window, it just puts `runTurn` behind one HTTP port. Nothing below the
   // scheduler changes — intake only queues, routes and records.
   //
   // **One segment at a time, for the whole Agent.** Each conversation keeps its own FIFO so
@@ -4881,34 +4834,32 @@ if (SERVE) {
 
   // Conversation slots isolate local transcripts and queues, and nothing else. The
   // connection, the focus and the Board View belong to the Agent; a slot cannot hold a
-  // Case of its own, and it cannot take the connection away from another slot.
+  // goal of its own, and it cannot take the connection away from another slot.
   const sessions = new Map()
   const pendingArchives = new Map()
-  const detachedCases = new Map()
-  const rememberDetachedCase = (session, recovery) => {
-    detachedCases.delete(session)
-    detachedCases.set(session, recovery)
-    while (detachedCases.size > SERVE_SLOTS_MAX) detachedCases.delete(detachedCases.keys().next().value)
+  const detachedGoals = new Map()
+  const rememberDetachedGoal = (session, recovery) => {
+    detachedGoals.delete(session)
+    detachedGoals.set(session, recovery)
+    while (detachedGoals.size > SERVE_SLOTS_MAX) detachedGoals.delete(detachedGoals.keys().next().value)
   }
-  const detachIdleCase = (session, slot) => {
-    const recovery = board.roots.length === 0 ? slot.detachedCase : {
-      caseId: board.roots[0].caseId, root: board.roots[0].root, detachedAt: Date.now(),
-    }
+  const detachIdleGoal = (session, slot) => {
+    const recovery = board.goals.length === 0 ? slot.detachedGoal : { goal: board.goals[0].goal, detachedAt: Date.now() }
     if (recovery === undefined) return
-    rememberDetachedCase(session, recovery)
+    rememberDetachedGoal(session, recovery)
     // A recovery hint that was already detached is merely moving between bounded maps.
-    // Emit the public recovery record once, when focused Cases first leave their slot.
-    if (board.roots.length === 0) return
-    const caseId = recovery.caseId
+    // Emit the public recovery record once, when focused goals first leave their slot.
+    if (board.goals.length === 0) return
+    const goal = recovery.goal
     const at = Date.now()
-    const note = `Conversation "${session}" was reclaimed at the local session limit. Rulith Case "${caseId}" remains unchanged on the Board and may be selected explicitly later.`
+    const note = `Conversation "${session}" was reclaimed at the local session limit. Rulith goal "${goal}" remains unchanged on the Board.`
     const rec = {
       id: `detached-${randomUUID()}`, text: '(conversation reclaimed)', at,
       startedAt: at, endedAt: at, note, board: agentId, sessionKey: session,
-      caseId, pendingCaseId: caseId, console: consoleUrl,
+      goal, pendingGoal: goal, console: consoleUrl,
     }
     pushRun(rec)
-    emit('session-detached', { session, caseId, pendingCaseId: caseId, note, board: agentId, console: consoleUrl })
+    emit('session-detached', { session, goal, pendingGoal: goal, note, board: agentId, console: consoleUrl })
     log(`◎ ${note}`)
   }
   const evictIfNeeded = () => {
@@ -4922,11 +4873,11 @@ if (SERVE) {
         return false
       }
       const slot = sessions.get(victim)
-      detachIdleCase(victim, slot)
+      detachIdleGoal(victim, slot)
       sessions.delete(victim)
       // Its transcript goes with the slot: what it showed that conversation's model, unread, is shown again.
       forgetTranscript(victim)
-      if (board.roots.length === 0) log(`Evicted least-recently-used idle conversation "${victim}" at the ${SERVE_SLOTS_MAX}-conversation limit. This Agent has no focused Rulith Case.`)
+      if (board.goals.length === 0) log(`Evicted least-recently-used idle conversation "${victim}" at the ${SERVE_SLOTS_MAX}-conversation limit. This Agent has no focused Rulith goal.`)
       emit('slot-evicted', { session: victim, slots: sessions.size })
     }
     return true
@@ -4942,10 +4893,10 @@ if (SERVE) {
     if (!evictIfNeeded()) return undefined
     const slot = makeSlot(sessionKey)
     if (conversationStore) slot.messages = restoredMessages ?? conversationStore.messages(sessionKey, KEEP_MESSAGES)
-    const recovery = detachedCases.get(sessionKey)
+    const recovery = detachedGoals.get(sessionKey)
     if (recovery !== undefined) {
-      detachedCases.delete(sessionKey)
-      slot.detachedCase = recovery
+      detachedGoals.delete(sessionKey)
+      slot.detachedGoal = recovery
     }
     sessions.set(sessionKey, slot)
     log(`Opened session "${sessionKey}" (${sessions.size}/${SERVE_SLOTS_MAX} slots).`)
@@ -4996,7 +4947,7 @@ if (SERVE) {
           note: `Task never started: ${reason}`,
           board: agentId,
           ...(slot.key === '' ? {} : { sessionKey: slot.key }),
-          ...(board.roots.length === 0 ? {} : { console: consoleUrl }),
+          ...(board.goals.length === 0 ? {} : { console: consoleUrl }),
         }
         if (conversationStore) {
           try { conversationStore.finish(item.id, rec.note, 'not-started') }
@@ -5091,15 +5042,8 @@ if (SERVE) {
         const raw = Buffer.concat(bodyChunks).toString('utf8')
         let text = ''
         let sessionKey = ''
-        let requestedCaseId = ''
-        let requestedCaseIdValue
         let requestId = ''
         let historyModelDestination = ''
-        let caseType = selectedCaseType
-        // A caller that names a Case Type has made the governance selection for this task,
-        // exactly as `--case-type` does for the process. The model may not move off it.
-        let caseTypeGiven = caseTypePinned
-        let businessKey = selectedBusinessKey
         /**
          * Local material the host accepted on the operator's behalf.
          *
@@ -5112,6 +5056,16 @@ if (SERVE) {
         const materialSelectionKey = req.headers['x-rulith-material-selection-key']
         try {
           const b = JSON.parse(raw || '{}')
+          // `caseType`, `businessKey` and `caseId` steered `OpenCase`, which `rulith/v4` retired:
+          // a goal's contract follows from the goal the model declares, and there is no focus
+          // operation to carry an existing goal into a conversation. A body naming one is refused
+          // whole rather than run with the operator's choice silently dropped.
+          const retiredFields = ['caseType', 'businessKey', 'caseId'].filter((field) => Object.hasOwn(b, field))
+          if (retiredFields.length > 0) {
+            return deny(`${retiredFields.join(', ')} ${retiredFields.length === 1 ? 'was' : 'were'} retired with rulith/v4`
+              + ' (Runtime 0.13.0), and nothing was queued. The model declares goals inside ApplyBatch, so there is no Case Type,'
+              + ' business key or existing Case for this endpoint to pin; state them in the text instead.', 400)
+          }
           if (b.requestId !== undefined && (typeof b.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(b.requestId))) return deny('requestId must be a short opaque identifier (16–100 letters, digits, _ or -).', 400)
           requestId = b.requestId ?? ''
           historyModelDestination = typeof b.historyModelDestination === 'string' ? b.historyModelDestination : ''
@@ -5135,14 +5089,8 @@ if (SERVE) {
           }
           text = String(b.text ?? '').trim()
           sessionKey = String(b.sessionKey ?? '').trim()
-          requestedCaseIdValue = b.caseId
-          caseTypeGiven = caseTypeGiven || (typeof b.caseType === 'string' && b.caseType.trim() !== '')
-          caseType = String(b.caseType ?? selectedCaseType).trim()
-          businessKey = b.businessKey ?? selectedBusinessKey
-        } catch { return deny('Body is not valid JSON. Expected {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional","caseId":"optional-existing-case"}.') }
-        if (text === '') return deny('Missing text. Expected {"text":"process this task","caseType":"exploration"}.', 400)
-        if (requestedCaseIdValue !== undefined && typeof requestedCaseIdValue !== 'string') return deny('caseId must be a string copied exactly from /runs or Console.', 400)
-        requestedCaseId = String(requestedCaseIdValue ?? '').trim()
+        } catch { return deny('Body is not valid JSON. Expected {"text":"...","sessionKey":"optional"}.') }
+        if (text === '') return deny('Missing text. Expected {"text":"process this task"}.', 400)
         if (attachments.length > 0 && (typeof materialTaskProof !== 'string' || !/^[0-9a-f]{64}$/.test(materialTaskProof))) {
           return deny('Attached tasks require one private material task proof from the Rulith host.', 400)
         }
@@ -5153,22 +5101,16 @@ if (SERVE) {
           || attachments.some(material => !/^sha256:[0-9a-f]{64}$/.test(material.digest ?? '')))) {
           return deny('A private material selection key requires distinct valid proof and digested attachments.', 400)
         }
-        if (!/^[a-z][a-z0-9_-]{1,63}$/.test(caseType)) return deny('caseType must be a 2-64 character lowercase identifier from the Agent Case Type catalog.', 400)
-        if (businessKey !== undefined && (businessKey === null || typeof businessKey !== 'object' || Array.isArray(businessKey)
-          || Object.keys(businessKey).length === 0 || !Object.values(businessKey).every((v) => typeof v === 'string'
-            || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))))) {
-          return deny('businessKey must be a non-empty JSON object whose keys match the selected Case Contract and whose values are finite JSON scalars.', 400)
-        }
         // Missing keys start independent conversations. The caller receives the generated
-        // key and must echo it on follow-ups; unrelated clients never share a default Case.
+        // key and must echo it on follow-ups; unrelated clients never share a default conversation.
         // Bind an exact request-id retry to the private proof without saving the proof itself.
         // The fingerprint is stored, but neither its input nor a separate proof digest is a turn.
         const proofDigest = materialTaskProof === undefined ? undefined
           : createHash('sha256').update(Buffer.from(materialTaskProof, 'hex')).digest('hex')
         const selectionDigest = materialSelectionKey === undefined ? undefined
           : createHash('sha256').update(Buffer.from(materialSelectionKey, 'hex')).digest('hex')
-        const fingerprint = createHash('sha256').update(JSON.stringify({ text, sessionKey, caseType,
-          caseTypeGiven, businessKey, requestedCaseId, attachments, proofDigest, selectionDigest })).digest('hex')
+        const fingerprint = createHash('sha256').update(JSON.stringify({ text, sessionKey,
+          attachments, proofDigest, selectionDigest })).digest('hex')
         try {
           const previous = conversationStore?.find(requestId, fingerprint)
           if (previous) { res.writeHead(previous.ok ? 202 : 409, { 'content-type': 'application/json' }); res.end(JSON.stringify(previous)); return }
@@ -5180,7 +5122,6 @@ if (SERVE) {
           return deny(`sessionKey exceeds ${SESSION_KEY_MAX} characters (${sessionKey.length} received). It cannot be truncated because it identifies a local conversation slot. Use a short opaque identifier.`, 400)
         }
         if (pendingArchives.get(sessionKey) === true) return deny('This conversation is being archived after its accepted turns finish. Restore it before sending another message.', 409)
-        if (requestedCaseId.length > 256) return deny('caseId exceeds 256 characters. Use the exact Case ID returned by /runs or shown in Console.', 400)
         if (!sessions.has(sessionKey) && sessions.size >= SERVE_SLOTS_MAX
           && ![...sessions.values()].some(s => !s.busy && s.queue.length === 0))
           return deny(`Conversation capacity is full (${SERVE_SLOTS_MAX} slots), and every slot is busy. Retry later or continue an existing sessionKey.`, 429)
@@ -5188,9 +5129,8 @@ if (SERVE) {
           return deny('Earlier messages were used with a different model service. Confirm the current destination before sending this conversation history.', 409, { state: 'model-confirmation', modelService: MODEL_DESTINATION })
         }
         const restoredMessages = !sessions.has(sessionKey) ? conversationStore?.messages(sessionKey, KEEP_MESSAGES) : undefined
-        const item = { id: nextTaskId(), text, caseType, caseTypePinned: caseTypeGiven, businessKey, caseId: requestedCaseId, at: Date.now(), sessionKey, attachments, modelService: MODEL_DESTINATION,
-          ...(materialTaskProof ? { materialTaskProof,
-            materialTargetCaseId: requestedCaseId } : {}),
+        const item = { id: nextTaskId(), text, at: Date.now(), sessionKey, attachments, modelService: MODEL_DESTINATION,
+          ...(materialTaskProof ? { materialTaskProof } : {}),
           ...(materialSelectionKey ? { materialSelectionKey } : {}) }
         const depth = allSlots().reduce((n, s) => n + s.queue.length, 0) + 1
         const receipt = { ok: true, id: item.id, queued: depth, sessionKey, teaching: 'Queued. Read GET /runs?k=<key>, or add &stream=1 for SSE.' }
@@ -5223,16 +5163,14 @@ if (SERVE) {
       req.on('close', () => clients.delete(res))
       return
     }
-    return deny('Available endpoints: POST /task {"text":"...","caseType":"exploration","businessKey":{"id":"..."},"sessionKey":"optional","caseId":"optional-existing-case"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
+    return deny('Available endpoints: POST /task {"text":"...","sessionKey":"optional"} and GET /runs?k=<key> (add &stream=1 for SSE).', 404)
   })
   await new Promise((r) => serveSrv.listen(SERVE_PORT, '127.0.0.1', r))
   log(`
 Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE_SLOTS_MAX} conversation limit): http://127.0.0.1:${SERVE_PORT}
-  Submit: curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…","caseType":"exploration"}'
-  Contracted Case Types also send businessKey with the exact Case Contract argument names.
+  Submit: curl -s -XPOST http://127.0.0.1:${SERVE_PORT}/task -H 'content-type: application/json' -H 'x-rulith-serve: ${SERVE_KEY}' -d '{"text":"…"}'
   Continue a conversation by echoing the sessionKey returned by the first request: -d '{"text":"…","sessionKey":"conversation-1"}'
-  Bring an existing running or paused Case into a conversation's focus: add "caseId":"<id>" from /runs or Console.
-  Messages are ordinary conversation. The Agent opens or advances a Rulith Case only when it calls one of the Board tools.
+  Messages are ordinary conversation. The Agent declares or advances a Rulith goal only when it calls one of the Board tools.
   Inspect: curl -s 'http://127.0.0.1:${SERVE_PORT}/runs?k=${SERVE_KEY}'
   The key is randomized on every start. Loopback alone is not an authorization boundary.`)
   emit('start', { agentId, url: URL_BASE, task: '(task endpoint)', concurrency: 1, managedStop: true })
@@ -5330,38 +5268,30 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     log(`
 ▶ Message ${item.id}${slot.key === '' ? '' : ` (session ${slot.key})`}: ${item.text}`)
     let note = ''
-    let pendingCaseId = null
-    let activeCaseId = null
-    let activeCaseIds = []
-    let actualCaseId = null
-    let closedCases = []
+    let pendingGoal = null
+    let activeGoal = null
+    let activeGoals = []
+    let actualGoal = null
+    let endedGoals = []
     let outcome = 'error'
     try {
       conversationStore?.start(item.id)
       slot.materialTaskProof = item.materialTaskProof
-      slot.materialTargetCaseId = item.materialTargetCaseId
       slot.materialTaskProofRequestId = undefined
       slot.materialSelectionKey = item.materialSelectionKey
       slot.materialAttachments = item.attachments
-      const seg = await runCaseTurn(slot, item.text, {
-        policy: 'return',
-        caseType: item.caseType,
-        caseTypePinnedForTurn: item.caseTypePinned === true || caseTypePinned,
-        businessKey: item.businessKey,
-        requestedCaseId: item.caseId,
-        attachments: item.attachments,
-      })
+      const seg = await runTurn(slot, item.text, { policy: 'return', attachments: item.attachments })
       note = seg.note
       outcome = seg.outcome
       if (slot.turnInterrupt.signal.aborted) {
         outcome = 'user-stopped'
-        note = 'Stopped by the user. Work already handed to Rulith is not withdrawn. Pause the Case or withdraw work before dispatch in Console.'
+        note = 'Stopped by the user. Work already handed to Rulith is not withdrawn. Pause the goal or withdraw work before dispatch in Console.'
       }
-      pendingCaseId = seg.pendingCaseId
-      activeCaseId = seg.activeCaseId
-      activeCaseIds = seg.activeCaseIds
-      actualCaseId = seg.caseId
-      closedCases = seg.closedCases ?? []
+      pendingGoal = seg.pendingGoal
+      activeGoal = seg.activeGoal
+      activeGoals = seg.activeGoals
+      actualGoal = seg.goal
+      endedGoals = seg.endedGoals ?? []
     } catch (e) {
       const credentialRejected = e instanceof AgentCredentialRejectedError
       const connectionReplaced = e instanceof McpConnectionReplacedError
@@ -5374,10 +5304,10 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
         outcome = 'user-stopped'
         note = 'Stopped by the user. The Rulith call ended without a confirmed answer; check operations in Console before continuing.'
       }
-      actualCaseId = board.roots[0]?.caseId ?? null
-      activeCaseId = actualCaseId
-      activeCaseIds = board.roots.map((row) => row.caseId)
-      pendingCaseId = actualCaseId
+      actualGoal = board.goals[0]?.goal ?? null
+      activeGoal = actualGoal
+      activeGoals = board.goals.map((row) => row.goal)
+      pendingGoal = actualGoal
       if (credentialRejected || connectionReplaced || e instanceof ConversationStoreError) {
         // A revoked credential and a replaced connection both belong to the whole host
         // rather than to one task: neither is retryable per task, and continuing to admit
@@ -5390,11 +5320,10 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       log(`✗ ${note}`)
     } finally {
       delete slot.materialTaskProof
-      delete slot.materialTargetCaseId
       delete slot.materialTaskProofRequestId
       delete slot.materialSelectionKey
       delete slot.materialAttachments
-      // A later /task must obtain a fresh, explicitly Case-bound selection from the Host.
+      // A later /task must obtain a fresh, explicitly bound selection from the Host.
       // Never infer its authority from this conversation slot or persist this key here.
       // Bookkeeping lives in `finally`: nothing above may pin this slot as busy forever.
       // That client could never be served again, and the symptom — "202 on submit, no
@@ -5409,21 +5338,24 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       id: item.id, text: item.text, at: item.at,
       startedAt: flight.startedAt, endedAt: Date.now(), note, outcome,
       board: agentId,
-      ...(actualCaseId === null ? {} : { caseId: actualCaseId }),
-      ...(activeCaseId === null ? {} : { activeCaseId }),
-      ...(activeCaseIds.length === 0 ? {} : { activeCaseIds }),
-      ...(closedCases.length === 0 ? {} : { closedCases }),
+      ...(actualGoal === null ? {} : { goal: actualGoal }),
+      ...(activeGoal === null ? {} : { activeGoal }),
+      ...(activeGoals.length === 0 ? {} : { activeGoals }),
+      ...(endedGoals.length === 0 ? {} : { endedGoals }),
       ...(slot.key === '' ? {} : { sessionKey: slot.key }),
-      // pendingCaseId is reserved for a detached/paused Case. A healthy Case selected by
-      // this conversation is activeCaseId; callers must not escalate ordinary dialogue.
-      ...(pendingCaseId === null ? {} : { pendingCaseId }),
-      ...(actualCaseId === null ? {} : { console: consoleUrl }),
+      // pendingGoal is reserved for a detached goal. A healthy goal in this conversation's
+      // focus is activeGoal; callers must not escalate ordinary dialogue.
+      ...(pendingGoal === null ? {} : { pendingGoal }),
+      ...(actualGoal === null ? {} : { console: consoleUrl }),
     }
-    try { conversationStore?.finish(item.id, note, outcome, { caseIds: [...activeCaseIds, ...closedCases, actualCaseId].filter(v => typeof v === 'string') }) }
+    try {
+      conversationStore?.finish(item.id, note, outcome, { goals: [...activeGoals, ...endedGoals.map((row) => row.goal), actualGoal]
+        .filter(v => typeof v === 'string') })
+    }
     catch (error) {
       acceptingTasks = false
       rec.outcome = 'interrupted'
-      rec.note = error.message + ' The turn may have executed; do not resend it without checking the Case.'
+      rec.note = error.message + ' The turn may have executed; do not resend it without checking the goal.'
       terminalizeQueuedTasks(rec.note)
     }
     pushRun(rec)
@@ -5431,7 +5363,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
     const outcomes = conversationOutcomes.get(slot.key)
     if (outcomes) outcomes.stoppedTurn = outcome === 'user-stopped'
     applyPendingArchive(slot)
-    log(`· ${note}${activeCaseId === null ? '' : ` · Active Rulith Case: ${activeCaseId}.`}${pendingLine(pendingCaseId)}${actualCaseId === null ? '' : ` · Verify in Console: ${consoleUrl}`}
+    log(`· ${note}${activeGoal === null ? '' : ` · Active Rulith goal: ${activeGoal}.`}${pendingLine(pendingGoal)}${actualGoal === null ? '' : ` · Verify in Console: ${consoleUrl}`}
 `)
     await finishIfDrained()
   }
@@ -5456,7 +5388,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
   // can start the process, handle one message, and go on accepting more. It carries no
   // sessionKey, so it lands in the default slot.
   if (TASK !== '') {
-    const item = { id: nextTaskId(), text: TASK, caseType: selectedCaseType, businessKey: selectedBusinessKey, at: Date.now(), sessionKey: '', attachments: [] }
+    const item = { id: nextTaskId(), text: TASK, at: Date.now(), sessionKey: '', attachments: [] }
     conversationStore?.accept(item, { ok: true, id: item.id, sessionKey: '' }, '', '')
     defaultSlot.queue.push(item); pump()
   }
@@ -5466,14 +5398,14 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
   log(`Task: ${TASK}
 `)
   emit('start', { agentId, url: URL_BASE, task: TASK })
-  const { note, outcome, caseId, activeCaseIds, pendingCaseId, opened, closedCases = [] } = await runCaseTurn(defaultSlot, TASK, { policy: 'continue' })
+  const { note, outcome, goal, activeGoals, pendingGoal, opened, endedGoals = [] } = await runTurn(defaultSlot, TASK, { policy: 'continue' })
   // The run's own verdict, on the terminal. It used to travel only in the `end` event, so
   // the one interface this form actually has never said how the run ended.
   log(`\n· ${note}`)
   const seen = consoleUrl
   log('\n──────── Board View last observed ────────')
-  log(board.lastView === undefined ? '(No Board View was observed; inspect the Case records in Console.)' : viewText(board.lastView))
-  if (pendingCaseId !== null) log(`⚠ This case remains open: pending_case_id=${pendingCaseId}. Resume with --case ${pendingCaseId}, or resolve it in Console.`)
+  log(board.lastView === undefined ? '(No Board View was observed; inspect the records in Console.)' : viewText(board.lastView))
+  if (pendingGoal !== null) log(`⚠ This goal remains open: pending_goal=${pendingGoal}. Continue it in a later run, or resolve it in Console.`)
   log(`
 Verify the task tree, work items, and conclusions in Console: ${seen}
 `)
@@ -5483,14 +5415,14 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     ok: outcome === 'completed',
     outcome,
     note,
-    caseId,
-    ...(activeCaseIds.length === 0 ? {} : { activeCaseIds }),
-    ...(closedCases.length === 0 ? {} : { closedCases }),
+    goal,
+    ...(activeGoals.length === 0 ? {} : { activeGoals }),
+    ...(endedGoals.length === 0 ? {} : { endedGoals }),
     board: agentId,
     console: seen,
-    ...(pendingCaseId === null ? {} : { pendingCaseId }),
+    ...(pendingGoal === null ? {} : { pendingGoal }),
   })
-  // A task that never opened a Case did not run. Exiting 0 told every caller — CI step,
+  // A task that never declared a goal did not run. Exiting 0 told every caller — CI step,
   // shell script, cron wrapper — that the work was attempted and finished.
   //
   // The status is set rather than forced. `process.exit()` here tore the loop down
@@ -5499,8 +5431,8 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   // roughly half of successful runs on this platform reported 3221226505 — a crash
   // code — instead of 0, and the tail of stdout was lost with it.
   if (opened !== true) {
-    console.error(`\n✗ No Case Context was opened, so this task never started: ${note}`
-      + '\n   Nothing was executed and no Case record exists. Fix the reported cause and run the task again.\n')
+    console.error(`\n✗ No goal was declared, so this task never started: ${note}`
+      + '\n   Nothing was executed and no goal exists. Fix the reported cause and run the task again.\n')
     process.exitCode = 1
   } else {
     process.exitCode = outcome === 'model-error' ? 1 : 0
@@ -5554,7 +5486,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
   let queuedAtSegmentStart = 0
   pollInterject = () => (inbox.length > queuedAtSegmentStart ? inbox.splice(queuedAtSegmentStart, 1)[0] : undefined)
 
-  log(`Interactive mode. This is a normal Agent conversation; Rulith is an optional tool. Cases are created only when the Agent chooses governed work. Verify any resulting Cases and conclusions in Console: ${consoleUrl}`)
+  log(`Interactive mode. This is a normal Agent conversation; Rulith is an optional tool. Goals are declared only when the Agent chooses governed work. Verify any resulting goals and conclusions in Console: ${consoleUrl}`)
   log('The transcript stays on this machine and is not written to the board. Empty lines are ignored. Use exit, quit, or Ctrl+C to stop.\n')
   emit('start', { agentId, url: URL_BASE, task: '(interactive)' })
   for (;;) {
@@ -5566,7 +5498,7 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
     queuedAtSegmentStart = inbox.length
     let segment
     try {
-      segment = await runCaseTurn(defaultSlot, line, { policy: 'return' })
+      segment = await runTurn(defaultSlot, line, { policy: 'return' })
     } catch (error) {
       if (error instanceof McpConnectionReplacedError) {
         console.error(`\n✗ ${error.message}`
@@ -5580,14 +5512,14 @@ Verify the task tree, work items, and conclusions in Console: ${seen}
       process.exitCode = 3
       break
     }
-    const { note, caseId, activeCaseId, activeCaseIds, pendingCaseId, closedCases = [] } = segment
-    emit('segment-end', { note, board: agentId, caseId,
-      ...(activeCaseId === null ? {} : { activeCaseId }),
-      ...(activeCaseIds.length === 0 ? {} : { activeCaseIds }),
-      ...(closedCases.length === 0 ? {} : { closedCases }),
-      ...(pendingCaseId === null ? {} : { pendingCaseId }) })
+    const { note, goal, activeGoal, activeGoals, pendingGoal, endedGoals = [] } = segment
+    emit('segment-end', { note, board: agentId, goal,
+      ...(activeGoal === null ? {} : { activeGoal }),
+      ...(activeGoals.length === 0 ? {} : { activeGoals }),
+      ...(endedGoals.length === 0 ? {} : { endedGoals }),
+      ...(pendingGoal === null ? {} : { pendingGoal }) })
     log(`
-· ${note}${activeCaseId === null ? '' : ` · Active Rulith Case: ${activeCaseId}.`}${pendingLine(pendingCaseId)}${caseId === null ? '' : ` · Verify in Console: ${consoleUrl}`}
+· ${note}${activeGoal === null ? '' : ` · Active Rulith goal: ${activeGoal}.`}${pendingLine(pendingGoal)}${goal === null ? '' : ` · Verify in Console: ${consoleUrl}`}
 `)
   }
   rl.close()

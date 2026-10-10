@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { conversationFile } from '../agent/conversation-store.mjs'
-import { TEST_AGENT_ID, callTool, freePort, runAgent } from './support/agent-harness.mjs'
+import { TEST_AGENT_ID, callTool, declareGoal, freePort, runAgent } from './support/agent-harness.mjs'
 
 const PROOF = 'ab'.repeat(32)
 const SECRET = 'cd'.repeat(32)
@@ -27,7 +27,7 @@ const execute = async (args, { selection = SECRET, attachments = [A, B], proof =
         ...(selection ? { 'x-rulith-material-selection-key': selection } : {}) },
       serveTasks: [{ text: 'Use the selected material.', requestId: 'selection-task-request-1',
         sessionKey: 'selection-session', attachments }], waitForServeCompletion: true,
-      model: round => round === 1 ? callTool('OpenCase', { caseType: 'exploration' })
+      model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
         : round === 2 ? callTool(tool, args) : 'Done.', timeoutMs: 800 })
     const projections = [run.toolCalls, run.modelRequests, run.localEvents, run.serveResponses,
       run.serveSnapshot, run.stdout, run.stderr]
@@ -43,7 +43,7 @@ test('real Agent forwards private selection on exact attached ApplyAction only',
   const run = await execute({ action: 'read', args: { material: { ref: A.id, digest: A.digest } } })
   assert.deepEqual(run.serveStatuses, [202], run.stdout + run.stderr)
   const calls = run.requests.filter(row => row.method === 'tools/call')
-  assert.deepEqual(run.toolCalls.map(row => row.name), ['OpenCase', 'ApplyAction'])
+  assert.deepEqual(run.toolCalls.map(row => row.name), ['ApplyBatch', 'ApplyAction'])
   assert.equal(calls[0].headers['x-rulith-material-selection-key'], undefined)
   assert.equal(calls[1].headers['x-rulith-material-selection-key'], SECRET)
   assert.equal(calls[0].headers['x-rulith-material-task-proof'], PROOF)

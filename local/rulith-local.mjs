@@ -1305,10 +1305,14 @@ export function createLocalHost({
           return void json(res, 400, { ok: false, errorCode: 'material_submission_invalid',
             teaching: 'Submitting an attachment needs the request id for this click.' })
         }
-        if (body.caseId !== undefined && (typeof body.caseId !== 'string'
-          || body.caseId.length > 256 || !/^[A-Za-z0-9:_-]+$/.test(body.caseId))) {
-          return void json(res, 400, { ok: false, errorCode: 'material_case_invalid',
-            teaching: 'An existing Case selection must be one exact Case id.' })
+        // An existing Case target, a Case Type and a business key steered OpenCase, which rulith/v4
+        // retired (Runtime 0.13.0): a goal's contract follows from the goal the model declares, and
+        // there is no call that binds files to an existing goal. Refused whole, before anything is kept.
+        const retired = ['caseId', 'caseType', 'businessKey'].filter((field) => Object.hasOwn(body, field))
+        if (retired.length > 0) {
+          return void json(res, 400, { ok: false, errorCode: 'case_selection_retired',
+            teaching: `${retired.join(', ')} ${retired.length === 1 ? 'was' : 'were'} retired with rulith/v4; nothing was sent.`
+              + ' Send the message, and any files, without them.' })
         }
         const sessionKey = String(body.sessionKey ?? '').trim() || (body.requestId
           ? 'ctx-' + createHash('sha256').update(String(body.requestId)).digest('hex').slice(0, 32)
@@ -1326,7 +1330,7 @@ export function createLocalHost({
         let selected
         try {
           selected = materials.attachments(body.attachments, {
-            sessionKey, requestId: body.requestId, targetCaseId: body.caseId ?? '' })
+            sessionKey, requestId: body.requestId, targetCaseId: '' })
         } catch (error) { return materialFailure(res, error) }
         let taskProof
         let selectionSecret
@@ -1376,10 +1380,7 @@ export function createLocalHost({
           sessionKey,
           ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
           ...(selected.attachments.length === 0 ? {} : { attachments: selected.attachments }),
-          ...(body.caseId === undefined ? {} : { caseId: body.caseId }),
-          ...(body.historyModelDestination === undefined ? {} : { historyModelDestination: body.historyModelDestination }),
-          ...(body.caseType === undefined ? {} : { caseType: body.caseType }),
-          ...(body.businessKey === undefined ? {} : { businessKey: body.businessKey }) })
+          ...(body.historyModelDestination === undefined ? {} : { historyModelDestination: body.historyModelDestination }) })
         const sendTask = () => fetch(`http://127.0.0.1:${components.agent.servePort}/task`, {
           method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-serve': components.agent.serveKey,
             ...(taskProof ? { 'x-rulith-material-task-proof': taskProof } : {}),

@@ -12,7 +12,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { runAgent, callTool } from './support/agent-harness.mjs'
+import { runAgent, callTool, declareGoal } from './support/agent-harness.mjs'
 
 const BEYOND = '9007199254740993'
 const EXACT_MAX = '9007199254740991'
@@ -20,7 +20,7 @@ const rawArgs = (n) => `{"action":"tally","args":{"path":"reports/tally.txt","co
 
 /** Open a Case first, then make the call under test, then stop. */
 const script = (second) => (round) => {
-  if (round === 1) return callTool('OpenCase', {})
+  if (round === 1) return callTool('ApplyBatch', declareGoal())
   if (round === 2) return second
   return 'Understood.'
 }

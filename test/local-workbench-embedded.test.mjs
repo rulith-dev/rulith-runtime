@@ -99,7 +99,6 @@ test('the composer answers in the page, because a sandboxed frame has no browser
   const code = script.replace(/\/\*[\s\S]*?\*\//g, '')
   assert.doesNotMatch(code, /\balert\(/, 'a send that fails must not fail silently when embedded')
   assert.doesNotMatch(managerPage, /allow-modals/, 'the fix is the page answering, not the sandbox letting dialogs through')
-  assert.match(script, /sayCompose\('Business key must be valid JSON\.'\)/)
   assert.match(script, /sayCompose\(r\?\.teaching\|\|'The message outcome is not confirmed\./)
   assert.match(localPage, /id="composererr" role="alert"/, 'the answer is announced, not only drawn')
   assert.match(localPage, /\.composererr:empty\{display:none\}/)
@@ -137,9 +136,10 @@ test('readiness is a bounded receipt and never carries authority or reads the ot
 })
 
 test('the embedded conversation keeps every behaviour it has on its own', () => {
-  // These are the parts a person would notice missing: the composer, the Case preferences it
+  // These are the parts a person would notice missing: the composer, the files menu it
   // carries, the Trace view, tool disclosure, Markdown, the session log and Runtime details.
-  for (const marker of ['id="composer"', 'id="casepopover"', 'data-view="trace"', 'renderMarkdown',
+  // (The Case preferences popover was retired with rulith/v4.)
+  for (const marker of ['id="composer"', 'id="attachmenu"', 'data-view="trace"', 'renderMarkdown',
     'renderToolCall', 'id="exportlog"', 'id="runtimemodal"', 'projectCaseRoots', 'projectOperations'])
     assert.ok(localPage.includes(marker), `the embedded conversation lost ${marker}`)
   assert.doesNotMatch(script, /EMBEDDED\s*\?\s*fetch|if\(EMBEDDED\)\s*return/,

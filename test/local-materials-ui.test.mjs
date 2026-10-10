@@ -74,22 +74,14 @@ test('the composer plus opens an attachment menu whose primary action is adding 
   assert.equal(page.$('attachmenu').hidden, false)
   assert.equal(page.$('caseoptions').getAttribute('aria-expanded'), 'true')
   assert.equal(page.activeId(), 'attachfiles', 'a keyboard lands on the primary action')
-  // Add files is first and plain; Case preferences is still here, named as the advanced option.
+  // Add files is the one item: the Case preferences (Case Type, business key) steered OpenCase,
+  // which rulith/v4 retired, and there is nothing left for them to pin.
   const items = page.$('attachmenu').querySelectorAll('[role="menuitem"]')
-  assert.deepEqual(items.map((item) => item.id), ['attachfiles', 'attachprefs'])
+  assert.deepEqual(items.map((item) => item.id), ['attachfiles'])
   assert.match(items[0].textContent, /Add files/)
-  assert.match(items[1].textContent, /Advanced · Case preferences/)
-  assert.ok(items[1].classList.contains('advanced'))
-})
-
-test('Case preferences still opens the same popover, from its place in the menu', async () => {
-  const page = await load()
-  await page.click('caseoptions')
-  await page.click('attachprefs')
-  assert.equal(page.$('attachmenu').hidden, true, 'choosing an item closes the menu')
-  assert.equal(page.$('casepopover').hidden, false)
-  assert.equal(page.activeId(), 'casetype', 'the field it opens for is where the keyboard continues')
-  assert.equal(page.$('casetype').value, '', 'no Case Type is pinned unless the user chooses one')
+  for (const retired of ['attachprefs', 'casepopover', 'casetype', 'businesskey', 'materialtarget']) {
+    assert.equal(page.$(retired), undefined, `#${retired} is still on the page`)
+  }
 })
 
 test('Add files opens a dialog that can be opened again during a turn', async () => {
@@ -188,16 +180,20 @@ test('reconnecting the event stream does not duplicate persisted messages or mar
   assert.doesNotMatch(page.$('cases').innerHTML, /task endpoint/)
 })
 
-test('only an explicit Case preference pins the model, and clearing it restores automatic choice', async () => {
+test('a message never carries a Case Type, a business key or a Case target', async () => {
+  // rulith/v4: the model declares goals; the page has nothing to pin and sends none of them.
   const page = await load()
-  page.$('casetype').value = 'official_authoring'
-  await page.type('Use my chosen Case Type')
+  await page.type('Use the installed capability')
   await page.submit()
-  assert.equal(sent(page, '/cases')[0].body.caseType, 'official_authoring')
-  page.$('casetype').value = '  '
-  await page.type('Choose the next Case Type from the installed capabilities')
+  await addThroughDialog(page, [fileOf('notes.txt')])
+  await page.type('And read this')
   await page.submit()
-  assert.equal(Object.hasOwn(sent(page, '/cases')[1].body, 'caseType'), false)
+  for (const call of sent(page, '/cases')) {
+    for (const field of ['caseType', 'businessKey', 'caseId']) {
+      assert.equal(Object.hasOwn(call.body, field), false, `a message carried ${field}`)
+    }
+  }
+  assert.deepEqual(sent(page, '/cases')[1].body.attachments, ['mat-1'])
 })
 
 test('a message with only files is allowed once one of them is stored', async () => {
@@ -539,17 +535,18 @@ test('a late failure answers in the conversation it was sent from, not over anot
 
   // Meanwhile, in another conversation, the composer is saying something of its own.
   await page.click(caseOf('s-beta'))
+  page.control.material = () => ({ status: 413, body: { ok: false, teaching: 'The material service could not store this file.' } })
+  await addThroughDialog(page, [fileOf('beta.bin')])
   await page.type('A separate beta message')
-  page.$('businesskey').value = '{not json'
   await page.submit()
-  assert.equal(page.$('composererr').textContent, 'Business key must be valid JSON.')
+  const betaSays = page.$('composererr').textContent
+  assert.match(betaSays, /beta\.bin could not be added/)
 
   open.resolve({ status: 409, body: { ok: false, teaching: 'This Agent is not started, so the message was not sent.' } })
   await page.flush()
-  assert.equal(page.$('composererr').textContent, 'Business key must be valid JSON.',
+  assert.equal(page.$('composererr').textContent, betaSays,
     'a refusal from another conversation must not overwrite what this one is saying')
 
-  page.$('businesskey').value = ''
   await page.click(caseOf('s-alpha'))
   assert.equal(page.$('composererr').textContent, 'This Agent is not started, so the message was not sent.',
     'and it is waiting in the conversation it belongs to')

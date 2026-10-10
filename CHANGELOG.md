@@ -2,6 +2,30 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.13.0 - 2026-10-09
+
+- Agent: speaks `rulith/v4`, the goal-centric model surface (package A), and no longer
+  speaks `rulith/v3`. The model has five tools: `QueryBoard`, `ApplyBatch`, `ApplyAction`,
+  `ReadArtifact` and the new `EndGoal`; `OpenCase` and `CloseCase` are gone. Work starts when
+  the model declares a goal without `parent` in `ApplyBatch`; a goal the Board certifies ends
+  as `completed` by itself, and `EndGoal` ends one that will not be pursued, with a
+  disposition and a reason. Host metadata carries `focusedGoals` and `affectedGoals`; Board
+  Views carry `goals`. The system prompt states the v4 contract (V46–V51).
+- Agent: an endpoint whose `initialize` answer does not advertise `rulith/v4` (a `rulith/v3`
+  Gateway) is a version mismatch, exit status 1, before tools are listed or the model is
+  called; an endpoint that still lists `OpenCase` or `CloseCase`, or does not list `EndGoal`,
+  is a protocol mismatch.
+- Agent: `--case`, `--case-type`, `--business-key`, `RULITH_RESUME_CASE`, `RULITH_CASE_TYPE`
+  and `RULITH_BUSINESS_KEY_JSON` are retired; naming one stops the run before anything is
+  sent. `POST /task` refuses `caseId`, `caseType` and `businessKey` the same way. The task text
+  names the work instead. Results report `endedGoals`, `activeGoals` and `pendingGoal` in place
+  of the Case fields.
+- Agent: files attached to a task are bound by the first `ApplyBatch` of that task that
+  declares a goal without `parent`, which now carries the private material proof that
+  `OpenCase` carried.
+- Local: shows goals in focus and their endings; the Case preferences popover and the
+  existing-Case file target are removed, and `/cases` refuses the retired selection fields.
+
 ## 0.12.7 - 2026-10-08
 
 - Worker: claimed writes and runs whose outcome receipt cannot be delivered

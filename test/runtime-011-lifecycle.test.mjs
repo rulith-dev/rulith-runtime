@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { request } from 'node:http'
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
 import { conversationFile, openConversations, readConversations, readUnreadOutcomes, conversationList } from '../agent/conversation-store.mjs'
-import { runAgent, freePort, callTool, TEST_AGENT_ID } from './support/agent-harness.mjs'
+import { runAgent, freePort, callTool, declareGoal, TEST_AGENT_ID } from './support/agent-harness.mjs'
 const ROLE = resolve(import.meta.dirname, 'support/lifecycle-role.mjs')
 const until = async (check, timeout = 8000) => {
   const end = Date.now() + timeout
@@ -399,8 +399,8 @@ test('Stop aborts the model at once, records a user stop, and leaves another con
 })
 test('Stop waits for an in-flight held Rulith answer, records it, and makes no further model call', async t => {
   const { result, history, unread } = await serveFixture(t, {
-    model: () => callTool('OpenCase', { caseType: 'exploration' }),
-    hold: name => name === 'OpenCase' ? { answer: 'running', holdMs: 150,
+    model: () => callTool('ApplyBatch', declareGoal()),
+    hold: name => name === 'ApplyBatch' ? { answer: 'running', holdMs: 150,
       settle: seen => seen.pings >= 2 ? { state: 'done' } : undefined } : undefined,
   }, async ({ post, localEvents, toolCalls }) => {
     const task = await post('/task', { text: 'work', sessionKey: 'one' })
@@ -409,9 +409,9 @@ test('Stop waits for an in-flight held Rulith answer, records it, and makes no f
     await until(() => localEvents.some(e => e.type === 'task-done' && e.id === task.body.id))
   })
   assert.equal(result.modelRequests.length, 1)
-  assert.ok(result.localEvents.some(e => e.type === 'tool-result' && e.cmd === 'OpenCase' && e.authoritative))
+  assert.ok(result.localEvents.some(e => e.type === 'tool-result' && e.cmd === 'ApplyBatch' && e.authoritative))
   assert.equal(history.turns[0].outcome, 'user-stopped')
-  assert.ok(unread.one?.some(e => e.tool === 'OpenCase' && e.state === 'done' && e.unread), JSON.stringify(unread))
+  assert.ok(unread.one?.some(e => e.tool === 'ApplyBatch' && e.state === 'done' && e.unread), JSON.stringify(unread))
 })
 test('turn Stop requires serve authentication, local Host/Origin, valid scope and current turn identity', async t => {
   await serveFixture(t, {}, async ({ post, url, key }) => {
@@ -432,7 +432,7 @@ test('a stopped Action settles later in operations without another model call or
   let finishAction = false
   const { result, unread } = await serveFixture(t, {
     env: { RULITH_HOST_WAIT_MS: '0' },
-    model: n => n === 1 ? callTool('OpenCase', { caseType: 'exploration' }) : callTool('ApplyAction', { action: 'action-1' }),
+    model: n => n === 1 ? callTool('ApplyBatch', declareGoal()) : callTool('ApplyAction', { action: 'action-1' }),
     hold: name => name === 'ApplyAction' ? { answer: 'running', holdMs: 180,
       settle: () => finishAction ? { state: 'done' } : undefined } : undefined,
   }, async ({ post, url, key, localEvents, toolCalls, modelRequests, historyFile, owner }) => {

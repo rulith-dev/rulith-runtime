@@ -43,7 +43,45 @@ test('RT-OBS-2 a server that does not promise held calls is refused at initializ
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 1)
   assert.deepEqual(run.methods, ['initialize'])
-  assert.match(run.stderr, /requires rulith\/v3 server capabilities \{"heldCalls":1\}/)
+  assert.match(run.stderr, /requires rulith\/v4 server capabilities \{"heldCalls":1\}/)
+  assert.equal(run.modelRequests.length, 0)
+  assert.deepEqual(run.verbs, [])
+})
+
+test('RT-OBS-2b a Gateway still on rulith/v3 is refused at initialize as an earlier contract, exactly as v2 was', async () => {
+  // Package A is a one-shot cutover (A-2, A-22): this Runtime declares rulith/v4 only, and a
+  // Gateway that answers with the C1 rulith/v3 capability has not been cut over. It is refused
+  // before tools/list, before the model, and is not read as a credential fault.
+  const run = await runAgent({
+    argv: ['Inspect pending work.'], serverCapabilities: false,
+    extraServerCapabilities: { 'rulith/v3': { heldCalls: 1 } },
+    model: () => callTool('QueryBoard', {}),
+  })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 1)
+  assert.deepEqual(run.methods, ['initialize'])
+  assert.deepEqual(run.initializes[0].capabilities.experimental, { 'rulith/v4': { heldCalls: 1 } },
+    'this Runtime declared something besides rulith/v4')
+  assert.match(run.stderr, /requires rulith\/v4 server capabilities \{"heldCalls":1\}\. This endpoint did not advertise that contract;/)
+  assert.match(run.stderr, /it advertises rulith\/v3, an earlier Rulith contract that this Runtime no longer speaks\./)
+  assert.match(run.stderr, /Do not replace credentials/)
+  assert.doesNotMatch(run.stderr, /token rejected|rotate the Agent token/)
+  assert.equal(run.modelRequests.length, 0)
+})
+
+test('RT-OBS-2c a v3 tool surface beside a v4 capability is refused at tools/list, naming what was retired', async () => {
+  const v4 = (await import('./support/agent-harness.mjs')).advertisedTools()
+  const run = await runAgent({
+    argv: ['Inspect pending work.'],
+    toolSchemas: v4.filter((tool) => tool.name !== 'EndGoal'),
+    extraTools: [{ name: 'OpenCase', description: 'Rulith OpenCase', inputSchema: { type: 'object' } },
+      { name: 'CloseCase', description: 'Rulith CloseCase', inputSchema: { type: 'object' } }],
+    model: () => callTool('QueryBoard', {}),
+  })
+  assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 1)
+  assert.match(run.stderr, /it does not advertise EndGoal/)
+  assert.match(run.stderr, /it still advertises OpenCase, CloseCase, which rulith\/v4 removed/)
   assert.equal(run.modelRequests.length, 0)
   assert.deepEqual(run.verbs, [])
 })

@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
 
-import { HOP_FAILURE, ROOT, callTool, runAgent } from './support/agent-harness.mjs'
+import { HOP_FAILURE, ROOT, callTool, declareGoal, runAgent } from './support/agent-harness.mjs'
 
 const THIS_RELEASE = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
@@ -235,7 +235,7 @@ test('RT-CUTOVER-6 a Gateway that refuses this release mid-run stops the turn wi
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     expireSessionAfter: 4, // initialize, initialized, tools/list, then the tools/call answered 404
     refuseInitialize: refusedAfterFirst,
-    model: (round) => (round === 1 ? { text: '', toolCalls: [{ name: 'OpenCase', input: {} }] } : 'Nothing further.'),
+    model: (round) => (round === 1 ? { text: '', toolCalls: [{ name: 'ApplyBatch', input: declareGoal() }] } : 'Nothing further.'),
     timeoutMs: 25_000,
   })
   assertRunningMismatch(run)

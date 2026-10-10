@@ -41,12 +41,13 @@ hidden order-processing policy or other business workflow.
 
 ## Requirements
 
-Task and conversation results include `closedCases` when the Runtime observed accepted
-Case closures in that turn. Each entry identifies the Case, its root and disposition;
-the CLI and Local result note list them together. A final cancellation does not hide an
-earlier completed Case. Mixed dispositions are not reported as all successful, and
-refused calls or roots merely leaving focus are not counted as completed work. The
-summary describes observed outcomes, not a second verification decision.
+Task and conversation results include `endedGoals` when the Runtime observed goals end
+in that turn. Each entry identifies the goal and how it ended: `completed` when the Board
+certified it, the disposition this host sent on an accepted `EndGoal`, or `ended` when
+something else ended it. The CLI and Local result note list them together. A final
+cancellation does not hide an earlier completed goal. Mixed endings are not reported as
+all successful, and refused calls or goals merely leaving focus are not counted as
+completed work. The summary describes observed outcomes, not a second verification decision.
 
 - Node.js 20 or newer
 - A Rulith Cloud account and Agent token
@@ -87,7 +88,7 @@ npm install --global rulith
 rulith start
 ```
 
-A Rulith service checks the client protocol (the MCP date and the `rulith/v3` capabilities),
+A Rulith service checks the client protocol (the MCP date and the `rulith/v4` capabilities),
 not the exact release, and its Console names the one release it recommends. To connect to a
 service, install the exact version its Console shows in Setup or Quickstart instead
 (`npm install --global rulith@<version>`): around a protocol change, npm's `latest` can
@@ -106,7 +107,7 @@ send the first message to start that Agent automatically. Enable **Use this envi
 processes. Model changes restart the Agent between turns; Worker configuration reloads after
 running executions drain. During a turn, Send becomes Stop: it aborts the model request,
 records a user stop, and waits for any Rulith call already sent without withdrawing it.
-Pause the Case or withdraw work before dispatch in Console to stop Board work.
+Pause the goal or withdraw work before dispatch in Console to stop Board work.
 **Sign out and stop this environment** remains the global exit. Database tools load the
 optional `pg` package only when used.
 
@@ -120,34 +121,44 @@ $env:RULITH_MODEL_URL = 'https://your-model-endpoint/v1/chat/completions'
 node agent/rulith-agent.mjs
 ```
 
-With no positional task, the Agent starts an ordinary conversation. It opens no
-Case until the model calls `OpenCase`. A positional task is the autopilot path:
-the same loop, kept going while the Board still has something to say.
+With no positional task, the Agent starts an ordinary conversation. Nothing is put on
+the Board until the model declares a goal in `ApplyBatch`. A positional task is the
+autopilot path: the same loop, kept going while the Board still has something to say.
 
 ```powershell
-node agent/rulith-agent.mjs --case-type verified_calculation --business-key '{"job_id":"calc-001"}' "calculate and verify this job"
+node agent/rulith-agent.mjs "calculate and verify job calc-001"
 ```
 
-For the loopback service, `POST /task` accepts the same host-owned selection as
-`{"text":"...","caseType":"verified_calculation","businessKey":{"job_id":"calc-001"},"sessionKey":"conversation-1"}`.
+Start the loopback service instead with `--serve`. On the autopilot path, `--shadow` adds
+the shadow reviewer described below, at the end of the task.
+
+```powershell
+node agent/rulith-agent.mjs --serve
+node agent/rulith-agent.mjs --shadow "calculate and verify job calc-001"
+```
+
+`POST /task` on the loopback service accepts
+`{"text":"...","sessionKey":"conversation-1"}`.
 The first request may omit `sessionKey`; the service returns a newly generated one,
 which the caller must echo on follow-ups. Two clients that omit it never share a
-conversation or selected Case. A caller may also send an existing `caseId` from
-`/runs` or Console to select a running Case without opening a replacement Case.
-A paused Case requires every pause hold to be released by its authorized owner. Console
-can release operator holds; policy holds require their policy authority. Selecting a Case ID
-does not resume it. After it resumes, select that same Case ID.
-`RULITH_CASE_TYPE` and `RULITH_BUSINESS_KEY_JSON` set local defaults. Contracted
-Case Types require the exact business-key argument names shown by their Case
-Contract; exploration omits them. The Runtime sends values only. Cloud computes
-and pins the business-key, Capability Release, Case Contract, generation, and
-commercial-term digests before the Case opens, so the model never fills them.
+conversation or its goals.
 
-### The model surface: six tools on one endpoint
+There is no host-owned Case selection under `rulith/v4`. A goal declared without a
+`parent` starts new work: when its one desired atom is a capability's goal, with its key
+values, the Cloud opens that capability's contract and computes and pins the business-key,
+Capability Release, Case Contract, generation and commercial-term digests itself; any
+other top-level goal opens an exploration contract. Declaring the same goal again while it
+is open returns the existing goal rather than a second one. So the task text, not a flag,
+names the work and any key values it concerns. Runtime 0.13.0 retired `--case-type`,
+`--business-key` and `--case`, their environment defaults, and the `caseType`,
+`businessKey` and `caseId` fields of `POST /task`: naming one stops the run, or refuses
+the request, before anything is sent.
+
+### The model surface: five tools on one endpoint
 
 The Agent Runtime is an ordinary MCP client. It connects to one path — `/mcp` — performs
-the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the six
-tools of the unified MCP surface: five that dispatch to Board operations and one read of
+the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the five
+tools of the unified MCP surface: four that dispatch to Board operations and one read of
 already-generated result data. There is no operation-read tool: an earlier call's outcome
 reaches the model on the recent-operations strip every result carries.
 
@@ -173,27 +184,28 @@ that does not exist would pass as verified.
 
 | Tool | What the model is asking for |
 | --- | --- |
-| `OpenCase` | Create a Case, or bring an existing one into this session's focus |
-| `ApplyBatch` | Apply one atomic batch of working-memory operations |
-| `ApplyAction` | Invoke one Action the Board View lists; each says ready or blocked |
-| `CloseCase` | Close a Case with an explicit disposition |
 | `QueryBoard` | Read the bounded Board View this Agent's Profile permits |
+| `ApplyBatch` | Apply one atomic batch of working-memory operations, declaring goals included |
+| `ApplyAction` | Invoke one Action the Board View lists; each says ready or blocked |
 | `ReadArtifact` | Read a bounded fragment of an already-generated result object |
+| `EndGoal` | End a goal that will not be pursued, with a disposition and a reason |
+
+A goal the Board certifies ends as `completed` by itself, in the commit that satisfied it;
+`EndGoal` is only for the other endings (`cancelled`, `failed`, `abandoned`, `superseded`).
 
 There is no second vocabulary, no reply protocol, and no privileged path a third-party
 client cannot reach. The Agent ships as a single file, so the contract is compiled into it
 rather than read from a sibling at startup: a downloaded `rulith-agent.mjs` needs nothing
 beside it to know its own surface. `ReadArtifact` is the one tool served by the Gateway's
 result data plane rather than by a Board operation: it returns bytes and a continuation position, not a
-Board View, and it creates no Case, writes nothing and changes no focus. The tool schemas
+Board View, and it declares no goal, writes nothing and changes no focus. The tool schemas
 the Cloud advertises are the templates, so nothing
-in the prompt restates them. `caseType` stays on `OpenCase`, but an operator who pinned
-one with `--case-type`, `RULITH_CASE_TYPE` or a `POST /task` body has made that governance
-selection, and a model turn cannot move the work onto another contract.
+in the prompt restates them.
 
-That membership is a contract, not a menu. An endpoint that advertises a seventh tool, a
-duplicate, or one of the retired host surfaces is a **protocol mismatch**: startup refuses
-and names both sides. Silently reinterpreting it into the approved six would be this client
+That membership is a contract, not a menu. An endpoint that advertises a sixth tool, a
+duplicate, or one of the retired surfaces — `OpenCase` and `CloseCase` included — is a
+**protocol mismatch**: startup refuses and names both sides. Silently reinterpreting it
+into the approved five would be this client
 deciding on its own what the authority had offered. The same applies to the protocol
 version: an endpoint that negotiates anything other than 2025-11-25 is refused at the
 handshake, because the session, streaming, resumption and serial-call rules this client
@@ -229,10 +241,16 @@ release is older than this one; otherwise it points to the install command shown
 Console. The exit status is 1. A rejected credential stays 3 and quotes the Gateway's own next
 step as its message; a takeover stays 4.
 
+The handshake is checked from this side too. An endpoint whose `initialize` answer does not
+advertise `rulith/v4` — a `rulith/v3` Gateway, for one — is a version mismatch with the same
+exit status 1: the message names the earlier contract the endpoint did advertise, says this
+Runtime no longer speaks it, and points to the matching release. Nothing is listed or sent
+after that answer, and the model is never called.
+
 Host metadata travels beside the model's content, never inside it, in the MCP `_meta`
-block under `rulith/v3`: the authenticated Agent identity, the Board revision (an audit
-string, never a precondition), the `{caseId, root}` focus pairs, the complete
-`affectedCases`, and, on `initialize` and `ping`, the state form of the recent-operations
+block under `rulith/v4`: the authenticated Agent identity, the Board revision (an audit
+string, never a precondition), the `focusedGoals`, the complete `affectedGoals`, and, on
+`initialize` and `ping`, the state form of the recent-operations
 strip described below. It travels one way. The protected
 query context — `audienceProfile` and `requestedRoots` — is injected by the Gateway from the
 authenticated principal, and the session id is a response header, so a conforming client
@@ -245,17 +263,16 @@ Identity comes from that handshake. Ordinary conversation — including startup 
 greeting — never touches the Board: there is no bootstrap query issued merely to learn
 which Agent this is.
 
-A conversation holds a *set* of acceptance roots with independent lifecycles, not one
-active Case. Bringing an existing Case into focus is a host feature reached through
-`--case` and the Local UI, and it uses the same public `OpenCase({caseId})` the model
-would. Deterministic discharge, holding a call until its outcome and closure mechanics belong
-to Cloud and the Board; this runtime runs no second discharge state machine, and a stopped
-model turn is not a paused Case.
+A conversation holds a *set* of goals with independent lifecycles, not one active goal.
+A goal joins it only by being declared; there is no focus operation, for the model or for
+this host. Deterministic discharge, holding a call until its outcome, certification and
+ending belong to Cloud and the Board; this runtime runs no second discharge state machine,
+and a stopped model turn is not a paused goal.
 
 ### One connection, one call at a time, held calls
 
 The Agent has **one authenticated MCP connection**, and everything goes through it: every
-local conversation, `--case`, the Local UI, and the shadow reviewer. Conversations are
+local conversation, the Local UI, and the shadow reviewer. Conversations are
 transcripts, not clients — they keep their own message queues and are served **one segment
 at a time**. A second authenticated connection does not isolate two conversations, it takes
 the Agent over from one of them, so a host that opened a session per conversation was
@@ -302,7 +319,7 @@ answer — is no longer running, then reads the position once with a public `Que
 strip carries the operation's own result. The model's call is answered with that result, intact —
 its own Board View included, which shows what that step touched — and with the position of that
 read beside it: its strip, and its Board View as `currentView`. The model sees what a synchronous
-call would have shown it. The strip carries a result without its host metadata, so the Cases such
+call would have shown it. The strip carries a result without its host metadata, so the goals such
 a result affected are reported to Local as not reported, rather than as none.
 `waiting_for_decision` and `needs_person` reach the model at once. After `RULITH_HOST_WAIT_MS`
 (ten minutes) the model is answered `running` with the current position; the operation goes
@@ -354,19 +371,19 @@ that follows another conversation's text does not acknowledge them. Any *request
 conversation does, as the Gateway counts it: what still shows that conversation its own outcome
 then is the record described in the next section. A greeting sends nothing.
 
-The host's own calls pass the same gate: bringing the Case the operator selected into focus
-(`--case`, the Local UI, a served task's `caseId`) is an `OpenCase`, and the shadow reviewer's
-finding is an `ApplyBatch`. When one of them is refused with `previous_result_undelivered`, the
+The host's own calls pass the same gate: its one write is the shadow reviewer's finding, an
+`ApplyBatch`. When it is refused with `previous_result_undelivered`, the
 earlier outcome that refusal carries is delivered to this session, and the next write would run.
 So the strip is shown, verbatim and labelled as the Board's record, in the next message the model
 of the conversation the call was made for reads, before it decides anything. Until some model has
 read it, no acknowledgement ping is sent; and when another conversation's turn runs first —
 because the turn it was fetched for stopped before asking its model — that turn's message carries
-it too, since every request of that turn would acknowledge it. A focus refused that way is asked
-for once more and then runs, except when files are being bound to that Case through it: the
-material proof belongs to the first request, so the files are submitted again. The shadow
-reviewer does not write at all after a call of the turn was held, not executed, or lost its
-answer, nor while a result of the turn is still unread.
+it too, since every request of that turn would acknowledge it. Files attached to a task are
+bound by the first `ApplyBatch` of that task that declares a goal without a `parent`: the
+private material proof rides on that one request and no other, so when that request does
+not open the work the files are submitted again. The shadow reviewer does not write at all
+after a call of the turn was held, not executed, or lost its answer, nor while a result of
+the turn is still unread.
 
 ### Several conversations, one session
 
@@ -420,7 +437,7 @@ unavailable observation and changes nothing else.
 
 An authoritative refusal is never replayed by the host: the Board judged the step, and
 resending it with the refusal's own words attached would be this client deciding on the
-model's behalf. Local UI shows the recent operations beside the Cases in focus.
+model's behalf. Local UI shows the recent operations beside the goals in focus.
 
 Nothing about an unfinished call is kept on disk. Runtime 0.9 recorded such a call in
 `agent-sessions.json`; a record found there is named once at startup, with its request id, and
@@ -432,14 +449,14 @@ Inside `ApplyBatch`, a step of reasoning takes one of four shapes:
 | --- | --- |
 | `assert_fact` | A material fact, with the source it came from |
 | `add_axiom` | A rule the Board may derive with |
-| `declare_goal` | An outcome that must hold |
+| `declare_goal` | An outcome to work toward: without `parent` it starts new work, with `parent` it breaks a goal down |
 | `retract_node` / `revise_fact` | Withdraw or correct one of your own assertions |
 
 Let rules derive conclusions. Explanation and argument stay in the model's reply. They are not Board material.
 
 Every tool result carries one bounded **Board View**, computed by the Board for the
 operation the model just took and filtered to what the Agent Profile permits: its
-position (whether writes, new Cases and rules are open), the acceptance roots and their
+position (whether writes, new goals and rules are open), the goals and their
 status, the open gaps, the nodes, and the Actions with their parameters, each ready or
 blocked with a reason. It describes the Board when the result was made; calls check
 again. It is not the complete Board history, and it carries no receipt, permission,
@@ -449,14 +466,15 @@ the one it last saw, it calls `QueryBoard`; the host never issues a read of its 
 in particular never refreshes an observation immediately before a write.
 
 Anthropic Messages and OpenAI Chat Completions tool use are both spoken natively. An
-endpoint that rejects tool definitions gets the same six schemas described in the system
+endpoint that rejects tool definitions gets the same five schemas described in the system
 prompt and answers with one JSON object; set `RULITH_MODEL_TOOLS=emulated` to select that
 transport up front. It is a transport, not a second surface: the names, the schemas and
 the refusals are identical.
 
-The `exploration` Case Type is the only mode that permits provisional Case-local
-predicates, rules, Actions, and Goals. They never modify installed Capabilities
-or shared Agent law and disappear when the Case closes. Its Terminal Receipt is
+A top-level goal that is not a capability's goal opens an exploration contract, the only
+mode that permits provisional predicates, rules, Actions, and goals local to that work.
+They never modify installed Capabilities or shared Agent law and disappear when the goal
+ends. Its acceptance is the goal's own desired atoms. Its Terminal Receipt is
 exploratory and never Publisher-billable; only later attribution and replay may
 turn repeated paths into a Capability draft.
 
@@ -822,7 +840,7 @@ complete first-use setup. The left list selects the Agent; the middle and right 
 show its conversation and execution information. Switching preserves each profile's
 processes and history. See [the workbench guide](docs/local-manager.md).
 
-Ordinary conversation creates no Case. The model selects Rulith tools when work benefits
+Ordinary conversation declares no goal. The model selects Rulith tools when work benefits
 from persistent state, rules, evidence, execution or an auditable conclusion. The profile's
 setup and tool pages configure its local resources; they do not grant cloud authority.
 
@@ -875,8 +893,8 @@ The model never supplies the trusted input values or the calculated output value
   `SELECT`; every model value is passed through the database driver's parameter array
   rather than interpolated into SQL. Fenced write tools classify and reject unsupported
   or destructive statements unless the declared contract allows them.
-- The model can name exactly six tools: `OpenCase`, `ApplyBatch`, `ApplyAction`,
-  `CloseCase`, `QueryBoard` and `ReadArtifact`. Anything else is refused locally and never
+- The model can name exactly five tools: `QueryBoard`, `ApplyBatch`, `ApplyAction`,
+  `ReadArtifact` and `EndGoal`. Anything else is refused locally and never
   reaches Cloud, so injected text in a task, a document, or a tool result cannot spend the
   Agent's credential on verification, Worker receipts, clearance, or package and Board
   governance. Cloud authorization is the second line, not the first. The protected query

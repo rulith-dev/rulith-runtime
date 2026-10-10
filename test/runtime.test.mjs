@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.12.7')
+  assert.equal(pkg.version, '0.13.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -148,7 +148,7 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('the model surface is the six tools of the unified list, and no second grammar survives', () => {
+test('the model surface is the five tools of the unified list, and no second grammar survives', () => {
   const whole = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   // The runtime names the retired surfaces once, in the constant it refuses them by. That
   // single declaration is the allow-list; the scan below runs over everything else, so a
@@ -157,8 +157,10 @@ test('the model surface is the six tools of the unified list, and no second gram
     'the refusal list for retired host surfaces is gone, so advertising one would no longer be named')
   assert.match(whole, /const RETIRED_V2_TOOL_NAMES = \['ReadOperation'\]/,
     'a v2 endpoint still advertising ReadOperation would no longer be named')
+  assert.match(whole, /const RETIRED_V3_TOOL_NAMES = \['OpenCase', 'CloseCase'\]/,
+    'a v3 endpoint still advertising OpenCase or CloseCase would no longer be named')
   const source = whole.split('\n').filter((line) => !line.startsWith('const RETIRED_TOOL_NAMES =')
-    && !line.startsWith('const RETIRED_V2_TOOL_NAMES =')).join('\n')
+    && !line.startsWith('const RETIRED_V2_TOOL_NAMES =') && !line.startsWith('const RETIRED_V3_TOOL_NAMES =')).join('\n')
   // Membership comes from the vendored projection of `protocol/mcp-surface.json`, with each
   // tool's dispatch target beside it, and from nowhere else. The retired handwritten
   // `agentVerb` / `agentRead` membership fields are gone with the host split.
@@ -196,6 +198,10 @@ test('the model surface is the six tools of the unified list, and no second gram
     'unavailableReadNote', 'pendingObservationNote', 'host_recovery', 'hostRecoveryEntry', 'RECOVERY_STATES',
     'operationRecovery', 'boardObservation', 'persistUnresolved', 'holdUnresolved', 'operationAtAdmission',
     'transportAmbiguous', 'call_gate_open',
+    // The rulith/v3 Case surface, by every name a call or a read could still take: no OpenCase or
+    // CloseCase is carried, no focus pair or Case directory is read, and nothing pins a Case Type.
+    "'OpenCase'", "'CloseCase'", 'focusedRoots', 'affectedCases', 'caseHistory', 'cases\\?\\.directory', 'focusPairsOf',
+    'focusExistingCase', 'selectedCaseType', 'caseTypePinned', 'selectedBusinessKey', 'materialTargetCaseId',
   ]) {
     assert.doesNotMatch(source, new RegExp(retired), `${retired} survived the single-MCP rewrite`)
   }
@@ -205,8 +211,8 @@ test('the model surface is the six tools of the unified list, and no second gram
   // weakest — a silent downgrade in the direction that looks safe.
   // The authority's closed lifecycle set, exactly. Carrying the words the retired per-Case
   // model used would let a status Core says it never sends be displayed as if it had.
-  assert.match(source, /const LIFECYCLE = \['running', 'paused', 'closed'\]/)
-  assert.match(source, /const TERMINAL_LIFECYCLE = new Set\(\['closed'\]\)/)
+  assert.match(source, /const LIFECYCLE = \['running', 'paused', 'completed', 'ended'\]/)
+  assert.match(source, /const TERMINAL_LIFECYCLE = new Set\(\['completed', 'ended'\]\)/)
   assert.doesNotMatch(source, /TIER_ORDER|floorRank/)
 })
 
@@ -245,9 +251,9 @@ test('ordinary startup performs no Board read of any kind', () => {
   // make the Board tool mandatory in everything but name.
   const startup = /let startupFailed = false\n([\s\S]*?)\nif \(!startupFailed\)/.exec(source)?.[1]
   assert.ok(startup, 'the startup block could not be found')
-  assert.doesNotMatch(startup, /callTool|QueryBoard|OpenCase/,
+  assert.doesNotMatch(startup, /callTool|QueryBoard|ApplyBatch/,
     'startup reached the Board before the model had decided whether Rulith was useful')
-  assert.match(source, /it will not open a Case or read the Board merely to learn who it is/)
+  assert.match(source, /it will not declare a goal or read the Board merely to learn who it is/)
 })
 
 test('the Agent completes a minimal run through a real local MCP server, on /mcp and nothing else', async () => {
@@ -262,9 +268,10 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
   const terminated = []
   let closed = false
   const sessionId = 'live-session-1'
+  // rulith/v4: a goal declared without parent opens its contract; the Board completes it in the
+  // commit that certifies it, and it then leaves focus with status completed in the directory.
   const boardView = (focused) => ({
-    roots: focused ? [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE', status: 'running' }] : [],
-    cases: { directory: [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE', status: focused ? 'running' : 'closed' }], total: 1 },
+    goals: { directory: [{ goal: 'GOAL_LIVE', label: 'task_done', status: focused ? 'running' : 'completed' }], total: 1 },
     gaps: [], nodes: [], actions: [],
   })
   const server = createServer(async (req, res) => {
@@ -276,18 +283,20 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
       res.setHeader('content-type', 'application/json')
       // Native tool use, not a fenced dialect: the model names a tool the endpoint
       // advertised, and the runtime carries it as a tools/call.
-      const answered = toolNames.includes('CloseCase')
+      const answered = toolNames.length >= 2
       res.end(JSON.stringify({
         choices: [{
           message: answered
-            ? { content: 'The Case is closed.' }
+            ? { content: 'The goal is completed.' }
             : {
                 content: null,
                 tool_calls: [{
                   id: 'call_1', type: 'function',
                   function: {
-                    name: toolNames.includes('OpenCase') ? 'CloseCase' : 'OpenCase',
-                    arguments: toolNames.includes('OpenCase') ? '{"disposition":"completed"}' : '{}',
+                    name: 'ApplyBatch',
+                    arguments: toolNames.length === 0
+                      ? '{"operations":[{"op":"declare_goal","desired":[{"predicate":"task_done","args":{}}]}]}'
+                      : '{"operations":[{"op":"assert_fact","predicate":"evidence","args":{"n":1}}]}',
                   },
                 }],
               },
@@ -313,50 +322,52 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
     res.setHeader('content-type', 'application/json')
     const reply = (result) => res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result }))
     if (input.method === 'initialize') {
+      assert.deepEqual(input.params?.capabilities?.experimental, { 'rulith/v4': { heldCalls: 1 } },
+        'the Runtime declared something other than rulith/v4')
       return void reply({
-        protocolVersion: '2025-11-25', capabilities: { tools: {}, experimental: { 'rulith/v3': { heldCalls: 1 } } },
+        protocolVersion: '2025-11-25', capabilities: { tools: {}, experimental: { 'rulith/v4': { heldCalls: 1 } } },
         serverInfo: { name: 'live-mcp', version: '1' },
         // The state form of the recent-operations strip: nothing yet, which is why this run
         // never has to ping.
-        _meta: { 'rulith/v3': { agentId: 'agent-public-1', focusedRoots: [], operations: [] } },
+        _meta: { 'rulith/v4': { agentId: 'agent-public-1', focusedGoals: [], operations: [] } },
       })
     }
     if (input.method === 'ping') {
-      return void reply({ _meta: { 'rulith/v3': { agentId: 'agent-public-1', focusedRoots: [], operations: [] } } })
+      return void reply({ _meta: { 'rulith/v4': { agentId: 'agent-public-1', focusedGoals: [], operations: [] } } })
     }
     if (input.method === 'tools/list') {
       assert.equal(String(req.headers['mcp-session-id']), sessionId, 'the session header was not carried after initialize')
       return void reply({
         tools: [
-          { name: 'OpenCase', inputSchema: { type: 'object', properties: { caseType: { type: 'string' }, caseId: { type: 'string' }, case: { type: 'object' } } } },
+          { name: 'QueryBoard', inputSchema: { type: 'object', properties: { include: { type: 'array' } } } },
           { name: 'ApplyBatch', inputSchema: { type: 'object', properties: { operations: { type: 'array' }, case: { type: 'object' } } } },
           { name: 'ApplyAction', inputSchema: { type: 'object', properties: { action: { type: 'string' }, case: { type: 'object' } } } },
-          { name: 'CloseCase', inputSchema: { type: 'object', properties: { disposition: { type: 'string' }, case: { type: 'object' } } } },
-          { name: 'QueryBoard', inputSchema: { type: 'object', properties: { include: { type: 'array' } } } },
           { name: 'ReadArtifact', inputSchema: { type: 'object', required: ['ref'], properties: { ref: { type: 'string' }, offset: { type: 'integer' }, maxBytes: { type: 'integer' } } } },
+          { name: 'EndGoal', inputSchema: { type: 'object', required: ['goal', 'disposition', 'reason'], properties: { goal: { type: 'string' }, disposition: { type: 'string' }, reason: { type: 'string' } } } },
         ],
-        _meta: { 'rulith/v3': { agentId: 'agent-public-1', focusedRoots: [] } },
+        _meta: { 'rulith/v4': { agentId: 'agent-public-1', focusedGoals: [] } },
       })
     }
     assert.equal(input.method, 'tools/call')
     const name = String(input.params?.name ?? '')
     toolNames.push(name)
-    sentMeta.push(input.params?._meta?.['rulith/v3'])
-    if (name === 'CloseCase') closed = true
+    sentMeta.push(input.params?._meta?.['rulith/v4'])
+    const declaring = (input.params?.arguments?.operations ?? []).some((operation) => operation.op === 'declare_goal')
+    if (!declaring) closed = true
     const now = new Date(Date.UTC(2026, 9, 1, 8, 0, toolNames.length)).toISOString()
     const core = {
-      accepted: true, revision: `r${toolNames.length}`, payload: boardView(!closed),
-      ...(closed ? { receipt: { disposition: 'completed' } } : {}),
+      accepted: true, revision: `r${toolNames.length}`, view: boardView(!closed),
+      result: { nodeIds: ['N1'], ...(declaring ? { goals: [{ goal: 'GOAL_LIVE', opened: true }] } : {}) },
       operations: toolNames.map((tool, index) => ({ tool, label: tool, state: 'done', summary: `${tool}: done`,
         at: new Date(Date.UTC(2026, 9, 1, 8, 0, index + 1)).toISOString(), since: now })).reverse(),
     }
     reply({
       content: [{ type: 'text', text: JSON.stringify(core) }],
-      _meta: { 'rulith/v3': {
+      _meta: { 'rulith/v4': {
         agentId: 'agent-public-1',
         boardRevision: `r${toolNames.length}`,
-        focusedRoots: closed ? [] : [{ caseId: 'CASE_LIVE', root: 'ROOT_LIVE' }],
-        ...(closed ? { affectedCases: ['CASE_LIVE'] } : {}),
+        focusedGoals: closed ? [] : ['GOAL_LIVE'],
+        affectedGoals: ['GOAL_LIVE'],
       } },
     })
   })
@@ -371,7 +382,7 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
       RULITH_TOKEN: `rlt_agt_${'a'.repeat(43)}`,
       RULITH_MODEL_URL: `http://127.0.0.1:${port}`,
       RULITH_MODEL: 'test-model', RULITH_MODEL_KEY: '', ANTHROPIC_API_KEY: '',
-      RULITH_MAX_ROUNDS: '4', RULITH_CASE_TYPE: '', RULITH_MODEL_TOOLS: '',
+      RULITH_MAX_ROUNDS: '4', RULITH_CASE_TYPE: '', RULITH_BUSINESS_KEY_JSON: '', RULITH_RESUME_CASE: '', RULITH_MODEL_TOOLS: '',
       RULITH_SESSION_FILE: join(store, 'sessions.json'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -390,14 +401,16 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
   assert.equal(status, 0, `${stdout}\n${stderr}`)
   assert.deepEqual(methods.slice(0, 3), ['initialize', 'notifications/initialized', 'tools/list'],
     `the MCP lifecycle was not performed: ${methods.join(', ')}`)
-  assert.deepEqual(toolNames, ['OpenCase', 'CloseCase'], `the model surface did not reach the Board as tools/call: ${toolNames.join(', ')}`)
+  assert.deepEqual(toolNames, ['ApplyBatch', 'ApplyBatch'], `the model surface did not reach the Board as tools/call: ${toolNames.join(', ')}`)
   // Identity came from the handshake. Nothing of this client's own travelled beside the
   // arguments: the protected query context is the Gateway's to inject and the session is a
   // transport header, so a conforming client attaches no metadata at all.
   assert.match(stdout, /Agent "agent-public-1"/)
   assert.deepEqual(sentMeta, [undefined, undefined],
     `the client attached metadata of its own: ${JSON.stringify(sentMeta)}`)
-  assert.match(stdout, /Closed Case "CASE_LIVE" with disposition "completed"/)
+  assert.match(stdout, /Goal in focus: "GOAL_LIVE" \(running\)/)
+  assert.match(stdout, /Goal "GOAL_LIVE" completed: the Board certified it/)
+  assert.match(stdout, /The Board certified the goal and it is completed\./)
   assert.ok(paths.includes('/mcp'))
   assert.ok(paths.includes('/v1/chat/completions'))
   assert.ok(paths.every((path) => path === '/mcp' || path === '/v1/chat/completions'), `unexpected privileged path: ${paths.join(', ')}`)
@@ -1338,7 +1351,8 @@ test('agent help is available before credentials and points automation at the se
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /RULITH_SERVE_PORT/)
   assert.doesNotMatch(run.stdout, /--ui|RULITH_UI_PORT/)
-  assert.match(run.stdout, /--case <id>/)
+  // rulith/v4 retired the options that steered OpenCase; help no longer offers them.
+  assert.doesNotMatch(run.stdout, /--case|--business-key/)
   assert.doesNotMatch(run.stdout, /--case-boards|--recipe/)
   assert.doesNotMatch(run.stderr, /missing/i)
 })
@@ -1440,8 +1454,10 @@ test('the local Agent does not assemble, fingerprint, or install governance reci
 
 test('the local Agent sends business values while Cloud mints identity and returns one Board View', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /--business-key <json>/)
-  assert.match(source, /options\.businessKey === undefined \? \{\} : \{ businessKey: options\.businessKey \}/)
+  // Business values travel in the goal the model declares (rulith/v4); the host pins none, and
+  // the options that used to pin a Case Type or business key are refused by name.
+  assert.match(source, /const RETIRED_OPTIONS = Object\.freeze\(\{\n  '--case': 'RULITH_RESUME_CASE',\n  '--case-type': 'RULITH_CASE_TYPE',\n  '--business-key': 'RULITH_BUSINESS_KEY_JSON',\n\}\)/)
+  assert.doesNotMatch(source, /businessKey: options\.businessKey|caseType: openedCaseType/)
   // The bounded view is the authority's, carried on every tool result. The client no
   // longer budgets a projection of its own, so there is no second, quieter view to drift.
   assert.match(source, /const boardViewOf = \(result\) =>/)
@@ -1466,11 +1482,18 @@ test('one system prompt explains reasoning without granting Case-specific author
     assert.ok(prompt.includes(shape), `the prompt does not name the ${shape} shape`)
   }
   assert.doesNotMatch(prompt, /declare_hypothesis|record_result/)
-  assert.match(prompt, /Its position says whether writes, new Cases and rules are open/)
+  // Package A, V46–V50, verbatim.
+  assert.ok(prompt.includes('declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down.'), 'V46')
+  assert.ok(prompt.includes('A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.'), 'V47')
+  assert.ok(prompt.includes('Never assert acceptance_met, test_result or certification.'), 'V48')
+  assert.ok(prompt.includes('Its position says whether writes, new goals and rules are open;'), 'V49')
+  assert.ok(prompt.includes('When you declare a capability\'s goal, the Board plants the steps its capability prepared. Work toward unmet goals'
+    + ' by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board'
+    + ' certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason.'), 'V50')
+  assert.doesNotMatch(prompt, /\bCases?\b|OpenCase|CloseCase|rulith\.exploration\.completed/, 'a Case sentence survived in the system prompt')
   assert.match(prompt, /each Action says ready or blocked and why, or what it will wait for/)
   assert.match(prompt, /not a promise: calls are checked again/)
   assert.doesNotMatch(source, /last observed \(not refreshed/)
-  assert.match(prompt, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
   // No JSON templates: the advertised tool schemas are the templates.
   assert.doesNotMatch(prompt, /"kind":|\{"op"|```/)
   assert.doesNotMatch(source, /EXPLORATION_LINE|are Case-local, and disappear/)
@@ -1478,7 +1501,6 @@ test('one system prompt explains reasoning without granting Case-specific author
   // real authority it could never fire. A prompt rule from a guessed field is worse than
   // the plain refusal it was trying to pre-empt.
   assert.doesNotMatch(source, /LOCKED_LINE|Legislation is locked/)
-  assert.match(prompt, /Case Type alone grants no rule-writing permission/)
 })
 
 test('the Action parameter contract is the advertised schema, not a hand-written copy of it', () => {
@@ -1507,9 +1529,10 @@ test('available Actions reach the model through the Board View, not a prompt-sid
 
 test('agent lifecycle events shown to users use the English product vocabulary', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  assert.match(source, /Closed Case "\$\{caseId\}" with disposition/)
+  assert.match(source, /Goal "\$\{goal\}" ended as "\$\{disposition\}"/)
+  assert.match(source, /Goal "\$\{goal\}" completed: the Board certified it/)
   assert.match(source, /emitOn\(ctx, 'case-closed'/)
-  assert.match(source, /Case Context in focus/)
+  assert.match(source, /Goal in focus/)
   assert.match(source, /still running on the Board/)
   assert.match(source, /Board View last observed/)
   assert.doesNotMatch(source, /notes\.push\(`\[放电/)
@@ -1830,7 +1853,7 @@ test('committed public files only teach environment variables the runtime suppor
 
 test('committed public files only teach Agent flags the Agent accepts', () => {
   const accepted = agentFlagsAccepted()
-  assert.ok(accepted.size >= 4, `only extracted ${accepted.size} accepted flags — the parser scan failed`)
+  assert.ok(accepted.size >= 3, `only extracted ${accepted.size} accepted flags — the parser scan failed`)
   assert.ok(!accepted.has('--agent') && accepted.has('--serve'), 'the Agent id must come only from the MCP token')
 
   // Only flags on an Agent invocation count. `git clone --depth` in the same README

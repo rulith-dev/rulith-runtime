@@ -21,7 +21,7 @@ import { projectCaseRoots } from '../local/local-ui.mjs'
 import {
   MCP_SURFACE, MODEL_TOOLS, HOP_FAILURE, TEST_AGENT_ID,
   advertisedTools, businessNameCollisionTools, callTool, declaredToolsOf, defaultGateway,
-  hostFieldTools, requiredHostFieldTools, runAgent, systemTextOf, withMeta,
+  declareGoal, hostFieldTools, requiredHostFieldTools, runAgent, systemTextOf, withMeta,
 } from './support/agent-harness.mjs'
 
 const freePort = async () => {
@@ -122,30 +122,30 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
     assert.ok(system.includes(shape), `the prompt does not name the ${shape} shape`)
   }
   assert.doesNotMatch(system, /declare_hypothesis|record_result/)
-  assert.match(system, /Never assert acceptance_met, test_result, certification or rulith\.exploration\.completed/)
+  assert.match(system, /Never assert acceptance_met, test_result or certification\. Acceptance is the Board's decision\./)
   assert.match(system, /call QueryBoard when you need a current view/,
     'reading the Board is now the model\'s own tool, so the prompt must say so')
-  // D-1004a ⑥：任务已由 OpenCase 备好时推进它而不是重建它；root 认证后才以 completed 结案。
-  assert.match(system, /When OpenCase prepares the Case's task, the view lists its goals and whether each is met\./)
-  assert.match(system, /do not rebuild the task with ApplyBatch/)
+  // A 包 V50：声明能力目标即种下能力备好的步骤；推进它们而不是重建；被认证的目标自动完成。
+  assert.match(system, /When you declare a capability's goal, the Board plants the steps its capability prepared\./)
+  assert.match(system, /do not rebuild prepared steps with ApplyBatch/)
+  assert.match(system, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason\./)
   // D-1004b ①：Source 结果、动作回执与备好的任务已由 Board 记下，不再另写断言。
   assert.match(system, /Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion./)
   assert.doesNotMatch(system, /follow the capability's task structure/)
-  assert.match(system, /When taskStatus shows the root certified, close it with CloseCase as completed\./)
+  assert.doesNotMatch(system, /OpenCase|CloseCase|\bCases?\b/, 'the v3 Case vocabulary survived in the system prompt')
 })
 
 test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.' })
   const tools = declaredToolsOf(run.modelRequests[0])
-  assert.equal(tools.length, 6)
+  assert.equal(tools.length, 5)
   // Top level only, because that is the scope host metadata lives on. The envelope is the
   // boundary; a property one level down inside a business object is business data, and
   // RT-TOOLS-3c asserts that such a property survives.
   const owned = ['case', 'expectedRevision', 'caseRevision', 'expectedBoardSharedEpoch', 'viewToken', 'requestId',
     'kind', 'queryContext', 'audienceProfile', 'requestedRoots', 'interaction', 'admission']
   for (const tool of tools) {
-    // A schema states its shape either as one property map or as composition branches — the
-    // contract's `OpenCase` is a `oneOf` of the create form and the focus form — so the
+    // A schema states its shape either as one property map or as composition branches, so the
     // assertion is that the model can reach no host-owned name either way, not that some
     // particular carrier is present.
     const branches = ['oneOf', 'anyOf', 'allOf'].flatMap((key) => (Array.isArray(tool.schema?.[key]) ? tool.schema[key] : []))
@@ -171,10 +171,13 @@ test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', 
   // actually carries them.
   assert.doesNotMatch(JSON.stringify(advertisedTools()), /"viewToken"|"queryContext"|"audienceProfile"|"expectedRevision"|"expectedBoardSharedEpoch"/,
     'the conforming fixture advertises host metadata, so ordinary tests are not running against a valid public schema')
-  // And the model surface keeps the fields that are genuinely its own.
-  const openCase = tools.find((tool) => tool.name === 'OpenCase').schema
-  assert.ok(names(openCase).includes('caseId'), 'OpenCase({caseId}) is the public focus form and must survive the projection')
-  assert.ok(names(openCase).includes('businessKey'), 'businessKey is the model own object of named business-key values')
+  // And the model surface keeps the fields that are genuinely its own: a goal's outcome and its
+  // parent (rulith/v4, A-4), and the goal EndGoal names.
+  const batch = tools.find((tool) => tool.name === 'ApplyBatch').schema
+  assert.ok(names(batch).includes('desired') && names(batch).includes('parent'),
+    'declare_goal must keep desired and parent through the projection')
+  const endGoal = tools.find((tool) => tool.name === 'EndGoal').schema
+  assert.deepEqual(Object.keys(endGoal.properties ?? {}).sort(), ['disposition', 'goal', 'reason'])
 })
 
 test('RT-TOOLS-3b host metadata offered as a tool argument is kept from the model and reported', async () => {
@@ -201,7 +204,7 @@ test('RT-TOOLS-3c a nested business property that shares a name with envelope me
     chatLines: ['Record a fact that carries a business session id.'],
     toolSchemas: businessNameCollisionTools(),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) {
         return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: { sessionId: 'customer-9', requestId: 'ticket-4', amount: 3 } }] })
       }
@@ -214,7 +217,7 @@ test('RT-TOOLS-3c a nested business property that shares a name with envelope me
   assert.deepEqual(Object.keys(args.properties).sort(), ['amount', 'requestId', 'sessionId'],
     'a nested business argument was deleted because it shares a name with envelope metadata')
   assert.deepEqual(args.required, ['sessionId'], 'the advertised business requirement was rewritten')
-  const sent = run.toolCalls.find((call) => call.name === 'ApplyBatch')
+  const sent = run.toolCalls.find((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
   assert.deepEqual(sent.args.operations[0].args, { sessionId: 'customer-9', requestId: 'ticket-4', amount: 3 },
     'the nested business arguments did not reach the authority')
 })
@@ -228,7 +231,7 @@ test('RT-TOOLS-3d a schema that makes host metadata required is refused, not qui
   assert.equal(run.modelRequests.length, 0, 'the model was asked to work against a contract no call could satisfy')
 })
 
-test('RT-TOOLS-4 a tool that is not one of the six is refused locally and never forwarded', async () => {
+test('RT-TOOLS-4 a tool that is not one of the five is refused locally and never forwarded', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['remove the pack'],
@@ -268,14 +271,15 @@ for (const [field, value, code] of [
       env: { RULITH_MAX_ROUNDS: '4' },
       chatLines: ['Record a fact.'],
       model: (round) => {
-        if (round === 1) return callTool('OpenCase', {})
+        if (round === 1) return callTool('ApplyBatch', declareGoal())
         if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }], [field]: value })
         return 'I will reissue it without that field.'
       },
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-    assert.equal(run.verbs.includes('ApplyBatch'), false,
+    assert.deepEqual(run.verbs, ['ApplyBatch'],
       `${field} reached the authority and may have executed under a guessed contract: ${run.verbs.join(', ')}`)
+    assert.equal(run.toolCalls.some((call) => Object.hasOwn(call.args, field)), false)
     assert.match(run.stdout, /Refused locally/)
     assert.match(JSON.stringify(run.modelRequests[2]), new RegExp(code))
   })
@@ -287,13 +291,13 @@ test('RT-WIRE-2 the same step without the retired field is carried (calibration)
     env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Record a fact.'],
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('ApplyBatch'), true)
+  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'])
 })
 
 // ── Host metadata: one channel, filled from what the authority returned ──────
@@ -303,7 +307,7 @@ test('RT-META-1 the client sends no protected metadata of its own, in the envelo
     argv: [],
     chatLines: ['Open a Case and record a fact.'],
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
@@ -333,7 +337,7 @@ test('RT-META-1b the client declares the held-call capability it actually implem
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const [handshake] = run.initializes
   assert.equal(handshake.protocolVersion, '2025-11-25', 'the client offered a protocol version it does not implement')
-  assert.deepEqual(handshake.capabilities?.experimental?.['rulith/v3'], { heldCalls: 1 },
+  assert.deepEqual(handshake.capabilities?.experimental?.['rulith/v4'], { heldCalls: 1 },
     'the declaration says this host sends a progress token and waits past the hold bound;'
     + ' a rulith/v2 declaration would be refused before any session opened')
   assert.equal(handshake.presentedSession, undefined, 'a fresh process presented a session identity it does not hold')
@@ -343,61 +347,60 @@ test('RT-META-2 the identity, revision and focus the host tracks come only from 
   const run = await runAgent({
     argv: [], captureLocalEvents: true,
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
-  assert.deepEqual(focus.roots, [{ caseId: 'CASE_1', root: 'ROOT_1', status: 'running', contact: 'observed' }],
-    'focus pairs must be the ones Core returned, never derived locally')
+  assert.deepEqual(focus.goals, [{ goal: 'GOAL_1', status: 'running', contact: 'observed' }],
+    'focused goals must be the ones the authority returned (focusedGoals), never derived locally')
   const observed = run.localEvents.filter((event) => event.type === 'case-state').at(-1)
-  assert.equal(observed.caseId, 'CASE_1')
-  assert.equal(observed.root, 'ROOT_1')
-  assert.equal(observed.caseStatus, 'running')
-  // Core mints the identity. A host that minted one would have named the Case itself.
-  const opened = run.toolCalls.find((call) => call.name === 'OpenCase')
-  assert.equal(opened.args.caseId, undefined, 'the host minted a Case id that belongs to Core')
+  assert.equal(observed.goal, 'GOAL_1')
+  assert.equal(observed.status, 'running')
+  // Core mints the identity. A host that minted one would have named the goal itself.
+  const declared = run.toolCalls.find((call) => call.name === 'ApplyBatch')
+  assert.deepEqual(declared.args, declareGoal(), 'the host added to the model\'s declaration')
 })
 
-test('RT-META-3 a session whose focus holds several roots is reported as several roots', async () => {
+test('RT-META-3 a session whose focus holds several goals is reported as several goals', async () => {
   const run = await runAgent({
     argv: [], captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '5' },
-    chatLines: ['Open two governed Cases.'],
-    model: (round) => (round <= 2 ? callTool('OpenCase', {}) : 'Both Cases are in focus.'),
+    chatLines: ['Start two pieces of governed work.'],
+    model: (round) => (round <= 2 ? callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b')) : 'Both goals are in focus.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.filter((verb) => verb === 'OpenCase').length, 2,
-    'a second Case in one session was refused by the host, which no longer owns that rule')
+  assert.equal(run.verbs.filter((verb) => verb === 'ApplyBatch').length, 2,
+    'a second goal in one session was refused by the host, which no longer owns that rule')
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
-  assert.deepEqual(focus.roots.map((row) => row.caseId), ['CASE_1', 'CASE_2'])
+  assert.deepEqual(focus.goals.map((row) => row.goal), ['GOAL_1', 'GOAL_2'])
   const rows = projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))
-  assert.deepEqual(rows.map((row) => [row.caseId, row.root, row.label]),
-    [['CASE_1', 'ROOT_1', 'Running'], ['CASE_2', 'ROOT_2', 'Running']])
+  assert.deepEqual(rows.map((row) => [row.goal, row.label]),
+    [['GOAL_1', 'Running'], ['GOAL_2', 'Running']])
 })
 
-test('RT-META-4 an independent lifecycle per root: closing one leaves the other running', async () => {
+test('RT-META-4 an independent lifecycle per goal: ending one leaves the other running', async () => {
   const run = await runAgent({
     argv: [], captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '6' },
     gateway: defaultGateway({ settleAfterBatch: true }),
-    chatLines: ['Open two Cases and close the first.'],
+    chatLines: ['Start two pieces of work and end the first.'],
     model: (round) => {
-      if (round <= 2) return callTool('OpenCase', {})
-      if (round === 3) return callTool('CloseCase', { root: 'ROOT_1', disposition: 'abandoned' })
-      return 'The second Case is still running.'
+      if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
+      if (round === 3) return callTool('EndGoal', { goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' })
+      return 'The second goal is still running.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const rows = projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))
-  const byId = Object.fromEntries(rows.map((row) => [row.caseId, row]))
-  assert.equal(byId.CASE_1.label, 'Closed')
-  assert.equal(byId.CASE_1.focused, false)
-  assert.equal(byId.CASE_2.label, 'Running')
-  assert.equal(byId.CASE_2.focused, true, 'closing one root removed another root from focus')
-  assert.ok(run.localEvents.some((event) => event.type === 'case-closed' && event.caseId === 'CASE_1'))
+  const byId = Object.fromEntries(rows.map((row) => [row.goal, row]))
+  assert.equal(byId.GOAL_1.label, 'Ended')
+  assert.equal(byId.GOAL_1.focused, false)
+  assert.equal(byId.GOAL_2.label, 'Running')
+  assert.equal(byId.GOAL_2.focused, true, 'ending one goal removed another goal from focus')
+  assert.ok(run.localEvents.some((event) => event.type === 'case-closed' && event.goal === 'GOAL_1' && event.disposition === 'abandoned'))
 })
 
-test('RT-META-5 a root the authority reports as unavailable loses the status it used to have', async () => {
+test('RT-META-5 a goal the authority reports as unavailable loses the status it used to have', async () => {
   // Neutral by construction: the Board View says a root is unavailable without saying
   // whether it never existed, was deleted, or is not visible. What must not happen is the
   // display keeping "running" because the last answer that mentioned the root said so —
@@ -406,26 +409,26 @@ test('RT-META-5 a root the authority reports as unavailable loses the status it 
   const run = await runAgent({
     argv: [], captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '5' },
-    chatLines: ['Open a Case, then read the Board.'],
+    chatLines: ['Declare a goal, then read the Board.'],
     tool: (name, args, board, session) => {
       calls += 1
       if (calls < 2) return undefined
       return withMeta(
-        committed({ roots: [], unavailableRoots: ['ROOT_1'], cases: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] }),
-        { agentId: TEST_AGENT_ID, focusedRoots: [{ caseId: 'CASE_1', root: 'ROOT_1' }] },
+        committed({ goals: { directory: [], total: 0, unavailableGoals: ['GOAL_1'] }, gaps: [], nodes: [], actions: [] }),
+        { agentId: TEST_AGENT_ID, focusedGoals: ['GOAL_1'] },
       )
     },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
-      if (round === 2) return callTool('QueryBoard', { include: ['cases'] })
-      return 'The root is no longer available to me.'
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 2) return callTool('QueryBoard', { include: ['goals'] })
+      return 'The goal is no longer available to me.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const observations = run.localEvents.filter((event) => event.type === 'case-state' && event.caseId === 'CASE_1')
-  assert.equal(observations.at(0).caseStatus, 'running')
-  assert.equal(observations.at(-1).caseStatus, 'unavailable',
-    `an unavailable root kept a status the authority stopped reporting: ${JSON.stringify(observations)}`)
+  const observations = run.localEvents.filter((event) => event.type === 'case-state' && event.goal === 'GOAL_1')
+  assert.equal(observations.at(0).status, 'running')
+  assert.equal(observations.at(-1).status, 'unavailable',
+    `an unavailable goal kept a status the authority stopped reporting: ${JSON.stringify(observations)}`)
   assert.equal(projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))[0].label, 'Unavailable')
 })
 
@@ -436,30 +439,30 @@ test('RT-META-6 a bounded view that dropped rows says so; a complete one does no
     chatLines: ['Read the Board twice.'],
     tool: (name, args, board, session, meta) => {
       if (name !== 'QueryBoard') return undefined
-      // The carriers Core published: per-limb `cases.truncated` beside `cases.total`, and
+      // The carriers Core published: per-limb `goals.truncated` beside `goals.total`, and
       // the top-level `truncated` for the node limbs. An earlier client read an aggregate
       // `loss` object that a Core draft proposed and the published schema does not contain,
       // so against the real authority it saw no truncation at all.
       const core = board.tool(name, args, session, meta)
-      return withMeta(committed({ ...core.payload, cases: { ...core.payload.cases, truncated: true }, total: 9, truncated: true }), board.meta(session))
+      return withMeta(committed({ ...core.payload, goals: { ...core.payload.goals, truncated: true }, total: 9, truncated: true }), board.meta(session))
     },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
-      if (round === 2) return callTool('QueryBoard', { include: ['cases'] })
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 2) return callTool('QueryBoard', { include: ['goals'] })
       return 'Some rows were omitted.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.match(run.stdout, /QueryBoard returned a bounded view: cases \(1 total\), nodes \(9 total\) was truncated by the authority/)
+  assert.match(run.stdout, /QueryBoard returned a bounded view: goals \(1 total\), nodes \(9 total\) was truncated by the authority/)
   assert.match(run.stdout, /anything it does not mention is unreported, not absent/)
   const losses = run.localEvents.filter((event) => event.type === 'loss')
   assert.equal(losses.length, 1, 'silent truncation reads as "covered everything" when it did not')
-  assert.deepEqual([losses[0].cmd, losses[0].limbs], ['QueryBoard', ['cases', 'nodes']])
-  // Calibration: the OpenCase answer carried no loss record and produced no note.
-  assert.equal(run.localEvents.filter((event) => event.type === 'loss' && event.cmd === 'OpenCase').length, 0)
+  assert.deepEqual([losses[0].cmd, losses[0].limbs], ['QueryBoard', ['goals', 'nodes']])
+  // Calibration: the declaring ApplyBatch answer carried no loss record and produced no note.
+  assert.equal(run.localEvents.filter((event) => event.type === 'loss' && event.cmd === 'ApplyBatch').length, 0)
 })
 
-test('RT-META-6b a root a truncated answer did not reach keeps a labelled observation, not a fresh one', async () => {
+test('RT-META-6b a goal a truncated answer did not reach keeps a labelled observation, not a fresh one', async () => {
   // The subtle half of truncation. The bounded answer simply did not reach this root, so its
   // previous status is all anyone has — but passing that status back through as a new
   // observation republishes stale state as if the authority had just confirmed it. It is
@@ -468,53 +471,53 @@ test('RT-META-6b a root a truncated answer did not reach keeps a labelled observ
   let calls = 0
   const run = await runAgent({
     argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '5' },
-    chatLines: ['Open a Case, then read a bounded view.'],
+    chatLines: ['Declare a goal, then read a bounded view.'],
     tool: (name, args, board, session, meta) => {
       calls += 1
       if (calls < 2) return undefined
       return withMeta(
-        // Truncated, and mentioning no roots at all: CASE_1 is unreported, not absent.
-        committed({ roots: [], cases: { directory: [], total: 4, truncated: true }, gaps: [], nodes: [], total: 0, truncated: false }),
-        { agentId: TEST_AGENT_ID, focusedRoots: [{ caseId: 'CASE_1', root: 'ROOT_1' }] },
+        // Truncated, and mentioning no goals at all: GOAL_1 is unreported, not absent.
+        committed({ goals: { directory: [], total: 4, truncated: true }, gaps: [], nodes: [], total: 0, truncated: false }),
+        { agentId: TEST_AGENT_ID, focusedGoals: ['GOAL_1'] },
       )
     },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
-      if (round === 2) return callTool('QueryBoard', { include: ['cases'] })
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 2) return callTool('QueryBoard', { include: ['goals'] })
       return 'The view was bounded.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const observations = run.localEvents.filter((event) => event.type === 'case-state' && event.caseId === 'CASE_1')
-  assert.equal(observations.at(0).caseStatus, 'running')
+  const observations = run.localEvents.filter((event) => event.type === 'case-state' && event.goal === 'GOAL_1')
+  assert.equal(observations.at(0).status, 'running')
   assert.equal(observations.at(0).contact, undefined, 'a refreshed observation carries no contact qualifier')
   const last = observations.at(-1)
-  assert.equal(last.caseStatus, 'running', 'a truncated answer is not evidence the root changed')
+  assert.equal(last.status, 'running', 'a truncated answer is not evidence the goal changed')
   assert.equal(last.contact, 'not-refreshed',
     `a status the bounded answer never mentioned was republished as freshly observed: ${JSON.stringify(observations)}`)
   // Truncation is not unavailability: one says "I did not reach it", the other says
   // "I looked and it is not there for you".
-  assert.notEqual(last.caseStatus, 'unavailable')
+  assert.notEqual(last.status, 'unavailable')
   const row = projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))[0]
   assert.equal(row.label, 'Running')
   assert.equal(row.observation, 'Not refreshed by the last bounded answer')
-  // And a per-view gap count is not attached to a root this answer did not describe.
+  // And a per-view gap count is not attached to a goal this answer did not describe.
   assert.equal(Object.hasOwn(last, 'gaps'), false)
 })
 
-test('RT-META-7 an empty affectedCases is reported, because it is a statement', async () => {
+test('RT-META-7 an empty affectedGoals is reported, because it is a statement', async () => {
   const run = await runAgent({
     argv: [], captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Record a blind addition, then act.'],
     tool: (name, args, board, session, meta) => {
       const core = board.tool(name, args, session, meta)
-      if (name === 'ApplyBatch') return withMeta(core, { ...board.meta(session), affectedCases: [] })
-      if (name === 'ApplyAction') return withMeta(core, { ...board.meta(session), affectedCases: ['CASE_1'] })
+      if (name === 'ApplyBatch') return withMeta(core, { ...board.meta(session), affectedGoals: [] })
+      if (name === 'ApplyAction') return withMeta(core, { ...board.meta(session), affectedGoals: ['GOAL_1'] })
       return undefined
     },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       if (round === 3) return callTool('ApplyAction', { action: 'acme.ship' })
       return 'Done.'
@@ -522,9 +525,9 @@ test('RT-META-7 an empty affectedCases is reported, because it is a statement', 
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const affected = run.localEvents.filter((event) => event.type === 'affected')
-  assert.deepEqual(affected.map((event) => [event.cmd, event.affectedCases]),
-    [['ApplyBatch', []], ['ApplyAction', ['CASE_1']]],
-    '"no live root advanced" and "the authority did not say" must not read the same')
+  assert.deepEqual(affected.map((event) => [event.cmd, event.affectedGoals]),
+    [['ApplyBatch', []], ['ApplyBatch', []], ['ApplyAction', ['GOAL_1']]],
+    '"no top-level goal advanced" and "the authority did not say" must not read the same')
 })
 
 // ── ReadArtifact: bounded data, and nothing else ─────────────────────────────
@@ -536,14 +539,14 @@ test('RT-ART-1 an artifact is read in bounded fragments and touches no Board sta
     chatLines: ['Read the result the Action produced.'],
     gateway: defaultGateway({ artifacts: { 'art-1': { mediaType: 'text/plain', text } } }),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ReadArtifact', { ref: 'art-1', maxBytes: 8 })
       if (round === 3) return callTool('ReadArtifact', { ref: 'art-1', offset: 8, maxBytes: 64 })
       return 'I have the whole result.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase', 'ReadArtifact', 'ReadArtifact'],
+  assert.deepEqual(run.verbs, ['ApplyBatch', 'ReadArtifact', 'ReadArtifact'],
     `the host added a Board call around a data read: ${run.verbs.join(', ')}`)
   const reads = run.toolCalls.filter((call) => call.name === 'ReadArtifact')
   assert.deepEqual(reads.map((call) => call.args), [
@@ -569,7 +572,7 @@ test('RT-ART-1 an artifact is read in bounded fragments and touches no Board sta
   assert.deepEqual(artifactEvents.map((event) => [event.ref, event.complete, event.truncated]),
     [['art-1', false, true], ['art-1', true, false]])
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
-  assert.deepEqual(focus.roots.map((row) => row.caseId), ['CASE_1'], 'the artifact read changed the focused roots')
+  assert.deepEqual(focus.goals.map((row) => row.goal), ['GOAL_1'], 'the artifact read changed the focused goals')
   assert.match(run.stdout, /Data: ReadArtifact returned a fragment of 28 byte\(s\), truncated at the read limit/)
 })
 
@@ -599,25 +602,25 @@ test('RT-REFUSE-1 an authoritative refusal reaches the model with its Board View
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '4' },
     captureLocalEvents: true,
-    tool: (name) => {
-      if (name !== 'ApplyBatch') return undefined
+    tool: (name, args) => {
+      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'assert_fact') return undefined
       served += 1
       if (served > 1) return undefined
       return withMeta(
         { accepted: false, errorCode: 'precondition_not_met',
           teaching: 'The premises this step depends on are not in force. Read the current view and decide again.',
-          payload: { roots: [{ caseId: 'CASE_1', root: 'ROOT_1', status: 'running' }], gaps: ['acceptance'], nodes: [], actions: [] } },
-        { agentId: TEST_AGENT_ID, boardRevision: 'r9', focusedRoots: [{ caseId: 'CASE_1', root: 'ROOT_1' }] },
+          payload: { goals: { directory: [{ goal: 'GOAL_1', label: 'GOAL_1', status: 'running' }], total: 1 }, gaps: ['acceptance'], nodes: [], actions: [] } },
+        { agentId: TEST_AGENT_ID, boardRevision: 'r9', focusedGoals: ['GOAL_1'] },
       )
     },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'I will re-read the Board and decide again.'
     },
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.filter((verb) => verb === 'ApplyBatch').length, 1,
+  assert.equal(run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact').length, 1,
     `the host resent the refused step on the model's behalf: ${run.verbs.join(', ')}`)
   const third = JSON.stringify(run.modelRequests[2])
   assert.match(third, /precondition_not_met/, 'the refusal must reach the model as the tool result of its own step')
@@ -631,21 +634,21 @@ test('RT-REFUSE-2 the model\'s next choice after a refusal is a new logical requ
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '5' },
-    tool: (name) => {
-      if (name !== 'ApplyBatch') return undefined
+    tool: (name, args) => {
+      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'assert_fact') return undefined
       served += 1
       if (served > 1) return undefined
-      return { accepted: false, errorCode: 'precondition_not_met', teaching: 'not in force', payload: { roots: [], gaps: [], nodes: [], actions: [] } }
+      return { accepted: false, errorCode: 'precondition_not_met', teaching: 'not in force', payload: { goals: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] } }
     },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'a', args: {} }] })
       if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F2', predicate: 'b', args: {} }] })
       return 'Recorded.'
     },
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  const batches = run.toolCalls.filter((call) => call.name === 'ApplyBatch')
+  const batches = run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
   assert.equal(batches.length, 2)
   assert.deepEqual(batches.map((call) => call.args.operations[0].id), ['F1', 'F2'],
     'the refused step was resent instead of the model deciding again')
@@ -657,13 +660,13 @@ test('RT-WRITE-1 the host inserts no read of its own around a write', async () =
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '5' },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase', 'ApplyBatch'],
+  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'],
     `the host inserted a read of its own around the write: ${run.verbs.join(', ')}`)
 })
 
@@ -676,7 +679,7 @@ test('RT-WRITE-2 a first write is carried as it stands and judged by the authori
     env: { RULITH_MAX_ROUNDS: '4' },
     model: (round) => (round === 1
       ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
-      : 'The Board refused it, so I will open a Case first.'),
+      : 'The Board refused it, so I will declare a goal first.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   const batch = run.toolCalls.find((call) => call.name === 'ApplyBatch')
@@ -695,7 +698,7 @@ test('RT-SESSION-1 a restarted Runtime takes over as a new client rather than re
   try {
     const first = await runAgent({
       argv: ['do the work'], sessionFile: store, listenPort, env: { RULITH_MAX_ROUNDS: '3' },
-      model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Opened.'),
+      model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
     })
     assert.notEqual(first.code, 'timeout', `${first.stdout}\n${first.stderr}`)
     // A run that resolved everything writes nothing at all: the store exists to remember
@@ -712,7 +715,7 @@ test('RT-SESSION-1 a restarted Runtime takes over as a new client rather than re
       // identity it no longer has.
       assert.deepEqual(Object.keys(endpoint).filter((key) => key !== 'unresolved'), [],
         `the durable store kept transport or view state: ${JSON.stringify(endpoint)}`)
-      assert.doesNotMatch(text, /viewToken|boardRevision|focusedRoots/)
+      assert.doesNotMatch(text, /viewToken|boardRevision|focusedRoots|focusedGoals/)
     }
 
     const second = await runAgent({
@@ -741,11 +744,11 @@ test('RT-SESSION-3 every local conversation speaks over the one authenticated co
       { text: 'Open another governed Case.', sessionKey: 'client-b' },
     ],
     waitForServeCompletion: true,
-    model: (round) => (round === 1 || round === 3 ? callTool('OpenCase', {}) : 'Opened.'),
+    model: (round) => (round === 1 || round === 3 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
     timeoutMs: 12_000,
   })
   assert.deepEqual(run.serveStatuses, [202, 202], `${run.stdout}\n${run.stderr}`)
-  const opens = run.toolCalls.filter((call) => call.name === 'OpenCase')
+  const opens = run.toolCalls.filter((call) => call.name === 'ApplyBatch')
   assert.equal(opens.length, 2)
   assert.equal(run.initializes.length, 1,
     `the Agent authenticated ${run.initializes.length} times; a second connection would have taken the first one over`)
@@ -774,14 +777,14 @@ test('RT-SESSION-3b conversations are served one segment at a time, never woven 
     model: (_round, body) => {
       const transcript = JSON.stringify(body)
       const steps = (transcript.match(/tool_call_id|tool_use_id/g) ?? []).length
-      if (steps === 0) return callTool('OpenCase', {})
+      if (steps === 0) return callTool('ApplyBatch', declareGoal())
       if (steps === 1) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
     timeoutMs: 15_000,
   })
   assert.deepEqual(run.serveStatuses, [202, 202], `${run.stdout}\n${run.stderr}`)
-  const batches = run.toolCalls.filter((call) => call.name === 'ApplyBatch')
+  const batches = run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
   assert.equal(batches.length, 2, `both conversations must have been served: ${run.verbs.join(', ')}`)
   // The segment boundary, from the host's own events: no second start before the first end.
   const flow = run.localEvents.filter((event) => event.type === 'task-start' || event.type === 'task-done')
@@ -798,60 +801,61 @@ test('RT-SESSION-3b conversations are served one segment at a time, never woven 
 test('RT-SESSION-4 results delivered as an SSE stream are read like any other', async () => {
   const run = await runAgent({
     argv: [], sseResults: true, chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('OpenCase'), true,
+  assert.equal(run.verbs.includes('ApplyBatch'), true,
     'a Streamable HTTP server that answers with text/event-stream must not be unreachable')
-  assert.match(run.stdout, /Case Context in focus/)
+  assert.match(run.stdout, /Goal in focus/)
 })
 
 // ── The scenario the surface exists for ──────────────────────────────────────
 
-test('open, batch, act, and close: the Board refuses an uncertified completion and accepts a certified one', async () => {
+test('declare, act, read and write: the goal completes in the commit the Board certifies, with no closing call', async () => {
   const run = await runAgent({
     // The autopilot policy, because this is the scenario in which a dispatched Action
     // settles on the Board's own schedule rather than the host's.
-    argv: ['investigate this and finish when the Board permits it'],
+    argv: ['investigate this and finish when the Board certifies it'],
     env: { RULITH_MAX_ROUNDS: '8' },
-    gateway: defaultGateway({ settleAfterBatch: false }),
+    gateway: defaultGateway({ certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
-      if (round === 3) return callTool('CloseCase', { disposition: 'completed' })
-      if (round === 4) return callTool('ApplyAction', { action: 'compute_total', target: 'L1' })
-      if (round === 5) return callTool('QueryBoard', { include: ['cases'] })
-      if (round === 6) return callTool('CloseCase', { disposition: 'completed' })
-      return 'The Case is closed.'
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 2) return callTool('ApplyAction', { action: 'compute_total', target: 'GOAL_1' })
+      if (round === 3) return callTool('QueryBoard', { include: ['goals'] })
+      if (round === 4) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
+      return 'unreachable: the Board completed the goal'
     },
   })
 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase', 'ApplyBatch', 'CloseCase', 'ApplyAction', 'QueryBoard', 'CloseCase'])
-  assert.match(JSON.stringify(run.modelRequests[3]), /case_not_certified/,
-    'an uncertified completion was not refused with the Board teaching')
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyAction', 'QueryBoard', 'ApplyBatch'])
   // The dispatched Action was reported as pending with its invocation, not as done.
-  assert.match(JSON.stringify(run.modelRequests[4]), /inv_1/)
-  // Waiting is the model's own read, not a host poll loop.
-  assert.match(run.stdout, /Closed Case .* with disposition "completed"/)
+  assert.match(JSON.stringify(run.modelRequests[2]), /inv_1/)
+  // Before the certifying commit, the directory said running; nothing asked to finish it.
+  assert.match(JSON.stringify(run.modelRequests[3]), /\\"status\\":\\"running\\"/)
+  assert.equal(run.verbs.includes('EndGoal'), false)
+  assert.equal(run.modelRequests.length, 4, 'the run went on after the Board completed the goal')
+  assert.match(run.stdout, /Goal "GOAL_1" completed: the Board certified it/)
+  assert.match(run.stdout, /The Board certified the goal and it is completed\./)
 })
 
-test('the Board decides completion: an uncertified Case is not closed by the host', async () => {
+test('the Board decides completion: an uncertified goal stays open, and the host ends nothing', async () => {
   const run = await runAgent({
     argv: [],
-    chatLines: ['Use Rulith, but finish only if the Board permits it.'],
-    gateway: defaultGateway({ settleAfterBatch: false }),
+    chatLines: ['Use Rulith, but finish only if the Board certifies it.'],
+    gateway: defaultGateway({ settleAfterBatch: false, certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
-      if (round === 2) return callTool('CloseCase', { disposition: 'completed' })
-      return 'The Board refused completion, so the Case remains open.'
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      return 'The Board has not certified it, so the goal remains open.'
     },
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.match(JSON.stringify(run.modelRequests[2]), /case_not_certified/)
-  assert.match(run.stdout, /Board rejected CloseCase/)
-  assert.doesNotMatch(run.stdout, /Closed Case/)
+  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'])
+  assert.doesNotMatch(run.stdout, /completed: the Board certified it|ended as/)
+  assert.match(run.stdout, /Response delivered; Rulith goal\(s\) "GOAL_1" remain in focus\./)
 })
 
 test('a greeting is answered normally with no Case and no Board call', async () => {
@@ -866,27 +870,26 @@ test('a greeting is answered normally with no Case and no Board call', async () 
   assert.equal(run.modelRequests.length, 1, 'a plain conversational reply must return control to the user')
   assert.deepEqual(run.verbs, [], `a greeting unexpectedly touched the Board: ${run.verbs.join(', ')}`)
   assert.match(run.stdout, /What would you like to work on\?/)
-  assert.doesNotMatch(run.stdout, /Case Context in focus|pending_case_id/)
+  assert.doesNotMatch(run.stdout, /Goal in focus|pending_goal|Case Context in focus|pending_case_id/)
 })
 
-test('a focused Case persists across messages and is never advanced implicitly', async () => {
+test('a focused goal persists across messages and is never advanced implicitly', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['Start a governed investigation.', 'Before the next step, explain what you know.'],
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
-      if (round === 2) return 'The Case is open. I will wait for your next instruction.'
-      return 'The same Case is still in focus; I took no further step.'
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 2) return 'The goal is declared. I will wait for your next instruction.'
+      return 'The same goal is still in focus; I took no further step.'
     },
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.filter((verb) => verb === 'OpenCase').length, 1,
-    `a follow-up message opened another Case: ${run.verbs.join(', ')}`)
-  assert.deepEqual(run.verbs, ['OpenCase'], 'the host advanced or re-read the Board during an ordinary conversational turn')
+  assert.deepEqual(run.verbs, ['ApplyBatch'], 'the host advanced or re-read the Board during an ordinary conversational turn')
   const followUp = run.modelRequests[2].messages.at(-1).content
-  assert.match(followUp, /Cases in focus: CASE_1 \(root ROOT_1, running\)/,
+  assert.match(followUp, /Goals in focus: GOAL_1 \(running\)/,
     'the next conversational turn must receive the focus the authority reported')
+  assert.doesNotMatch(followUp, /\bCases?\b|root /, 'the v3 Case vocabulary reached the model')
   const notice = 'The Board may have changed since your last tool result; QueryBoard reads its current position.'
   assert.equal(followUp.split(notice).length - 1, 1,
     'a follow-up user entry must carry exactly one current-position notice')
@@ -900,7 +903,7 @@ test('only a transcript that holds a tool result is told the Board may have chan
     chatLines: ['Hello.', 'Open a Case and look at it.', 'Thanks, that is all.'],
     model: (round) => {
       if (round === 1) return 'Hello! What would you like to work on?'
-      if (round === 2) return callTool('OpenCase', {})
+      if (round === 2) return callTool('ApplyBatch', declareGoal())
       if (round === 3) return callTool('QueryBoard', {})
       if (round === 4) return 'The Case is open and I have looked at it.'
       return 'You are welcome.'
@@ -928,7 +931,7 @@ test('an unscoped write is carried and refused by the authority, not guessed at 
     chatLines: ['Record a fact.'],
     model: (round) => (round === 1
       ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
-      : 'I will open a Case first.'),
+      : 'I will declare a goal first.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -959,7 +962,7 @@ test('RT-SERIAL-1 several calls in one turn are executed one after another, in o
       ? {
           text: '',
           toolCalls: [
-            { name: 'OpenCase', input: {} },
+            { name: 'ApplyBatch', input: declareGoal() },
             { name: 'ApplyBatch', input: { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] } },
           ],
         }
@@ -967,17 +970,17 @@ test('RT-SERIAL-1 several calls in one turn are executed one after another, in o
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase', 'ApplyBatch'],
+  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'],
     `both calls of the turn must be carried, in order: ${run.verbs.join(', ')}`)
   // The proof that they were serial rather than concurrent: the write arrived at a Board
-  // that already held the root the first call created.
-  assert.deepEqual(arrivals, [{ name: 'OpenCase', focus: 0 }, { name: 'ApplyBatch', focus: 1 }],
+  // that already held the goal the first call declared.
+  assert.deepEqual(arrivals, [{ name: 'ApplyBatch', focus: 0 }, { name: 'ApplyBatch', focus: 1 }],
     'the second call did not observe the first call\'s effect, so they were not serialised')
   const results = JSON.stringify(run.modelRequests[1])
   assert.doesNotMatch(results, /one_step_per_turn|call_queue_suspended/,
     'a call was declined by the host although nothing was unresolved')
   // Every tool_use must be answered, or the next Anthropic request is malformed.
-  assert.match(results, /OpenCase/)
+  assert.equal(run.modelRequests[1].messages.filter((message) => message.role === 'tool').length, 2)
 })
 
 test('RT-SERIAL-2 a call the authority is still holding suspends the rest of the turn', async () => {
@@ -987,11 +990,11 @@ test('RT-SERIAL-2 a call the authority is still holding suspends the rest of the
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '3' },
     chatLines: ['Do all three steps.'], captureLocalEvents: true,
-    hold: (name) => (name === 'OpenCase' ? { answer: 'needs_person' } : undefined),
+    hold: (name, args) => (name === 'ApplyBatch' && args.operations?.[0]?.op === 'declare_goal' ? { answer: 'needs_person' } : undefined),
     model: (round) => (round === 1 ? {
       text: '',
       toolCalls: [
-        { name: 'OpenCase', input: {} },
+        { name: 'ApplyBatch', input: declareGoal() },
         { name: 'ApplyBatch', input: { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] } },
         { name: 'QueryBoard', input: {} },
       ],
@@ -999,59 +1002,48 @@ test('RT-SERIAL-2 a call the authority is still holding suspends the rest of the
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase'],
+  assert.deepEqual(run.verbs, ['ApplyBatch'],
     `calls chosen before the model saw the first answer were sent: ${run.verbs.join(', ')}`)
   assert.equal(run.modelRequests.length, 2, 'the model was not given the held answer and the unsent calls')
   const suspension = run.localEvents.find((event) => event.type === 'queue-suspended')
   assert.equal(suspension?.notSent, 2, 'the two unsent calls were not reported as unsent')
   assert.match(run.stdout, /were not sent/)
-  assert.match(run.stdout, /OpenCase is waiting for a person to reconcile it in Console/)
+  assert.match(run.stdout, /ApplyBatch is waiting for a person to reconcile it in Console/)
 })
 
-test('the configured Case Type cannot be overridden by model output', async () => {
-  const run = await runAgent({
-    argv: ['--case-type', 'verified_calculation'],
-    chatLines: ['Use Rulith for this governed calculation.'],
-    model: (round) => (round === 1
-      ? callTool('OpenCase', { caseType: 'exploration' })
-      : 'The configured Case Type is now active.'),
-  })
-
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const opened = run.toolCalls.find((call) => call.name === 'OpenCase')
-  assert.equal(opened?.args?.caseType, 'verified_calculation',
-    'the host-selected governance contract must remain authoritative')
-})
-
-test('with no Case Type pinned, the model may select one from its own catalogue', async () => {
-  // The other half of the rule. A host that always overwrote `caseType` would pass the
-  // arm above while removing a field the protocol puts on the model surface.
+test('a goal declaration is carried exactly as the model wrote it: the host pins no contract on it', async () => {
+  // rulith/v4: a capability's goal is chosen by the goal the model declares (A-5). The host used
+  // to write the operator's Case Type into OpenCase; it has nothing left to write, and it must
+  // not edit the declaration either.
+  const declaration = { operations: [{ op: 'declare_goal', label: 'Calculation calc-001',
+    desired: [{ predicate: 'rulith.verified_calculation.calculation_completed', args: { job_id: 'calc-001' } }] }] }
   const run = await runAgent({
     argv: [],
-    chatLines: ['Open a research Case.'],
-    model: (round) => (round === 1 ? callTool('OpenCase', { caseType: 'research' }) : 'Opened.'),
+    chatLines: ['Use Rulith for this governed calculation.'],
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declaration) : 'Declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.toolCalls.find((call) => call.name === 'OpenCase')?.args?.caseType, 'research')
+  assert.deepEqual(run.toolCalls.map((call) => call.args), [declaration])
 })
 
-test('the focus form of OpenCase is never turned into a mixed form by the host', async () => {
-  // {caseId} focuses, {caseType, businessKey?} creates, and a mixed form is refused. A
-  // host that stamped its pinned Case Type onto a focus request would manufacture the
-  // rejected shape out of a legal one.
-  const run = await runAgent({
-    argv: ['--case-type', 'verified_calculation', '--business-key', '{"job_id":"calc-001"}'],
-    chatLines: ['Continue the existing Case.'],
-    gateway: defaultGateway({ cases: [{ caseId: 'CASE_EXISTING', root: 'ROOT_EXISTING', status: 'running' }] }),
-    model: (round) => (round === 1 ? callTool('OpenCase', { caseId: 'CASE_EXISTING' }) : 'Focused.'),
+for (const retired of ['OpenCase', 'CloseCase']) {
+  test(`a model that still calls ${retired} is refused locally, and nothing reaches the authority`, async () => {
+    // rulith/v4 took OpenCase and CloseCase off the model surface with no alias (V1, V2). A model
+    // formed against the old surface is told which five tools exist; its call is never carried.
+    const run = await runAgent({
+      argv: [],
+      chatLines: ['Open a Case.'],
+      model: (round) => (round === 1 ? callTool(retired, retired === 'OpenCase' ? { caseType: 'exploration' }
+        : { root: 'ROOT_1', disposition: 'completed' }) : 'I will declare a goal instead.'),
+    })
+    assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+    assert.deepEqual(run.verbs, [], `${retired} reached the authority`)
+    const answered = JSON.stringify(run.modelRequests[1])
+    assert.match(answered, /tool_not_carried/)
+    assert.match(answered, /This Agent may call: QueryBoard, ApplyBatch, ApplyAction, ReadArtifact, EndGoal\./)
   })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const opened = run.toolCalls.find((call) => call.name === 'OpenCase')
-  assert.deepEqual(opened.args, { caseId: 'CASE_EXISTING' },
-    `the host added creation fields to a focus request: ${JSON.stringify(opened.args)}`)
-  assert.doesNotMatch(run.stdout, /Board rejected OpenCase/)
-})
+}
 
 test('RT-GUESS-1 no prompt line is driven by a field the authority never published', async () => {
   // There used to be a second conditional line here, telling the model that Board
@@ -1061,17 +1053,16 @@ test('RT-GUESS-1 no prompt line is driven by a field the authority never publish
   // `add_axiom` is permitted is the Board's judgement and the Board refuses it plainly.
   //
   // The arm asserts the *absence* on both sides: a server that sends the invented field must
-  // not resurrect the line, and the one surviving conditional must be driven by the Case Type
-  // this host itself sent.
+  // not resurrect the line, and no line may be driven by anything this host itself sent.
   const run = await runAgent({
-    argv: ['--case-type', 'exploration'],
+    argv: [],
     chatLines: ['Use Rulith under the installed governance.'],
     tool: (name, args, board, session, meta) => {
-      if (name !== 'OpenCase') return undefined
+      if (name !== 'ApplyBatch') return undefined
       const core = board.tool(name, args, session, meta)
       return withMeta({ ...core, payload: { ...core.payload, lawLocked: true } }, board.meta(session))
     },
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The Case is open.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The goal is declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1081,10 +1072,10 @@ test('RT-GUESS-1 no prompt line is driven by a field the authority never publish
     'the unscoped first turn exposed a provisional-law permission before any Case existed')
   assert.doesNotMatch(`${beforeOpen}\n${afterOpen}`, /Legislation is locked/,
     'an unpublished Board View field is driving a prompt line again')
-  // A known Case Type still does not let the host decide the current writing permission.
-  assert.match(afterOpen, /Case Type alone grants no rule-writing permission/)
+  // A known goal type still does not let the host decide the current writing permission (V47).
+  assert.match(afterOpen, /A goal type alone grants no rule-writing permission/)
   assert.doesNotMatch(afterOpen, /are permitted inside this Case|are Case-local/)
-  assert.deepEqual(run.verbs, ['OpenCase'], 'the Board was probed for governance state')
+  assert.deepEqual(run.verbs, ['ApplyBatch'], 'the Board was probed for governance state')
   const source = readFileSync(new URL('../agent/rulith-agent.mjs', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /ctx\.lawLocked|LOCKED_LINE/, 'the guessed lock state survived in the runtime')
 })
@@ -1098,7 +1089,7 @@ test('RT-GUESS-2 an accepted Action reports the invocation gap instead of a fals
     argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Dispatch the action twice.'],
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyAction', { action: 'acme.ship', target: 'L1' })
       if (round === 3) return callTool('ApplyAction', { action: 'acme.ship', target: 'L2' })
       return 'Dispatched.'
@@ -1133,7 +1124,7 @@ test('a bounded public Action result reports its own terminal state without inve
         const core = board.tool(name, args, session, meta)
         return withMeta({ ...core, result: { action: args.action, done: true, ...shape } }, board.meta(session))
       },
-      model: (round) => round === 1 ? callTool('OpenCase', {})
+      model: (round) => round === 1 ? callTool('ApplyBatch', declareGoal())
         : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1151,7 +1142,7 @@ test('a bounded public Action result reports its own terminal state without inve
     tool: (name, args, board, session, meta) => name !== 'ApplyAction' ? undefined
       : withMeta({ ...board.tool(name, args, session, meta),
         result: { action: 'another.action', done: true, status: 'confirmed', ok: true } }, board.meta(session)),
-    model: round => round === 1 ? callTool('OpenCase', {})
+    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
       : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
   })
   assert.equal(mismatched.code, 0, `${mismatched.stdout}\n${mismatched.stderr}`)
@@ -1173,7 +1164,7 @@ test('a contradictory Action envelope is not taken as the outcome', async () => 
         return { ...withMeta(result, board.meta(session)),
           ...(contradiction === 'mcp-error' ? { __isError: true } : {}) }
       },
-      model: round => round === 1 ? callTool('OpenCase', {})
+      model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
         : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
       timeoutMs: 8_000,
     })
@@ -1193,7 +1184,7 @@ test('a normal MCP envelope can carry an authoritative business refusal', async 
     tool: (name, args, board, session, meta) => name !== 'ApplyAction' ? undefined
       : withMeta({ accepted: false, errorCode: 'not_authorized', teaching: 'Action refused by policy.' },
         board.meta(session)),
-    model: round => round === 1 ? callTool('OpenCase', {})
+    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
       : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'The action was refused.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1202,11 +1193,11 @@ test('a normal MCP envelope can carry an authoritative business refusal', async 
   assert.equal(run.localEvents.some(event => event.type === 'action-outcome'), false)
 })
 
-test('opening exploration does not invent a permission grant or Case-local lifetime', async () => {
+test('declaring an exploration goal does not invent a permission grant or Case-local lifetime', async () => {
   const run = await runAgent({
-    argv: ['--case-type', 'exploration'],
+    argv: [],
     chatLines: ['Explore this.'],
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Exploring.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Exploring.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1222,7 +1213,7 @@ test('the Anthropic wire carries tool definitions, tool_use blocks, and tool_res
     argv: [],
     provider: 'anthropic',
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1232,14 +1223,14 @@ test('the Anthropic wire carries tool definitions, tool_use blocks, and tool_res
   assert.equal(typeof first.system, 'string', 'Anthropic carries the system prompt as a top-level field')
   const second = run.modelRequests[1]
   const assistant = second.messages.find((message) => message.role === 'assistant')
-  assert.ok(assistant.content.some((block) => block.type === 'tool_use' && block.name === 'OpenCase'),
+  assert.ok(assistant.content.some((block) => block.type === 'tool_use' && block.name === 'ApplyBatch'),
     `the assistant turn was not replayed as a tool_use block: ${JSON.stringify(assistant)}`)
   const results = second.messages.filter((message) => message.role === 'user')
     .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
     .filter((block) => block.type === 'tool_result')
   assert.equal(results.length, 1, 'the tool result was not replayed as a tool_result block')
   assert.equal(results[0].tool_use_id, assistant.content.find((block) => block.type === 'tool_use').id)
-  assert.equal(run.verbs.includes('OpenCase'), true)
+  assert.equal(run.verbs.includes('ApplyBatch'), true)
 })
 
 test('the OpenAI wire carries function tools, tool_calls, and role tool replies', async () => {
@@ -1247,33 +1238,40 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
     argv: [],
     provider: 'openai',
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('OpenCase', {}, { id: 'call_abc' }) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal(), { id: 'call_abc' }) : 'Declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const first = run.modelRequests[0]
   assert.ok(Array.isArray(first.tools) && first.tools.every((tool) => tool.type === 'function' && tool.function.parameters !== undefined),
     `OpenAI tools must be function definitions with parameters: ${JSON.stringify(first.tools)}`)
-  const opening = first.tools.find(tool => tool.function.name === 'OpenCase').function.parameters
-  assert.deepEqual(Object.keys(opening.properties ?? {}).sort(), ['businessKey', 'caseId', 'caseType'],
-    'object-only model interfaces need the top-level field catalogue for both OpenCase alternatives')
-  const sourceOpening = advertisedTools().find(tool => tool.name === 'OpenCase').inputSchema
-  assert.deepEqual(opening.oneOf, sourceOpening.oneOf, 'the creation/resume alternatives must retain their exact validation constraints')
-  assert.equal(sourceOpening.properties, undefined, 'the source fixture must actually use the composite form')
   const query = first.tools.find(tool => tool.function.name === 'QueryBoard').function.parameters
-  assert.equal(query.properties.selector.properties.roots.type, 'array')
-  assert.equal(query.properties.selector.properties.roots.items.type, 'string')
-  assert.equal(query.properties.selector.properties.roots.minItems, 1)
-  assert.equal(query.properties.selector.properties.roots.maxItems, 1000)
-  assert.equal(query.properties.selector.properties.roots.items.minLength, 1)
+  assert.equal(query.properties.selector.properties.goals.type, 'array')
+  assert.equal(query.properties.selector.properties.goals.items.type, 'string')
+  assert.equal(query.properties.selector.properties.goals.minItems, 1)
+  assert.equal(query.properties.selector.properties.goals.maxItems, 1000)
+  assert.equal(query.properties.selector.properties.goals.items.minLength, 1)
+  assert.deepEqual(query.properties.include.items.enum, ['goals', 'nodes', 'gaps', 'taskStatus', 'history'])
   const batch = first.tools.find(tool => tool.function.name === 'ApplyBatch').function.parameters
   assert.equal(batch.properties.operations.items.type, 'object')
   assert.ok(batch.properties.operations.items.properties.op.enum.includes('assert_fact'))
+  assert.ok(batch.properties.operations.items.properties.op.enum.includes('declare_goal'))
+  // Object-only model interfaces need the top-level field catalogue of every batch operation,
+  // a goal's parent included (A-4), while the alternatives keep their exact constraints.
+  assert.ok(Object.hasOwn(batch.properties.operations.items.properties, 'parent'))
+  const ending = first.tools.find(tool => tool.function.name === 'EndGoal').function.parameters
+  assert.deepEqual(ending.properties.disposition.enum, ['cancelled', 'failed', 'abandoned', 'superseded'])
   const validator = new Ajv({ strict: false })
   const samples = {
-    OpenCase: [{ caseType: 'verified_calculation', businessKey: { job_id: 'calc-001' } }, { caseId: 'case-1' }, {}, { caseType: 'verified_calculation', caseId: 'case-1' }],
-    QueryBoard: [{}, { include: ['nodes'], selector: { roots: ['root-1'] } }, { include: ['nodes'] }, { include: ['nodes'], selector: { roots: [] } }, { include: ['nodes'], selector: { roots: [{}] } }],
-    ApplyBatch: [{ operations: [{ op: 'assert_fact', predicate: 'subgoal_of', args: { child: 'CALC_calc-001', parent: 'root-1' } }] }, { operations: [{}] }, { operations: [{ op: 'unknown' }] }],
+    EndGoal: [{ goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' }, { goal: 'GOAL_1', disposition: 'completed', reason: 'Done.' },
+      { goal: 'GOAL_1', disposition: 'cancelled' }, {}],
+    QueryBoard: [{}, { include: ['nodes'], selector: { goals: ['goal-1'] } }, { include: ['nodes'] }, { include: ['nodes'], selector: { goals: [] } },
+      { include: ['nodes'], selector: { goals: [{}] } }, { include: ['history'], selector: { goals: ['goal-1'] } }, { include: ['cases'] },
+      { include: ['nodes'], selector: { roots: ['root-1'] } }],
+    ApplyBatch: [{ operations: [{ op: 'assert_fact', predicate: 'x', args: { n: 1 } }] }, { operations: [{}] }, { operations: [{ op: 'unknown' }] },
+      { operations: [{ op: 'declare_goal', desired: [{ predicate: 'task_done', args: {} }] }] },
+      { operations: [{ op: 'declare_goal', desired: [{ predicate: 'step_done', args: {} }], parent: 'GOAL_1' }] },
+      { operations: [{ op: 'declare_goal', desired: [] }] }, { operations: [{ op: 'sign_off', goal: 'GOAL_1' }] }],
   }
   for (const [name, values] of Object.entries(samples)) {
     const original = validator.compile(advertisedTools().find(tool => tool.name === name).inputSchema)
@@ -1283,7 +1281,7 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
   assert.equal(first.messages[0].role, 'system')
   const second = run.modelRequests[1]
   const assistant = second.messages.find((message) => message.role === 'assistant' && message.tool_calls)
-  assert.equal(assistant.tool_calls[0].function.name, 'OpenCase')
+  assert.equal(assistant.tool_calls[0].function.name, 'ApplyBatch')
   const toolMessage = second.messages.find((message) => message.role === 'tool')
   assert.equal(toolMessage.tool_call_id, assistant.tool_calls[0].id)
   assert.match(String(toolMessage.content), /"accepted":true/)
@@ -1306,16 +1304,15 @@ test('provider schema shaping preserves recursive refs and unsatisfiable constan
   assert.equal(after({ choice: 'a' }), false)
 })
 
-test('a Case closed in the last conversational round is reported as completed', async () => {
-  const run = await runAgent({ argv: [], env: { RULITH_MAX_ROUNDS: '3' }, captureLocalEvents: true,
-    gateway: defaultGateway({ settleAfterBatch: true }), chatLines: ['Finish the Case.'],
-    model: round => round === 1 ? callTool('OpenCase', {}) : round === 2
-      ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', predicate: 'ready', args: {} }] })
-      : callTool('CloseCase', { root: 'ROOT_1', disposition: 'completed' }),
+test('a goal the Board completed in the last conversational round is reported as completed', async () => {
+  const run = await runAgent({ argv: [], env: { RULITH_MAX_ROUNDS: '2' }, captureLocalEvents: true,
+    gateway: defaultGateway({ settleAfterBatch: true, certifyAfterBatch: true }), chatLines: ['Finish the work.'],
+    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
+      : callTool('ApplyBatch', { operations: [{ op: 'assert_fact', predicate: 'ready', args: {} }] }),
   })
   assert.equal(run.code, 0, run.stderr)
-  assert.match(run.stdout, /The Board accepted closure and the Case is completed/)
-  assert.doesNotMatch(run.stdout, /Stopped at the 3-round limit/)
+  assert.match(run.stdout, /The Board certified the goal and it is completed\./)
+  assert.doesNotMatch(run.stdout, /Stopped at the 2-round limit/)
 })
 
 test('an endpoint that rejects tool definitions gets the same tools described in the prompt', async () => {
@@ -1326,14 +1323,14 @@ test('an endpoint that rejects tool definitions gets the same tools described in
     model: (round, body) => {
       // The first request carried tools and was refused; the retry must not.
       if (body.tools !== undefined) return 'unreachable'
-      const spoken = JSON.stringify(body.messages).includes('OpenCase result') ? 'Opened.' : ''
-      return spoken === '' ? '{"tool":"OpenCase","input":{}}' : spoken
+      const spoken = JSON.stringify(body.messages).includes('ApplyBatch result') ? 'Declared.' : ''
+      return spoken === '' ? `{"tool":"ApplyBatch","input":${JSON.stringify(declareGoal())}}` : spoken
     },
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stdout, /refused a request carrying tool definitions/)
-  assert.equal(run.verbs.includes('OpenCase'), true,
+  assert.equal(run.verbs.includes('ApplyBatch'), true,
     `the fallback lost the model's ability to reach the Board: ${run.verbs.join(', ')}`)
   const emulated = run.modelRequests.filter((request) => request.tools === undefined)
   assert.ok(emulated.length >= 1)
@@ -1347,13 +1344,13 @@ test('RULITH_MODEL_TOOLS=emulated selects the fallback transport without a faile
     argv: [],
     env: { RULITH_MODEL_TOOLS: 'emulated' },
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? '{"tool":"OpenCase","input":{}}' : 'Opened.'),
+    model: (round) => (round === 1 ? `{"tool":"ApplyBatch","input":${JSON.stringify(declareGoal())}}` : 'Declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.ok(run.modelRequests.every((request) => request.tools === undefined),
     'the forced fallback still sent tool definitions')
-  assert.equal(run.verbs.includes('OpenCase'), true)
+  assert.equal(run.verbs.includes('ApplyBatch'), true)
   assert.doesNotMatch(run.stdout, /refused a request carrying tool definitions/,
     'no request failed, so nothing should be reported as a fallback')
 })
@@ -1372,20 +1369,20 @@ test(`a ${failure === HOP_FAILURE ? 'transport' : 'gateway upstream'} failure is
     env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Record this despite a transient network failure.'],
     captureLocalEvents: true,
-    tool: (name) => {
-      if (name !== 'ApplyBatch') return undefined
+    tool: (name, args) => {
+      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'assert_fact') return undefined
       attempts += 1
       return attempts === 1 ? failure : undefined
     },
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', batch)
       return 'I will look at operations before trying again.'
     },
     timeoutMs: 25_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const sent = run.toolCalls.filter((call) => call.name === 'ApplyBatch')
+  const sent = run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
   assert.equal(sent.length, 1, `the host re-sent a write whose answer was lost: ${JSON.stringify(run.verbs)}`)
   assert.equal(run.modelRequests.length, 3, 'the model was not told that the answer was lost')
   // The classification still travels — as the verdict a person and the local view can read.
@@ -1410,11 +1407,12 @@ test('a write whose answer was lost after it ran cannot run again blind: the nex
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '5' }, chatLines: ['Record it once.'],
     sseResults: true, breakStreamOnCall: 2, refuseResume: true,
-    model: (round) => round === 1 ? callTool('OpenCase', {}) : round <= 3 ? callTool('ApplyBatch', batch) : 'Recorded once.',
+    model: (round) => round === 1 ? callTool('ApplyBatch', declareGoal()) : round <= 3 ? callTool('ApplyBatch', batch) : 'Recorded once.',
     timeoutMs: 25_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.operations.filter((op) => op.tool === 'ApplyBatch').length, 1, 'the write ran twice')
+  // The declaration and the write, once each.
+  assert.equal(run.operations.filter((op) => op.tool === 'ApplyBatch').length, 2, 'the write ran twice')
   assert.ok(run.initializes.length >= 2, 'the host kept using the session whose answer it lost')
   const second = JSON.parse(run.modelRequests.at(-1).messages.filter((message) => message.role === 'tool').at(-1).content)
   assert.equal(second.errorCode, 'previous_result_undelivered')
@@ -1431,7 +1429,7 @@ test('distinct submissions carry distinct request identities, and an answered on
     env: { RULITH_MAX_ROUNDS: '6' },
     chatLines: ['record two facts'],
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F2', predicate: 'x', args: {} }] })
       return 'Both recorded.'
@@ -1447,18 +1445,18 @@ test('distinct submissions carry distinct request identities, and an answered on
 test('an empty arguments string is an empty object, not a malformed call', async () => {
   // Several OpenAI-compatible endpoints send `""` for a tool that takes no arguments.
   // Refusing it locally would refuse every no-argument verb on those endpoints, and the
-  // symptom — "the model kept trying to open a Case and nothing happened" — points at
+  // symptom — "the model kept trying to read the Board and nothing happened" — points at
   // the model rather than at the client that dropped the call.
   const run = await runAgent({
     argv: [],
-    chatLines: ['Open a Case.'],
+    chatLines: ['Look at the Board.'],
     model: (round) => (round === 1
-      ? { text: '', toolCalls: [{ name: 'OpenCase', input: {}, rawArguments: '' }] }
-      : 'Opened.'),
+      ? { text: '', toolCalls: [{ name: 'QueryBoard', input: {}, rawArguments: '' }] }
+      : 'Read.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('OpenCase'), true, `an empty argument string was refused: ${run.verbs.join(', ')}`)
+  assert.equal(run.verbs.includes('QueryBoard'), true, `an empty argument string was refused: ${run.verbs.join(', ')}`)
 })
 
 test('the Anthropic transcript alternates roles even when the host adds its own nudge', async () => {
@@ -1468,7 +1466,7 @@ test('the Anthropic transcript alternates roles even when the host adds its own 
     env: { RULITH_MAX_ROUNDS: '4' },
     gateway: defaultGateway({ settleAfterBatch: false }),
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Finished.'
     },
@@ -1482,7 +1480,7 @@ test('the Anthropic transcript alternates roles even when the host adds its own 
       `two ${last[index].role} turns in a row: the host's nudge was appended without folding.\n${JSON.stringify(last.map((message) => message.role))}`)
   }
   // Calibration: the nudge really is in there, folded into the tool result turn.
-  assert.match(JSON.stringify(last), /still running on the Board/)
+  assert.match(JSON.stringify(last), /These goals are still open on the Board/)
   const nudgeText = last.flatMap(message => message.content)
     .filter(block => block.type === 'text').map(block => block.text).join('\n')
   assert.doesNotMatch(nudgeText, /"directory"|Board View last observed/,
@@ -1494,66 +1492,19 @@ test('tool arguments that are not a JSON object are refused locally', async () =
     argv: [],
     chatLines: ['Open a Case.'],
     model: (round) => (round === 1
-      ? { text: '', toolCalls: [{ name: 'OpenCase', input: {}, rawArguments: 'not json' }] }
+      ? { text: '', toolCalls: [{ name: 'ApplyBatch', input: {}, rawArguments: 'not json' }] }
       : 'I will send a JSON object.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('OpenCase'), false, 'malformed arguments reached the authority')
+  assert.equal(run.verbs.includes('ApplyBatch'), false, 'malformed arguments reached the authority')
   assert.match(JSON.stringify(run.modelRequests[1]), /bad_tool_arguments/)
 })
 
 // ── Host features the model has no verb for ──────────────────────────────────
 
-test('--case brings a running Case into focus through the same public tool and still delivers the message', async () => {
-  const run = await runAgent({
-    argv: ['--case', 'CASE_RUNNING'],
-    captureLocalEvents: true,
-    chatLines: ['Continue our discussion without changing the Board.'],
-    gateway: defaultGateway({ cases: [{ caseId: 'CASE_RUNNING', root: 'ROOT_RUNNING', status: 'running' }] }),
-    model: () => 'The existing Case is in focus. I have not taken another step.',
-  })
-
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.modelRequests.length, 1, 'focusing a running Case must not swallow the user message')
-  assert.deepEqual(run.verbs, ['OpenCase'], 'a host lifecycle route survived beside the public tool')
-  assert.deepEqual(run.toolCalls[0].args, { caseId: 'CASE_RUNNING' })
-  assert.match(JSON.stringify(run.modelRequests[0]), /Cases in focus: CASE_RUNNING \(root ROOT_RUNNING, running\)/)
-  assert.ok(run.localEvents.some((event) => event.type === 'case-state' && event.caseId === 'CASE_RUNNING' && event.caseStatus === 'running'))
-})
-
-test('--case preserves a paused Case and delivers the authority refusal to the model', async () => {
-  const gateway = defaultGateway({ cases: [{ caseId: 'CASE_PAUSED', root: 'ROOT_PAUSED', status: 'paused' }] })
-  const run = await runAgent({
-    argv: ['--case', 'CASE_PAUSED'],
-    captureLocalEvents: true,
-    chatLines: ['Continue the paused work.'],
-    gateway,
-    model: () => 'The Case is paused; its pause hold must be handled through governance.',
-  })
-
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase'], `a retired lifecycle operation was issued: ${run.verbs.join(', ')}`)
-  assert.equal(gateway.state.cases.get('CASE_PAUSED').status, 'paused')
-  assert.match(run.stdout, /could not be brought into focus/)
-  assert.match(JSON.stringify(run.modelRequests[0]), /operator or policy that holds it/)
-  assert.match(JSON.stringify(run.modelRequests[0]), /do not claim that Case is active/)
-  assert.equal(run.localEvents.some(event => event.type === 'case-state'), false)
-})
-
-test('--case on a Case the authority refuses says so and does not claim the Case is active', async () => {
-  const run = await runAgent({
-    argv: ['--case', 'CASE_GONE'],
-    captureLocalEvents: true,
-    chatLines: ['Continue that work.'],
-    model: () => 'That Case is not available, so I answered normally.',
-  })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.match(run.stdout, /could not be brought into focus/)
-  assert.match(JSON.stringify(run.modelRequests[0]), /do not claim that Case is active/)
-  assert.equal(run.localEvents.some((event) => event.type === 'case-state'), false,
-    'a refused focus must not create a Local lifecycle observation')
-})
+// `--case` and the other OpenCase-steering options were retired with rulith/v4; that they stop
+// the run before anything is sent is asserted in serial-calls.test.mjs (RT-REC-10).
 
 test('--serve survives a model-provider failure and keeps taking work', async () => {
   const port = await freePort()
@@ -1584,10 +1535,10 @@ for (const provider of ['openai', 'anthropic']) {
       const port = await freePort()
       const body = provider === 'openai'
         ? { choices: [{ finish_reason: truncated ? 'length' : 'stop', message: truncated
-          ? { content: 'A partial answer', tool_calls: [{ id: 'partial', type: 'function', function: { name: 'OpenCase', arguments: '{"title":"must not run"}' } }] }
+          ? { content: 'A partial answer', tool_calls: [{ id: 'partial', type: 'function', function: { name: 'ApplyBatch', arguments: '{"operations":[]}' } }] }
           : { content: null, reasoning_content: 'Reasoning alone is not a response.' } }] }
         : { stop_reason: truncated ? 'max_tokens' : 'end_turn', content: truncated
-          ? [{ type: 'text', text: 'A partial answer' }, { type: 'tool_use', id: 'partial', name: 'OpenCase', input: { title: 'must not run' } }]
+          ? [{ type: 'text', text: 'A partial answer' }, { type: 'tool_use', id: 'partial', name: 'ApplyBatch', input: { operations: [] } }]
           : [{ type: 'thinking', thinking: 'Reasoning alone is not a response.' }] }
       const run = await runAgent({
         argv: ['--serve'], provider,
@@ -1599,7 +1550,7 @@ for (const provider of ['openai', 'anthropic']) {
       })
       assert.equal(run.modelRequests.length, 2, 'there must be no automatic paid retry')
       assert.equal(run.modelRequests[0].max_tokens, truncated ? 12000 : 6000)
-      assert.equal(run.verbs.includes('OpenCase'), false, 'a truncated tool call must never execute')
+      assert.equal(run.verbs.includes('ApplyBatch'), false, 'a truncated tool call must never execute')
       assert.equal(run.serveSnapshot.runs[0].outcome, 'model-error')
       assert.match(run.serveSnapshot.runs[0].note, truncated ? /output token limit/ : /no answer or tool call/)
       assert.doesNotMatch(run.serveSnapshot.runs[0].note, /Response delivered/)
@@ -1611,31 +1562,32 @@ for (const provider of ['openai', 'anthropic']) {
 
 test('interactive chat survives empty model output and preserves prior tool results', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Open a Case.', 'Continue.'],
-    model: n => n === 1 ? callTool('OpenCase', {}) : n === 2 ? '' : 'The conversation continued.' })
+    model: n => n === 1 ? callTool('ApplyBatch', declareGoal()) : n === 2 ? '' : 'The conversation continued.' })
   assert.equal(run.code, 0, run.stderr)
   assert.match(run.stdout, /no answer or tool call/)
   assert.match(run.stdout, /The conversation continued/)
-  assert.equal(run.verbs.filter(verb => verb === 'OpenCase').length, 1)
-  assert.match(JSON.stringify(run.modelRequests.at(-1)), /CASE_1/)
+  assert.equal(run.verbs.filter(verb => verb === 'ApplyBatch').length, 1)
+  assert.match(JSON.stringify(run.modelRequests.at(-1)), /GOAL_1/)
 })
 
-test('one-shot reports a recoverable model failure with its open Case', async () => {
+test('one-shot reports a recoverable model failure with its open goal', async () => {
   const run = await runAgent({ argv: ['Open a Case.'], captureLocalEvents: true,
-    model: n => n === 1 ? callTool('OpenCase', {}) : '' })
+    model: n => n === 1 ? callTool('ApplyBatch', declareGoal()) : '' })
   assert.equal(run.code, 1)
   const end = run.localEvents.find(event => event.type === 'end')
   assert.equal(end.outcome, 'model-error')
-  assert.equal(end.pendingCaseId, 'CASE_1')
-  assert.match(run.stdout, /Resume with --case CASE_1/)
+  assert.equal(end.pendingGoal, 'GOAL_1')
+  assert.match(run.stdout, /This goal remains open: pending_goal=GOAL_1\. Continue it in a later run, or resolve it in Console\./)
+  assert.doesNotMatch(run.stdout, /--case/)
 })
 
-test('an empty shadow review is unavailable and preserves the Case report', async () => {
+test('an empty shadow review is unavailable and preserves the goal report', async () => {
   const run = await runAgent({ argv: ['Open a Case.', '--shadow'], captureLocalEvents: true,
     env: { RULITH_MODEL_THINKING: 'disabled', RULITH_MODEL_MAX_OUTPUT_TOKENS: '12000' },
     model: (n, request) => systemTextOf(request).includes('adversarial shadow reviewer') ? ''
-      : n === 1 ? callTool('OpenCase', {}) : 'Waiting for more information.' })
+      : n === 1 ? callTool('ApplyBatch', declareGoal()) : 'Waiting for more information.' })
   assert.equal(run.code, 0, run.stdout + run.stderr)
-  assert.equal(run.localEvents.find(event => event.type === 'end').pendingCaseId, 'CASE_1')
+  assert.equal(run.localEvents.find(event => event.type === 'end').pendingGoal, 'GOAL_1')
   assert.equal(run.modelRequests[0].max_tokens, 12000)
   assert.equal(run.modelRequests.at(-1).max_tokens, 6000, 'the shadow has its own output budget')
   assert.equal(run.localEvents.find(event => event.type === 'shadow').unavailable, true)
@@ -1660,66 +1612,69 @@ test('--serve assigns independent conversation keys when callers omit sessionKey
   assert.notEqual(keys[0], keys[1], 'unrelated no-key clients must not share the default conversation slot')
 })
 
-test('--serve records a recoverable Case id before reclaiming an abandoned conversation slot', async () => {
+test('--serve records a recoverable goal before reclaiming an abandoned conversation slot', async () => {
   const port = await freePort()
   const run = await runAgent({
     argv: ['--serve'],
     captureLocalEvents: true,
     env: { RULITH_SERVE_PORT: String(port), RULITH_SERVE_KEY: 'slot-capacity-test', RULITH_SERVE_SLOTS_MAX: '1' },
     serveTasks: [
-      { text: 'Open a governed Case.', sessionKey: 'client-a' },
+      { text: 'Start governed work.', sessionKey: 'client-a' },
       { text: 'Start an unrelated conversation.', sessionKey: 'client-b' },
     ],
     waitForServeCompletion: true,
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The Case remains active.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The goal remains active.'),
     timeoutMs: 8000,
   })
 
   assert.deepEqual(run.serveStatuses, [202, 202], `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.filter((verb) => verb === 'OpenCase').length, 1)
-  const detached = (run.serveSnapshot?.runs ?? []).find((record) => record.sessionKey === 'client-a' && record.pendingCaseId)
-  assert.ok(detached, `the reclaimed Case was not exposed for explicit recovery: ${JSON.stringify(run.serveSnapshot)}`)
-  assert.match(detached.note, /remains unchanged on the Board/)
+  assert.equal(run.verbs.filter((verb) => verb === 'ApplyBatch').length, 1)
+  const detached = (run.serveSnapshot?.runs ?? []).find((record) => record.sessionKey === 'client-a' && record.pendingGoal)
+  assert.ok(detached, `the reclaimed goal was not exposed for recovery: ${JSON.stringify(run.serveSnapshot)}`)
+  assert.equal(detached.pendingGoal, 'GOAL_1')
+  assert.match(detached.note, /Rulith goal "GOAL_1" remains unchanged on the Board\./)
   const localEvents = run.localEvents.filter((event) => (event.session || event.sessionKey) === 'client-a').map((event) => ({ ...event, src: 'agent' }))
   assert.ok(localEvents.some((event) => event.type === 'case-state'), 'the --serve publisher feeds the real Local inspector')
   assert.equal(localEvents.some((event) => event.type === 'case-pending'), false, 'normal Local --serve is not the one-shot pending path')
   const displayed = projectCaseRoots(localEvents)
   assert.equal(displayed.length, 1)
-  assert.equal(displayed[0].lifecycle, 'running', 'a reclaimed local conversation is not a Case transition')
+  assert.equal(displayed[0].lifecycle, 'running', 'a reclaimed local conversation is not a goal transition')
   assert.equal(displayed[0].observation, 'Detached · last observed')
 })
 
-test('an explicit caseId adds a root to a conversation rather than replacing the one it has', async () => {
+test('a goal declared in a later message joins the conversation focus rather than replacing the one it has', async () => {
+  // Focus is additive (AIS §4): declaring a goal adds it, and no branch clears the others. With no
+  // focus operation left, a second goal reaches a conversation only by being declared.
   const port = await freePort()
   const run = await runAgent({
     argv: ['--serve'],
     captureLocalEvents: true,
-    env: { RULITH_SERVE_PORT: String(port), RULITH_SERVE_KEY: 'case-focus-test' },
-    gateway: defaultGateway({ cases: [{ caseId: 'CASE_OTHER', root: 'ROOT_OTHER', status: 'running' }] }),
+    env: { RULITH_SERVE_PORT: String(port), RULITH_SERVE_KEY: 'goal-focus-test' },
     serveTasks: [
-      { text: 'Open this conversation Case.', sessionKey: 'client-a' },
-      { text: 'Continue here, with the other Case too.', sessionKey: 'client-a', caseId: 'CASE_OTHER' },
+      { text: 'Start this conversation\'s work.', sessionKey: 'client-a' },
+      { text: 'Start the other work too.', sessionKey: 'client-a' },
     ],
     waitForServeCompletion: true,
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Both roots are in focus.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal('task_a'))
+      : round === 3 ? callTool('ApplyBatch', declareGoal('task_b')) : 'Both goals are in focus.'),
     timeoutMs: 8000,
   })
 
   assert.deepEqual(run.serveStatuses, [202, 202], `${run.stdout}\n${run.stderr}`)
   const focus = run.localEvents.filter((event) => event.type === 'focus' && event.session === 'client-a').at(-1)
-  assert.deepEqual(focus.roots.map((row) => row.caseId).sort(), ['CASE_1', 'CASE_OTHER'],
-    'the existing root was silently replaced instead of joined')
+  assert.deepEqual(focus.goals.map((row) => row.goal).sort(), ['GOAL_1', 'GOAL_2'],
+    'the existing goal was silently replaced instead of joined')
 })
 
-test('conversation mode emits Board verdicts and per-root observations for Local', async () => {
+test('conversation mode emits Board verdicts and per-goal observations for Local', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['Record one governed observation.'],
     captureLocalEvents: true,
     model: (round) => {
-      if (round === 1) return callTool('OpenCase', {})
+      if (round === 1) return callTool('ApplyBatch', declareGoal())
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F_EVENT', predicate: 'scratch.demo.observation', args: { value: 'visible' } }] })
-      return 'The explicit step was accepted and is visible in the Case trace.'
+      return 'The explicit step was accepted and is visible in the goal trace.'
     },
   })
 
@@ -1727,49 +1682,50 @@ test('conversation mode emits Board verdicts and per-root observations for Local
   assert.ok(run.localEvents.some((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch' && event.accepted === true),
     `Local received no Board verdict: ${JSON.stringify(run.localEvents)}`)
   assert.ok(run.localEvents.some((event) => event.type === 'case-open' && event.ok === true),
-    `Local received no Case lifecycle event: ${JSON.stringify(run.localEvents)}`)
+    `Local received no goal lifecycle event: ${JSON.stringify(run.localEvents)}`)
   const observations = run.localEvents.filter((event) => event.type === 'case-state')
   assert.ok(observations.length > 0, 'the actual Agent publisher must emit lifecycle observations')
   assert.ok(observations.every((event) => !Object.hasOwn(event, 'revision')), 'Local observations do not carry protocol cursors')
   for (let index = 1; index < observations.length; index += 1) {
-    const value = ({ caseId, root, caseStatus, gaps, contact }) => ({ caseId, root, caseStatus, gaps, contact })
+    const value = ({ goal, status, gaps, contact }) => ({ goal, status, gaps, contact })
     assert.notDeepEqual(value(observations[index]), value(observations[index - 1]), 'unchanged observations are not repeated per tool call')
   }
 })
 
-test('a refused OpenCase never creates a conversation focus binding', async () => {
+test('a refused declaration never creates a conversation focus binding', async () => {
   const run = await runAgent({
-    argv: [], chatLines: ['Try to open a Case.'], captureLocalEvents: true,
-    tool: (name) => (name === 'OpenCase'
+    argv: [], chatLines: ['Try to start governed work.'], captureLocalEvents: true,
+    tool: (name) => (name === 'ApplyBatch'
       ? withMeta(
-          { accepted: false, errorCode: 'case_admission_refused', teaching: 'Opening was refused.',
-            payload: { roots: [], cases: { directory: [{ caseId: 'CASE_NOT_OPENED', root: 'ROOT_X', status: 'running' }], total: 1 }, gaps: [], nodes: [], actions: [] } },
-          { agentId: TEST_AGENT_ID, focusedRoots: [] },
+          { accepted: false, errorCode: 'commercial_admission_rejected', teaching: 'Declaring was refused.',
+            payload: { goals: { directory: [{ goal: 'GOAL_NOT_DECLARED', label: 'x', status: 'running' }], total: 1 }, gaps: [], nodes: [], actions: [] } },
+          { agentId: TEST_AGENT_ID, focusedGoals: [] },
         )
       : undefined),
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'Opening was refused.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Declaring was refused.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.localEvents.some((event) => event.type === 'case-state'), false,
-    'a Case named in the directory but not in focus must not become this conversation\'s Case')
+    'a goal named in the directory but not in focus must not become this conversation\'s goal')
   assert.equal(run.localEvents.some((event) => event.type === 'case-open'), false)
 })
 
-test('a focused root the Board View never described is unavailable, never invented as running', async () => {
+test('a focused goal the Board View never described is unavailable, never invented as running', async () => {
   const run = await runAgent({
-    argv: [], chatLines: ['Open a Case.'], captureLocalEvents: true,
-    tool: (name) => (name === 'OpenCase'
+    argv: [], chatLines: ['Start governed work.'], captureLocalEvents: true,
+    tool: (name) => (name === 'ApplyBatch'
       ? withMeta(
-          { accepted: true, revision: 'r1', payload: { roots: [], cases: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] } },
-          { agentId: TEST_AGENT_ID, focusedRoots: [{ caseId: 'CASE_Q', root: 'ROOT_Q' }] },
+          { accepted: true, revision: 'r1', payload: { goals: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] } },
+          { agentId: TEST_AGENT_ID, focusedGoals: ['GOAL_Q'] },
         )
       : undefined),
-    model: (round) => (round === 1 ? callTool('OpenCase', {}) : 'The lifecycle status was not returned.'),
+    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The lifecycle status was not returned.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const observations = run.localEvents.filter((event) => event.type === 'case-state')
   assert.equal(observations.length, 1)
-  assert.equal(observations[0].caseStatus, 'unavailable')
+  assert.equal(observations[0].goal, 'GOAL_Q')
+  assert.equal(observations[0].status, 'unavailable')
   assert.equal(projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))[0].label, 'Unavailable')
 })
 
@@ -1831,7 +1787,7 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
   let acceptedQueries = 0
   const ref = 'art_' + 'a'.repeat(32)
   const gateway = defaultGateway({
-    cases: Array.from({ length: 90 }, (_, index) => ({ caseId: `ARCHIVED_${index}`, root: `ROOT_${index}`, status: 'closed' })),
+    goals: Array.from({ length: 90 }, (_, index) => ({ goal: `ARCHIVED_${index}`, status: 'completed' })),
     artifacts: { [ref]: { text: 'immutable document marker for authoring' } },
   })
   let queries = 0
@@ -1874,7 +1830,7 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
 
 test('context compression retains distinct Board observations and partial or refused snapshots', async () => {
   let queries = 0
-  const cases = Array.from({ length: 350 }, (_, index) => ({ caseId: `C_${index}`, root: `R_${index}`, status: 'closed' }))
+  const goals = Array.from({ length: 350 }, (_, index) => ({ goal: `G_${index}`, label: `G_${index}`, status: 'completed' }))
   const run = await runAgent({
     argv: [], chatLines: ['Compare these observations without dropping their evidence.'], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '6' },
     tool: name => {
@@ -1883,8 +1839,8 @@ test('context compression retains distinct Board observations and partial or ref
       const marker = ['FIRST_SCOPE_ONLY', 'PARTIAL_SCOPE_ONLY', 'REFUSED_SCOPE_ONLY', 'LAST_SCOPE_ONLY'][queries - 1]
       if (queries === 3) return { accepted: false, errorCode: 'refused_but_retained', requestExecuted: false,
         teaching: `${marker}: Use the earlier complete result.`, operations: [], view: {} }
-      return committed({ cases: { directory: [{ caseId: marker, root: marker, status: 'closed' }, ...cases], total: cases.length + 1, truncated: queries === 2 },
-        roots: [], gaps: [], nodes: [], actions: [] })
+      return committed({ goals: { directory: [{ goal: marker, label: marker, status: 'completed' }, ...goals], total: goals.length + 1,
+        ...(queries === 2 ? { truncated: true } : {}) }, gaps: [], nodes: [], actions: [] })
     },
     model: round => round <= 4 ? callTool('QueryBoard', {}) : 'Compared all observations.',
   })

@@ -39,11 +39,11 @@ const shippedCard = () => {
 test('a routine event is a line of text, not a panel', () => {
   const card = shippedCard()
   for (const event of [
-    { src: 'agent', type: 'case-open', caseId: 'case-1', body: 'Case Type exploration' },
-    { src: 'agent', type: 'task-done', body: 'Response delivered; Rulith Case(s) "case-1" remain in focus.' },
+    { src: 'agent', type: 'case-open', goal: 'goal-1', body: 'Goal goal-1' },
+    { src: 'agent', type: 'task-done', body: 'Response delivered; Rulith goal(s) "goal-1" remain in focus.' },
     { src: 'worker', type: 'claimed', body: 'lease · lease-77' },
     { src: 'agent', type: 'verdict', accepted: true, body: 'Accepted by Board · ApplyBatch' },
-    { src: 'agent', type: 'case-closed', body: 'Disposition: closed' },
+    { src: 'agent', type: 'case-closed', body: 'Disposition: completed' },
   ]) {
     const html = card(event)
     assert.match(html, /class="message quiet"/, event.type + ' still takes a full message block')
@@ -52,8 +52,8 @@ test('a routine event is a line of text, not a panel', () => {
     assert.doesNotMatch(html, /class="event/, 'the bordered event panel is retired')
   }
   // The label and the body arrive on one line, in that order, with when it happened after it.
-  const opened = card({ src: 'agent', type: 'case-open', body: 'Case Type exploration' })
-  assert.match(opened, /Rulith Case opened · Case Type exploration/)
+  const opened = card({ src: 'agent', type: 'case-open', goal: 'goal-1', body: 'Goal goal-1' })
+  assert.match(opened, /Rulith Case opened · Goal goal-1/)
   assert.match(opened, /<span class="act-state">agent · 23:36<\/span>/)
 })
 
@@ -87,14 +87,14 @@ test('wrong, waiting, or needing a person keeps a treatment of its own', () => {
 
 test('a line with more to say opens in place, and stays open across a refresh', () => {
   const card = shippedCard()
-  const long = { src: 'agent', type: 'source-plan', at: '2026-09-20T15:36:00.000Z', caseId: 'case-1',
+  const long = { src: 'agent', type: 'source-plan', at: '2026-09-20T15:36:00.000Z', goal: 'goal-1',
     body: 'read via file:/data/one → order.count\nread via db:ledger → order.total\nread via http:rates → order.rate' }
   const html = card(long)
   assert.match(html, /<details class="activity"/, 'a multi-line body must not be truncated away')
   assert.match(html, /<pre>read via file:/, 'the whole of it is there once opened')
   // render() restores open disclosures by data-call; a quiet line needs a name of its own that
   // is the same on the next render, or it closes itself every time an event arrives.
-  assert.match(html, /data-call="note:source-plan:2026-09-20T15:36:00\.000Z:case-1"/)
+  assert.match(html, /data-call="note:source-plan:2026-09-20T15:36:00\.000Z:goal-1"/)
   assert.equal(card(long), html, 'the same event must produce the same name')
   assert.match(card({ src: 'agent', type: 'artifact-read', body: 'Artifact art_1 · final fragment' }),
     /class="note"/, 'a line that fits needs no disclosure')
@@ -107,8 +107,8 @@ test('prose, the person\'s own message, and Trace are unchanged', () => {
   assert.match(card({ src: 'agent', type: 'task-start', text: '<b>hi</b>' }),
     /<div class="message user"><div class="bubble">&lt;b&gt;hi&lt;\/b&gt;<\/div><\/div>/)
   // Trace shows what the conversation view filters out, in the same quiet form.
-  assert.equal(card({ src: 'agent', type: 'case-state', caseId: 'c', body: 'Case lifecycle: running' }), '')
-  assert.match(card({ src: 'agent', type: 'case-state', caseId: 'c', body: 'Case lifecycle: running' }, true),
+  assert.equal(card({ src: 'agent', type: 'case-state', goal: 'g', body: 'Case lifecycle: running' }), '')
+  assert.match(card({ src: 'agent', type: 'case-state', goal: 'g', body: 'Case lifecycle: running' }, true),
     /class="note">.*Case lifecycle/)
 })
 

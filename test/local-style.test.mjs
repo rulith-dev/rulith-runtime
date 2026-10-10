@@ -46,8 +46,12 @@ test('the retired blue-black and teal surfaces are gone from every page', () => 
 })
 
 test('each page keeps the ids its controller and its routes depend on', () => {
-  for (const id of ['stream', 'composer', 'cases', 'sidefoot', 'runtimemsg', 'runtimeopen', 'casepopover'])
+  for (const id of ['stream', 'composer', 'cases', 'sidefoot', 'runtimemsg', 'runtimeopen', 'attachmenu'])
     assert.match(localPage, new RegExp(`id="${id}"`), `local page lost #${id}`)
+  // rulith/v4 retired the Case preferences (Case Type, business key) and the existing-Case file
+  // target: they steered OpenCase, which has no successor a host could pin.
+  for (const id of ['casepopover', 'casetype', 'businesskey', 'attachprefs', 'materialtarget'])
+    assert.doesNotMatch(localPage, new RegExp(`id="${id}"`), `local page still offers #${id}`)
   for (const id of ['home', 'tools-link', 'chat-link', 'headerlinks', 'notice', 'pair', 'resources', 'run'])
     assert.match(setupPage, new RegExp(`id="${id}"`), `setup page lost #${id}`)
   for (const id of ['back', 'headerlinks', 'result', 'tool-rows', 'registry-results', 'registry-prepare'])

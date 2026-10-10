@@ -514,7 +514,9 @@ test('RT-EXAMPLE-11 the guide starts a configured Case through Local without scr
   for (const argument of contract.businessKey.arguments) assert.ok(guide.includes(argument))
   assert.match(guide, /Use this environment’s tools and files/)
   assert.match(guide, /first message.*starts the Agent automatically/)
-  assert.match(guide, /preferred Case Type at \*\*Automatic\*\*/)
+  // rulith/v4: no Case Type or business key is pinned in Local; the model declares the goal.
+  assert.doesNotMatch(guide, /preferred Case Type|OpenCase|CloseCase/)
+  assert.match(guide, /declare_goal/)
   assert.match(guide, /`exploration` intake/)
   assert.doesNotMatch(guide, /--role|RULITH_LOCAL_CONFIG/)
   assert.match(guide, /Local composer/)
@@ -542,9 +544,9 @@ test('RT-EXAMPLE-7 every tool call the guide prints matches the vendored tool co
 
   for (const { tool, input } of printed) {
     const schema = schemas[tool]
-    assert.ok(schema, `${tool} is not one of the seven tools this Runtime serves`)
+    assert.ok(schema, `${tool} is not one of the five tools this Runtime serves`)
     assert.ok(input !== null && typeof input === 'object' && !Array.isArray(input), `${tool} must be printed with an object input`)
-    // `oneOf` (OpenCase) states alternative shapes; the branch that names every key present is
+    // `oneOf` states alternative shapes; the branch that names every key present is
     // the one this call means, and at least one branch must accept it.
     const branches = Array.isArray(schema.oneOf) ? schema.oneOf : [schema]
     const accepted = branches.some((branch) => {

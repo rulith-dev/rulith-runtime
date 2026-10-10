@@ -23,7 +23,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { TEST_AGENT_ID, callTool, defaultGateway, freePort, runAgent } from './support/agent-harness.mjs'
+import { openConversations } from '../agent/conversation-store.mjs'
+import { TEST_AGENT_ID, callTool, defaultGateway, freePort, runAgent, declareGoal } from './support/agent-harness.mjs'
 
 const confirmed = (core, args) => ({ ...core, result: { action: args.action, done: true, ok: true, status: 'confirmed' } })
 const ship = callTool('ApplyAction', { action: 'demo.ship', args: {} })
@@ -74,7 +75,7 @@ for (const interleave of [true, false]) {
           return undefined
         } }
       },
-      tool: (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('OpenCase', {}, session), args) : undefined),
+      tool: (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('ApplyBatch', declareGoal(), session), args) : undefined),
       model: (round, body) => {
         const said = lastUserText(body)
         if (said.includes('What is going on?')) return answered(body) ? 'Something else happened.' : callTool('QueryBoard', {})
@@ -129,7 +130,7 @@ test('RT-CONV-2 an acknowledgement ping never acknowledges a result the conversa
       { text: 'Carry on.', sessionKey: 'client-a' },
     ],
     waitForServeCompletion: true, stopAfterServe: true,
-    model: (round, body) => (lastUserText(body).includes('Open a Case.') ? callTool('OpenCase', {}) : 'Noted.'),
+    model: (round, body) => (lastUserText(body).includes('Open a Case.') ? callTool('ApplyBatch', declareGoal()) : 'Noted.'),
     timeoutMs: 15_000,
   })
   assert.deepEqual(run.serveStatuses, [202, 202, 202], `${run.stdout}\n${run.stderr}`)
@@ -138,49 +139,63 @@ test('RT-CONV-2 an acknowledgement ping never acknowledges a result the conversa
   assert.ok(pingAt === -1 || pingAt > aRead,
     `a ping acknowledged conversation A's result before A's model had read it: ${JSON.stringify(run.order)}`)
   assert.equal(run.pings, 1, 'the result was never acknowledged once conversation A had read it')
-  assert.equal(run.operations.find((op) => op.tool === 'OpenCase').acked, true)
+  assert.equal(run.operations.find((op) => op.tool === 'ApplyBatch').acked, true)
 })
 
-const PROOF = 'ab'.repeat(32)
-const ATTACHMENT = { id: 'mat_' + 'a'.repeat(32), name: 'notes.txt',
-  mediaType: 'text/plain', totalBytes: 5, digest: 'sha256:' + 'b'.repeat(64) }
-
-test('RT-CONV-3 a strip kept for a conversation whose turn stopped holds back the ping, and the next conversation is shown it', async () => {
-  // An earlier write's result never reached this client. Conversation C's operator focus — with
-  // files bound through it — is refused with that result, which delivers it to the session, and
-  // C's turn stops before its model is asked. Conversation D's turn comes next: every request it
-  // sends would acknowledge that result, so D's model is shown it first, and no acknowledgement
-  // ping follows D's text. C's own next message shows it to C's model as well.
+test('RT-CONV-3 a strip kept for a conversation whose turn stopped holds back the ping, and the next conversation is shown it', async (t) => {
+  // Conversation C's user stopped its turn while C's write was still unresolved (restored from the
+  // history beside it). Observing that stopped work is this host's own read for C, and the read
+  // delivers an earlier write's result to the session before C's model is asked. Conversation D's
+  // turn comes next: every request it sends would acknowledge that result, so D's model is shown it
+  // first, and no acknowledgement ping follows D's text. C's own next message shows it to C's model.
+  // (Under rulith/v3 the same path was reached through the operator's Case focus, which v4 retired.)
+  const dir = historyDir(t)
+  const at = '2026-10-04T00:00:00Z'
+  const store = await openConversations(dir, OWNER)
+  try {
+    store.accept({ id: 'earlier-turn', sessionKey: 'client-c', text: 'Ship order 7.', at: Date.now(), attachments: [] },
+      { ok: true, id: 'earlier-turn', sessionKey: 'client-c' }, '', '')
+    store.start('earlier-turn')
+    store.finish('earlier-turn', 'Stopped by the user.', 'user-stopped')
+    store.saveUnreadOutcomes({ 'client-c': [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', at, state: 'running', unread: false }] })
+  } finally { store.close() }
   const earlier = { accepted: true, result: { action: 'demo.ship', done: true, ok: true, status: 'confirmed' } }
-  const port = await freePort()
+  const until = async (check, timeout = 8000) => {
+    const end = Date.now() + timeout
+    while (!check()) { if (Date.now() > end) throw new Error('Fixture condition timed out'); await new Promise((r) => setTimeout(r, 15)) }
+  }
   const run = await runAgent({
-    argv: ['--serve'],
-    env: { RULITH_SERVE_PORT: String(port), ...serveEnv('conversations-kept') },
-    gateway: defaultGateway({ cases: [{ caseId: 'CASE_X', root: 'ROOT_X' }], queryIndependent: true }),
-    priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'done', core: earlier }],
-    serveTaskHeaders: (index) => (index === 0 ? { 'x-rulith-material-task-proof': PROOF } : {}),
-    serveTasks: [
-      { text: 'Add these notes to that Case.', sessionKey: 'client-c', caseId: 'CASE_X', attachments: [ATTACHMENT] },
-      { text: 'Hello.', sessionKey: 'client-d' },
-      { text: 'What happened with my notes?', sessionKey: 'client-c' },
-    ],
-    waitForServeCompletion: true, stopAfterServe: true,
+    argv: ['--serve'], captureLocalEvents: true, waitForServeReady: true, stopAfterServe: true,
+    env: { RULITH_SERVE_PORT: String(await freePort()), ...serveEnv('conversations-kept'), ...historyEnv(dir) },
+    priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', at, state: 'done', acked: false, core: earlier }],
     model: () => 'Noted.',
+    onServeReady: async ({ url, key, toolCalls, localEvents }) => {
+      await fetch(url + '/runs', { headers: { 'x-rulith-serve': key } }).then((r) => r.json())
+      await until(() => toolCalls.some((call) => call.name === 'QueryBoard'))
+      for (const [text, sessionKey] of [['Hello.', 'client-d'], ['What happened with my shipment?', 'client-c']]) {
+        const response = await fetch(url + '/task', { method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-rulith-serve': key }, body: JSON.stringify({ text, sessionKey }) })
+        const task = await response.json()
+        assert.equal(response.status, 202, JSON.stringify(task))
+        await until(() => localEvents.some((event) => event.type === 'task-done' && event.id === task.id))
+      }
+    },
     timeoutMs: 15_000,
   })
-  assert.deepEqual(run.serveStatuses, [202, 202, 202], `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['OpenCase'], 'the turn whose files could not be bound went on')
-  assert.equal(run.modelRequests.length, 2, 'conversation C\'s first turn asked its model')
+  assert.deepEqual(run.verbs, ['QueryBoard'], 'the host observed more than the stopped work, or a model wrote')
+  assert.equal(run.modelRequests.length, 2)
   const [d, c] = run.modelRequests.map(lastUserContent)
-  assert.match(d, /while it brought Case "CASE_X" into focus for the operator for another conversation of this Agent/)
+  assert.match(d, /while it observed work from a stopped turn for another conversation of this Agent/)
   const shown = relayedStrips(d).flat().find((entry) => entry.label === 'ApplyAction demo.ship')
   assert.equal(JSON.parse(shown.result.content[0].text).result.status, 'confirmed',
     'conversation D was not shown the outcome its requests would acknowledge')
-  assert.match(c, /while it brought Case "CASE_X" into focus for the operator\. This is the Board's own record/)
-  const firstPing = run.order.findIndex((step) => step.kind === 'mcp' && step.method === 'ping')
+  assert.match(c, /while it observed work from a stopped turn\. This is the Board's own record/)
+  const read = run.order.findIndex((step) => step.kind === 'mcp' && step.method === 'tools/call')
   const cRead = run.order.findIndex((step) => step.kind === 'model' && step.n === 2)
-  assert.ok(firstPing === -1 || firstPing > cRead, 'a ping was sent while the strip kept for conversation C was unread by C')
-  assert.equal(run.pings, 1, 'conversation C\'s model read the strip, and the result was still not acknowledged')
+  const acknowledging = run.order.map((step, index) => [step, index])
+    .filter(([step, index]) => step.kind === 'mcp' && step.method === 'ping' && index > read).map(([, index]) => index)
+  assert.ok(acknowledging.every((index) => index > cRead), 'a ping was sent while the strip kept for conversation C was unread by C')
+  assert.equal(acknowledging.length, 1, 'conversation C\'s model read the strip, and the result was still not acknowledged')
 })
 
 for (const interleave of [true, false]) {
@@ -200,7 +215,7 @@ for (const interleave of [true, false]) {
         { text: 'Ship order 7 now.', sessionKey: 'client-a' },
       ],
       waitForServeCompletion: true, stopAfterServe: true,
-      tool: (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('OpenCase', {}, session), args) : undefined),
+      tool: (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('ApplyBatch', declareGoal(), session), args) : undefined),
       model: (round, body) => {
         const said = lastUserText(body)
         if (said.includes('What is going on?')) return answered(body) ? 'Something else happened.' : callTool('QueryBoard', {})
@@ -247,7 +262,7 @@ test('RT-CONV-5 an outcome captured for a conversation is shown once, in the str
         return undefined
       } }
     },
-    tool: (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('OpenCase', {}, session), args) : undefined),
+    tool: (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('ApplyBatch', declareGoal(), session), args) : undefined),
     model: (round, body) => {
       const said = lastUserText(body)
       if (said.includes('What is going on?')) return answered(body) ? 'Something else happened.' : callTool('QueryBoard', {})
@@ -293,7 +308,7 @@ const keptBeside = (dir) => {
 /** A model that acts on what it was given: it ships unless something in front of it shows how demo.ship ended. */
 const sawShipOutcome = (body) => /confirmed|demo\.ship: done|\\"state\\":\\"done\\"|"state":"done"/.test(JSON.stringify(body.messages ?? []))
 const shipUnlessSeen = (body) => (answered(body) ? 'Done.' : sawShipOutcome(body) ? 'It already shipped.' : ship)
-const shipping = (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('OpenCase', {}, session), args) : undefined)
+const shipping = (name, args, board, session) => (name === 'ApplyAction' ? confirmed(board.tool('ApplyBatch', declareGoal(), session), args) : undefined)
 
 for (const [slots, other] of [['1', 'reads'], ['1', 'chats'], ['64', 'reads']]) {
   test(`RT-CONV-6 a result whose turn ended before its model read it is shown again after its slot was reclaimed (slots ${slots},`
