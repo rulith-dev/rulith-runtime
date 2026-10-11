@@ -108,7 +108,7 @@
       "sha256": "953181b3b02bb10b026b47acacddca35557d1ac786194a849c0a716211cb1baa"
     },
     "local/instance-manager.mjs": {
-      "sha256": "aa9a7c1161ff84b83f6b762467357c3c2a45305fccd503d67e608abadb127275"
+      "sha256": "ba8b6cc7ed9955602ad4adf1158f54e21a5d7f728014c6cbe79a965db64596f8"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"

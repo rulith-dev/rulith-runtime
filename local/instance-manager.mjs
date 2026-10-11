@@ -305,10 +305,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
    * One control call to an instance's own loopback host.
    *
    * `connection: close` rather than a pooled socket, and one retry on a transport failure.
-   * An instance that was stopped and started again takes the same remembered port, and a
-   * keep-alive socket left over from the previous host on that port is dead — reusing it
-   * answers a perfectly good start with "fetch failed", which reads as the instance being
-   * broken rather than as this client holding a stale connection.
+   * The OS may reuse a recently closed address. A pooled socket from that previous host
+   * must not be treated as a connection to the current host generation.
    */
   /** The secret every host this manager builds accepts as "this call is mine". */
   const managedCallToken = randomUUID()
@@ -486,10 +484,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
   /**
    * Start this instance's loopback host, or return the one already running.
    *
-   * The port is remembered so a link stays stable across restarts, and re-checked because
-   * something else may have taken it; the Agent's task port is checked the same way. Neither
-   * is fatal — a busy port is reassigned and recorded, which is what "choose unique available
-   * ports automatically" has to mean on a machine Rulith does not own.
+   * A new host takes an OS-assigned port and records its live address. Links are obtained
+   * from the manager for this host generation; a previous address carries no identity.
+   * The Agent's task endpoint is separately checked against other live endpoints.
    */
   const ensureHostLocked = async (id) => {
     const live = hosts.get(id)
@@ -576,14 +573,11 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       ...(startConfirmMs === undefined ? {} : { startConfirmMs }),
     })
     if (phase !== 'ready') throw new Error(phaseTeaching())
-    let host = build(Number(row.hostPort ?? 0) || 0)
-    try { await host.listen() } catch (error) {
-      if (error?.code !== 'EADDRINUSE') throw error
-      // The remembered port belongs to somebody else now. Take any free one rather than
-      // refusing to open an instance over a number.
-      host = build(await freePort(taken))
-      await host.listen()
-    }
+    // A stopped host's port is an address, not an instance identity. Windows may reserve it
+    // between runs, even when no process listens there. Let the OS allocate this host's live
+    // address; the registry records it below and every caller asks the manager for it.
+    const host = build(0)
+    await host.listen()
     if (phase === 'closing') {
       // Closed while this was listening: it never becomes anybody's host, so it is shut here
       // rather than left behind holding a port and a key.

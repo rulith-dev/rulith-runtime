@@ -967,6 +967,22 @@ async function listening(ports) {
   return live
 }
 
+test('a stopped instance takes a live address instead of treating its remembered port as identity', async t => {
+  await withManager(t, async ({ manager }) => {
+    const instance = await addInstance(manager, 'Changed loopback address', { agentId: 'agent-alpha' })
+    await manager.instances.closeHost(instance.id)
+    const before = manager.registry.instance(instance.id)
+    await manager.registry.patchInstance(instance.id, () => ({ hostPort: 65536 }))
+    const opened = await manager.instances.open(instance.id)
+    const url = new URL(opened.url)
+    assert.ok(Number(url.port) > 0 && Number(url.port) <= 65535)
+    assert.equal((await fetch(url)).status, 200)
+    const after = manager.registry.instance(instance.id)
+    assert.equal(after.hostPort, Number(url.port))
+    for (const key of ['id', 'agentId', 'accountId', 'directory', 'connectionId']) assert.equal(after[key], before[key], key)
+  })
+})
+
 test('simultaneous opens of one instance create one host, on one port', async (t) => {
   await withManager(t, async ({ manager }) => {
     const instance = await addInstance(manager, 'Contended open', { agentId: 'agent-alpha' })
@@ -1007,8 +1023,13 @@ test('opens, Worker settings and owned shutdown of one instance interleave witho
       manager.instances.open(instance.id, '/worker-tools'),
     ])
     assert.equal(results.filter((row) => row.status === 'rejected').length, 0, JSON.stringify(results.map((r) => String(r.reason ?? ''))))
-    const ports = new Set(results.filter((row) => row.value?.url).map((row) => new URL(row.value.url).port))
-    assert.equal(ports.size <= 1, true, `interleaving produced ${ports.size} ports`)
+    const openedByGeneration = new Map()
+    for (const { value } of results) if (value?.url) {
+      const port = new URL(value.url).port
+      const previous = openedByGeneration.get(value.hostGeneration)
+      assert.ok(previous === undefined || previous === port, 'one live generation has one address')
+      openedByGeneration.set(value.hostGeneration, port)
+    }
     assert.equal(manager.instances.hosts.size <= 1, true)
 
     // Whatever order they ran in, the record and the reality agree at the end.
