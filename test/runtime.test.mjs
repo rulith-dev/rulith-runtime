@@ -867,7 +867,7 @@ test('the shipped Worker really sends the readiness event Rulith Local confirms 
     assert.ok(up, `the shipped Worker never reported readiness: ${JSON.stringify(host.events().slice(-6))}`)
     assert.equal(typeof up.workerId, 'string')
     assert.equal(up.connectionId, 'conn-local-readiness')
-    assert.ok(host.events().some((event) => event.src === 'worker' && event.type === 'log' && /Could not reach Rulith Cloud/i.test(String(event.line ?? ''))),
+    assert.ok(host.events().some((event) => event.src === 'worker' && event.type === 'log' && /Could not refresh source definitions from Rulith Cloud/i.test(String(event.line ?? ''))),
       'this arm is only meaningful while the Worker cannot reach a working Gateway')
   } finally {
     await host.close()

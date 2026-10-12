@@ -26,6 +26,8 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import {
   DONE, HOLD, actionRow, driveWorker, grantFor, signGrant, sourceFreeActionRow, toolDigest,
@@ -191,4 +193,106 @@ test('RT-WK-SRC-5 reading the selector never rewrites the bytes the grant covers
   assert.equal(run.timedOut, false, run.output)
   assert.equal(run.ran('ship'), 1, 'the served bytes were re-serialized before being digested')
   assert.equal(run.of('ClaimWork').length, 1)
+})
+
+// The Adapter touches a file inside the directory it was actually handed. Both directories
+// start with different contents, so a receipt alone cannot pass for a changed Source root.
+const TOUCH_SOURCE = "import { appendFileSync } from 'node:fs'\n"
+  + "import { join, basename } from 'node:path'\n"
+  + "appendFileSync(join(process.env.RULITH_SOURCE_ACCESS, 'note.txt'), 'touched\\n')\n"
+  + "appendFileSync(process.env.P2_EFFECT_LOG, basename(process.env.RULITH_SOURCE_ACCESS) + '\\n')\n"
+  + "process.stdout.write(JSON.stringify({ done: true }))\n"
+
+async function sourceDirectories({ secondName = 'orders', failure, removed = false, localOverride = false } = {}) {
+  let first, second, root, reports = 0, listings = 0, contents
+  const row = (name, work) => actionRow({ work, sourceRecordId: name, args: JSON.stringify({ source: name }) })
+  const rows = failure ? [row('orders', 'inv_first')]
+    : [row('orders', 'inv_first'), row(secondName, 'inv_second')]
+  const run = await driveWorker({
+    extraFiles: { 'first/note.txt': 'first\n', 'second/note.txt': 'second\n' },
+    extraAdapters: { 'ship-adapter.mjs': TOUCH_SOURCE },
+    sources: directory => {
+      root = directory
+      first = join(root, 'first')
+      second = join(root, 'second')
+      // Fixture secrets only: a conflicting local directory for the granted file Source.
+      if (localOverride) writeFileSync(join(root, 'no-secrets.json'),
+        JSON.stringify({ orders: { type: 'file', access: second } }))
+      return [{ name: 'orders', type: 'file', access: first }]
+    },
+    sourceReply: () => {
+      listings++
+      if (listings > 1 && failure) return failure
+      return { body: { sources: reports === 0 ? [{ name: 'orders', type: 'file', access: first }]
+        : removed ? [] : [{ name: secondName, type: 'file', access: second }] } }
+    },
+    reply: (operation, seen) => {
+      if (operation.kind === 'Poll') return seen.filter(entry => entry.operation.kind === 'Poll').length === 1
+        ? { body: { accepted: true, payload: { work: rows } } } : HOLD
+      if (operation.kind === 'ReportWork') reports++
+      return { body: { accepted: true, revision: 'b12' } }
+    },
+    done: (_seen, output) => {
+      const completed = (output.match(/\| receipt (?:not )?committed/g) ?? []).length
+      if (completed < rows.length && !/this work item is left unclaimed|not an authorized Source/.test(output)) return false
+      contents = [first, second].map(directory => readFileSync(join(directory, 'note.txt'), 'utf8'))
+      return true
+    },
+  })
+  assert.equal(run.timedOut, false, run.output)
+  return { run, contents, listings, root }
+}
+
+test('RT-WK-SRC-6 one Worker uses two projects approved in turn without a restart', async () => {
+  const { run, contents, listings } = await sourceDirectories({ secondName: 'new-project' })
+  assert.deepEqual(run.effects, ['first', 'second'], run.output)
+  assert.deepEqual(contents, ['first\ntouched\n', 'second\ntouched\n'])
+  assert.equal(run.of('ClaimWork').length, 2)
+  assert.equal(new Set(run.of('ClaimWork').map(entry => entry.operation.workerId)).size, 1)
+  assert.equal(listings, 3, 'startup and each Source-bound item must read the current grants')
+})
+
+test('RT-WK-SRC-7 the next item in a batch uses the changed directory under the same Source name', async () => {
+  const { run, contents, listings } = await sourceDirectories()
+  assert.deepEqual(run.effects, ['first', 'second'], run.output)
+  assert.deepEqual(contents, ['first\ntouched\n', 'second\ntouched\n'])
+  assert.equal(run.of('ClaimWork').length, 2)
+  assert.equal(listings, 3)
+})
+
+for (const [label, failure] of [
+  ['HTTP failure', { status: 503, body: {} }],
+  ['unreadable Source list', { body: {} }],
+]) {
+  test(`RT-WK-SRC-8 a refresh ${label} leaves work unclaimed and both directories untouched`, async () => {
+    const { run, contents, listings } = await sourceDirectories({ failure, localOverride: true })
+    assert.deepEqual(contents, ['first\n', 'second\n'])
+    assert.deepEqual(run.effects, [])
+    assert.equal(run.of('ClaimWork').length, 0)
+    assert.equal(run.of('ReportWork').length, 0)
+    assert.equal(listings, 2)
+    assert.match(run.output, /Nothing was claimed and no Tool ran; this work item is left unclaimed/)
+  })
+}
+
+test('RT-WK-SRC-9 a Source withdrawn between two items is not used for the second', async () => {
+  const { run, contents, listings } = await sourceDirectories({ removed: true })
+  assert.deepEqual(run.effects, ['first'], run.output)
+  assert.deepEqual(contents, ['first\ntouched\n', 'second\n'])
+  assert.equal(run.of('ClaimWork').length, 1)
+  assert.equal(run.of('ReportWork').length, 1)
+  assert.equal(listings, 3)
+  assert.match(run.output, /Source "orders" is not an authorized Source/)
+})
+
+test('RT-WK-SRC-10 a local file directory override is ignored and reported without its value', async () => {
+  const { run, contents, root } = await sourceDirectories({ localOverride: true })
+  assert.deepEqual(run.effects, ['first', 'second'], run.output)
+  assert.deepEqual(contents, ['first\ntouched\n', 'second\ntouched\n'])
+  const lines = run.output.split('\n').filter(line => line.includes('The local directory for Source'))
+  assert.equal(lines.length, 2, 'only startup and the conflicting first-item refresh refuse the local directory')
+  for (const line of lines) {
+    assert.match(line, /Source "orders" is not used: the Gateway's approved directory is used/)
+    assert.equal(line.includes(root), false, 'the refusal quoted a directory')
+  }
 })

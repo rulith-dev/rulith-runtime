@@ -4,6 +4,9 @@ All notable changes to the local runtime are documented here.
 
 ## 0.15.0 - 2026-10-12
 
+- Worker: refreshes granted Sources before each Source-bound work item, uses the
+  Gateway-approved file directory without a restart, and leaves work unclaimed if
+  that refresh fails; withdrawn Sources and conflicting local directories are not used.
 - Worker: stops with exit code 4 when a newer process takes over its Connection
   (D-1012f); Local leaves that Worker stopped instead of restarting it.
 - Agent: vendors the D-1012e public MCP contract, with one-line input descriptions for

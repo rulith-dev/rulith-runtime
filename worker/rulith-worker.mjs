@@ -332,8 +332,7 @@ function materialStore() {
 }
 let SOURCE_CONTEXT = {}
 let LOCAL_SOURCE_CONTEXT = {}
-// 首张工单也必须拿到完整执行契约。来源地址同步失败可以降级到本机密文库，
-// 但不能一边同步一边先 Poll——否则同一配置会因网络时序偶发地报“缺端点”。
+// 首张工单也必须等待来源同步。具名来源工单在领取前再次刷新，失败则不执行。
 let SOURCES_READY = Promise.resolve()
 /** 纯函数:按来源引用合成凭据面(条目字段优先,库补缺)。导出给测试——解析对错不该靠读源码断言。 */
 function resolveSourceCreds(route, vault) {
@@ -477,7 +476,8 @@ export function localSourceEntry(granted, ownVault, environmentVault) {
  *
  * Credentials for a granted Source come from this Worker's own vault when it has an entry under
  * that name and from the environment's vault otherwise; the cloud's non-secret half (type and
- * address) underlies either, as before. Nothing in `environmentVault` reaches the result except
+ * address) underlies either; a file Source always keeps the Gateway's approved directory.
+ * Nothing in either vault reaches the result except
  * under a name the authority granted — an environment key for a Source this Connection is not
  * bound to is not an input to anything here.
  *
@@ -492,25 +492,29 @@ export function localSourceEntry(granted, ownVault, environmentVault) {
 export function grantedSourceContext(granted, ownVault, environmentVault = {}) {
   const context = { ...ownVault }
   let count = 0, shared = 0
-  const refused = [], ignored = []
+  const refused = [], ignored = [], localOverrides = []
   for (const s of granted) {
     if (!s || typeof s.name !== 'string' || s.name === '') continue
     const chosen = localSourceEntry(s, ownVault, environmentVault)
     if (chosen.refused !== undefined) refused.push({ name: s.name, mismatch: chosen.refused })
     if (chosen.ignored.length > 0) ignored.push({ name: s.name, fields: chosen.ignored })
-    const local = chosen.entry
+    const local = { ...chosen.entry }
     const remote = typeof s.access === 'string' && s.access !== ''
       ? { type: s.type, access: s.access, url: s.access, dsn: s.access }
       : { type: s.type }
+    if (s.type === 'file' && local.access !== undefined && local.access !== s.access) localOverrides.push(s.name)
+    if (s.type === 'file') {
+      for (const field of ['type', 'access', 'url', 'dsn']) delete local[field]
+    }
     context[s.name] = { ...remote, ...local,
       ...(remote.headers || local.headers ? { headers: { ...(remote.headers ?? {}), ...(local.headers ?? {}) } } : {}) }
     count++
     if (chosen.fromEnvironment && Object.keys(local).length > 0) shared++
   }
-  return { context, count, shared, refused, ignored }
+  return { context, count, shared, refused, ignored, localOverrides }
 }
-/** Refresh only the non-secret Source metadata when a newly bound Source is first dispatched.
- * The original vault remains local; a refresh never merges a stale cloud snapshot into a new one. */
+/** Refresh the non-secret Source metadata before resolving each Source-bound work item.
+ * Replace the granted snapshot whole; return false when no current snapshot could be read. */
 async function refreshSourceDefinitions() {
   return fetch(`${WORK_URL}/sources`, {
       headers: { 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY },
@@ -519,16 +523,15 @@ async function refreshSourceDefinitions() {
       .then(async (r) => {
         if (r.ok) return r.json()
         if (r.status === 401) throw await credentialRejection(r)
-        console.error(`· Could not load source definitions from Rulith Cloud (HTTP ${r.status}). Local secrets remain available, but cloud source endpoints were not loaded.`)
-        return undefined
+        throw new Error(`HTTP ${r.status}`)
       }).then((j) => {
         // `j.toolIds` is read no more (board-spec TOOL-08). It used to become a local
         // advertisement filter; the Connection lock in Console is the only authority,
         // and a Worker that also decided made the two disagree invisibly.
-        if (!j || !Array.isArray(j.sources)) return
-        const { context, count: n, shared, refused, ignored } = grantedSourceContext(j.sources, LOCAL_SOURCE_CONTEXT, readEnvironmentVault())
+        if (!j || !Array.isArray(j.sources)) throw new Error('current Gateway Source list is unreadable')
+        const { context, count: n, shared, refused, ignored, localOverrides } = grantedSourceContext(j.sources, LOCAL_SOURCE_CONTEXT, readEnvironmentVault())
         SOURCE_CONTEXT = context
-        if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. Local secrets take precedence; credentials remain local.`
+        if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. File directories come from the Gateway; credentials remain local.`
           + (shared > 0 ? ` ${shared} of them use the environment's keys.` : ''))
         // Said by name and by which part did not fit, never with the entry's values: the vault holds
         // keys, and the Source name comes from the wire.
@@ -541,9 +544,14 @@ async function refreshSourceDefinitions() {
         for (const { name, fields } of ignored) {
           console.error(`· The environment's key for Source "${flatPeerText(name, 80)}" supplies credentials only; ignored: ${flatPeerText(fields.join(', '), 160)}.`)
         }
+        for (const name of localOverrides) {
+          console.error(`· The local directory for Source "${flatPeerText(name, 80)}" is not used: the Gateway's approved directory is used.`)
+        }
+        return true
       }).catch((e) => {
         if (e instanceof CredentialRejectedError) throw e
-        console.error(`· Could not reach Rulith Cloud for source definitions (${e.message}). Continuing with local secrets.`)
+        console.error(`· Could not refresh source definitions from Rulith Cloud (${e.message}). Source-bound work will be left unclaimed.`)
+        return false
       })
 }
 
@@ -5082,10 +5090,6 @@ if (IS_MAIN) {
       // 顺风窗恒落空,一个动作烧两轮模型调用。序=动作>清关>求证>取材——
       // 动作改世界且有人在等回执;求证失败自会按板侧退避窗重来,晚几秒无损。
       const items = orderWork(r.payload?.work ?? [])
-      // Console may bind a Source after this Worker first advertises its tools. Fetch that
-      // authorized Source before resolving/claiming its first job; never guess a type or path.
-      if (items.some(item => typeof item.sourceRecordId === 'string' && item.sourceRecordId !== ''
-        && !Object.hasOwn(SOURCE_CONTEXT, item.sourceRecordId))) await refreshSourceDefinitions()
       for (const [index, w] of items.entries()) {
         // The batch is not a promise. It was handed over under one lease, and the lease can
         // go while the first item is still running — so every following item is checked
@@ -5117,6 +5121,21 @@ if (IS_MAIN) {
           // silently while still carrying the field. The rule is about the hop, not about
           // any one kind of work, so it belongs where the hop arrives.
           refuseRetiredHopFields(w, `The ${String(w.workType ?? 'unknown')} work item ${w.work ?? w.material ?? '(unnamed)'}`)
+          // Console can change or withdraw a Source between two items in this very batch.
+          // Refresh before any handler resolves its Source; a failed read takes the existing
+          // pre-claim skip path, with no ClaimWork, ReportWork or executor side effects.
+          const namesSource = typeof w.sourceRecordId === 'string' && w.sourceRecordId !== ''
+            || ['verification', 'evidence'].includes(w.workType) && typeof w.source === 'string' && w.source !== ''
+          if (namesSource && !await refreshSourceDefinitions()) {
+            const note = `· Skipping ${w.tool ?? w.work ?? w.material}: current granted Source definitions could not be refreshed.`
+              + ' Nothing was claimed and no Tool ran; this work item is left unclaimed.'
+            if (w.workType === 'action') saySkipOnce(w.work, w.tool, 'source_refresh_failed', note)
+            else {
+              console.log(note)
+              wev('skipped', { id: w.work ?? w.material ?? '', workType: String(w.workType ?? ''), why: 'source_refresh_failed' })
+            }
+            continue
+          }
           if (w.workType === 'verification') await handleClaimWork(w)
           else if (w.workType === 'action') await handleAction(w)
           else if (w.workType === 'review') await handleReview(w)

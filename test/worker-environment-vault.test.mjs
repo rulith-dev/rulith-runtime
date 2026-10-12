@@ -40,14 +40,26 @@ test('an environment key for a Source nobody granted never enters the Source con
 })
 
 test('a Worker\'s own vault wins over the environment vault for the same Source', () => {
-  const own = { orders: { type: 'file', access: '/own/orders' } }
-  const environment = { orders: { type: 'file', access: '/environment/orders', token: 'environment-token' } }
-  const { context, shared } = grantedSourceContext(granted('orders'), own, environment)
-  assert.equal(context.orders.access, '/own/orders')
+  const own = { orders: { type: 'http', url: 'https://own.example/' } }
+  const environment = { orders: { type: 'http', token: 'environment-token' } }
+  const { context, shared } = grantedSourceContext([{ name: 'orders', type: 'http', access: 'https://granted.example/' }], own, environment)
+  assert.equal(context.orders.url, 'https://own.example/')
   assert.equal(context.orders.token, undefined, 'the environment entry was merged into the entry the own vault already supplies')
   assert.equal(shared, 0)
   // An own entry that is not granted stays where it always was: available, and still its own.
-  assert.equal(grantedSourceContext([], own, environment).context.orders.access, '/own/orders')
+  assert.equal(grantedSourceContext([], own, environment).context.orders.url, 'https://own.example/')
+})
+
+test('a granted file Source keeps the Gateway directory and type while own credentials retain precedence', () => {
+  const own = { orders: { type: 'db', access: '/own/orders', token: 'OWN' } }
+  const { context, shared, localOverrides } = grantedSourceContext(granted('orders'), own, { orders: { token: 'ENV' } })
+  assert.equal(context.orders.access, '/granted/orders')
+  assert.equal(context.orders.type, 'file')
+  assert.equal(context.orders.token, 'OWN')
+  assert.equal(shared, 0)
+  assert.deepEqual(localOverrides, ['orders'])
+  const unlocated = grantedSourceContext([{ name: 'orders', type: 'file' }], own).context.orders
+  assert.equal(unlocated.access, undefined, 'an absent Gateway directory must not fall back to the local one')
 })
 
 test('an environment entry that is not a vault entry is ignored rather than spread into the context', () => {
@@ -286,12 +298,16 @@ test('a token is sent only to the address it was entered for', async (t) => {
   assert.doesNotMatch(run.output, /NEVER-SENT/)
 })
 
-test('own-vault entries win over environment entries in a running Worker', async (t) => {
+test('own-vault entries exclude environment entries while the granted file directory comes from the Gateway', async (t) => {
   const own = join(tmpdir(), 'own-orders'), shared = join(tmpdir(), 'environment-orders')
+  let root
   const run = await drive(vaults(t, { own: { orders: { type: 'file', access: own } },
-    environment: { orders: { type: 'file', access: shared } } }), [actionRow()])
+    environment: { orders: { type: 'file', access: shared } } }), [actionRow()],
+    { sources: dir => { root = dir; return [{ name: 'orders', type: 'file', access: dir }] } })
   assert.equal(run.timedOut, false, run.output)
-  assert.deepEqual(run.effects, ['access:' + own])
+  assert.deepEqual(run.effects, ['access:' + root])
+  assert.match(run.output, /The local directory for Source "orders" is not used/)
+  assert.doesNotMatch(run.output, /The environment's key for Source/)
 })
 
 test('an environment key for another type of Source, for another address, or that says how to start the Source, is not handed to an Adapter, and the Worker says so', async (t) => {
@@ -341,6 +357,7 @@ test('a key for a Source bound later is used after the refresh a new work item c
   assert.equal(run.timedOut, false, run.output)
   assert.ok(listings >= 2, 'the work item naming an unseen Source did not cause a refresh')
   assert.deepEqual(run.effects, ['access:' + root], 'the ungranted Source ran, or the late-bound one did not')
-  assert.equal(run.output.match(/Loaded \d+ source definition/g)?.length, 1, 'a Source was loaded at start, before anything was granted')
+  assert.equal(listings, 3, 'startup and both Source-bound items each read the grants')
+  assert.equal(run.output.match(/Loaded \d+ source definition/g)?.length, 2, 'both item refreshes read the late grant; startup grants nothing')
   assert.match(run.output, /Loaded 1 source definition\(s\)[^\n]*1 of them use the environment's keys/)
 })
