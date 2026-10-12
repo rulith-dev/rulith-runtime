@@ -2143,10 +2143,9 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
   if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
     return { fault: 'the execution grant payload is not an object.' }
   }
-  const selected = decoded.version === 3 || decoded.version === 4
-  const sourceBound = decoded.version === 4
+  const selected = decoded.version === 4
   const expectedKeys = [...Object.keys(EXECUTION_GRANT_SHAPE), ...(selected ? ['materialBindingDigest'] : []),
-    ...(sourceBound ? ['sourceBindingDigest'] : [])]
+    ...(selected ? ['sourceBindingDigest'] : [])]
   const extra = Object.keys(decoded).filter((name) => !expectedKeys.includes(name))
   if (extra.length > 0) {
     return { fault: `the execution grant carries ${extra.join(', ')}, which the contract does not define.` }
@@ -2171,7 +2170,7 @@ export function readExecutionGrant(token, key = CONNECTION_KEY) {
       || typeof decoded.sourceRecordId !== 'string' || decoded.sourceRecordId === '')) {
     return { fault: 'the selected material grant lacks a binding digest or Source record.' }
   }
-  if (sourceBound && (typeof decoded.sourceBindingDigest !== 'string'
+  if (selected && (typeof decoded.sourceBindingDigest !== 'string'
       || !DIGEST_PATTERN.test(decoded.sourceBindingDigest))) {
     return { fault: 'the selected HTTP grant lacks its Source binding digest.' }
   }

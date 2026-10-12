@@ -2,6 +2,15 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.15.1 - unreleased
+
+- Agent: the system prompt no longer repeats the Board View and operations explanations that the
+  Get description carries (D-1012h).
+- Agent: drops unreachable definitions after OpenAI tool-schema expansion while preserving input validation and native schemas.
+- Agent and Local: remove Runtime 0.9 unresolved-record retirement and its environment plumbing; old files remain untouched.
+- Worker: rejects selected-material grant v3 in the decoder; ordinary v2, selected v4 and archived records remain supported.
+- Packaging: stops shipping the four archived selected-material v1/v2 schema and pin files; repository archives and verification remain.
+
 ## 0.15.0 - 2026-10-12
 
 - Agent: speaks the D-1012g three-tool surface, `Get`, `Set` and `Execute`; `Get`

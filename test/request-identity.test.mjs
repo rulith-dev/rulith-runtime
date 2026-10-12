@@ -71,7 +71,7 @@ test('RT-ID-2 an answered call leaves nothing held, and the next call is a new i
 /** The endpoint key Runtime 0.9 filed its record under: the URL and a fingerprint of the token. */
 const endpointKey = (port) => `http://127.0.0.1:${port}#${createHash('sha256').update(TEST_TOKEN, 'utf8').digest('hex').slice(0, 16)}`
 
-test('RT-ID-3 a record Runtime 0.9 left is named once, removed, and never acted on', async () => {
+test('RT-ID-3 a record Runtime 0.9 left is untouched and never acted on', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-legacy-'))
   const store = join(dir, 'agent-sessions.json')
   const listenPort = await freePort()
@@ -80,28 +80,27 @@ test('RT-ID-3 a record Runtime 0.9 left is named once, removed, and never acted 
       [endpointKey(listenPort)]: { unresolved: { requestId: 'req-legacy-1', sessionId: 'mcp-old', tool: 'Set', since: 1 } },
       'https://elsewhere.example#0123456789abcdef': { unresolved: { requestId: 'req-other', tool: 'Execute', since: 2 } },
     } }))
+    const before = readFileSync(store)
     const first = await runAgent({
       argv: [], sessionFile: store, listenPort, chatLines: ['hello'],
       priorOperations: running,
       model: () => 'Hello.', timeoutMs: 25_000,
     })
     assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`)
-    assert.match(first.stderr, /Rulith Runtime 0\.9 recorded a Set call from a previous run whose answer it never received \(request req-legacy-1\)/)
+    assert.doesNotMatch(first.stderr, /Runtime 0\.9 recorded/)
     assert.match(first.stderr, /nothing is re-sent/)
     // What the authority shows about it is said beside it, from the strip initialize carried.
     assert.match(first.stderr, /Set is still running at the authority/)
     assert.deepEqual(first.verbs, [], 'an inherited record was acted on')
     assert.equal(first.modelRequests.length, 1, 'an ordinary greeting was held back by the old record')
-    const after = JSON.parse(readFileSync(store, 'utf8'))
-    assert.equal(after.endpoints[endpointKey(listenPort)], undefined, 'the record was not retired')
-    assert.equal(after.endpoints['https://elsewhere.example#0123456789abcdef'].unresolved.requestId, 'req-other',
-      'a record for another endpoint was touched')
+    assert.deepEqual(readFileSync(store), before, 'a legacy file was rewritten')
 
     const second = await runAgent({
       argv: [], sessionFile: store, listenPort, chatLines: ['hello again'], model: () => 'Hello again.', timeoutMs: 25_000,
     })
     assert.equal(second.code, 0, `${second.stdout}\n${second.stderr}`)
-    assert.doesNotMatch(second.stderr, /Runtime 0\.9 recorded/, 'the notice repeated after the record was retired')
+    assert.doesNotMatch(second.stderr, /Runtime 0\.9 recorded/, 'a legacy notice was emitted')
+    assert.deepEqual(readFileSync(store), before)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -113,13 +112,14 @@ test('RT-ID-4 with the store off, a 0.9 record is not read at all', async () => 
   assert.doesNotMatch(run.stdout + run.stderr, /Runtime 0\.9 recorded|session store/)
 })
 
-test('RT-ID-5 nothing is written for a call whose answer was lost, and a retired record leaves no temporary behind', async () => {
+test('RT-ID-5 a lost answer leaves the old record untouched and creates no temporary', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-atomic-'))
   const store = join(dir, 'agent-sessions.json')
   const listenPort = await freePort()
   try {
     writeFileSync(store, JSON.stringify({ schema: 'rulith-agent-sessions/1', endpoints: {
       [endpointKey(listenPort)]: { unresolved: { requestId: 'req-legacy-2', tool: 'OpenCase', since: 1 } } } }))
+    const before = readFileSync(store)
     const run = await runAgent({
       argv: [], sessionFile: store, listenPort, env: { RULITH_MAX_ROUNDS: '4' },
       chatLines: ['Write once through a broken stream.'],
@@ -133,10 +133,9 @@ test('RT-ID-5 nothing is written for a call whose answer was lost, and a retired
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
     assert.match(run.stdout, /No answer arrived for Set/)
-    // The store now holds nothing for this endpoint: no record of the lost call is kept.
+    // The legacy record is neither read nor rewritten after the new call loses its answer.
     assert.ok(existsSync(store))
-    const record = JSON.parse(readFileSync(store, 'utf8'))
-    assert.deepEqual(record, { schema: 'rulith-agent-sessions/1', endpoints: {} })
+    assert.deepEqual(readFileSync(store), before)
     assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith('.tmp')), [],
       'a temporary store file survived the write')
   } finally { rmSync(dir, { recursive: true, force: true }) }

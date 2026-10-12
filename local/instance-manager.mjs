@@ -5,8 +5,8 @@
  * An instance is a **directory**, not a name and not a running process. Everything that can
  * differ between two Agents lives inside it: the configuration file (and therefore the MCP
  * state, which the existing services resolve from `dirname(config)`), the pairing state, the
- * Worker tool manifest and vault, the workspace root, the durable record of calls whose
- * outcome is unknown, and the ports. Two instances that shared any one of those would be one
+ * Worker tool manifest and vault, the workspace root, and the ports. Two instances that
+ * shared any one of those would be one
  * instance wearing two names — and the symptom would be an Agent answering under another
  * Agent's identity, which is the failure this whole file exists to make impossible.
  *
@@ -74,23 +74,19 @@ export const saveInstanceConfig = (directory, config) => writeJsonAtomic(instanc
  * The configuration a fresh instance starts from.
  *
  * Every default that would otherwise resolve to a location *shared by all instances* is
- * pinned into this directory. Three of them are not obvious:
+ * pinned into this directory. Two of them are not obvious:
  *
  *   · `RULITH_TOOLS_FILE` / `RULITH_SECRETS_FILE` default to the Worker's own script
  *     directory — inside the installed runtime package. Left alone, every instance on the
  *     machine would edit one manifest and one credential vault.
  *   · `RULITH_WORKER_ROOT` defaults to the same place, so workspace tools would read and
  *     write inside the installed package rather than in this instance's workspace.
- *   · `RULITH_SESSION_FILE` defaults to `~/.rulith/agent-sessions.json`, the durable record
- *     of calls whose outcome is unknown. Two Agents sharing it is how one Agent's unresolved
- *     call becomes another's to explain.
  */
 export function newInstanceConfig({ directory, mode = 'local_agent', servePort }) {
   const config = defaultLocalConfig()
   config.roles = mode === 'existing_client' ? ['worker'] : ['agent', 'worker']
   config.agent = { ...config.agent, env: { ...config.agent.env,
-    RULITH_SERVE_PORT: String(servePort),
-    RULITH_SESSION_FILE: join(directory, 'agent-sessions.json') } }
+    RULITH_SERVE_PORT: String(servePort) } }
   config.worker = { ...config.worker, env: { ...config.worker.env,
     RULITH_TOOLS_FILE: join(directory, 'worker-tools.json'),
     RULITH_SECRETS_FILE: join(directory, 'worker-secrets.json'),
@@ -343,7 +339,6 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       ['RULITH_WORKER_ROOT', config.worker?.env?.RULITH_WORKER_ROOT],
       ['RULITH_TOOLS_FILE', config.worker?.env?.RULITH_TOOLS_FILE],
       ['RULITH_SECRETS_FILE', config.worker?.env?.RULITH_SECRETS_FILE],
-      ['RULITH_SESSION_FILE', config.agent?.env?.RULITH_SESSION_FILE],
     ]
     for (const [name, raw] of configured) {
       const value = text(raw).trim()

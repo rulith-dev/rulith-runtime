@@ -12,13 +12,9 @@
  * the wire and what reached the model.
  */
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import test from 'node:test'
 
-import { HOP_FAILURE, TEST_TOKEN, callTool, defaultGateway, freePort, runAgent, declareGoal } from './support/agent-harness.mjs'
+import { HOP_FAILURE, callTool, defaultGateway, runAgent, declareGoal } from './support/agent-harness.mjs'
 
 test('RT-REC-5 nothing outstanding costs nothing: no ping, no read, no Board call', async () => {
   // The strip must not become a tax on ordinary conversation. The handshake already showed the
@@ -211,35 +207,3 @@ test('RT-REC-11d the shadow reviewer does not write when the turn ended with res
   assert.equal(shadowWrites(run).length, 0,
     'the shadow reviewer wrote while a result was still unread')
 })
-
-for (const readable of [true, false]) {
-  test(`RT-REC-18 a record Runtime 0.9 left is named once, and the strip is said to show only what it lists${readable ? ''
-    : ', which is nothing when initialize carried none'}`, async () => {
-    // The strip lists the latest operations, any still in progress and the latest settled write —
-    // not every call. And a strip initialize did not carry says nothing about that call either way.
-    const dir = mkdtempSync(join(tmpdir(), 'rulith-legacy-record-'))
-    const store = join(dir, 'agent-sessions.json')
-    const listenPort = await freePort()
-    const endpoint = `http://127.0.0.1:${listenPort}#${createHash('sha256').update(TEST_TOKEN, 'utf8').digest('hex').slice(0, 16)}`
-    writeFileSync(store, JSON.stringify({ schema: 'rulith-agent-sessions/1',
-      endpoints: { [endpoint]: { unresolved: { requestId: 'req-legacy-1', tool: 'Execute' } } } }))
-    try {
-      const run = await runAgent({
-        argv: [], sessionFile: store, listenPort, chatLines: ['hello'], model: () => 'Hello.',
-        ...(readable ? {} : { omitStrip: (method) => method === 'initialize' }),
-        timeoutMs: 20_000,
-      })
-      assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-      assert.match(run.stderr, /Runtime 0\.9 recorded an Execute call from a previous run whose answer it never received/)
-      assert.match(run.stderr, /lists this Agent's latest operations, any still in progress and the latest settled write/)
-      assert.doesNotMatch(run.stderr, /shows every call/)
-      if (readable) {
-        assert.match(run.stderr, /The strip shows no operation still in progress\./)
-      } else {
-        assert.match(run.stderr, /The initialize answer carried no readable recent-operations strip/)
-        assert.doesNotMatch(run.stderr, /The strip shows no operation still in progress/,
-          'a strip initialize never carried was said to show nothing in progress')
-      }
-    } finally { rmSync(dir, { recursive: true, force: true }) }
-  })
-}

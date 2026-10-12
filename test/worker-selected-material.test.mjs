@@ -37,13 +37,21 @@ test('selected effect result keeps its exact private input and Tool pin across l
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('v3 grant has its exact overlay shape and v2 cannot carry the selected commitment', () => {
+test('decoder rejects archived v3, preserves v2/v4 and closes the selected commitment', () => {
   const row = actionRow()
-  assert.equal(readExecutionGrant(signGrant(v3(row)), CONNECTION_KEY).fault, undefined)
+  const ordinary = grantFor(row, { workerId: 'wkr_selected_material' })
+  const selected = { ...v3(row), version: 4, sourceBindingDigest: bindingDigest }
+  assert.deepEqual(readExecutionGrant(signGrant(ordinary), CONNECTION_KEY), { grant: ordinary })
+  assert.deepEqual(readExecutionGrant(signGrant(selected), CONNECTION_KEY), { grant: selected })
+  for (const archived of [v3(row), { ...ordinary, version: 3 }]) {
+    assert.ok(readExecutionGrant(signGrant(archived), CONNECTION_KEY).fault)
+    assert.equal(readExecutionGrant(signGrant(archived), CONNECTION_KEY).grant, undefined)
+  }
   for (const changed of [
     { materialBindingDigest: undefined }, { materialBindingDigest: 'sha256:wrong' },
+    { sourceBindingDigest: undefined }, { sourceBindingDigest: 'sha256:wrong' },
     { sourceRecordId: '' }, { arbitrary: true },
-  ]) assert.ok(readExecutionGrant(signGrant({ ...v3(row), ...changed }), CONNECTION_KEY).fault)
+  ]) assert.ok(readExecutionGrant(signGrant({ ...selected, ...changed }), CONNECTION_KEY).fault)
   assert.match(readExecutionGrant(signGrant({ ...grantFor(row, { workerId: 'wkr_selected_material' }), materialBindingDigest: bindingDigest }), CONNECTION_KEY).fault, /does not define/)
 })
 

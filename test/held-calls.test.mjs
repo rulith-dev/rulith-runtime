@@ -403,7 +403,8 @@ test('RT-HELD-7b an unknown outcome is never taught as something to try again', 
   assert.equal(answer.teaching, 'The outcome is unknown: its external effect may already have happened. Its content is'
     + ' withheld from you now. Do not repeat the operation; a person can check the effect in Console.')
   assert.doesNotMatch(answer.teaching, /unless the Board shows/, 'an unknown outcome was offered as something to redo')
-  assert.match(run.modelRequests[0].messages[0].content, /unknown means its effect may already have happened; do not repeat it/)
+  // D-1012h: the system prompt no longer repeats the operations explanation; the Get description and this teaching carry it.
+  assert.doesNotMatch(run.modelRequests[0].messages[0].content, /Every answer from the authority also shows operations/)
 })
 
 for (const provider of ['openai', 'anthropic']) {
@@ -822,14 +823,15 @@ test('RT-HELD-32 with no ping answered, the read at the host bound still finds t
   assert.equal(answer.result?.status, 'confirmed', 'the model was told running while the read showed the result')
 })
 
-test('RT-HELD-33 the model is told which answers show operations, and a call this host did not send shows none', async () => {
+test('RT-HELD-33 the system prompt does not repeat the operations explanation (D-1012h), and a call this host did not send shows none', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Try it.'], env: FAST,
     model: (round) => round === 1 ? callTool('GetCompletion', {}) : 'That tool is not carried.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const system = systemTextOf(run.modelRequests[0])
-  assert.ok(system.includes('Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you.'))
+  // D-1012h: the operations explanation lives once, in the Get description; the system prompt no longer repeats it.
+  assert.doesNotMatch(system, /Every answer from the authority also shows operations/)
   assert.doesNotMatch(system, /recent operations|newest first|shows no full list/)
   assert.doesNotMatch(system, /Every tool result also shows operations/)
   const [refused] = toolResults(run)

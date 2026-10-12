@@ -220,7 +220,7 @@ test('selected Source binding cannot name another Connection or Source', async (
   }
 })
 
-test('archived v3 selected grant decodes but cannot authorize the Source-bound /2 write', async () => {
+test('archived v3 selected grant is rejected before the Source-bound /2 write', async () => {
   const { run, requests } = await selectedRun({ grantVersion: 3 })
   assert.equal(run.timedOut, false, run.output)
   assert.equal(run.of('ClaimWork').length, 0)

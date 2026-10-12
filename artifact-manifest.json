@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "5ef045aefda0cdf6637485792badcb2c3361cae6a787d184f29dc1a55fea6383"
+      "sha256": "3b3c22d9069f14cf9a7c1bb54e158c017a79524551e6cc6ebd010c37a2697838"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -38,23 +38,11 @@
     "protocol/worker-selected-material.schema.json": {
       "sha256": "9b2a4f87d7cd0ce18520bcd06606e7896ba3f919b5b25186db43baf7a1b0f2e5"
     },
-    "protocol/worker-selected-material-v1.schema.json": {
-      "sha256": "4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e"
-    },
-    "protocol/worker-selected-material-v2.schema.json": {
-      "sha256": "f7a0e3ea90f8d94d1698b469d9bc7c75a956c51000399a7876d9506782e173f6"
-    },
     "protocol/worker-selected-material-overlay-pin.json": {
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
-    "protocol/worker-selected-material-overlay-pin-v1.json": {
-      "sha256": "0aabd5cae79485c9e0e92858e9ede62df98835f6bf46d86a95d841e1e86b7a6c"
-    },
-    "protocol/worker-selected-material-overlay-pin-v2.json": {
-      "sha256": "d48f5884161aac490aa0af6b3390b8a1ff8102c71019bab12f92007ec5c029bf"
-    },
     "worker/rulith-worker.mjs": {
-      "sha256": "fa571b014327d133633b042964f39804ad723b16e38d1e851437b4ae2b453319"
+      "sha256": "74b9b039b7312a7aa4c40fb5b1b753ee9ea2c6b948c2a61562c74ed3b43c8508"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -108,7 +96,7 @@
       "sha256": "953181b3b02bb10b026b47acacddca35557d1ac786194a849c0a716211cb1baa"
     },
     "local/instance-manager.mjs": {
-      "sha256": "ba8b6cc7ed9955602ad4adf1158f54e21a5d7f728014c6cbe79a965db64596f8"
+      "sha256": "1355ca7113824629394f227c414cdf2029eff1e4bed7d984014f38e90d534d86"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"

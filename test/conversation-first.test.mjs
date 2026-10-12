@@ -126,8 +126,8 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
   assert.doesNotMatch(system, /declare_hypothesis|record_result|revise_fact|EndGoal/)
   assert.match(system, /Let rules derive conclusions; retract_node corrects your assertion\./)
   assert.match(system, /Never assert acceptance_met, test_result or certification\. Acceptance is the Board's decision\./)
-  assert.match(system, /call Get when you need a current view/,
-    'reading the Board is now the model\'s own tool, so the prompt must say so')
+  // D-1012h: reading the Board is the model's own tool, taught once by the Get description; the prompt no longer repeats it.
+  assert.doesNotMatch(system, /Every Board tool result carries the Board View/)
   // A 包 V50：声明能力目标即种下能力备好的步骤；推进它们而不是重建；被认证的目标自动完成。
   assert.match(system, /When you declare a capability's goal, the Board plants the steps its capability prepared\./)
   assert.match(system, /do not rebuild prepared steps with Set/)
@@ -179,7 +179,15 @@ test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', 
   const batch = tools.find((tool) => tool.name === 'Set').schema
   assert.ok(names(batch).includes('desired') && names(batch).includes('parent'),
     'declare_goal must keep desired and parent through the projection')
-  const endGoal = Object.values(batch.$defs).find(schema => schema.properties?.op?.const === 'end_goal')
+  // Definitions may be inlined and pruned after expansion (0.15.1), so find the end_goal branch anywhere in the schema.
+  const branches = []
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return
+    if (node.properties?.op?.const === 'end_goal') branches.push(node)
+    for (const value of Object.values(node)) visit(value)
+  }
+  visit(batch)
+  const endGoal = branches[0]
   assert.deepEqual(Object.keys(endGoal.properties).sort(), ['disposition', 'goal', 'op', 'reason'])
 })
 

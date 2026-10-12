@@ -26,9 +26,8 @@
  */
 import http from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { localToolSnapshot } from './local-trace.mjs'
 import { openConversations, ConversationStoreError } from './conversation-store.mjs'
 import { DEFAULT_MODEL_URL } from '../local/model-settings.mjs'
@@ -153,8 +152,6 @@ Common optional environment:
   RULITH_HOST_WAIT_MS  How long a call the authority reports as running is waited for
                      before the model is answered with running (default: 600000)
   RULITH_MCP_TIMEOUT_MS  How long one call may go without an answer or progress (default: 75000)
-  RULITH_SESSION_FILE  Where Runtime 0.9 recorded unresolved calls; such a record is named
-                     once and cleared (off = skip)
 `)
   process.exit(0)
 }
@@ -370,72 +367,6 @@ const emitOn = (ctx, type, data) => emit(type, {
   ...(agentId === '' ? {} : { board: agentId }),
   ...data,
 })
-
-// ── A record Runtime 0.9 may have left, named once and retired ───────────────
-//
-// Runtime 0.9 kept one thing on disk: the call whose outcome it had not learned, so that a
-// restart could say "this was in the air" instead of starting from zero. That record existed
-// because a 0.9 Gateway could end a call without answering it, and the host then had to
-// remember what it no longer knew.
-//
-// It is retired, not migrated, because nothing in it is still needed:
-//
-//   · The authority now holds every call until its outcome, a person's decision, or its hold
-//     bound, and every result — and every `initialize` and `ping` — carries the Agent's
-//     recent-operations strip. A call a previous process left in the air is on that strip,
-//     with its state, for this process and for any other Host.
-//   · The Gateway's write gate refuses a new write until the latest outcome has been shown to
-//     the session asking (`previous_result_undelivered`, `requestExecuted:false`), and hands
-//     that outcome over in the same answer. The double effect the record guarded against is
-//     closed by the authority, not by a file on one machine.
-//   · A call that never reached the authority had no effect and is not on the strip. The old
-//     record could not tell those two apart either; it could only stop work.
-//
-// So a record found here is named once — the operator may still want its request id for
-// Console — and removed, and nothing is written in its place. What is deliberately *not* kept,
-// and must not come back, is unchanged: no MCP session id, no focus, no Board revision and no
-// token (the store holds only a fingerprint of it).
-const SESSION_STORE_PATH = (() => {
-  const configured = (process.env.RULITH_SESSION_FILE ?? '').trim()
-  if (configured.toLowerCase() === 'off') return ''
-  return configured !== '' ? resolve(configured) : join(homedir(), '.rulith', 'agent-sessions.json')
-})()
-const ENDPOINT_KEY = `${URL_BASE}#${createHash('sha256').update(TOKEN, 'utf8').digest('hex').slice(0, 16)}`
-const SESSION_STORE_SCHEMA = 'rulith-agent-sessions/1'
-function readSessionStore() {
-  if (SESSION_STORE_PATH === '' || !existsSync(SESSION_STORE_PATH)) return undefined
-  try {
-    const value = JSON.parse(readFileSync(SESSION_STORE_PATH, 'utf8'))
-    return value?.schema === SESSION_STORE_SCHEMA && value.endpoints !== null && typeof value.endpoints === 'object'
-      ? value : undefined
-  } catch { return undefined }
-}
-
-/**
- * Name, and remove, the unresolved-call record Runtime 0.9 kept for this endpoint.
- *
- * Returns the record as `{ requestId, tool }`, or undefined. The removal is written the way
- * 0.9 wrote the store — same directory, write then rename — so a crash leaves either the old
- * file or the new one. A store that cannot be rewritten only means the notice repeats at the
- * next start; nothing is decided from the record either way.
- */
-function retireLegacyUnresolved() {
-  const store = readSessionStore()
-  const endpoint = store?.endpoints?.[ENDPOINT_KEY]
-  const record = endpoint?.unresolved
-  if (record === null || typeof record !== 'object' || typeof record.requestId !== 'string') return undefined
-  delete endpoint.unresolved
-  if (Object.keys(endpoint).length === 0) delete store.endpoints[ENDPOINT_KEY]
-  try {
-    mkdirSync(dirname(SESSION_STORE_PATH), { recursive: true, mode: 0o700 })
-    const temporary = `${SESSION_STORE_PATH}.${process.pid}.tmp`
-    writeFileSync(temporary, JSON.stringify(store), { mode: 0o600 })
-    renameSync(temporary, SESSION_STORE_PATH)
-  } catch (error) {
-    console.error(`⚠ ${SESSION_STORE_PATH} could not be rewritten (${String(error?.message ?? error)}); the notice below will repeat at the next start.`)
-  }
-  return { requestId: record.requestId, tool: typeof record.tool === 'string' ? record.tool : 'tool' }
-}
 
 // ── Public MCP client ───────────────────────────────────────────────────────
 //
@@ -3957,7 +3888,36 @@ function openAIParameters(schema) {
     }
     return out
   }
-  return expose(schema)
+  const out = expose(schema)
+  if (!out?.$defs) return out
+  const reachable = new Set()
+  let otherReferences = false
+  function visit(node) {
+    if (!node || typeof node !== 'object') return
+    if (typeof node.$ref === 'string') {
+      let ref
+      try { ref = decodeURIComponent(node.$ref) } catch { otherReferences = true }
+      if (ref?.startsWith('#/$defs/')) {
+        const key = ref.slice('#/$defs/'.length).split('/')[0].replaceAll('~1', '/').replaceAll('~0', '~')
+        if (Object.hasOwn(out.$defs, key) && !reachable.has(key)) {
+          reachable.add(key)
+          visit(out.$defs[key])
+        }
+      } else otherReferences = true
+    }
+    // Anchors, resource IDs and dynamic references can reach definitions without a root pointer.
+    if (typeof node.$dynamicRef === 'string' || typeof node.$recursiveRef === 'string') {
+      otherReferences = true
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (node !== out || key !== '$defs') visit(value)
+    }
+  }
+  visit(out)
+  if (otherReferences) return out
+  out.$defs = Object.fromEntries(Object.entries(out.$defs).filter(([key]) => reachable.has(key)))
+  if (reachable.size === 0) delete out.$defs
+  return out
 }
 
 async function ask(entries, system, { tools = [], cfg = MAIN_CFG, onUsage, signal } = {}) {
@@ -4107,11 +4067,7 @@ Inside Set, assert_fact proposes a fact without Source trust; add_axiom offers a
 
 Never assert acceptance_met, test_result or certification. Acceptance is the Board's decision.
 
-Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new goals and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call Get when you need a current view.
-
-When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with Set. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
-
-Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.`
+When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with Set. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.`
 
 // ── Main loop: propose → adjudicate → teach back ─────────────────────────────
 const log = (s) => console.log(s)
@@ -4198,27 +4154,11 @@ consoleUrl = consoleUrlOf(agentId)
 // reply already carried the strip that shows it, so saying so costs nothing. Nothing is
 // re-sent and nothing is waited for here: the model finds the operation in the strip of its
 // next result, and the authority's write gate keeps a new write from running until that
-// operation is settled and its outcome shown. A record Runtime 0.9 kept of a call it had lost
-// track of is named once, then retired (`retireLegacyUnresolved`).
+// operation is settled and its outcome shown.
 {
   const STANDING = { running: 'still running', waiting_for_decision: 'waiting for a person\'s decision',
     needs_person: 'waiting for a person to reconcile it in Console' }
-  const legacy = retireLegacyUnresolved()
   const unresolved = (board.operations ?? []).filter((entry) => UNRESOLVED_STATES.has(entry.state))
-  if (legacy !== undefined) {
-    const tool = plainPeerText(legacy.tool, 40)
-    // What the strip is said to show is what it lists: this Agent's latest five operations, any
-    // still unresolved and the latest settled write. An older settled call may no longer be on it,
-    // and a strip `initialize` did not carry, or carried unreadably, shows nothing at all.
-    const stripSays = board.operations === undefined
-      ? 'The initialize answer carried no readable recent-operations strip, so this Runtime cannot say what became of'
-        + ' that call; check it in Console.'
-      : unresolved.length === 0 ? 'The strip shows no operation still in progress.' : 'The strip shows:'
-    console.error(`⚠ Rulith Runtime 0.9 recorded ${/^[AEIOU]/i.test(tool) ? 'an' : 'a'} ${tool} call from a previous run whose answer it`
-      + ` never received (request ${plainPeerText(legacy.requestId, 80)}). This release keeps no such record, and nothing is`
-      + ' re-sent: the authority\'s recent-operations strip lists this Agent\'s latest operations, any still in progress and'
-      + ` the latest settled write. A call older than those may no longer be listed; Console keeps its record. ${stripSays}`)
-  }
   for (const entry of unresolved) {
     console.error(`⚠ ${plainPeerText(entry.label, 200)} is ${STANDING[entry.state]} at the authority.`
       + ' Its outcome will show in operations of the next result; nothing is re-sent.')

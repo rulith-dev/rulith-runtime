@@ -295,12 +295,12 @@ test('two instances are two installations: separate directories, ports, keys and
     const configs = [first, second].map((row) => loadInstanceConfig(row.directory))
     for (const [index, config] of configs.entries()) {
       const directory = [first, second][index].directory
-      assert.equal(config.agent.env.RULITH_SESSION_FILE, join(directory, 'agent-sessions.json'))
+      assert.equal(Object.hasOwn(config.agent.env, 'RULITH_SESSION_FILE'), false)
       assert.equal(config.worker.env.RULITH_TOOLS_FILE, join(directory, 'worker-tools.json'))
       assert.equal(config.worker.env.RULITH_SECRETS_FILE, join(directory, 'worker-secrets.json'))
       assert.equal(config.worker.env.RULITH_WORKER_ROOT, join(directory, 'workspace'))
     }
-    for (const field of ['RULITH_SESSION_FILE', 'RULITH_SERVE_PORT', 'RULITH_TOKEN']) {
+    for (const field of ['RULITH_SERVE_PORT', 'RULITH_TOKEN']) {
       assert.notEqual(configs[0].agent.env[field], configs[1].agent.env[field], `${field} is shared between instances`)
     }
     for (const field of ['RULITH_TOOLS_FILE', 'RULITH_SECRETS_FILE', 'RULITH_WORKER_ROOT', 'RULITH_CONNECTION_KEY']) {

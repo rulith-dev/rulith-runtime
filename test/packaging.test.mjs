@@ -18,7 +18,7 @@ import { dirname, join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-import { carriageReturnOffenders, controlByteOffenders, controlByteTeaching, teaching } from '../scripts/check-line-endings.mjs'
+import { carriageReturnOffenders, controlByteOffenders, controlByteTeaching, publishedFiles, teaching } from '../scripts/check-line-endings.mjs'
 import { extractTgz } from './support/untar.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -189,7 +189,7 @@ test('the shipped runtime sources are searchable with ordinary tools', () => {
   assert.deepEqual(controlByteOffenders(), [])
   const agent = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'))
   assert.equal(agent.includes(0), false, 'agent/rulith-agent.mjs contains a NUL and is invisible to ripgrep')
-  assert.match(agent.toString('utf8'), /RULITH_SESSION_FILE/,
+  assert.match(agent.toString('utf8'), /RULITH_SERVE_PORT/,
     'a plain search of the Agent source must find what is in it')
 })
 
@@ -381,5 +381,21 @@ test('the release version, immutable download tag, changelog, and embedded pins 
   assert.equal(pins.length, 5, 'the setup pins its five data and Adapter files; Runtime comes from npm')
   for (const [, file, hash] of pins) {
     assert.equal(manifest.files?.[file]?.sha256, hash, `${file} embedded pin differs from artifact-manifest.json`)
+  }
+})
+
+const archivedSelectedFiles = [
+  'protocol/worker-selected-material-v1.schema.json',
+  'protocol/worker-selected-material-v2.schema.json',
+  'protocol/worker-selected-material-overlay-pin-v1.json',
+  'protocol/worker-selected-material-overlay-pin-v2.json',
+]
+test('archived selected-material schemas and pins stay in the repository but are excluded from shipping', () => {
+  const shipped = publishedFiles()
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'artifact-manifest.json'), 'utf8'))
+  for (const file of archivedSelectedFiles) {
+    assert.equal(existsSync(join(ROOT, file)), true, file)
+    assert.equal(shipped.includes(file), false, file)
+    assert.equal(Object.hasOwn(manifest.files, file), false, file)
   }
 })

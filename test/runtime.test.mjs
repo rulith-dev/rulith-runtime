@@ -1481,15 +1481,17 @@ test('one system prompt explains reasoning without granting Case-specific author
   assert.ok(prompt.includes('declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down.'), 'V46')
   assert.ok(prompt.includes('A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.'), 'V47')
   assert.ok(prompt.includes('Never assert acceptance_met, test_result or certification.'), 'V48')
-  assert.ok(prompt.includes('Its position says whether writes, new goals and rules are open;'), 'V49')
-  assert.ok(prompt.includes('Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you.'), 'D-1012e')
+  // D-1012h: the Board View and operations paragraphs duplicated the Get description (POSITION_GUIDE,
+  // OPERATIONS_GUIDE) and left the prompt; the tool description is the one copy.
+  assert.doesNotMatch(prompt, /Every Board tool result carries the Board View|Every answer from the authority also shows operations/)
   assert.doesNotMatch(prompt, /recent operations|newest first|shows no full list/)
   assert.ok(prompt.includes('When you declare a capability\'s goal, the Board plants the steps its capability prepared. Work toward unmet goals'
     + ' by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with Set. A goal the Board'
     + ' certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.'), 'V50')
   assert.doesNotMatch(prompt, /\bCases?\b|OpenCase|CloseCase|rulith\.exploration\.completed/, 'a Case sentence survived in the system prompt')
-  assert.match(prompt, /each Action says ready or blocked and why, or what it will wait for/)
-  assert.match(prompt, /not a promise: calls are checked again/)
+  // D-1012h: Action status is explained once, by the Get description (POSITION_GUIDE), not by the prompt.
+  assert.doesNotMatch(prompt, /each Action says ready or blocked and why, or what it will wait for/)
+  assert.doesNotMatch(prompt, /not a promise: calls are checked again/) // D-1012h: POSITION_GUIDE says it once
   assert.doesNotMatch(source, /last observed \(not refreshed/)
   // No JSON templates: the advertised tool schemas are the templates.
   assert.doesNotMatch(prompt, /"kind":|\{"op"|```/)
@@ -1519,9 +1521,8 @@ test('available Actions reach the model through the Board View, not a prompt-sid
   // second, staler copy of the Board.
   assert.doesNotMatch(source, /sourceAccessGuide|evidenceChaseGuide|source_access|evidence_chase/)
   assert.doesNotMatch(source, /\/agent\/v1\/evidence-chase/)
-  assert.match(source, /Every Board tool result carries the Board View the authority computed for that step/)
-  // And reading a *current* view is the model's own tool, not a host poll loop.
-  assert.match(source, /call Get when you need a current view/)
+  // Reading a current view is the model's own tool (Get), taught by the tool description (D-1012h), not a host poll loop.
+  assert.doesNotMatch(source, /setInterval\([^)]*QueryBoard|pollBoard/)
 })
 
 test('agent lifecycle events shown to users use the English product vocabulary', () => {
