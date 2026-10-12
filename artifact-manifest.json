@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "3b3c22d9069f14cf9a7c1bb54e158c017a79524551e6cc6ebd010c37a2697838"
+      "sha256": "64a860d0fa47bfc1fa636689145ed324d4a26a80d2165ba04d5d17f08c7b8dea"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -42,7 +42,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "74b9b039b7312a7aa4c40fb5b1b753ee9ea2c6b948c2a61562c74ed3b43c8508"
+      "sha256": "ed4608fea1a2087ebe997e2e2648978b9030bc81148833fbd6a08a48d21c893c"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -159,7 +159,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "1973c48c1564248c7291b04668ae42c6296094ba187247b7f4a9245682fc7d25"
+      "sha256": "66bcdf5e6d167a671e0a93f113db4cbfdb43ee563b77b1f9cb9a3df5450eb609"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -168,7 +168,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "c56b8db77752cd11db826230e00c55d586d4eb065de7add065cb2f5fee5f8f5f"
+      "sha256": "6b2c911696ad479222d4aec50cb3acc6a061fb562a6ed6c16771fb2c4ab7318c"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "e173b13818e54b7f9b07a9ad70fce2a4a7b6426abc514780efe41e080e14d244"

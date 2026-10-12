@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## 0.15.1 - unreleased
+## 0.15.1 - 2026-10-13
 
 - Agent: the system prompt no longer repeats the Board View and operations explanations that the
   Get description carries (D-1012h).
