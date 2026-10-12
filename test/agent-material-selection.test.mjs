@@ -17,7 +17,7 @@ const B = { id: 'mat_' + 'b'.repeat(32), name: 'b.txt', mediaType: 'text/plain',
 const OWNER = { origin: 'http://127.0.0.1', accountId: 'account-a', agentId: TEST_AGENT_ID }
 
 const execute = async (args, { selection = SECRET, attachments = [A, B], proof = PROOF,
-  tool = 'ApplyAction' } = {}) => {
+  tool = 'Execute' } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-selection-'))
   try {
     const run = await runAgent({ argv: ['--serve'], captureLocalEvents: true,
@@ -27,7 +27,7 @@ const execute = async (args, { selection = SECRET, attachments = [A, B], proof =
         ...(selection ? { 'x-rulith-material-selection-key': selection } : {}) },
       serveTasks: [{ text: 'Use the selected material.', requestId: 'selection-task-request-1',
         sessionKey: 'selection-session', attachments }], waitForServeCompletion: true,
-      model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
+      model: round => round === 1 ? callTool('Set', declareGoal())
         : round === 2 ? callTool(tool, args) : 'Done.', timeoutMs: 800 })
     const projections = [run.toolCalls, run.modelRequests, run.localEvents, run.serveResponses,
       run.serveSnapshot, run.stdout, run.stderr]
@@ -39,11 +39,11 @@ const execute = async (args, { selection = SECRET, attachments = [A, B], proof =
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
-test('real Agent forwards private selection on exact attached ApplyAction only', async () => {
+test('real Agent forwards private selection on exact attached Execute only', async () => {
   const run = await execute({ action: 'read', args: { material: { ref: A.id, digest: A.digest } } })
   assert.deepEqual(run.serveStatuses, [202], run.stdout + run.stderr)
   const calls = run.requests.filter(row => row.method === 'tools/call')
-  assert.deepEqual(run.toolCalls.map(row => row.name), ['ApplyBatch', 'ApplyAction'])
+  assert.deepEqual(run.toolCalls.map(row => row.name), ['Set', 'Execute'])
   assert.equal(calls[0].headers['x-rulith-material-selection-key'], undefined)
   assert.equal(calls[1].headers['x-rulith-material-selection-key'], SECRET)
   assert.equal(calls[0].headers['x-rulith-material-task-proof'], PROOF)
@@ -51,7 +51,7 @@ test('real Agent forwards private selection on exact attached ApplyAction only',
 })
 
 test('real Agent withholds selection on unrelated MCP tools', async () => {
-  const run = await execute({ args: { material: { ref: A.id, digest: A.digest } } }, { tool: 'QueryBoard' })
+  const run = await execute({ args: { material: { ref: A.id, digest: A.digest } } }, { tool: 'Get' })
   assert.deepEqual(run.serveStatuses, [202], run.stdout + run.stderr)
   assert.equal(run.requests.filter(row => row.method === 'tools/call').find(row =>
     row.headers['x-rulith-material-selection-key'] !== undefined), undefined)

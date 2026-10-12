@@ -130,23 +130,23 @@ test('unread outcome identities survive a restart beside the history, and carry 
   const dir = fixture(t), first = await openConversations(dir, owner)
   assert.deepEqual(first.unreadOutcomes(), {})
   first.saveUnreadOutcomes({ 'chat-1': [
-    { tool: 'ApplyAction', label: 'ApplyAction demo.ship', at: '2026-10-01T00:00:01.000Z', state: 'done', unread: true, result: 'not kept' },
-    { tool: 'ApplyBatch', label: 'ApplyBatch', at: '2026-10-01T00:00:02.000Z', state: 'running', unread: false },
+    { tool: 'Execute', label: 'Execute demo.ship', at: '2026-10-01T00:00:01.000Z', state: 'done', unread: true, result: 'not kept' },
+    { tool: 'Set', label: 'Set', at: '2026-10-01T00:00:02.000Z', state: 'running', unread: false },
   ] })
   first.close()
   const second = await openConversations(dir, owner); t.after(() => second.close())
   assert.deepEqual(second.unreadOutcomes(), { 'chat-1': [
-    { tool: 'ApplyAction', label: 'ApplyAction demo.ship', at: '2026-10-01T00:00:01.000Z', state: 'done', unread: true },
-    { tool: 'ApplyBatch', label: 'ApplyBatch', at: '2026-10-01T00:00:02.000Z', state: 'running', unread: false },
+    { tool: 'Execute', label: 'Execute demo.ship', at: '2026-10-01T00:00:01.000Z', state: 'done', unread: true },
+    { tool: 'Set', label: 'Set', at: '2026-10-01T00:00:02.000Z', state: 'running', unread: false },
   ] })
   assert.doesNotMatch(readFileSync(join(`${second.file}.d`, '_unread-outcomes.json'), 'utf8'), /not kept/)
-  assert.throws(() => second.saveUnreadOutcomes({ 'chat-1': [{ tool: 'ApplyAction', label: 'x', at: 'y', state: 'guessed', unread: true }] }),
+  assert.throws(() => second.saveUnreadOutcomes({ 'chat-1': [{ tool: 'Execute', label: 'x', at: 'y', state: 'guessed', unread: true }] }),
     /invalid unread-outcome entry/)
 })
 
 test('a damaged unread-outcome record is preserved and stops the history from opening, like any damaged history file', async t => {
   const dir = fixture(t), first = await openConversations(dir, owner)
-  first.saveUnreadOutcomes({ 'chat-1': [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', at: 'a', state: 'done', unread: true }] })
+  first.saveUnreadOutcomes({ 'chat-1': [{ tool: 'Execute', label: 'Execute demo.ship', at: 'a', state: 'done', unread: true }] })
   first.close()
   const path = join(`${conversationFile(dir, owner)}.d`, '_unread-outcomes.json')
   writeFileSync(path, '{truncated')

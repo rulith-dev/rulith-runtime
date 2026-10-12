@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
 import { projectOperations } from '../local/local-ui.mjs'
 
-const RUNNING = { tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker',
+const RUNNING = { tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker',
   at: '2026-10-01T08:00:00Z', since: '2026-10-01T08:00:01Z' }
 
 for (const settled of [false, true]) test(`new SSE clients receive the operations after the source events were evicted; settled=${settled}`, async () => {
@@ -79,17 +79,17 @@ test('an operation that waits for a person is marked for Console, and a held cal
   const waiting = projectOperations([
     { src: 'agent', type: 'operations', ...owner, operations: [
       { ...RUNNING, state: 'waiting_for_decision', stage: undefined },
-      { tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', contentWithheld: true, at: 'a', since: 'b' },
+      { tool: 'Set', label: 'Set', state: 'done', contentWithheld: true, at: 'a', since: 'b' },
     ] },
-    { src: 'agent', type: 'held-call', phase: 'waiting', tool: 'ApplyAction', label: 'ApplyAction demo.ship' },
+    { src: 'agent', type: 'held-call', phase: 'waiting', tool: 'Execute', label: 'Execute demo.ship' },
   ])
   assert.equal(waiting.entries[0].needsPerson, true)
   assert.match(waiting.entries[0].words, /Waiting for a decision in Console/)
   assert.match(waiting.entries[1].words, /Done · content withheld/)
   assert.equal(waiting.entries[1].needsPerson, false)
   assert.deepEqual([waiting.accountId, waiting.agentId], ['acct-1', 'agent-1'])
-  assert.deepEqual(waiting.held, { tool: 'ApplyAction', label: 'ApplyAction demo.ship' })
-  const answered = projectOperations([{ src: 'agent', type: 'held-call', phase: 'answered', tool: 'ApplyAction' }], waiting)
+  assert.deepEqual(waiting.held, { tool: 'Execute', label: 'Execute demo.ship' })
+  const answered = projectOperations([{ src: 'agent', type: 'held-call', phase: 'answered', tool: 'Execute' }], waiting)
   assert.equal(answered.held, null)
 })
 

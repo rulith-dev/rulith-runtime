@@ -362,13 +362,13 @@ for (const outcome of ['conversation', 'stopped', 'interrupted', 'user-stopped']
         { ok: true, id: 'earlier-turn', sessionKey: 'one' }, '', '')
       store.start('earlier-turn')
       if (outcome !== 'interrupted') store.finish('earlier-turn', 'Earlier turn ended.', outcome)
-      store.saveUnreadOutcomes({ one: [{ tool: 'ApplyAction', label: 'ApplyAction fixture.work', at, state: 'running', unread: false }] })
+      store.saveUnreadOutcomes({ one: [{ tool: 'Execute', label: 'Execute fixture.work', at, state: 'running', unread: false }] })
     } finally { store.close() }
     const userStopped = outcome === 'user-stopped'
     const run = await runAgent({ argv: ['--serve'], captureLocalEvents: true, waitForServeReady: true, stopAfterServe: true,
       env: { RULITH_SERVE_PORT: String(await freePort()), RULITH_SERVE_KEY: 'restored-turn-key',
         RULITH_CONVERSATION_DIR: directory, RULITH_CONVERSATION_OWNER: JSON.stringify(owner) },
-      priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction fixture.work', at, state: 'done', acked: false,
+      priorOperations: [{ tool: 'Execute', label: 'Execute fixture.work', at, state: 'done', acked: false,
         core: { accepted: true, result: { marker: 'settled-work-content' } } }],
       model: () => 'Hello.',
       onServeReady: async ({ url, key, child, toolCalls, localEvents, modelRequests }) => {
@@ -378,8 +378,8 @@ for (const outcome of ['conversation', 'stopped', 'interrupted', 'user-stopped']
           await fetch(url + '/runs', { headers: { 'x-rulith-serve': key } }).then(r => r.json())
           await new Promise(done => setTimeout(done, 40))
         }
-        if (userStopped) await until(() => toolCalls.some(call => call.name === 'QueryBoard'))
-        else assert.equal(toolCalls.length, 0, 'a restored ordinary turn does not authorize a host QueryBoard')
+        if (userStopped) await until(() => toolCalls.some(call => call.name === 'Get'))
+        else assert.equal(toolCalls.length, 0, 'a restored ordinary turn does not authorize a host Get')
         assert.equal(modelRequests.length, 0)
         const response = await fetch(url + '/task', { method: 'POST',
           headers: { 'content-type': 'application/json', 'x-rulith-serve': key },
@@ -390,7 +390,7 @@ for (const outcome of ['conversation', 'stopped', 'interrupted', 'user-stopped']
         if (!userStopped) assert.doesNotMatch(JSON.stringify(modelRequests[0]), /settled-work-content|observed work from a stopped turn/)
       } })
     assert.equal(run.modelRequests.length, 1)
-    assert.deepEqual(run.verbs, userStopped ? ['QueryBoard'] : [])
+    assert.deepEqual(run.verbs, userStopped ? ['Get'] : [])
     if (!userStopped) assert.equal(run.pings, 0, 'polling alone cannot ping the Board for an ordinary restored turn')
   })
 }
@@ -417,8 +417,8 @@ test('Stop aborts the model at once, records a user stop, and leaves another con
 })
 test('Stop waits for an in-flight held Rulith answer, records it, and makes no further model call', async t => {
   const { result, history, unread } = await serveFixture(t, {
-    model: () => callTool('ApplyBatch', declareGoal()),
-    hold: name => name === 'ApplyBatch' ? { answer: 'running', holdMs: 150,
+    model: () => callTool('Set', declareGoal()),
+    hold: name => name === 'Set' ? { answer: 'running', holdMs: 150,
       settle: seen => seen.pings >= 2 ? { state: 'done' } : undefined } : undefined,
   }, async ({ post, localEvents, toolCalls }) => {
     const task = await post('/task', { text: 'work', sessionKey: 'one' })
@@ -427,9 +427,9 @@ test('Stop waits for an in-flight held Rulith answer, records it, and makes no f
     await until(() => localEvents.some(e => e.type === 'task-done' && e.id === task.body.id))
   })
   assert.equal(result.modelRequests.length, 1)
-  assert.ok(result.localEvents.some(e => e.type === 'tool-result' && e.cmd === 'ApplyBatch' && e.authoritative))
+  assert.ok(result.localEvents.some(e => e.type === 'tool-result' && e.cmd === 'Set' && e.authoritative))
   assert.equal(history.turns[0].outcome, 'user-stopped')
-  assert.ok(unread.one?.some(e => e.tool === 'ApplyBatch' && e.state === 'done' && e.unread), JSON.stringify(unread))
+  assert.ok(unread.one?.some(e => e.tool === 'Set' && e.state === 'done' && e.unread), JSON.stringify(unread))
 })
 test('turn Stop requires serve authentication, local Host/Origin, valid scope and current turn identity', async t => {
   await serveFixture(t, {}, async ({ post, url, key }) => {
@@ -450,19 +450,19 @@ test('a stopped Action settles later in operations without another model call or
   let finishAction = false
   const { result, unread } = await serveFixture(t, {
     env: { RULITH_HOST_WAIT_MS: '0' },
-    model: n => n === 1 ? callTool('ApplyBatch', declareGoal()) : callTool('ApplyAction', { action: 'action-1' }),
-    hold: name => name === 'ApplyAction' ? { answer: 'running', holdMs: 180,
+    model: n => n === 1 ? callTool('Set', declareGoal()) : callTool('Execute', { action: 'action-1' }),
+    hold: name => name === 'Execute' ? { answer: 'running', holdMs: 180,
       settle: () => finishAction ? { state: 'done' } : undefined } : undefined,
   }, async ({ post, url, key, localEvents, toolCalls, modelRequests, historyFile, owner }) => {
     const task = await post('/task', { text: 'work', sessionKey: 'one' })
-    await until(() => toolCalls.some(call => call.name === 'ApplyAction'))
+    await until(() => toolCalls.some(call => call.name === 'Execute'))
     await post('/turn/stop', { sessionKey: 'one', id: task.body.id })
     await until(() => localEvents.some(e => e.type === 'task-done' && e.id === task.body.id))
     finishAction = true
     await fetch(url + '/runs', { headers: { 'x-rulith-serve': key } }).then(r => r.json())
-    await until(() => readUnreadOutcomes(historyFile, owner).one?.some(e => e.tool === 'ApplyAction' && e.state === 'done' && e.unread))
-    assert.ok(toolCalls.some(call => call.name === 'QueryBoard'))
-    assert.ok(localEvents.some(e => e.type === 'operations' && e.operations.some(op => op.tool === 'ApplyAction' && op.state === 'done')))
+    await until(() => readUnreadOutcomes(historyFile, owner).one?.some(e => e.tool === 'Execute' && e.state === 'done' && e.unread))
+    assert.ok(toolCalls.some(call => call.name === 'Get'))
+    assert.ok(localEvents.some(e => e.type === 'operations' && e.operations.some(op => op.tool === 'Execute' && op.state === 'done')))
     const reads = toolCalls.length
     await fetch(url + '/runs', { headers: { 'x-rulith-serve': key } }).then(r => r.json())
     await new Promise(r => setTimeout(r, 50))
@@ -470,7 +470,7 @@ test('a stopped Action settles later in operations without another model call or
     assert.equal(modelRequests.length, 2)
   })
   assert.equal(result.modelRequests.length, 2)
-  assert.ok(unread.one?.some(e => e.tool === 'ApplyAction' && e.state === 'done' && e.unread), JSON.stringify(unread))
+  assert.ok(unread.one?.some(e => e.tool === 'Execute' && e.state === 'done' && e.unread), JSON.stringify(unread))
 })
 
 test('Stop removes one queued turn and applies its pending archive while another conversation keeps running', async t => {

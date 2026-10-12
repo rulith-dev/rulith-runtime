@@ -10,7 +10,7 @@ import { callTool, runAgent, declareGoal, defaultGateway } from './support/agent
  * and it leaves focus with `status:"completed"` in the goal directory.
  */
 const gatewayView = (name, args, board, session) => {
-  const certify = name === 'ApplyBatch' ? (args.operations ?? []).find((operation) => operation.predicate === 'certified_by_test') : undefined
+  const certify = name === 'Set' ? (args.operations ?? []).find((operation) => operation.predicate === 'certified_by_test') : undefined
   const { payload, ...result } = board.tool(name, args, session)
   if (certify !== undefined && result.accepted === true) {
     const goal = board.state.goals.get(String(certify.args?.goal ?? ''))
@@ -20,10 +20,10 @@ const gatewayView = (name, args, board, session) => {
   }
   return { ...result, view: payload }
 }
-const certify = (goal) => callTool('ApplyBatch', { operations: [{ op: 'assert_fact', predicate: 'certified_by_test', args: { goal } }] })
+const certify = (goal) => callTool('Set', { operations: [{ op: 'assert_fact', predicate: 'certified_by_test', args: { goal } }] })
 /** End GOAL_n the way a disposition says: completed by the Board, or ended by end_goal. */
 const endWith = (goal, disposition) => (disposition === 'completed' ? certify(goal)
-  : callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal, disposition, reason: `The work was ${disposition}.` }] }))
+  : callTool('Set', { operations: [{ op: 'end_goal', goal, disposition, reason: `The work was ${disposition}.` }] }))
 
 test('Gateway view keeps the remaining goal running after another goal ends', async () => {
   const run = await runAgent({
@@ -31,17 +31,17 @@ test('Gateway view keeps the remaining goal running after another goal ends', as
     env: { RULITH_MAX_ROUNDS: '5' },
     tool: gatewayView,
     model: (round) => {
-      if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
-      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' }] })
-      if (round === 4) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_2', disposition: 'abandoned', reason: 'Not needed.' }] })
+      if (round <= 2) return callTool('Set', declareGoal(round === 1 ? 'task_a' : 'task_b'))
+      if (round === 3) return callTool('Set', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' }] })
+      if (round === 4) return callTool('Set', { operations: [{ op: 'end_goal', goal: 'GOAL_2', disposition: 'abandoned', reason: 'Not needed.' }] })
       return 'Both goals were abandoned.'
     },
   })
   assert.equal(run.code, 0, run.stdout + run.stderr)
-  assert.deepEqual(run.toolCalls.filter(call => call.name === 'ApplyBatch' && call.args.operations?.[0]?.op === 'end_goal').map(call => call.args.operations[0].goal), ['GOAL_1', 'GOAL_2'])
+  assert.deepEqual(run.toolCalls.filter(call => call.name === 'Set' && call.args.operations?.[0]?.op === 'end_goal').map(call => call.args.operations[0].goal), ['GOAL_1', 'GOAL_2'])
   assert.deepEqual(run.operations.slice(-2).map(({ tool, label }) => ({ tool, label })), [
-    { tool: 'ApplyBatch', label: 'ApplyBatch end_goal GOAL_1' },
-    { tool: 'ApplyBatch', label: 'ApplyBatch end_goal GOAL_2' },
+    { tool: 'Set', label: 'Set end_goal GOAL_1' },
+    { tool: 'Set', label: 'Set end_goal GOAL_2' },
   ])
   assert.ok(run.localEvents.some(event => event.type === 'focus' && event.goals.length === 1 && event.goals[0].goal === 'GOAL_2' && event.goals[0].status === 'running'))
   assert.ok(run.localEvents.some(event => event.type === 'case-closed' && event.goal === 'GOAL_2' && event.disposition === 'abandoned'))
@@ -55,7 +55,7 @@ test(`one-shot reports every ended goal in order: ${dispositions.join(', ')}`, a
     env: { RULITH_MAX_ROUNDS: '6' },
     tool: gatewayView,
     model: round => {
-      if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
+      if (round <= 2) return callTool('Set', declareGoal(round === 1 ? 'task_a' : 'task_b'))
       if (round <= 4) return endWith(`GOAL_${round - 2}`, dispositions[round - 3])
       return 'unreachable'
     },
@@ -76,11 +76,11 @@ test('one-shot ends as completed when the Board completes the goal it certifies,
     captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '6' },
     tool: gatewayView,
-    model: round => (round === 1 ? callTool('ApplyBatch', declareGoal()) : round === 2 ? certify('GOAL_1') : 'unreachable'),
+    model: round => (round === 1 ? callTool('Set', declareGoal()) : round === 2 ? certify('GOAL_1') : 'unreachable'),
   })
   assert.equal(run.code, 0, run.stderr)
   assert.equal(run.modelRequests.length, 2)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'], 'completion needed a call of its own')
+  assert.deepEqual(run.verbs, ['Set', 'Set'], 'completion needed a call of its own')
   const end = run.localEvents.findLast(event => event.type === 'end')
   assert.equal(end.ok, true)
   assert.equal(end.outcome, 'completed')
@@ -107,7 +107,7 @@ test(`${mode} returns per-goal outcomes only for the current turn`, async () => 
     timeoutMs: mode === 'serve' ? 3000 : 20000,
     tool: gatewayView,
     model: round => {
-      if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
+      if (round <= 2) return callTool('Set', declareGoal(round === 1 ? 'task_a' : 'task_b'))
       if (round <= 4) return endWith(`GOAL_${round - 2}`, round === 3 ? 'completed' : 'cancelled')
       return 'Response delivered.'
     },
@@ -130,9 +130,9 @@ test('a refused end_goal batch cannot enter the terminal outcome summary', async
     env: { RULITH_MAX_ROUNDS: '5' },
     tool: gatewayView,
     model: round => {
-      if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
-      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_9', disposition: 'failed', reason: 'No such work.' }] })
-      return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: `GOAL_${round - 3}`, disposition: 'cancelled', reason: 'Withdrawn.' }] })
+      if (round <= 2) return callTool('Set', declareGoal(round === 1 ? 'task_a' : 'task_b'))
+      if (round === 3) return callTool('Set', { operations: [{ op: 'end_goal', goal: 'GOAL_9', disposition: 'failed', reason: 'No such work.' }] })
+      return callTool('Set', { operations: [{ op: 'end_goal', goal: `GOAL_${round - 3}`, disposition: 'cancelled', reason: 'Withdrawn.' }] })
     },
   })
   assert.equal(run.code, 0, run.stderr)
@@ -146,8 +146,8 @@ test('a mixed end_goal batch is refused without ending its goal or applying its 
   const gateway = defaultGateway()
   const run = await runAgent({
     argv: [], chatLines: ['Try the mixed batch.'], gateway, captureLocalEvents: true,
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
-      : round === 2 ? callTool('ApplyBatch', { operations: [
+    model: round => round === 1 ? callTool('Set', declareGoal())
+      : round === 2 ? callTool('Set', { operations: [
         { op: 'assert_fact', predicate: 'x', args: {} },
         { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
       ] }) : 'The mixed batch was refused.',
@@ -163,12 +163,12 @@ test('a mixed end_goal batch is refused without ending its goal or applying its 
 test('an accepted end_goal reports the disposition this host sent rather than one returned in the result', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Cancel it.'], captureLocalEvents: true,
     tool: (name, args, board, session) => {
-      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'end_goal') return undefined
+      if (name !== 'Set' || args.operations?.[0]?.op !== 'end_goal') return undefined
       const { payload, ...answer } = board.tool(name, args, session)
       return { ...answer, view: payload, result: { ...answer.result, disposition: 'failed' } }
     },
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
-      : round === 2 ? callTool('ApplyBatch', { operations: [
+    model: round => round === 1 ? callTool('Set', declareGoal())
+      : round === 2 ? callTool('Set', { operations: [
         { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
       ] }) : 'Cancelled.',
   })

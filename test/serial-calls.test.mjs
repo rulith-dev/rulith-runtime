@@ -40,12 +40,12 @@ test('RT-REC-5b an operation a previous client left running costs a greeting not
   // asked: the model will find it in the strip of its next result.
   const run = await runAgent({
     argv: [], chatLines: ['hello'],
-    priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker' }],
+    priorOperations: [{ tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker' }],
     model: () => 'Hello.',
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.match(run.stderr, /ApplyAction demo\.ship is still running at the authority/)
+  assert.match(run.stderr, /Execute demo\.ship is still running at the authority/)
   assert.deepEqual(run.methods, ['initialize', 'notifications/initialized', 'tools/list'])
   assert.equal(run.modelRequests.length, 1)
 })
@@ -73,8 +73,8 @@ for (const [named, option] of [['--case', { argv: ['--case', 'CASE_X'] }],
   })
 }
 
-/** The shadow reviewer's own write: the only ApplyBatch that asserts a shadow finding. */
-const shadowWrites = (run) => run.toolCalls.filter((call) => call.name === 'ApplyBatch'
+/** The shadow reviewer's own write: the only Set that asserts a shadow finding. */
+const shadowWrites = (run) => run.toolCalls.filter((call) => call.name === 'Set'
   && (call.args.operations ?? []).some((operation) => operation.predicate === 'shadow_finding'))
 
 test('RT-REC-11 the shadow reviewer does not write while an operation is unresolved', async () => {
@@ -85,10 +85,10 @@ test('RT-REC-11 the shadow reviewer does not write while an operation is unresol
     argv: ['Do the governed work', '--shadow'],
     env: { RULITH_MAX_ROUNDS: '4' },
     captureLocalEvents: true,
-    hold: (name) => (name === 'ApplyAction' ? { answer: 'needs_person' } : undefined),
+    hold: (name) => (name === 'Execute' ? { answer: 'needs_person' } : undefined),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyAction', { action: 'demo.ship', args: {} })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Execute', { action: 'demo.ship', args: {} })
       return 'Stopping.'
     },
     timeoutMs: 25_000,
@@ -96,7 +96,7 @@ test('RT-REC-11 the shadow reviewer does not write while an operation is unresol
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(shadowWrites(run).length, 0,
     'the shadow reviewer wrote a finding while an operation needed reconciliation')
-  assert.match(run.stdout, /ApplyAction is waiting for a person to reconcile it in Console/)
+  assert.match(run.stdout, /Execute is waiting for a person to reconcile it in Console/)
 })
 
 test('RT-REC-11b with nothing unresolved the shadow reviewer does write (calibration)', async () => {
@@ -104,7 +104,7 @@ test('RT-REC-11b with nothing unresolved the shadow reviewer does write (calibra
     argv: ['Do the governed work', '--shadow'],
     env: { RULITH_MAX_ROUNDS: '4', RULITH_SHADOW_MODEL: 'shadow-model' },
     model: (round, body) => (body.model === 'shadow-model' ? 'FINDING: the total is unsupported'
-      : round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Stopping.'),
+      : round === 1 ? callTool('Set', declareGoal()) : 'Stopping.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -119,14 +119,14 @@ test('RT-REC-17 a lost answer is not sold to the model as a de-duplicated retry'
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '3' },
     chatLines: ['Record a fact.'], captureLocalEvents: true,
-    tool: (name) => (name === 'ApplyBatch' ? HOP_FAILURE : undefined),
+    tool: (name) => (name === 'Set' ? HOP_FAILURE : undefined),
     model: (round) => (round === 1
-      ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      ? callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       : 'Understood.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch').at(-1)
+  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'Set').at(-1)
   assert.match(verdict.teaching, /transport failure, not the Board's answer/)
   assert.match(verdict.teaching, /Look there before you decide; do not repeat the call blindly/)
   assert.doesNotMatch(verdict.teaching, /reaches that same identity|rather than becoming a second command/,
@@ -140,7 +140,7 @@ test('RT-REC-5c a turn that ends in text after a write acknowledges its result w
   // unacknowledged, and after a restart the next write would be refused with it.
   const run = await runAgent({
     argv: [], chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Opened.'),
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -154,7 +154,7 @@ test('RT-REC-5c a turn that ends in text after a write acknowledges its result w
   const pinged = run.order.findIndex((step) => step.kind === 'mcp' && step.method === 'ping')
   const read = run.order.findIndex((step) => step.kind === 'model' && step.n === 2)
   assert.ok(read >= 0 && pinged > read, `the ping came before the model read the result: ${JSON.stringify(run.order)}`)
-  assert.equal(run.operations.find((op) => op.tool === 'ApplyBatch').acked, true)
+  assert.equal(run.operations.find((op) => op.tool === 'Set').acked, true)
 })
 
 test('RT-REC-5d a turn cut off at its round limit does not acknowledge the result it never showed the model', async () => {
@@ -162,13 +162,13 @@ test('RT-REC-5d a turn cut off at its round limit does not acknowledge the resul
   // model has read it. Nothing may count it as read — the model reads it in the next turn.
   const run = await runAgent({
     argv: [], chatLines: ['Open a Case.'], env: { RULITH_MAX_ROUNDS: '1' },
-    model: () => callTool('ApplyBatch', declareGoal()),
+    model: () => callTool('Set', declareGoal()),
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stdout, /Stopped at the 1-round limit/)
   assert.equal(run.pings, 0, 'a ping acknowledged a result the model never read')
-  assert.equal(run.operations.find((op) => op.tool === 'ApplyBatch').acked, false)
+  assert.equal(run.operations.find((op) => op.tool === 'Set').acked, false)
 })
 
 /** The strip a host notice showed the model, parsed from the text of a user message. */
@@ -184,10 +184,10 @@ test('RT-REC-11c the shadow reviewer does not write after a call of the turn los
   const run = await runAgent({
     argv: ['Do the governed work', '--shadow'],
     env: { RULITH_MAX_ROUNDS: '4', RULITH_SHADOW_MODEL: 'shadow-model' },
-    tool: (name) => (name === 'ApplyBatch' ? HOP_FAILURE : undefined),
+    tool: (name) => (name === 'Set' ? HOP_FAILURE : undefined),
     model: (round, body) => (body.model === 'shadow-model' ? 'FINDING: the total is unsupported'
-      : round === 1 ? callTool('ApplyBatch', declareGoal())
-        : round === 2 ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      : round === 1 ? callTool('Set', declareGoal())
+        : round === 2 ? callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
           : 'Stopping.'),
     timeoutMs: 25_000,
   })
@@ -203,7 +203,7 @@ test('RT-REC-11d the shadow reviewer does not write when the turn ended with res
     argv: ['Do the governed work', '--shadow'],
     env: { RULITH_MAX_ROUNDS: '2', RULITH_SHADOW_MODEL: 'shadow-model' },
     model: (round, body) => (body.model === 'shadow-model' ? 'FINDING: the total is unsupported'
-      : round === 1 ? callTool('ApplyBatch', declareGoal()) : callTool('ApplyAction', { action: 'demo.ship', args: {} })),
+      : round === 1 ? callTool('Set', declareGoal()) : callTool('Execute', { action: 'demo.ship', args: {} })),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -222,7 +222,7 @@ for (const readable of [true, false]) {
     const listenPort = await freePort()
     const endpoint = `http://127.0.0.1:${listenPort}#${createHash('sha256').update(TEST_TOKEN, 'utf8').digest('hex').slice(0, 16)}`
     writeFileSync(store, JSON.stringify({ schema: 'rulith-agent-sessions/1',
-      endpoints: { [endpoint]: { unresolved: { requestId: 'req-legacy-1', tool: 'ApplyAction' } } } }))
+      endpoints: { [endpoint]: { unresolved: { requestId: 'req-legacy-1', tool: 'Execute' } } } }))
     try {
       const run = await runAgent({
         argv: [], sessionFile: store, listenPort, chatLines: ['hello'], model: () => 'Hello.',
@@ -230,7 +230,7 @@ for (const readable of [true, false]) {
         timeoutMs: 20_000,
       })
       assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-      assert.match(run.stderr, /Runtime 0\.9 recorded an ApplyAction call from a previous run whose answer it never received/)
+      assert.match(run.stderr, /Runtime 0\.9 recorded an Execute call from a previous run whose answer it never received/)
       assert.match(run.stderr, /lists this Agent's latest operations, any still in progress and the latest settled write/)
       assert.doesNotMatch(run.stderr, /shows every call/)
       if (readable) {

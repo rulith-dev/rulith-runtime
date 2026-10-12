@@ -11,13 +11,13 @@
  *
  * There is exactly one path: `/mcp`. The gateway speaks the MCP 2025-11-25 lifecycle
  * (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`, plus `ping`
- * and a resumable GET stream), mints a session id per initialize, and answers the four tools
- * — `QueryBoard` / `ApplyBatch` / `ApplyAction` / `ReadArtifact`. Each answers
+ * and a resumable GET stream), mints a session id per initialize, and answers the three tools
+ * — `Get` / `Set` / `Execute`. Get also reads Artifacts. Each answers
  * with JSON text carrying the result and this Agent's operations strip, and carries host
  * metadata beside it in `_meta`, never inside the text.
  *
  * The `rulith/v4` half of the contract is modelled because it is where the interesting
- * defects live. Every call but QueryBoard becomes an operation with a host-only ordinal; the
+ * defects live. Every call but Get becomes an operation with a host-only ordinal; the
  * strip in every result shows unresolved operations and the latest unacknowledged write,
  * and `initialize` and `ping` show their state
  * form, ordinals included. A scenario's `hold` plan makes a call be held — answered
@@ -56,7 +56,7 @@ export const CONTRACT = loadContractBundle(ROOT)
 export const RULITH_META = CONTRACT.metadataNamespace
 export const MCP_SURFACE = CONTRACT.tools.map((tool) => ({ name: tool.name, target: tool.target }))
 export const MODEL_TOOLS = MCP_SURFACE.map((entry) => entry.name)
-export const BOARD_WRITES = CONTRACT.tools.filter((tool) => tool.target === 'core' && tool.name !== 'QueryBoard')
+export const BOARD_WRITES = CONTRACT.tools.filter((tool) => tool.target === 'core' && tool.name !== 'Get')
   .map((tool) => tool.name)
 export const MCP_PROTOCOL_VERSION = CONTRACT.protocolVersion
 
@@ -96,7 +96,7 @@ export const advertisedTools = () => CONTRACT.schemas.map(({ name, inputSchema }
  * that happens to be called `sessionId` or `case` is business data and must survive. This
  * fixture exists to state that rule; it is not a claim about the real contract.
  */
-export const businessNameCollisionTools = () => advertisedTools().map((tool) => (tool.name !== 'ApplyBatch' ? tool : {
+export const businessNameCollisionTools = () => advertisedTools().map((tool) => (tool.name !== 'Set' ? tool : {
   ...tool,
   inputSchema: {
     type: 'object',
@@ -128,7 +128,7 @@ export const businessNameCollisionTools = () => advertisedTools().map((tool) => 
  * tool arguments. The client must keep them away from the model and say so, but may still
  * work: an endpoint offering a field is not the same as a contract requiring one.
  */
-export const hostFieldTools = () => advertisedTools().map((tool) => (tool.name !== 'ApplyBatch' ? tool : {
+export const hostFieldTools = () => advertisedTools().map((tool) => (tool.name !== 'Set' ? tool : {
   ...tool,
   inputSchema: {
     ...tool.inputSchema,
@@ -145,7 +145,7 @@ export const hostFieldTools = () => advertisedTools().map((tool) => (tool.name !
  * A non-conforming authority that makes host envelope metadata **required**. No call this
  * client would carry can satisfy it, so the two contracts genuinely disagree.
  */
-export const requiredHostFieldTools = () => advertisedTools().map((tool) => (tool.name !== 'ApplyBatch' ? tool : {
+export const requiredHostFieldTools = () => advertisedTools().map((tool) => (tool.name !== 'Set' ? tool : {
   ...tool,
   inputSchema: {
     ...tool.inputSchema,
@@ -159,11 +159,11 @@ export const requiredHostFieldTools = () => advertisedTools().map((tool) => (too
  * what it actually cares about.
  *
  * It keeps just enough state to be honest about what the loop depends on (`rulith/v4`): Core
- * mints goal IDs when a goal declared without a parent opens its contract inside `ApplyBatch`,
+ * mints goal IDs when a goal declared without a parent opens its contract inside `Set`,
  * the same desired outcome declared again returns the open goal (`opened:false`), focus is per
- * authenticated session, `ApplyAction` reports pending work that a later read clears, and
- * `end_goal` alone in `ApplyBatch` ends a goal with a non-completed disposition. A goal completes only when the
- * Board certifies it: with `certifyAfterBatch`, a later `ApplyBatch` that leaves no gap
+ * authenticated session, `Execute` reports pending work that a later read clears, and
+ * `end_goal` alone in `Set` ends a goal with a non-completed disposition. A goal completes only when the
+ * Board certifies it: with `certifyAfterBatch`, a later `Set` that leaves no gap
  * completes the focused goals in that commit, as Core does (A-13).
  *
  * There is no observation token and no first-write exception. A write presents no view and
@@ -178,7 +178,7 @@ export const requiredHostFieldTools = () => advertisedTools().map((tool) => (too
  */
 export function defaultGateway({
   goals = [], settleAfterBatch = true, certifyAfterBatch = false, actionSettles = true,
-  artifacts = {}, queryIndependent = false,
+  artifacts = {}, artifactReadBytes = 64, queryIndependent = false,
 } = {}) {
   const state = {
     goals: new Map(goals.map((row) => [String(row.goal), {
@@ -223,7 +223,7 @@ export function defaultGateway({
     },
     tool(name, args, session) {
       switch (name) {
-        case 'ApplyBatch': {
+        case 'Set': {
           const operations = Array.isArray(args.operations) ? args.operations : []
           const ending = operations.find(operation => operation?.op === 'end_goal')
           if (ending !== undefined) {
@@ -275,17 +275,18 @@ export function defaultGateway({
           return accept(session, { result: { nodeIds: operations.map((_, index) => `N_${state.revision + 1}_${index}`),
             ...(declared.length === 0 ? {} : { goals: declared }) } })
         }
-        case 'ApplyAction': {
+        case 'Execute': {
           if (session.focus.size === 0) return refuse(session, 'no_acceptance_root', 'This Board has no goal for this Action to advance.')
           state.pending += 1
           state.gaps = [`invocation:inv_${state.pending}`]
           return accept(session, { receipt: { invocation: `inv_${state.pending}`, done: false } })
         }
-        case 'QueryBoard': {
-          if (!queryIndependent && state.pending > 0 && actionSettles) { state.pending = 0; state.gaps = [] }
-          return accept(session)
-        }
-        case 'ReadArtifact': {
+        case 'Get': {
+          if (!Object.hasOwn(args, 'artifact')) {
+            if (!queryIndependent && state.pending > 0 && actionSettles) { state.pending = 0; state.gaps = [] }
+            return accept(session)
+          }
+          args = args.artifact
           // Gateway wraps the bounded data result in its public admission envelope.
           const object = state.artifacts.get(String(args.ref ?? ''))
           if (object === undefined) {
@@ -293,8 +294,7 @@ export function defaultGateway({
           }
           const bytes = Buffer.from(object.text, 'utf8')
           const offset = Number.isInteger(args.offset) ? args.offset : 0
-          const maxBytes = Number.isInteger(args.maxBytes) ? Math.max(1, args.maxBytes) : 64
-          const slice = bytes.subarray(offset, offset + maxBytes)
+          const slice = bytes.subarray(offset, offset + artifactReadBytes)
           const nextOffset = offset + slice.byteLength
           const complete = nextOffset >= bytes.byteLength
           return { accepted: true, result: {
@@ -310,7 +310,7 @@ export function defaultGateway({
   }
 }
 
-/** One goal declaration without a parent, in the shape the model writes it inside ApplyBatch. */
+/** One goal declaration without a parent, in the shape the model writes it inside Set. */
 export const declareGoal = (predicate = 'task_done', args = {}, extra = {}) => ({
   operations: [{ op: 'declare_goal', desired: [{ predicate, args }], ...extra }],
 })
@@ -519,14 +519,14 @@ export async function runAgent({
   }
   // ── The Agent's operations, as the authority keeps them ──
   //
-  // Every tools/call but QueryBoard is an operation with an ordinal the endpoint allocates in
+  // Every tools/call but Get is an operation with an ordinal the endpoint allocates in
   // admission order. The ordinal is host-only: the state form on initialize and ping carries
   // it, the model-visible strip in a tool result does not. A result is delivered when a
   // response carrying it in full is written to a session, and acknowledged when that session
   // makes a later request.
   const SETTLED = new Set(['done', 'failed', 'refused', 'unknown'])
   const UNRESOLVED = new Set(['running', 'waiting_for_decision', 'needs_person'])
-  const WRITES = new Set(['ApplyBatch', 'ApplyAction'])
+  const WRITES = new Set(['Set', 'Execute'])
   const operations = priorOperations.map((row, index) => ({ ordinal: index + 1,
     at: new Date(Date.now() - 60_000 + index).toISOString(), since: new Date().toISOString(),
     delivered: new Map(), acked: false, ...row }))
@@ -540,10 +540,10 @@ export async function runAgent({
   let queries = 0
   let requestSeq = 0
   const counters = () => ({ pings, queries, toolCalls: toolCalls.length, requests: requests.length })
-  // Taken only from the call's own input (meta v4 Label): a declaring ApplyBatch is labelled by its tool name alone.
+  // Taken only from the call's own input (meta v4 Label): a declaring Set is labelled by its tool name alone.
   const labelOf = (name, args) => [name,
-    name === 'ApplyAction' ? args.action : name === 'ApplyBatch' && args.operations?.length === 1 && args.operations[0]?.op === 'end_goal'
-      ? `end_goal ${args.operations[0].goal}` : name === 'ReadArtifact' ? args.ref : '']
+    name === 'Execute' ? args.action : name === 'Set' && args.operations?.length === 1 && args.operations[0]?.op === 'end_goal'
+      ? `end_goal ${args.operations[0].goal}` : name === 'Get' && args.artifact ? `artifact ${args.artifact.ref}` : '']
     .filter(Boolean).join(' ')
   /** How a decoded result ends, as a strip state. */
   const outcomeOf = (core) => {
@@ -904,7 +904,7 @@ export async function runAgent({
     }
     const strip = (own) => (omitStrip?.('tools/call') ? {} : { operations: visibleStrip(session, requestNo, own) })
 
-    if (name === 'QueryBoard') {
+    if (name === 'Get' && !Object.hasOwn(args, 'artifact')) {
       // Never held, never an operation. A scripted answer is served verbatim so that negative
       // arms can test a nonconforming endpoint rather than having this fixture repair it.
       queries += 1
@@ -927,7 +927,7 @@ export async function runAgent({
         teaching: gate === 'operation_running'
           ? `Not executed: ${unresolved.label} is still in progress. Its outcome will appear in operations; do not send it again.`
           : 'Not executed: read the previous outcome in operations, then decide again.',
-        ...strip(), ...(name === 'ReadArtifact' ? {} : { view: board.peek?.(session) ?? {} }) }
+        ...strip(), ...(name === 'Get' && args.artifact ? {} : { view: board.peek?.(session) ?? {} }) }
       return send(envelope(JSON.stringify(refusal), true), { sse: sseResults })
     }
 
@@ -1007,7 +1007,7 @@ export async function runAgent({
         ?? `The outcome is ${op.state}. Its content is withheld from you now.`
       // A held answer is not the operation's result, so its strip names no entry as its own.
       text = JSON.stringify({ state: racing ? 'running' : op.state, ...(!racing && op.contentWithheld ? { contentWithheld: true } : {}),
-        teaching, ...strip(racing ? undefined : op), ...(name === 'ReadArtifact' ? {} : { view: board.peek?.(session) ?? {} }) })
+        teaching, ...strip(racing ? undefined : op), ...(name === 'Get' && args.artifact ? {} : { view: board.peek?.(session) ?? {} }) })
     }
     write({ jsonrpc: '2.0', id: input.id, result: envelope(text) })
     response.end()
@@ -1127,7 +1127,7 @@ export async function runAgent({
     code, stdout, stderr, modelRequests, order, localEvents, port, exitedAt,
     serveStatuses, serveResponses, serveSnapshot, board, toolCalls, initializes, methods, paths, requests,
     sessionStore: store,
-    /** How many `ping` calls the endpoint answered, and how many QueryBoard calls it served. */
+    /** How many `ping` calls the endpoint answered, and how many Get calls it served. */
     pings, queries,
     /** The Agent's operations as the endpoint kept them, oldest first. */
     operations,

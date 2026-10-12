@@ -13,8 +13,8 @@ const ATTACHMENT = { id: 'mat_' + 'a'.repeat(32), name: 'notes.txt',
   mediaType: 'text/plain', totalBytes: 5, digest: 'sha256:' + 'b'.repeat(64) }
 const OWNER = { origin: 'http://127.0.0.1', accountId: 'account-a', agentId: TEST_AGENT_ID }
 
-test('real Agent sends the private proof only on the first ApplyBatch that declares a goal without parent, and never persists it', async t => {
-  // rulith/v4 opens new work where a goal without parent is declared (AIS §4); that ApplyBatch is
+test('real Agent sends the private proof only on the first Set that declares a goal without parent, and never persists it', async t => {
+  // rulith/v4 opens new work where a goal without parent is declared (AIS §4); that Set is
   // the successor of the create form of OpenCase, so the Host proof rides on it and on nothing else.
   const dir = mkdtempSync(join(tmpdir(), 'rulith-task-proof-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
@@ -25,10 +25,10 @@ test('real Agent sends the private proof only on the first ApplyBatch that decla
     serveTasks: [{ text: 'Start new work for this attachment.', requestId: 'proof-task-request-1',
       sessionKey: 'proof-session', attachments: [ATTACHMENT] }],
     waitForServeCompletion: true,
-    model: round => round === 1 ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', predicate: 'note', args: {} }] })
-      : round === 2 ? callTool('ApplyBatch', declareGoal('step_done', {}, { parent: 'GOAL_0' }))
-        : round === 3 ? callTool('ApplyBatch', declareGoal())
-          : round === 4 ? callTool('ApplyBatch', declareGoal('other_done'))
+    model: round => round === 1 ? callTool('Set', { operations: [{ op: 'assert_fact', predicate: 'note', args: {} }] })
+      : round === 2 ? callTool('Set', declareGoal('step_done', {}, { parent: 'GOAL_0' }))
+        : round === 3 ? callTool('Set', declareGoal())
+          : round === 4 ? callTool('Set', declareGoal('other_done'))
             : 'Declared.',
     timeoutMs: 800,
   })
@@ -37,7 +37,7 @@ test('real Agent sends the private proof only on the first ApplyBatch that decla
   assert.equal(calls.length, 4, run.verbs.join(', '))
   assert.deepEqual(calls.map(call => call.headers['x-rulith-material-task-proof']), [undefined, undefined, PROOF, undefined],
     'the proof rides on the first declaration without parent, once')
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch', 'ApplyBatch', 'ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Set', 'Set', 'Set', 'Set'])
   for (const projection of [run.toolCalls, run.modelRequests, run.localEvents, run.serveResponses,
     run.serveSnapshot, run.stdout, run.stderr, readFileSync(conversationFile(dir, OWNER), 'utf8')]) {
     assert.doesNotMatch(JSON.stringify(projection), new RegExp(PROOF, 'u'))
@@ -57,8 +57,8 @@ test('an explicit pre-admission proof refusal stops the attached task before ano
     conflictBody: input => ({ jsonrpc: '2.0', id: input.id,
       error: { code: -32000, message: 'The proof was not registered for this Agent credential.',
         data: { reason: 'material_proof_unavailable', requestExecuted: false } } }),
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
-      : callTool('ApplyBatch', declareGoal()),
+    model: round => round === 1 ? callTool('Set', declareGoal())
+      : callTool('Set', declareGoal()),
     timeoutMs: 1200,
   })
   assert.deepEqual(run.serveStatuses, [202], run.stdout + '\n' + run.stderr)
@@ -68,7 +68,7 @@ test('an explicit pre-admission proof refusal stops the attached task before ano
     && event.reason === 'material_binding_refused'), 'Local receives a definite material refusal')
   assert.match(run.localEvents.find(event => event.type === 'blocked').teaching,
     /refused before the goal was declared: The proof was not registered.*No goal was declared for these files/)
-  assert.doesNotMatch(run.stdout, /No answer arrived for ApplyBatch/)
+  assert.doesNotMatch(run.stdout, /No answer arrived for Set/)
 })
 
 test('real Agent refuses attached tasks without a valid Host proof before MCP egress', async () => {
@@ -113,7 +113,7 @@ test('same task request accepts the same proof once and refuses a changed proof 
     serveTasks: [task, task, task],
     serveTaskHeaders: index => ({ 'x-rulith-material-task-proof': index === 2 ? different : PROOF }),
     waitForServeCompletion: true,
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Declared.',
+    model: round => round === 1 ? callTool('Set', declareGoal()) : 'Declared.',
     timeoutMs: 800,
   })
   assert.deepEqual(run.serveStatuses, [202, 202, 409], run.stdout + '\n' + run.stderr)

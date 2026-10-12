@@ -94,7 +94,7 @@ test('each problem offers one existing operation or the scoped Console tab', () 
     assert.equal(source.action.url, ORIGIN + '/console/#/agents/agent-alpha?tab=configuration')
   }
   const health = healthOf(cloudAgent({ program: { state: 'rejected', refusal: { errorCode: 'bad_program', message: 'Review the rules' } },
-    pendingCall: { tool: 'ApplyAction', label: 'Write', phase: 'reconciliation_required', needsPerson: true } }))
+    pendingCall: { tool: 'Execute', label: 'Write', phase: 'reconciliation_required', needsPerson: true } }))
   const rows = problemRows(health)
   assert.match(rows.find(row => row.label === 'Program').value, /Review the rules/)
   assert.equal(rows.find(row => row.label === 'Pending call').action.url, ORIGIN + '/console/#/agents/agent-alpha?tab=runtime')
@@ -265,7 +265,7 @@ test('Health reconnect uses the named existing choice and never silently chooses
 
 test('Health Worker start uses the existing local-tools operation and Console links use their specified tabs', async () => {
   const page = await pageFor(healthOf(cloudAgent({ connections: [{ ...cloudAgent().connections[0], workerOnline: false }],
-    sources: [{ name: '<Files>', state: 'needs_relock' }], pendingCall: { tool: 'ApplyAction', phase: 'waiting', needsPerson: true } })))
+    sources: [{ name: '<Files>', state: 'needs_relock' }], pendingCall: { tool: 'Execute', phase: 'waiting', needsPerson: true } })))
   await page.$('health-open').onclick()
   const html = page.$('health-items').innerHTML
   assert.match(html, /&lt;Files&gt;/)

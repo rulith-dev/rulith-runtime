@@ -43,14 +43,14 @@ const wait = (ms) => new Promise((done) => setTimeout(done, ms))
 /**
  * A model that declares one goal and then stops.
  *
- * The first answer for a task is an `ApplyBatch` declaring a goal without a parent, which opens
+ * The first answer for a task is an `Set` declaring a goal without a parent, which opens
  * its contract (rulith/v4); once the transcript carries the tool result, the next answer is plain
  * text, which ends the round. Both instances share this endpoint, so the answers must not depend
  * on who is asking.
  */
 const openOneCase = (body) => (JSON.stringify(body).includes('tool_result')
   ? { text: 'The goal is declared. Nothing further is needed.' }
-  : { text: 'Declaring a goal.', toolCalls: [{ name: 'ApplyBatch',
+  : { text: 'Declaring a goal.', toolCalls: [{ name: 'Set',
     input: { operations: [{ op: 'declare_goal', desired: [{ predicate: 'task_done', args: {} }] }] } }] })
 
 /** Read this instance's loopback address the way the page does: by asking the manager. */

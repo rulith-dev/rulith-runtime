@@ -20,7 +20,7 @@ const rawArgs = (n) => `{"action":"tally","args":{"path":"reports/tally.txt","co
 
 /** Open a Case first, then make the call under test, then stop. */
 const script = (second) => (round) => {
-  if (round === 1) return callTool('ApplyBatch', declareGoal())
+  if (round === 1) return callTool('Set', declareGoal())
   if (round === 2) return second
   return 'Understood.'
 }
@@ -32,15 +32,15 @@ async function run(options) {
 }
 
 test('RT-AG-EXACT-1: a Chat Completions tool call carrying an integer beyond 2^53-1 is refused on the arguments text', async () => {
-  const result = await run({ provider: 'openai', model: script(callTool('ApplyAction', {}, { rawArguments: rawArgs(BEYOND) })) })
-  assert.ok(!result.verbs.includes('ApplyAction'), `the inexact call reached the gateway: ${result.verbs.join(', ')}`)
+  const result = await run({ provider: 'openai', model: script(callTool('Execute', {}, { rawArguments: rawArgs(BEYOND) })) })
+  assert.ok(!result.verbs.includes('Execute'), `the inexact call reached the gateway: ${result.verbs.join(', ')}`)
   assert.match(result.stdout, /outside the exact number domain/)
   assert.match(result.stdout, new RegExp(BEYOND), 'the refusal must quote the literal the model wrote')
 })
 
 test('RT-AG-EXACT-2: a Messages tool_use carrying the same literal is refused on the response text', async () => {
-  const result = await run({ provider: 'anthropic', model: script(callTool('ApplyAction', {}, { rawInput: rawArgs(BEYOND) })) })
-  assert.ok(!result.verbs.includes('ApplyAction'), `the inexact call reached the gateway: ${result.verbs.join(', ')}`)
+  const result = await run({ provider: 'anthropic', model: script(callTool('Execute', {}, { rawInput: rawArgs(BEYOND) })) })
+  assert.ok(!result.verbs.includes('Execute'), `the inexact call reached the gateway: ${result.verbs.join(', ')}`)
   assert.match(result.stdout, /outside the exact number domain/)
 })
 
@@ -51,25 +51,25 @@ test('RT-AG-EXACT-3: the emulated transport refuses the literal in the model\'s 
     env: { RULITH_MODEL_TOOLS: 'emulated' },
     model: (round) => {
       if (round === 1) return '{"tool":"OpenCase","input":{}}'
-      if (round === 2) return `{"tool":"ApplyAction","input":${rawArgs(BEYOND)}}`
+      if (round === 2) return `{"tool":"Execute","input":${rawArgs(BEYOND)}}`
       return 'Understood.'
     },
   })
-  assert.ok(!result.verbs.includes('ApplyAction'), `the inexact call reached the gateway: ${result.verbs.join(', ')}`)
+  assert.ok(!result.verbs.includes('Execute'), `the inexact call reached the gateway: ${result.verbs.join(', ')}`)
   assert.match(result.stdout, /outside the exact number domain/)
 })
 
 test('RT-AG-EXACT-5: a literal that underflows to zero is refused the same way', async () => {
-  const result = await run({ provider: 'openai', model: script(callTool('ApplyAction', {}, { rawArguments: rawArgs('1e-400') })) })
-  assert.ok(!result.verbs.includes('ApplyAction'), `the underflowing call reached the gateway: ${result.verbs.join(', ')}`)
+  const result = await run({ provider: 'openai', model: script(callTool('Execute', {}, { rawArguments: rawArgs('1e-400') })) })
+  assert.ok(!result.verbs.includes('Execute'), `the underflowing call reached the gateway: ${result.verbs.join(', ')}`)
   assert.match(result.stdout, /outside the exact number domain/)
   assert.match(result.stdout, /1e-400/)
 })
 
 test('RT-AG-EXACT-4: the largest exact integer passes through unchanged (calibration)', async () => {
-  const result = await run({ provider: 'openai', model: script(callTool('ApplyAction', {}, { rawArguments: rawArgs(EXACT_MAX) })) })
-  assert.ok(result.verbs.includes('ApplyAction'), `the exact call never reached the gateway: ${result.verbs.join(', ')}\n${result.stdout}\n${result.stderr}`)
-  const sent = result.toolCalls.find((call) => call.name === 'ApplyAction')
+  const result = await run({ provider: 'openai', model: script(callTool('Execute', {}, { rawArguments: rawArgs(EXACT_MAX) })) })
+  assert.ok(result.verbs.includes('Execute'), `the exact call never reached the gateway: ${result.verbs.join(', ')}\n${result.stdout}\n${result.stderr}`)
+  const sent = result.toolCalls.find((call) => call.name === 'Execute')
   assert.equal(sent?.args?.args?.count, 9007199254740991)
   assert.doesNotMatch(result.stdout, /outside the exact number domain/)
 })

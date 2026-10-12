@@ -148,7 +148,7 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('the model surface is the four tools of the unified list, and no second grammar survives', () => {
+test('the model surface is the three tools of the unified list, and no second grammar survives', () => {
   const whole = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   // EndGoal keeps its specific diagnostic for this release. Older names fail the same
   // membership check as every other tool outside the approved surface.
@@ -161,7 +161,7 @@ test('the model surface is the four tools of the unified list, and no second gra
   // `agentVerb` / `agentRead` membership fields are gone with the host split.
   assert.match(source, /const RULITH_MCP_SURFACE = Object\.freeze\(\[/)
   assert.match(source, /const MODEL_TOOLS = RULITH_MCP_SURFACE\.map\(\(entry\) => entry\.name\)/)
-  assert.match(source, /name: 'ReadArtifact', target: 'artifact'/)
+  assert.match(source, /name: 'Get', target: 'core'.*artifactRoute: Object\.freeze\(/)
   assert.doesNotMatch(source, /target: 'operation'/, 'the retired operation-read target survived')
   assert.match(source, /const BOARD_TOOLS = new Set\(RULITH_MCP_SURFACE\.filter\(\(entry\) => entry\.target === 'core'\)/)
   assert.doesNotMatch(source, /agentVerb|agentRead/)
@@ -242,11 +242,11 @@ test('Agent identity comes from the authenticated MCP handshake, never from deco
 test('ordinary startup performs no Board read of any kind', () => {
   const source = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   // The startup block runs `initialize`, the initialized notification, and `tools/list`.
-  // A bootstrap `QueryBoard` — even a dummy one issued only to learn the Agent id — would
+  // A bootstrap `Get` — even a dummy one issued only to learn the Agent id — would
   // make the Board tool mandatory in everything but name.
   const startup = /let startupFailed = false\n([\s\S]*?)\nif \(!startupFailed\)/.exec(source)?.[1]
   assert.ok(startup, 'the startup block could not be found')
-  assert.doesNotMatch(startup, /callTool|QueryBoard|ApplyBatch/,
+  assert.doesNotMatch(startup, /callTool|Get|Set/,
     'startup reached the Board before the model had decided whether Rulith was useful')
   assert.match(source, /it will not declare a goal or read the Board merely to learn who it is/)
 })
@@ -288,7 +288,7 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
                 tool_calls: [{
                   id: 'call_1', type: 'function',
                   function: {
-                    name: 'ApplyBatch',
+                    name: 'Set',
                     arguments: toolNames.length === 0
                       ? '{"operations":[{"op":"declare_goal","desired":[{"predicate":"task_done","args":{}}]}]}'
                       : '{"operations":[{"op":"assert_fact","predicate":"evidence","args":{"n":1}}]}',
@@ -334,10 +334,12 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
       assert.equal(String(req.headers['mcp-session-id']), sessionId, 'the session header was not carried after initialize')
       return void reply({
         tools: [
-          { name: 'QueryBoard', inputSchema: { type: 'object', properties: { include: { type: 'array' } } } },
-          { name: 'ApplyBatch', inputSchema: { type: 'object', properties: { operations: { type: 'array' }, case: { type: 'object' } } } },
-          { name: 'ApplyAction', inputSchema: { type: 'object', properties: { action: { type: 'string' }, case: { type: 'object' } } } },
-          { name: 'ReadArtifact', inputSchema: { type: 'object', required: ['ref'], properties: { ref: { type: 'string' }, offset: { type: 'integer' }, maxBytes: { type: 'integer' } } } },
+          { name: 'Get', inputSchema: { type: 'object', properties: {
+            include: { type: 'array' }, artifact: { type: 'object', required: ['ref'],
+              properties: { ref: { type: 'string' }, offset: { type: 'integer' } } },
+          } } },
+          { name: 'Set', inputSchema: { type: 'object', properties: { operations: { type: 'array' }, case: { type: 'object' } } } },
+          { name: 'Execute', inputSchema: { type: 'object', properties: { action: { type: 'string' }, case: { type: 'object' } } } },
         ],
         _meta: { 'rulith/v4': { agentId: 'agent-public-1', focusedGoals: [] } },
       })
@@ -395,7 +397,7 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
   assert.equal(status, 0, `${stdout}\n${stderr}`)
   assert.deepEqual(methods.slice(0, 3), ['initialize', 'notifications/initialized', 'tools/list'],
     `the MCP lifecycle was not performed: ${methods.join(', ')}`)
-  assert.deepEqual(toolNames, ['ApplyBatch', 'ApplyBatch'], `the model surface did not reach the Board as tools/call: ${toolNames.join(', ')}`)
+  assert.deepEqual(toolNames, ['Set', 'Set'], `the model surface did not reach the Board as tools/call: ${toolNames.join(', ')}`)
   // Identity came from the handshake. Nothing of this client's own travelled beside the
   // arguments: the protected query context is the Gateway's to inject and the session is a
   // transport header, so a conforming client attaches no metadata at all.
@@ -1483,7 +1485,7 @@ test('one system prompt explains reasoning without granting Case-specific author
   assert.ok(prompt.includes('Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you.'), 'D-1012e')
   assert.doesNotMatch(prompt, /recent operations|newest first|shows no full list/)
   assert.ok(prompt.includes('When you declare a capability\'s goal, the Board plants the steps its capability prepared. Work toward unmet goals'
-    + ' by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board'
+    + ' by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with Set. A goal the Board'
     + ' certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.'), 'V50')
   assert.doesNotMatch(prompt, /\bCases?\b|OpenCase|CloseCase|rulith\.exploration\.completed/, 'a Case sentence survived in the system prompt')
   assert.match(prompt, /each Action says ready or blocked and why, or what it will wait for/)
@@ -1519,7 +1521,7 @@ test('available Actions reach the model through the Board View, not a prompt-sid
   assert.doesNotMatch(source, /\/agent\/v1\/evidence-chase/)
   assert.match(source, /Every Board tool result carries the Board View the authority computed for that step/)
   // And reading a *current* view is the model's own tool, not a host poll loop.
-  assert.match(source, /call QueryBoard when you need a current view/)
+  assert.match(source, /call Get when you need a current view/)
 })
 
 test('agent lifecycle events shown to users use the English product vocabulary', () => {

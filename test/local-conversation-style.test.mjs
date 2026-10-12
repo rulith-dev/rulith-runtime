@@ -42,7 +42,7 @@ test('a routine event is a line of text, not a panel', () => {
     { src: 'agent', type: 'case-open', goal: 'goal-1', body: 'Goal goal-1' },
     { src: 'agent', type: 'task-done', body: 'Response delivered; Rulith goal(s) "goal-1" remain in focus.' },
     { src: 'worker', type: 'claimed', body: 'lease · lease-77' },
-    { src: 'agent', type: 'verdict', accepted: true, body: 'Accepted by Board · ApplyBatch' },
+    { src: 'agent', type: 'verdict', accepted: true, body: 'Accepted by Board · Set' },
     { src: 'agent', type: 'case-closed', body: 'Disposition: completed' },
   ]) {
     const html = card(event)
@@ -72,8 +72,8 @@ test('wrong, waiting, or needing a person keeps a treatment of its own', () => {
   }
   for (const event of [
     { src: 'agent', type: 'case-pending', body: 'Waiting for evidence' },
-    { src: 'agent', type: 'held-call', phase: 'waiting', body: 'ApplyAction demo.ship is still running at the authority.' },
-    { src: 'agent', type: 'verdict', held: 'waiting_for_decision', body: 'ApplyAction · waiting for decision' },
+    { src: 'agent', type: 'held-call', phase: 'waiting', body: 'Execute demo.ship is still running at the authority.' },
+    { src: 'agent', type: 'verdict', held: 'waiting_for_decision', body: 'Execute · waiting for decision' },
     { src: 'agent', type: 'queue-suspended', body: '2 further call(s) were not sent' },
     { src: 'agent', type: 'session-detached', body: 'The local conversation was reclaimed.' },
   ]) {
@@ -113,18 +113,18 @@ test('prose, the person\'s own message, and Trace are unchanged', () => {
 })
 
 test('a tool call is one activity line that opens onto what it actually sent and received', () => {
-  const html = renderToolCall({ callId: 'call-1', cmd: 'ApplyBatch', input: { text: '{"op":"assert"}' } },
+  const html = renderToolCall({ callId: 'call-1', cmd: 'Set', input: { text: '{"op":"assert"}' } },
     { authoritative: true, accepted: true, output: { text: '{"accepted":true}' } })
   assert.match(html, /class="message quiet"/)
   assert.match(html, /<details class="activity tool-call" data-call="call-1">/)
-  assert.match(html, /<span class="act-text">ApplyBatch<\/span>/)
+  assert.match(html, /<span class="act-text">Set<\/span>/)
   assert.match(html, /<span class="act-state">Accepted<\/span>/)
   assert.doesNotMatch(html, /class="event/, 'a call is an activity line, not a bordered card')
   // Only a refusal spends colour, and the words are still the host's own.
-  assert.match(renderToolCall({ cmd: 'ApplyAction' }, { authoritative: true, accepted: false }),
+  assert.match(renderToolCall({ cmd: 'Execute' }, { authoritative: true, accepted: false }),
     /<span class="act-state bad">Rejected<\/span>/)
-  assert.match(renderToolCall({ cmd: 'ApplyAction' }, { refusedLocally: true }), /act-state bad">Not sent/)
-  assert.match(renderToolCall({ cmd: 'ApplyAction' }, undefined), /<span class="act-state">Waiting for result<\/span>/)
+  assert.match(renderToolCall({ cmd: 'Execute' }, { refusedLocally: true }), /act-state bad">Not sent/)
+  assert.match(renderToolCall({ cmd: 'Execute' }, undefined), /<span class="act-state">Waiting for result<\/span>/)
 })
 
 test('the retired panel styles are gone and the quiet ones are declared', () => {

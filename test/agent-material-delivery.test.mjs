@@ -72,14 +72,14 @@ async function withDeliveryEndpoint(run, { answer } = {}) {
  * `_meta["rulith/local-delivery/v1"]` is a sibling of the host-metadata block and equally
  * host-only; the model receives only the text content, which is the refusal.
  */
-const negotiated = (block = {}) => (name, args) => (name !== 'ReadArtifact' ? undefined : withMeta({
+const negotiated = (block = {}) => (name, args) => ((name !== 'Get' || !args?.artifact) ? undefined : withMeta({
   accepted: false, errorCode: 'local_delivery_incomplete',
   teaching: 'This bounded read was authorized for local delivery on the requesting host. The service carried no bytes.'
     + ' Restore the local custodian before trying again.',
 }, {
   agentId: TEST_AGENT_ID,
   'rulith/local-delivery/v1': {
-    protocol: 'rulith-local-delivery/1', ticket: TICKET, ref: String(args.ref),
+    protocol: 'rulith-local-delivery/1', ticket: TICKET, ref: String(args.artifact.ref),
     custodyId: `res_${'c'.repeat(32)}`, claimPath: '/work/artifact/claim', expiresInMillis: 15_000,
     ...block,
   },
@@ -100,14 +100,14 @@ test('a negotiated read is completed from custody, and the model reads bytes tha
       chatLines: ['Read what was attached.'],
       gateway: defaultGateway(),
       tool: negotiated(),
-      model: (round) => (round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'I have read it.'),
+      model: (round) => (round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'I have read it.'),
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
 
     // The authority was asked first, the ordinary way, with the reference it issued — and the
     // negotiation travelled as a header beside the call, never as an argument.
-    assert.deepEqual(run.verbs, ['ReadArtifact'])
-    assert.deepEqual(run.toolCalls[0].args, { ref: GATEWAY_REF })
+    assert.deepEqual(run.verbs, ['Get'])
+    assert.deepEqual(run.toolCalls[0].args, { artifact: { ref: GATEWAY_REF } })
     const negotiations = run.requests.filter((entry) => entry.method === 'tools/call')
     assert.equal(negotiations.length, 1)
     assert.equal(negotiations[0].headers?.[LOCAL_DELIVERY_HEADER], 'rulith-local-delivery/1',
@@ -122,7 +122,7 @@ test('a negotiated read is completed from custody, and the model reads bytes tha
     assert.equal(claims[0].body.ref, GATEWAY_REF)
     assert.equal(claims[0].body.modelDestination, `http://127.0.0.1:${port}`)
 
-    // The model received the locally completed fragment, in the shape ReadArtifact answers in,
+    // The model received the locally completed fragment, in the shape Get answers in,
     // and never saw the authority's placeholder refusal.
     const read = fragments(run)
     assert.equal(read.length, 1)
@@ -150,7 +150,7 @@ test('an Agent with no custodian does not negotiate, and takes the ordinary prox
       RULITH_MATERIALS_KEY: MATERIALS_KEY, RULITH_MATERIALS_CONNECTION: '' },
     chatLines: ['Read that.'],
     gateway: defaultGateway({ artifacts: { [GATEWAY_REF]: { mediaType: 'text/plain', text: 'proxied bytes' } } }),
-    model: (round) => (round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'Read.'),
+    model: (round) => (round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'Read.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const negotiations = run.requests.filter((entry) => entry.method === 'tools/call')
@@ -164,14 +164,14 @@ test('maximum binary and escaped UTF-8 material windows reach the model through 
     const bytes = Buffer.alloc(1_048_576, encoding === 'base64' ? 0xff : 0)
     const data = bytes.toString(encoding === 'base64' ? 'base64' : 'utf8')
     const run = await runAgent({ argv: [], env: { RULITH_MAX_ROUNDS: '4' }, chatLines: ['Read the whole window.'],
-      tool: name => name === 'ReadArtifact' ? { accepted: true, result: {
+      tool: (name, args) => (name === 'Get' && args?.artifact) ? { accepted: true, result: {
         ref: GATEWAY_REF, mediaType: encoding === 'base64' ? 'application/octet-stream' : 'text/plain',
         encoding, data, offset: 0, nextOffset: null, totalBytes: bytes.length, complete: true, truncated: false,
       } } : undefined,
-      model: round => round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF, length: bytes.length }) : 'Read.',
+      model: round => round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'Read.',
     })
     assert.equal(run.code, 0, run.stderr)
-    assert.deepEqual(run.verbs, ['ReadArtifact'], 'a valid bounded result should not enter recovery')
+    assert.deepEqual(run.verbs, ['Get'], 'a valid bounded result should not enter recovery')
     assert.ok(fragments(run).at(-1)?.result?.data === data, `${encoding} was truncated or refused`)
   }
 })
@@ -190,7 +190,7 @@ test('a local delivery this host cannot complete is a visible refusal, never an 
         chatLines: ['Read that.'],
         gateway: defaultGateway(),
         tool: negotiated(),
-        model: (round) => (round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'It was refused.'),
+        model: (round) => (round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'It was refused.'),
       })
       assert.equal(run.code, 0, `${label}: ${run.stdout}\n${run.stderr}`)
       const body = modelText(run)
@@ -221,7 +221,7 @@ test('a metadata block this host cannot act on is a refusal too, and nothing is 
         chatLines: ['Read that.'],
         gateway: defaultGateway(),
         tool: negotiated(block),
-        model: (round) => (round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'It was refused.'),
+        model: (round) => (round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'It was refused.'),
       })
       assert.equal(run.code, 0, `${label}: ${run.stdout}\n${run.stderr}`)
       assert.deepEqual(claims, [], `${label}: an unreadable block was still carried to the custodian`)
@@ -238,7 +238,7 @@ test('a failed local read never silently changes the next read to a proxy', asyn
       chatLines: ['Read that.'],
       gateway: defaultGateway({ artifacts: { [GATEWAY_REF]: { mediaType: 'text/plain', text: 'proxied after all' } } }),
       tool: negotiated(),
-      model: (round) => (round <= 2 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'Read.'),
+      model: (round) => (round <= 2 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'Read.'),
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
 
@@ -255,8 +255,8 @@ test('a failed local read never silently changes the next read to a proxy', asyn
   }, { answer: () => ({ status: 400, body: { ok: false, errorCode: 'local_ticket_expired', teaching: 'gone' } }) })
 })
 
-/** A ReadArtifact the authority holds and answers `running`, settling after two pings. */
-const heldRead = () => (name, args, seen) => name !== 'ReadArtifact' || seen.toolCalls > 1 ? undefined : {
+/** A Get the authority holds and answers `running`, settling after two pings. */
+const heldRead = () => (name, args, seen) => (name !== 'Get' || !args?.artifact) || seen.toolCalls > 1 ? undefined : {
   answer: 'running', holdMs: 50, settle: (now) => (now.pings >= 2 ? { state: 'done' } : undefined),
 }
 
@@ -265,9 +265,9 @@ test('a held read is answered by a fresh read, with a fresh local ticket that ne
     const run = await runAgent({ argv: [], env: { RULITH_MAX_ROUNDS: '4', RULITH_HOST_POLL_MS: '50', ...env },
       chatLines: ['Read what was attached.'], gateway: defaultGateway(),
       hold: heldRead(), tool: negotiated(),
-      model: (round) => (round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'I have read it.') })
+      model: (round) => (round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'I have read it.') })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-    assert.deepEqual(run.verbs, ['ReadArtifact', 'ReadArtifact'], 'the settled read was not simply read again')
+    assert.deepEqual(run.verbs, ['Get', 'Get'], 'the settled read was not simply read again')
     assert.equal(run.queries, 0, 'a read was answered from the strip, which never carries it')
     assert.equal(claims.length, 1, 'the held read spent a ticket, or the fresh read did not get one')
     for (const call of run.requests.filter((row) => row.method === 'tools/call')) {
@@ -284,11 +284,11 @@ test('a read whose answer was lost is read again once, and a refused ticket stay
   await withDeliveryEndpoint(async ({ env, claims }) => {
     const run = await runAgent({ argv: [], env: { RULITH_MAX_ROUNDS: '3', ...env }, chatLines: ['Read it.'],
       sseResults: true, breakStreamOnCall: 1, refuseResume: true, tool: negotiated(),
-      model: (round) => (round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'The local read failed.') })
+      model: (round) => (round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'The local read failed.') })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-    assert.deepEqual(run.verbs, ['ReadArtifact', 'ReadArtifact'])
+    assert.deepEqual(run.verbs, ['Get', 'Get'])
     assert.notEqual(run.toolCalls[0].id, run.toolCalls[1].id, 'the fresh read reused the lost identity')
-    assert.match(run.stdout, /The answer to ReadArtifact was lost \(response_lost\); reading the object again as a new read/)
+    assert.match(run.stdout, /The answer to Get with artifact was lost \(response_lost\); reading the object again as a new read/)
     assert.equal(claims.length, 1)
     const [read] = fragments(run)
     assert.equal(read.errorCode, 'local_ticket_expired')
@@ -307,14 +307,14 @@ test('a locally completed read keeps the strip its answer carried, and an earlie
       argv: [], env: { RULITH_MAX_ROUNDS: '4', ...env },
       chatLines: ['Read what was attached.'],
       gateway: defaultGateway(),
-      priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'done', core: earlier }],
+      priorOperations: [{ tool: 'Execute', label: 'Execute demo.ship', state: 'done', core: earlier }],
       tool: negotiated(),
-      model: (round) => (round === 1 ? callTool('ReadArtifact', { ref: GATEWAY_REF }) : 'I have read it, and the shipment.'),
+      model: (round) => (round === 1 ? callTool('Get', { artifact: { ref: GATEWAY_REF } }) : 'I have read it, and the shipment.'),
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
     const [read] = fragments(run)
     assert.equal(read.result.data, SECRET)
-    const shipment = read.operations?.find((entry) => entry.label === 'ApplyAction demo.ship')
+    const shipment = read.operations?.find((entry) => entry.label === 'Execute demo.ship')
     assert.ok(shipment, 'the strip of the completed read was dropped')
     assert.equal(JSON.parse(shipment.result.content[0].text).result.status, 'confirmed',
       'the earlier outcome the read delivered did not reach the model')

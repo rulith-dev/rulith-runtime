@@ -43,19 +43,19 @@ test('RT-CONTRACT-1 the vendored bundle is what this Runtime speaks', () => {
   assert.deepEqual(bundle.operationStates,
     ['running', 'waiting_for_decision', 'done', 'failed', 'refused', 'unknown', 'needs_person'])
   assert.deepEqual(bundle.runningStages, ['not_dispatched', 'at_worker'])
-  // D-1012a: four tools, end_goal inside ApplyBatch, and no retired tool aliases.
-  assert.deepEqual(MODEL_TOOLS, ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact'])
-  assert.deepEqual(bundle.operationTools, ['ApplyBatch', 'ApplyAction', 'ReadArtifact'])
+  // D-1012g: three tools; Get's Artifact mode is also held.
+  assert.deepEqual(MODEL_TOOLS, ['Get', 'Set', 'Execute'])
+  assert.deepEqual(bundle.operationTools, ['Set', 'Execute', 'Get'])
   for (const retired of ['ReadOperation', 'OpenCase', 'CloseCase', 'EndGoal']) {
     assert.equal(bundle.tools.some((tool) => tool.name === retired), false, `${retired} is still on the surface`)
   }
   // The declaration keeps the C1 shape (heldCalls, seat); this Runtime states only the constant.
   assert.deepEqual(bundle.clientCapabilities, { heldCalls: 1 })
   assert.deepEqual(bundle.serverCapabilities, { heldCalls: 1 })
-  const observation = bundle.tools.find((tool) => tool.name === 'QueryBoard')
+  const observation = bundle.tools.find((tool) => tool.name === 'Get')
   assert.equal(observation.resultSchemaRef,
     'docs/specs/schemas/rulith-board-observation-v3.schema.json#/$defs/QueryBoardResult')
-  assert.ok(bundle.schemas.find((schema) => schema.name === 'QueryBoard')?.resultSchema,
+  assert.ok(bundle.schemas.find((schema) => schema.name === 'Get')?.resultSchema,
     'the committed Board observation result schema was dropped from the verified bundle')
   for (const { inputSchema } of bundle.schemas) {
     assert.equal(inputSchema.$schema, 'http://json-schema.org/draft-07/schema#',
@@ -90,7 +90,7 @@ for (const [label, mutate, expected] of [
   ['an open server capability shape', (b) => { b.metadata.$defs.ServerCapabilities.additionalProperties = true }, /ServerCapabilities must require exactly/],
   ['a variable held-call protocol', (b) => { delete b.metadata.$defs.ServerCapabilities.properties.heldCalls.const }, /ServerCapabilities.heldCalls has no constant/],
   ['no operation states', (b) => { delete b.metadata.$defs.OperationState }, /declares no OperationState enum/],
-  ['held tools that are not the membership', (b) => { b.metadata.$defs.OperationTool.enum.push('QueryBoard') }, /OperationTool enum/],
+  ['held tools that are not the membership', (b) => { b.metadata.$defs.OperationTool.enum.push('Get') }, /OperationTool enum/],
   ['the v2 surface', (b) => { b.surface.schema = 'rulith-mcp-surface/v2'; b.files['protocol/mcp-surface.json'].content = JSON.stringify(b.surface) }, /does not match the digest|expected rulith-mcp-surface\/v3|differs from the carried/],
   ['no audience profiles', (b) => { delete b.queryProfiles }, /carries no queryProfiles/],
   ['no query context', (b) => { delete b.queryContext }, /carries no queryContext/],
@@ -129,7 +129,7 @@ test('RT-CONTRACT-6 a rewritten tool projection cannot ride along on unchanged f
   // The attack this closes: leave every file and its digest exactly as exported, and change
   // only the materialized schema the Gateway would serve. The digests all still match.
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    const applyBatch = bundle.tools.find((tool) => tool.name === 'ApplyBatch')
+    const applyBatch = bundle.tools.find((tool) => tool.name === 'Set')
     applyBatch.inputSchema.properties.viewToken = { type: 'string' }
   })), (error) => {
     assert.match(error.message, /materialized schema no longer matches/)
@@ -138,22 +138,22 @@ test('RT-CONTRACT-6 a rewritten tool projection cannot ride along on unchanged f
   })
   // The same for a requirement that quietly disappears.
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    bundle.tools.find((tool) => tool.name === 'ApplyBatch').inputSchema.required = []
+    bundle.tools.find((tool) => tool.name === 'Set').inputSchema.required = []
   })), /materialized schema no longer matches/)
 })
 
-test('RT-CONTRACT-6b a rewritten QueryBoard result projection cannot ride on unchanged source digests', () => {
+test('RT-CONTRACT-6b a rewritten Get result projection cannot ride on unchanged source digests', () => {
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    bundle.tools.find((tool) => tool.name === 'QueryBoard').resultSchema.required = []
+    bundle.tools.find((tool) => tool.name === 'Get').resultSchema.required = []
   })), /materialized result schema no longer matches/)
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    delete bundle.tools.find((tool) => tool.name === 'QueryBoard').resultSchema
+    delete bundle.tools.find((tool) => tool.name === 'Get').resultSchema
   })), /carries no draft-07 materialized resultSchema/)
 })
 
 test('RT-CONTRACT-7 a tool the surface does not declare, or a moved target, is refused', () => {
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    bundle.tools.find((tool) => tool.name === 'ReadArtifact').target = 'core'
+    bundle.tools.find((tool) => tool.name === 'Get').target = 'artifact'
   })), /does not match the declared/)
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
     bundle.tools.pop()
@@ -164,13 +164,13 @@ test('RT-CONTRACT-8 a membership the metadata schema does not repeat is refused'
   // `ToolName` is the same list again, in the schema the Gateway validates its own metadata
   // against. Two lists that can disagree are two contracts.
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    bundle.metadata.$defs.ToolName.enum = bundle.metadata.$defs.ToolName.enum.slice(0, 3)
+    bundle.metadata.$defs.ToolName.enum = bundle.metadata.$defs.ToolName.enum.slice(0, 2)
   })), /is not the tool membership/)
 })
 
 test('RT-CONTRACT-9 a materialized schema without an explicit dialect is refused', () => {
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    delete bundle.tools.find((tool) => tool.name === 'QueryBoard').inputSchema.$schema
+    delete bundle.tools.find((tool) => tool.name === 'Get').inputSchema.$schema
   })), /does not declare draft-07 explicitly/)
 })
 
@@ -203,9 +203,9 @@ test('RT-CONTRACT-11 vendoring requires the contract repository\'s own verifier'
   assert.ok(proof > 0 && write > proof, 'the bundle is written before its provenance is proved')
 })
 
-test('the bundled ApplyBatch offers the model exactly eight operations', () => {
+test('the bundled Set offers the model exactly eight operations', () => {
   // D-1012a: end_goal replaces revise_fact and the batch's apply_action.
-  const tool = RAW.tools.find((row) => row.name === 'ApplyBatch')
+  const tool = RAW.tools.find((row) => row.name === 'Set')
   const defs = tool.inputSchema.$defs
   const resolve = (ref) => defs[ref.split('/').pop()]
   const operation = resolve(tool.inputSchema.properties.operations.items.$ref)
@@ -219,7 +219,7 @@ test('the bundled ApplyBatch offers the model exactly eight operations', () => {
 })
 
 test('the bundled end_goal takes a goal, a non-completed disposition and a reason', () => {
-  const tool = RAW.tools.find((row) => row.name === 'ApplyBatch')
+  const tool = RAW.tools.find((row) => row.name === 'Set')
   const ending = Object.values(tool.inputSchema.$defs).find(schema => schema.properties?.op?.const === 'end_goal')
   assert.deepEqual(ending.required, ['op', 'goal', 'disposition', 'reason'])
   assert.deepEqual(ending.properties.disposition.enum, ['cancelled', 'failed', 'abandoned', 'superseded'])
@@ -233,13 +233,41 @@ test('the bundled end_goal takes a goal, a non-completed disposition and a reaso
   }
 })
 
-test('the bundled QueryBoard continues history by offset alone', () => {
-  const schema = RAW.tools.find(tool => tool.name === 'QueryBoard').inputSchema
-  assert.equal(Object.hasOwn(schema.properties, 'historyVersion'), false)
+test('the bundled Get continues history by offset alone', () => {
+  const schema = RAW.tools.find(tool => tool.name === 'Get').inputSchema
+  assert.equal(Object.values(schema.$defs).some(def => Object.hasOwn(def.properties ?? {}, 'historyVersion')), false)
   const validate = new Ajv({ strict: false }).compile(schema)
   const page = { include: ['history'], selector: { goals: ['GOAL_1'] }, historyOffset: 25 }
   assert.equal(validate(page), true)
   assert.equal(validate({ ...page, historyVersion: 'old' }), false)
+})
+
+test('D-1012g Get accepts only artifact ref and optional offset in its exclusive Artifact mode', () => {
+  const get = RAW.tools.find(tool => tool.name === 'Get')
+  const validate = new Ajv({ strict: false }).compile(get.inputSchema)
+  const ref = `art_${'a'.repeat(32)}`
+  assert.equal(validate({}), true)
+  assert.equal(validate({ artifact: { ref } }), true)
+  assert.equal(validate({ artifact: { ref, offset: 16 } }), true)
+  for (const invalid of [
+    { artifact: { ref }, include: ['history'] },
+    { artifact: { ref }, selector: { goals: ['GOAL_1'] } },
+    { artifact: { ref }, maxBytes: 8 },
+    { artifact: { ref, maxBytes: 8 } },
+    { ref }, { artifact: {} }, { artifact: { ref, offset: -1 } },
+  ]) assert.equal(validate(invalid), false, `accepted retired or mixed Artifact input: ${JSON.stringify(invalid)}`)
+  assert.equal(get.artifactRoute.operation, 'ReadArtifact', 'the private Core route must retain its name')
+  assert.equal(get.artifactRoute.resultSchema.$schema, 'http://json-schema.org/draft-07/schema#')
+})
+
+test('D-1012g a spoiled Artifact route or result schema is refused', () => {
+  for (const mutate of [
+    tool => { tool.artifactRoute.operation = 'Get' },
+    tool => { delete tool.artifactRoute },
+    tool => { tool.artifactRoute.resultSchema.required = [] },
+    tool => { delete tool.artifactRoute.resultSchema },
+  ]) assert.throws(() => readContractBundle(bundleWith(b => mutate(b.tools.find(tool => tool.name === 'Get')))),
+    /Artifact route|Artifact result schema|Artifact resultSchema/)
 })
 
 test('RT-CONTRACT-12 a client declaration this Runtime cannot state completely is refused', () => {

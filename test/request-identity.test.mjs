@@ -24,7 +24,7 @@ import { join } from 'node:path'
 
 import { TEST_TOKEN, callTool, declareGoal, freePort, runAgent } from './support/agent-harness.mjs'
 
-const running = [{ tool: 'ApplyBatch', label: 'ApplyBatch', state: 'running', stage: 'not_dispatched' }]
+const running = [{ tool: 'Set', label: 'Set', state: 'running', stage: 'not_dispatched' }]
 
 test('RT-ID-1 new user input never makes a second write run while the first is unresolved', async () => {
   // A new message reaches the model as usual. The write it proposes goes to the authority,
@@ -35,7 +35,7 @@ test('RT-ID-1 new user input never makes a second write run while the first is u
     chatLines: ['Try again please.'],
     priorOperations: running,
     model: (round) => (round === 1
-      ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      ? callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       : 'The earlier batch is still in progress, so I will wait.'),
     timeoutMs: 25_000,
   })
@@ -45,7 +45,7 @@ test('RT-ID-1 new user input never makes a second write run while the first is u
   assert.equal(refused.errorCode, 'operation_running')
   assert.equal(refused.requestExecuted, false)
   assert.equal(refused.operations[0].state, 'running')
-  assert.match(run.stdout, /ApplyBatch was not executed \(operation_running\)/)
+  assert.match(run.stdout, /Set was not executed \(operation_running\)/)
 })
 
 test('RT-ID-2 an answered call leaves nothing held, and the next call is a new identity', async () => {
@@ -55,13 +55,13 @@ test('RT-ID-2 an answered call leaves nothing held, and the next call is a new i
     chatLines: ['Write repeatedly.'],
     model: (round) => {
       if (round === 1) return callTool('OpenCase', {})
-      if (round <= 8) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: `F${round}`, predicate: 'x', args: {} }] })
+      if (round <= 8) return callTool('Set', { operations: [{ op: 'assert_fact', id: `F${round}`, predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  const sent = run.toolCalls.filter((call) => call.name === 'ApplyBatch')
+  const sent = run.toolCalls.filter((call) => call.name === 'Set')
   assert.ok(sent.length >= 7, `only ${sent.length} writes were carried`)
   assert.equal(new Set(sent.map((call) => call.id)).size, sent.length,
     'two different submissions shared one request identity')
@@ -77,8 +77,8 @@ test('RT-ID-3 a record Runtime 0.9 left is named once, removed, and never acted 
   const listenPort = await freePort()
   try {
     writeFileSync(store, JSON.stringify({ schema: 'rulith-agent-sessions/1', endpoints: {
-      [endpointKey(listenPort)]: { unresolved: { requestId: 'req-legacy-1', sessionId: 'mcp-old', tool: 'ApplyBatch', since: 1 } },
-      'https://elsewhere.example#0123456789abcdef': { unresolved: { requestId: 'req-other', tool: 'ApplyAction', since: 2 } },
+      [endpointKey(listenPort)]: { unresolved: { requestId: 'req-legacy-1', sessionId: 'mcp-old', tool: 'Set', since: 1 } },
+      'https://elsewhere.example#0123456789abcdef': { unresolved: { requestId: 'req-other', tool: 'Execute', since: 2 } },
     } }))
     const first = await runAgent({
       argv: [], sessionFile: store, listenPort, chatLines: ['hello'],
@@ -86,10 +86,10 @@ test('RT-ID-3 a record Runtime 0.9 left is named once, removed, and never acted 
       model: () => 'Hello.', timeoutMs: 25_000,
     })
     assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`)
-    assert.match(first.stderr, /Rulith Runtime 0\.9 recorded an ApplyBatch call from a previous run whose answer it never received \(request req-legacy-1\)/)
+    assert.match(first.stderr, /Rulith Runtime 0\.9 recorded a Set call from a previous run whose answer it never received \(request req-legacy-1\)/)
     assert.match(first.stderr, /nothing is re-sent/)
     // What the authority shows about it is said beside it, from the strip initialize carried.
-    assert.match(first.stderr, /ApplyBatch is still running at the authority/)
+    assert.match(first.stderr, /Set is still running at the authority/)
     assert.deepEqual(first.verbs, [], 'an inherited record was acted on')
     assert.equal(first.modelRequests.length, 1, 'an ordinary greeting was held back by the old record')
     const after = JSON.parse(readFileSync(store, 'utf8'))
@@ -125,14 +125,14 @@ test('RT-ID-5 nothing is written for a call whose answer was lost, and a retired
       chatLines: ['Write once through a broken stream.'],
       sseResults: true, breakStreamOnCall: 2, refuseResume: true,
       model: (round) => {
-        if (round === 1) return callTool('ApplyBatch', declareGoal())
-        if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+        if (round === 1) return callTool('Set', declareGoal())
+        if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
         return 'The answer was lost.'
       },
       timeoutMs: 25_000,
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-    assert.match(run.stdout, /No answer arrived for ApplyBatch/)
+    assert.match(run.stdout, /No answer arrived for Set/)
     // The store now holds nothing for this endpoint: no record of the lost call is kept.
     assert.ok(existsSync(store))
     const record = JSON.parse(readFileSync(store, 'utf8'))

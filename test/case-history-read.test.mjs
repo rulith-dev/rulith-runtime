@@ -14,10 +14,10 @@ const expected = { observed: true, history: { goal: 'goal-old', status: 'availab
 
 test('a historical read reaches Local independently of the truncated trace preview, without changing focus', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Read recorded history.'], captureLocalEvents: true,
-    model: round => round === 1 ? callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Read.',
-    tool: name => name === 'QueryBoard' ? result : undefined })
+    model: round => round === 1 ? callTool('Get', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Read.',
+    tool: name => name === 'Get' ? result : undefined })
   assert.equal(run.code, 0, run.stderr)
-  const observed = run.localEvents.find(event => event.type === 'tool-result' && event.cmd === 'QueryBoard')
+  const observed = run.localEvents.find(event => event.type === 'tool-result' && event.cmd === 'Get')
   assert.deepEqual(observed.boardRead, expected)
   assert.equal(observed.output.truncated, true)
   assert.equal(run.localEvents.some(event => event.type === 'case-open' || event.type === 'case-state'), false)
@@ -28,17 +28,17 @@ test('a history page in the retired v3 shape is not read as a goal history', asy
     asOf: 'case_close', disposition: 'completed', certified: true, facts: [], truncated: false } },
   observation: { consistency: 'committed' }, operations: [] }
   const run = await runAgent({ argv: [], chatLines: ['Read recorded history.'], captureLocalEvents: true,
-    model: round => round === 1 ? callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Read.',
-    tool: name => name === 'QueryBoard' ? retired : undefined })
+    model: round => round === 1 ? callTool('Get', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Read.',
+    tool: name => name === 'Get' ? retired : undefined })
   assert.equal(run.code, 0, run.stderr)
-  assert.deepEqual(run.localEvents.find(event => event.type === 'tool-result' && event.cmd === 'QueryBoard')?.boardRead,
+  assert.deepEqual(run.localEvents.find(event => event.type === 'tool-result' && event.cmd === 'Get')?.boardRead,
     { observed: true })
 })
 
 test('a refused history read does not retain a successful history summary from its payload', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Read recorded history.'], captureLocalEvents: true,
-    model: round => round === 1 ? callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Unavailable.',
-    tool: name => name === 'QueryBoard' ? { accepted: false, errorCode: 'stale_revision', requestExecuted: false,
+    model: round => round === 1 ? callTool('Get', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Unavailable.',
+    tool: name => name === 'Get' ? { accepted: false, errorCode: 'stale_revision', requestExecuted: false,
       teaching: 'Restart at the first page.', operations: [], view: { history } } : undefined })
   assert.equal(run.code, 0, run.stderr)
   assert.equal(run.localEvents.find(event => event.type === 'tool-result')?.boardRead, undefined)
@@ -46,10 +46,10 @@ test('a refused history read does not retain a successful history summary from i
 
 test('a historical read is never an operation: it is not held, waited for or replayed from the strip', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Read recorded history twice.'], captureLocalEvents: true,
-    model: round => round <= 2 ? callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Reviewed.',
-    tool: name => name === 'QueryBoard' ? result : undefined })
+    model: round => round <= 2 ? callTool('Get', { include: ['history'], selector: { goals: ['goal-old'] } }) : 'Reviewed.',
+    tool: name => name === 'Get' ? result : undefined })
   assert.equal(run.code, 0, run.stderr)
-  assert.deepEqual(run.verbs, ['QueryBoard', 'QueryBoard'], 'each read answers its own request')
+  assert.deepEqual(run.verbs, ['Get', 'Get'], 'each read answers its own request')
   assert.equal(run.operations.length, 0, 'a read became an operation')
   assert.equal(run.toolCalls.every(call => call.progressToken === undefined), true, 'a read asked to be held')
   assert.equal(run.pings, 0)
@@ -58,14 +58,14 @@ test('a historical read is never an operation: it is not held, waited for or rep
 test('a history page continues from nextOffset without historyVersion', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Read both history pages.'],
     model: (round, request) => {
-      if (round === 1) return callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] } })
+      if (round === 1) return callTool('Get', { include: ['history'], selector: { goals: ['goal-old'] } })
       if (round === 2) {
         const answer = JSON.parse(request.messages.findLast(message => message.role === 'tool').content)
-        return callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] }, historyOffset: answer.view.history.nextOffset })
+        return callTool('Get', { include: ['history'], selector: { goals: ['goal-old'] }, historyOffset: answer.view.history.nextOffset })
       }
       return 'Reviewed both pages.'
     },
-    tool: (name, args) => name === 'QueryBoard' ? { ...result, view: { history: { ...history,
+    tool: (name, args) => name === 'Get' ? { ...result, view: { history: { ...history,
       nextOffset: args.historyOffset === undefined ? 25 : null, truncated: args.historyOffset === undefined } } } : undefined,
   })
   assert.equal(run.code, 0, run.stderr)

@@ -28,8 +28,7 @@
  *     property names — so a rewritten tool projection cannot ride along on intact file
  *     digests;
  *   · the metadata schema's `ToolName` enum is the same membership again, and its
- *     `OperationTool` enum is that membership without `QueryBoard`: the tools whose calls
- *     the authority holds and shows in the recent-operations strip.
+ *     `OperationTool` enum is the held membership, including Get's Artifact route.
  *
  * After installation the packaged bytes are bound by `artifact-manifest.json`, which is the
  * integrity story for the shipped file rather than for its provenance.
@@ -42,7 +41,7 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { posix, resolve } from 'node:path'
 
 export const BUNDLE_SCHEMA = 'rulith-mcp-contract-bundle/v1'
 export const SURFACE_SCHEMA = 'rulith-mcp-surface/v4'
@@ -56,7 +55,9 @@ const sha256 = (text) => createHash('sha256').update(text, 'utf8').digest('hex')
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 /** Resolve a `file#/json/pointer` reference against the bundle's carried files. */
-function resolveRef(reference, parsedFiles, path) {
+function resolveRef(reference, parsedFiles, path, aliases = new Set()) {
+  if (aliases.has(reference)) throw new ContractError(`${path}: cyclic root schema alias ${reference}.`)
+  aliases.add(reference)
   const [file, pointer] = String(reference).split('#')
   const source = parsedFiles.get(file)
   if (source === undefined) {
@@ -72,6 +73,12 @@ function resolveRef(reference, parsedFiles, path) {
     if (node === undefined) throw new ContractError(`${path}: ${reference} does not resolve inside ${file}.`)
   }
   if (!isObject(node)) throw new ContractError(`${path}: ${reference} resolves to something that is not a schema object.`)
+  // AgentSet and AgentExecute are aliases of the retained Core input definitions.
+  if (typeof node.$ref === 'string' && Object.keys(node).every((key) => key === '$ref' || key === 'type')) {
+    const [name, pointer] = node.$ref.split('#')
+    const target = name === '' ? file : name.startsWith('docs/specs/schemas/') ? name : posix.join(posix.dirname(file), name)
+    return resolveRef(`${target}#${pointer}`, parsedFiles, path, aliases)
+  }
   return node
 }
 
@@ -190,8 +197,27 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
     } else if (tool.resultSchema !== undefined) {
       throw new ContractError(`${path}: ${entry.name} carries an undeclared materialized resultSchema.`)
     }
+    const route = entry.artifactRoute
+    const projectedRoute = tool.artifactRoute
+    if (route !== undefined) {
+      const { resultSchema, ...projected } = projectedRoute ?? {}
+      if (entry.name !== 'Get' || route.argument !== 'artifact' || route.target !== 'artifact'
+        || route.operation !== 'ReadArtifact' || Object.keys(projected).length !== Object.keys(route).length
+        || !Object.entries(route).every(([key, value]) => projected[key] === value)) {
+        throw new ContractError(`${path}: ${entry.name}'s materialized Artifact route does not match the declared route.`)
+      }
+      if (!isObject(resultSchema) || resultSchema.$schema !== 'http://json-schema.org/draft-07/schema#') {
+        throw new ContractError(`${path}: ${entry.name} carries no draft-07 materialized Artifact resultSchema.`)
+      }
+      if (skeletonOf(resolveRef(route.resultSchemaRef, parsedFiles, path)) !== skeletonOf(resultSchema)) {
+        throw new ContractError(`${path}: ${entry.name}'s materialized Artifact result schema no longer matches ${route.resultSchemaRef}.`)
+      }
+    } else if (projectedRoute !== undefined) {
+      throw new ContractError(`${path}: ${entry.name} carries an undeclared Artifact route.`)
+    }
     schemas.push({ name: entry.name, inputSchema: tool.inputSchema,
-      ...(entry.resultSchemaRef === undefined ? {} : { resultSchema: tool.resultSchema }) })
+      ...(entry.resultSchemaRef === undefined ? {} : { resultSchema: tool.resultSchema }),
+      ...(route === undefined ? {} : { artifactRoute: projectedRoute }) })
   }
 
   // 4. The metadata schema, and the membership it repeats.
@@ -212,12 +238,13 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
   const operationStates = enumOf('OperationState')
   const runningStages = enumOf('RunningStage')
   const operationTools = enumOf('OperationTool')
-  // The held tools are the membership without the one read that is never held. A strip entry
+  // Get is held only on its Artifact route. A strip entry
   // naming a tool outside the surface would be an operation this client cannot place.
-  const heldNames = names.filter((name) => name !== 'QueryBoard')
+  const heldNames = declared.filter((entry) => entry.operation !== 'QueryBoard' || entry.artifactRoute !== undefined)
+    .map((entry) => entry.name)
   if (JSON.stringify([...operationTools].sort()) !== JSON.stringify([...heldNames].sort())) {
     throw new ContractError(`${path}: the metadata OperationTool enum ${JSON.stringify(operationTools)}`
-      + ` is not the tool membership without QueryBoard ${JSON.stringify(heldNames)}.`)
+      + ` is not the held tool membership ${JSON.stringify(heldNames)}.`)
   }
   const constantCapabilities = label => {
     const shape = bundle.metadata.$defs?.[label]
@@ -276,6 +303,7 @@ export function readContractBundle(bundle, { path = BUNDLE_PATH } = {}) {
       target: entry.target,
       ...(entry.operation === undefined ? {} : { operation: entry.operation }),
       ...(entry.resultSchemaRef === undefined ? {} : { resultSchemaRef: entry.resultSchemaRef }),
+      ...(entry.artifactRoute === undefined ? {} : { artifactRoute: entry.artifactRoute }),
     })),
     schemas,
     operationStates,

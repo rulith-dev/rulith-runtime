@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * The model surface is four tools called over one `/mcp` endpoint.
+ * The model surface is three tools called over one `/mcp` endpoint.
  *
- * `ApplyBatch` / `ApplyAction` / `QueryBoard` dispatch to Board
- * operations, and `ReadArtifact` reads already-generated result data from the Gateway's
+ * `Set` / `Execute` / `Get` dispatch to Board
+ * operations, and `Get` reads already-generated result data from the Gateway's
  * data plane. That is the whole vocabulary: no host tool split, no `agent_protocol` escape
  * hatch onto the Board operation registry, no second grammar. One loop serves both
  * policies — a conversation returns to the user the moment the model answers with text,
@@ -70,8 +70,10 @@ test('RT-TOOLS-1 the model-facing tools are exactly the unified MCP surface list
   assert.deepEqual([...offered].sort(), [...MODEL_TOOLS].sort(),
     `the model was offered a different surface than the list declares: ${offered.join(', ')}`)
   assert.deepEqual(runtime.map((entry) => entry.name), MODEL_TOOLS)
-  assert.deepEqual(runtime.filter((entry) => entry.target === 'artifact').map((entry) => entry.name), ['ReadArtifact'],
-    'the artifact read is the one tool served by the data plane rather than by a Board operation')
+  assert.deepEqual(runtime.map((entry) => entry.name), ['Get', 'Set', 'Execute'])
+  const bundledGet = JSON.parse(readFileSync(new URL('../protocol/mcp-contract.json', import.meta.url), 'utf8'))
+    .tools.find(tool => tool.name === 'Get')
+  assert.equal(bundledGet.artifactRoute.target, 'artifact', 'Get must retain its data-plane route')
   // No operation-read tool: an outcome reaches the model on the strip every result carries.
   assert.deepEqual(runtime.filter((entry) => entry.target === 'operation'), [])
   assert.equal(offered.includes('ReadOperation'), false, 'the retired operation read was offered to the model')
@@ -124,11 +126,11 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
   assert.doesNotMatch(system, /declare_hypothesis|record_result|revise_fact|EndGoal/)
   assert.match(system, /Let rules derive conclusions; retract_node corrects your assertion\./)
   assert.match(system, /Never assert acceptance_met, test_result or certification\. Acceptance is the Board's decision\./)
-  assert.match(system, /call QueryBoard when you need a current view/,
+  assert.match(system, /call Get when you need a current view/,
     'reading the Board is now the model\'s own tool, so the prompt must say so')
   // A 包 V50：声明能力目标即种下能力备好的步骤；推进它们而不是重建；被认证的目标自动完成。
   assert.match(system, /When you declare a capability's goal, the Board plants the steps its capability prepared\./)
-  assert.match(system, /do not rebuild prepared steps with ApplyBatch/)
+  assert.match(system, /do not rebuild prepared steps with Set/)
   assert.match(system, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason\./)
   // D-1004b ①：Source 结果、动作回执与备好的任务已由 Board 记下，不再另写断言。
   assert.match(system, /Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion./)
@@ -139,7 +141,7 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
 test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.' })
   const tools = declaredToolsOf(run.modelRequests[0])
-  assert.equal(tools.length, 4)
+  assert.equal(tools.length, 3)
   // Top level only, because that is the scope host metadata lives on. The envelope is the
   // boundary; a property one level down inside a business object is business data, and
   // RT-TOOLS-3c asserts that such a property survives.
@@ -174,7 +176,7 @@ test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', 
     'the conforming fixture advertises host metadata, so ordinary tests are not running against a valid public schema')
   // And the model surface keeps the fields that are genuinely its own: a goal's outcome and its
   // parent (rulith/v4, A-4), and the goal end_goal names.
-  const batch = tools.find((tool) => tool.name === 'ApplyBatch').schema
+  const batch = tools.find((tool) => tool.name === 'Set').schema
   assert.ok(names(batch).includes('desired') && names(batch).includes('parent'),
     'declare_goal must keep desired and parent through the projection')
   const endGoal = Object.values(batch.$defs).find(schema => schema.properties?.op?.const === 'end_goal')
@@ -187,11 +189,11 @@ test('RT-TOOLS-3b host metadata offered as a tool argument is kept from the mode
     toolSchemas: hostFieldTools(),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const batch = declaredToolsOf(run.modelRequests[0]).find((tool) => tool.name === 'ApplyBatch')
+  const batch = declaredToolsOf(run.modelRequests[0]).find((tool) => tool.name === 'Set')
   for (const owned of ['case', 'viewToken', 'requestId']) {
     assert.equal(Object.hasOwn(batch.schema.properties, owned), false, `${owned} was shown to the model`)
   }
-  assert.match(run.stderr, /ApplyBatch: the advertised schema offered the host-owned argument\(s\)/,
+  assert.match(run.stderr, /Set: the advertised schema offered the host-owned argument\(s\)/,
     'a schema this client had to project was projected silently')
 })
 
@@ -205,20 +207,20 @@ test('RT-TOOLS-3c a nested business property that shares a name with envelope me
     chatLines: ['Record a fact that carries a business session id.'],
     toolSchemas: businessNameCollisionTools(),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 1) return callTool('Set', declareGoal())
       if (round === 2) {
-        return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: { sessionId: 'customer-9', requestId: 'ticket-4', amount: 3 } }] })
+        return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: { sessionId: 'customer-9', requestId: 'ticket-4', amount: 3 } }] })
       }
       return 'Recorded.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const batchSchema = declaredToolsOf(run.modelRequests[0]).find((tool) => tool.name === 'ApplyBatch').schema
+  const batchSchema = declaredToolsOf(run.modelRequests[0]).find((tool) => tool.name === 'Set').schema
   const args = batchSchema.properties.operations.items.properties.args
   assert.deepEqual(Object.keys(args.properties).sort(), ['amount', 'requestId', 'sessionId'],
     'a nested business argument was deleted because it shares a name with envelope metadata')
   assert.deepEqual(args.required, ['sessionId'], 'the advertised business requirement was rewritten')
-  const sent = run.toolCalls.find((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
+  const sent = run.toolCalls.find((call) => call.name === 'Set' && call.args.operations[0].op === 'assert_fact')
   assert.deepEqual(sent.args.operations[0].args, { sessionId: 'customer-9', requestId: 'ticket-4', amount: 3 },
     'the nested business arguments did not reach the authority')
 })
@@ -228,11 +230,11 @@ test('RT-TOOLS-3d a schema that makes host metadata required is refused, not qui
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0)
   assert.match(run.stderr, /advertises tool schemas this Runtime cannot satisfy/)
-  assert.match(run.stderr, /ApplyBatch makes the host-owned argument\(s\) viewToken required/)
+  assert.match(run.stderr, /Set makes the host-owned argument\(s\) viewToken required/)
   assert.equal(run.modelRequests.length, 0, 'the model was asked to work against a contract no call could satisfy')
 })
 
-test('RT-TOOLS-4 a tool that is not one of the four is refused locally and never forwarded', async () => {
+test('RT-TOOLS-4 a tool that is not one of the three is refused locally and never forwarded', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['remove the pack'],
@@ -258,7 +260,7 @@ for (const [field, value, code] of [
   ['caseRevision', 'c3', 'retired_wire_field'],
   ['expectedBoardSharedEpoch', 4, 'retired_wire_field'],
   ['viewToken', 'stolen-token', 'retired_wire_field'],
-  ['kind', 'ApplyBatch', 'host_owned_field'],
+  ['kind', 'Set', 'host_owned_field'],
   ['queryContext', { audienceProfile: 'internal' }, 'host_owned_field'],
   ['audienceProfile', 'operator', 'host_owned_field'],
   ['requestedRoots', ['ROOT_1'], 'host_owned_field'],
@@ -272,13 +274,13 @@ for (const [field, value, code] of [
       env: { RULITH_MAX_ROUNDS: '4' },
       chatLines: ['Record a fact.'],
       model: (round) => {
-        if (round === 1) return callTool('ApplyBatch', declareGoal())
-        if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }], [field]: value })
+        if (round === 1) return callTool('Set', declareGoal())
+        if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }], [field]: value })
         return 'I will reissue it without that field.'
       },
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-    assert.deepEqual(run.verbs, ['ApplyBatch'],
+    assert.deepEqual(run.verbs, ['Set'],
       `${field} reached the authority and may have executed under a guessed contract: ${run.verbs.join(', ')}`)
     assert.equal(run.toolCalls.some((call) => Object.hasOwn(call.args, field)), false)
     assert.match(run.stdout, /Refused locally/)
@@ -292,13 +294,13 @@ test('RT-WIRE-2 the same step without the retired field is carried (calibration)
     env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Record a fact.'],
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Set', 'Set'])
 })
 
 // ── Host metadata: one channel, filled from what the authority returned ──────
@@ -308,8 +310,8 @@ test('RT-META-1 the client sends no protected metadata of its own, in the envelo
     argv: [],
     chatLines: ['Open a Case and record a fact.'],
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
   })
@@ -348,7 +350,7 @@ test('RT-META-2 the identity, revision and focus the host tracks come only from 
   const run = await runAgent({
     argv: [], captureLocalEvents: true,
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Opened.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
@@ -358,7 +360,7 @@ test('RT-META-2 the identity, revision and focus the host tracks come only from 
   assert.equal(observed.goal, 'GOAL_1')
   assert.equal(observed.status, 'running')
   // Core mints the identity. A host that minted one would have named the goal itself.
-  const declared = run.toolCalls.find((call) => call.name === 'ApplyBatch')
+  const declared = run.toolCalls.find((call) => call.name === 'Set')
   assert.deepEqual(declared.args, declareGoal(), 'the host added to the model\'s declaration')
 })
 
@@ -367,10 +369,10 @@ test('RT-META-3 a session whose focus holds several goals is reported as several
     argv: [], captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Start two pieces of governed work.'],
-    model: (round) => (round <= 2 ? callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b')) : 'Both goals are in focus.'),
+    model: (round) => (round <= 2 ? callTool('Set', declareGoal(round === 1 ? 'task_a' : 'task_b')) : 'Both goals are in focus.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.filter((verb) => verb === 'ApplyBatch').length, 2,
+  assert.equal(run.verbs.filter((verb) => verb === 'Set').length, 2,
     'a second goal in one session was refused by the host, which no longer owns that rule')
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
   assert.deepEqual(focus.goals.map((row) => row.goal), ['GOAL_1', 'GOAL_2'])
@@ -386,8 +388,8 @@ test('RT-META-4 an independent lifecycle per goal: ending one leaves the other r
     gateway: defaultGateway({ settleAfterBatch: true }),
     chatLines: ['Start two pieces of work and end the first.'],
     model: (round) => {
-      if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
-      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' }] })
+      if (round <= 2) return callTool('Set', declareGoal(round === 1 ? 'task_a' : 'task_b'))
+      if (round === 3) return callTool('Set', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' }] })
       return 'The second goal is still running.'
     },
   })
@@ -420,8 +422,8 @@ test('RT-META-5 a goal the authority reports as unavailable loses the status it 
       )
     },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('QueryBoard', { include: ['goals'] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Get', { include: ['goals'] })
       return 'The goal is no longer available to me.'
     },
   })
@@ -439,7 +441,7 @@ test('RT-META-6 a bounded view that dropped rows says so; a complete one does no
     env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Read the Board twice.'],
     tool: (name, args, board, session, meta) => {
-      if (name !== 'QueryBoard') return undefined
+      if (name !== 'Get') return undefined
       // The carriers Core published: per-limb `goals.truncated` beside `goals.total`, and
       // the top-level `truncated` for the node limbs. An earlier client read an aggregate
       // `loss` object that a Core draft proposed and the published schema does not contain,
@@ -448,19 +450,19 @@ test('RT-META-6 a bounded view that dropped rows says so; a complete one does no
       return withMeta(committed({ ...core.payload, goals: { ...core.payload.goals, truncated: true }, total: 9, truncated: true }), board.meta(session))
     },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('QueryBoard', { include: ['goals'] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Get', { include: ['goals'] })
       return 'Some rows were omitted.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.match(run.stdout, /QueryBoard returned a bounded view: goals \(1 total\), nodes \(9 total\) was truncated by the authority/)
+  assert.match(run.stdout, /Get returned a bounded view: goals \(1 total\), nodes \(9 total\) was truncated by the authority/)
   assert.match(run.stdout, /anything it does not mention is unreported, not absent/)
   const losses = run.localEvents.filter((event) => event.type === 'loss')
   assert.equal(losses.length, 1, 'silent truncation reads as "covered everything" when it did not')
-  assert.deepEqual([losses[0].cmd, losses[0].limbs], ['QueryBoard', ['goals', 'nodes']])
-  // Calibration: the declaring ApplyBatch answer carried no loss record and produced no note.
-  assert.equal(run.localEvents.filter((event) => event.type === 'loss' && event.cmd === 'ApplyBatch').length, 0)
+  assert.deepEqual([losses[0].cmd, losses[0].limbs], ['Get', ['goals', 'nodes']])
+  // Calibration: the declaring Set answer carried no loss record and produced no note.
+  assert.equal(run.localEvents.filter((event) => event.type === 'loss' && event.cmd === 'Set').length, 0)
 })
 
 test('RT-META-6b a goal a truncated answer did not reach keeps a labelled observation, not a fresh one', async () => {
@@ -483,8 +485,8 @@ test('RT-META-6b a goal a truncated answer did not reach keeps a labelled observ
       )
     },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('QueryBoard', { include: ['goals'] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Get', { include: ['goals'] })
       return 'The view was bounded.'
     },
   })
@@ -513,46 +515,46 @@ test('RT-META-7 an empty affectedGoals is reported, because it is a statement', 
     chatLines: ['Record a blind addition, then act.'],
     tool: (name, args, board, session, meta) => {
       const core = board.tool(name, args, session, meta)
-      if (name === 'ApplyBatch') return withMeta(core, { ...board.meta(session), affectedGoals: [] })
-      if (name === 'ApplyAction') return withMeta(core, { ...board.meta(session), affectedGoals: ['GOAL_1'] })
+      if (name === 'Set') return withMeta(core, { ...board.meta(session), affectedGoals: [] })
+      if (name === 'Execute') return withMeta(core, { ...board.meta(session), affectedGoals: ['GOAL_1'] })
       return undefined
     },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
-      if (round === 3) return callTool('ApplyAction', { action: 'acme.ship' })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 3) return callTool('Execute', { action: 'acme.ship' })
       return 'Done.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const affected = run.localEvents.filter((event) => event.type === 'affected')
   assert.deepEqual(affected.map((event) => [event.cmd, event.affectedGoals]),
-    [['ApplyBatch', []], ['ApplyBatch', []], ['ApplyAction', ['GOAL_1']]],
+    [['Set', []], ['Set', []], ['Execute', ['GOAL_1']]],
     '"no top-level goal advanced" and "the authority did not say" must not read the same')
 })
 
-// ── ReadArtifact: bounded data, and nothing else ─────────────────────────────
+// ── Get: bounded data, and nothing else ─────────────────────────────
 
 test('RT-ART-1 an artifact is read in bounded fragments and touches no Board state', async () => {
   const text = 'line-one\nline-two\nline-three'
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '6' }, captureLocalEvents: true,
     chatLines: ['Read the result the Action produced.'],
-    gateway: defaultGateway({ artifacts: { 'art-1': { mediaType: 'text/plain', text } } }),
+    gateway: defaultGateway({ artifacts: { 'art-1': { mediaType: 'text/plain', text } }, artifactReadBytes: 16 }),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ReadArtifact', { ref: 'art-1', maxBytes: 8 })
-      if (round === 3) return callTool('ReadArtifact', { ref: 'art-1', offset: 8, maxBytes: 64 })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Get', { artifact: { ref: 'art-1' } })
+      if (round === 3) return callTool('Get', { artifact: { ref: 'art-1', offset: 16 } })
       return 'I have the whole result.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ReadArtifact', 'ReadArtifact'],
+  assert.deepEqual(run.verbs, ['Set', 'Get', 'Get'],
     `the host added a Board call around a data read: ${run.verbs.join(', ')}`)
-  const reads = run.toolCalls.filter((call) => call.name === 'ReadArtifact')
+  const reads = run.toolCalls.filter((call) => call.name === 'Get')
   assert.deepEqual(reads.map((call) => call.args), [
-    { ref: 'art-1', maxBytes: 8 },
-    { ref: 'art-1', offset: 8, maxBytes: 64 },
+    { artifact: { ref: 'art-1' } },
+    { artifact: { ref: 'art-1', offset: 16 } },
   ], 'the reference and continuation position must travel exactly as the service issued them')
 
   // The fragments say what they are. A partial read presented as the whole file, or an
@@ -562,19 +564,19 @@ test('RT-ART-1 an artifact is read in bounded fragments and touches no Board sta
   const fragments = results.map((message) => JSON.parse(message.content).result).filter((value) => value?.ref === 'art-1')
   assert.equal(fragments.length, 2)
   assert.deepEqual(fragments.map((fragment) => [fragment.complete, fragment.truncated, fragment.nextOffset]),
-    [[false, true, 8], [true, false, null]])
+    [[false, true, 16], [true, false, null]])
   assert.equal(fragments.map((fragment) => fragment.data).join(''), text, 'the fragments did not reconstruct the object')
   assert.equal(fragments[0].totalBytes, Buffer.byteLength(text))
 
   // A data read decides nothing on the Board: no verdict, no focus change, no view.
-  assert.equal(run.localEvents.some((event) => event.type === 'verdict' && event.cmd === 'ReadArtifact'), false,
+  assert.equal(run.localEvents.some((event) => event.type === 'verdict' && event.cmd === 'Get'), false,
     'a data read was reported as a Board verdict')
   const artifactEvents = run.localEvents.filter((event) => event.type === 'artifact-read')
   assert.deepEqual(artifactEvents.map((event) => [event.ref, event.complete, event.truncated]),
     [['art-1', false, true], ['art-1', true, false]])
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
   assert.deepEqual(focus.goals.map((row) => row.goal), ['GOAL_1'], 'the artifact read changed the focused goals')
-  assert.match(run.stdout, /Data: ReadArtifact returned a fragment of 28 byte\(s\), truncated at the read limit/)
+  assert.match(run.stdout, /Data: Get returned a fragment of 28 byte\(s\), truncated at the read limit/)
 })
 
 test('RT-ART-2 a reference this Agent cannot read is refused, not answered with empty data', async () => {
@@ -583,15 +585,15 @@ test('RT-ART-2 a reference this Agent cannot read is refused, not answered with 
     chatLines: ['Read that other object.'],
     gateway: defaultGateway({ artifacts: { 'art-1': { text: 'mine' } } }),
     model: (round) => (round === 1
-      ? callTool('ReadArtifact', { ref: 'art-someone-else' })
+      ? callTool('Get', { artifact: { ref: 'art-someone-else' } })
       : 'That object is not readable by this Agent.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const feedback = JSON.stringify(run.modelRequests[1])
   assert.match(feedback, /artifact_unavailable/)
   assert.doesNotMatch(feedback, /"data":""/, 'an unreadable object was presented as an empty one')
-  assert.match(run.stdout, /Data read refused for ReadArtifact/)
-  assert.doesNotMatch(run.stdout, /Board rejected ReadArtifact/,
+  assert.match(run.stdout, /Data read refused for Get/)
+  assert.doesNotMatch(run.stdout, /Board rejected Get/,
     'a data-plane refusal is not a Board decision and must not be reported as one')
 })
 
@@ -604,7 +606,7 @@ test('RT-REFUSE-1 an authoritative refusal reaches the model with its Board View
     env: { RULITH_MAX_ROUNDS: '4' },
     captureLocalEvents: true,
     tool: (name, args) => {
-      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'assert_fact') return undefined
+      if (name !== 'Set' || args.operations?.[0]?.op !== 'assert_fact') return undefined
       served += 1
       if (served > 1) return undefined
       return withMeta(
@@ -615,19 +617,19 @@ test('RT-REFUSE-1 an authoritative refusal reaches the model with its Board View
       )
     },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'I will re-read the Board and decide again.'
     },
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact').length, 1,
+  assert.equal(run.toolCalls.filter((call) => call.name === 'Set' && call.args.operations[0].op === 'assert_fact').length, 1,
     `the host resent the refused step on the model's behalf: ${run.verbs.join(', ')}`)
   const third = JSON.stringify(run.modelRequests[2])
   assert.match(third, /precondition_not_met/, 'the refusal must reach the model as the tool result of its own step')
   assert.match(third, /\\"gaps\\":\[\\"acceptance\\"\]/, 'the view the refusal carried must travel with it')
   assert.doesNotMatch(third, /boardRevision|r9/, 'the audit revision is host metadata and is not model content')
-  assert.match(run.stdout, /Board rejected ApplyBatch: The premises/)
+  assert.match(run.stdout, /Board rejected Set: The premises/)
 })
 
 test('RT-REFUSE-2 the model\'s next choice after a refusal is a new logical request', async () => {
@@ -636,20 +638,20 @@ test('RT-REFUSE-2 the model\'s next choice after a refusal is a new logical requ
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '5' },
     tool: (name, args) => {
-      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'assert_fact') return undefined
+      if (name !== 'Set' || args.operations?.[0]?.op !== 'assert_fact') return undefined
       served += 1
       if (served > 1) return undefined
       return { accepted: false, errorCode: 'precondition_not_met', teaching: 'not in force', payload: { goals: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] } }
     },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'a', args: {} }] })
-      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F2', predicate: 'b', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'a', args: {} }] })
+      if (round === 3) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F2', predicate: 'b', args: {} }] })
       return 'Recorded.'
     },
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  const batches = run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
+  const batches = run.toolCalls.filter((call) => call.name === 'Set' && call.args.operations[0].op === 'assert_fact')
   assert.equal(batches.length, 2)
   assert.deepEqual(batches.map((call) => call.args.operations[0].id), ['F1', 'F2'],
     'the refused step was resent instead of the model deciding again')
@@ -661,13 +663,13 @@ test('RT-WRITE-1 the host inserts no read of its own around a write', async () =
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '5' },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'],
+  assert.deepEqual(run.verbs, ['Set', 'Set'],
     `the host inserted a read of its own around the write: ${run.verbs.join(', ')}`)
 })
 
@@ -679,11 +681,11 @@ test('RT-WRITE-2 a first write is carried as it stands and judged by the authori
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '4' },
     model: (round) => (round === 1
-      ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      ? callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       : 'The Board refused it, so I will declare a goal first.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  const batch = run.toolCalls.find((call) => call.name === 'ApplyBatch')
+  const batch = run.toolCalls.find((call) => call.name === 'Set')
   assert.ok(batch, 'the step was never forwarded, so the authority never got to refuse it')
   assert.equal(batch.meta, undefined)
   assert.match(JSON.stringify(run.modelRequests[1]), /no_acceptance_root/)
@@ -699,7 +701,7 @@ test('RT-SESSION-1 a restarted Runtime takes over as a new client rather than re
   try {
     const first = await runAgent({
       argv: ['do the work'], sessionFile: store, listenPort, env: { RULITH_MAX_ROUNDS: '3' },
-      model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+      model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Opened.'),
     })
     assert.notEqual(first.code, 'timeout', `${first.stdout}\n${first.stderr}`)
     // A run that resolved everything writes nothing at all: the store exists to remember
@@ -745,11 +747,11 @@ test('RT-SESSION-3 every local conversation speaks over the one authenticated co
       { text: 'Open another governed Case.', sessionKey: 'client-b' },
     ],
     waitForServeCompletion: true,
-    model: (round) => (round === 1 || round === 3 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+    model: (round) => (round === 1 || round === 3 ? callTool('Set', declareGoal()) : 'Opened.'),
     timeoutMs: 12_000,
   })
   assert.deepEqual(run.serveStatuses, [202, 202], `${run.stdout}\n${run.stderr}`)
-  const opens = run.toolCalls.filter((call) => call.name === 'ApplyBatch')
+  const opens = run.toolCalls.filter((call) => call.name === 'Set')
   assert.equal(opens.length, 2)
   assert.equal(run.initializes.length, 1,
     `the Agent authenticated ${run.initializes.length} times; a second connection would have taken the first one over`)
@@ -778,14 +780,14 @@ test('RT-SESSION-3b conversations are served one segment at a time, never woven 
     model: (_round, body) => {
       const transcript = JSON.stringify(body)
       const steps = (transcript.match(/tool_call_id|tool_use_id/g) ?? []).length
-      if (steps === 0) return callTool('ApplyBatch', declareGoal())
-      if (steps === 1) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (steps === 0) return callTool('Set', declareGoal())
+      if (steps === 1) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Recorded.'
     },
     timeoutMs: 15_000,
   })
   assert.deepEqual(run.serveStatuses, [202, 202], `${run.stdout}\n${run.stderr}`)
-  const batches = run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
+  const batches = run.toolCalls.filter((call) => call.name === 'Set' && call.args.operations[0].op === 'assert_fact')
   assert.equal(batches.length, 2, `both conversations must have been served: ${run.verbs.join(', ')}`)
   // The segment boundary, from the host's own events: no second start before the first end.
   const flow = run.localEvents.filter((event) => event.type === 'task-start' || event.type === 'task-done')
@@ -802,10 +804,10 @@ test('RT-SESSION-3b conversations are served one segment at a time, never woven 
 test('RT-SESSION-4 results delivered as an SSE stream are read like any other', async () => {
   const run = await runAgent({
     argv: [], sseResults: true, chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Opened.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('ApplyBatch'), true,
+  assert.equal(run.verbs.includes('Set'), true,
     'a Streamable HTTP server that answers with text/event-stream must not be unreachable')
   assert.match(run.stdout, /Goal in focus/)
 })
@@ -820,22 +822,22 @@ test('declare, act, read and write: the goal completes in the commit the Board c
     env: { RULITH_MAX_ROUNDS: '8' },
     gateway: defaultGateway({ certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyAction', { action: 'compute_total', target: 'GOAL_1' })
-      if (round === 3) return callTool('QueryBoard', { include: ['goals'] })
-      if (round === 4) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Execute', { action: 'compute_total', target: 'GOAL_1' })
+      if (round === 3) return callTool('Get', { include: ['goals'] })
+      if (round === 4) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
       return 'unreachable: the Board completed the goal'
     },
   })
 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyAction', 'QueryBoard', 'ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Set', 'Execute', 'Get', 'Set'])
   // The dispatched Action was reported as pending with its invocation, not as done.
   assert.match(JSON.stringify(run.modelRequests[2]), /inv_1/)
   // Before the certifying commit, the directory said running; nothing asked to finish it.
   assert.match(JSON.stringify(run.modelRequests[3]), /\\"status\\":\\"running\\"/)
-  assert.equal(run.toolCalls.some(call => call.name === 'ApplyBatch' && call.args.operations?.some(op => op.op === 'end_goal')), false)
+  assert.equal(run.toolCalls.some(call => call.name === 'Set' && call.args.operations?.some(op => op.op === 'end_goal')), false)
   assert.equal(run.modelRequests.length, 4, 'the run went on after the Board completed the goal')
   assert.match(run.stdout, /Goal "GOAL_1" completed: the Board certified it/)
   assert.match(run.stdout, /The Board certified the goal and it is completed\./)
@@ -847,14 +849,14 @@ test('the Board decides completion: an uncertified goal stays open, and the host
     chatLines: ['Use Rulith, but finish only if the Board certifies it.'],
     gateway: defaultGateway({ settleAfterBatch: false, certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'The Board has not certified it, so the goal remains open.'
     },
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Set', 'Set'])
   assert.doesNotMatch(run.stdout, /completed: the Board certified it|ended as/)
   assert.match(run.stdout, /Response delivered; Rulith goal\(s\) "GOAL_1" remain in focus\./)
 })
@@ -879,19 +881,19 @@ test('a focused goal persists across messages and is never advanced implicitly',
     argv: [],
     chatLines: ['Start a governed investigation.', 'Before the next step, explain what you know.'],
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
+      if (round === 1) return callTool('Set', declareGoal())
       if (round === 2) return 'The goal is declared. I will wait for your next instruction.'
       return 'The same goal is still in focus; I took no further step.'
     },
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch'], 'the host advanced or re-read the Board during an ordinary conversational turn')
+  assert.deepEqual(run.verbs, ['Set'], 'the host advanced or re-read the Board during an ordinary conversational turn')
   const followUp = run.modelRequests[2].messages.at(-1).content
   assert.match(followUp, /Goals in focus: GOAL_1 \(running\)/,
     'the next conversational turn must receive the focus the authority reported')
   assert.doesNotMatch(followUp, /\bCases?\b|root /, 'the v3 Case vocabulary reached the model')
-  const notice = 'The Board may have changed since your last tool result; QueryBoard reads its current position.'
+  const notice = 'The Board may have changed since your last tool result; Get reads its current position.'
   assert.equal(followUp.split(notice).length - 1, 1,
     'a follow-up user entry must carry exactly one current-position notice')
   assert.doesNotMatch(followUp, /"directory"|Board View last observed/,
@@ -904,8 +906,8 @@ test('only a transcript that holds a tool result is told the Board may have chan
     chatLines: ['Hello.', 'Open a Case and look at it.', 'Thanks, that is all.'],
     model: (round) => {
       if (round === 1) return 'Hello! What would you like to work on?'
-      if (round === 2) return callTool('ApplyBatch', declareGoal())
-      if (round === 3) return callTool('QueryBoard', {})
+      if (round === 2) return callTool('Set', declareGoal())
+      if (round === 3) return callTool('Get', {})
       if (round === 4) return 'The Case is open and I have looked at it.'
       return 'You are welcome.'
     },
@@ -916,7 +918,7 @@ test('only a transcript that holds a tool result is told the Board may have chan
     .map((entry) => entry.content)
     .filter((content) => typeof content === 'string' && /^(User message|Task): /u.test(content))
   assert.equal(entries.length, 3, 'each chat line enters the transcript once')
-  const notice = 'The Board may have changed since your last tool result; QueryBoard reads its current position.'
+  const notice = 'The Board may have changed since your last tool result; Get reads its current position.'
   const count = (entry) => entry.split(notice).length - 1
   // 前两条进入记录时还没有任何工具结果：模型上下文里没有旧局面，就不必提醒。
   assert.deepEqual(entries.map(count), [0, 0, 1],
@@ -931,12 +933,12 @@ test('an unscoped write is carried and refused by the authority, not guessed at 
     argv: [],
     chatLines: ['Record a fact.'],
     model: (round) => (round === 1
-      ? callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      ? callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       : 'I will declare a goal first.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('ApplyBatch'), true,
+  assert.equal(run.verbs.includes('Set'), true,
     'the host refused on the authority\'s behalf; focus lives in the authenticated session, which only the authority can read')
   // `case_context_required` is retired by name (Core 1.2). Under one shared graph a write
   // is not scoped by focus, and it presents no view: the authority judges it against the
@@ -963,19 +965,19 @@ test('RT-SERIAL-1 several calls in one turn are executed one after another, in o
       ? {
           text: '',
           toolCalls: [
-            { name: 'ApplyBatch', input: declareGoal() },
-            { name: 'ApplyBatch', input: { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] } },
+            { name: 'Set', input: declareGoal() },
+            { name: 'Set', input: { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] } },
           ],
         }
       : 'Both steps are recorded.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'],
+  assert.deepEqual(run.verbs, ['Set', 'Set'],
     `both calls of the turn must be carried, in order: ${run.verbs.join(', ')}`)
   // The proof that they were serial rather than concurrent: the write arrived at a Board
   // that already held the goal the first call declared.
-  assert.deepEqual(arrivals, [{ name: 'ApplyBatch', focus: 0 }, { name: 'ApplyBatch', focus: 1 }],
+  assert.deepEqual(arrivals, [{ name: 'Set', focus: 0 }, { name: 'Set', focus: 1 }],
     'the second call did not observe the first call\'s effect, so they were not serialised')
   const results = JSON.stringify(run.modelRequests[1])
   assert.doesNotMatch(results, /one_step_per_turn|call_queue_suspended/,
@@ -991,25 +993,25 @@ test('RT-SERIAL-2 a call the authority is still holding suspends the rest of the
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '3' },
     chatLines: ['Do all three steps.'], captureLocalEvents: true,
-    hold: (name, args) => (name === 'ApplyBatch' && args.operations?.[0]?.op === 'declare_goal' ? { answer: 'needs_person' } : undefined),
+    hold: (name, args) => (name === 'Set' && args.operations?.[0]?.op === 'declare_goal' ? { answer: 'needs_person' } : undefined),
     model: (round) => (round === 1 ? {
       text: '',
       toolCalls: [
-        { name: 'ApplyBatch', input: declareGoal() },
-        { name: 'ApplyBatch', input: { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] } },
-        { name: 'QueryBoard', input: {} },
+        { name: 'Set', input: declareGoal() },
+        { name: 'Set', input: { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] } },
+        { name: 'Get', input: {} },
       ],
     } : 'A person has to reconcile it first.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['ApplyBatch'],
+  assert.deepEqual(run.verbs, ['Set'],
     `calls chosen before the model saw the first answer were sent: ${run.verbs.join(', ')}`)
   assert.equal(run.modelRequests.length, 2, 'the model was not given the held answer and the unsent calls')
   const suspension = run.localEvents.find((event) => event.type === 'queue-suspended')
   assert.equal(suspension?.notSent, 2, 'the two unsent calls were not reported as unsent')
   assert.match(run.stdout, /were not sent/)
-  assert.match(run.stdout, /ApplyBatch is waiting for a person to reconcile it in Console/)
+  assert.match(run.stdout, /Set is waiting for a person to reconcile it in Console/)
 })
 
 test('a goal declaration is carried exactly as the model wrote it: the host pins no contract on it', async () => {
@@ -1021,7 +1023,7 @@ test('a goal declaration is carried exactly as the model wrote it: the host pins
   const run = await runAgent({
     argv: [],
     chatLines: ['Use Rulith for this governed calculation.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declaration) : 'Declared.'),
+    model: (round) => (round === 1 ? callTool('Set', declaration) : 'Declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1031,7 +1033,7 @@ test('a goal declaration is carried exactly as the model wrote it: the host pins
   for (const retired of ['OpenCase', 'CloseCase', 'EndGoal']) {
   test(`a model that still calls ${retired} is refused locally, and nothing reaches the authority`, async () => {
     // rulith/v4 took OpenCase and CloseCase off the model surface with no alias (V1, V2). A model
-    // formed against the old surface is told which four tools exist; its call is never carried.
+    // formed against the old surface is told which three tools exist; its call is never carried.
     const run = await runAgent({
       argv: [],
       chatLines: ['Open a Case.'],
@@ -1042,7 +1044,7 @@ test('a goal declaration is carried exactly as the model wrote it: the host pins
     assert.deepEqual(run.verbs, [], `${retired} reached the authority`)
     const answered = JSON.stringify(run.modelRequests[1])
     assert.match(answered, /tool_not_carried/)
-    assert.match(answered, /This Agent may call: QueryBoard, ApplyBatch, ApplyAction, ReadArtifact\./)
+    assert.match(answered, /This Agent may call: Get, Set, Execute\./)
   })
 }
 
@@ -1059,11 +1061,11 @@ test('RT-GUESS-1 no prompt line is driven by a field the authority never publish
     argv: [],
     chatLines: ['Use Rulith under the installed governance.'],
     tool: (name, args, board, session, meta) => {
-      if (name !== 'ApplyBatch') return undefined
+      if (name !== 'Set') return undefined
       const core = board.tool(name, args, session, meta)
       return withMeta({ ...core, payload: { ...core.payload, lawLocked: true } }, board.meta(session))
     },
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The goal is declared.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The goal is declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1076,7 +1078,7 @@ test('RT-GUESS-1 no prompt line is driven by a field the authority never publish
   // A known goal type still does not let the host decide the current writing permission (V47).
   assert.match(afterOpen, /A goal type alone grants no rule-writing permission/)
   assert.doesNotMatch(afterOpen, /are permitted inside this Case|are Case-local/)
-  assert.deepEqual(run.verbs, ['ApplyBatch'], 'the Board was probed for governance state')
+  assert.deepEqual(run.verbs, ['Set'], 'the Board was probed for governance state')
   const source = readFileSync(new URL('../agent/rulith-agent.mjs', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /ctx\.lawLocked|LOCKED_LINE/, 'the guessed lock state survived in the runtime')
 })
@@ -1090,9 +1092,9 @@ test('RT-GUESS-2 an accepted Action reports the invocation gap instead of a fals
     argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '5' },
     chatLines: ['Dispatch the action twice.'],
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyAction', { action: 'acme.ship', target: 'L1' })
-      if (round === 3) return callTool('ApplyAction', { action: 'acme.ship', target: 'L2' })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Execute', { action: 'acme.ship', target: 'L1' })
+      if (round === 3) return callTool('Execute', { action: 'acme.ship', target: 'L2' })
       return 'Dispatched.'
     },
   })
@@ -1106,7 +1108,7 @@ test('RT-GUESS-2 an accepted Action reports the invocation gap instead of a fals
   assert.ok(verdicts.length >= 2)
   assert.ok(verdicts.every((event) => !Object.hasOwn(event, 'done') && !Object.hasOwn(event, 'ok') && !Object.hasOwn(event, 'invocation')),
     `a verdict carried a guessed completion field: ${JSON.stringify(verdicts)}`)
-  assert.doesNotMatch(run.stdout, /completed with failure|ApplyAction completed/)
+  assert.doesNotMatch(run.stdout, /completed with failure|Execute completed/)
 })
 
 test('a bounded public Action result reports its own terminal state without inventing an invocation', async () => {
@@ -1121,12 +1123,12 @@ test('a bounded public Action result reports its own terminal state without inve
       argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '4' },
       chatLines: ['Try the declared Action.'],
       tool: (name, args, board, session, meta) => {
-        if (name !== 'ApplyAction') return undefined
+        if (name !== 'Execute') return undefined
         const core = board.tool(name, args, session, meta)
         return withMeta({ ...core, result: { action: args.action, done: true, ...shape } }, board.meta(session))
       },
-      model: (round) => round === 1 ? callTool('ApplyBatch', declareGoal())
-        : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
+      model: (round) => round === 1 ? callTool('Set', declareGoal())
+        : round === 2 ? callTool('Execute', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
     const outcomes = run.localEvents.filter(event => event.type === 'action-outcome')
@@ -1140,11 +1142,11 @@ test('a bounded public Action result reports its own terminal state without inve
   const mismatched = await runAgent({
     argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Try the declared Action.'],
-    tool: (name, args, board, session, meta) => name !== 'ApplyAction' ? undefined
+    tool: (name, args, board, session, meta) => name !== 'Execute' ? undefined
       : withMeta({ ...board.tool(name, args, session, meta),
         result: { action: 'another.action', done: true, status: 'confirmed', ok: true } }, board.meta(session)),
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
-      : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
+    model: round => round === 1 ? callTool('Set', declareGoal())
+      : round === 2 ? callTool('Execute', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
   })
   assert.equal(mismatched.code, 0, `${mismatched.stdout}\n${mismatched.stderr}`)
   assert.equal(mismatched.localEvents.some(event => event.type === 'action-outcome'), false)
@@ -1158,22 +1160,22 @@ test('a contradictory Action envelope is not taken as the outcome', async () => 
       env: { RULITH_MAX_ROUNDS: '4' },
       chatLines: ['Try the declared Action.'],
       tool: (name, args, board, session, meta) => {
-        if (name !== 'ApplyAction') return undefined
+        if (name !== 'Execute') return undefined
         const result = { ...board.tool(name, args, session, meta),
           result: { action: args.action, done: true, ok: true, status: 'confirmed' },
           ...(contradiction === 'ambiguous-code' ? { errorCode: 'upstream_unavailable' } : {}) }
         return { ...withMeta(result, board.meta(session)),
           ...(contradiction === 'mcp-error' ? { __isError: true } : {}) }
       },
-      model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
-        : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
+      model: round => round === 1 ? callTool('Set', declareGoal())
+        : round === 2 ? callTool('Execute', { action: 'acme.ship', target: 'L1' }) : 'Result noted.',
       timeoutMs: 8_000,
     })
     assert.notEqual(run.code, 'timeout', `${contradiction}: ${run.stdout}\n${run.stderr}`)
     assert.equal(run.localEvents.some(event => event.type === 'action-outcome'), false,
       `${contradiction}: a contradictory envelope was shown as confirmed`)
     assert.equal(run.localEvents.some(event => event.type === 'verdict'
-      && event.cmd === 'ApplyAction' && event.accepted === true), false,
+      && event.cmd === 'Execute' && event.accepted === true), false,
     `${contradiction}: the contradictory reply was shown as accepted by Board`)
   }
 })
@@ -1182,14 +1184,14 @@ test('a normal MCP envelope can carry an authoritative business refusal', async 
   const run = await runAgent({
     argv: [], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Try the declared Action.'],
-    tool: (name, args, board, session, meta) => name !== 'ApplyAction' ? undefined
+    tool: (name, args, board, session, meta) => name !== 'Execute' ? undefined
       : withMeta({ accepted: false, errorCode: 'not_authorized', teaching: 'Action refused by policy.' },
         board.meta(session)),
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
-      : round === 2 ? callTool('ApplyAction', { action: 'acme.ship', target: 'L1' }) : 'The action was refused.',
+    model: round => round === 1 ? callTool('Set', declareGoal())
+      : round === 2 ? callTool('Execute', { action: 'acme.ship', target: 'L1' }) : 'The action was refused.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.localEvents.some(event => event.type === 'verdict' && event.cmd === 'ApplyAction'
+  assert.equal(run.localEvents.some(event => event.type === 'verdict' && event.cmd === 'Execute'
     && event.accepted === false && event.transportFailed !== true), true)
   assert.equal(run.localEvents.some(event => event.type === 'action-outcome'), false)
 })
@@ -1198,7 +1200,7 @@ test('declaring an exploration goal does not invent a permission grant or Case-l
   const run = await runAgent({
     argv: [],
     chatLines: ['Explore this.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Exploring.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Exploring.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1214,7 +1216,7 @@ test('the Anthropic wire carries tool definitions, tool_use blocks, and tool_res
     argv: [],
     provider: 'anthropic',
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Opened.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -1224,14 +1226,14 @@ test('the Anthropic wire carries tool definitions, tool_use blocks, and tool_res
   assert.equal(typeof first.system, 'string', 'Anthropic carries the system prompt as a top-level field')
   const second = run.modelRequests[1]
   const assistant = second.messages.find((message) => message.role === 'assistant')
-  assert.ok(assistant.content.some((block) => block.type === 'tool_use' && block.name === 'ApplyBatch'),
+  assert.ok(assistant.content.some((block) => block.type === 'tool_use' && block.name === 'Set'),
     `the assistant turn was not replayed as a tool_use block: ${JSON.stringify(assistant)}`)
   const results = second.messages.filter((message) => message.role === 'user')
     .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
     .filter((block) => block.type === 'tool_result')
   assert.equal(results.length, 1, 'the tool result was not replayed as a tool_result block')
   assert.equal(results[0].tool_use_id, assistant.content.find((block) => block.type === 'tool_use').id)
-  assert.equal(run.verbs.includes('ApplyBatch'), true)
+  assert.equal(run.verbs.includes('Set'), true)
 })
 
 test('the OpenAI wire carries function tools, tool_calls, and role tool replies', async () => {
@@ -1239,21 +1241,21 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
     argv: [],
     provider: 'openai',
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal(), { id: 'call_abc' }) : 'Declared.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal(), { id: 'call_abc' }) : 'Declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const first = run.modelRequests[0]
   assert.ok(Array.isArray(first.tools) && first.tools.every((tool) => tool.type === 'function' && tool.function.parameters !== undefined),
     `OpenAI tools must be function definitions with parameters: ${JSON.stringify(first.tools)}`)
-  const query = first.tools.find(tool => tool.function.name === 'QueryBoard').function.parameters
+  const query = first.tools.find(tool => tool.function.name === 'Get').function.parameters
   assert.equal(query.properties.selector.properties.goals.type, 'array')
   assert.equal(query.properties.selector.properties.goals.items.type, 'string')
   assert.equal(query.properties.selector.properties.goals.minItems, 1)
   assert.equal(query.properties.selector.properties.goals.maxItems, 1000)
   assert.equal(query.properties.selector.properties.goals.items.minLength, 1)
   assert.deepEqual(query.properties.include.items.enum, ['goals', 'nodes', 'gaps', 'taskStatus', 'history'])
-  const batch = first.tools.find(tool => tool.function.name === 'ApplyBatch').function.parameters
+  const batch = first.tools.find(tool => tool.function.name === 'Set').function.parameters
   assert.equal(batch.properties.operations.items.type, 'object')
   assert.ok(batch.properties.operations.items.properties.op.enum.includes('assert_fact'))
   assert.ok(batch.properties.operations.items.properties.op.enum.includes('declare_goal'))
@@ -1264,12 +1266,12 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
   assert.deepEqual(ending.properties.disposition.enum, ['cancelled', 'failed', 'abandoned', 'superseded'])
   const validator = new Ajv({ strict: false })
   const samples = {
-    QueryBoard: [{}, { include: ['nodes'], selector: { goals: ['goal-1'] } }, { include: ['nodes'] }, { include: ['nodes'], selector: { goals: [] } },
+    Get: [{}, { include: ['nodes'], selector: { goals: ['goal-1'] } }, { include: ['nodes'] }, { include: ['nodes'], selector: { goals: [] } },
       { include: ['nodes'], selector: { goals: [{}] } }, { include: ['history'], selector: { goals: ['goal-1'] } }, { include: ['cases'] },
       { include: ['nodes'], selector: { roots: ['root-1'] } },
       { include: ['history'], selector: { goals: ['goal-1'] }, historyOffset: 1 },
       { include: ['history'], selector: { goals: ['goal-1'] }, historyOffset: 1, historyVersion: 'old' }],
-    ApplyBatch: [{ operations: [{ op: 'assert_fact', predicate: 'x', args: { n: 1 } }] }, { operations: [{}] }, { operations: [{ op: 'unknown' }] },
+    Set: [{ operations: [{ op: 'assert_fact', predicate: 'x', args: { n: 1 } }] }, { operations: [{}] }, { operations: [{ op: 'unknown' }] },
       { operations: [{ op: 'declare_goal', desired: [{ predicate: 'task_done', args: {} }] }] },
       { operations: [{ op: 'declare_goal', desired: [{ predicate: 'step_done', args: {} }], parent: 'GOAL_1' }] },
       { operations: [{ op: 'declare_goal', desired: [] }] }, { operations: [{ op: 'sign_off', goal: 'GOAL_1' }] },
@@ -1285,7 +1287,7 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
   assert.equal(first.messages[0].role, 'system')
   const second = run.modelRequests[1]
   const assistant = second.messages.find((message) => message.role === 'assistant' && message.tool_calls)
-  assert.equal(assistant.tool_calls[0].function.name, 'ApplyBatch')
+  assert.equal(assistant.tool_calls[0].function.name, 'Set')
   const toolMessage = second.messages.find((message) => message.role === 'tool')
   assert.equal(toolMessage.tool_call_id, assistant.tool_calls[0].id)
   assert.match(String(toolMessage.content), /"accepted":true/)
@@ -1296,10 +1298,10 @@ test('provider schema shaping preserves recursive refs and unsatisfiable constan
     chain: { $ref: '#/$defs/Node' },
     choice: { anyOf: [{ const: 'a', type: 'number' }, { const: 'b', type: 'string' }] },
   }, $defs: { Node: { type: 'object', properties: { next: { $ref: '#/$defs/Node' } } } } }
-  const toolSchemas = advertisedTools().map(tool => tool.name === 'QueryBoard' ? { ...tool, inputSchema: original } : tool)
+  const toolSchemas = advertisedTools().map(tool => tool.name === 'Get' ? { ...tool, inputSchema: original } : tool)
   const run = await runAgent({ argv: [], provider: 'openai', toolSchemas, chatLines: ['Hello'], model: () => 'Hello' })
   assert.equal(run.code, 0, run.stderr)
-  const shaped = run.modelRequests[0].tools.find(tool => tool.function.name === 'QueryBoard').function.parameters
+  const shaped = run.modelRequests[0].tools.find(tool => tool.function.name === 'Get').function.parameters
   const ajv = new Ajv({ strict: false })
   const before = ajv.compile(original), after = ajv.compile(shaped)
   for (const value of [{ chain: { next: { next: {} } }, choice: 'b' }, { chain: { next: 1 } }, { choice: 'a' }]) {
@@ -1311,8 +1313,8 @@ test('provider schema shaping preserves recursive refs and unsatisfiable constan
 test('a goal the Board completed in the last conversational round is reported as completed', async () => {
   const run = await runAgent({ argv: [], env: { RULITH_MAX_ROUNDS: '2' }, captureLocalEvents: true,
     gateway: defaultGateway({ settleAfterBatch: true, certifyAfterBatch: true }), chatLines: ['Finish the work.'],
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
-      : callTool('ApplyBatch', { operations: [{ op: 'assert_fact', predicate: 'ready', args: {} }] }),
+    model: round => round === 1 ? callTool('Set', declareGoal())
+      : callTool('Set', { operations: [{ op: 'assert_fact', predicate: 'ready', args: {} }] }),
   })
   assert.equal(run.code, 0, run.stderr)
   assert.match(run.stdout, /The Board certified the goal and it is completed\./)
@@ -1327,14 +1329,14 @@ test('an endpoint that rejects tool definitions gets the same tools described in
     model: (round, body) => {
       // The first request carried tools and was refused; the retry must not.
       if (body.tools !== undefined) return 'unreachable'
-      const spoken = JSON.stringify(body.messages).includes('ApplyBatch result') ? 'Declared.' : ''
-      return spoken === '' ? `{"tool":"ApplyBatch","input":${JSON.stringify(declareGoal())}}` : spoken
+      const spoken = JSON.stringify(body.messages).includes('Set result') ? 'Declared.' : ''
+      return spoken === '' ? `{"tool":"Set","input":${JSON.stringify(declareGoal())}}` : spoken
     },
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stdout, /refused a request carrying tool definitions/)
-  assert.equal(run.verbs.includes('ApplyBatch'), true,
+  assert.equal(run.verbs.includes('Set'), true,
     `the fallback lost the model's ability to reach the Board: ${run.verbs.join(', ')}`)
   const emulated = run.modelRequests.filter((request) => request.tools === undefined)
   assert.ok(emulated.length >= 1)
@@ -1348,13 +1350,13 @@ test('RULITH_MODEL_TOOLS=emulated selects the fallback transport without a faile
     argv: [],
     env: { RULITH_MODEL_TOOLS: 'emulated' },
     chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? `{"tool":"ApplyBatch","input":${JSON.stringify(declareGoal())}}` : 'Declared.'),
+    model: (round) => (round === 1 ? `{"tool":"Set","input":${JSON.stringify(declareGoal())}}` : 'Declared.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.ok(run.modelRequests.every((request) => request.tools === undefined),
     'the forced fallback still sent tool definitions')
-  assert.equal(run.verbs.includes('ApplyBatch'), true)
+  assert.equal(run.verbs.includes('Set'), true)
   assert.doesNotMatch(run.stdout, /refused a request carrying tool definitions/,
     'no request failed, so nothing should be reported as a fallback')
 })
@@ -1374,28 +1376,28 @@ test(`a ${failure === HOP_FAILURE ? 'transport' : 'gateway upstream'} failure is
     chatLines: ['Record this despite a transient network failure.'],
     captureLocalEvents: true,
     tool: (name, args) => {
-      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'assert_fact') return undefined
+      if (name !== 'Set' || args.operations?.[0]?.op !== 'assert_fact') return undefined
       attempts += 1
       return attempts === 1 ? failure : undefined
     },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', batch)
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', batch)
       return 'I will look at operations before trying again.'
     },
     timeoutMs: 25_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const sent = run.toolCalls.filter((call) => call.name === 'ApplyBatch' && call.args.operations[0].op === 'assert_fact')
+  const sent = run.toolCalls.filter((call) => call.name === 'Set' && call.args.operations[0].op === 'assert_fact')
   assert.equal(sent.length, 1, `the host re-sent a write whose answer was lost: ${JSON.stringify(run.verbs)}`)
   assert.equal(run.modelRequests.length, 3, 'the model was not told that the answer was lost')
   // The classification still travels — as the verdict a person and the local view can read.
-  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch').at(-1)
+  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'Set').at(-1)
   assert.equal(verdict.transportFailed, true)
   assert.match(verdict.teaching, /transport failure, not the Board's answer: the call may or may not have run/)
   assert.doesNotMatch(verdict.teaching, /Retry the identical step|reaches that same identity/,
     'transport uncertainty was reported as something the model may simply re-issue')
-  assert.match(run.stdout, /No answer arrived for ApplyBatch/)
+  assert.match(run.stdout, /No answer arrived for Set/)
   assert.ok(run.localEvents.some((event) => event.type === 'case-state' && event.contact === 'unknown'),
     'after a lost answer, the inspector must not continue presenting an earlier observation as confirmed')
 })
@@ -1411,17 +1413,17 @@ test('a write whose answer was lost after it ran cannot run again blind: the nex
   const run = await runAgent({
     argv: [], env: { RULITH_MAX_ROUNDS: '5' }, chatLines: ['Record it once.'],
     sseResults: true, breakStreamOnCall: 2, refuseResume: true,
-    model: (round) => round === 1 ? callTool('ApplyBatch', declareGoal()) : round <= 3 ? callTool('ApplyBatch', batch) : 'Recorded once.',
+    model: (round) => round === 1 ? callTool('Set', declareGoal()) : round <= 3 ? callTool('Set', batch) : 'Recorded once.',
     timeoutMs: 25_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   // The declaration and the write, once each.
-  assert.equal(run.operations.filter((op) => op.tool === 'ApplyBatch').length, 2, 'the write ran twice')
+  assert.equal(run.operations.filter((op) => op.tool === 'Set').length, 2, 'the write ran twice')
   assert.ok(run.initializes.length >= 2, 'the host kept using the session whose answer it lost')
   const second = JSON.parse(run.modelRequests.at(-1).messages.filter((message) => message.role === 'tool').at(-1).content)
   assert.equal(second.errorCode, 'previous_result_undelivered')
   assert.equal(second.requestExecuted, false)
-  assert.equal(second.operations.find((entry) => entry.tool === 'ApplyBatch').result.isError, false,
+  assert.equal(second.operations.find((entry) => entry.tool === 'Set').result.isError, false,
     'the refusal did not hand over the earlier outcome')
 })
 
@@ -1433,9 +1435,9 @@ test('distinct submissions carry distinct request identities, and an answered on
     env: { RULITH_MAX_ROUNDS: '6' },
     chatLines: ['record two facts'],
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
-      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F2', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 3) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F2', predicate: 'x', args: {} }] })
       return 'Both recorded.'
     },
   })
@@ -1455,12 +1457,12 @@ test('an empty arguments string is an empty object, not a malformed call', async
     argv: [],
     chatLines: ['Look at the Board.'],
     model: (round) => (round === 1
-      ? { text: '', toolCalls: [{ name: 'QueryBoard', input: {}, rawArguments: '' }] }
+      ? { text: '', toolCalls: [{ name: 'Get', input: {}, rawArguments: '' }] }
       : 'Read.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('QueryBoard'), true, `an empty argument string was refused: ${run.verbs.join(', ')}`)
+  assert.equal(run.verbs.includes('Get'), true, `an empty argument string was refused: ${run.verbs.join(', ')}`)
 })
 
 test('the Anthropic transcript alternates roles even when the host adds its own nudge', async () => {
@@ -1470,8 +1472,8 @@ test('the Anthropic transcript alternates roles even when the host adds its own 
     env: { RULITH_MAX_ROUNDS: '4' },
     gateway: defaultGateway({ settleAfterBatch: false }),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Finished.'
     },
   })
@@ -1496,12 +1498,12 @@ test('tool arguments that are not a JSON object are refused locally', async () =
     argv: [],
     chatLines: ['Open a Case.'],
     model: (round) => (round === 1
-      ? { text: '', toolCalls: [{ name: 'ApplyBatch', input: {}, rawArguments: 'not json' }] }
+      ? { text: '', toolCalls: [{ name: 'Set', input: {}, rawArguments: 'not json' }] }
       : 'I will send a JSON object.'),
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.includes('ApplyBatch'), false, 'malformed arguments reached the authority')
+  assert.equal(run.verbs.includes('Set'), false, 'malformed arguments reached the authority')
   assert.match(JSON.stringify(run.modelRequests[1]), /bad_tool_arguments/)
 })
 
@@ -1539,10 +1541,10 @@ for (const provider of ['openai', 'anthropic']) {
       const port = await freePort()
       const body = provider === 'openai'
         ? { choices: [{ finish_reason: truncated ? 'length' : 'stop', message: truncated
-          ? { content: 'A partial answer', tool_calls: [{ id: 'partial', type: 'function', function: { name: 'ApplyBatch', arguments: '{"operations":[]}' } }] }
+          ? { content: 'A partial answer', tool_calls: [{ id: 'partial', type: 'function', function: { name: 'Set', arguments: '{"operations":[]}' } }] }
           : { content: null, reasoning_content: 'Reasoning alone is not a response.' } }] }
         : { stop_reason: truncated ? 'max_tokens' : 'end_turn', content: truncated
-          ? [{ type: 'text', text: 'A partial answer' }, { type: 'tool_use', id: 'partial', name: 'ApplyBatch', input: { operations: [] } }]
+          ? [{ type: 'text', text: 'A partial answer' }, { type: 'tool_use', id: 'partial', name: 'Set', input: { operations: [] } }]
           : [{ type: 'thinking', thinking: 'Reasoning alone is not a response.' }] }
       const run = await runAgent({
         argv: ['--serve'], provider,
@@ -1554,7 +1556,7 @@ for (const provider of ['openai', 'anthropic']) {
       })
       assert.equal(run.modelRequests.length, 2, 'there must be no automatic paid retry')
       assert.equal(run.modelRequests[0].max_tokens, truncated ? 12000 : 6000)
-      assert.equal(run.verbs.includes('ApplyBatch'), false, 'a truncated tool call must never execute')
+      assert.equal(run.verbs.includes('Set'), false, 'a truncated tool call must never execute')
       assert.equal(run.serveSnapshot.runs[0].outcome, 'model-error')
       assert.match(run.serveSnapshot.runs[0].note, truncated ? /output token limit/ : /no answer or tool call/)
       assert.doesNotMatch(run.serveSnapshot.runs[0].note, /Response delivered/)
@@ -1566,17 +1568,17 @@ for (const provider of ['openai', 'anthropic']) {
 
 test('interactive chat survives empty model output and preserves prior tool results', async () => {
   const run = await runAgent({ argv: [], chatLines: ['Open a Case.', 'Continue.'],
-    model: n => n === 1 ? callTool('ApplyBatch', declareGoal()) : n === 2 ? '' : 'The conversation continued.' })
+    model: n => n === 1 ? callTool('Set', declareGoal()) : n === 2 ? '' : 'The conversation continued.' })
   assert.equal(run.code, 0, run.stderr)
   assert.match(run.stdout, /no answer or tool call/)
   assert.match(run.stdout, /The conversation continued/)
-  assert.equal(run.verbs.filter(verb => verb === 'ApplyBatch').length, 1)
+  assert.equal(run.verbs.filter(verb => verb === 'Set').length, 1)
   assert.match(JSON.stringify(run.modelRequests.at(-1)), /GOAL_1/)
 })
 
 test('one-shot reports a recoverable model failure with its open goal', async () => {
   const run = await runAgent({ argv: ['Open a Case.'], captureLocalEvents: true,
-    model: n => n === 1 ? callTool('ApplyBatch', declareGoal()) : '' })
+    model: n => n === 1 ? callTool('Set', declareGoal()) : '' })
   assert.equal(run.code, 1)
   const end = run.localEvents.find(event => event.type === 'end')
   assert.equal(end.outcome, 'model-error')
@@ -1589,7 +1591,7 @@ test('an empty shadow review is unavailable and preserves the goal report', asyn
   const run = await runAgent({ argv: ['Open a Case.', '--shadow'], captureLocalEvents: true,
     env: { RULITH_MODEL_THINKING: 'disabled', RULITH_MODEL_MAX_OUTPUT_TOKENS: '12000' },
     model: (n, request) => systemTextOf(request).includes('adversarial shadow reviewer') ? ''
-      : n === 1 ? callTool('ApplyBatch', declareGoal()) : 'Waiting for more information.' })
+      : n === 1 ? callTool('Set', declareGoal()) : 'Waiting for more information.' })
   assert.equal(run.code, 0, run.stdout + run.stderr)
   assert.equal(run.localEvents.find(event => event.type === 'end').pendingGoal, 'GOAL_1')
   assert.equal(run.modelRequests[0].max_tokens, 12000)
@@ -1627,12 +1629,12 @@ test('--serve records a recoverable goal before reclaiming an abandoned conversa
       { text: 'Start an unrelated conversation.', sessionKey: 'client-b' },
     ],
     waitForServeCompletion: true,
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The goal remains active.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The goal remains active.'),
     timeoutMs: 8000,
   })
 
   assert.deepEqual(run.serveStatuses, [202, 202], `${run.stdout}\n${run.stderr}`)
-  assert.equal(run.verbs.filter((verb) => verb === 'ApplyBatch').length, 1)
+  assert.equal(run.verbs.filter((verb) => verb === 'Set').length, 1)
   const detached = (run.serveSnapshot?.runs ?? []).find((record) => record.sessionKey === 'client-a' && record.pendingGoal)
   assert.ok(detached, `the reclaimed goal was not exposed for recovery: ${JSON.stringify(run.serveSnapshot)}`)
   assert.equal(detached.pendingGoal, 'GOAL_1')
@@ -1659,8 +1661,8 @@ test('a goal declared in a later message joins the conversation focus rather tha
       { text: 'Start the other work too.', sessionKey: 'client-a' },
     ],
     waitForServeCompletion: true,
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal('task_a'))
-      : round === 3 ? callTool('ApplyBatch', declareGoal('task_b')) : 'Both goals are in focus.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal('task_a'))
+      : round === 3 ? callTool('Set', declareGoal('task_b')) : 'Both goals are in focus.'),
     timeoutMs: 8000,
   })
 
@@ -1676,14 +1678,14 @@ test('conversation mode emits Board verdicts and per-goal observations for Local
     chatLines: ['Record one governed observation.'],
     captureLocalEvents: true,
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F_EVENT', predicate: 'scratch.demo.observation', args: { value: 'visible' } }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F_EVENT', predicate: 'scratch.demo.observation', args: { value: 'visible' } }] })
       return 'The explicit step was accepted and is visible in the goal trace.'
     },
   })
 
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.ok(run.localEvents.some((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch' && event.accepted === true),
+  assert.ok(run.localEvents.some((event) => event.type === 'verdict' && event.cmd === 'Set' && event.accepted === true),
     `Local received no Board verdict: ${JSON.stringify(run.localEvents)}`)
   assert.ok(run.localEvents.some((event) => event.type === 'case-open' && event.ok === true),
     `Local received no goal lifecycle event: ${JSON.stringify(run.localEvents)}`)
@@ -1699,14 +1701,14 @@ test('conversation mode emits Board verdicts and per-goal observations for Local
 test('a refused declaration never creates a conversation focus binding', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Try to start governed work.'], captureLocalEvents: true,
-    tool: (name) => (name === 'ApplyBatch'
+    tool: (name) => (name === 'Set'
       ? withMeta(
           { accepted: false, errorCode: 'commercial_admission_rejected', teaching: 'Declaring was refused.',
             payload: { goals: { directory: [{ goal: 'GOAL_NOT_DECLARED', label: 'x', status: 'running' }], total: 1 }, gaps: [], nodes: [], actions: [] } },
           { agentId: TEST_AGENT_ID, focusedGoals: [] },
         )
       : undefined),
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Declaring was refused.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Declaring was refused.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.localEvents.some((event) => event.type === 'case-state'), false,
@@ -1717,13 +1719,13 @@ test('a refused declaration never creates a conversation focus binding', async (
 test('a focused goal the Board View never described is unavailable, never invented as running', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Start governed work.'], captureLocalEvents: true,
-    tool: (name) => (name === 'ApplyBatch'
+    tool: (name) => (name === 'Set'
       ? withMeta(
           { accepted: true, revision: 'r1', payload: { goals: { directory: [], total: 0 }, gaps: [], nodes: [], actions: [] } },
           { agentId: TEST_AGENT_ID, focusedGoals: ['GOAL_Q'] },
         )
       : undefined),
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The lifecycle status was not returned.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The lifecycle status was not returned.'),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const observations = run.localEvents.filter((event) => event.type === 'case-state')
@@ -1785,7 +1787,7 @@ test('inconsistent provider cache counts remain unknown, not a fabricated discou
 
 test('long turns retain Artifact evidence and the latest Board View while shortening older views', async () => {
   const strips = ['running', 'waiting_for_decision', 'needs_person'].flatMap(state =>
-    ['ApplyAction', 'ApplyBatch'].map(tool => [{ tool, label: tool, state, at: '2026-10-01T08:00:00Z', since: '2026-10-01T08:00:01Z',
+    ['Execute', 'Set'].map(tool => [{ tool, label: tool, state, at: '2026-10-01T08:00:00Z', since: '2026-10-01T08:00:01Z',
       ...(state === 'running' ? { stage: 'at_worker' } : {}),
       ...(state === 'waiting_for_decision' ? { decision: 'a person\'s decision in Console' } : {}) }]))
   let acceptedQueries = 0
@@ -1799,7 +1801,7 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
     argv: [], chatLines: ['Read the attached material and inspect the Board.'],
     gateway, captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '12' },
     tool: (name, args, board, session) => {
-      if (name !== 'QueryBoard') return undefined
+      if (name !== 'Get' || args.artifact) return undefined
       queries += 1
       if (queries % 3 === 0) return { accepted: false, errorCode: 'query_refused_for_fixture', requestExecuted: false,
         teaching: 'The Board refused this query.', operations: [], view: {} }
@@ -1807,8 +1809,8 @@ test('long turns retain Artifact evidence and the latest Board View while shorte
       result.operations = strips[acceptedQueries++]
       return result
     },
-    model: (round) => round === 1 ? callTool('ReadArtifact', { ref })
-      : round < 11 ? callTool('QueryBoard', {}) : 'The inspection is complete.',
+    model: (round) => round === 1 ? callTool('Get', { artifact: { ref } })
+      : round < 11 ? callTool('Get', {}) : 'The inspection is complete.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.modelRequests.length, 11, 'the long-turn fixture did not reach the intended number of model calls')
@@ -1838,7 +1840,7 @@ test('context compression retains distinct Board observations and partial or ref
   const run = await runAgent({
     argv: [], chatLines: ['Compare these observations without dropping their evidence.'], captureLocalEvents: true, env: { RULITH_MAX_ROUNDS: '6' },
     tool: name => {
-      if (name !== 'QueryBoard') return undefined
+      if (name !== 'Get') return undefined
       queries += 1
       const marker = ['FIRST_SCOPE_ONLY', 'PARTIAL_SCOPE_ONLY', 'REFUSED_SCOPE_ONLY', 'LAST_SCOPE_ONLY'][queries - 1]
       if (queries === 3) return { accepted: false, errorCode: 'refused_but_retained', requestExecuted: false,
@@ -1846,7 +1848,7 @@ test('context compression retains distinct Board observations and partial or ref
       return committed({ goals: { directory: [{ goal: marker, label: marker, status: 'completed' }, ...goals], total: goals.length + 1,
         ...(queries === 2 ? { truncated: true } : {}) }, gaps: [], nodes: [], actions: [] })
     },
-    model: round => round <= 4 ? callTool('QueryBoard', {}) : 'Compared all observations.',
+    model: round => round <= 4 ? callTool('Get', {}) : 'Compared all observations.',
   })
   assert.equal(run.code, 0, run.stderr)
   assert.equal(run.modelRequests.length, 5)

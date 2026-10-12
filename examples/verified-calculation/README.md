@@ -88,7 +88,7 @@ pins. It does not create credentials, install a Capability, or grant access to a
 
 ## Run and verify
 
-Rulith Runtime 0.15.0 speaks `rulith/v4`: the Agent declares goals inside `ApplyBatch`,
+Rulith Runtime 0.15.0 speaks `rulith/v4`: the Agent declares goals inside `Set`,
 and the Board completes a goal by itself in the commit that certifies it. The Agent first
 reads the trusted input under an `exploration` intake goal it declares, then declares the
 `verified_calculation` capability's goal with the returned `job_id`. In the Local
@@ -124,13 +124,13 @@ The order-processing example and paid billing are separate acceptance paths.
 
 ## Protocol troubleshooting (optional)
 
-The normal run uses the Local composer. Inspect `QueryBoard` for the installed Action
+The normal run uses the Local composer. Inspect `Get` for the installed Action
 schemas and descriptions, and for the capability goals this Agent can declare
 (`goalTypes`). These examples apply to Capability 1.0.3; existing installations remain
 pinned until their operator installs the new version.
 
 ```json
-{"tool":"ApplyAction","input":{"action":"load_calculation_input","args":{"source":"verified-calculation-local"}}}
+{"tool":"Execute","input":{"action":"load_calculation_input","args":{"source":"verified-calculation-local"}}}
 ```
 
 Read `job_id` from the actual intake result, then declare the capability's goal with that
@@ -138,14 +138,14 @@ key value. A goal declared without `parent` starts new work; declaring the same 
 while it is open returns it (`opened:false`).
 
 ```json
-{"tool":"ApplyBatch","input":{"operations":[{"op":"declare_goal","desired":[{"predicate":"rulith.verified_calculation.calculation_completed","args":{"job_id":"calc-001"}}]}]}}
+{"tool":"Set","input":{"operations":[{"op":"declare_goal","desired":[{"predicate":"rulith.verified_calculation.calculation_completed","args":{"job_id":"calc-001"}}]}]}}
 ```
 
 `result.goals[0].goal` is the goal's ID; `result.goals[0].children`, when present, lists
 the steps the capability prepared. Inspect the goal:
 
 ```json
-{"tool":"QueryBoard","input":{"selector":{"goals":["<the goal ApplyBatch returned>"]},"include":["nodes","taskStatus"]}}
+{"tool":"Get","input":{"selector":{"goals":["<the goal Set returned>"]},"include":["nodes","taskStatus"]}}
 ```
 
 Initially its `taskStatus` row has `certified:false`. Nothing is closed by hand: the goal
@@ -160,15 +160,15 @@ Use a prepared step's goal ID as `target` when the result listed one, and the go
 ID otherwise.
 
 ```json
-{"tool":"ApplyAction","input":{"action":"write_calculation_result","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the step or goal ID ApplyBatch returned>"}}
+{"tool":"Execute","input":{"action":"write_calculation_result","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the step or goal ID Set returned>"}}
 ```
 
 ```json
-{"tool":"ApplyAction","input":{"action":"verify_calculation_output","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the step or goal ID ApplyBatch returned>"}}
+{"tool":"Execute","input":{"action":"verify_calculation_output","args":{"source":"verified-calculation-local","job_id":"calc-001"},"target":"<the step or goal ID Set returned>"}}
 ```
 
 ```json
-{"tool":"QueryBoard","input":{"include":["goals"]}}
+{"tool":"Get","input":{"include":["goals"]}}
 ```
 
 After the independent read-back agrees, the goal's row shows `status:"completed"`. If it
@@ -176,7 +176,7 @@ does not, inspect the returned gaps and goals. A goal you will not pursue furthe
 with a disposition and a reason instead; that is never a completion:
 
 ```json
-{"tool":"ApplyBatch","input":{"operations":[{"op":"end_goal","goal":"<the goal ApplyBatch returned>","disposition":"abandoned","reason":"The input job was withdrawn."}]}}
+{"tool":"Set","input":{"operations":[{"op":"end_goal","goal":"<the goal Set returned>","disposition":"abandoned","reason":"The input job was withdrawn."}]}}
 ```
 
 A model answer, a derived result or an output file alone does not prove completion. Console

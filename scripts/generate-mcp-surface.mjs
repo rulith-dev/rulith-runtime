@@ -29,7 +29,8 @@ export function projectionBlock(bundle) {
   const runtimeVersion = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')).version
   const tools = bundle.tools.map((tool) => `  Object.freeze({ name: '${tool.name}', target: '${tool.target}'`
     + `${tool.operation === undefined ? '' : `, operation: '${tool.operation}'`}`
-    + `${tool.resultSchemaRef === undefined ? '' : `, resultSchemaRef: '${tool.resultSchemaRef}'`} }),`).join('\n')
+    + `${tool.resultSchemaRef === undefined ? '' : `, resultSchemaRef: '${tool.resultSchemaRef}'`}`
+    + `${tool.artifactRoute === undefined ? '' : `, artifactRoute: Object.freeze(${JSON.stringify(tool.artifactRoute)})`} }),`).join('\n')
   const capabilities = Object.entries(bundle.clientCapabilities)
     .map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join(', ')
   const states = bundle.operationStates.map((state) => `'${state}'`).join(', ')
@@ -40,8 +41,8 @@ export function projectionBlock(bundle) {
 // edit: \`npm run check\` regenerates this block and fails on any difference. Every value
 // below is the contract's, except the Runtime version from package.json.
 //
-// \`target\` is why the list is not just names. The Core tools dispatch to Board operations
-// and their results carry a Board View; the artifact read is the Gateway's private result
+// \`target\` and \`artifactRoute\` distinguish Get's two modes. Core calls dispatch to Board
+// operations and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
 const RULITH_CONTRACT_SOURCE_COMMIT = '${bundle.sourceCommit}'

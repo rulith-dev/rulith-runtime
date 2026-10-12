@@ -77,11 +77,11 @@ const MCP_URL = `${URL_BASE}/mcp`
 // edit: `npm run check` regenerates this block and fails on any difference. Every value
 // below is the contract's, except the Runtime version from package.json.
 //
-// `target` is why the list is not just names. The Core tools dispatch to Board operations
-// and their results carry a Board View; the artifact read is the Gateway's private result
+// `target` and `artifactRoute` distinguish Get's two modes. Core calls dispatch to Board
+// operations and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = '3bb35e6f19be0aeb74d49b7cc6fb78c012fee5f9'
+const RULITH_CONTRACT_SOURCE_COMMIT = '607ee6ce8e079cdbc70934030113bf23bd555b61'
 const RULITH_RUNTIME_VERSION = "0.15.0"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
@@ -99,10 +99,9 @@ const OPERATION_STATES = new Set(['running', 'waiting_for_decision', 'done', 'fa
 /** The stages a running operation may report. */
 const RUNNING_STAGES = new Set(['not_dispatched', 'at_worker'])
 const RULITH_MCP_SURFACE = Object.freeze([
-  Object.freeze({ name: 'QueryBoard', target: 'core', operation: 'QueryBoard', resultSchemaRef: 'docs/specs/schemas/rulith-board-observation-v3.schema.json#/$defs/QueryBoardResult' }),
-  Object.freeze({ name: 'ApplyBatch', target: 'core', operation: 'ApplyBatch' }),
-  Object.freeze({ name: 'ApplyAction', target: 'core', operation: 'ApplyAction' }),
-  Object.freeze({ name: 'ReadArtifact', target: 'artifact' }),
+  Object.freeze({ name: 'Get', target: 'core', operation: 'QueryBoard', resultSchemaRef: 'docs/specs/schemas/rulith-board-observation-v3.schema.json#/$defs/QueryBoardResult', artifactRoute: Object.freeze({"argument":"artifact","target":"artifact","operation":"ReadArtifact","resultSchemaRef":"docs/specs/schemas/rulith-artifact-read-v1.schema.json#/$defs/ReadArtifactResult"}) }),
+  Object.freeze({ name: 'Set', target: 'core', operation: 'ApplyBatch' }),
+  Object.freeze({ name: 'Execute', target: 'core', operation: 'ApplyAction' }),
 ])
 // ── END GENERATED CONTRACT PROJECTION ───────────────────────────────────────
 const TOKEN = process.env.RULITH_TOKEN ?? ''
@@ -168,7 +167,7 @@ let withServe = (process.env.RULITH_SERVE ?? '') === 'on'
  * no alias: `--case` focused an existing Case through `OpenCase({caseId})`, and `--case-type`
  * and `--business-key` were written into the create form of `OpenCase` so that an operator,
  * not a model turn, chose the contract. In `rulith/v4` the model declares a goal inside
- * `ApplyBatch`; a capability goal is recognised by the atom it declares, and there is no
+ * `Set`; a capability goal is recognised by the atom it declares, and there is no
  * focus operation at all (AIS §4). A host that kept accepting these would either rewrite the
  * model's own declarations — a second contract nobody approved — or quietly drop the
  * operator's choice. Neither is done: naming one stops the run before anything is sent.
@@ -179,7 +178,7 @@ const RETIRED_OPTIONS = Object.freeze({
   '--business-key': 'RULITH_BUSINESS_KEY_JSON',
 })
 const retiredOptionTeaching = (named) => `${named} was retired with rulith/v4 (Runtime 0.13.0), and nothing was sent.`
-  + ' The model declares goals inside ApplyBatch: a capability\'s goal is chosen by the goal it declares, so there is no'
+  + ' The model declares goals inside Set: a capability\'s goal is chosen by the goal it declares, so there is no'
   + ' Case Type or business key for this host to pin, and there is no focus operation for it to call.'
   + ' State the work, and any goal ID or key values it concerns, in the task text instead.'
 const rest = []
@@ -444,7 +443,7 @@ function retireLegacyUnresolved() {
 // tools/call membrane. The one Agent token is a client configuration secret, sent only as
 // an Authorization header; it never appears in a URL.
 let mcpSeq = 0
-// ReadArtifact permits 1 MiB of raw material. UTF-8 control bytes can expand to seven bytes
+// Get with artifact permits 1 MiB of raw material. UTF-8 control bytes can expand to seven bytes
 // each across the JSON tool text and its JSON-RPC envelope; base64 needs less. Keep a finite
 // ceiling with room for that documented window and envelope metadata.
 const MCP_RESPONSE_MAX_BYTES = 8 * 1_048_576 + 65_536
@@ -799,7 +798,7 @@ const callTimeout = (method, timeoutMs, clock) => (clock.capped
  * replays what came after that cursor; the answer to the original request is on it,
  * unchanged, and a call the authority is still holding goes on being held. No new tool call
  * is made — that is the entire point. Re-deciding here would turn one logical command into
- * two, and for `ApplyAction` that is one extra effect in the outside world.
+ * two, and for `Execute` that is one extra effect in the outside world.
  *
  * What it must never do is manufacture an ending. A server that cannot replay (no cursor,
  * 405 because it serves no GET stream, an expired session) leaves the answer missing, and
@@ -1258,6 +1257,12 @@ async function openSession() {
 const MODEL_TOOLS = RULITH_MCP_SURFACE.map((entry) => entry.name)
 /** Tools whose result is a Board View. The artifact read is not one of them. */
 const BOARD_TOOLS = new Set(RULITH_MCP_SURFACE.filter((entry) => entry.target === 'core').map((entry) => entry.name))
+/** Dispatch depends on Get's arguments, not just its shared public name. */
+const artifactRead = (name, input) => name === 'Get' && input !== null && typeof input === 'object'
+  && Object.hasOwn(input, 'artifact')
+const boardRead = (name, input) => name === 'Get' && !artifactRead(name, input)
+const boardCall = (name, input) => BOARD_TOOLS.has(name) && !artifactRead(name, input)
+const operationCall = (name, input) => MODEL_TOOLS.includes(name) && !boardRead(name, input)
 /**
  * Fields the model never sends, in two families.
  *
@@ -1278,8 +1283,9 @@ const RETIRED_TOOL_FIELDS = ['case', 'expectedRevision', 'caseRevision', 'expect
 const HOST_METADATA_FIELDS = ['kind', 'queryContext', 'audienceProfile', 'requestedRoots', 'admission',
   'interaction', 'requestId', 'boardId', 'protocol']
 const HOST_OWNED_TOOL_FIELDS = [...RETIRED_TOOL_FIELDS, ...HOST_METADATA_FIELDS]
-/** D-1012a: ending a goal is now an operation inside ApplyBatch, with no tool alias. */
+/** D-1012a: ending a goal is now an operation inside Set, with no tool alias. */
 const RETIRED_V4_TOOL_NAMES = ['EndGoal']
+const RETIRED_MODEL_TOOL_NAMES = ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact']
 
 /**
  * Project the advertised schema onto what the model may say — at the envelope boundary
@@ -1287,7 +1293,7 @@ const RETIRED_V4_TOOL_NAMES = ['EndGoal']
  *
  * The earlier version deleted any property called `case`, `sessionId` or `requestId` *at
  * any depth*. That was a scope error with teeth in both directions: a Core schema whose
- * `ApplyAction` arguments legitimately carry a business `sessionId` had that argument
+ * `Execute` arguments legitimately carry a business `sessionId` had that argument
  * removed before the model ever saw it, so the model could not send a field Core then
  * required; and a model that nested the same name one level down was not refused, so the
  * deep strip bought no protection either. Host metadata is an *envelope* concept. A
@@ -1365,20 +1371,24 @@ function toolMembershipConflicts(tools) {
   const duplicates = new Set()
   for (const tool of tools) {
     const name = String(tool?.name ?? '')
-    if (name === '') continue
+    if (name === '') { conflicts.push('it advertises a tool without a name'); continue }
     if (seen.has(name)) duplicates.add(name)
     else seen.set(name, tool)
   }
   const missing = MODEL_TOOLS.filter((name) => !seen.has(name))
   const extra = [...seen.keys()].filter((name) => !MODEL_TOOLS.includes(name))
   const retiredV4 = extra.filter((name) => RETIRED_V4_TOOL_NAMES.includes(name))
+  const retiredNames = extra.filter((name) => RETIRED_MODEL_TOOL_NAMES.includes(name))
   if (missing.length > 0) conflicts.push(`it does not advertise ${missing.join(', ')}`)
   if (duplicates.size > 0) conflicts.push(`it advertises ${[...duplicates].join(', ')} more than once`)
   if (retiredV4.length > 0) {
     conflicts.push(`it still advertises ${retiredV4.join(', ')}, which ${RULITH_META} removed,`
-      + ' which means this endpoint has not been cut over to end_goal inside ApplyBatch')
+      + ' which means this endpoint has not been cut over to end_goal inside Set')
   }
-  const unknown = extra.filter((name) => !RETIRED_V4_TOOL_NAMES.includes(name))
+  if (retiredNames.length > 0) {
+    conflicts.push(`it still advertises ${retiredNames.join(', ')}, which means this endpoint has not been cut over to Get, Set and Execute`)
+  }
+  const unknown = extra.filter((name) => !RETIRED_V4_TOOL_NAMES.includes(name) && !RETIRED_MODEL_TOOL_NAMES.includes(name))
   if (unknown.length > 0) {
     conflicts.push(`it advertises ${unknown.join(', ')}, which is not part of the approved surface`)
   }
@@ -1567,8 +1577,8 @@ const liveGoalsOf = () => board.goals.filter((row) => row.status === 'running')
 // fails is no entry. The label and the two times are only shown and compared, so they are
 // taken as the text they are.
 
-/** Tools whose calls the authority holds and records as operations. QueryBoard never is. */
-const OPERATION_TOOLS = new Set(MODEL_TOOLS.filter((name) => name !== 'QueryBoard'))
+/** Held tool names: Get is held only when it reads an Artifact. */
+const OPERATION_TOOLS = new Set(MODEL_TOOLS)
 /** Settled outcomes. Each carries the operation's result or a summary of it, unless its content is withheld. */
 const SETTLED_STATES = new Set(['done', 'failed', 'refused', 'unknown'])
 /** States that keep the Agent's one execution slot: a new write is not executed meanwhile. */
@@ -1644,7 +1654,7 @@ function ownEntryOf(strip, own) {
   const entry = operationStateOf(raw)
   if (entry === undefined) return undefined
   const text = (value) => (typeof value === 'string' && value !== '' ? value : undefined)
-  const result = SETTLED_STATES.has(entry.state) && entry.tool !== 'ReadArtifact' && entry.contentWithheld !== true
+  const result = SETTLED_STATES.has(entry.state) && entry.tool !== 'Get' && entry.contentWithheld !== true
     ? publicToolResultOf(raw.result) : undefined
   return { ...entry, raw,
     ...(text(raw.decision) === undefined ? {} : { decision: raw.decision }),
@@ -1682,13 +1692,13 @@ function noteOperations(states, { stateForm = false } = {}) {
 /** Whether the strip last shown holds an operation that still keeps the execution slot. */
 const unresolvedOperation = () => board.operations?.find((entry) => UNRESOLVED_STATES.has(entry.state))
 
-/** The writes: ApplyBatch (including end_goal) and ApplyAction, whose settled result the write gate guards. */
-const WRITE_TOOLS = new Set([...BOARD_TOOLS].filter((name) => name !== 'QueryBoard'))
+/** The writes: Set (including end_goal) and Execute, whose settled result the write gate guards. */
+const WRITE_TOOLS = new Set([...BOARD_TOOLS].filter((name) => name !== 'Get'))
 
-/** The goal-ending operation, only when it is the whole ApplyBatch. */
+/** The goal-ending operation, only when it is the whole Set. */
 function endGoalOperation(name, input) {
   const operations = input?.operations
-  return name === 'ApplyBatch' && Array.isArray(operations) && operations.length === 1 && operations[0]?.op === 'end_goal'
+  return name === 'Set' && Array.isArray(operations) && operations.length === 1 && operations[0]?.op === 'end_goal'
     ? operations[0] : undefined
 }
 
@@ -1752,7 +1762,7 @@ const answerDelivers = (ctx, name, result, held) => (WRITE_TOOLS.has(name) && re
 // host carries every local conversation over its one session. The authority cannot tell those
 // conversations apart, so its guarantee — no write runs before the latest outcome was delivered to
 // the session asking — says nothing about *which* conversation's model was shown it, or whether that
-// model read it. Left at that, one conversation settled another's: B's QueryBoard carried the result
+// model read it. Left at that, one conversation settled another's: B's Get carried the result
 // of A's write, A's model never saw it, and A's "send it again" ran a second time (Board spec
 // TOOL-06). The same happened when the transcript that showed A an outcome was lost before A's model
 // read it: its turn ended first, and then its slot was reclaimed for another conversation, or the
@@ -1851,7 +1861,8 @@ function outcomesSnapshot() {
   const conversations = {}
   for (const record of conversationOutcomes.values()) {
     if (record.entries.size === 0) continue
-    conversations[record.key] = [...record.entries.values()].map((entry) => ({ tool: entry.tool, label: entry.label,
+    conversations[record.key] = [...record.entries.values()].map((entry) => ({
+      tool: entry.retainedIdentity?.tool ?? entry.tool, label: entry.retainedIdentity?.label ?? entry.label,
       at: entry.at, state: entry.state, ...(entry.withheld ? { withheld: true } : {}), unread: entry.phase !== 'open' }))
   }
   return conversations
@@ -1887,7 +1898,8 @@ function restoreOutcomes(store) {
     // Process exit, reload and a round limit do not mean the user asked to stop a turn.
     record.stoppedTurn = store.lastOutcome(key) === 'user-stopped'
     for (const entry of entries) {
-      setEntry(record, entry, { state: entry.state, withheld: entry.withheld === true,
+      setEntry(record, replayOperation(entry), { state: entry.state, withheld: entry.withheld === true,
+        retainedIdentity: identityOf(entry),
         phase: entry.unread ? 'pending' : 'open', restored: true, captured: undefined })
       restored += 1
     }
@@ -2180,7 +2192,7 @@ const refusalOf = (name, teaching, extra = {}) => ({ accepted: false, requestExe
  *
  * Outcomes captured in this process are shown as they were captured. When any was restored — its
  * transcript lost to a reclaimed slot or a restart, with no content kept — the position is read once
- * first, with a public QueryBoard: the refusal is that answer's strip and Board View, with what was
+ * first, with a public Get: the refusal is that answer's strip and Board View, with what was
  * captured put in, and it names each restored call that strip no longer lists. A restored call the
  * strip shows still unresolved needs nothing; when nothing else waits and the read delivered nothing,
  * the write is sent.
@@ -2196,11 +2208,11 @@ async function refuseForUnseenOutcomes(ctx, name) {
   }
   log(`◌ ${key === '' ? 'This conversation' : `Conversation ${JSON.stringify(plainPeerText(key, 80))}`} has outcomes its`
     + ' model has not read from before its transcript was lost; reading the recent operations before its write.')
-  const look = await callToolOnce(ctx, 'QueryBoard', {})
+  const look = await callToolOnce(ctx, 'Get', {})
   if (look.stopTurn !== undefined || !look.authoritative || !Array.isArray(look.result?.operations)) {
     // Nothing could be read: the write is still not sent, and the model is told to look first.
     return { result: refusalOf(name, 'Not executed: this Runtime did not send it. A call of yours settled, and you have'
-      + ' not read how; this Runtime could not read the recent operations to show it now. Call QueryBoard, then decide.'),
+      + ' not read how; this Runtime could not read the recent operations to show it now. Call Get, then decide.'),
     ...(look.stopTurn === undefined ? {} : { stopTurn: look.stopTurn }) }
   }
   // The read's own answer went through capture: restored calls it lists are captured or known unresolved.
@@ -2237,7 +2249,7 @@ function unseenOutcomesNotice(ctx) {
   if (waiting.length === 0) return ''
   const labels = waiting.sort(newestFirst).map((entry) => plainPeerText(entry.label, 200)).join(' · ')
   return `\n\nOutcomes you have not been shown yet: ${labels}. They belong to calls of yours. The answer to your next`
-    + ' Rulith call shows them in operations, as the authority shows them; QueryBoard shows them and changes nothing.'
+    + ' Rulith call shows them in operations, as the authority shows them; Get shows them and changes nothing.'
 }
 
 /**
@@ -2614,14 +2626,14 @@ const transportFailureTeaching = (value, { admitted = false } = {}) => {
  *
  * The two targets answer differently and neither shape may be imposed on the other. A Board
  * operation returns the Core result envelope, so `accepted` or an `errorCode` is what makes
- * it a receipt. `ReadArtifact` returns a data fragment from the Gateway's result plane:
+ * it a receipt. `Get` with artifact returns a data fragment from the Gateway's result plane:
  * requiring `accepted` there would have read every successful artifact read as "no receipt".
  * A held call's answer has its own shape and is recognised by `heldCallOf` first.
  */
-function looksAuthoritative(name, result) {
+function looksAuthoritative(name, result, input) {
   if (result === undefined) return false
   if (typeof result.errorCode === 'string') return true
-  if (BOARD_TOOLS.has(name)) return typeof result.accepted === 'boolean'
+  if (boardCall(name, input)) return typeof result.accepted === 'boolean'
   return result.accepted === true && typeof result.result?.ref === 'string' && result.result.ref !== ''
 }
 
@@ -2648,7 +2660,7 @@ function heldCallOf(result) {
 const DISCLOSURE_REFUSALS = new Set(['result_unavailable', 'not_authorized', 'audience_profile_required', 'audience_profile_denied'])
 
 /**
- * A QueryBoard result in the published observation shape: a committed view with the strip,
+ * A Get result in the published observation shape: a committed view with the strip,
  * or a refusal with the strip and, unless it concerns disclosure, the bounded view.
  */
 function validBoardObservation(result) {
@@ -2800,7 +2812,7 @@ function forgetSession() {
  * is the JSON-RPC id. A client that supplied `audienceProfile` would be asking to be read as
  * somebody else. The one addition is the progress token in the request's `_meta`, the base
  * protocol's own place for it, which asks the authority to say that it is still holding the
- * call; `QueryBoard` is never held and asks for none.
+ * call; `Get` is never held and asks for none.
  *
  * Nothing is fetched first either. A write never begins with a read: the authority judges
  * each command against the premises, grounding and policy in force when it executes. And
@@ -2815,7 +2827,7 @@ function forgetSession() {
  * was sent, so that the one entry of its tool that appears after it can be recognised as this
  * call's own.
  *
- * `heldCall` is given only to the `QueryBoard` a wait reads the position with: the held call it
+ * `heldCall` is given only to the `Get` a wait reads the position with: the held call it
  * reads for, so that a goal that call ended is logged with the disposition it asked for.
  */
 async function callToolOnce(ctx, name, input, { heldCall } = {}) {
@@ -2835,11 +2847,11 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   const identity = newSubmission()
   // This Host proof is private to the current attached task and to its first request that
   // opens work: under `rulith/v3` the create form of `OpenCase`; under `rulith/v4` the
-  // `ApplyBatch` that declares a goal without a parent, which is where the contract is opened
+  // `Set` that declares a goal without a parent, which is where the contract is opened
   // and where the rules that applied to `OpenCase` now apply (AIS §4). It is never an argument,
   // result, event, transcript or durable call key, and it rides on one RPC only.
   let materialTaskProof
-  if (name === 'ApplyBatch' && ctx.materialTaskProof && declaresTopLevelGoal(input)) {
+  if (name === 'Set' && ctx.materialTaskProof && declaresTopLevelGoal(input)) {
     if (!ctx.materialTaskProofRequestId) ctx.materialTaskProofRequestId = identity.requestId
     if (ctx.materialTaskProofRequestId === identity.requestId) materialTaskProof = ctx.materialTaskProof
   }
@@ -2858,7 +2870,7 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   if (actionArgs !== null && typeof actionArgs === 'object' && !Array.isArray(actionArgs)) {
     collectMaterialReferences(actionArgs)
   }
-  const materialArgs = name === 'ApplyAction' && ctx.materialSelectionKey
+  const materialArgs = name === 'Execute' && ctx.materialSelectionKey
     && actionArgs !== null && typeof actionArgs === 'object' && !Array.isArray(actionArgs)
     ? Object.values(actionArgs).filter(value => value !== null && typeof value === 'object'
       && !Array.isArray(value) && (Object.hasOwn(value, 'ref') || Object.hasOwn(value, 'digest')))
@@ -2883,13 +2895,13 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   let stopTurn
   const sentAfter = operationKeysNow()
   try {
-    // ReadArtifact may use local delivery; the ticket is carried only in host metadata.
+    // Get with artifact may use local delivery; the ticket is carried only in host metadata.
     const negotiate = CAN_DELIVER_LOCALLY
     const answer = await mcpRpc('tools/call', { name, arguments: input }, {
       id: identity.requestId,
       timeoutMs: MCP_CALL_TIMEOUT_MS,
       ceilingMs: HOST_WAIT_MS,
-      ...(name === 'QueryBoard' ? {} : { progressToken: `progress_${identity.requestId}`,
+      ...(boardRead(name, input) ? {} : { progressToken: `progress_${identity.requestId}`,
         onProgress: (params) => { heldOrdinal ??= ordinalOf(params?._meta?.[RULITH_META]?.ordinal) } }),
       ...(negotiate ? { headers: { [LOCAL_DELIVERY_HEADER]: LOCAL_DELIVERY_PROTOCOL,
         'x-rulith-local-custodian': MATERIALS_CONNECTION,
@@ -2937,7 +2949,7 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   const heldState = authoritative ? heldCallOf(result) : undefined
   const held = heldState === undefined ? undefined
     : { ...heldState, ...(heldOrdinal === undefined ? {} : { ordinal: heldOrdinal }) }
-  if (held === undefined && !looksAuthoritative(name, result)) {
+  if (held === undefined && !looksAuthoritative(name, result, input)) {
     authoritative = false
     result = { accepted: false, errorCode: 'upstream_unavailable', teaching: `${name} returned no answer this client can read.` }
   }
@@ -2950,11 +2962,11 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   // A transport code inside an ordinary result is still a transport failure, unless the same
   // answer says the request never executed.
   if (transportFailed(result)) authoritative = false
-  if (authoritative && name === 'QueryBoard'
+  if (authoritative && boardRead(name, input)
     && (hostMeta?.agentId !== agentId || !Array.isArray(hostMeta?.focusedGoals) || !validBoardObservation(result))) {
     authoritative = false
     result = { accepted: false, errorCode: 'board_observation_malformed',
-      teaching: 'QueryBoard returned no valid committed observation.' }
+      teaching: 'Get returned no valid committed observation.' }
   }
   if (!authoritative) {
     // A session whose answer this host did not take is not used again. The authority counts a
@@ -2988,9 +3000,9 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
     // Only a strip read whole says what it does not list.
     if (states !== undefined) dropUnlisted(result.operations)
     noteOperations(states)
-    if (BOARD_TOOLS.has(name)) {
+    if (boardCall(name, input)) {
       trackFocus(ctx, hostMeta, boardViewOf(result), commandBehind(name, input, heldCall, result),
-        name === 'ApplyBatch' && result?.accepted === true ? declaredGoalsOf(result) : [])
+        name === 'Set' && result?.accepted === true ? declaredGoalsOf(result) : [])
       // `affectedGoals` (V43, the v3 Case list renamed) is complete and causal, and the empty
       // array is a statement: no top-level goal advanced. Reporting it only when non-empty would
       // erase the difference between "nothing was affected" and "the authority did not say".
@@ -2999,11 +3011,11 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
       }
       reportLoss(ctx, name, boardViewOf(result))
     }
-  } else if (name === 'QueryBoard') {
-    // A read that failed is a read that failed. QueryBoard is never an operation and never
+  } else if (boardRead(name, input)) {
+    // A read that failed is a read that failed. Get is never an operation and never
     // holds anything, so its failure says nothing about any other call.
     result = { accepted: false, errorCode: 'board_observation_unavailable',
-      teaching: 'QueryBoard returned no usable committed observation. Nothing else changed.' }
+      teaching: 'Get returned no usable committed observation. Nothing else changed.' }
     text = JSON.stringify(result)
   } else {
     text = JSON.stringify({ ...result, teaching: transportFailureTeaching(result, { admitted: heldOrdinal !== undefined }) })
@@ -3011,7 +3023,7 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   }
   // Authorized local delivery, and only after everything above it.
   //
-  // The order is the guarantee. `ReadArtifact` went to the authority first and came back
+  // The order is the guarantee. `Get` with artifact went to the authority first and came back
   // authoritative, which means this host's MCP authentication and its session were in force
   // for this read — the same checks any other eligible host passes before it may be offered a
   // ticket. Only then is the host-only namespace consulted.
@@ -3022,7 +3034,7 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   // deliberately no automatic proxy inside a negotiated read — a Source that may be read here
   // but not sent off the machine must never have its bytes moved as a convenience. The strip
   // the authority's answer carried stays with the completed answer.
-  if (authoritative && name === 'ReadArtifact' && held === undefined) {
+  if (authoritative && artifactRead(name, input) && held === undefined) {
     const delivery = localDeliveryOf(localMeta)
     if (delivery !== undefined) {
       const local = delivery.ticket === undefined ? { ok: false, ...delivery } : await deliverMaterialLocally(delivery)
@@ -3045,8 +3057,8 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   // A call whose answer was lost before the authority named it is told apart only while this host has
   // no other operation admitted: after that, two entries could be the new one. A request refused
   // before execution created none and leaves it findable; an answer that never arrived cannot say.
-  if (OPERATION_TOOLS.has(name) && !(authoritative && result?.requestExecuted === false)) forgetLostCall()
-  const view = BOARD_TOOLS.has(name) ? boardViewOf(result) : undefined
+  if (operationCall(name, input) && !(authoritative && result?.requestExecuted === false)) forgetLostCall()
+  const view = boardCall(name, input) ? boardViewOf(result) : undefined
   if (view !== undefined) board.lastView = view
   // An authoritative refusal is not retried here. The step the model chose was judged by
   // the authority against the premises and policy in force, and re-sending it with the
@@ -3054,18 +3066,18 @@ async function callToolOnce(ctx, name, input, { heldCall } = {}) {
   return { result, text, authoritative, view, isError,
     ...(held === undefined ? {} : { held }),
     // A call whose answer was lost after the authority named it as an operation.
-    ...(!authoritative && name !== 'QueryBoard' && heldOrdinal !== undefined ? { admitted: heldOrdinal } : {}),
+    ...(!authoritative && !boardRead(name, input) && heldOrdinal !== undefined ? { admitted: heldOrdinal } : {}),
     ...(transportDetail === undefined ? {} : { transportDetail }),
     ...(stopTurn === undefined ? {} : { stopTurn }),
     ...(sentAfter === undefined ? {} : { sentAfter }),
     ...(materialTaskProof === undefined ? {} : { carriedMaterialProof: true }),
     notExecuted: authoritative && result?.requestExecuted === false,
-    transportFailed: !authoritative && name !== 'QueryBoard',
-    readUnavailable: name === 'QueryBoard' && !authoritative }
+    transportFailed: !authoritative && !boardRead(name, input),
+    readUnavailable: boardRead(name, input) && !authoritative }
 }
 
 /**
- * Whether an `ApplyBatch` input declares a goal without a parent: the one way new work starts
+ * Whether an `Set` input declares a goal without a parent: the one way new work starts
  * under `rulith/v4` (A-4, A-5). A declaration with `parent` breaks an existing goal down and
  * opens nothing.
  */
@@ -3076,7 +3088,7 @@ function declaresTopLevelGoal(input) {
 }
 
 /**
- * The goal IDs an accepted `ApplyBatch` reported in `result.goals` (A-9): one `{goal, opened}`
+ * The goal IDs an accepted `Set` reported in `result.goals` (A-9): one `{goal, opened}`
  * per `declare_goal`, in declaration order. A missing or malformed list is no list.
  */
 function declaredGoalsOf(answer) {
@@ -3090,13 +3102,13 @@ function declaredGoalsOf(answer) {
 /**
  * The command a Board answer's focus change follows from, for the log line of a goal it ended.
  *
- * Usually the call itself. For the `QueryBoard` a wait reads the position with, it is the held
+ * Usually the call itself. For the `Get` a wait reads the position with, it is the held
  * call the wait is for — but only when that call's own entry on this very strip says it settled
  * `done`: then a goal it asked to end, seen ended here, was ended as it asked. Anything else
  * seen ended was ended by something this host cannot name, and is logged as ended.
  */
 function commandBehind(name, input, heldCall, result) {
-  if (name !== 'QueryBoard' || heldCall === undefined) return { name, input }
+  if (!boardRead(name, input) || heldCall === undefined) return { name, input }
   const operations = result?.operations
   const own = heldCall.own ?? newEntryOf(operations, heldCall.sentAfter, heldCall.name)
   return ownEntryOf(operations, own)?.state === 'done' ? { name: heldCall.name, input: heldCall.input } : { name, input }
@@ -3118,7 +3130,7 @@ const REREAD_AFTER = new Set(['upstream_unavailable', 'response_lost', 'response
  * exactly which operation to watch, the model's call is still open, and it is finished with
  * the call's own result from the strip on the new session (AIS §5.2, Host).
  *
- * A `ReadArtifact` whose answer was lost before any such sign is read again, once, as a new
+ * A `Get` with artifact whose answer was lost before any such sign is read again, once, as a new
  * read: it is a pure read of an immutable object, with no business effect to double, and its
  * result never travels on the strip, so a fresh read under current authority — with a fresh
  * local ticket — is the one way to answer it. That read is a call like any other: held, it is
@@ -3133,9 +3145,9 @@ async function callTool(ctx, name, input) {
   const startedAt = Date.now()
   let answer = await callToolOnce(ctx, name, input)
   if (answer.stopTurn !== undefined) return answer
-  if (name === 'ReadArtifact' && answer.transportFailed && answer.admitted === undefined
+  if (artifactRead(name, input) && answer.transportFailed && answer.admitted === undefined
     && REREAD_AFTER.has(String(answer.result?.errorCode))) {
-    log(`◌ The answer to ReadArtifact was lost (${answer.result.errorCode}); reading the object again as a new read.`)
+    log(`◌ The answer to Get with artifact was lost (${answer.result.errorCode}); reading the object again as a new read.`)
     const lost = answer
     try {
       answer = await rereadOf(ctx, name, input, lost)
@@ -3155,7 +3167,7 @@ async function callTool(ctx, name, input) {
     // after the wait would carry a summary: so the model is answered from this strip, now. (A read's
     // entry never carries its result; a settled read is read again, which the wait does at once.)
     const own = ownEntryInAnswer(name, answer)
-    if (name !== 'ReadArtifact' && own !== undefined && SETTLED_STATES.has(own.state)) {
+    if (!artifactRead(name, input) && own !== undefined && SETTLED_STATES.has(own.state)) {
       const settled = await answerFromStrip(ctx, name, input, answer, own, answer.result)
       if (settled !== undefined) {
         log(`◎ ${plainPeerText(own.label, 200)} settled as it was answered; the model is answered with`
@@ -3184,7 +3196,7 @@ async function callTool(ctx, name, input) {
 }
 
 /**
- * Read an object again, as a new read, to answer a `ReadArtifact` the model asked for: after its
+ * Read an object again, as a new read, to answer a `Get` with artifact the model asked for: after its
  * answer was lost (`lost`), or once it settled while it was held.
  *
  * When no session can be opened for the new read, the model is told exactly that: the object could
@@ -3206,17 +3218,17 @@ async function rereadOf(ctx, name, input, lost) {
 
 // ── Held calls: the model's call stays open until its own result can answer it ──
 //
-// The authority holds every call except QueryBoard until its outcome, until a person has to
+// The authority holds every call except Get until its outcome, until a person has to
 // decide, or until its hold bound H — and at H it answers `running`, with the position. A
 // third-party Host passes that on, and the model finds the outcome on the strip of a later
 // result. This host goes one step further for the model (AIS §5.2, first-party Host): it
 // keeps the model's own tool call open, asks the model nothing meanwhile, watches the strip's
 // state-only form on the base protocol's `ping`, and — once the strip says the call is no
-// longer running — takes one public `QueryBoard`, whose strip carries the call's own result,
+// longer running — takes one public `Get`, whose strip carries the call's own result,
 // and answers the model's call with it and with that read's position: its Board View and its
 // strip, both as they stand now. The model sees what a synchronous call would have shown it.
 //
-// Everything used is public MCP that any Host may use — `ping` and `QueryBoard` — and the
+// Everything used is public MCP that any Host may use — `ping` and `Get` — and the
 // call is matched only by the ordinal the authority gave it in its progress. An entry is
 // never taken for this call because it looks like it: same tool, same label or the right time
 // are not the same operation.
@@ -3299,7 +3311,7 @@ const UNREADABLE_RESULT = 'This call has settled, but its recorded result is not
   + ' its state is shown. Do not repeat it; look at the Board before you decide.'
 
 /**
- * Answer the model's open call from one public read of the position: `QueryBoard`, whose strip
+ * Answer the model's open call from one public read of the position: `Get`, whose strip
  * carries this call's entry — with its own result while that result waits to be acknowledged,
  * or its state and a summary once the result was acknowledged elsewhere.
  *
@@ -3318,8 +3330,8 @@ async function answerFromPosition(ctx, name, input, first, own, { atBound = fals
   // A settled read, or one no longer listed — an unresolved operation always is — is read again:
   // its entry never carries its result, and a fresh read is how it is answered. The position is
   // not read first; it would only be set aside.
-  if (name === 'ReadArtifact' && (absent || SETTLED_STATES.has(own?.state))) return rereadOf(ctx, name, input)
-  const look = await callToolOnce(ctx, 'QueryBoard', {}, { heldCall: { name, input, own, sentAfter: first.sentAfter } })
+  if (artifactRead(name, input) && (absent || SETTLED_STATES.has(own?.state))) return rereadOf(ctx, name, input)
+  const look = await callToolOnce(ctx, 'Get', {}, { heldCall: { name, input, own, sentAfter: first.sentAfter } })
   if (look.stopTurn !== undefined) throw look.stopTurn
   if (!look.authoritative) return undefined
   const found = own ?? (absent ? undefined : newEntryOf(look.result?.operations, first.sentAfter, name))
@@ -3338,7 +3350,7 @@ async function answerFromPosition(ctx, name, input, first, own, { atBound = fals
  */
 async function answerFromStrip(ctx, name, input, first, own, look, { atBound = false, absent = false } = {}) {
   const operations = Array.isArray(look?.operations) ? look.operations : []
-  const view = name === 'ReadArtifact' ? undefined : look?.view
+  const view = artifactRead(name, input) ? undefined : look?.view
   const position = { operations, ...(view === undefined ? {} : { view }) }
   const entry = ownEntryOf(operations, own)
   const state = entry?.state ?? (absent ? undefined : own?.state)
@@ -3346,7 +3358,7 @@ async function answerFromStrip(ctx, name, input, first, own, look, { atBound = f
   const news = stripCarriesResult(operations)
   const lost = first.held === undefined
   const answer = (result, extra = {}) => ({ result, text: JSON.stringify(result), authoritative: true,
-    view: name === 'ReadArtifact' ? undefined : boardViewOf(result), isError: false, ...extra })
+    view: artifactRead(name, input) ? undefined : boardViewOf(result), isError: false, ...extra })
   // Still running: at the host bound, `running` and the position as it is now. A call that is
   // running keeps the execution slot, so no other result can be waiting on this strip; one that
   // is anyway is not set aside.
@@ -3377,7 +3389,7 @@ async function answerFromStrip(ctx, name, input, first, own, look, { atBound = f
       authoritative: false, view: undefined, isError: false,
       transportFailed: true, admitted: first.admitted, notExecuted: false, readUnavailable: false }
   }
-  if (name === 'ReadArtifact' && SETTLED_STATES.has(state)) {
+  if (artifactRead(name, input) && SETTLED_STATES.has(state)) {
     // Settled after all, though the ping still showed it running. A fresh read answers it —
     // unless this read delivered an earlier outcome in full, which the fresh read's request would
     // acknowledge before the model saw it; then the model is given this position and asked to
@@ -3399,14 +3411,14 @@ async function answerFromStrip(ctx, name, input, first, own, look, { atBound = f
     const ownText = entry.result.content.map((item) => item.text).join('\n')
     let parsed
     try { parsed = JSON.parse(ownText) } catch { parsed = undefined }
-    readable = isRecord(parsed) && looksAuthoritative(name, parsed)
+    readable = isRecord(parsed) && looksAuthoritative(name, parsed, input)
       && !(parsed.accepted === true && entry.result.isError === true)
     if (readable) {
       const result = { ...parsed, operations: stripWithoutResult(operations, entry.raw),
         ...(view === undefined ? {} : { currentView: view }) }
       // The strip carries a call's public result without its host metadata, so the goals it
       // affected are not known here. That is said, rather than left to read as "none".
-      if (BOARD_TOOLS.has(name)) emitOn(ctx, 'affected', { cmd: name, unreported: true })
+      if (boardCall(name, input)) emitOn(ctx, 'affected', { cmd: name, unreported: true })
       return answer(result, { isError: entry.result.isError })
     }
   }
@@ -3430,7 +3442,7 @@ async function answerFromStrip(ctx, name, input, first, own, look, { atBound = f
  * only by the ordinal the authority gave it, host-only, in its progress notifications: without
  * one there is nothing to match, and the model is answered with `running` and the position at
  * once. With one, the strip is read on `ping` until that entry is no longer running, and then
- * the position is read once. A pure `ReadArtifact` is answered by reading the object again: its
+ * the position is read once. A pure `Get` with artifact is answered by reading the object again: its
  * entry never carries its result, bytes or tickets, and the settled read left nothing to guard.
  *
  * The answer the wait ends with carries, host-only, `own`: the call's identity on the strip, when
@@ -3502,7 +3514,7 @@ async function waitForHeldCall(ctx, name, input, first, deadline) {
       absent = seen === undefined
       if (seen !== undefined) own = seen
       if (seen?.state === 'running') continue
-      if (name === 'ReadArtifact' && (absent || SETTLED_STATES.has(seen.state))) {
+      if (artifactRead(name, input) && (absent || SETTLED_STATES.has(seen.state))) {
         const fresh = await rereadOf(ctx, name, input)
         if (fresh.stopTurn === undefined && fresh.held?.state === 'running' && fresh.held.ordinal !== undefined
           && !stripCarriesResult(fresh.result?.operations)) {
@@ -3579,18 +3591,112 @@ const assistantEntry = (text, toolCalls = [], reasoningContent) => ({ role: 'ass
   ...(typeof reasoningContent === 'string' ? { reasoningContent } : {}) })
 const resultsEntry = (results) => ({ role: 'tool_results', results })
 
-/** Shorten only repeated, identical successful QueryBoard snapshots in a request.
+/** Present retained protocol names at the model boundary; stored history and business data stay intact. */
+const REPLAY_TOOL_NAMES = new Map([['QueryBoard', 'Get'], ['ApplyBatch', 'Set'], ['ApplyAction', 'Execute'], ['ReadArtifact', 'Get']])
+const replayToolName = (name) => REPLAY_TOOL_NAMES.get(name) ?? name
+const replayLabel = (label) => typeof label !== 'string' ? label : label
+  .replace(/^QueryBoard(?= |$)/u, 'Get').replace(/^ApplyBatch(?= |$)/u, 'Set')
+  .replace(/^ApplyAction(?= |$)/u, 'Execute').replace(/^ReadArtifact(?= |$)/u, 'Get artifact')
+function replayTeaching(text) {
+  if (typeof text !== 'string') return text
+  // The rejected input's literal spelling in M54 is evidence, not a tool registration.
+  if (text.includes(' is not a tool this Agent Runtime carries,')) {
+    return text.replace('This Agent may call: QueryBoard, ApplyBatch, ApplyAction, ReadArtifact.',
+      'This Agent may call: Get, Set, Execute.')
+  }
+  // Match authored clauses only: a quoted Action name or arbitrary failure reason is data.
+  return text.replace(/^(QueryBoard|ApplyBatch|ApplyAction|ReadArtifact)(?= returned | was not sent:| carried | arguments were |: the number )/u,
+    replayToolName)
+    .replace('No Action has this name; use a name from QueryBoard.', 'No Action has this name; use a name from Get.')
+    .replace('Send it as a top-level ApplyAction instead', 'Send it as a top-level Execute instead')
+    .replace('QueryBoard requires a protected audienceProfile', 'Get requires a protected audienceProfile')
+    .replace('ApplyAction args must be a named object', 'Execute args must be a named object')
+    .replace('ApplyAction args must be an object', 'Execute args must be an object')
+    .replace('goalAdmissions belongs only to ApplyBatch', 'goalAdmissions belongs only to Set')
+    .replace('selectionContext belongs only to ApplyAction', 'selectionContext belongs only to Execute')
+    .replace('decisionAdmission belongs only to ApplyAction', 'decisionAdmission belongs only to Execute')
+    .replace('decisionRequests belongs only to QueryBoard', 'decisionRequests belongs only to Get')
+    .replace('Private selection belongs only to ApplyAction', 'Private selection belongs only to Execute')
+    .replace('Host proof applies only to the original ApplyBatch request declaring a goal without parent',
+      'Host proof applies only to the original Set request declaring a goal without parent')
+    .replace('Writes are paused while this Agent\'s configuration is being applied; QueryBoard still works.',
+      'Writes are paused while this Agent\'s configuration is being applied; Get still works.')
+    .replace('Call QueryBoard, then decide.', 'Call Get, then decide.')
+    .replace('The identical QueryBoard snapshot is retained at that later result in this request.',
+      'The identical Get snapshot is retained at that later result in this request.')
+    .replace('ReadArtifact request does not match its bounded read contract',
+      'The artifact argument of Get does not match its bounded read contract')
+    .replace('QueryBoard is an independent observation, not a held operation',
+      'A Get without artifact is an independent observation, not a held operation')
+    .replace('data read; a new ReadArtifact reads it again', 'data read; a new Get with artifact reads it again')
+    .replace('read settled; a new ReadArtifact reads the data', 'read settled; a new Get with artifact reads the data')
+}
+function replayResultText(text) {
+  try {
+    const original = JSON.parse(text)
+    const projected = replayResult(original)
+    return JSON.stringify(projected) === JSON.stringify(original) ? text : JSON.stringify(projected)
+  } catch { return text }
+}
+function replayPublicResult(result) {
+  if (!isRecord(result)) return result
+  return { ...result,
+    ...(Array.isArray(result.content) ? { content: result.content.map(item => item?.type === 'text'
+      ? { ...item, text: replayResultText(item.text) } : item) } : {}),
+    ...(isRecord(result.structuredContent) ? { structuredContent: replayResult(result.structuredContent) } : {}) }
+}
+function replayOperation(entry) {
+  if (!isRecord(entry)) return entry
+  return { ...entry, tool: replayToolName(entry.tool), label: replayLabel(entry.label),
+    ...(typeof entry.summary === 'string' ? { summary: replayTeaching(entry.summary) } : {}),
+    ...(typeof entry.reason === 'string' ? { reason: replayTeaching(entry.reason) } : {}),
+    ...(isRecord(entry.result) ? { result: replayPublicResult(entry.result) } : {}) }
+}
+function replayResult(result) {
+  if (!isRecord(result)) return result
+  return { ...result,
+    ...(typeof result.tool === 'string' ? { tool: replayToolName(result.tool) } : {}),
+    ...(typeof result.previousTool === 'string' ? { previousTool: replayToolName(result.previousTool) } : {}),
+    ...(typeof result.teaching === 'string' ? { teaching: replayTeaching(result.teaching) } : {}),
+    ...(typeof result.summary === 'string' ? { summary: replayTeaching(result.summary) } : {}),
+    ...(Array.isArray(result.operations) ? { operations: result.operations.map(replayOperation) } : {}),
+    ...(isRecord(result.previousResult) ? { previousResult: replayPublicResult(result.previousResult) } : {}),
+    ...(isRecord(result.earlierBoardView) ? { earlierBoardView: { ...result.earlierBoardView,
+      note: replayTeaching(result.earlierBoardView.note) } } : {}) }
+}
+function replayEntries(entries) {
+  return entries.map(entry => {
+    if (entry.role === 'assistant' && Array.isArray(entry.toolCalls)) return { ...entry, toolCalls: entry.toolCalls.map(call => {
+      const name = replayToolName(call.name)
+      const input = call.name === 'ReadArtifact' ? { artifact: Object.fromEntries(
+        ['ref', 'offset'].filter(key => Object.hasOwn(call.input ?? {}, key)).map(key => [key, call.input[key]])) } : call.input
+      return { ...call, name, input }
+    }) }
+    if (entry.role === 'tool_results' && Array.isArray(entry.results)) return { ...entry,
+      results: entry.results.map(result => ({ ...result, name: replayToolName(result.name), text: replayResultText(result.text) })) }
+    return entry
+  })
+}
+
+/** Shorten only repeated, identical successful Get snapshots in a request.
  * A newer focused or partial view does not supersede earlier observations of another
  * scope. Keep command receipts, refusals, Artifact data and the stored transcript intact. */
 function requestEntries(entries) {
+  entries = replayEntries(entries)
   const beforeBytes = Buffer.byteLength(JSON.stringify(entries))
   if (beforeBytes < 32 * 1024) return { entries, compactedViews: 0, compactedTranscriptBytes: 0 }
   const views = [], latest = new Map()
+  const calls = new Map()
   for (let index = 0; index < entries.length; index++) {
+    // Models can reuse call IDs in later rounds. Match each result to the most recent
+    // preceding call, so an earlier Artifact Get cannot exclude a later Board Get.
+    if (entries[index].role === 'assistant' && Array.isArray(entries[index].toolCalls)) {
+      for (const call of entries[index].toolCalls) calls.set(call.id, call)
+    }
     if (entries[index].role !== 'tool_results' || !Array.isArray(entries[index].results)) continue
     for (let resultIndex = 0; resultIndex < entries[index].results.length; resultIndex++) {
       const result = entries[index].results[resultIndex]
-      if (result.name !== 'QueryBoard') continue
+      if (result.name !== 'Get' || artifactRead(result.name, calls.get(result.id)?.input)) continue
       let parsed
       try { parsed = JSON.parse(result.text) } catch { continue }
       const field = parsed?.view?.goals ? 'view' : parsed?.payload?.goals ? 'payload' : ''
@@ -3615,7 +3721,7 @@ function requestEntries(entries) {
     rewritten[index].results[resultIndex] = {
       ...entries[index].results[resultIndex],
       text: JSON.stringify({ ...rest, earlierBoardView: { identicalToToolCall: retained.id,
-        note: 'The identical QueryBoard snapshot is retained at that later result in this request.' } }),
+        note: 'The identical Get snapshot is retained at that later result in this request.' } }),
     }
     compactedViews += 1
   }
@@ -3997,13 +4103,13 @@ const SYSTEM_PROMPT = `You are a conversational assistant using Rulith for gover
 
 Complete the user's request, however many tool calls it takes. If you announce an action, include its actual tool call. After results, continue to an answer, a concrete blocker or a necessary question. Plain text ends your turn; never stop at "Let me check".
 
-Inside ApplyBatch, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down. Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion. Let rules derive conclusions; retract_node corrects your assertion. Narrate in replies. A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.
+Inside Set, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down. Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion. Let rules derive conclusions; retract_node corrects your assertion. Narrate in replies. A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.
 
 Never assert acceptance_met, test_result or certification. Acceptance is the Board's decision.
 
-Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new goals and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call QueryBoard when you need a current view.
+Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new goals and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call Get when you need a current view.
 
-When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
+When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with Set. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
 
 Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.`
 
@@ -4210,7 +4316,7 @@ const hostFieldTeaching = (name, fields) => `${name} carried the host-owned fiel
 /**
  * Report one Board answer to the terminal and to Local.
  *
- * The Gateway's bounded, public ApplyAction result can report a terminal disposition.
+ * The Gateway's bounded, public Execute result can report a terminal disposition.
  * Never read the internal receipt or infer an invocation id from a Board View. A missing,
  * mismatched or future result shape still leaves the Worker-activity gap visible.
  */
@@ -4227,10 +4333,10 @@ const HELD_LINE = {
 const heldLine = (held) => (held.contentWithheld
   ? `settled as ${held.state}, with its content withheld from this Agent` : HELD_LINE[held.state] ?? held.state)
 
-function emitVerdict(ctx, name, answer, callId, expectedAction) {
+function emitVerdict(ctx, name, answer, callId, input) {
   const result = answer.result ?? {}
-  if (name === 'QueryBoard' && answer.readUnavailable) {
-    log('Board observation unavailable: QueryBoard returned no usable committed snapshot. Nothing else changed.')
+  if (boardRead(name, input) && answer.readUnavailable) {
+    log('Board observation unavailable: Get returned no usable committed snapshot. Nothing else changed.')
     emitOn(ctx, 'board-observation-unavailable', { cmd: name,
       note: String(result.teaching ?? 'The committed snapshot was not delivered.') })
     return
@@ -4244,7 +4350,7 @@ function emitVerdict(ctx, name, answer, callId, expectedAction) {
     log(`${name} is ${heldLine(answer.held)}.`)
     return
   }
-  if (!BOARD_TOOLS.has(name) && answer.authoritative === true && typeof result.errorCode !== 'string') {
+  if (!boardCall(name, input) && answer.authoritative === true && typeof result.errorCode !== 'string') {
     // Data admission is distinct from a Board verdict.
     const data = result.result ?? {}
     const size = Number.isFinite(data.totalBytes) ? `${data.totalBytes} byte(s)` : 'an unstated size'
@@ -4262,8 +4368,8 @@ function emitVerdict(ctx, name, answer, callId, expectedAction) {
   if (answer.authoritative === true && result.accepted === true) {
     emitOn(ctx, 'verdict', { accepted: true, cmd: name, ...(callId ? { callId } : {}) })
     log(`Board: ${name} accepted.`)
-    if (name === 'ApplyAction') {
-      const outcome = publicActionOutcome(result, expectedAction)
+    if (name === 'Execute') {
+      const outcome = publicActionOutcome(result, input?.action)
       if (outcome) reportActionOutcome(ctx, outcome, { callId })
       else workerActivityGap(ctx)
     }
@@ -4288,7 +4394,7 @@ function emitVerdict(ctx, name, answer, callId, expectedAction) {
     log(`${name}: ${teaching.slice(0, 240)}`)
   } else if (answer.notExecuted === true) {
     log(`${name} was not executed (${code}): ${teaching.slice(0, 240)}`)
-  } else log(`${BOARD_TOOLS.has(name) ? 'Board rejected' : 'Data read refused for'} ${name}: ${teaching.slice(0, 240)}`)
+  } else log(`${boardCall(name, input) ? 'Board rejected' : 'Data read refused for'} ${name}: ${teaching.slice(0, 240)}`)
 }
 
 /**
@@ -4383,13 +4489,13 @@ async function executeToolCall(ctx, call) {
       ...(answer.held.contentWithheld === true ? { contentWithheld: true } : {}) }),
     ...(answer.notExecuted === true ? { notExecuted: true } : {}),
     ...(answer.transportFailed === true ? { transportFailed: true } : {}),
-    ...(name === 'QueryBoard' && answer.authoritative === true
+    ...(boardRead(name, input) && answer.authoritative === true
       ? { boardRead: publicBoardRead(answer.result) } : {}),
     output: localToolSnapshot(answer.result ?? { teaching: answer.text ?? 'No result was returned.' }) })
   // A refusal the host already announced is not announced again as though the Board had spoken.
-  if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer, localCallId, input.action)
+  if (answer.refusedLocally !== true) emitVerdict(ctx, name, answer, localCallId, input)
   const accepted = answer.result?.accepted === true
-  if (name === 'ApplyBatch' && accepted) {
+  if (name === 'Set' && accepted) {
     // A goal declared without a parent opens its contract in this very batch, or returns the
     // open goal it is (A-5, A-6); either way the authority puts it into focus. Only what
     // `focusedGoals` now lists and did not before is announced: the authority's own statement.
@@ -4509,7 +4615,7 @@ async function runTurn(ctx, userText, { policy = 'return', attachments = [] } = 
     attachmentNotice,
     takeTurnNotices(ctx),
     board.goals.length === 0 ? '' : `\n\nGoals in focus: ${board.goals.map((row) => `${row.goal} (${row.status})`).join(' · ')}`,
-    !messages.some((entry) => entry.role === 'tool_results') ? '' : '\n\nThe Board may have changed since your last tool result; QueryBoard reads its current position.',
+    !messages.some((entry) => entry.role === 'tool_results') ? '' : '\n\nThe Board may have changed since your last tool result; Get reads its current position.',
   ].join('')))
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
@@ -4584,7 +4690,7 @@ async function runTurn(ctx, userText, { policy = 'return', attachments = [] } = 
       // guess about the prose: it is the lifecycle that says the work is not finished.
       nudged = true
       messages.push(userEntry(`These goals are still open on the Board: ${live.map((row) => row.goal).join(' · ')}.\n`
-        + 'Take the next step, read the current view with QueryBoard,'
+        + 'Take the next step, read the current view with Get,'
         + ' or end a goal with a disposition that says why it cannot be finished.'))
       continue
     }
@@ -4767,7 +4873,7 @@ Otherwise return at most three lines, each formatted FINDING: <one precise issue
     op: 'assert_fact', id: `SF_${Date.now().toString(36)}_${index}`,
     predicate: 'shadow_finding', args: { text: finding.slice(9, 240).trim() },
   }))
-  const answer = await callTool(ctx, 'ApplyBatch', { operations })
+  const answer = await callTool(ctx, 'Set', { operations })
   // This write is this host's, and its answer is this host's to read. What its strip delivered
   // beyond that — an earlier outcome of the model's own — is the model's to read, next time it
   // is asked. Otherwise this host has read everything the answer delivered, and says so to the
@@ -5042,7 +5148,7 @@ if (SERVE) {
           const retiredFields = ['caseType', 'businessKey', 'caseId'].filter((field) => Object.hasOwn(b, field))
           if (retiredFields.length > 0) {
             return deny(`${retiredFields.join(', ')} ${retiredFields.length === 1 ? 'was' : 'were'} retired with rulith/v4`
-              + ' (Runtime 0.13.0), and nothing was queued. The model declares goals inside ApplyBatch, so there is no Case Type,'
+              + ' (Runtime 0.13.0), and nothing was queued. The model declares goals inside Set, so there is no Case Type,'
               + ' business key or existing Case for this endpoint to pin; state them in the text instead.', 400)
           }
           if (b.requestId !== undefined && (typeof b.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(b.requestId))) return deny('requestId must be a short opaque identifier (16–100 letters, digits, _ or -).', 400)
@@ -5207,7 +5313,7 @@ Task endpoint ready (one Agent, one connection, one segment at a time · ${SERVE
       }))
       if (settled) {
         const ctx = makeSlot(settled.key)
-        const answer = await callToolOnce(ctx, 'QueryBoard', {})
+        const answer = await callToolOnce(ctx, 'Get', {})
         keepUnshownDelivery(ctx, 'observed work from a stopped turn', answer)
       }
     } catch (error) {

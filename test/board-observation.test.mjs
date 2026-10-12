@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * QueryBoard, the one call the authority never holds.
+ * Get without artifact, the call the authority never holds.
  *
  * A committed observation reads the Board as it stands and answers its own request, whatever
  * else is in progress: it takes no execution slot, it is not an operation, and its strip shows
@@ -11,26 +11,35 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { HOP_FAILURE, RULITH_META, callTool, runAgent, declareGoal } from './support/agent-harness.mjs'
-import { projectOperations } from '../local/local-ui.mjs'
+import { projectBoardReads, projectOperations } from '../local/local-ui.mjs'
 
-const RUNNING = [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker' }]
+const RUNNING = [{ tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker' }]
 const toolAnswers = (request) => request.messages.filter((message) => message.role === 'tool')
   .map((message) => JSON.parse(message.content))
 
+test('D-1012g Local recognizes Board Get and historical QueryBoard observations, and excludes Artifact Get', () => {
+  for (const cmd of ['Get', 'QueryBoard']) assert.equal(projectBoardReads([
+    { src: 'agent', type: 'tool-result', cmd, authoritative: true, accepted: true, boardRead: { observed: true } },
+  ]).observed, true)
+  assert.deepEqual(projectBoardReads([
+    { src: 'agent', type: 'tool-result', cmd: 'Get', authoritative: true, accepted: true,
+      output: { ref: 'art-returned', data: 'hello' } },
+  ]), { observed: false, histories: [] })
+})
 test('D-1012e acknowledged writes leave an empty strip without blocking writes or losing goal endings', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Start, inspect, then cancel the goal.'], captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '6' },
-    priorOperations: [{ tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', acked: true,
+    priorOperations: [{ tool: 'Set', label: 'Set', state: 'done', acked: true,
       core: { accepted: true } }],
-    model: round => round === 1 || round === 3 || round === 5 ? callTool('QueryBoard', {})
-      : round === 2 ? callTool('ApplyBatch', declareGoal())
-        : round === 4 ? callTool('ApplyBatch', { operations: [
+    model: round => round === 1 || round === 3 || round === 5 ? callTool('Get', {})
+      : round === 2 ? callTool('Set', declareGoal())
+        : round === 4 ? callTool('Set', { operations: [
           { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
         ] }) : 'Cancelled.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['QueryBoard', 'ApplyBatch', 'QueryBoard', 'ApplyBatch', 'QueryBoard'])
+  assert.deepEqual(run.verbs, ['Get', 'Set', 'Get', 'Set', 'Get'])
   const answers = toolAnswers(run.modelRequests.at(-1))
   assert.deepEqual(answers.filter((_, i) => i % 2 === 0).map(answer => answer.operations), [[], [], []])
   assert.ok(answers.filter((_, i) => i % 2 === 1).every(answer => answer.accepted === true))
@@ -43,10 +52,10 @@ test('D-1012e acknowledged writes leave an empty strip without blocking writes o
 test('RT-OBS-1 a new user message can read the Board while an operation runs, and sees it running', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['What can you see now?'], priorOperations: RUNNING, captureLocalEvents: true,
-    model: round => round === 1 ? callTool('QueryBoard', {}) : 'The earlier action is still running.',
+    model: round => round === 1 ? callTool('Get', {}) : 'The earlier action is still running.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['QueryBoard'])
+  assert.deepEqual(run.verbs, ['Get'])
   assert.deepEqual(run.initializes[0].capabilities.experimental[RULITH_META], { heldCalls: 1 })
   assert.equal(run.modelRequests.length, 2)
   assert.equal(run.pings, 0, 'an observation is not a reason to watch anything')
@@ -61,7 +70,7 @@ test('RT-OBS-1 a new user message can read the Board while an operation runs, an
 test('RT-OBS-2 a server that does not promise held calls is refused at initialize without observing anything', async () => {
   const run = await runAgent({
     argv: ['Inspect pending work.'], serverCapabilities: false, priorOperations: RUNNING,
-    model: () => callTool('QueryBoard', {}),
+    model: () => callTool('Get', {}),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 1)
@@ -78,7 +87,7 @@ test('RT-OBS-2b a Gateway without rulith/v4 fails the generic capability check',
   const run = await runAgent({
     argv: ['Inspect pending work.'], serverCapabilities: false,
     extraServerCapabilities: { 'rulith/v3': { heldCalls: 1 } },
-    model: () => callTool('QueryBoard', {}),
+    model: () => callTool('Get', {}),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 1)
@@ -96,14 +105,14 @@ test('RT-OBS-2c retired tools beside a v4 capability fail the generic membership
   const v4 = (await import('./support/agent-harness.mjs')).advertisedTools()
   const run = await runAgent({
     argv: ['Inspect pending work.'],
-    toolSchemas: v4.filter((tool) => tool.name !== 'ApplyAction'),
+    toolSchemas: v4.filter((tool) => tool.name !== 'Execute'),
     extraTools: [{ name: 'OpenCase', description: 'Rulith OpenCase', inputSchema: { type: 'object' } },
       { name: 'CloseCase', description: 'Rulith CloseCase', inputSchema: { type: 'object' } }],
-    model: () => callTool('QueryBoard', {}),
+    model: () => callTool('Get', {}),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 1)
-  assert.match(run.stderr, /it does not advertise ApplyAction/)
+  assert.match(run.stderr, /it does not advertise Execute/)
   assert.match(run.stderr, /it advertises OpenCase, CloseCase, which is not part of the approved surface/)
   assert.doesNotMatch(run.stderr, /which rulith\/v4 removed|has not been cut over/)
   assert.equal(run.modelRequests.length, 0)
@@ -113,11 +122,11 @@ test('RT-OBS-2c retired tools beside a v4 capability fail the generic membership
 test('RT-OBS-3 an operation that needs reconciliation can be observed; nothing is invented about its effect', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Show the committed Board state.'], captureLocalEvents: true,
-    priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'needs_person' }],
-    model: round => round === 1 ? callTool('QueryBoard', {}) : 'The action still needs reconciliation.',
+    priorOperations: [{ tool: 'Execute', label: 'Execute demo.ship', state: 'needs_person' }],
+    model: round => round === 1 ? callTool('Get', {}) : 'The action still needs reconciliation.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['QueryBoard'])
+  assert.deepEqual(run.verbs, ['Get'])
   const [read] = toolAnswers(run.modelRequests[1])
   assert.equal(read.operations[0].state, 'needs_person')
   assert.equal(Object.hasOwn(read.operations[0], 'result'), false)
@@ -125,10 +134,10 @@ test('RT-OBS-3 an operation that needs reconciliation can be observed; nothing i
   assert.equal(projected.entries[0].needsPerson, true)
 })
 
-test('end_goal inside ApplyBatch is guarded while another operation is unresolved', async () => {
+test('end_goal inside Set is guarded while another operation is unresolved', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Cancel it.'], priorOperations: RUNNING,
-    model: round => round === 1 ? callTool('ApplyBatch', { operations: [
+    model: round => round === 1 ? callTool('Set', { operations: [
       { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
     ] }) : 'The running operation prevents this write.',
   })
@@ -137,7 +146,7 @@ test('end_goal inside ApplyBatch is guarded while another operation is unresolve
   assert.equal(refused.accepted, false)
   assert.equal(refused.requestExecuted, false)
   assert.equal(refused.errorCode, 'operation_running')
-  assert.deepEqual(run.verbs, ['ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Set'])
   assert.equal(run.operations.length, 1, 'the guarded write was admitted as an operation')
 })
 
@@ -145,14 +154,14 @@ test('RT-OBS-4 beside a running operation a read runs, a write is not executed, 
   const run = await runAgent({
     argv: [], chatLines: ['Inspect and decide.'], priorOperations: RUNNING,
     model: round => round === 1 ? { text: '', toolCalls: [
-      { name: 'QueryBoard', input: {} },
-      { name: 'ApplyBatch', input: { operations: [{ op: 'assert_fact', id: 'BLIND', predicate: 'x', args: {} }] } },
-      { name: 'ReadArtifact', input: { ref: `art_${'a'.repeat(32)}` } },
+      { name: 'Get', input: {} },
+      { name: 'Set', input: { operations: [{ op: 'assert_fact', id: 'BLIND', predicate: 'x', args: {} }] } },
+      { name: 'Get', input: { artifact: { ref: `art_${'a'.repeat(32)}` } } },
       { name: 'OpenCase', input: { caseId: 'CASE_X' } },
     ] } : 'I cannot change the running operation.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['QueryBoard', 'ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Get', 'Set'])
   const results = toolAnswers(run.modelRequests[1])
   assert.equal(results.length, 4)
   assert.equal(results[0].accepted, true)
@@ -165,11 +174,11 @@ test('RT-OBS-4 beside a running operation a read runs, a write is not executed, 
 test('RT-OBS-5 a failed read is reported unavailable and leaves the running operation as it was', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Inspect.'], priorOperations: RUNNING, captureLocalEvents: true,
-    tool: name => name === 'QueryBoard' ? HOP_FAILURE : undefined,
-    model: round => round === 1 ? callTool('QueryBoard', {}) : 'The current snapshot was unavailable.',
+    tool: name => name === 'Get' ? HOP_FAILURE : undefined,
+    model: round => round === 1 ? callTool('Get', {}) : 'The current snapshot was unavailable.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.deepEqual(run.verbs, ['QueryBoard'])
+  assert.deepEqual(run.verbs, ['Get'])
   const [read] = toolAnswers(run.modelRequests[1])
   assert.equal(read.errorCode, 'board_observation_unavailable')
   assert.doesNotMatch(read.teaching, /may or may not have run|transport failure/,
@@ -180,13 +189,13 @@ test('RT-OBS-5 a failed read is reported unavailable and leaves the running oper
 
 test('RT-OBS-8 a model proposal or a read verdict does not change the operations panel', () => {
   const prior = projectOperations([{ src: 'agent', type: 'operations', operations: [
-    { tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker', at: 'a', since: 'b' }] }])
+    { tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker', at: 'a', since: 'b' }] }])
   const after = projectOperations([{ src: 'agent', type: 'propose', say: 'I will inspect.' },
-    { src: 'agent', type: 'verdict', cmd: 'QueryBoard', accepted: true }], prior)
+    { src: 'agent', type: 'verdict', cmd: 'Get', accepted: true }], prior)
   assert.deepEqual(after, prior)
 })
 
-test('RT-OBS-12 a conforming QueryBoard refusal reaches the model as the authority wrote it', async () => {
+test('RT-OBS-12 a conforming Get refusal reaches the model as the authority wrote it', async () => {
   for (const denied of [
     { accepted: false, requestExecuted: false, errorCode: 'invalid_params', teaching: 'That selector is not allowed.',
       operations: [], view: { cases: { directory: [], total: 0 } } },
@@ -195,8 +204,8 @@ test('RT-OBS-12 a conforming QueryBoard refusal reaches the model as the authori
   ]) {
     const run = await runAgent({
       argv: [], chatLines: ['Inspect.'],
-      tool: name => name === 'QueryBoard' ? denied : undefined,
-      model: round => round === 1 ? callTool('QueryBoard', {}) : 'Access was refused.',
+      tool: name => name === 'Get' ? denied : undefined,
+      model: round => round === 1 ? callTool('Get', {}) : 'Access was refused.',
     })
     assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
     const [read] = toolAnswers(run.modelRequests[1])
@@ -213,16 +222,17 @@ for (const [label, malformed] of [
   ['a refusal without the strip', { accepted: false, errorCode: 'not_authorized' }],
   ['extra top-level content', { accepted: true, view: {}, observation: { consistency: 'committed' }, operations: [], secret: 'LEAK' }],
   ['the retired admission-time operation', { accepted: true, view: {}, operations: [], observation: {
-    consistency: 'committed', operationAtAdmission: { state: 'waiting', originalTool: 'ApplyAction' } } }],
+    consistency: 'committed', operationAtAdmission: { state: 'waiting', originalTool: 'Execute' } } }],
+  // Get is now also an Artifact operation; the retired Board-read name remains invalid.
   ['a strip entry for a tool that is never an operation', { accepted: true, view: {}, observation: { consistency: 'committed' },
     operations: [{ tool: 'QueryBoard', label: 'QueryBoard', state: 'done', summary: 'read', at: 'a', since: 'b' }] }],
   ['a strip entry in a state the contract does not have', { accepted: true, view: {}, observation: { consistency: 'committed' },
-    operations: [{ tool: 'ApplyAction', label: 'ApplyAction x', state: 'withheld', at: 'a', since: 'b' }] }],
+    operations: [{ tool: 'Execute', label: 'Execute x', state: 'withheld', at: 'a', since: 'b' }] }],
 ]) test(`RT-OBS-13 ${label} is not delivered as a committed snapshot`, async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Inspect.'],
-    tool: name => name === 'QueryBoard' ? malformed : undefined,
-    model: round => round === 1 ? callTool('QueryBoard', {}) : 'No usable snapshot.',
+    tool: name => name === 'Get' ? malformed : undefined,
+    model: round => round === 1 ? callTool('Get', {}) : 'No usable snapshot.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const [read] = toolAnswers(run.modelRequests[1])

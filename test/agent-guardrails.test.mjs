@@ -7,7 +7,7 @@
  * Each arm therefore asserts on the wire — what reached the scripted Board, and what the
  * process did afterwards — rather than on a message the Agent printed.
  *
- * The allow-list is now the tool list itself: four names, and nothing else can be reached.
+ * The allow-list is now the tool list itself: three names, and nothing else can be reached.
  * That is a stronger guard than the refusal table it replaced, so these arms enumerate the
  * family anyway: a guard written against one name passes while the sibling that matters
  * walks through. The list deliberately includes the operations the retired `agent_protocol`
@@ -23,6 +23,10 @@ import { MODEL_TOOLS, callTool, defaultGateway, runAgent, declareGoal } from './
 // ── D. The model may not speak governance, lifecycle selection, or receipts ──
 
 for (const forbidden of [
+  { name: 'QueryBoard', input: {} },
+  { name: 'ApplyBatch', input: { operations: [] } },
+  { name: 'ApplyAction', input: { action: 'demo.ship' } },
+  { name: 'ReadArtifact', input: { ref: 'old-reference' } },
   { name: 'SealBoard', input: {} },
   { name: 'RegisterPack', input: { packType: 'domain', pack: {} } },
   { name: 'RemovePack', input: { packType: 'domain', name: 'verified-calculation' } },
@@ -60,25 +64,25 @@ test('the four Board tools the tool list advertises are still forwarded (calibra
     argv: ['apply an action'],
     env: { RULITH_MAX_ROUNDS: '7' },
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
-      if (round === 3) return callTool('ApplyAction', { action: 'acme.ship', target: 'L1' })
-      if (round === 4) return callTool('QueryBoard', { include: ['goals'] })
-      if (round === 5) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'demonstration only' }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
+      if (round === 3) return callTool('Execute', { action: 'acme.ship', target: 'L1' })
+      if (round === 4) return callTool('Get', { include: ['goals'] })
+      if (round === 5) return callTool('Set', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'demonstration only' }] })
       return 'Done.'
     },
   })
   assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
   assert.deepEqual(run.verbs.filter((verb) => MODEL_TOOLS.includes(verb)),
-    ['ApplyBatch', 'ApplyBatch', 'ApplyAction', 'QueryBoard', 'ApplyBatch'])
+    ['Set', 'Set', 'Execute', 'Get', 'Set'])
   assert.doesNotMatch(run.stdout, /Refused locally/)
 })
 
 test('a Cloud endpoint that advertises fewer tools than the contract names stops startup instead of inventing them', async () => {
-  const run = await runAgent({ advertise: ['ApplyBatch', 'ApplyAction', 'ReadArtifact'] })
+  const run = await runAgent({ advertise: ['Set', 'Execute'] })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0)
-  assert.match(run.stderr, /does not advertise QueryBoard/)
+  assert.match(run.stderr, /does not advertise Get/)
   assert.doesNotMatch(run.stderr, /could not resolve this opaque Agent MCP token/i,
     'a surface that cannot serve this client must not be reported as a credential failure')
 })
@@ -108,7 +112,7 @@ test('an Agent credential rejection terminates the process and never invents a p
     env: { RULITH_SERVE_PORT: String(servePort), RULITH_SERVE_KEY: 'credential-test-key' },
     // The credential is rejected on the first model tool call, which is the first thing a
     // governed turn does and the surface every client crosses.
-    model: () => callTool('ApplyBatch', declareGoal()),
+    model: () => callTool('Set', declareGoal()),
     rejectToolAfter: 1,
     serveTasks: ['first accepted task', 'second accepted task'],
   })
@@ -135,7 +139,7 @@ test('interactive mode reports a mid-session credential rejection without an unh
   const run = await runAgent({
     argv: [],
     chatLines: ['do the work'],
-    model: () => callTool('ApplyBatch', declareGoal()),
+    model: () => callTool('Set', declareGoal()),
     rejectToolAfter: 1,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -149,10 +153,10 @@ test('interactive mode reports a mid-session credential rejection without an unh
 test('a one-shot run whose goal was never declared exits non-zero', async () => {
   const run = await runAgent({
     argv: ['do the work'],
-    tool: (name) => (name === 'ApplyBatch'
+    tool: (name) => (name === 'Set'
       ? { accepted: false, errorCode: 'commercial_admission_rejected', teaching: 'Configured but not in effect yet; it opens after the configuration takes effect.' }
       : undefined),
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The goal could not be declared, so nothing ran.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The goal could not be declared, so nothing ran.'),
   })
   assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
   assert.equal(run.code, 1,
@@ -167,14 +171,14 @@ test('a one-shot run whose goal the Board certifies exits zero without a closing
     env: { RULITH_MAX_ROUNDS: '5' },
     gateway: defaultGateway({ certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'Finished.'
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stdout, /Goal "GOAL_1" completed: the Board certified it/)
-  assert.deepEqual(run.verbs, ['ApplyBatch', 'ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Set', 'Set'])
 })
 
 test('autopilot nudges once with the lifecycle the Board reported, then stops rather than looping', async () => {
@@ -182,7 +186,7 @@ test('autopilot nudges once with the lifecycle the Board reported, then stops ra
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '8' },
     gateway: defaultGateway({ settleAfterBatch: false }),
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'I have nothing further to add.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'I have nothing further to add.'),
   })
 
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -192,10 +196,10 @@ test('autopilot nudges once with the lifecycle the Board reported, then stops ra
   assert.match(JSON.stringify(run.modelRequests[2]), /or end a goal with a disposition that says why it cannot be finished/)
   assert.match(run.stdout, /The model stopped while "GOAL_1" is still running on the Board/)
   assert.match(run.stdout, /remain in focus/)
-  assert.equal(run.toolCalls.some(call => call.name === 'ApplyBatch' && call.args.operations?.some(op => op.op === 'end_goal')), false, 'the host ended a goal the model never ended')
+  assert.equal(run.toolCalls.some(call => call.name === 'Set' && call.args.operations?.some(op => op.op === 'end_goal')), false, 'the host ended a goal the model never ended')
   // The nudge reuses what the Board already said. A host read here would be an implicit
   // Board query in the middle of a conversation the model had already ended.
-  assert.deepEqual(run.verbs, ['ApplyBatch'])
+  assert.deepEqual(run.verbs, ['Set'])
 })
 
 test('autopilot stops when no focused goal is still running, without another model turn', async () => {
@@ -204,8 +208,8 @@ test('autopilot stops when no focused goal is still running, without another mod
     env: { RULITH_MAX_ROUNDS: '8' },
     gateway: defaultGateway({ certifyAfterBatch: true }),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'x', args: {} }] })
       return 'The Board has what it needs.'
     },
   })
@@ -221,7 +225,7 @@ test('a stopped model turn is not a paused goal', async () => {
     env: { RULITH_MAX_ROUNDS: '8' },
     captureLocalEvents: true,
     gateway: defaultGateway({ settleAfterBatch: false }),
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'I have nothing further to add.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'I have nothing further to add.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   const observations = run.localEvents.filter((event) => event.type === 'case-state')
@@ -238,8 +242,8 @@ test('a void disposition ends the autopilot run as an explicit stop', async () =
     env: { RULITH_MAX_ROUNDS: '8' },
     gateway: defaultGateway({ settleAfterBatch: false }),
     model: (round) => {
-      if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'the required Source is not configured' }] })
+      if (round === 1) return callTool('Set', declareGoal())
+      if (round === 2) return callTool('Set', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'the required Source is not configured' }] })
       return 'unreachable'
     },
   })
@@ -247,7 +251,7 @@ test('a void disposition ends the autopilot run as an explicit stop', async () =
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.modelRequests.length, 2, 'an explicit stop must not be followed by another model turn')
   assert.match(run.stdout, /The goal ended as abandoned\./)
-  const ended = run.toolCalls.find((call) => call.name === 'ApplyBatch' && call.args.operations?.[0]?.op === 'end_goal')
+  const ended = run.toolCalls.find((call) => call.name === 'Set' && call.args.operations?.[0]?.op === 'end_goal')
   assert.equal(ended.args.operations[0].reason, 'the required Source is not configured')
 })
 
@@ -257,7 +261,7 @@ test('a non-numeric RULITH_MAX_ROUNDS warns and falls back instead of becoming N
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: 'twelve' },
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Nothing further.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Nothing further.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.match(run.stderr, /RULITH_MAX_ROUNDS="twelve" is not an integer between 1 and 1000; using the default 12/)
@@ -292,13 +296,13 @@ test('the runtime uploads no trace and opens no second cloud channel', async () 
   const run = await runAgent({
     argv: ['do the work'],
     env: { RULITH_MAX_ROUNDS: '4' },
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Nothing further.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Nothing further.'),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   // Every request the endpoint saw was either the model service or an approved tool
   // over the MCP handshake. A client-side trace uploader would appear here as a method or
   // a tool name that is neither. The one `ping` is the base protocol's own: it acknowledges,
-  // on the same session, the ApplyBatch result the model has read (AIS §5.2).
+  // on the same session, the Set result the model has read (AIS §5.2).
   assert.deepEqual([...new Set(run.methods)].sort(),
     ['initialize', 'notifications/initialized', 'ping', 'tools/call', 'tools/list'])
   assert.equal(run.pings, 1)

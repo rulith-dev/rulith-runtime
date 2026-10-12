@@ -37,7 +37,7 @@ for (const value of ['255', '65537', '12000.5', 'wrong']) test(`invalid model ou
 test('provider reasoning continuation survives tool results and later conversation turns without entering user output or Board requests', async () => {
   const first = 'opaque-provider-continuation-α', second = 'opaque-provider-continuation-β'
   const run = await runAgent({ argv: [], provider: 'openai', captureLocalEvents: true, chatLines: ['Check the board.', 'Thanks.'],
-    model: round => round === 1 ? { ...callTool('QueryBoard', {}), reasoningContent: first }
+    model: round => round === 1 ? { ...callTool('Get', {}), reasoningContent: first }
       : round === 2 ? { text: 'Board read.', reasoningContent: second } : 'You are welcome.' })
   assert.equal(run.code, 0, run.stderr)
   assert.equal(run.modelRequests.length, 3)

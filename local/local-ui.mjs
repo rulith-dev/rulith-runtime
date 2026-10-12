@@ -59,8 +59,8 @@ export function projectBoardReads(events) {
   const histories = new Map()
   for (const event of events) {
     if (event.src !== 'agent') continue
-    const direct = event.type === 'tool-result' && event.cmd === 'QueryBoard'
-      && event.authoritative === true && event.accepted === true
+    const direct = event.type === 'tool-result' && ['Get', 'QueryBoard'].includes(event.cmd)
+      && event.authoritative === true && event.accepted === true && event.boardRead?.observed === true
     if (!direct) continue
     observed = true
     const history = event.boardRead?.history

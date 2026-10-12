@@ -235,7 +235,7 @@ test('RT-CUTOVER-6 a Gateway that refuses this release mid-run stops the turn wi
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     expireSessionAfter: 4, // initialize, initialized, tools/list, then the tools/call answered 404
     refuseInitialize: refusedAfterFirst,
-    model: (round) => (round === 1 ? { text: '', toolCalls: [{ name: 'ApplyBatch', input: declareGoal() }] } : 'Nothing further.'),
+    model: (round) => (round === 1 ? { text: '', toolCalls: [{ name: 'Set', input: declareGoal() }] } : 'Nothing further.'),
     timeoutMs: 25_000,
   })
   assertRunningMismatch(run)
@@ -248,10 +248,10 @@ test('RT-CUTOVER-8 a refusal met while watching a held call stops at once, not a
   // once with the whole message instead of waiting out the host bound and calling it unreachable.
   const run = await runAgent({
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '2', RULITH_HOST_POLL_MS: '50', RULITH_HOST_WAIT_MS: '30000' },
-    hold: (name) => (name === 'ApplyAction' ? { answer: 'running', holdMs: 50 } : undefined),
+    hold: (name) => (name === 'Execute' ? { answer: 'running', holdMs: 50 } : undefined),
     expireSessionAfter: 5, // initialize, initialized, tools/list, the held call, then the first ping answered 404
     refuseInitialize: refusedAfterFirst,
-    model: (round) => (round === 1 ? callTool('ApplyAction', { action: 'demo.ship', args: {} }) : 'Must not be asked.'),
+    model: (round) => (round === 1 ? callTool('Execute', { action: 'demo.ship', args: {} }) : 'Must not be asked.'),
     timeoutMs: 20_000,
   })
   assertRunningMismatch(run)
@@ -410,9 +410,9 @@ test('RT-CUTOVER-10 the other peer texts shown to a person are flattened the sam
   // A takeover that ends a held call's stream quotes the Gateway's message, flattened the same way.
   const held = await runAgent({
     argv: ['do the work'],
-    hold: (name) => (name === 'ApplyAction' ? { answer: 'running', holdMs: 50 } : undefined),
+    hold: (name) => (name === 'Execute' ? { answer: 'running', holdMs: 50 } : undefined),
     replaceDuringHold: () => 'Taken over\u001b[2J\nwhile\u2028the Action ran.',
-    model: () => callTool('ApplyAction', { action: 'demo.ship', args: {} }),
+    model: () => callTool('Execute', { action: 'demo.ship', args: {} }),
     timeoutMs: 20_000,
   })
   assert.equal(held.code, 4, `${held.stdout}\n${held.stderr}`)

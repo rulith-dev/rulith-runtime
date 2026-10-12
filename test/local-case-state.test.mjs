@@ -184,14 +184,14 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   // A running operation is neither an error nor idleness, and the panel says which it is.
   // Shown as idle, a person concludes the Runtime is stuck or that nothing was dispatched.
   assert.match(elements.get('operations').innerHTML, /No operations reported yet/)
-  const running = { tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker',
+  const running = { tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker',
     at: '2026-10-01T08:00:00Z', since: '2026-10-01T08:00:01Z' }
   context.events = [{ src: 'agent', type: 'operations', operations: [running] },
-    { src: 'agent', type: 'held-call', phase: 'waiting', tool: 'ApplyAction', label: 'ApplyAction demo.ship' }]
+    { src: 'agent', type: 'held-call', phase: 'waiting', tool: 'Execute', label: 'Execute demo.ship' }]
   vm.runInContext('renderInspector(events)', context)
-  assert.match(elements.get('operations').innerHTML, /Waiting for ApplyAction demo\.ship/)
+  assert.match(elements.get('operations').innerHTML, /Waiting for Execute demo\.ship/)
   assert.match(elements.get('operations').innerHTML, /asks it nothing meanwhile/)
-  assert.match(elements.get('operations').innerHTML, /ApplyAction demo\.ship<small>Running · at the Worker/)
+  assert.match(elements.get('operations').innerHTML, /Execute demo\.ship<small>Running · at the Worker/)
 
   // Waiting for a person: the link to Console is offered only for the account and Agent the
   // report was made under.
@@ -211,16 +211,16 @@ test('the shipped inspector separates lifecycle, focus and detached observations
   context.state.status = undefined
 
   context.events = [{ src: 'agent', type: 'operations', operations: [
-    { tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', at: 'a', since: 'b' },
-    { tool: 'ApplyBatch', label: 'ApplyBatch end_goal GOAL_1', state: 'unknown', contentWithheld: true, at: 'c', since: 'd' },
+    { tool: 'Set', label: 'Set', state: 'done', at: 'a', since: 'b' },
+    { tool: 'Set', label: 'Set end_goal GOAL_1', state: 'unknown', contentWithheld: true, at: 'c', since: 'd' },
   ] }, { src: 'agent', type: 'exit' }]
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('operations').innerHTML, /Reported before the Agent process changed/)
-  assert.match(elements.get('operations').innerHTML, /ApplyBatch<small>Done/)
+  assert.match(elements.get('operations').innerHTML, /Set<small>Done/)
   assert.match(elements.get('operations').innerHTML, /Reconciled, external effect unknown · content withheld/)
 
   // Looking at an ended goal is an observation, not focus or a new lifecycle transition.
-  context.events = [{ src: 'agent', type: 'tool-result', cmd: 'QueryBoard', authoritative: true,
+  context.events = [{ src: 'agent', type: 'tool-result', cmd: 'Get', authoritative: true,
     accepted: true, boardRead: { observed: true, history: { goal: 'GOAL<OLD>',
       status: 'available', disposition: 'completed', certified: true, factsOnPage: 7, morePages: true } } }]
   vm.runInContext('renderInspector(events)', context)

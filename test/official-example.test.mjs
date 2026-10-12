@@ -28,6 +28,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import Ajv from 'ajv'
 
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
 import { BOARD, CONNECTION, HOLD, ROOT, SIGNED, driveWorker, toolDigest, artifactWorkFields } from './support/worker-harness.mjs'
@@ -530,12 +531,13 @@ test('RT-EXAMPLE-11 the guide starts a configured Case through Local without scr
  * wrong when the end-to-end run reached them — `CloseCase` took `caseId` rather than the
  * contract's `root`, and the Source-bound Actions were shown with no business arguments,
  * which the authority refuses — and neither is visible without either running the whole stack
- * or comparing against the served schema. This is the cheap half: tool membership, required
- * keys present, no key the schema does not declare.
+ * or comparing against the served schema. This is the cheap half: tool membership and full
+ * input validation, including referenced branches and nested arguments.
  */
 test('RT-EXAMPLE-7 every tool call the guide prints matches the vendored tool contract', () => {
   const contract = JSON.parse(readFileSync(join(ROOT, 'protocol', 'mcp-contract.json'), 'utf8'))
-  const schemas = Object.fromEntries(contract.tools.map((tool) => [tool.name, tool.inputSchema]))
+  const ajv = new Ajv({ strict: false, allErrors: true })
+  const validators = Object.fromEntries(contract.tools.map((tool) => [tool.name, ajv.compile(tool.inputSchema)]))
   const guide = readFileSync(join(EXAMPLE, 'README.md'), 'utf8')
   const printed = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)]
     .map(([, body]) => { try { return JSON.parse(body) } catch { return undefined } })
@@ -543,19 +545,10 @@ test('RT-EXAMPLE-7 every tool call the guide prints matches the vendored tool co
   assert.ok(printed.length >= 5, `only ${printed.length} tool calls were extracted from the guide — the scan lost the code fences`)
 
   for (const { tool, input } of printed) {
-    const schema = schemas[tool]
-    assert.ok(schema, `${tool} is not one of the four tools this Runtime serves`)
+    const validate = validators[tool]
+    assert.ok(validate, `${tool} is not one of the three tools this Runtime serves`)
     assert.ok(input !== null && typeof input === 'object' && !Array.isArray(input), `${tool} must be printed with an object input`)
-    // `oneOf` states alternative shapes; the branch that names every key present is
-    // the one this call means, and at least one branch must accept it.
-    const branches = Array.isArray(schema.oneOf) ? schema.oneOf : [schema]
-    const accepted = branches.some((branch) => {
-      const allowed = Object.keys(branch.properties ?? {})
-      const required = branch.required ?? []
-      return Object.keys(input).every((key) => allowed.includes(key))
-        && required.every((key) => Object.hasOwn(input, key))
-    })
-    assert.ok(accepted, `${tool} is printed with ${JSON.stringify(Object.keys(input))}, which no branch of its contracted schema accepts`)
+    assert.ok(validate(input), `${tool} is printed with an invalid contracted input: ${ajv.errorsText(validate.errors)}`)
   }
 
   // The two calls the guide must show in full, because the authority refuses the short form.

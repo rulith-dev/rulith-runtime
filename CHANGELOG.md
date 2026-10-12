@@ -4,6 +4,9 @@ All notable changes to the local runtime are documented here.
 
 ## 0.15.0 - 2026-10-12
 
+- Agent: speaks the D-1012g three-tool surface, `Get`, `Set` and `Execute`; `Get`
+  reads Artifacts with `artifact: {ref, offset?}`, and retained calls are shown under
+  the new names on replay. Protocol remains `rulith/v4`.
 - Worker: refreshes granted Sources before each Source-bound work item, uses the
   Gateway-approved file directory without a restart, and leaves work unclaimed if
   that refresh fails; withdrawn Sources and conflicting local directories are not used.

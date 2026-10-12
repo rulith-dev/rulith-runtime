@@ -42,7 +42,7 @@ test('RT-PROTO-1 a version this client does not speak stops the run before any b
 test('RT-PROTO-2 the negotiated version and the declared capability travel on every request (calibration)', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Open a Case.'],
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Opened.'),
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -64,7 +64,7 @@ for (const serverCapabilities of [false, null, [], {}, { heldCalls: 0 }, { heldC
   { heldCalls: 1, boardObservation: 1 }, { operationRecovery: 1, boardObservation: 1 }]) {
   test(`incompatible server capabilities stop before model, tools or waiting: ${JSON.stringify(serverCapabilities)}`, async () => {
     const run = await runAgent({ serverCapabilities,
-      priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker' }],
+      priorOperations: [{ tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker' }],
       model: () => 'Must not run.', timeoutMs: 20_000 })
     assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
     assert.deepEqual(run.methods, ['initialize'])
@@ -84,7 +84,7 @@ test('RT-CONN-1 a replaced connection ends the run and does not reconnect', asyn
   const run = await runAgent({
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '4' },
     replaceAfter: 4, // initialize, initialized, tools/list, then the first tools/call
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Nothing further.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Nothing further.'),
     timeoutMs: 20_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -103,7 +103,7 @@ test('RT-CONN-1b a stream resume refused because another client took over ends t
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '4' },
     sseResults: true, breakStreamOnCall: 1,
     replaceAfter: 5, // initialize, initialized, tools/list, the broken tools/call, then the resume
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Nothing further.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Nothing further.'),
     timeoutMs: 20_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
@@ -120,13 +120,13 @@ test('RT-CONN-2 a 409 that is not connection_replaced is not read as a takeover'
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4,
     conflictBody: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'a different conflict', data: { reason: 'quota_exceeded' } } },
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The outcome was not known.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The outcome was not known.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 4, 'an unrelated 409 was read as a connection takeover')
   assert.doesNotMatch(run.stderr, /replaced by a newer authenticated client/)
-  assert.match(run.stdout, /No answer arrived for ApplyBatch/,
+  assert.match(run.stdout, /No answer arrived for Set/,
     'a conflict this client cannot interpret is a transport failure, which is what it is')
 })
 
@@ -137,12 +137,12 @@ test('a correlated pre-admission material refusal is final; an unproven conflict
   const sound = await runAgent({
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4, conflictBody: refusal,
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The proof was refused before execution.',
+    model: round => round === 1 ? callTool('Set', declareGoal()) : 'The proof was refused before execution.',
     timeoutMs: 20_000,
   })
   assert.notEqual(sound.code, 'timeout', `${sound.stdout}\n${sound.stderr}`)
-  assert.match(sound.stdout, /ApplyBatch was not executed \(material_proof_unavailable\): The Host proof was not available/)
-  assert.doesNotMatch(sound.stdout, /No answer arrived for ApplyBatch/)
+  assert.match(sound.stdout, /Set was not executed \(material_proof_unavailable\): The Host proof was not available/)
+  assert.doesNotMatch(sound.stdout, /No answer arrived for Set/)
   assert.equal(sound.requests.filter(row => row.method === 'tools/call').length, 1,
     'an authority refusal must not be retried by the transport')
 
@@ -151,31 +151,31 @@ test('a correlated pre-admission material refusal is final; an unproven conflict
     replaceAfter: 4,
     conflictBody: input => ({ ...refusal(input), error: { ...refusal(input).error,
       data: { reason: 'material_proof_unavailable' } } }),
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The outcome was not known.',
+    model: round => round === 1 ? callTool('Set', declareGoal()) : 'The outcome was not known.',
     timeoutMs: 25_000,
   })
   assert.notEqual(unproven.code, 'timeout', `${unproven.stdout}\n${unproven.stderr}`)
-  assert.match(unproven.stdout, /No answer arrived for ApplyBatch/,
+  assert.match(unproven.stdout, /No answer arrived for Set/,
     'the reason alone cannot prove that no operation executed')
 
   const wrongSession = await runAgent({
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4, conflictBody: refusal, conflictSessionId: 'a-different-mcp-session',
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The outcome was not known.',
+    model: round => round === 1 ? callTool('Set', declareGoal()) : 'The outcome was not known.',
     timeoutMs: 25_000,
   })
   assert.notEqual(wrongSession.code, 'timeout', `${wrongSession.stdout}\n${wrongSession.stderr}`)
-  assert.match(wrongSession.stdout, /No answer arrived for ApplyBatch/,
+  assert.match(wrongSession.stdout, /No answer arrived for Set/,
     'a correlated id under another session is not a receipt for this connection')
 
   const wrongId = await runAgent({
     argv: ['do the work'], env: { RULITH_MAX_ROUNDS: '3' },
     replaceAfter: 4, conflictBody: input => ({ ...refusal(input), id: 'another-request' }),
-    model: round => round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The outcome was not known.',
+    model: round => round === 1 ? callTool('Set', declareGoal()) : 'The outcome was not known.',
     timeoutMs: 25_000,
   })
   assert.notEqual(wrongId.code, 'timeout', `${wrongId.stdout}\n${wrongId.stderr}`)
-  assert.match(wrongId.stdout, /No answer arrived for ApplyBatch/,
+  assert.match(wrongId.stdout, /No answer arrived for Set/,
     'an error for another JSON-RPC request cannot clear this operation')
 })
 
@@ -187,14 +187,14 @@ test('RT-CONN-3 an expired session is re-established rather than treated as a ta
     argv: [], env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     expireSessionAfter: 4, // the first tools/call only
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'I will wait for the outcome.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'I will wait for the outcome.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 4, 'an expired session was reported as a connection replacement')
   assert.ok(run.initializes.length >= 2, `the client did not establish a new session: ${run.methods.join(', ')}`)
-  assert.match(run.stdout, /No answer arrived for ApplyBatch \(session_expired: /)
-  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch').at(-1)
+  assert.match(run.stdout, /No answer arrived for Set \(session_expired: /)
+  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'Set').at(-1)
   assert.match(verdict.teaching, /session ended before the answer arrived/)
   // The session's own id is transport detail, kept for the log (AIS §2).
   assert.doesNotMatch(JSON.stringify(run.modelRequests), /mcp-1/)
@@ -214,7 +214,7 @@ test('RT-RESUME-1 a broken response stream is resumed from its event id, not re-
     argv: [], env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Open a Case.'],
     sseResults: true, breakStreamOnCall: 1,
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'Opened.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'Opened.'),
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
@@ -231,12 +231,12 @@ test('RT-RESUME-2 an unrecoverable stream is a lost answer, never an empty one',
     argv: [], env: { RULITH_MAX_ROUNDS: '3' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     sseResults: true, breakStreamOnCall: 1, refuseResume: true,
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The outcome was not known.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The outcome was not known.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.toolCalls.length, 1, 'an unrecovered answer was answered by asking again')
-  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch').at(-1)
+  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'Set').at(-1)
   assert.match(verdict.teaching, /answer stream was cut before the answer arrived/)
   assert.match(verdict.teaching, /resuming it did not bring the answer back/)
   // How the stream failed names the request id, so it is said in the log and not to the model.
@@ -308,18 +308,18 @@ test('RT-RPC-4 a write answered under a different session is a transport failure
     argv: [], env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     swapSessionOnCall: 1,
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'That did not resolve.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'That did not resolve.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   // The command was sent under one authenticated session and answered under another, so this
   // client cannot take the answer as the command's. Adopting the new identity and calling it
   // a metadata refresh would have made an unanswered write look settled.
-  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch').at(-1)
+  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'Set').at(-1)
   assert.match(verdict.teaching, /What came back was not the answer to this call/)
   assert.match(verdict.teaching, /transport failure, not the Board's answer/)
   // Which sessions were involved is for the person reading the log; session ids never reach a model.
-  assert.match(run.stdout, /No answer arrived for ApplyBatch \(response_not_correlated: .*answered under/)
+  assert.match(run.stdout, /No answer arrived for Set \(response_not_correlated: .*answered under/)
   assert.doesNotMatch(JSON.stringify(run.modelRequests), /mcp-1/)
   // And no focus was created from an answer this client would not attribute to its session.
   assert.doesNotMatch(run.stdout, /Goal in focus/)
@@ -369,14 +369,14 @@ test('RT-SURFACE-2 retired tools fail the generic approved-surface check', async
 
 test('RT-SURFACE-3 a duplicated approved tool is refused rather than de-duplicated', async () => {
   const run = await runAgent({
-    argv: ['hello'], duplicateTool: 'ApplyBatch',
+    argv: ['hello'], duplicateTool: 'Set',
     model: () => 'The model should never be asked.',
     timeoutMs: 20_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0)
   assert.equal(run.modelRequests.length, 0)
-  assert.match(run.stderr, /advertises ApplyBatch more than once/)
+  assert.match(run.stderr, /advertises Set more than once/)
 })
 
 for (const missing of MODEL_TOOLS) {
@@ -393,11 +393,11 @@ test(`RT-SURFACE-4 a missing approved tool ${missing} is refused and named`, asy
 })
 }
 
-test('RT-SURFACE-5 the approved four, exactly, reach the model (calibration)', async () => {
+test('RT-SURFACE-5 the approved three, exactly, reach the model (calibration)', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.', timeoutMs: 20_000 })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
-  assert.deepEqual(offered, ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact'])
+  assert.deepEqual(offered, ['Get', 'Set', 'Execute'])
   assert.deepEqual([...offered].sort(), [...MODEL_TOOLS].sort())
   assert.doesNotMatch(run.stderr, /cannot speak/)
 })
@@ -410,10 +410,23 @@ test('RT-SURFACE-5b a v4 endpoint still advertising EndGoal has not been updated
   })
   assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
   assert.match(run.stderr, /it still advertises EndGoal, which rulith\/v4 removed/)
-  assert.match(run.stderr, /this endpoint has not been cut over to end_goal inside ApplyBatch/)
+  assert.match(run.stderr, /this endpoint has not been cut over to end_goal inside Set/)
   assert.equal(run.modelRequests.length, 0)
   assert.deepEqual(run.verbs, [])
 })
+
+for (const old of ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact']) {
+  test(`D-1012g an endpoint still advertising ${old} is refused before the model starts`, async () => {
+    const run = await runAgent({ argv: ['hello'],
+      extraTools: [{ name: old, description: 'retired', inputSchema: { type: 'object' } }],
+      model: () => 'The model should never be asked.' })
+    assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+    assert.match(run.stderr, new RegExp(`still advertises ${old}`))
+    assert.match(run.stderr, /has not been cut over to Get, Set and Execute/)
+    assert.equal(run.modelRequests.length, 0)
+    assert.deepEqual(run.verbs, [])
+  })
+}
 
 // ── A local read limit is not the same as no answer ──────────────────────────
 
@@ -422,11 +435,11 @@ test('tool guidance beyond 1024 characters reaches the model unchanged at the lo
   const description = '证'.repeat(5000) + 'x'.repeat(16384 - 15000 - Buffer.byteLength(tail)) + tail
   const run = await runAgent({
     argv: [], chatLines: ['Review prior work.'], model: () => 'Reviewed.', timeoutMs: 20_000,
-    toolSchemas: advertisedTools().map(tool => tool.name === 'QueryBoard' ? { ...tool, description } : tool),
+    toolSchemas: advertisedTools().map(tool => tool.name === 'Get' ? { ...tool, description } : tool),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   assert.equal(run.modelRequests.length, 1)
-  const offered = run.modelRequests[0].tools.find(tool => (tool.function?.name ?? tool.name) === 'QueryBoard')
+  const offered = run.modelRequests[0].tools.find(tool => (tool.function?.name ?? tool.name) === 'Get')
   assert.equal((offered.function ?? offered).description, description)
 })
 
@@ -434,25 +447,25 @@ test('oversized or non-text tool guidance stops before any model or business cal
   for (const description of ['证'.repeat(5462), { text: 'not an MCP description' }, null]) {
     const run = await runAgent({
       argv: ['Review prior work.'], model: () => 'Must not run.', timeoutMs: 20_000,
-      toolSchemas: advertisedTools().map(tool => tool.name === 'QueryBoard' ? { ...tool, description } : tool),
+      toolSchemas: advertisedTools().map(tool => tool.name === 'Get' ? { ...tool, description } : tool),
     })
     assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
     assert.notEqual(run.code, 0)
     assert.equal(run.modelRequests.length, 0)
     assert.equal(run.requests.filter(request => request.method === 'tools/call').length, 0)
-    assert.match(run.stderr, /QueryBoard.*16384-byte UTF-8 limit/)
+    assert.match(run.stderr, /Get.*16384-byte UTF-8 limit/)
   }
 })
 
 test('optional tool descriptions remain optional without replacing explicitly empty text', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['hello'], model: () => 'Hello.', timeoutMs: 20_000,
-    toolSchemas: advertisedTools().map(tool => ({ ...tool, description: tool.name === 'QueryBoard' ? '' : undefined })),
+    toolSchemas: advertisedTools().map(tool => ({ ...tool, description: tool.name === 'Get' ? '' : undefined })),
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   for (const offered of run.modelRequests[0].tools) {
     const tool = offered.function ?? offered
-    assert.equal(tool.description, tool.name === 'QueryBoard' ? '' : `Rulith Board ${tool.name}`)
+    assert.equal(tool.description, tool.name === 'Get' ? '' : `Rulith Board ${tool.name}`)
   }
 })
 
@@ -462,15 +475,15 @@ test('RT-RPC-5 a response too large to read is a transport failure that says whi
     argv: [], env: { RULITH_MAX_ROUNDS: '4' },
     chatLines: ['Open a Case.'], captureLocalEvents: true,
     tool: (name, args, board, session, meta) => {
-      if (name !== 'ApplyBatch') return undefined
+      if (name !== 'Set') return undefined
       const core = board.tool(name, args, session, meta)
       return { ...core, teaching: oversized }
     },
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The outcome was not readable.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The outcome was not readable.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
-  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'ApplyBatch').at(-1)
+  const verdict = run.localEvents.filter((event) => event.type === 'verdict' && event.cmd === 'Set').at(-1)
   assert.match(verdict.teaching, /The answer exceeded this host's local response limit and was not read/,
     'a local read limit was reported as though the authority had never answered')
   assert.match(verdict.teaching, /may or may not have run/)
@@ -482,7 +495,7 @@ test('RT-RPC-5 a response too large to read is a transport failure that says whi
 test('RT-SURFACE-6 a paged tools/list is read to the end before membership is judged', async () => {
   // The base protocol lets `tools/list` answer in pages with a `nextCursor`. A client that
   // read only the first page would refuse a conforming endpoint for "not advertising
-  // QueryBoard" — and would point the reader at the wrong side of the mismatch.
+  // Get" — and would point the reader at the wrong side of the mismatch.
   const run = await runAgent({
     argv: [], chatLines: ['hello'], pageTools: 1,
     model: () => 'Hello.',
@@ -490,7 +503,7 @@ test('RT-SURFACE-6 a paged tools/list is read to the end before membership is ju
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const pages = run.requests.filter((request) => request.method === 'tools/list')
-  assert.equal(pages.length, 4, `four tools in pages of one is four pages: ${pages.length}`)
+  assert.equal(pages.length, 3, `three tools in pages of one is three pages: ${pages.length}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
   assert.deepEqual([...offered].sort(), [...MODEL_TOOLS].sort())
   assert.doesNotMatch(run.stderr, /does not advertise/)
@@ -518,7 +531,7 @@ test('RT-RESUME-3 resumption lives inside the call\'s own deadline, not beside i
     argv: [], env: { RULITH_MAX_ROUNDS: '3', RULITH_MCP_TIMEOUT_MS: '2000' },
     chatLines: ['Open a Case.'],
     sseResults: true, breakStreamOnCall: 1, refuseResume: true,
-    model: (round) => (round === 1 ? callTool('ApplyBatch', declareGoal()) : 'The outcome was not known.'),
+    model: (round) => (round === 1 ? callTool('Set', declareGoal()) : 'The outcome was not known.'),
     timeoutMs: 25_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
