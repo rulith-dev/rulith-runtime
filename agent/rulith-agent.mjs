@@ -81,8 +81,8 @@ const MCP_URL = `${URL_BASE}/mcp`
 // and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = 'fc1c17dadd23be2ad835370bd416489a1a787194'
-const RULITH_RUNTIME_VERSION = "0.13.0"
+const RULITH_CONTRACT_SOURCE_COMMIT = '1e70b8a9c0754636a83b8379a87b91087b7ce22c'
+const RULITH_RUNTIME_VERSION = "0.14.0"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v4'
@@ -103,7 +103,6 @@ const RULITH_MCP_SURFACE = Object.freeze([
   Object.freeze({ name: 'ApplyBatch', target: 'core', operation: 'ApplyBatch' }),
   Object.freeze({ name: 'ApplyAction', target: 'core', operation: 'ApplyAction' }),
   Object.freeze({ name: 'ReadArtifact', target: 'artifact' }),
-  Object.freeze({ name: 'EndGoal', target: 'core', operation: 'EndGoal' }),
 ])
 // ── END GENERATED CONTRACT PROJECTION ───────────────────────────────────────
 const TOKEN = process.env.RULITH_TOKEN ?? ''
@@ -1295,9 +1294,11 @@ const RETIRED_V2_TOOL_NAMES = ['ReadOperation']
 /**
  * Retired by `rulith/v4` (package A, D-1008i), with no alias: a goal declared inside
  * `ApplyBatch` without a parent starts new work, a certified goal ends as completed by itself,
- * and `EndGoal` ends a goal that will not be pursued.
+ * and `end_goal` ends a goal that will not be pursued.
  */
 const RETIRED_V3_TOOL_NAMES = ['OpenCase', 'CloseCase']
+/** D-1012a: ending a goal is now an operation inside ApplyBatch, with no tool alias. */
+const RETIRED_V4_TOOL_NAMES = ['EndGoal']
 
 /**
  * Project the advertised schema onto what the model may say — at the envelope boundary
@@ -1392,6 +1393,7 @@ function toolMembershipConflicts(tools) {
   const retired = extra.filter((name) => RETIRED_TOOL_NAMES.includes(name))
   const retiredV2 = extra.filter((name) => RETIRED_V2_TOOL_NAMES.includes(name))
   const retiredV3 = extra.filter((name) => RETIRED_V3_TOOL_NAMES.includes(name))
+  const retiredV4 = extra.filter((name) => RETIRED_V4_TOOL_NAMES.includes(name))
   if (missing.length > 0) conflicts.push(`it does not advertise ${missing.join(', ')}`)
   if (duplicates.size > 0) conflicts.push(`it advertises ${[...duplicates].join(', ')} more than once`)
   if (retired.length > 0) {
@@ -1404,10 +1406,14 @@ function toolMembershipConflicts(tools) {
   }
   if (retiredV3.length > 0) {
     conflicts.push(`it still advertises ${retiredV3.join(', ')}, which ${RULITH_META} removed,`
-      + ' which means this endpoint has not been cut over to goals declared in ApplyBatch and EndGoal')
+      + ' which means this endpoint has not been cut over to goals declared in ApplyBatch and end_goal')
+  }
+  if (retiredV4.length > 0) {
+    conflicts.push(`it still advertises ${retiredV4.join(', ')}, which ${RULITH_META} removed,`
+      + ' which means this endpoint has not been cut over to end_goal inside ApplyBatch')
   }
   const unknown = extra.filter((name) => !RETIRED_TOOL_NAMES.includes(name) && !RETIRED_V2_TOOL_NAMES.includes(name)
-    && !RETIRED_V3_TOOL_NAMES.includes(name))
+    && !RETIRED_V3_TOOL_NAMES.includes(name) && !RETIRED_V4_TOOL_NAMES.includes(name))
   if (unknown.length > 0) {
     conflicts.push(`it advertises ${unknown.join(', ')}, which is not part of the approved surface`)
   }
@@ -1571,7 +1577,7 @@ const viewIsTruncated = (view) => truncatedLimbsOf(view).length > 0
 
 /**
  * The lifecycle words of the goal directory (A-17). `completed` is a goal the Board certified,
- * ended in the same commit; `ended` is a goal `EndGoal` or a person ended with another
+ * ended in the same commit; `ended` is a goal `end_goal` or a person ended with another
  * disposition. Anything else is `unavailable`, never guessed.
  */
 const LIFECYCLE = ['running', 'paused', 'completed', 'ended']
@@ -1711,8 +1717,15 @@ function noteOperations(states, { stateForm = false } = {}) {
 /** Whether the strip last shown holds an operation that still keeps the execution slot. */
 const unresolvedOperation = () => board.operations?.find((entry) => UNRESOLVED_STATES.has(entry.state))
 
-/** The writes: ApplyBatch, ApplyAction and EndGoal, whose settled result the write gate guards. */
+/** The writes: ApplyBatch (including end_goal) and ApplyAction, whose settled result the write gate guards. */
 const WRITE_TOOLS = new Set([...BOARD_TOOLS].filter((name) => name !== 'QueryBoard'))
+
+/** The goal-ending operation, only when it is the whole ApplyBatch. */
+function endGoalOperation(name, input) {
+  const operations = input?.operations
+  return name === 'ApplyBatch' && Array.isArray(operations) && operations.length === 1 && operations[0]?.op === 'end_goal'
+    ? operations[0] : undefined
+}
 
 /** An entry's identity on the strip: its tool, label and admission time, which is strictly increasing. */
 const operationKey = (entry) => `${entry.tool}\u0000${entry.label}\u0000${entry.at}`
@@ -2518,6 +2531,7 @@ function trackFocus(ctx, meta, view, command, declared = []) {
       row.contact ?? 'observed')
   }
   const candidates = [...new Set([...previous.keys(), ...declared])]
+  const ending = endGoalOperation(command?.name, command?.input)
   for (const goal of candidates) {
     const before = previous.get(goal)
     if (before !== undefined && TERMINAL_LIFECYCLE.has(before.status)) continue
@@ -2526,10 +2540,10 @@ function trackFocus(ctx, meta, view, command, declared = []) {
     if (seen !== undefined && TERMINAL_LIFECYCLE.has(seen.status)) {
       if (now === undefined) observeGoal(ctx, seen)
       // `completed` is the Board's own verdict. For `ended`, the disposition is the one this
-      // host sent on the accepted EndGoal for this goal — a fact it knows — and not one read
+      // host sent on the accepted end_goal for this goal — a fact it knows — and not one read
       // back out of the result; anything else ended it, and it is said only to have ended.
-      const asked = seen.status === 'ended' && command?.name === 'EndGoal' && command.input?.goal === goal
-        ? String(command.input?.disposition ?? '').trim() : ''
+      const asked = seen.status === 'ended' && ending?.goal === goal
+        ? String(ending.disposition ?? '').trim() : ''
       const disposition = seen.status === 'completed' ? 'completed' : asked === '' ? 'ended' : asked
       log(seen.status === 'completed'
         ? `◎ Goal "${goal}" completed: the Board certified it. Its record remains available in Console.`
@@ -4018,13 +4032,13 @@ const SYSTEM_PROMPT = `You are a conversational assistant using Rulith for gover
 
 Complete the user's request, however many tool calls it takes. If you announce an action, include its actual tool call. After results, continue to an answer, a concrete blocker or a necessary question. Plain text ends your turn; never stop at "Let me check".
 
-Inside ApplyBatch, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down. Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion. Let rules derive conclusions; retract_node or revise_fact corrects your assertion. Narrate in replies. A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.
+Inside ApplyBatch, assert_fact proposes a fact without Source trust; add_axiom offers a rule; declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down. Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion. Let rules derive conclusions; retract_node corrects your assertion. Narrate in replies. A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.
 
 Never assert acceptance_met, test_result or certification. Acceptance is the Board's decision.
 
 Every Board tool result carries the Board View the authority computed for that step. Its position says whether writes, new goals and rules are open; each Action says ready or blocked and why, or what it will wait for. That was the state at that step, not a promise: calls are checked again. Read it before your next step, and call QueryBoard when you need a current view.
 
-When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason.
+When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
 
 Every answer from the authority also shows operations: this Agent's recent operations, other conversations' included, newest first. A call this Runtime did not send, or whose answer never arrived, shows no full list; QueryBoard does. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.`
 
@@ -4461,7 +4475,7 @@ async function executeToolCall(ctx, call) {
  * continuation condition is never "the model did not say DONE". It is the authority's own
  * lifecycle: a focused goal that is still running, a goal seen to end, or the round budget.
  * Under `rulith/v4` a goal is never closed by a call meaning "done": the Board ends it as
- * `completed` in the commit that certifies it (A-13), and `EndGoal` ends one with another
+ * `completed` in the commit that certifies it (A-13), and `end_goal` ends one with another
  * disposition. Either way the goal directory says so, and `trackFocus` records it here
  * (`ctx.goalsEnded`).
  *

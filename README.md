@@ -43,7 +43,7 @@ hidden order-processing policy or other business workflow.
 
 Task and conversation results include `endedGoals` when the Runtime observed goals end
 in that turn. Each entry identifies the goal and how it ended: `completed` when the Board
-certified it, the disposition this host sent on an accepted `EndGoal`, or `ended` when
+certified it, the disposition this host sent on an accepted `end_goal`, or `ended` when
 something else ended it. The CLI and Local result note list them together. A final
 cancellation does not hide an earlier completed goal. Mixed endings are not reported as
 all successful, and refused calls or goals merely leaving focus are not counted as
@@ -154,11 +154,11 @@ names the work and any key values it concerns. Runtime 0.13.0 retired `--case-ty
 `businessKey` and `caseId` fields of `POST /task`: naming one stops the run, or refuses
 the request, before anything is sent.
 
-### The model surface: five tools on one endpoint
+### The model surface: four tools on one endpoint
 
 The Agent Runtime is an ordinary MCP client. It connects to one path — `/mcp` — performs
-the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the five
-tools of the unified MCP surface: four that dispatch to Board operations and one read of
+the MCP 2025-11-25 handshake, reads `tools/list`, and offers the model exactly the four
+tools of the unified MCP surface: three that dispatch to Board operations and one read of
 already-generated result data. There is no operation-read tool: an earlier call's outcome
 reaches the model on the recent-operations strip every result carries.
 
@@ -185,13 +185,13 @@ that does not exist would pass as verified.
 | Tool | What the model is asking for |
 | --- | --- |
 | `QueryBoard` | Read the bounded Board View this Agent's Profile permits |
-| `ApplyBatch` | Apply one atomic batch of working-memory operations, declaring goals included |
+| `ApplyBatch` | Apply one atomic batch of working-memory operations, including declaring or ending goals |
 | `ApplyAction` | Invoke one Action the Board View lists; each says ready or blocked |
 | `ReadArtifact` | Read a bounded fragment of an already-generated result object |
-| `EndGoal` | End a goal that will not be pursued, with a disposition and a reason |
 
 A goal the Board certifies ends as `completed` by itself, in the commit that satisfied it;
-`EndGoal` is only for the other endings (`cancelled`, `failed`, `abandoned`, `superseded`).
+`end_goal` inside `ApplyBatch` is only for the other endings (`cancelled`, `failed`, `abandoned`,
+`superseded`), with a disposition and a reason. It must be the only operation in its batch.
 
 There is no second vocabulary, no reply protocol, and no privileged path a third-party
 client cannot reach. The Agent ships as a single file, so the contract is compiled into it
@@ -202,10 +202,10 @@ Board View, and it declares no goal, writes nothing and changes no focus. The to
 the Cloud advertises are the templates, so nothing
 in the prompt restates them.
 
-That membership is a contract, not a menu. An endpoint that advertises a sixth tool, a
-duplicate, or one of the retired surfaces — `OpenCase` and `CloseCase` included — is a
+That membership is a contract, not a menu. An endpoint that advertises a fifth tool, a
+duplicate, or one of the retired surfaces — `OpenCase`, `CloseCase` and `EndGoal` included — is a
 **protocol mismatch**: startup refuses and names both sides. Silently reinterpreting it
-into the approved five would be this client
+into the approved four would be this client
 deciding on its own what the authority had offered. The same applies to the protocol
 version: an endpoint that negotiates anything other than 2025-11-25 is refused at the
 handshake, because the session, streaming, resumption and serial-call rules this client
@@ -450,7 +450,7 @@ Inside `ApplyBatch`, a step of reasoning takes one of four shapes:
 | `assert_fact` | A material fact, with the source it came from |
 | `add_axiom` | A rule the Board may derive with |
 | `declare_goal` | An outcome to work toward: without `parent` it starts new work, with `parent` it breaks a goal down |
-| `retract_node` / `revise_fact` | Withdraw or correct one of your own assertions |
+| `retract_node` | Withdraw one of your own assertions; assert its correction in the same batch |
 
 Let rules derive conclusions. Explanation and argument stay in the model's reply. They are not Board material.
 
@@ -466,7 +466,7 @@ the one it last saw, it calls `QueryBoard`; the host never issues a read of its 
 in particular never refreshes an observation immediately before a write.
 
 Anthropic Messages and OpenAI Chat Completions tool use are both spoken natively. An
-endpoint that rejects tool definitions gets the same five schemas described in the system
+endpoint that rejects tool definitions gets the same four schemas described in the system
 prompt and answers with one JSON object; set `RULITH_MODEL_TOOLS=emulated` to select that
 transport up front. It is a transport, not a second surface: the names, the schemas and
 the refusals are identical.
@@ -893,8 +893,8 @@ The model never supplies the trusted input values or the calculated output value
   `SELECT`; every model value is passed through the database driver's parameter array
   rather than interpolated into SQL. Fenced write tools classify and reject unsupported
   or destructive statements unless the declared contract allows them.
-- The model can name exactly five tools: `QueryBoard`, `ApplyBatch`, `ApplyAction`,
-  `ReadArtifact` and `EndGoal`. Anything else is refused locally and never
+- The model can name exactly four tools: `QueryBoard`, `ApplyBatch`, `ApplyAction`,
+  `ReadArtifact`. Anything else is refused locally and never
   reaches Cloud, so injected text in a task, a document, or a tool result cannot spend the
   Agent's credential on verification, Worker receipts, clearance, or package and Board
   governance. Cloud authorization is the second line, not the first. The protected query

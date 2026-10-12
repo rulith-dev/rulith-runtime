@@ -736,25 +736,25 @@ test('RT-HELD-28 a waited result is given intact, its own Board View included, w
   assert.equal(affected?.unreported, true, 'the affected goals of a result taken from the strip were not said to be unreported')
 })
 
-test('RT-HELD-29 a goal a waited EndGoal ended is logged with the disposition it asked for', async () => {
+test('RT-HELD-29 a goal a waited end_goal batch ended is logged with the disposition it asked for', async () => {
   let ending
   const gateway = defaultGateway({ queryIndependent: true })
   const run = await runAgent({
     argv: [], chatLines: ['Cancel it.'], env: { ...FAST, RULITH_MAX_ROUNDS: '4' }, gateway, captureLocalEvents: true,
     // The end takes effect only once the held call settles; the read after the wait sees it.
-    hold: (name) => name !== 'EndGoal' ? undefined : { answer: 'running', holdMs: 50, settle: (seen) => {
+    hold: (name, args) => name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'end_goal' ? undefined : { answer: 'running', holdMs: 50, settle: (seen) => {
       if (seen.pings < 2) return undefined
       gateway.state.goals.get('GOAL_1').status = 'ended'
       ending?.focus.delete('GOAL_1')
       return { state: 'done' }
     } },
     tool: (name, args, board, session) => {
-      if (name !== 'EndGoal') return undefined
+      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'end_goal') return undefined
       ending = session
-      return { accepted: true, revision: 'r9', result: { goal: args.goal, disposition: args.disposition }, payload: board.peek(session) }
+      return { accepted: true, revision: 'r9', result: { goal: args.operations[0].goal, disposition: args.operations[0].disposition }, payload: board.peek(session) }
     },
     model: (round) => round === 1 ? callTool('ApplyBatch', declareGoal())
-      : round === 2 ? callTool('EndGoal', { goal: 'GOAL_1', disposition: 'cancelled', reason: 'The user withdrew the request.' })
+      : round === 2 ? callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'The user withdrew the request.' }] })
         : 'Cancelled.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)

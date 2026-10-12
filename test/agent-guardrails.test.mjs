@@ -7,7 +7,7 @@
  * Each arm therefore asserts on the wire — what reached the scripted Board, and what the
  * process did afterwards — rather than on a message the Agent printed.
  *
- * The allow-list is now the tool list itself: five names, and nothing else can be reached.
+ * The allow-list is now the tool list itself: four names, and nothing else can be reached.
  * That is a stronger guard than the refusal table it replaced, so these arms enumerate the
  * family anyway: a guard written against one name passes while the sibling that matters
  * walks through. The list deliberately includes the operations the retired `agent_protocol`
@@ -30,6 +30,7 @@ for (const forbidden of [
   { name: 'MaintainBoardShared', input: { operations: [] } },
   { name: 'PauseCase', input: {} },
   { name: 'ResumeCase', input: { caseId: 'CASE_1' } },
+  { name: 'EndGoal', input: { goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' } },
   { name: 'RunDischarge', input: { root: 'ROOT_1' } },
   { name: 'GetBoardManifest', input: {} },
   { name: 'GetCompletion', input: {} },
@@ -52,7 +53,7 @@ for (const forbidden of [
   })
 }
 
-test('the five Board tools the tool list advertises are still forwarded (calibration)', async () => {
+test('the four Board tools the tool list advertises are still forwarded (calibration)', async () => {
   // Without this arm, an allow-list that refused everything would make every assertion
   // above green while breaking the runtime.
   const run = await runAgent({
@@ -63,18 +64,18 @@ test('the five Board tools the tool list advertises are still forwarded (calibra
       if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'assert_fact', id: 'F1', predicate: 'scratch.demo.value', args: { n: 1 } }] })
       if (round === 3) return callTool('ApplyAction', { action: 'acme.ship', target: 'L1' })
       if (round === 4) return callTool('QueryBoard', { include: ['goals'] })
-      if (round === 5) return callTool('EndGoal', { goal: 'GOAL_1', disposition: 'abandoned', reason: 'demonstration only' })
+      if (round === 5) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'demonstration only' }] })
       return 'Done.'
     },
   })
   assert.notEqual(run.code, 'timeout', run.stdout + run.stderr)
   assert.deepEqual(run.verbs.filter((verb) => MODEL_TOOLS.includes(verb)),
-    ['ApplyBatch', 'ApplyBatch', 'ApplyAction', 'QueryBoard', 'EndGoal'])
+    ['ApplyBatch', 'ApplyBatch', 'ApplyAction', 'QueryBoard', 'ApplyBatch'])
   assert.doesNotMatch(run.stdout, /Refused locally/)
 })
 
 test('a Cloud endpoint that advertises fewer tools than the contract names stops startup instead of inventing them', async () => {
-  const run = await runAgent({ advertise: ['ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal'] })
+  const run = await runAgent({ advertise: ['ApplyBatch', 'ApplyAction', 'ReadArtifact'] })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0)
   assert.match(run.stderr, /does not advertise QueryBoard/)
@@ -191,7 +192,7 @@ test('autopilot nudges once with the lifecycle the Board reported, then stops ra
   assert.match(JSON.stringify(run.modelRequests[2]), /or end a goal with a disposition that says why it cannot be finished/)
   assert.match(run.stdout, /The model stopped while "GOAL_1" is still running on the Board/)
   assert.match(run.stdout, /remain in focus/)
-  assert.equal(run.verbs.includes('EndGoal'), false, 'the host ended a goal the model never ended')
+  assert.equal(run.toolCalls.some(call => call.name === 'ApplyBatch' && call.args.operations?.some(op => op.op === 'end_goal')), false, 'the host ended a goal the model never ended')
   // The nudge reuses what the Board already said. A host read here would be an implicit
   // Board query in the middle of a conversation the model had already ended.
   assert.deepEqual(run.verbs, ['ApplyBatch'])
@@ -238,7 +239,7 @@ test('a void disposition ends the autopilot run as an explicit stop', async () =
     gateway: defaultGateway({ settleAfterBatch: false }),
     model: (round) => {
       if (round === 1) return callTool('ApplyBatch', declareGoal())
-      if (round === 2) return callTool('EndGoal', { goal: 'GOAL_1', disposition: 'abandoned', reason: 'the required Source is not configured' })
+      if (round === 2) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'the required Source is not configured' }] })
       return 'unreachable'
     },
   })
@@ -246,8 +247,8 @@ test('a void disposition ends the autopilot run as an explicit stop', async () =
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.modelRequests.length, 2, 'an explicit stop must not be followed by another model turn')
   assert.match(run.stdout, /The goal ended as abandoned\./)
-  const ended = run.toolCalls.find((call) => call.name === 'EndGoal')
-  assert.equal(ended.args.reason, 'the required Source is not configured')
+  const ended = run.toolCalls.find((call) => call.name === 'ApplyBatch' && call.args.operations?.[0]?.op === 'end_goal')
+  assert.equal(ended.args.operations[0].reason, 'the required Source is not configured')
 })
 
 // ── J. A numeric knob with a typo falls back loudly ──────────────────────────

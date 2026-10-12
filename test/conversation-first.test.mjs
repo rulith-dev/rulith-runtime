@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * The model surface is six tools called over one `/mcp` endpoint.
+ * The model surface is four tools called over one `/mcp` endpoint.
  *
- * `OpenCase` / `ApplyBatch` / `ApplyAction` / `CloseCase` / `QueryBoard` dispatch to Board
+ * `ApplyBatch` / `ApplyAction` / `QueryBoard` dispatch to Board
  * operations, and `ReadArtifact` reads already-generated result data from the Gateway's
  * data plane. That is the whole vocabulary: no host tool split, no `agent_protocol` escape
  * hatch onto the Board operation registry, no second grammar. One loop serves both
  * policies — a conversation returns to the user the moment the model answers with text,
- * and `--task` autopilot keeps going while a focused Case is still running on the Board.
+ * and `--task` autopilot keeps going while a focused goal is still running on the Board.
  */
 import assert from 'node:assert/strict'
 import Ajv from 'ajv'
@@ -118,17 +118,18 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
     assert.equal(system.includes(forbidden), false, `the system prompt still teaches ${forbidden}`)
   }
   // What it must say instead: facts, rules, goals and corrections.
-  for (const shape of ['assert_fact', 'add_axiom', 'declare_goal', 'retract_node', 'revise_fact']) {
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_goal', 'retract_node']) {
     assert.ok(system.includes(shape), `the prompt does not name the ${shape} shape`)
   }
-  assert.doesNotMatch(system, /declare_hypothesis|record_result/)
+  assert.doesNotMatch(system, /declare_hypothesis|record_result|revise_fact|EndGoal/)
+  assert.match(system, /Let rules derive conclusions; retract_node corrects your assertion\./)
   assert.match(system, /Never assert acceptance_met, test_result or certification\. Acceptance is the Board's decision\./)
   assert.match(system, /call QueryBoard when you need a current view/,
     'reading the Board is now the model\'s own tool, so the prompt must say so')
   // A 包 V50：声明能力目标即种下能力备好的步骤；推进它们而不是重建；被认证的目标自动完成。
   assert.match(system, /When you declare a capability's goal, the Board plants the steps its capability prepared\./)
   assert.match(system, /do not rebuild prepared steps with ApplyBatch/)
-  assert.match(system, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason\./)
+  assert.match(system, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason\./)
   // D-1004b ①：Source 结果、动作回执与备好的任务已由 Board 记下，不再另写断言。
   assert.match(system, /Source results, Action receipts and a prepared task are already recorded by the Board, so do not assert them again; keeping the original basis needs no assertion./)
   assert.doesNotMatch(system, /follow the capability's task structure/)
@@ -138,7 +139,7 @@ test('RT-TOOLS-2 the system prompt carries no wire form and no reply protocol', 
 test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.' })
   const tools = declaredToolsOf(run.modelRequests[0])
-  assert.equal(tools.length, 5)
+  assert.equal(tools.length, 4)
   // Top level only, because that is the scope host metadata lives on. The envelope is the
   // boundary; a property one level down inside a business object is business data, and
   // RT-TOOLS-3c asserts that such a property survives.
@@ -172,12 +173,12 @@ test('RT-TOOLS-3 no model-facing schema exposes a retired or host-owned field', 
   assert.doesNotMatch(JSON.stringify(advertisedTools()), /"viewToken"|"queryContext"|"audienceProfile"|"expectedRevision"|"expectedBoardSharedEpoch"/,
     'the conforming fixture advertises host metadata, so ordinary tests are not running against a valid public schema')
   // And the model surface keeps the fields that are genuinely its own: a goal's outcome and its
-  // parent (rulith/v4, A-4), and the goal EndGoal names.
+  // parent (rulith/v4, A-4), and the goal end_goal names.
   const batch = tools.find((tool) => tool.name === 'ApplyBatch').schema
   assert.ok(names(batch).includes('desired') && names(batch).includes('parent'),
     'declare_goal must keep desired and parent through the projection')
-  const endGoal = tools.find((tool) => tool.name === 'EndGoal').schema
-  assert.deepEqual(Object.keys(endGoal.properties ?? {}).sort(), ['disposition', 'goal', 'reason'])
+  const endGoal = Object.values(batch.$defs).find(schema => schema.properties?.op?.const === 'end_goal')
+  assert.deepEqual(Object.keys(endGoal.properties).sort(), ['disposition', 'goal', 'op', 'reason'])
 })
 
 test('RT-TOOLS-3b host metadata offered as a tool argument is kept from the model and reported', async () => {
@@ -231,7 +232,7 @@ test('RT-TOOLS-3d a schema that makes host metadata required is refused, not qui
   assert.equal(run.modelRequests.length, 0, 'the model was asked to work against a contract no call could satisfy')
 })
 
-test('RT-TOOLS-4 a tool that is not one of the five is refused locally and never forwarded', async () => {
+test('RT-TOOLS-4 a tool that is not one of the four is refused locally and never forwarded', async () => {
   const run = await runAgent({
     argv: [],
     chatLines: ['remove the pack'],
@@ -386,7 +387,7 @@ test('RT-META-4 an independent lifecycle per goal: ending one leaves the other r
     chatLines: ['Start two pieces of work and end the first.'],
     model: (round) => {
       if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
-      if (round === 3) return callTool('EndGoal', { goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' })
+      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' }] })
       return 'The second goal is still running.'
     },
   })
@@ -834,7 +835,7 @@ test('declare, act, read and write: the goal completes in the commit the Board c
   assert.match(JSON.stringify(run.modelRequests[2]), /inv_1/)
   // Before the certifying commit, the directory said running; nothing asked to finish it.
   assert.match(JSON.stringify(run.modelRequests[3]), /\\"status\\":\\"running\\"/)
-  assert.equal(run.verbs.includes('EndGoal'), false)
+  assert.equal(run.toolCalls.some(call => call.name === 'ApplyBatch' && call.args.operations?.some(op => op.op === 'end_goal')), false)
   assert.equal(run.modelRequests.length, 4, 'the run went on after the Board completed the goal')
   assert.match(run.stdout, /Goal "GOAL_1" completed: the Board certified it/)
   assert.match(run.stdout, /The Board certified the goal and it is completed\./)
@@ -1027,10 +1028,10 @@ test('a goal declaration is carried exactly as the model wrote it: the host pins
   assert.deepEqual(run.toolCalls.map((call) => call.args), [declaration])
 })
 
-for (const retired of ['OpenCase', 'CloseCase']) {
+  for (const retired of ['OpenCase', 'CloseCase', 'EndGoal']) {
   test(`a model that still calls ${retired} is refused locally, and nothing reaches the authority`, async () => {
     // rulith/v4 took OpenCase and CloseCase off the model surface with no alias (V1, V2). A model
-    // formed against the old surface is told which five tools exist; its call is never carried.
+    // formed against the old surface is told which four tools exist; its call is never carried.
     const run = await runAgent({
       argv: [],
       chatLines: ['Open a Case.'],
@@ -1041,7 +1042,7 @@ for (const retired of ['OpenCase', 'CloseCase']) {
     assert.deepEqual(run.verbs, [], `${retired} reached the authority`)
     const answered = JSON.stringify(run.modelRequests[1])
     assert.match(answered, /tool_not_carried/)
-    assert.match(answered, /This Agent may call: QueryBoard, ApplyBatch, ApplyAction, ReadArtifact, EndGoal\./)
+    assert.match(answered, /This Agent may call: QueryBoard, ApplyBatch, ApplyAction, ReadArtifact\./)
   })
 }
 
@@ -1259,19 +1260,22 @@ test('the OpenAI wire carries function tools, tool_calls, and role tool replies'
   // Object-only model interfaces need the top-level field catalogue of every batch operation,
   // a goal's parent included (A-4), while the alternatives keep their exact constraints.
   assert.ok(Object.hasOwn(batch.properties.operations.items.properties, 'parent'))
-  const ending = first.tools.find(tool => tool.function.name === 'EndGoal').function.parameters
+  const ending = batch.properties.operations.items.oneOf.find(schema => schema.properties?.op?.const === 'end_goal')
   assert.deepEqual(ending.properties.disposition.enum, ['cancelled', 'failed', 'abandoned', 'superseded'])
   const validator = new Ajv({ strict: false })
   const samples = {
-    EndGoal: [{ goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' }, { goal: 'GOAL_1', disposition: 'completed', reason: 'Done.' },
-      { goal: 'GOAL_1', disposition: 'cancelled' }, {}],
     QueryBoard: [{}, { include: ['nodes'], selector: { goals: ['goal-1'] } }, { include: ['nodes'] }, { include: ['nodes'], selector: { goals: [] } },
       { include: ['nodes'], selector: { goals: [{}] } }, { include: ['history'], selector: { goals: ['goal-1'] } }, { include: ['cases'] },
-      { include: ['nodes'], selector: { roots: ['root-1'] } }],
+      { include: ['nodes'], selector: { roots: ['root-1'] } },
+      { include: ['history'], selector: { goals: ['goal-1'] }, historyOffset: 1 },
+      { include: ['history'], selector: { goals: ['goal-1'] }, historyOffset: 1, historyVersion: 'old' }],
     ApplyBatch: [{ operations: [{ op: 'assert_fact', predicate: 'x', args: { n: 1 } }] }, { operations: [{}] }, { operations: [{ op: 'unknown' }] },
       { operations: [{ op: 'declare_goal', desired: [{ predicate: 'task_done', args: {} }] }] },
       { operations: [{ op: 'declare_goal', desired: [{ predicate: 'step_done', args: {} }], parent: 'GOAL_1' }] },
-      { operations: [{ op: 'declare_goal', desired: [] }] }, { operations: [{ op: 'sign_off', goal: 'GOAL_1' }] }],
+      { operations: [{ op: 'declare_goal', desired: [] }] }, { operations: [{ op: 'sign_off', goal: 'GOAL_1' }] },
+      ...[{ goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' }, { goal: 'GOAL_1', disposition: 'completed', reason: 'Done.' },
+        { goal: 'GOAL_1', disposition: 'cancelled' }, {}].map(ending => ({ operations: [{ op: 'end_goal', ...ending }] })),
+      { operations: [{ op: 'revise_fact', id: 'F1' }] }, { operations: [{ op: 'apply_action', action: 'demo.run' }] }],
   }
   for (const [name, values] of Object.entries(samples)) {
     const original = validator.compile(advertisedTools().find(tool => tool.name === name).inputSchema)

@@ -212,7 +212,7 @@ test('the shipped inspector separates lifecycle, focus and detached observations
 
   context.events = [{ src: 'agent', type: 'operations', operations: [
     { tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', at: 'a', since: 'b' },
-    { tool: 'EndGoal', label: 'EndGoal GOAL_1', state: 'unknown', contentWithheld: true, at: 'c', since: 'd' },
+    { tool: 'ApplyBatch', label: 'ApplyBatch end_goal GOAL_1', state: 'unknown', contentWithheld: true, at: 'c', since: 'd' },
   ] }, { src: 'agent', type: 'exit' }]
   vm.runInContext('renderInspector(events)', context)
   assert.match(elements.get('operations').innerHTML, /Reported before the Agent process changed/)

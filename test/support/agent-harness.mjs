@@ -11,8 +11,8 @@
  *
  * There is exactly one path: `/mcp`. The gateway speaks the MCP 2025-11-25 lifecycle
  * (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`, plus `ping`
- * and a resumable GET stream), mints a session id per initialize, and answers the five tools
- * — `QueryBoard` / `ApplyBatch` / `ApplyAction` / `ReadArtifact` and `EndGoal`. Each answers
+ * and a resumable GET stream), mints a session id per initialize, and answers the four tools
+ * — `QueryBoard` / `ApplyBatch` / `ApplyAction` / `ReadArtifact`. Each answers
  * with JSON text carrying the result and this Agent's recent-operations strip, and carries host
  * metadata beside it in `_meta`, never inside the text.
  *
@@ -161,7 +161,7 @@ export const requiredHostFieldTools = () => advertisedTools().map((tool) => (too
  * mints goal IDs when a goal declared without a parent opens its contract inside `ApplyBatch`,
  * the same desired outcome declared again returns the open goal (`opened:false`), focus is per
  * authenticated session, `ApplyAction` reports pending work that a later read clears, and
- * `EndGoal` ends a goal with a non-completed disposition. A goal completes only when the
+ * `end_goal` alone in `ApplyBatch` ends a goal with a non-completed disposition. A goal completes only when the
  * Board certifies it: with `certifyAfterBatch`, a later `ApplyBatch` that leaves no gap
  * completes the focused goals in that commit, as Core does (A-13).
  *
@@ -224,6 +224,19 @@ export function defaultGateway({
       switch (name) {
         case 'ApplyBatch': {
           const operations = Array.isArray(args.operations) ? args.operations : []
+          const ending = operations.find(operation => operation?.op === 'end_goal')
+          if (ending !== undefined) {
+            if (operations.length !== 1) return refuse(session, 'end_goal_mixed_batch', 'end_goal must be the only operation in its batch.')
+            const target = state.goals.get(String(ending.goal ?? ''))
+            if (target === undefined) return refuse(session, 'unknown_goal', 'No such goal is visible to this Agent.')
+            if (target.status === 'paused') {
+              return refuse(session, 'goal_paused', 'A paused goal cannot be ended by the Agent; an authorized operator may record a non-completed disposition with a reason')
+            }
+            if (target.status !== 'running') return refuse(session, 'goal_ended', 'This goal has ended; declare a new goal for more work')
+            target.status = 'ended'
+            session.focus.delete(target.goal)
+            return accept(session, { result: { goal: target.goal, disposition: String(ending.disposition ?? '') } })
+          }
           const declared = []
           for (const operation of operations) {
             if (operation?.op !== 'declare_goal' || Object.hasOwn(operation, 'parent')) continue
@@ -266,17 +279,6 @@ export function defaultGateway({
           state.pending += 1
           state.gaps = [`invocation:inv_${state.pending}`]
           return accept(session, { receipt: { invocation: `inv_${state.pending}`, done: false } })
-        }
-        case 'EndGoal': {
-          const target = state.goals.get(String(args.goal ?? ''))
-          if (target === undefined) return refuse(session, 'unknown_goal', 'No such goal is visible to this Agent.')
-          if (target.status === 'paused') {
-            return refuse(session, 'goal_paused', 'A paused goal cannot be ended by the Agent; an authorized operator may record a non-completed disposition with a reason')
-          }
-          if (!['running'].includes(target.status)) return refuse(session, 'goal_ended', 'This goal has ended; declare a new goal for more work')
-          target.status = 'ended'
-          session.focus.delete(target.goal)
-          return accept(session, { result: { goal: target.goal, disposition: String(args.disposition ?? '') } })
         }
         case 'QueryBoard': {
           if (!queryIndependent && state.pending > 0 && actionSettles) { state.pending = 0; state.gaps = [] }
@@ -523,7 +525,7 @@ export async function runAgent({
   // makes a later request.
   const SETTLED = new Set(['done', 'failed', 'refused', 'unknown'])
   const UNRESOLVED = new Set(['running', 'waiting_for_decision', 'needs_person'])
-  const WRITES = new Set(['ApplyBatch', 'ApplyAction', 'EndGoal'])
+  const WRITES = new Set(['ApplyBatch', 'ApplyAction'])
   const operations = priorOperations.map((row, index) => ({ ordinal: index + 1,
     at: new Date(Date.now() - 60_000 + index).toISOString(), since: new Date().toISOString(),
     delivered: new Map(), acked: false, ...row }))
@@ -539,7 +541,8 @@ export async function runAgent({
   const counters = () => ({ pings, queries, toolCalls: toolCalls.length, requests: requests.length })
   // Taken only from the call's own input (meta v4 Label): a declaring ApplyBatch is labelled by its tool name alone.
   const labelOf = (name, args) => [name,
-    name === 'ApplyAction' ? args.action : name === 'EndGoal' ? args.goal : name === 'ReadArtifact' ? args.ref : '']
+    name === 'ApplyAction' ? args.action : name === 'ApplyBatch' && args.operations?.length === 1 && args.operations[0]?.op === 'end_goal'
+      ? `end_goal ${args.operations[0].goal}` : name === 'ReadArtifact' ? args.ref : '']
     .filter(Boolean).join(' ')
   /** How a decoded result ends, as a strip state. */
   const outcomeOf = (core) => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'node:http'
-import { callTool, runAgent, declareGoal } from './support/agent-harness.mjs'
+import { callTool, runAgent, declareGoal, defaultGateway } from './support/agent-harness.mjs'
 
 /**
  * The Board as the Java Gateway projects it: the business view in `view`, never the model's prose
@@ -21,9 +21,9 @@ const gatewayView = (name, args, board, session) => {
   return { ...result, view: payload }
 }
 const certify = (goal) => callTool('ApplyBatch', { operations: [{ op: 'assert_fact', predicate: 'certified_by_test', args: { goal } }] })
-/** End GOAL_n the way a disposition says: completed by the Board, or ended by EndGoal. */
+/** End GOAL_n the way a disposition says: completed by the Board, or ended by end_goal. */
 const endWith = (goal, disposition) => (disposition === 'completed' ? certify(goal)
-  : callTool('EndGoal', { goal, disposition, reason: `The work was ${disposition}.` }))
+  : callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal, disposition, reason: `The work was ${disposition}.` }] }))
 
 test('Gateway view keeps the remaining goal running after another goal ends', async () => {
   const run = await runAgent({
@@ -32,13 +32,17 @@ test('Gateway view keeps the remaining goal running after another goal ends', as
     tool: gatewayView,
     model: (round) => {
       if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
-      if (round === 3) return callTool('EndGoal', { goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' })
-      if (round === 4) return callTool('EndGoal', { goal: 'GOAL_2', disposition: 'abandoned', reason: 'Not needed.' })
+      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_1', disposition: 'abandoned', reason: 'Not needed.' }] })
+      if (round === 4) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_2', disposition: 'abandoned', reason: 'Not needed.' }] })
       return 'Both goals were abandoned.'
     },
   })
   assert.equal(run.code, 0, run.stdout + run.stderr)
-  assert.deepEqual(run.toolCalls.filter(call => call.name === 'EndGoal').map(call => call.args.goal), ['GOAL_1', 'GOAL_2'])
+  assert.deepEqual(run.toolCalls.filter(call => call.name === 'ApplyBatch' && call.args.operations?.[0]?.op === 'end_goal').map(call => call.args.operations[0].goal), ['GOAL_1', 'GOAL_2'])
+  assert.deepEqual(run.operations.slice(-2).map(({ tool, label }) => ({ tool, label })), [
+    { tool: 'ApplyBatch', label: 'ApplyBatch end_goal GOAL_1' },
+    { tool: 'ApplyBatch', label: 'ApplyBatch end_goal GOAL_2' },
+  ])
   assert.ok(run.localEvents.some(event => event.type === 'focus' && event.goals.length === 1 && event.goals[0].goal === 'GOAL_2' && event.goals[0].status === 'running'))
   assert.ok(run.localEvents.some(event => event.type === 'case-closed' && event.goal === 'GOAL_2' && event.disposition === 'abandoned'))
   assert.doesNotMatch(run.stdout, /No Board View was observed/)
@@ -120,15 +124,15 @@ test(`${mode} returns per-goal outcomes only for the current turn`, async () => 
 })
 }
 
-test('a refused EndGoal cannot enter the terminal outcome summary', async () => {
+test('a refused end_goal batch cannot enter the terminal outcome summary', async () => {
   const run = await runAgent({
     captureLocalEvents: true,
     env: { RULITH_MAX_ROUNDS: '5' },
     tool: gatewayView,
     model: round => {
       if (round <= 2) return callTool('ApplyBatch', declareGoal(round === 1 ? 'task_a' : 'task_b'))
-      if (round === 3) return callTool('EndGoal', { goal: 'GOAL_9', disposition: 'failed', reason: 'No such work.' })
-      return callTool('EndGoal', { goal: `GOAL_${round - 3}`, disposition: 'cancelled', reason: 'Withdrawn.' })
+      if (round === 3) return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: 'GOAL_9', disposition: 'failed', reason: 'No such work.' }] })
+      return callTool('ApplyBatch', { operations: [{ op: 'end_goal', goal: `GOAL_${round - 3}`, disposition: 'cancelled', reason: 'Withdrawn.' }] })
     },
   })
   assert.equal(run.code, 0, run.stderr)
@@ -136,4 +140,39 @@ test('a refused EndGoal cannot enter the terminal outcome summary', async () => 
   assert.deepEqual(end.endedGoals.map(row => row.disposition), ['cancelled', 'cancelled'])
   assert.equal(end.ok, false)
   assert.ok(run.localEvents.some(event => event.type === 'verdict' && event.accepted === false))
+})
+
+test('a mixed end_goal batch is refused without ending its goal or applying its other operation', async () => {
+  const gateway = defaultGateway()
+  const run = await runAgent({
+    argv: [], chatLines: ['Try the mixed batch.'], gateway, captureLocalEvents: true,
+    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
+      : round === 2 ? callTool('ApplyBatch', { operations: [
+        { op: 'assert_fact', predicate: 'x', args: {} },
+        { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
+      ] }) : 'The mixed batch was refused.',
+  })
+  assert.equal(run.code, 0, run.stderr)
+  assert.equal(gateway.state.goals.get('GOAL_1').status, 'running')
+  assert.equal(gateway.state.revision, 1, 'the refused mixed batch changed the Board')
+  assert.equal(run.localEvents.some(event => event.type === 'case-closed'), false)
+  assert.equal(run.operations.at(-1).state, 'refused')
+  assert.equal(run.operations.at(-1).core.errorCode, 'end_goal_mixed_batch')
+})
+
+test('an accepted end_goal reports the disposition this host sent rather than one returned in the result', async () => {
+  const run = await runAgent({ argv: [], chatLines: ['Cancel it.'], captureLocalEvents: true,
+    tool: (name, args, board, session) => {
+      if (name !== 'ApplyBatch' || args.operations?.[0]?.op !== 'end_goal') return undefined
+      const { payload, ...answer } = board.tool(name, args, session)
+      return { ...answer, view: payload, result: { ...answer.result, disposition: 'failed' } }
+    },
+    model: round => round === 1 ? callTool('ApplyBatch', declareGoal())
+      : round === 2 ? callTool('ApplyBatch', { operations: [
+        { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
+      ] }) : 'Cancelled.',
+  })
+  assert.equal(run.code, 0, run.stderr)
+  assert.match(run.stdout, /Goal "GOAL_1" ended as "cancelled"/)
+  assert.equal(run.localEvents.find(event => event.type === 'case-closed').disposition, 'cancelled')
 })

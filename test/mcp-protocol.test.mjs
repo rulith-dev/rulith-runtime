@@ -379,24 +379,40 @@ test('RT-SURFACE-3 a duplicated approved tool is refused rather than de-duplicat
   assert.match(run.stderr, /advertises ApplyBatch more than once/)
 })
 
-test('RT-SURFACE-4 a missing approved tool is refused and named', async () => {
+for (const missing of MODEL_TOOLS) {
+test(`RT-SURFACE-4 a missing approved tool ${missing} is refused and named`, async () => {
   const run = await runAgent({
-    argv: ['hello'], advertise: ['ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal'],
+    argv: ['hello'], advertise: MODEL_TOOLS.filter(name => name !== missing),
     model: () => 'The model should never be asked.',
     timeoutMs: 20_000,
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0)
   assert.equal(run.modelRequests.length, 0)
-  assert.match(run.stderr, /does not advertise QueryBoard/)
+  assert.ok(run.stderr.includes(`does not advertise ${missing}`), run.stderr)
 })
+}
 
-test('RT-SURFACE-5 the approved five, exactly, reach the model (calibration)', async () => {
+test('RT-SURFACE-5 the approved four, exactly, reach the model (calibration)', async () => {
   const run = await runAgent({ argv: [], chatLines: ['hello'], model: () => 'Hello.', timeoutMs: 20_000 })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
+  assert.deepEqual(offered, ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact'])
   assert.deepEqual([...offered].sort(), [...MODEL_TOOLS].sort())
   assert.doesNotMatch(run.stderr, /cannot speak/)
+})
+
+test('RT-SURFACE-5b a v4 endpoint still advertising EndGoal has not been updated', async () => {
+  const run = await runAgent({
+    argv: ['hello'],
+    extraTools: [{ name: 'EndGoal', description: 'retired', inputSchema: { type: 'object' } }],
+    model: () => 'The model should never be asked.',
+  })
+  assert.equal(run.code, 1, `${run.stdout}\n${run.stderr}`)
+  assert.match(run.stderr, /it still advertises EndGoal, which rulith\/v4 removed/)
+  assert.match(run.stderr, /this endpoint has not been cut over to end_goal inside ApplyBatch/)
+  assert.equal(run.modelRequests.length, 0)
+  assert.deepEqual(run.verbs, [])
 })
 
 // ── A local read limit is not the same as no answer ──────────────────────────
@@ -468,13 +484,13 @@ test('RT-SURFACE-6 a paged tools/list is read to the end before membership is ju
   // read only the first page would refuse a conforming endpoint for "not advertising
   // QueryBoard" — and would point the reader at the wrong side of the mismatch.
   const run = await runAgent({
-    argv: [], chatLines: ['hello'], pageTools: 2,
+    argv: [], chatLines: ['hello'], pageTools: 1,
     model: () => 'Hello.',
     timeoutMs: 20_000,
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const pages = run.requests.filter((request) => request.method === 'tools/list')
-  assert.equal(pages.length, 3, `six tools in pages of two is three pages: ${pages.length}`)
+  assert.equal(pages.length, 4, `four tools in pages of one is four pages: ${pages.length}`)
   const offered = (run.modelRequests[0].tools ?? []).map((tool) => tool.function?.name ?? tool.name)
   assert.deepEqual([...offered].sort(), [...MODEL_TOOLS].sort())
   assert.doesNotMatch(run.stderr, /does not advertise/)

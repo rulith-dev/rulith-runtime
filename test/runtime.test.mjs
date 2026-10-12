@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.13.0')
+  assert.equal(pkg.version, '0.14.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -148,7 +148,7 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
     'the first-party Agent must not retain a native Cloud route unavailable to ordinary MCP clients')
 })
 
-test('the model surface is the five tools of the unified list, and no second grammar survives', () => {
+test('the model surface is the four tools of the unified list, and no second grammar survives', () => {
   const whole = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
   // The runtime names the retired surfaces once, in the constant it refuses them by. That
   // single declaration is the allow-list; the scan below runs over everything else, so a
@@ -159,8 +159,11 @@ test('the model surface is the five tools of the unified list, and no second gra
     'a v2 endpoint still advertising ReadOperation would no longer be named')
   assert.match(whole, /const RETIRED_V3_TOOL_NAMES = \['OpenCase', 'CloseCase'\]/,
     'a v3 endpoint still advertising OpenCase or CloseCase would no longer be named')
+  assert.match(whole, /const RETIRED_V4_TOOL_NAMES = \['EndGoal'\]/,
+    'an endpoint still advertising the EndGoal tool would no longer be named')
   const source = whole.split('\n').filter((line) => !line.startsWith('const RETIRED_TOOL_NAMES =')
-    && !line.startsWith('const RETIRED_V2_TOOL_NAMES =') && !line.startsWith('const RETIRED_V3_TOOL_NAMES =')).join('\n')
+    && !line.startsWith('const RETIRED_V2_TOOL_NAMES =') && !line.startsWith('const RETIRED_V3_TOOL_NAMES =')
+    && !line.startsWith('const RETIRED_V4_TOOL_NAMES =')).join('\n')
   // Membership comes from the vendored projection of `protocol/mcp-surface.json`, with each
   // tool's dispatch target beside it, and from nowhere else. The retired handwritten
   // `agentVerb` / `agentRead` membership fields are gone with the host split.
@@ -200,7 +203,7 @@ test('the model surface is the five tools of the unified list, and no second gra
     'transportAmbiguous', 'call_gate_open',
     // The rulith/v3 Case surface, by every name a call or a read could still take: no OpenCase or
     // CloseCase is carried, no focus pair or Case directory is read, and nothing pins a Case Type.
-    "'OpenCase'", "'CloseCase'", 'focusedRoots', 'affectedCases', 'caseHistory', 'cases\\?\\.directory', 'focusPairsOf',
+    "'OpenCase'", "'CloseCase'", "'EndGoal'", 'focusedRoots', 'affectedCases', 'caseHistory', 'cases\\?\\.directory', 'focusPairsOf',
     'focusExistingCase', 'selectedCaseType', 'caseTypePinned', 'selectedBusinessKey', 'materialTargetCaseId',
   ]) {
     assert.doesNotMatch(source, new RegExp(retired), `${retired} survived the single-MCP rewrite`)
@@ -343,7 +346,6 @@ test('the Agent completes a minimal run through a real local MCP server, on /mcp
           { name: 'ApplyBatch', inputSchema: { type: 'object', properties: { operations: { type: 'array' }, case: { type: 'object' } } } },
           { name: 'ApplyAction', inputSchema: { type: 'object', properties: { action: { type: 'string' }, case: { type: 'object' } } } },
           { name: 'ReadArtifact', inputSchema: { type: 'object', required: ['ref'], properties: { ref: { type: 'string' }, offset: { type: 'integer' }, maxBytes: { type: 'integer' } } } },
-          { name: 'EndGoal', inputSchema: { type: 'object', required: ['goal', 'disposition', 'reason'], properties: { goal: { type: 'string' }, disposition: { type: 'string' }, reason: { type: 'string' } } } },
         ],
         _meta: { 'rulith/v4': { agentId: 'agent-public-1', focusedGoals: [] } },
       })
@@ -1478,10 +1480,11 @@ test('one system prompt explains reasoning without granting Case-specific author
   const words = prompt.split(/\s+/).filter(Boolean).length
   // 所有者 2026-10-04：本地模型 prefill 快且有前缀缓存，提示可放宽到 600 词；只在实测需要时加字。
   assert.ok(words > 100 && words < 600, `the prompt is ${words} words; the owner set the budget at 600 (2026-10-04)`)
-  for (const shape of ['assert_fact', 'add_axiom', 'declare_goal', 'retract_node', 'revise_fact']) {
+  for (const shape of ['assert_fact', 'add_axiom', 'declare_goal', 'retract_node']) {
     assert.ok(prompt.includes(shape), `the prompt does not name the ${shape} shape`)
   }
-  assert.doesNotMatch(prompt, /declare_hypothesis|record_result/)
+  assert.doesNotMatch(prompt, /declare_hypothesis|record_result|revise_fact|EndGoal/)
+  assert.match(prompt, /Let rules derive conclusions; retract_node corrects your assertion\./)
   // Package A, V46–V50, verbatim.
   assert.ok(prompt.includes('declare_goal states an outcome you will work toward: without parent it starts new work, with parent it breaks a goal down.'), 'V46')
   assert.ok(prompt.includes('A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.'), 'V47')
@@ -1489,7 +1492,7 @@ test('one system prompt explains reasoning without granting Case-specific author
   assert.ok(prompt.includes('Its position says whether writes, new goals and rules are open;'), 'V49')
   assert.ok(prompt.includes('When you declare a capability\'s goal, the Board plants the steps its capability prepared. Work toward unmet goals'
     + ' by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board'
-    + ' certifies ends as completed by itself; end a goal you will not pursue with EndGoal and a reason.'), 'V50')
+    + ' certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.'), 'V50')
   assert.doesNotMatch(prompt, /\bCases?\b|OpenCase|CloseCase|rulith\.exploration\.completed/, 'a Case sentence survived in the system prompt')
   assert.match(prompt, /each Action says ready or blocked and why, or what it will wait for/)
   assert.match(prompt, /not a promise: calls are checked again/)

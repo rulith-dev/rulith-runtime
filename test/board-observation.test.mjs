@@ -73,14 +73,14 @@ test('RT-OBS-2c a v3 tool surface beside a v4 capability is refused at tools/lis
   const v4 = (await import('./support/agent-harness.mjs')).advertisedTools()
   const run = await runAgent({
     argv: ['Inspect pending work.'],
-    toolSchemas: v4.filter((tool) => tool.name !== 'EndGoal'),
+    toolSchemas: v4.filter((tool) => tool.name !== 'ApplyAction'),
     extraTools: [{ name: 'OpenCase', description: 'Rulith OpenCase', inputSchema: { type: 'object' } },
       { name: 'CloseCase', description: 'Rulith CloseCase', inputSchema: { type: 'object' } }],
     model: () => callTool('QueryBoard', {}),
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 1)
-  assert.match(run.stderr, /it does not advertise EndGoal/)
+  assert.match(run.stderr, /it does not advertise ApplyAction/)
   assert.match(run.stderr, /it still advertises OpenCase, CloseCase, which rulith\/v4 removed/)
   assert.equal(run.modelRequests.length, 0)
   assert.deepEqual(run.verbs, [])
@@ -99,6 +99,22 @@ test('RT-OBS-3 an operation that needs reconciliation can be observed; nothing i
   assert.equal(Object.hasOwn(read.operations[0], 'result'), false)
   const projected = projectOperations(run.localEvents.map(event => ({ ...event, src: 'agent' })))
   assert.equal(projected.entries[0].needsPerson, true)
+})
+
+test('end_goal inside ApplyBatch is guarded while another operation is unresolved', async () => {
+  const run = await runAgent({
+    argv: [], chatLines: ['Cancel it.'], priorOperations: RUNNING,
+    model: round => round === 1 ? callTool('ApplyBatch', { operations: [
+      { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
+    ] }) : 'The running operation prevents this write.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  const [refused] = toolAnswers(run.modelRequests[1])
+  assert.equal(refused.accepted, false)
+  assert.equal(refused.requestExecuted, false)
+  assert.equal(refused.errorCode, 'operation_running')
+  assert.deepEqual(run.verbs, ['ApplyBatch'])
+  assert.equal(run.operations.length, 1, 'the guarded write was admitted as an operation')
 })
 
 test('RT-OBS-4 beside a running operation a read runs, a write is not executed, and the rest waits for the model', async () => {

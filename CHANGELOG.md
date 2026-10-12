@@ -2,6 +2,18 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.14.0 - 2026-10-12
+
+- Agent: follows the reduced `rulith/v4` model surface (D-1012a), with four tools:
+  `QueryBoard`, `ApplyBatch`, `ApplyAction` and `ReadArtifact`. Ending a goal is the
+  `end_goal` operation inside `ApplyBatch`, alone in its batch, with a goal, a
+  non-completed disposition and a reason. Endings report the disposition this host sent,
+  including after a held call settles; strip entries use `ApplyBatch end_goal <goal>`.
+- Agent: an endpoint that still lists `EndGoal`, or omits any of the four tools, is a
+  protocol mismatch. The model batch no longer offers `revise_fact` or `apply_action`;
+  `QueryBoard` history pages continue from `nextOffset` alone, without `historyVersion`.
+  The system prompt names `end_goal` and corrects assertions with `retract_node`.
+
 ## 0.13.0 - 2026-10-09
 
 - Agent: speaks `rulith/v4`, the goal-centric model surface (package A), and no longer

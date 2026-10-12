@@ -28,7 +28,7 @@ remote endpoints require a provider key. The five-minute run assumes those prere
 PowerShell:
 
 ```powershell
-npm.cmd install --global rulith@0.13.0
+npm.cmd install --global rulith@0.14.0
 node "$(npm.cmd root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -36,7 +36,7 @@ rulith start
 Bash:
 
 ```bash
-npm install --global rulith@0.13.0
+npm install --global rulith@0.14.0
 node "$(npm root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -88,7 +88,7 @@ pins. It does not create credentials, install a Capability, or grant access to a
 
 ## Run and verify
 
-Rulith Runtime 0.13.0 speaks `rulith/v4`: the Agent declares goals inside `ApplyBatch`,
+Rulith Runtime 0.14.0 speaks `rulith/v4`: the Agent declares goals inside `ApplyBatch`,
 and the Board completes a goal by itself in the commit that certifies it. The Agent first
 reads the trusted input under an `exploration` intake goal it declares, then declares the
 `verified_calculation` capability's goal with the returned `job_id`. In the Local
@@ -176,7 +176,7 @@ does not, inspect the returned gaps and goals. A goal you will not pursue furthe
 with a disposition and a reason instead; that is never a completion:
 
 ```json
-{"tool":"EndGoal","input":{"goal":"<the goal ApplyBatch returned>","disposition":"abandoned","reason":"The input job was withdrawn."}}
+{"tool":"ApplyBatch","input":{"operations":[{"op":"end_goal","goal":"<the goal ApplyBatch returned>","disposition":"abandoned","reason":"The input job was withdrawn."}]}}
 ```
 
 A model answer, a derived result or an output file alone does not prove completion. Console

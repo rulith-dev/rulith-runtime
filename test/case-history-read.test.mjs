@@ -54,3 +54,24 @@ test('a historical read is never an operation: it is not held, waited for or rep
   assert.equal(run.toolCalls.every(call => call.progressToken === undefined), true, 'a read asked to be held')
   assert.equal(run.pings, 0)
 })
+
+test('a history page continues from nextOffset without historyVersion', async () => {
+  const run = await runAgent({ argv: [], chatLines: ['Read both history pages.'],
+    model: (round, request) => {
+      if (round === 1) return callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] } })
+      if (round === 2) {
+        const answer = JSON.parse(request.messages.findLast(message => message.role === 'tool').content)
+        return callTool('QueryBoard', { include: ['history'], selector: { goals: ['goal-old'] }, historyOffset: answer.view.history.nextOffset })
+      }
+      return 'Reviewed both pages.'
+    },
+    tool: (name, args) => name === 'QueryBoard' ? { ...result, view: { history: { ...history,
+      nextOffset: args.historyOffset === undefined ? 25 : null, truncated: args.historyOffset === undefined } } } : undefined,
+  })
+  assert.equal(run.code, 0, run.stderr)
+  assert.deepEqual(run.toolCalls.map(call => call.args), [
+    { include: ['history'], selector: { goals: ['goal-old'] } },
+    { include: ['history'], selector: { goals: ['goal-old'] }, historyOffset: 25 },
+  ])
+  assert.equal(run.operations.length, 0)
+})

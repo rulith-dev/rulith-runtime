@@ -12,6 +12,7 @@
  * own invention proves nothing about the file that ships.
  */
 import assert from 'node:assert/strict'
+import Ajv from 'ajv'
 import test from 'node:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -42,10 +43,10 @@ test('RT-CONTRACT-1 the vendored bundle is what this Runtime speaks', () => {
   assert.deepEqual(bundle.operationStates,
     ['running', 'waiting_for_decision', 'done', 'failed', 'refused', 'unknown', 'needs_person'])
   assert.deepEqual(bundle.runningStages, ['not_dispatched', 'at_worker'])
-  // Package A (D-1008i): five tools, OpenCase and CloseCase gone with no alias, EndGoal new.
-  assert.deepEqual(MODEL_TOOLS, ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal'])
-  assert.deepEqual(bundle.operationTools, ['ApplyBatch', 'ApplyAction', 'ReadArtifact', 'EndGoal'])
-  for (const retired of ['ReadOperation', 'OpenCase', 'CloseCase']) {
+  // D-1012a: four tools, end_goal inside ApplyBatch, and no retired tool aliases.
+  assert.deepEqual(MODEL_TOOLS, ['QueryBoard', 'ApplyBatch', 'ApplyAction', 'ReadArtifact'])
+  assert.deepEqual(bundle.operationTools, ['ApplyBatch', 'ApplyAction', 'ReadArtifact'])
+  for (const retired of ['ReadOperation', 'OpenCase', 'CloseCase', 'EndGoal']) {
     assert.equal(bundle.tools.some((tool) => tool.name === retired), false, `${retired} is still on the surface`)
   }
   // The declaration keeps the C1 shape (heldCalls, seat); this Runtime states only the constant.
@@ -137,7 +138,7 @@ test('RT-CONTRACT-6 a rewritten tool projection cannot ride along on unchanged f
   })
   // The same for a requirement that quietly disappears.
   assert.throws(() => readContractBundle(bundleWith((bundle) => {
-    bundle.tools.find((tool) => tool.name === 'EndGoal').inputSchema.required = []
+    bundle.tools.find((tool) => tool.name === 'ApplyBatch').inputSchema.required = []
   })), /materialized schema no longer matches/)
 })
 
@@ -202,26 +203,43 @@ test('RT-CONTRACT-11 vendoring requires the contract repository\'s own verifier'
   assert.ok(proof > 0 && write > proof, 'the bundle is written before its provenance is proved')
 })
 
-test('the bundled ApplyBatch offers the model exactly nine operations', () => {
-  // D-1003a b（规范 ec6e77e）：declare_hypothesis 与 record_result 已退出模型批。C1（D-1008h）加入 sign_off。
+test('the bundled ApplyBatch offers the model exactly eight operations', () => {
+  // D-1012a: end_goal replaces revise_fact and the batch's apply_action.
   const tool = RAW.tools.find((row) => row.name === 'ApplyBatch')
   const defs = tool.inputSchema.$defs
   const resolve = (ref) => defs[ref.split('/').pop()]
   const operation = resolve(tool.inputSchema.properties.operations.items.$ref)
   assert.deepEqual(operation.oneOf.map((variant) => resolve(variant.$ref).properties.op.const),
-    ['assert_fact', 'declare_goal', 'add_axiom', 'define_action', 'apply_action', 'derive_aggregate',
-      'retract_node', 'revise_fact', 'sign_off'])
+    ['assert_fact', 'declare_goal', 'add_axiom', 'define_action', 'derive_aggregate',
+      'retract_node', 'sign_off', 'end_goal'])
   // A-4: a goal declared without parent starts new work; with parent it breaks a goal down.
   const declare = operation.oneOf.map((variant) => resolve(variant.$ref)).find((row) => row.properties.op.const === 'declare_goal')
   assert.deepEqual(Object.keys(declare.properties).sort(), ['desired', 'id', 'label', 'op', 'parent'])
   assert.deepEqual(declare.required, ['op', 'desired'])
 })
 
-test('the bundled EndGoal takes a goal, a non-completed disposition and a reason', () => {
-  const tool = RAW.tools.find((row) => row.name === 'EndGoal')
-  assert.deepEqual(tool.inputSchema.required, ['goal', 'disposition', 'reason'])
-  assert.deepEqual(tool.inputSchema.properties.disposition.enum, ['cancelled', 'failed', 'abandoned', 'superseded'])
-  assert.equal(tool.inputSchema.additionalProperties, false)
+test('the bundled end_goal takes a goal, a non-completed disposition and a reason', () => {
+  const tool = RAW.tools.find((row) => row.name === 'ApplyBatch')
+  const ending = Object.values(tool.inputSchema.$defs).find(schema => schema.properties?.op?.const === 'end_goal')
+  assert.deepEqual(ending.required, ['op', 'goal', 'disposition', 'reason'])
+  assert.deepEqual(ending.properties.disposition.enum, ['cancelled', 'failed', 'abandoned', 'superseded'])
+  assert.equal(ending.additionalProperties, false)
+  const validate = new Ajv({ strict: false }).compile(tool.inputSchema)
+  const operation = { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' }
+  assert.equal(validate({ operations: [operation] }), true)
+  for (const invalid of [{ ...operation, disposition: 'completed' }, { ...operation, reason: '' }, { op: 'end_goal' },
+    { op: 'revise_fact', id: 'F1' }, { op: 'apply_action', action: 'demo.run' }]) {
+    assert.equal(validate({ operations: [invalid] }), false, JSON.stringify(invalid))
+  }
+})
+
+test('the bundled QueryBoard continues history by offset alone', () => {
+  const schema = RAW.tools.find(tool => tool.name === 'QueryBoard').inputSchema
+  assert.equal(Object.hasOwn(schema.properties, 'historyVersion'), false)
+  const validate = new Ajv({ strict: false }).compile(schema)
+  const page = { include: ['history'], selector: { goals: ['GOAL_1'] }, historyOffset: 25 }
+  assert.equal(validate(page), true)
+  assert.equal(validate({ ...page, historyVersion: 'old' }), false)
 })
 
 test('RT-CONTRACT-12 a client declaration this Runtime cannot state completely is refused', () => {
