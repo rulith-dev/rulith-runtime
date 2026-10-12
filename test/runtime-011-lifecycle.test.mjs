@@ -86,6 +86,24 @@ test('Worker credential rejection stops automatic retries and reports needs setu
   assert.equal(rows().filter(row => row.type === 'spawn').length, 1)
 })
 
+test('Worker takeover exit stops automatic retries and remains stopped on resume', async t => {
+  const line = 'This connection was taken over by a newer Worker process; this one stops.'
+  const { host, rows, post } = await hostFixture(t, { enabled: true, workerEnv: { RULITH_TEST_EXIT_CODE: '4' } })
+  await until(() => !!host.status().workerSetting.failure)
+  assert.equal(host.status().worker, false)
+  assert.equal(host.status().ready.worker, false)
+  assert.equal(host.status().workerSetting.state, 'offline')
+  assert.equal(host.status().workerSetting.failure, line)
+  assert.equal(host.status().workerSetting.retryAt, null)
+  assert.ok(host.events().some(event => event.src === 'worker' && event.type === 'restart-failed'
+    && event.code === 4 && event.note === line))
+  await new Promise(done => setTimeout(done, 150))
+  await post('/setup/pair/poll', {})
+  await host.resumeWorker()
+  assert.equal(rows().filter(row => row.type === 'spawn').length, 1)
+  assert.equal(host.events().some(event => event.src === 'worker' && event.type === 'restart-wait'), false)
+})
+
 test('a message racing an Agent reload retries one refused task after the drain with the same request', async t => {
   const { host, rows, post } = await hostFixture(t, { agentEnv: { RULITH_TEST_TURN_MS: '350' } })
   assert.equal((await post('/cases', { text: 'first', sessionKey: 'one' })).status, 202)

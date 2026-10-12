@@ -4,6 +4,8 @@ All notable changes to the local runtime are documented here.
 
 ## 0.15.0 - 2026-10-12
 
+- Worker: stops with exit code 4 when a newer process takes over its Connection
+  (D-1012f); Local leaves that Worker stopped instead of restarting it.
 - Agent: vendors the D-1012e public MCP contract, with one-line input descriptions for
   the four tools. The operations strip shows running or waiting operations and the latest
   write whose result remains unacknowledged; it is empty when nothing needs attention.

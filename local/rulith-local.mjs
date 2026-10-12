@@ -32,6 +32,7 @@ const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROLE_SET = new Set(['agent', 'worker'])
 const MAX_BODY = 64 * 1024
+const WORKER_TAKEN_OVER_EXIT_CODE = 4
 
 /** Local owns both sides of each port connection, so it validates once and gives the
  * parent and child the same integer. Falling back independently lets the Agent listen on
@@ -297,7 +298,7 @@ export function createLocalHost({
   }
   const reloads = { agent: null, worker: null }
   const reloadAgain = { agent: false, worker: false }
-  let agentStarting, workerRetryTimer, workerFailures = 0, workerFailure = '', workerCredentialRejected = false
+  let agentStarting, workerRetryTimer, workerFailures = 0, workerFailure = '', workerRestartStopped = false
   const workerEnabled = () => selectedRoles.includes('worker') && config.worker?.enabled === true
   const workerSetup = () => {
     const env = effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
@@ -693,11 +694,13 @@ export function createLocalHost({
       if (components.worker.child === child) components.worker.child = null
       announceChildren()
       if (closing || !workerEnabled() || stopRequested.has(child)) return
-      if (code === 3) {
-        components.worker.availability = 'needs setup'
-        workerCredentialRejected = true
+      if (code === 3 || code === WORKER_TAKEN_OVER_EXIT_CODE) {
+        components.worker.availability = code === 3 ? 'needs setup' : 'offline'
+        workerRestartStopped = true
         workerFailures += 1
-        workerFailure = 'The Worker credential was rejected. Replace its Connection key before enabling local tools again.'
+        workerFailure = code === 3
+          ? 'The Worker credential was rejected. Replace its Connection key before enabling local tools again.'
+          : 'This connection was taken over by a newer Worker process; this one stops.'
         emit('worker', 'restart-failed', { note: workerFailure, code })
         return
       }
@@ -884,7 +887,7 @@ export function createLocalHost({
   // Reuse the role owner and its drain protocol; no second process manager or polling loop.
   const ensureWorker = async () => {
     if (closing || setup.busy || mcpServices.busy || !workerEnabled() || running('worker') || reloads.worker || workerRetryTimer
-      || workerCredentialRejected || workerFailures > workerRestartDelays.length) return
+      || workerRestartStopped || workerFailures > workerRestartDelays.length) return
     if (!workerSetup()) { workerFailure = 'Set up this Agent\'s Worker Connection before using local tools.'; return }
     const refused = await permitted({ kind: 'start', role: 'worker' })
     if (refused !== null) { workerFailure = refused; return }
@@ -901,7 +904,7 @@ export function createLocalHost({
     }
     const child = components[role].child
     if (!running(role)) {
-      if (role === 'worker') { workerFailures = 0; workerFailure = ''; workerCredentialRejected = false; void ensureWorker() }
+      if (role === 'worker') { workerFailures = 0; workerFailure = ''; workerRestartStopped = false; void ensureWorker() }
       return null
     }
     emit('local', 'role-reloading', { role, note: note ?? (role === 'agent'
@@ -959,7 +962,7 @@ export function createLocalHost({
     saveConfig(configFile, next)
     config = next
     workerFailures = 0; workerFailure = ''
-    workerCredentialRejected = false
+    workerRestartStopped = false
     clearTimeout(workerRetryTimer); workerRetryTimer = undefined; components.worker.retryAt = null
     if (enabled) {
       if (running('worker') && stopRequested.has(components.worker.child)) requestReload('worker')

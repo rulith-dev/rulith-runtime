@@ -540,8 +540,13 @@ export async function driveWorker({
   if (ipc) child.on('message', (message) => messages.push(message))
   child.stdout.setEncoding('utf8').on('data', (chunk) => { output += chunk })
   child.stderr.setEncoding('utf8').on('data', (chunk) => { output += chunk })
-  let childExited = false
-  const childExit = new Promise((exited) => child.once('exit', () => { childExited = true; exited() }))
+  let childExited = false, exitCode, exitSignal
+  const childExit = new Promise((exited) => child.once('exit', (code, signal) => {
+    childExited = true
+    exitCode = code
+    exitSignal = signal
+    exited()
+  }))
 
   const deadline = Date.now() + timeoutMs
   let timedOut = false
@@ -569,6 +574,6 @@ export async function driveWorker({
     : []
   rmSync(dir, { recursive: true, force: true })
   const of = (kind) => seen.filter((entry) => entry.operation.kind === kind)
-  return { seen, output, effects, timedOut, of, messages,
+  return { seen, output, effects, timedOut, of, messages, exitCode, exitSignal,
     ran: (label) => effects.filter((line) => line === label).length }
 }

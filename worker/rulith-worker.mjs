@@ -1654,6 +1654,25 @@ let lease
 let lastLeaseSnapshot
 let leaseKeeper
 let leaseClosing = false
+const WORKER_TAKEN_OVER_EXIT_CODE = 4
+let takenOver = false, pollAbort, takeoverRetired
+
+function stopIfTakenOver(errorCode) {
+  if (errorCode !== 'worker_lease_held' || lastLeaseSnapshot === undefined) return false
+  if (takenOver) return true
+  takenOver = true
+  running = false
+  leaseClosing = true
+  takeoverRetired = retireLeaseKeeper()
+  lease = undefined
+  reportAvailability('offline')
+  process.exitCode = WORKER_TAKEN_OVER_EXIT_CODE
+  console.error('This connection was taken over by a newer Worker process; this one stops.')
+  // Only the inbox wait is interrupted. Already claimed work follows the ordinary
+  // lease-loss path, including any receipt under its original dispatch identity.
+  pollAbort?.abort()
+  return true
+}
 
 function retireLeaseKeeper() {
   const keeper = leaseKeeper
@@ -1859,6 +1878,7 @@ async function renewLease(keeper) {
   // Release must not be followed by a late Renew that starts another keeper.
   if (keeper.stopped || leaseKeeper !== keeper || leaseClosing
     || lease?.workerGeneration !== held.workerGeneration) return undefined
+  if (stopIfTakenOver(answer?.errorCode)) return undefined
   if (leaseLiveRemainingMs(held) <= 0) return expire()
   const renewed = adoptLease(answer?.lease, 'RenewLease', startedAt, wallStartedAt)
   if (renewed === undefined) {
@@ -4938,7 +4958,8 @@ if (IS_MAIN) {
   // that knows about it — still holding a lease, still claiming work, while the machine
   // reports the instance as stopped. This emergency path can interrupt a claimed action;
   // its original dispatch remains unresolved at the authority, never reported as failure.
-  process.on('disconnect', () => { void stopWithoutHost() })
+  // A replaced process closes the channel itself to end; that is not the host going away.
+  process.on('disconnect', () => { if (!takenOver) void stopWithoutHost() })
   process.on('SIGTERM', requestDrain)
   process.on('SIGINT', requestDrain)
 
@@ -5017,11 +5038,13 @@ if (IS_MAIN) {
       const stopPollRenewal = keepLeaseAlive()
       let r, pollStartedAt, pollWallStartedAt
       try {
+        pollAbort = new AbortController()
         pollStartedAt = performance.now()
         pollWallStartedAt = Date.now()
         r = await work({ kind: POLL_KIND, tools: advertised,
-          ...(inputAdoption ? { inputAdoption } : {}) })
+          ...(inputAdoption ? { inputAdoption } : {}) }, lease, { signal: pollAbort.signal })
       } finally {
+        pollAbort = undefined
         await stopPollRenewal()
       }
       if (!running || leaseClosing) break
@@ -5125,6 +5148,7 @@ if (IS_MAIN) {
         console.log(`\n· Note: a reviewer is configured, but no review arrived in five polls. If actions are awaiting clearance, confirm that Connection "${CONNECTION_ID}" has the reviewer role.`)
       }
     } catch (e) {
+      if (takenOver) break
       reportAvailability(e instanceof CredentialRejectedError ? 'needs setup' : 'offline')
       if (e instanceof CredentialRejectedError) {
         console.error(e.message)
@@ -5133,6 +5157,7 @@ if (IS_MAIN) {
         continue
       }
       if (e instanceof PollRefusedError) {
+        if (stopIfTakenOver(e.errorCode)) continue
         // The Gateway decides admission against the lease it holds, so a refused poll means
         // the one this process believes in is not it. Dropping it here is what makes the
         // next poll an acquiring one; keeping it would restate a generation that has already
@@ -5159,5 +5184,11 @@ if (IS_MAIN) {
   await delivering
   await releaseLease().catch(() => false)
   await closeMcpClients()
-  if (stoppingLocal) process.exit(process.exitCode ?? 0)
+  if (takenOver) {
+    // A replaced process ends on its own with exitCode already set. Its IPC channel is the one thing that would
+    // keep the event loop alive, so it is closed here; forcing process.exit instead races handles that are
+    // still closing (a libuv assertion on Windows).
+    await Promise.resolve(takeoverRetired).catch(() => {})
+    if (process.connected) process.disconnect()
+  } else if (stoppingLocal) process.exit(process.exitCode ?? 0)
 }

@@ -48,6 +48,136 @@ const identityOf = entry => ({
   workerId: entry.operation.workerId,
   workerIdHeader: entry.headers['x-rulith-worker'],
 })
+const TAKEOVER_LINE = 'This connection was taken over by a newer Worker process; this one stops.'
+
+for (const status of [200, 409]) {
+  test(`a held Worker stops after a Poll takeover refusal with HTTP ${status}`, async () => {
+    let polls = 0
+    const run = await driveWorker({
+      ipc: true,
+      env: { RULITH_LOCAL_EVENTS: 'ipc' },
+      reply: operation => operation.kind === 'Poll'
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [] } } }
+          : { status, body: { accepted: false, errorCode: 'worker_lease_held' } }
+        : { body: { accepted: true } },
+      done: (_seen, _output, control) => control.exited,
+      timeoutMs: 8000,
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.exitCode, 4, run.output)
+    assert.equal(run.exitSignal, null)
+    assert.equal(run.of('Poll').length, 2, 'the replaced process tried to acquire again')
+    assert.equal(run.of('ClaimWork').length, 0)
+    assert.equal(run.output.split('\n').filter(line => line.trim() === TAKEOVER_LINE).length, 1)
+  })
+
+  test(`a renewal takeover refusal with HTTP ${status} ends an idle long Poll`, async () => {
+    let polls = 0
+    const run = await driveWorker({
+      ipc: true,
+      env: { RULITH_LOCAL_EVENTS: 'ipc' },
+      lease: shortLease,
+      reply: operation => operation.kind === 'Poll'
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [] } } } : HOLD
+        : operation.kind === 'RenewLease'
+          ? { status, body: { accepted: false, errorCode: 'worker_lease_held' } }
+          : { body: { accepted: true } },
+      done: (_seen, _output, control) => control.exited,
+      timeoutMs: 8000,
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.exitCode, 4, run.output)
+    assert.equal(run.of('Poll').length, 2)
+    assert.equal(run.of('RenewLease').length, 1)
+    assert.equal(run.of('ClaimWork').length, 0)
+    assert.equal(run.output.split('\n').filter(line => line.trim() === TAKEOVER_LINE).length, 1)
+  })
+
+  test(`an expired Poll with HTTP ${status} re-acquires without the expired generation`, async () => {
+    let polls = 0
+    const run = await driveWorker({
+      reply: operation => {
+        if (operation.kind === 'Poll') {
+          if (++polls === 2) return { status, body: { accepted: false, errorCode: 'worker_lease_lost' } }
+          if (polls >= 4) return HOLD
+          if (polls >= 3) return { body: { accepted: true,
+            lease: activeLease({ workerId: operation.workerId, workerGeneration: 8 }), payload: { work: [] } } }
+          return { body: { accepted: true, payload: { work: [] } } }
+        }
+        return { body: { accepted: true } }
+      },
+      done: seen => seen.some(row => row.operation.kind === 'Poll' && row.operation.workerGeneration === 8),
+      timeoutMs: 9000,
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.deepEqual(run.of('Poll').map(row => row.operation.workerGeneration), [undefined, 7, undefined, 8])
+    assert.equal(run.output.includes(TAKEOVER_LINE), false)
+  })
+}
+
+test('a Worker that never held a lease still retries worker_lease_held', async () => {
+  let polls = 0
+  const run = await driveWorker({
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { status: 409, body: { accepted: false, errorCode: 'worker_lease_held' } }
+        : polls === 2 ? { body: { accepted: true, payload: { work: [] } } } : HOLD
+      : { body: { accepted: true } },
+    done: seen => seen.some(row => row.operation.kind === 'Poll' && row.operation.workerGeneration === 7),
+    timeoutMs: 9000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.deepEqual(run.of('Poll').map(row => row.operation.workerGeneration), [undefined, undefined, 7])
+  assert.equal(run.output.includes(TAKEOVER_LINE), false)
+})
+
+test('a takeover refusal still stops a process whose earlier lease was already lost', async () => {
+  let polls = 0
+  const run = await driveWorker({
+    ipc: true,
+    env: { RULITH_LOCAL_EVENTS: 'ipc' },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [] } } }
+        : { status: 409, body: { accepted: false,
+          errorCode: polls === 2 ? 'worker_lease_lost' : 'worker_lease_held' } }
+      : { body: { accepted: true } },
+    done: (_seen, _output, control) => control.exited,
+    timeoutMs: 9000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.exitCode, 4, run.output)
+  assert.deepEqual(run.of('Poll').map(row => row.operation.workerGeneration), [undefined, 7, undefined])
+  assert.equal(run.output.split('\n').filter(line => line.trim() === TAKEOVER_LINE).length, 1)
+})
+
+test('takeover during an action preserves ordinary lease loss and exits after the batch drains', async () => {
+  let lost = false
+  const run = await driveWorker({
+    ipc: true,
+    lease: shortLease,
+    extraAdapters: SLOW_ADAPTER,
+    extraTools: SLOW_TOOL,
+    env: { P2_SLOW_MS: '2400' },
+    reply: operation => {
+      if (operation.kind === 'Poll') return { body: { accepted: true, payload: { work: [slowRow(), actionRow()] } } }
+      if (operation.kind === 'RenewLease') {
+        lost = true
+        return { status: 409, body: { accepted: false, errorCode: 'worker_lease_held' } }
+      }
+      return { body: lost ? { accepted: false, errorCode: 'worker_lease_held' } : { accepted: true, revision: 'b12' } }
+    },
+    done: (_seen, _output, control) => control.exited,
+    timeoutMs: 8000,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.exitCode, 4, run.output)
+  assert.equal(run.of('Poll').length, 1)
+  assert.equal(run.of('ClaimWork').length, 1)
+  assert.equal(run.ran('slow'), 1)
+  assert.equal(run.ran('ship'), 0)
+  assert.equal(run.of('ReportWork').length, 1)
+  assert.deepEqual(identityOf(run.of('ReportWork')[0]), identityOf(run.of('ClaimWork')[0]))
+  assert.equal(run.output.split('\n').filter(line => line.trim() === TAKEOVER_LINE).length, 1)
+})
 
 test('late same-generation Poll snapshots cannot roll back a renewed lease', () => {
   const current = { workerGeneration: 7, serverTime: '2026-09-28T10:00:01.000Z',
