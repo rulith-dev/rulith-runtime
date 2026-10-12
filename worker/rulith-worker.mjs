@@ -692,9 +692,10 @@ async function credentialRejection(response) {
  * startup, without stating a generation it can no longer have checked.
  */
 class PollRefusedError extends Error {
-  constructor(message, errorCode) {
+  constructor(message, errorCode, reason) {
     super(message)
     this.name = 'PollRefusedError'
+    this.reason = reason
     this.errorCode = errorCode
   }
 }
@@ -1213,7 +1214,7 @@ async function work(operation, identity = lease, { signal } = {}) {
     const detail = flatPeerText([j.teaching, j.errorCode, errors.length > 0 ? errors.join('; ') : undefined]
       .find((value) => typeof value === 'string'), 300)
     throw new PollRefusedError(`Worker endpoint rejected ${operation.kind ?? 'operation'} with HTTP ${r.status}${detail ? `: ${detail}` : ''}`,
-      typeof j.errorCode === 'string' ? j.errorCode : undefined)
+      typeof j.errorCode === 'string' ? j.errorCode : undefined, typeof j.reason === 'string' ? j.reason : undefined)
   }
   // A poll answered 200 but refused in the body is the same refusal wearing a different
   // status. Admission is what `accepted` reports, so it decides here too, and a refusal
@@ -1221,7 +1222,7 @@ async function work(operation, identity = lease, { signal } = {}) {
   if (operation.kind === POLL_KIND && j.accepted === false) {
     const detail = flatPeerText([j.teaching, j.errorCode].find((value) => typeof value === 'string'), 300)
     throw new PollRefusedError(`Worker endpoint refused ${operation.kind}${detail ? `: ${detail}` : ''}`,
-      typeof j.errorCode === 'string' ? j.errorCode : undefined)
+      typeof j.errorCode === 'string' ? j.errorCode : undefined, typeof j.reason === 'string' ? j.reason : undefined)
   }
   return j
 }
@@ -1657,8 +1658,9 @@ let leaseClosing = false
 const WORKER_TAKEN_OVER_EXIT_CODE = 4
 let takenOver = false, pollAbort, takeoverRetired
 
-function stopIfTakenOver(errorCode) {
-  if (errorCode !== 'worker_lease_held' || lastLeaseSnapshot === undefined) return false
+// The Gateway names most Worker refusals as errorCode "rejected" with the specific code in reason.
+function stopIfTakenOver(errorCode, reason) {
+  if ((errorCode !== 'worker_lease_held' && reason !== 'worker_lease_held') || lastLeaseSnapshot === undefined) return false
   if (takenOver) return true
   takenOver = true
   running = false
@@ -1878,7 +1880,7 @@ async function renewLease(keeper) {
   // Release must not be followed by a late Renew that starts another keeper.
   if (keeper.stopped || leaseKeeper !== keeper || leaseClosing
     || lease?.workerGeneration !== held.workerGeneration) return undefined
-  if (stopIfTakenOver(answer?.errorCode)) return undefined
+  if (stopIfTakenOver(answer?.errorCode, answer?.reason)) return undefined
   if (leaseLiveRemainingMs(held) <= 0) return expire()
   const renewed = adoptLease(answer?.lease, 'RenewLease', startedAt, wallStartedAt)
   if (renewed === undefined) {
@@ -5157,7 +5159,7 @@ if (IS_MAIN) {
         continue
       }
       if (e instanceof PollRefusedError) {
-        if (stopIfTakenOver(e.errorCode)) continue
+        if (stopIfTakenOver(e.errorCode, e.reason)) continue
         // The Gateway decides admission against the lease it holds, so a refused poll means
         // the one this process believes in is not it. Dropping it here is what makes the
         // next poll an acquiring one; keeping it would restate a generation that has already

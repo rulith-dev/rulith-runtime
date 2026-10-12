@@ -50,15 +50,20 @@ const identityOf = entry => ({
 })
 const TAKEOVER_LINE = 'This connection was taken over by a newer Worker process; this one stops.'
 
-for (const status of [200, 409]) {
-  test(`a held Worker stops after a Poll takeover refusal with HTTP ${status}`, async () => {
+// The Java Gateway names the refusal as errorCode "rejected" with the code in reason; both shapes stop the Worker.
+const HELD_SHAPES = {
+  direct: { accepted: false, errorCode: 'worker_lease_held' },
+  gateway: { accepted: false, errorCode: 'rejected', reason: 'worker_lease_held' },
+}
+for (const [shape, held] of Object.entries(HELD_SHAPES)) for (const status of [200, 409]) {
+  test(`a held Worker stops after a Poll takeover refusal with HTTP ${status} (${shape})`, async () => {
     let polls = 0
     const run = await driveWorker({
       ipc: true,
       env: { RULITH_LOCAL_EVENTS: 'ipc' },
       reply: operation => operation.kind === 'Poll'
         ? ++polls === 1 ? { body: { accepted: true, payload: { work: [] } } }
-          : { status, body: { accepted: false, errorCode: 'worker_lease_held' } }
+          : { status, body: held }
         : { body: { accepted: true } },
       done: (_seen, _output, control) => control.exited,
       timeoutMs: 8000,
@@ -71,7 +76,7 @@ for (const status of [200, 409]) {
     assert.equal(run.output.split('\n').filter(line => line.trim() === TAKEOVER_LINE).length, 1)
   })
 
-  test(`a renewal takeover refusal with HTTP ${status} ends an idle long Poll`, async () => {
+  test(`a renewal takeover refusal with HTTP ${status} ends an idle long Poll (${shape})`, async () => {
     let polls = 0
     const run = await driveWorker({
       ipc: true,
@@ -80,7 +85,7 @@ for (const status of [200, 409]) {
       reply: operation => operation.kind === 'Poll'
         ? ++polls === 1 ? { body: { accepted: true, payload: { work: [] } } } : HOLD
         : operation.kind === 'RenewLease'
-          ? { status, body: { accepted: false, errorCode: 'worker_lease_held' } }
+          ? { status, body: held }
           : { body: { accepted: true } },
       done: (_seen, _output, control) => control.exited,
       timeoutMs: 8000,
