@@ -286,8 +286,9 @@ test('RT-CONV-5 an outcome captured for a conversation is shown once, in the str
   assert.equal(read.operations.filter((row) => row.label === 'ApplyAction demo.ship').length, 1)
   const [batch] = toolResults(asked[2]).slice(-1)
   assert.equal(batch.accepted, true)
-  assert.equal(Object.hasOwn(batch.operations.find((row) => row.label === 'ApplyAction demo.ship'), 'result'), false,
-    'the captured outcome was shown a second time')
+  const again = batch.operations.find((row) => row.label === 'ApplyAction demo.ship')
+  // D-1012e: the strip lists only what still needs attention, so the acknowledged call is usually absent.
+  assert.ok(again === undefined || !Object.hasOwn(again, 'result'), 'the captured outcome was shown a second time')
 })
 
 // ── What a conversation's model has not read outlives its transcript ─────────
@@ -345,7 +346,10 @@ for (const [slots, other] of [['1', 'reads'], ['1', 'chats'], ['64', 'reads']]) 
       // The second write never left this host: it was refused here, with the outcome. (The round
       // limit ends that turn too, so the refusal is seen in what this host reported, not in a later
       // model request.)
-      assert.deepEqual(run.verbs, ['ApplyAction', 'QueryBoard'], 'the write was sent, or the position was read twice')
+      // D-1012e: when B only chats, or B's read no longer lists A's acknowledged call, A's write reads
+      // the position once itself before it is refused here.
+      const expected = other === 'reads' ? ['ApplyAction', 'QueryBoard', 'QueryBoard'] : ['ApplyAction', 'QueryBoard']
+      assert.deepEqual(run.verbs, expected, 'the write was sent, or the position was read more than once for it')
       const refusal = run.localEvents.find((event) => event.type === 'verdict' && event.cmd === 'ApplyAction'
         && event.refusedLocally === true)
       assert.equal(refusal?.notExecuted, true, 'the second write was not refused here')
@@ -414,7 +418,9 @@ test('RT-CONV-7 after a restart, a conversation is shown an outcome its model ne
   assert.equal(refusal.errorCode, 'previous_result_undelivered')
   assert.equal(refusal.requestExecuted, false)
   const shown = refusal.operations.find((entry) => entry.label === 'ApplyAction demo.ship')
-  assert.equal(shown.state, 'done', 'the outcome was not shown as the fresh strip shows it')
+  // D-1012e: the fresh strip lists an acknowledged call no more; when it does not, the refusal names it.
+  if (shown !== undefined) assert.equal(shown.state, 'done', 'the outcome was not shown as the fresh strip shows it')
+  else assert.match(String(refusal.teaching), /ApplyAction demo\.ship/, 'the call the strip no longer lists was not named')
   assert.ok(refusal.view, 'the refusal does not carry the position it was read with')
   assert.match(lastUserText(second.modelRequests[0]), /Outcomes you have not been shown yet: ApplyAction demo\.ship\./)
   // Read now: nothing is kept for A any more.

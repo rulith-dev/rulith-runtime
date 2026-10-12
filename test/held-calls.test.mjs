@@ -581,9 +581,9 @@ for (const withheld of [false, true]) {
   })
 }
 
-test('RT-HELD-24 a withheld outcome the model has already been shown does not stop a held call from being waited for', async () => {
-  // A withheld entry stays on the strip long after it was delivered. Once a result has shown it
-  // to the model it is no longer news, and a held call is waited for as usual.
+test('RT-HELD-24 an acknowledged withheld outcome leaves the strip and does not interrupt a held call', async () => {
+  // D-1012e: acknowledgement removes settled writes, including withheld outcomes.
+  // Starting with an empty strip must still let the host identify and wait for its new call.
   const run = await runAgent({
     argv: [], chatLines: ['Look, then ship.'], env: FAST,
     priorOperations: [{ tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', contentWithheld: true, acked: true,
@@ -593,7 +593,7 @@ test('RT-HELD-24 a withheld outcome the model has already been shown does not st
     model: (round) => round === 1 ? callTool('QueryBoard', {}) : round === 2 ? ship : 'Shipped.',
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  assert.equal(toolResults(run, run.modelRequests[1])[0].operations.find((entry) => entry.label === 'ApplyBatch').contentWithheld, true)
+  assert.deepEqual(toolResults(run, run.modelRequests[1])[0].operations, [])
   assert.deepEqual(run.verbs, ['QueryBoard', 'ApplyAction', 'QueryBoard'], 'the host did not wait for the held call')
   assert.equal(toolResults(run).at(-1).result?.status, 'confirmed')
   assert.doesNotMatch(run.stdout, /earlier outcome the model has not seen yet/)
@@ -699,8 +699,8 @@ test('RT-HELD-26 a call that settles as its running answer is written is answere
 })
 
 test('RT-HELD-27 an entry of the same tool and label admitted earlier is never taken for the waited call', async () => {
-  // The same Action shipped before, and acknowledged: its entry stays on the strip beside the new
-  // one, alike in tool and label. Only the admission time tells them apart.
+  // The same Action shipped before, and acknowledged. Since D-1012e the strip no longer lists it, so it
+  // cannot be taken for the new call; the waited call is answered with its own result.
   const run = await runAgent({
     argv: [], chatLines: ['Ship it again.'], env: { ...FAST, RULITH_HOST_WAIT_MS: '2000' },
     priorOperations: [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'failed', acked: true,
@@ -713,8 +713,8 @@ test('RT-HELD-27 an entry of the same tool and label admitted earlier is never t
   const [answer] = toolResults(run)
   assert.equal(answer.result?.status, 'confirmed', 'the waited call was not answered with its own result')
   const alike = answer.operations.filter((entry) => entry.label === 'ApplyAction demo.ship')
-  assert.equal(alike.length, 2, 'the strip did not show both calls, so the arm proves nothing')
-  assert.notEqual(alike[0].at, alike[1].at)
+  assert.ok(alike.length <= 1, 'the acknowledged earlier call is still listed beside the new one')
+  assert.ok(!alike.some((entry) => entry.state === 'failed'), 'the earlier failed call was taken for the waited one')
 })
 
 test('RT-HELD-28 a waited result is given intact, its own Board View included, with the position beside it', async () => {
@@ -829,8 +829,8 @@ test('RT-HELD-33 the model is told which answers show operations, and a call thi
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
   const system = systemTextOf(run.modelRequests[0])
-  assert.match(system, /Every answer from the authority also shows operations/)
-  assert.match(system, /A call this Runtime did not send, or whose answer never arrived, shows no full list; QueryBoard does/)
+  assert.ok(system.includes('Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you.'))
+  assert.doesNotMatch(system, /recent operations|newest first|shows no full list/)
   assert.doesNotMatch(system, /Every tool result also shows operations/)
   const [refused] = toolResults(run)
   assert.equal(refused.errorCode, 'tool_not_carried')

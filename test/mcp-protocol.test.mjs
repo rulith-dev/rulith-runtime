@@ -348,14 +348,14 @@ test('RT-SURFACE-1 an extra advertised tool is a refused protocol mismatch, not 
   assert.match(run.stderr, /speaks the public MCP contract at commit [0-9a-f]{40}/)
 })
 
-test('RT-SURFACE-2 a retired host tool advertised again names itself in the refusal', async () => {
-  // `agent_protocol` and `GetCompletion` are the retired host surface. Both are extra names, but only one of them
-  // means "this endpoint has not been cut over", and the message says which.
+test('RT-SURFACE-2 retired tools fail the generic approved-surface check', async () => {
   const run = await runAgent({
     argv: ['hello'],
     extraTools: [
       { name: 'agent_protocol', description: 'retired', inputSchema: { type: 'object', properties: {} } },
       { name: 'GetCompletion', description: 'retired', inputSchema: { type: 'object', properties: {} } },
+      ...['GetBoardManifest', 'RunDischarge', 'GetProjection', 'GetChanges', 'ReadOperation', 'OpenCase', 'CloseCase']
+        .map((name) => ({ name, description: 'retired', inputSchema: { type: 'object', properties: {} } })),
     ],
     model: () => 'The model should never be asked.',
     timeoutMs: 20_000,
@@ -363,8 +363,8 @@ test('RT-SURFACE-2 a retired host tool advertised again names itself in the refu
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.notEqual(run.code, 0)
   assert.equal(run.modelRequests.length, 0)
-  assert.match(run.stderr, /still advertises the retired host surface agent_protocol, GetCompletion/)
-  assert.match(run.stderr, /has not been cut over to the single-MCP contract/)
+  assert.match(run.stderr, /it advertises agent_protocol, GetCompletion, GetBoardManifest, RunDischarge, GetProjection, GetChanges, ReadOperation, OpenCase, CloseCase, which is not part of the approved surface/)
+  assert.doesNotMatch(run.stderr, /retired host surface|has not been cut over|which rulith\/v[234] removed/)
 })
 
 test('RT-SURFACE-3 a duplicated approved tool is refused rather than de-duplicated', async () => {

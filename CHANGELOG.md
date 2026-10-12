@@ -2,6 +2,17 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.15.0 - 2026-10-12
+
+- Agent: vendors the D-1012e public MCP contract, with one-line input descriptions for
+  the four tools. The operations strip shows running or waiting operations and the latest
+  write whose result remains unacknowledged; it is empty when nothing needs attention.
+  The system prompt describes that strip, and the write gate, held calls and goal endings
+  continue to work when settled operations disappear.
+- Agent: removes the specific startup diagnostics for retired host, v2 and v3 Gateway
+  tools and earlier contract names. Those tools still fail the approved-surface check;
+  the specific `EndGoal` diagnostic and retired model-input field guard remain.
+
 ## 0.14.0 - 2026-10-12
 
 - Agent: follows the reduced `rulith/v4` model surface (D-1012a), with four tools:

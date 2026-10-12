@@ -81,8 +81,8 @@ const MCP_URL = `${URL_BASE}/mcp`
 // and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = '1e70b8a9c0754636a83b8379a87b91087b7ce22c'
-const RULITH_RUNTIME_VERSION = "0.14.0"
+const RULITH_CONTRACT_SOURCE_COMMIT = '3bb35e6f19be0aeb74d49b7cc6fb78c012fee5f9'
+const RULITH_RUNTIME_VERSION = "0.15.0"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v4'
@@ -1224,23 +1224,14 @@ async function openSession() {
         + ' rather than listing tools and discovering the difference during a write. Upgrade the endpoint, or use a Runtime'
         + ' built for the version it speaks.')
     }
-    // Held calls and the recent-operations strip are what this client is built on: a Gateway
+    // Held calls and the operations strip are what this client is built on: a Gateway
     // that does not promise them would end calls this client waits on in ways it cannot read.
-    // `rulith/v4` is a one-shot cutover (package A, A-2): this Runtime speaks no earlier contract,
-    // and an endpoint that advertises only `rulith/v3` (or older) is a Gateway that has not been
-    // cut over. It is refused here exactly as any other missing server contract is, before a
-    // tool is listed; the earlier key is named so that nobody reads it as a credential problem.
     const serverHolds = result?.capabilities?.experimental?.[RULITH_META]
     if (serverHolds === null || typeof serverHolds !== 'object' || Array.isArray(serverHolds)
       || Object.keys(serverHolds).length !== Object.keys(SERVER_CAPABILITIES).length
       || Object.entries(SERVER_CAPABILITIES).some(([name, value]) => serverHolds[name] !== value)) {
-      const experimental = result?.capabilities?.experimental
-      const earlier = experimental !== null && typeof experimental === 'object' && !Array.isArray(experimental)
-        ? Object.keys(experimental).filter((key) => /^rulith\/v[0-9]+$/.test(key) && key !== RULITH_META) : []
       throw new McpProtocolVersionError(`Rulith ${RULITH_RUNTIME_VERSION} requires ${RULITH_META} server capabilities`
-        + ` ${JSON.stringify(SERVER_CAPABILITIES)}. This endpoint did not advertise that contract`
-        + (earlier.length === 0 ? '.' : `; it advertises ${earlier.map((key) => plainPeerText(key, 40)).join(', ')},`
-          + ` an earlier Rulith contract that this Runtime no longer speaks.`)
+        + ` ${JSON.stringify(SERVER_CAPABILITIES)}. This endpoint did not advertise that contract.`
         + ` Install the matching Gateway release before starting this Runtime. ${nothingCalled()}`
         + ' Do not replace credentials or retry an unfinished action to resolve this version mismatch.')
     }
@@ -1287,16 +1278,6 @@ const RETIRED_TOOL_FIELDS = ['case', 'expectedRevision', 'caseRevision', 'expect
 const HOST_METADATA_FIELDS = ['kind', 'queryContext', 'audienceProfile', 'requestedRoots', 'admission',
   'interaction', 'requestId', 'boardId', 'protocol']
 const HOST_OWNED_TOOL_FIELDS = [...RETIRED_TOOL_FIELDS, ...HOST_METADATA_FIELDS]
-/** Retired surfaces. Advertising one is a server that has not been cut over, not a spare tool. */
-const RETIRED_TOOL_NAMES = ['agent_protocol', 'GetCompletion', 'GetBoardManifest', 'RunDischarge', 'GetProjection', 'GetChanges']
-/** Retired by `rulith/v3`: an outcome now reaches the model on the strip every result carries. */
-const RETIRED_V2_TOOL_NAMES = ['ReadOperation']
-/**
- * Retired by `rulith/v4` (package A, D-1008i), with no alias: a goal declared inside
- * `ApplyBatch` without a parent starts new work, a certified goal ends as completed by itself,
- * and `end_goal` ends a goal that will not be pursued.
- */
-const RETIRED_V3_TOOL_NAMES = ['OpenCase', 'CloseCase']
 /** D-1012a: ending a goal is now an operation inside ApplyBatch, with no tool alias. */
 const RETIRED_V4_TOOL_NAMES = ['EndGoal']
 
@@ -1390,30 +1371,14 @@ function toolMembershipConflicts(tools) {
   }
   const missing = MODEL_TOOLS.filter((name) => !seen.has(name))
   const extra = [...seen.keys()].filter((name) => !MODEL_TOOLS.includes(name))
-  const retired = extra.filter((name) => RETIRED_TOOL_NAMES.includes(name))
-  const retiredV2 = extra.filter((name) => RETIRED_V2_TOOL_NAMES.includes(name))
-  const retiredV3 = extra.filter((name) => RETIRED_V3_TOOL_NAMES.includes(name))
   const retiredV4 = extra.filter((name) => RETIRED_V4_TOOL_NAMES.includes(name))
   if (missing.length > 0) conflicts.push(`it does not advertise ${missing.join(', ')}`)
   if (duplicates.size > 0) conflicts.push(`it advertises ${[...duplicates].join(', ')} more than once`)
-  if (retired.length > 0) {
-    conflicts.push(`it still advertises the retired host surface ${retired.join(', ')},`
-      + ' which means this endpoint has not been cut over to the single-MCP contract')
-  }
-  if (retiredV2.length > 0) {
-    conflicts.push(`it still advertises ${retiredV2.join(', ')}, which rulith/v3 removed,`
-      + ' which means this endpoint has not been cut over to held calls and the recent-operations strip')
-  }
-  if (retiredV3.length > 0) {
-    conflicts.push(`it still advertises ${retiredV3.join(', ')}, which ${RULITH_META} removed,`
-      + ' which means this endpoint has not been cut over to goals declared in ApplyBatch and end_goal')
-  }
   if (retiredV4.length > 0) {
     conflicts.push(`it still advertises ${retiredV4.join(', ')}, which ${RULITH_META} removed,`
       + ' which means this endpoint has not been cut over to end_goal inside ApplyBatch')
   }
-  const unknown = extra.filter((name) => !RETIRED_TOOL_NAMES.includes(name) && !RETIRED_V2_TOOL_NAMES.includes(name)
-    && !RETIRED_V3_TOOL_NAMES.includes(name) && !RETIRED_V4_TOOL_NAMES.includes(name))
+  const unknown = extra.filter((name) => !RETIRED_V4_TOOL_NAMES.includes(name))
   if (unknown.length > 0) {
     conflicts.push(`it advertises ${unknown.join(', ')}, which is not part of the approved surface`)
   }
@@ -1737,7 +1702,7 @@ const identityOf = (entry) => ({ tool: entry.tool, label: entry.label, at: entry
 /** The identities on the strip last shown, or undefined when none was: what was there before a call. */
 const operationKeysNow = () => (Array.isArray(board.operations) ? new Set(board.operations.map(operationKey)) : undefined)
 
-/** Whether a strip carries an operation's full result: the one thing acknowledgement reduces to a summary. */
+/** Whether a strip carries an operation's full result, before acknowledgement removes that write. */
 const stripCarriesResult = (operations) => Array.isArray(operations)
   && operations.some((entry) => isRecord(entry) && Object.hasOwn(entry, 'result'))
 /** Whether an entry says the outcome itself: its full result, or its class with the content withheld. */
@@ -1751,9 +1716,9 @@ const latestSettledWriteOf = (operations) => (Array.isArray(operations)
 /**
  * The latest settled write, withheld, when this conversation's model has not been shown it yet.
  *
- * A withheld entry stays on the strip long after it was delivered, and says its outcome class the
- * same way before and after it is acknowledged. So it is news until the conversation's model has
- * been shown it once (`noteShownToModel`). One this process never showed that model — from before
+ * A withheld entry says its outcome class until acknowledgement removes it. So it is news until
+ * the conversation's model has been shown it once (`noteShownToModel`). One this process never
+ * showed that model — from before
  * a restart, or shown to another conversation — is news once more: that costs one look, never a
  * blind write.
  */
@@ -4040,7 +4005,7 @@ Every Board tool result carries the Board View the authority computed for that s
 
 When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
 
-Every answer from the authority also shows operations: this Agent's recent operations, other conversations' included, newest first. A call this Runtime did not send, or whose answer never arrived, shows no full list; QueryBoard does. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.`
+Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you. running means still in progress; never resend; operations will show its outcome. unknown means its effect may already have happened; do not repeat it. Writes while something runs are not executed. previous_result_undelivered: read that outcome in operations, then decide.`
 
 // ── Main loop: propose → adjudicate → teach back ─────────────────────────────
 const log = (s) => console.log(s)

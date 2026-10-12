@@ -10,12 +10,35 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { HOP_FAILURE, RULITH_META, callTool, runAgent } from './support/agent-harness.mjs'
+import { HOP_FAILURE, RULITH_META, callTool, runAgent, declareGoal } from './support/agent-harness.mjs'
 import { projectOperations } from '../local/local-ui.mjs'
 
 const RUNNING = [{ tool: 'ApplyAction', label: 'ApplyAction demo.ship', state: 'running', stage: 'at_worker' }]
 const toolAnswers = (request) => request.messages.filter((message) => message.role === 'tool')
   .map((message) => JSON.parse(message.content))
+
+test('D-1012e acknowledged writes leave an empty strip without blocking writes or losing goal endings', async () => {
+  const run = await runAgent({
+    argv: [], chatLines: ['Start, inspect, then cancel the goal.'], captureLocalEvents: true,
+    env: { RULITH_MAX_ROUNDS: '6' },
+    priorOperations: [{ tool: 'ApplyBatch', label: 'ApplyBatch', state: 'done', acked: true,
+      core: { accepted: true } }],
+    model: round => round === 1 || round === 3 || round === 5 ? callTool('QueryBoard', {})
+      : round === 2 ? callTool('ApplyBatch', declareGoal())
+        : round === 4 ? callTool('ApplyBatch', { operations: [
+          { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' },
+        ] }) : 'Cancelled.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.deepEqual(run.verbs, ['QueryBoard', 'ApplyBatch', 'QueryBoard', 'ApplyBatch', 'QueryBoard'])
+  const answers = toolAnswers(run.modelRequests.at(-1))
+  assert.deepEqual(answers.filter((_, i) => i % 2 === 0).map(answer => answer.operations), [[], [], []])
+  assert.ok(answers.filter((_, i) => i % 2 === 1).every(answer => answer.accepted === true))
+  assert.equal(run.pings, 0, 'an empty strip started a wait or an acknowledgement loop')
+  const end = run.localEvents.findLast(event => event.type === 'segment-end')
+  assert.deepEqual(end.endedGoals, [{ goal: 'GOAL_1', disposition: 'cancelled' }])
+  assert.ok(run.localEvents.some(event => event.type === 'operations' && event.operations.length === 0))
+})
 
 test('RT-OBS-1 a new user message can read the Board while an operation runs, and sees it running', async () => {
   const run = await runAgent({
@@ -48,7 +71,7 @@ test('RT-OBS-2 a server that does not promise held calls is refused at initializ
   assert.deepEqual(run.verbs, [])
 })
 
-test('RT-OBS-2b a Gateway still on rulith/v3 is refused at initialize as an earlier contract, exactly as v2 was', async () => {
+test('RT-OBS-2b a Gateway without rulith/v4 fails the generic capability check', async () => {
   // Package A is a one-shot cutover (A-2, A-22): this Runtime declares rulith/v4 only, and a
   // Gateway that answers with the C1 rulith/v3 capability has not been cut over. It is refused
   // before tools/list, before the model, and is not read as a credential fault.
@@ -62,14 +85,14 @@ test('RT-OBS-2b a Gateway still on rulith/v3 is refused at initialize as an earl
   assert.deepEqual(run.methods, ['initialize'])
   assert.deepEqual(run.initializes[0].capabilities.experimental, { 'rulith/v4': { heldCalls: 1 } },
     'this Runtime declared something besides rulith/v4')
-  assert.match(run.stderr, /requires rulith\/v4 server capabilities \{"heldCalls":1\}\. This endpoint did not advertise that contract;/)
-  assert.match(run.stderr, /it advertises rulith\/v3, an earlier Rulith contract that this Runtime no longer speaks\./)
+  assert.match(run.stderr, /requires rulith\/v4 server capabilities \{"heldCalls":1\}\. This endpoint did not advertise that contract\./)
+  assert.doesNotMatch(run.stderr, /it advertises rulith\/v3|an earlier Rulith contract/)
   assert.match(run.stderr, /Do not replace credentials/)
   assert.doesNotMatch(run.stderr, /token rejected|rotate the Agent token/)
   assert.equal(run.modelRequests.length, 0)
 })
 
-test('RT-OBS-2c a v3 tool surface beside a v4 capability is refused at tools/list, naming what was retired', async () => {
+test('RT-OBS-2c retired tools beside a v4 capability fail the generic membership check', async () => {
   const v4 = (await import('./support/agent-harness.mjs')).advertisedTools()
   const run = await runAgent({
     argv: ['Inspect pending work.'],
@@ -81,7 +104,8 @@ test('RT-OBS-2c a v3 tool surface beside a v4 capability is refused at tools/lis
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(run.code, 1)
   assert.match(run.stderr, /it does not advertise ApplyAction/)
-  assert.match(run.stderr, /it still advertises OpenCase, CloseCase, which rulith\/v4 removed/)
+  assert.match(run.stderr, /it advertises OpenCase, CloseCase, which is not part of the approved surface/)
+  assert.doesNotMatch(run.stderr, /which rulith\/v4 removed|has not been cut over/)
   assert.equal(run.modelRequests.length, 0)
   assert.deepEqual(run.verbs, [])
 })

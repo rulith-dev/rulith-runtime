@@ -13,12 +13,13 @@
  * (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`, plus `ping`
  * and a resumable GET stream), mints a session id per initialize, and answers the four tools
  * — `QueryBoard` / `ApplyBatch` / `ApplyAction` / `ReadArtifact`. Each answers
- * with JSON text carrying the result and this Agent's recent-operations strip, and carries host
+ * with JSON text carrying the result and this Agent's operations strip, and carries host
  * metadata beside it in `_meta`, never inside the text.
  *
  * The `rulith/v4` half of the contract is modelled because it is where the interesting
  * defects live. Every call but QueryBoard becomes an operation with a host-only ordinal; the
- * strip in every result shows the recent ones, and `initialize` and `ping` show their state
+ * strip in every result shows unresolved operations and the latest unacknowledged write,
+ * and `initialize` and `ping` show their state
  * form, ordinals included. A scenario's `hold` plan makes a call be held — answered
  * `running`, `waiting_for_decision` or `needs_person`, with progress for its progress token —
  * and settles it later. The write gate refuses a write while an operation is unresolved
@@ -586,8 +587,7 @@ export async function runAgent({
   const visibleStrip = (session, requestNo, own) => {
     const newest = [...listed()].reverse()
     const latest = latestSettledWrite()
-    const picked = newest.slice(0, 5)
-    for (const op of newest.slice(5)) if (UNRESOLVED.has(op.state) || (op === latest && !op.acked)) picked.push(op)
+    const picked = newest.filter((op) => UNRESOLVED.has(op.state) || (op === latest && !op.acked))
     return picked.map((op) => {
       // Shown in full: the latest settled write, still unacknowledged, in a response that is
       // not itself its result. A withheld outcome shows its state instead, and that counts too.
@@ -605,7 +605,8 @@ export async function runAgent({
     })
   }
   /** The state form, ordinals included and no content flag: host metadata of initialize and ping. */
-  const stateStrip = () => [...listed()].reverse().slice(0, 7).map((op) => ({
+  const stateStrip = () => [...listed()].reverse()
+    .filter((op) => UNRESOLVED.has(op.state) || (op === latestSettledWrite() && !op.acked)).map((op) => ({
     ordinal: op.ordinal, tool: op.tool, label: op.label, state: op.state,
     ...(op.state === 'running' && op.stage ? { stage: op.stage } : {}), at: op.at, since: op.since,
   }))

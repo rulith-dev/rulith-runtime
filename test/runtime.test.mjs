@@ -119,7 +119,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.14.0')
+  assert.equal(pkg.version, '0.15.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -150,20 +150,12 @@ test('the first-party Agent uses the same public MCP bearer surface as every oth
 
 test('the model surface is the four tools of the unified list, and no second grammar survives', () => {
   const whole = readFileSync(join(ROOT, 'agent', 'rulith-agent.mjs'), 'utf8')
-  // The runtime names the retired surfaces once, in the constant it refuses them by. That
-  // single declaration is the allow-list; the scan below runs over everything else, so a
-  // retired name reappearing anywhere it could be *called* still turns this red.
-  assert.match(whole, /const RETIRED_TOOL_NAMES = \['agent_protocol', 'GetCompletion', 'GetBoardManifest', 'RunDischarge', 'GetProjection', 'GetChanges'\]/,
-    'the refusal list for retired host surfaces is gone, so advertising one would no longer be named')
-  assert.match(whole, /const RETIRED_V2_TOOL_NAMES = \['ReadOperation'\]/,
-    'a v2 endpoint still advertising ReadOperation would no longer be named')
-  assert.match(whole, /const RETIRED_V3_TOOL_NAMES = \['OpenCase', 'CloseCase'\]/,
-    'a v3 endpoint still advertising OpenCase or CloseCase would no longer be named')
+  // EndGoal keeps its specific diagnostic for this release. Older names fail the same
+  // membership check as every other tool outside the approved surface.
+  assert.doesNotMatch(whole, /RETIRED_TOOL_NAMES|RETIRED_V2_TOOL_NAMES|RETIRED_V3_TOOL_NAMES/)
   assert.match(whole, /const RETIRED_V4_TOOL_NAMES = \['EndGoal'\]/,
     'an endpoint still advertising the EndGoal tool would no longer be named')
-  const source = whole.split('\n').filter((line) => !line.startsWith('const RETIRED_TOOL_NAMES =')
-    && !line.startsWith('const RETIRED_V2_TOOL_NAMES =') && !line.startsWith('const RETIRED_V3_TOOL_NAMES =')
-    && !line.startsWith('const RETIRED_V4_TOOL_NAMES =')).join('\n')
+  const source = whole.split('\n').filter((line) => !line.startsWith('const RETIRED_V4_TOOL_NAMES =')).join('\n')
   // Membership comes from the vendored projection of `protocol/mcp-surface.json`, with each
   // tool's dispatch target beside it, and from nowhere else. The retired handwritten
   // `agentVerb` / `agentRead` membership fields are gone with the host split.
@@ -1464,9 +1456,7 @@ test('the local Agent sends business values while Cloud mints identity and retur
   // longer budgets a projection of its own, so there is no second, quieter view to drift.
   assert.match(source, /const boardViewOf = \(result\) =>/)
   assert.doesNotMatch(source, /RULITH_ATTENTION_FACTS/)
-  // GetProjection appears once, inside the list of retired surfaces this client refuses.
-  assert.equal((source.match(/GetProjection/g) ?? []).length, 1)
-  assert.match(source, /const RETIRED_TOOL_NAMES = \[/)
+  assert.doesNotMatch(source, /GetProjection|RETIRED_TOOL_NAMES/)
   // Core mints the Case id and its stable acceptance root; the host must not.
   assert.doesNotMatch(source, /nextCaseId|CASE_PREFIX/,
     'Case-id minting belongs to Core, and a locally minted id would name a Case the authority did not')
@@ -1490,6 +1480,8 @@ test('one system prompt explains reasoning without granting Case-specific author
   assert.ok(prompt.includes('A goal type alone grants no rule-writing permission. Ending a goal preserves shared knowledge.'), 'V47')
   assert.ok(prompt.includes('Never assert acceptance_met, test_result or certification.'), 'V48')
   assert.ok(prompt.includes('Its position says whether writes, new goals and rules are open;'), 'V49')
+  assert.ok(prompt.includes('Every answer from the authority also shows operations: any operation of this Agent still running or waiting, and the latest write whose result has not reached you.'), 'D-1012e')
+  assert.doesNotMatch(prompt, /recent operations|newest first|shows no full list/)
   assert.ok(prompt.includes('When you declare a capability\'s goal, the Board plants the steps its capability prepared. Work toward unmet goals'
     + ' by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with ApplyBatch. A goal the Board'
     + ' certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.'), 'V50')
