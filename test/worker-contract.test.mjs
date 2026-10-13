@@ -526,9 +526,9 @@ test('RT-WKC-15 the runtime-owned open scenarios are the ones this suite answers
     // These scenarios are jointly owned with Gateway. These arms answer only the Worker
     // half; Gateway's durable operation, designation and suggestion semantics remain its tests.
     'review-reads-never-offered': 'worker-pre-execution-review: offer -> model tests assert no tools or Board reads',
-    'review-block-replay': 'worker-pre-execution-review: completed block/note replay keeps the original report',
-    'review-unavailable': 'worker-pre-execution-review: malformed, timeout, HTTP and cached failure reports',
-    'review-note-recovery': 'worker-pre-execution-review: completed block/note replay (process-local cache only)',
+    'review-once-per-call': 'worker-pre-execution-review: one model call per offer id and material digest; a repeated offer replays the report',
+    'review-failure-advice-free': 'worker-pre-execution-review: malformed (block included), timeout, HTTP and cached failure reports carry only a machine code',
+    'review-note-recovery': 'worker-pre-execution-review: completed note replay (process-local cache only)',
     'review-report-idempotency': 'worker-pre-execution-review: cache and transport retries preserve report bytes',
     'review-designation-generation': 'worker-pre-execution-review: lease loss aborts; cached report retains generation',
     'review-hold-cancellation': 'worker-pre-execution-review: shutdown aborts and queue time consumes remainingMs',

@@ -128,7 +128,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // Do not edit: `npm run check` regenerates this block and fails on any difference. Every
 // value below is the contract's, read from the bundle exported at the commit named here,
 // except the Runtime version from package.json.
-const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '45b1be35477354fcbc35ff6be33edfbd736d9633'
+const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = 'ee6fb706e7b8c22c11e823585c1247cff2a97734'
 /** This package's own release: a refusal that names a newer one gets an install line. */
 const RULITH_RUNTIME_VERSION = "0.16.1"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
@@ -209,9 +209,9 @@ const ARTIFACT_POLICY_FIELDS = Object.freeze({"inlineBytes":{"required":true,"ru
 const ARTIFACT_REF_PATTERN = /^art_[a-f0-9]{32}$/
 const UNDELIVERABLE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/
 // Separate Gateway review overlay; its prompt is supplied by the offer, never compiled here.
-const WORKER_REVIEW_SOURCE_COMMIT = '45b1be35477354fcbc35ff6be33edfbd736d9633'
+const WORKER_REVIEW_SOURCE_COMMIT = 'ee6fb706e7b8c22c11e823585c1247cff2a97734'
 const PRE_EXECUTION_REVIEW_CAPABILITY = Object.freeze({"preExecution":true})
-const PRE_EXECUTION_REPLY_VARIANTS = Object.freeze([{"type":"object","additionalProperties":false,"required":["verdict"],"properties":{"verdict":{"const":"allow"}}},{"type":"object","additionalProperties":false,"required":["verdict","node","advice"],"properties":{"verdict":{"const":"note"},"node":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"},"advice":{"type":"string","minLength":1,"maxLength":500,"pattern":"^[^\\r\\n]+$"}}},{"type":"object","additionalProperties":false,"required":["verdict","node","advice"],"properties":{"verdict":{"const":"block"},"node":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"},"advice":{"type":"string","minLength":1,"maxLength":500,"pattern":"^[^\\r\\n]+$"}}}])
+const PRE_EXECUTION_REPLY_VARIANTS = Object.freeze([{"type":"object","additionalProperties":false,"required":["verdict"],"properties":{"verdict":{"const":"allow"}}},{"type":"object","additionalProperties":false,"required":["verdict","node","advice"],"properties":{"verdict":{"const":"note"},"node":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"},"advice":{"type":"string","minLength":1,"maxLength":500,"pattern":"^[^\\r\\n]+$"}}}])
 const PRE_EXECUTION_ERROR_RULE = Object.freeze({"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z][a-z0-9_]*$"})
 // ── END GENERATED WORKER PROTOCOL PROJECTION ────────────────────────────────
 
@@ -4160,7 +4160,10 @@ function reviewNodeIds(material) {
   return ids
 }
 
-/** Strict whole-document JSON, with field rules projected from the separate review schema. */
+/** Strict whole-document JSON, with field rules projected from the separate review schema.
+ *  D-1013f(PSC 0.2.8):平台影子只在调用执行完、结果交付前给建议,不再拦截。契约里的回复
+ *  只剩 allow 与 note 两种,所以 block 回复找不到对应变体,与其他畸形回复一样报
+ *  review_invalid_reply。线上名字 workType review / purpose pre_execution 不变。 */
 export function parsePreExecutionReply(text, material) {
   if (typeof text !== 'string') return undefined
   let reply
@@ -4285,7 +4288,7 @@ export function createPreExecutionReviewHandler({ identityOf, alive, keepAlive, 
           id: w.id, materialDigest: w.materialDigest, ...outcome },
         identity: { workerId: identity.workerId, workerGeneration: identity.workerGeneration },
         elapsedMs: Math.round(performance.now() - startedAt),
-        tool: ['Set', 'Execute'].includes(w.material?.proposedCall?.tool) ? w.material.proposedCall.tool : undefined }
+        tool: ['Set', 'Execute'].includes(w.material?.call?.tool) ? w.material.call.tool : undefined }
       })()
       completed.set(key, result)
       cached = result

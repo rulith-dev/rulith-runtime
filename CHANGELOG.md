@@ -40,6 +40,15 @@ All notable changes to the local runtime are documented here.
   `accepted: false` without an errorCode is still resent, as the receipt ladder always did.
 - Worker: an `ingest_rejected` answer that arrives on a resend still authorizes the one failure
   receipt; the Gateway replays the request id, so the resend's answer is the original's.
+- Contracts: the MCP contract, the Worker contract and the Worker review contract follow spec ee6fb706
+  (PSC 0.2.8, D-1013f): the platform shadow is post-call advice and never blocks; `intent` is no longer
+  part of Set or Execute; the review material's `proposedCall` is now `call`, which carries the executed
+  call's `result` (and `actionDeclaration` only for an external action); the reviewer system prompt is
+  the new text 6. Wire names (`workType` review, `purpose` pre_execution) are unchanged.
+- Worker: a pre-execution review reply is `allow` or `note` only; a `block` reply is malformed and is
+  reported as `review_invalid_reply` without a retry. The log reads the reviewed tool from `call`.
+- Agent: the opt-in --shadow finding write no longer sends `intent`; the verified-calculation guide's
+  calls no longer carry it.
 
 ## 0.16.0 - 2026-10-13
 

@@ -226,13 +226,10 @@ test('the bundled end_goal takes a goal, a non-completed disposition and a reaso
   assert.equal(ending.additionalProperties, false)
   const validate = new Ajv({ strict: false }).compile(tool.inputSchema)
   const operation = { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' }
-  // D-1013c: every Set states its intent.
-  const intent = 'Withdraw GOAL_1 because the user cancelled it.'
-  assert.equal(validate({ intent, operations: [operation] }), true)
-  assert.equal(validate({ operations: [operation] }), false, 'intent is required')
+  assert.equal(validate({ operations: [operation] }), true)
   for (const invalid of [{ ...operation, disposition: 'completed' }, { ...operation, reason: '' }, { op: 'end_goal' },
     { op: 'revise_fact', id: 'F1' }, { op: 'apply_action', action: 'demo.run' }]) {
-    assert.equal(validate({ intent, operations: [invalid] }), false, JSON.stringify(invalid))
+    assert.equal(validate({ operations: [invalid] }), false, JSON.stringify(invalid))
   }
 })
 

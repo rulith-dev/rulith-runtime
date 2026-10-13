@@ -17,28 +17,30 @@ const material = {
   boardView: { nodes: [{ nodeId: 'F1', args: { id: 'business-id' } }], goals: { directory: [{ goal: 'G1' }] } },
   focusedGoalNodes: [{ id: 'G2' }], delta: {}, priorSuggestions: [],
   priorNotes: [{ verdict: 'note', node: 'old-node', advice: 'old advice' }],
-  proposedCall: { tool: 'Set', kind: 'Set', intent: 'Reach this goal.', arguments: { z: 1, a: { y: 2, b: 3 } } },
+  call: { tool: 'Set', kind: 'Set', arguments: { z: 1, a: { y: 2, b: 3 } },
+    result: { accepted: true, status: 'accepted', summary: 'Recorded the goal.' } },
 }
 const offer = (overrides = {}) => ({ workType: 'review', purpose: 'pre_execution', id: 'review-1',
   materialDigest: `sha256:${'a'.repeat(64)}`, systemPrompt: contract.defs.WorkerPreExecutionReviewOffer.properties.systemPrompt.const,
   material, remainingMs: 5000, ...overrides })
 const replyResponse = reply => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: reply } }] }))
 const lengthResponse = () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '' } }] }))
-const valid = [{ verdict: 'allow' }, { verdict: 'note', node: 'F1', advice: 'Check the premise.' },
-  { verdict: 'block', node: 'G2', advice: 'The criterion is too weak.' }]
+// D-1013f: post-call advice only; the contract's replies are allow and note, and block is malformed.
+const valid = [{ verdict: 'allow' }, { verdict: 'note', node: 'F1', advice: 'Check the premise.' }]
 const malformed = {
+  block: '{"verdict":"block","node":"G2","advice":"The criterion is too weak."}',
   fence: '```json\n{"verdict":"allow"}\n```',
   extra: '{"verdict":"allow","reason":"extra"}',
   two: '{"verdict":"allow"}{"verdict":"allow"}',
   unknown: '{"verdict":"note","node":"F9","advice":"A defect."}',
-  multiline: '{"verdict":"block","node":"F1","advice":"First\\nsecond"}',
-  trailingNewline: '{"verdict":"block","node":"F1","advice":"First\\n"}',
-  carriageReturn: '{"verdict":"block","node":"F1","advice":"First\\r"}',
+  multiline: '{"verdict":"note","node":"F1","advice":"First\\nsecond"}',
+  trailingNewline: '{"verdict":"note","node":"F1","advice":"First\\n"}',
+  carriageReturn: '{"verdict":"note","node":"F1","advice":"First\\r"}',
   empty: '{"verdict":"note","node":"F1","advice":""}',
   whitespace: '{"verdict":"note","node":"F1","advice":"  "}',
   long: JSON.stringify({ verdict: 'note', node: 'F1', advice: 'x'.repeat(501) }),
-  duplicate: '{"verdict":"block","verdict":"allow"}',
-  escapedDuplicate: '{"verdict":"block","\\u0076erdict":"allow"}',
+  duplicate: '{"verdict":"note","verdict":"allow"}',
+  escapedDuplicate: '{"verdict":"note","\\u0076erdict":"allow"}',
   array: '[{"verdict":"allow"}]',
   businessId: '{"verdict":"note","node":"business-id","advice":"A defect."}',
   priorOnly: '{"verdict":"note","node":"old-node","advice":"A defect."}',
@@ -69,6 +71,8 @@ test('in-process reviewer capability on/off follows the closed Poll schema', () 
 })
 
 for (const reply of valid) test(`in-process offer -> model -> ${reply.verdict} report is schema-valid`, async () => {
+  // The sample offer is a D-1013f offer: `call` carries the executed call's result and no intent.
+  assert.deepEqual(shapeFaults(offer(), contract.defs.WorkerPreExecutionReviewOffer, contract.defs), [])
   const run = handler({ fetchReviewer: async () => replyResponse(JSON.stringify(reply)) })
   await run.handle(offer())
   assert.deepEqual(run.sent[0], { kind: 'ReportWork', workType: 'review', purpose: 'pre_execution',
@@ -85,7 +89,7 @@ for (const reply of valid) test(`in-process offer -> model -> ${reply.verdict} r
   assert.equal(run.logs[0].verdict, reply.verdict)
   assert.equal(run.logs[0].tool, 'Set')
   assert.ok(run.logs[0].elapsedMs >= 0)
-  assert.doesNotMatch(JSON.stringify(run.logs), /criterion|premise|Reach this goal|SHADOW/)
+  assert.doesNotMatch(JSON.stringify(run.logs), /criterion|premise|Recorded the goal|SHADOW/)
 })
 
 for (const [name, text] of Object.entries(malformed)) test(`in-process malformed ${name} returns a bounded error report`, async () => {
@@ -282,17 +286,17 @@ for (const reply of valid.slice(1)) test(`in-process completed ${reply.verdict} 
 test('in-process material previews pass through unchanged and absent anchors fail', async () => {
   const preview = { preview: '🙂'.repeat(4096), characters: 4097, truncated: true }
   const offered = offer({ material: { ...material,
-    proposedCall: { ...material.proposedCall, arguments: { content: preview } } } })
+    call: { ...material.call, arguments: { content: preview } } } })
   const before = JSON.stringify(offered)
   const run = handler({ fetchReviewer: async () => replyResponse('{"verdict":"allow"}') })
   await run.handle(offered)
   assert.equal(JSON.stringify(offered), before)
-  assert.deepEqual(JSON.parse(run.calls[0].messages[1].content).proposedCall.arguments.content, preview)
-  assert.equal(parsePreExecutionReply('{"verdict":"block","node":"F9","advice":"Missing."}', offered.material), undefined)
+  assert.deepEqual(JSON.parse(run.calls[0].messages[1].content).call.arguments.content, preview)
+  assert.equal(parsePreExecutionReply('{"verdict":"note","node":"F9","advice":"Missing."}', offered.material), undefined)
 })
 
 test('in-process review bundle detects changed bytes, pins and projected definitions', () => {
-  assert.equal(contract.sourceCommit, '45b1be35477354fcbc35ff6be33edfbd736d9633')
+  assert.equal(contract.sourceCommit, 'ee6fb706e7b8c22c11e823585c1247cff2a97734')
   for (const mutate of [copy => { copy.files[Object.keys(copy.files)[0]].content += '\n' },
     copy => { copy.files[Object.keys(copy.files)[0]].gitBlobOid = '0'.repeat(40) },
     copy => { copy.contract.$defs.ReviewerCapability.properties.preExecution.const = false }]) {
@@ -322,7 +326,7 @@ for (const reply of valid) test(`runtime Poll offer takes pre-execution ${reply.
   assert.deepEqual(run.of('ReportWork')[0].operation.reply, reply)
   assert.deepEqual(shapeFaults(run.of('ReportWork')[0].operation, contract.defs.ReportWorkPreExecutionReview, contract.defs), [])
   assert.equal(run.of('ReportWork')[0].headers['x-rulith-worker-generation'], '7')
-  assert.doesNotMatch(run.output, /SHADOW|Reach this goal|criterion|premise/)
+  assert.doesNotMatch(run.output, /SHADOW|Recorded the goal|criterion|premise/)
 })
 
 test('runtime RULITH_REVIEWER_MAX_TOKENS sets the pre-execution max_tokens; an invalid value keeps 8000', async () => {

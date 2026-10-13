@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "96f5c520eaf8910f6b122b5d5fc28aa3720a51f28a6834152986ed78e112198d"
+      "sha256": "030f0ae1503db9d329fcad02468d2efce89a1885cf635c4b7ac4376e0f6da704"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -15,13 +15,13 @@
       "sha256": "5f35feed1bd111720524318ff65bfa8b4a4d97632846b9134b222785237fd48b"
     },
     "protocol/mcp-contract.json": {
-      "sha256": "0defa135ed273f115bacc10e19e4f2bf8725dd930fc2eb462852c5fd07992706"
+      "sha256": "9a0abda82b916033fe15141144b4ab84458c0f72d43b8c1864a6df7d9c525248"
     },
     "protocol/worker-contract.json": {
-      "sha256": "476e08bc83e119f75f2d5b755ac7dfd14225f8d99698ba0e7496eef0dd130cff"
+      "sha256": "42c084bb22521de81f90b5f539f3d36c3ad4cbb3cc0faab4661a7590094d984c"
     },
     "protocol/worker-review-contract.json": {
-      "sha256": "60d6254649728dc9a8ebd9d16b4cd935162c67e2bf7e794c1946ee52bd88c966"
+      "sha256": "b91c42aa512376ea11ab66e47eb3dbcfc2f3b0b46df1f3b55774eaa74406014a"
     },
     "protocol/worker-material.json": {
       "sha256": "497c57d8b12fe7f2acefb22a9f27d00229158c2ccb144a47573fb09e3c0ef97c"
@@ -45,7 +45,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "e5d95162c7c12386aa7605fd360cba69cf47434e41face581b47c48960c4bf0a"
+      "sha256": "021c5662c4fc712e393c820bc1c031133d48689e766f6cca0a1ba5c7a6e05a78"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -162,7 +162,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "449fdcf701c5a1b962707c24fed31f7963ba4d6973278568f5702c8c3c4424c5"
+      "sha256": "5b54382328f39735e84ff3aa08b95a694845fb981596b648e1a34f9ebfbd2e91"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"

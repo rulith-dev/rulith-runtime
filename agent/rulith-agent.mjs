@@ -80,7 +80,7 @@ const MCP_URL = `${URL_BASE}/mcp`
 // operations and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = '45b1be35477354fcbc35ff6be33edfbd736d9633'
+const RULITH_CONTRACT_SOURCE_COMMIT = 'ee6fb706e7b8c22c11e823585c1247cff2a97734'
 const RULITH_RUNTIME_VERSION = "0.16.1"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
@@ -4813,8 +4813,7 @@ Otherwise return at most three lines, each formatted FINDING: <one precise issue
     op: 'assert_fact', id: `SF_${Date.now().toString(36)}_${index}`,
     predicate: 'shadow_finding', args: { text: finding.slice(9, 240).trim() },
   }))
-  // Every Set states its intent (D-1013c); this one is the host's own record of the shadow review.
-  const answer = await callTool(ctx, 'Set', { intent: "Record the shadow review's findings so later steps can see them.", operations })
+  const answer = await callTool(ctx, 'Set', { operations })
   // This write is this host's, and its answer is this host's to read. What its strip delivered
   // beyond that — an earlier outcome of the model's own — is the model's to read, next time it
   // is asked. Otherwise this host has read everything the answer delivered, and says so to the
