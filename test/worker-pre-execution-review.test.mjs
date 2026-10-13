@@ -6,7 +6,7 @@ import { performance } from 'node:perf_hooks'
 import { readWorkerReviewContract, loadWorkerReviewContract } from '../scripts/verify-worker-review-contract.mjs'
 import { readWorkerContract } from '../scripts/verify-worker-contract.mjs'
 import { askPreExecutionReviewer, createPreExecutionReviewHandler, parsePreExecutionReply,
-  reviewerAdvertisement } from '../worker/rulith-worker.mjs'
+  reviewerAdvertisement, reviewerMaxTokens } from '../worker/rulith-worker.mjs'
 import { shapeFaults } from './support/contract-shape.mjs'
 import { DONE, HOLD, RESET, activeLease, driveWorker } from './support/worker-harness.mjs'
 
@@ -23,6 +23,7 @@ const offer = (overrides = {}) => ({ workType: 'review', purpose: 'pre_execution
   materialDigest: `sha256:${'a'.repeat(64)}`, systemPrompt: contract.defs.WorkerPreExecutionReviewOffer.properties.systemPrompt.const,
   material, remainingMs: 5000, ...overrides })
 const replyResponse = reply => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: reply } }] }))
+const lengthResponse = () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '' } }] }))
 const valid = [{ verdict: 'allow' }, { verdict: 'note', node: 'F1', advice: 'Check the premise.' },
   { verdict: 'block', node: 'G2', advice: 'The criterion is too weak.' }]
 const malformed = {
@@ -88,11 +89,75 @@ for (const reply of valid) test(`in-process offer -> model -> ${reply.verdict} r
 })
 
 for (const [name, text] of Object.entries(malformed)) test(`in-process malformed ${name} returns a bounded error report`, async () => {
-  const run = handler({ fetchReviewer: async () => replyResponse(text) })
+  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => replyResponse(text) })
   await run.handle(offer())
   assert.equal(run.sent[0].reply, undefined)
   assert.equal(run.sent[0].errorCode, 'review_invalid_reply')
+  // An answered but malformed reply fails closed: time remains, yet the model is not asked again.
+  assert.equal(run.calls.length, 1)
   assert.deepEqual(shapeFaults(run.sent[0], contract.defs.ReportWorkPreExecutionReview, contract.defs), [])
+})
+
+const cutOffReplies = {
+  'length finish': lengthResponse,
+  'empty content': () => replyResponse(''),
+  'absent content': () => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: {} }] })),
+}
+for (const [name, first] of Object.entries(cutOffReplies)) test(`in-process ${name} is asked once more and the second reply is reported`, async () => {
+  let n = 0
+  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => ++n === 1 ? first() : replyResponse('{"verdict":"allow"}') })
+  await run.handle(offer())
+  assert.equal(run.calls.length, 2)
+  assert.deepEqual(run.calls[0], run.calls[1])
+  assert.deepEqual(run.sent[0].reply, { verdict: 'allow' })
+  assert.equal(run.sent[0].errorCode, undefined)
+})
+
+test('in-process two cut-off replies report review_invalid_reply after exactly two model calls', async () => {
+  for (const second of [lengthResponse, cutOffReplies['empty content'], () => replyResponse('{"verdict":"allow"}{')]) {
+    let n = 0
+    const run = handler({ timeoutMs: 5000, fetchReviewer: async () => ++n === 1 ? lengthResponse() : second() })
+    await run.handle(offer())
+    assert.equal(run.calls.length, 2)
+    assert.equal(run.sent[0].errorCode, 'review_invalid_reply')
+  }
+})
+
+test('in-process no retry when the deadline leaves less than the first call plus the margin', async () => {
+  const slow = delayMs => {
+    let calls = 0
+    return { calls: () => calls, fetchReviewer: async () => {
+      calls++
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+      return lengthResponse()
+    } }
+  }
+  const settings = { url: 'http://reviewer.invalid', model: 'review-test', timeoutMs: 2000 }
+  // About 600 ms used and 1400 ms left, less than 600 + 1000: the first error stands.
+  const tight = slow(600)
+  assert.deepEqual(await askPreExecutionReviewer(offer(), { ...settings, fetchReviewer: tight.fetchReviewer }),
+    { errorCode: 'review_invalid_reply' })
+  assert.equal(tight.calls(), 1)
+  // About 200 ms used and 1800 ms left, at least 200 + 1000: one more call, never a third.
+  const roomy = slow(200)
+  assert.deepEqual(await askPreExecutionReviewer(offer(), { ...settings, fetchReviewer: roomy.fetchReviewer }),
+    { errorCode: 'review_invalid_reply' })
+  assert.equal(roomy.calls(), 2)
+})
+
+test('in-process reviewer max_tokens defaults to 8000 and accepts only a positive integer override', async () => {
+  assert.equal(reviewerMaxTokens(undefined), 8000)
+  for (const value of ['', '0', '-1', 'abc', '1.5', '1e4', '0x10', '9007199254740993']) {
+    assert.equal(reviewerMaxTokens(value), 8000, value)
+  }
+  assert.equal(reviewerMaxTokens('12000'), 12000)
+  assert.equal(reviewerMaxTokens(' 4096 '), 4096)
+  let body
+  const result = await askPreExecutionReviewer(offer(), { url: 'http://reviewer.invalid', model: 'review-test',
+    timeoutMs: 1000, maxTokens: 1234,
+    fetchReviewer: async (_url, request) => { body = JSON.parse(request.body); return replyResponse('{"verdict":"allow"}') } })
+  assert.deepEqual(result, { reply: { verdict: 'allow' } })
+  assert.equal(body.max_tokens, 1234)
 })
 
 test('in-process single-line advice may contain quoted JSON and Unicode at the schema limit', () => {
@@ -132,6 +197,7 @@ test('in-process timeout aborts the HTTP request and keeps the report margin', a
   await run.handle(offer({ remainingMs: 180 }))
   assert.equal(run.sent[0].errorCode, 'review_timeout')
   assert.equal(aborted, true)
+  assert.equal(run.calls.length, 1)
   assert.ok(performance.now() - started < 400)
 })
 
@@ -164,9 +230,11 @@ for (const [name, response, code] of [
   ['truncated', () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '{"verdict":"allow"}' } }] })), 'review_invalid_reply'],
   ['tool call', () => new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}', tool_calls: [] } }] })), 'review_invalid_reply'],
 ]) test(`in-process model ${name} failure reports only a machine code`, async () => {
-  const run = handler({ fetchReviewer: async () => response() })
+  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => response() })
   await run.handle(offer())
   assert.equal(run.sent[0].errorCode, code)
+  // Only a truncated reply is asked once more; HTTP, transport, envelope and tool-call failures are not.
+  assert.equal(run.calls.length, name === 'truncated' ? 2 : 1)
   assert.doesNotMatch(JSON.stringify([run.logs, run.sent]), /private provider/)
 })
 
@@ -250,10 +318,25 @@ for (const reply of valid) test(`runtime Poll offer takes pre-execution ${reply.
   assert.deepEqual(run.of('Poll')[0].operation.reviewer, { preExecution: true })
   assert.equal(run.of('ClaimWork').length, 0)
   assert.equal(run.modelRequests.length, 1)
+  assert.equal(run.modelRequests[0].body.max_tokens, 8000)
   assert.deepEqual(run.of('ReportWork')[0].operation.reply, reply)
   assert.deepEqual(shapeFaults(run.of('ReportWork')[0].operation, contract.defs.ReportWorkPreExecutionReview, contract.defs), [])
   assert.equal(run.of('ReportWork')[0].headers['x-rulith-worker-generation'], '7')
   assert.doesNotMatch(run.output, /SHADOW|Reach this goal|criterion|premise/)
+})
+
+test('runtime RULITH_REVIEWER_MAX_TOKENS sets the pre-execution max_tokens; an invalid value keeps 8000', async () => {
+  for (const [value, expected] of [['12345', 12345], ['lots', 8000]]) {
+    let polls = 0
+    const run = await driveWorker({ reviewer: valid[0], env: { RULITH_REVIEWER_MAX_TOKENS: value },
+      reply: operation => operation.kind === 'Poll'
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+        : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+      done: (_seen, output) => /Pre-execution review.*report accepted=true/.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.modelRequests[0].body.max_tokens, expected)
+  }
 })
 
 test('runtime cache replays original reports after a reset and repeated Poll offer', async () => {

@@ -22,6 +22,8 @@
  *   RULITH_WORKER_RUN_TIMEOUT_SECONDS  How long a run Adapter may take (seconds; default 60)
  *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
+ *   RULITH_REVIEWER_MAX_TOKENS  执行前审查每次模型调用的 max_tokens(正整数,默认 8000;
+ *                        思维链模型的 reasoning 也计入,不合法的值按默认)
  *
  * 一台 worker 可以只持工具、只判卷、或两样都干——**看你给它配了什么,不看它叫什么**。
  * 判卷那一席另需板侧把这个通道列进 reviewerChannels(治理配置,运营方定),
@@ -120,7 +122,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '45b1be35477354fcbc35ff6be33edfbd736d9633'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.16.0"
+const RULITH_RUNTIME_VERSION = "0.16.1"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -606,6 +608,18 @@ async function selectedHttpSourceSnapshot(sourceRecordId, expectedAccess) {
 const REVIEWER_URL = process.env.RULITH_REVIEWER_URL
 const REVIEWER_MODEL = process.env.RULITH_REVIEWER_MODEL
 const REVIEWER_TIMEOUT_MS = Number(process.env.RULITH_REVIEWER_TIMEOUT_MS ?? 120_000)
+/**
+ * 执行前审查一次模型调用的 max_tokens。思维链模型的 reasoning 计入这个上限:
+ * 2026-10-13 生产同一份冻结材料重放三次用了 1537、1774、2000 个 reasoning token,
+ * 第三次在 2000 处 finish_reason=length、content 为空,审查于是报 review_invalid_reply。
+ * 默认 8000;RULITH_REVIEWER_MAX_TOKENS 只接受正整数,其它值一律按默认。
+ */
+export const REVIEWER_DEFAULT_MAX_TOKENS = 8000
+export function reviewerMaxTokens(value = process.env.RULITH_REVIEWER_MAX_TOKENS) {
+  const text = String(value ?? '').trim()
+  return /^[1-9]\d*$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : REVIEWER_DEFAULT_MAX_TOKENS
+}
+const REVIEWER_MAX_TOKENS = reviewerMaxTokens()
 
 /**
  * A peer's text as one plain line: control, format (bidi and zero-width) and line or paragraph
@@ -3935,6 +3949,8 @@ export function parsePreExecutionReply(text, material) {
 }
 
 const PRE_EXECUTION_REPORT_MARGIN_MS = 100
+/** A retry needs at least the first call's duration plus this much before the deadline. */
+const PRE_EXECUTION_RETRY_MARGIN_MS = 1000
 function reviewError(code) {
   if (code.length > PRE_EXECUTION_ERROR_RULE.maxLength
     || !new RegExp(PRE_EXECUTION_ERROR_RULE.pattern, 'u').test(code)
@@ -3945,7 +3961,7 @@ function reviewError(code) {
 }
 
 export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchReviewer = fetch,
-  url = REVIEWER_URL, model = REVIEWER_MODEL } = {}) {
+  url = REVIEWER_URL, model = REVIEWER_MODEL, maxTokens = REVIEWER_MAX_TOKENS } = {}) {
   if (!url || !model) return reviewError('reviewer_unconfigured')
   if (!(timeoutMs > 0)) return reviewError('review_timeout')
   const ac = new AbortController()
@@ -3953,23 +3969,41 @@ export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchRevie
   if (signal?.aborted) onAbort()
   else signal?.addEventListener('abort', onAbort, { once: true })
   const timer = setTimeout(() => ac.abort('review_timeout'), timeoutMs)
+  const startedAt = performance.now()
   try {
-    ac.signal.throwIfAborted()
-    const response = await fetchReviewer(url, {
-      method: 'POST', signal: ac.signal,
+    const request = {
+      method: 'POST',
       headers: { 'content-type': 'application/json', ...(process.env.RULITH_REVIEWER_KEY ? { authorization: `Bearer ${process.env.RULITH_REVIEWER_KEY}` } : {}) },
-      body: JSON.stringify({ model, temperature: 0, max_tokens: 2000,
+      body: JSON.stringify({ model, temperature: 0, max_tokens: maxTokens,
         messages: [{ role: 'system', content: w.systemPrompt },
           { role: 'user', content: JSON.stringify(canonical(w.material)) }] }),
-    })
-    if (!response.ok) return reviewError('review_model_http_error')
-    const body = await response.json()
-    ac.signal.throwIfAborted()
-    const choice = body?.choices?.[0], message = choice?.message
-    if ((choice?.finish_reason != null && choice.finish_reason !== 'stop')
-      || message?.tool_calls != null || message?.function_call != null) return reviewError('review_invalid_reply')
-    const reply = parsePreExecutionReply(message?.content, w.material)
-    return reply === undefined ? reviewError('review_invalid_reply') : { reply }
+    }
+    /** One model call. `cutOff` marks a reply that was truncated or empty, never one that was answered badly. */
+    const askOnce = async () => {
+      ac.signal.throwIfAborted()
+      const response = await fetchReviewer(url, { ...request, signal: ac.signal })
+      if (!response.ok) return { outcome: reviewError('review_model_http_error') }
+      const body = await response.json()
+      ac.signal.throwIfAborted()
+      const choice = body?.choices?.[0], message = choice?.message
+      const toolUse = message?.tool_calls != null || message?.function_call != null
+      const cutOff = !toolUse && (choice?.finish_reason === 'length' || message?.content == null || message.content === '')
+      if ((choice?.finish_reason != null && choice.finish_reason !== 'stop') || toolUse) {
+        return { outcome: reviewError('review_invalid_reply'), cutOff }
+      }
+      const reply = parsePreExecutionReply(message?.content, w.material)
+      return { outcome: reply === undefined ? reviewError('review_invalid_reply') : { reply }, cutOff }
+    }
+    const first = await askOnce()
+    // 至多重问一次,且只为「被截断或空」的回复(finish_reason=length,或 content 缺失/为空串):
+    // 思维链模型同一份材料的 reasoning 长度会抖,截断不是它答错了。答出来却不合格的回复
+    // (坏 JSON、代码围栏、错节点、多行 advice、工具调用)按批准细则直接拒绝,不重问;
+    // HTTP 错误、超时与中止也不重问。剩余时间不足「第一次的耗时 + 余量」就报第一次的错,
+    // 不拿一次多半要超时的调用去换它。
+    if (!first.cutOff) return first.outcome
+    const firstMs = performance.now() - startedAt
+    if (timeoutMs - firstMs < firstMs + PRE_EXECUTION_RETRY_MARGIN_MS) return first.outcome
+    return (await askOnce()).outcome
   } catch {
     return reviewError(ac.signal.aborted ? String(ac.signal.reason) : 'review_model_error')
   } finally {

@@ -2,6 +2,19 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.16.1 - 2026-10-13
+
+- Worker: the pre-execution reviewer call asks for `max_tokens` 8000 instead of 2000, overridable with
+  RULITH_REVIEWER_MAX_TOKENS (a positive integer; any other value keeps 8000). A reasoning model's
+  reasoning counts against this limit; in production a 2000-token cap ended a review with
+  `finish_reason: "length"` and empty content.
+- Worker: a truncated or empty reviewer reply (`finish_reason: "length"`, or absent or empty content) is
+  asked once more with the same request when the review deadline still leaves at least the first call's
+  duration plus one second; never more than two model calls per review. Every other invalid reply
+  (malformed JSON, a code fence, an unknown node, multi-line advice, a tool call) still fails closed as
+  `review_invalid_reply` without a retry, and HTTP errors, timeouts and aborts are not retried. The strict
+  reply parser, the vendored contracts and constitution clearance review are unchanged.
+
 ## 0.16.0 - 2026-10-13
 
 - Worker: when RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are set, Poll advertises reviewer:{preExecution:true} and the Worker judges the platform's pre-execution review offers (D-1013c): the offer's system prompt and frozen material go to the configured model with no tools and no Board reads; the reply is parsed strictly and reported with ReportWork (reply or a machine error code) under the generation that produced it; completed reports are cached by id and material digest. Constitution clearance review keeps its own path.
