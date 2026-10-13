@@ -18,6 +18,8 @@ const files = [
   // download that fetched the worker without it would install bytes nobody could reconcile
   // against the commit they were projected from.
   'protocol/worker-contract.json',
+  // Separate Gateway pre-execution review bundle, pinned to its committed spec bytes.
+  'protocol/worker-review-contract.json',
   // Separately approved material amendment; the historical execution bundle keeps its pin.
   'protocol/worker-material.json',
   'protocol/worker-material-sha256.txt',

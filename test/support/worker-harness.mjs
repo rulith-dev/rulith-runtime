@@ -374,7 +374,7 @@ export function evidenceRow(overrides = {}) {
  * than the default `orders`.
  */
 export async function driveWorker({
-  reply, artifactReply, materialReply, sourceReply, done, reviewer, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {},
+  reply, artifactReply, materialReply, sourceReply, done, reviewer, reviewerReply, timeoutMs = 20_000, extraAdapters = {}, extraFiles = {},
   extraTools = {}, env = {}, ipc = false,
   leaseGeneration = 7, lease: leaseOverride, sources = (root) => [{ name: 'orders', type: 'file', access: root }],
 }) {
@@ -390,6 +390,7 @@ export async function driveWorker({
   const sourceRows = sources(dir)
 
   const seen = []
+  const modelRequests = []
   const held = []
   /**
    * A conforming Gateway by default.
@@ -452,8 +453,14 @@ export async function driveWorker({
     request.on('data', (chunk) => { raw += chunk })
     request.on('end', () => {
       if ((request.url ?? '').startsWith('/chat')) {
-        response.writeHead(200, { 'content-type': 'application/json' })
-        return void response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(reviewer ?? {}) } }] }))
+        const entry = { raw, body: JSON.parse(raw) }
+        modelRequests.push(entry)
+        const out = reviewerReply?.(entry.body, modelRequests)
+          ?? { body: { choices: [{ message: { content: JSON.stringify(reviewer ?? {}) } }] } }
+        if (out === HOLD) return void held.push(response)
+        if (out === RESET) return void response.socket.destroy()
+        response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
+        return void response.end(out.text ?? JSON.stringify(out.body))
       }
       if (request.url === '/work/artifact') {
         const payload = JSON.parse(raw)
@@ -522,8 +529,12 @@ export async function driveWorker({
       RULITH_WORKER_ROOT: dir,
       RULITH_TOOLS_FILE: join(dir, 'worker-tools.json'),
       RULITH_SECRETS_FILE: join(dir, 'no-secrets.json'),
+      RULITH_ENVIRONMENT_SECRETS_FILE: '',
+      RULITH_REVIEWER_URL: '',
+      RULITH_REVIEWER_MODEL: '',
+      RULITH_REVIEWER_KEY: '',
       P2_EFFECT_LOG: effectLog,
-      ...(reviewer === undefined ? {} : {
+      ...(reviewer === undefined && reviewerReply === undefined ? {} : {
         RULITH_REVIEWER_URL: `http://127.0.0.1:${port}/chat/completions`,
         RULITH_REVIEWER_MODEL: 'p2-reviewer',
       }),
@@ -574,6 +585,6 @@ export async function driveWorker({
     : []
   rmSync(dir, { recursive: true, force: true })
   const of = (kind) => seen.filter((entry) => entry.operation.kind === kind)
-  return { seen, output, effects, timedOut, of, messages, exitCode, exitSignal,
+  return { seen, modelRequests, output, effects, timedOut, of, messages, exitCode, exitSignal,
     ran: (label) => effects.filter((line) => line === label).length }
 }

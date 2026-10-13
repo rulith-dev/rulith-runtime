@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "64a860d0fa47bfc1fa636689145ed324d4a26a80d2165ba04d5d17f08c7b8dea"
+      "sha256": "e3ca49857d2261db694d3556410561c03dabc6213802a8059fe443420cfea925"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -15,10 +15,13 @@
       "sha256": "5f35feed1bd111720524318ff65bfa8b4a4d97632846b9134b222785237fd48b"
     },
     "protocol/mcp-contract.json": {
-      "sha256": "b308433ca352ab16a12f519149c5b5fc2feb1fc79f590724f72acb2f9ee6f437"
+      "sha256": "0defa135ed273f115bacc10e19e4f2bf8725dd930fc2eb462852c5fd07992706"
     },
     "protocol/worker-contract.json": {
-      "sha256": "beb403e6b8d190756f9ca4856aa424824b313e84fe99390d423072cf295ff7db"
+      "sha256": "476e08bc83e119f75f2d5b755ac7dfd14225f8d99698ba0e7496eef0dd130cff"
+    },
+    "protocol/worker-review-contract.json": {
+      "sha256": "60d6254649728dc9a8ebd9d16b4cd935162c67e2bf7e794c1946ee52bd88c966"
     },
     "protocol/worker-material.json": {
       "sha256": "497c57d8b12fe7f2acefb22a9f27d00229158c2ccb144a47573fb09e3c0ef97c"
@@ -42,7 +45,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "ed4608fea1a2087ebe997e2e2648978b9030bc81148833fbd6a08a48d21c893c"
+      "sha256": "96ced644bc7f11ab08e813a26ab6121893630c769e8bb336a05398b60872922c"
     },
     "worker/action-input-db.mjs": {
       "sha256": "de5b14f1506bb29c9b1fc4927d42102429fd3eb653623557524f72415121f6df"
@@ -159,7 +162,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "66bcdf5e6d167a671e0a93f113db4cbfdb43ee563b77b1f9cb9a3df5450eb609"
+      "sha256": "b102bca867b2ed4b49adcd126c15866b061b95a423737d31d019ba94f12f7b03"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"

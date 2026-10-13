@@ -1,0 +1,316 @@
+// SPDX-License-Identifier: Apache-2.0
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { performance } from 'node:perf_hooks'
+import { readWorkerReviewContract, loadWorkerReviewContract } from '../scripts/verify-worker-review-contract.mjs'
+import { readWorkerContract } from '../scripts/verify-worker-contract.mjs'
+import { askPreExecutionReviewer, createPreExecutionReviewHandler, parsePreExecutionReply,
+  reviewerAdvertisement } from '../worker/rulith-worker.mjs'
+import { shapeFaults } from './support/contract-shape.mjs'
+import { DONE, HOLD, RESET, activeLease, driveWorker } from './support/worker-harness.mjs'
+
+const bundle = JSON.parse(readFileSync(new URL('../protocol/worker-review-contract.json', import.meta.url), 'utf8'))
+const contract = readWorkerReviewContract(bundle)
+const workerContract = readWorkerContract(JSON.parse(readFileSync(new URL('../protocol/worker-contract.json', import.meta.url), 'utf8')))
+const material = {
+  boardView: { nodes: [{ nodeId: 'F1', args: { id: 'business-id' } }], goals: { directory: [{ goal: 'G1' }] } },
+  focusedGoalNodes: [{ id: 'G2' }], delta: {}, priorSuggestions: [],
+  priorNotes: [{ verdict: 'note', node: 'old-node', advice: 'old advice' }],
+  proposedCall: { tool: 'Set', kind: 'Set', intent: 'Reach this goal.', arguments: { z: 1, a: { y: 2, b: 3 } } },
+}
+const offer = (overrides = {}) => ({ workType: 'review', purpose: 'pre_execution', id: 'review-1',
+  materialDigest: `sha256:${'a'.repeat(64)}`, systemPrompt: contract.defs.WorkerPreExecutionReviewOffer.properties.systemPrompt.const,
+  material, remainingMs: 5000, ...overrides })
+const replyResponse = reply => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: reply } }] }))
+const valid = [{ verdict: 'allow' }, { verdict: 'note', node: 'F1', advice: 'Check the premise.' },
+  { verdict: 'block', node: 'G2', advice: 'The criterion is too weak.' }]
+const malformed = {
+  fence: '```json\n{"verdict":"allow"}\n```',
+  extra: '{"verdict":"allow","reason":"extra"}',
+  two: '{"verdict":"allow"}{"verdict":"allow"}',
+  unknown: '{"verdict":"note","node":"F9","advice":"A defect."}',
+  multiline: '{"verdict":"block","node":"F1","advice":"First\\nsecond"}',
+  trailingNewline: '{"verdict":"block","node":"F1","advice":"First\\n"}',
+  carriageReturn: '{"verdict":"block","node":"F1","advice":"First\\r"}',
+  empty: '{"verdict":"note","node":"F1","advice":""}',
+  whitespace: '{"verdict":"note","node":"F1","advice":"  "}',
+  long: JSON.stringify({ verdict: 'note', node: 'F1', advice: 'x'.repeat(501) }),
+  duplicate: '{"verdict":"block","verdict":"allow"}',
+  escapedDuplicate: '{"verdict":"block","\\u0076erdict":"allow"}',
+  array: '[{"verdict":"allow"}]',
+  businessId: '{"verdict":"note","node":"business-id","advice":"A defect."}',
+  priorOnly: '{"verdict":"note","node":"old-node","advice":"A defect."}',
+}
+
+function handler({ fetchReviewer, retryMs = [], ...options } = {}) {
+  const sent = [], logs = [], calls = []
+  let generation = 7
+  const handle = createPreExecutionReviewHandler({
+    identityOf: () => ({ workerId: 'wkr_test_123', workerGeneration: generation }),
+    alive: () => true, keepAlive: () => async () => {}, timeoutMs: 500, retryMs,
+    ask: (w, settings) => askPreExecutionReviewer(w, { ...settings, url: 'http://reviewer.invalid', model: 'review-test',
+      fetchReviewer: async (url, request) => { calls.push(JSON.parse(request.body)); return fetchReviewer(url, request) } }),
+    report: async (body, identity) => { sent.push(JSON.parse(JSON.stringify({ ...body, ...identity }))); return { accepted: true } },
+    log: event => logs.push(event), ...options,
+  })
+  return { handle, sent, logs, calls, generation: value => { generation = value } }
+}
+
+test('in-process reviewer capability on/off follows the closed Poll schema', () => {
+  for (const [url, model, enabled] of [['', '', false], ['http://reviewer.invalid', '', false], ['', 'model', false], ['http://reviewer.invalid', 'model', true]]) {
+    const advertisement = reviewerAdvertisement(url, model)
+    assert.deepEqual(advertisement, enabled ? { reviewer: { preExecution: true } } : {})
+    const poll = { kind: 'Poll', tools: [], workerId: 'wkr_test_123', ...advertisement }
+    assert.deepEqual(shapeFaults(poll, workerContract.defs.PollRequest, workerContract.defs), [])
+    assert.doesNotMatch(JSON.stringify(poll), /reviewer.invalid|model/)
+  }
+})
+
+for (const reply of valid) test(`in-process offer -> model -> ${reply.verdict} report is schema-valid`, async () => {
+  const run = handler({ fetchReviewer: async () => replyResponse(JSON.stringify(reply)) })
+  await run.handle(offer())
+  assert.deepEqual(run.sent[0], { kind: 'ReportWork', workType: 'review', purpose: 'pre_execution',
+    id: 'review-1', materialDigest: offer().materialDigest, workerId: 'wkr_test_123', workerGeneration: 7, reply })
+  assert.deepEqual(shapeFaults(run.sent[0], contract.defs.ReportWorkPreExecutionReview, contract.defs), [])
+  const body = run.calls[0]
+  assert.deepEqual(Object.keys(body).sort(), ['max_tokens', 'messages', 'model', 'temperature'])
+  assert.equal(body.messages.length, 2)
+  assert.deepEqual(body.messages[0], { role: 'system', content: offer().systemPrompt })
+  assert.deepEqual(JSON.parse(body.messages[1].content), material)
+  assert.match(body.messages[1].content, /"arguments":\{"a":\{"b":3,"y":2\},"z":1\}/)
+  assert.equal(run.logs[0].accepted, true)
+  assert.equal(run.logs[0].workerGeneration, 7)
+  assert.equal(run.logs[0].verdict, reply.verdict)
+  assert.equal(run.logs[0].tool, 'Set')
+  assert.ok(run.logs[0].elapsedMs >= 0)
+  assert.doesNotMatch(JSON.stringify(run.logs), /criterion|premise|Reach this goal|SHADOW/)
+})
+
+for (const [name, text] of Object.entries(malformed)) test(`in-process malformed ${name} returns a bounded error report`, async () => {
+  const run = handler({ fetchReviewer: async () => replyResponse(text) })
+  await run.handle(offer())
+  assert.equal(run.sent[0].reply, undefined)
+  assert.equal(run.sent[0].errorCode, 'review_invalid_reply')
+  assert.deepEqual(shapeFaults(run.sent[0], contract.defs.ReportWorkPreExecutionReview, contract.defs), [])
+})
+
+test('in-process single-line advice may contain quoted JSON and Unicode at the schema limit', () => {
+  for (const advice of ['Check {"node":"F1"}.', '🙂'.repeat(500)]) {
+    const reply = { verdict: 'note', node: 'G1', advice }
+    assert.deepEqual(parsePreExecutionReply(JSON.stringify(reply), material), reply)
+  }
+})
+
+test('in-process anchors include public fact, goal-node and Board action rows', () => {
+  const boardMaterial = { ...material, boardView: {
+    facts: [{ nodeId: 'F2', args: { id: 'business-id' } }],
+    goalNodes: [{ id: 'G3' }], actions: [{ actionNodeId: 'A1', action: 'Board action' }],
+  } }
+  for (const node of ['F2', 'G3', 'A1']) {
+    const reply = { verdict: 'note', node, advice: 'Check the premise.' }
+    assert.deepEqual(parsePreExecutionReply(JSON.stringify(reply), boardMaterial), reply)
+  }
+})
+
+test('in-process configured reviewer timeout caps a longer offer budget', async () => {
+  const run = handler({ timeoutMs: 30, fetchReviewer: (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new Error('abort')), { once: true })
+  }) })
+  const started = performance.now()
+  await run.handle(offer())
+  assert.equal(run.sent[0].errorCode, 'review_timeout')
+  assert.ok(performance.now() - started < 300)
+})
+
+test('in-process timeout aborts the HTTP request and keeps the report margin', async () => {
+  let aborted = false
+  const run = handler({ timeoutMs: 5000, fetchReviewer: (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => { aborted = true; reject(new Error('abort')) }, { once: true })
+  }) })
+  const started = performance.now()
+  await run.handle(offer({ remainingMs: 180 }))
+  assert.equal(run.sent[0].errorCode, 'review_timeout')
+  assert.equal(aborted, true)
+  assert.ok(performance.now() - started < 400)
+})
+
+test('in-process queue time consumes remainingMs before calling the model', async () => {
+  const run = handler({ fetchReviewer: async () => replyResponse('{"verdict":"allow"}') })
+  await run.handle(offer({ remainingMs: 1000 }), performance.now() - 1100)
+  assert.equal(run.calls.length, 0)
+  assert.equal(run.sent[0].errorCode, 'review_timeout')
+})
+
+for (const reason of ['review_shutdown', 'review_lease_lost']) test(`in-process ${reason} aborts and reports under the original generation`, async () => {
+  let live = true, aborted = false
+  const run = handler({
+    alive: () => live ? true : reason,
+    fetchReviewer: (_url, { signal }) => new Promise((_resolve, reject) => {
+      setTimeout(() => { live = false; run.generation(8) }, 5)
+      signal.addEventListener('abort', () => { aborted = true; reject(new Error('abort')) }, { once: true })
+    }),
+  })
+  await run.handle(offer())
+  assert.equal(aborted, true)
+  assert.equal(run.sent[0].errorCode, reason)
+  assert.equal(run.sent[0].workerGeneration, 7)
+})
+
+for (const [name, response, code] of [
+  ['HTTP', () => new Response('private provider body', { status: 503 }), 'review_model_http_error'],
+  ['transport', () => { throw new Error('private provider body') }, 'review_model_error'],
+  ['envelope', () => new Response('not JSON'), 'review_model_error'],
+  ['truncated', () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '{"verdict":"allow"}' } }] })), 'review_invalid_reply'],
+  ['tool call', () => new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}', tool_calls: [] } }] })), 'review_invalid_reply'],
+]) test(`in-process model ${name} failure reports only a machine code`, async () => {
+  const run = handler({ fetchReviewer: async () => response() })
+  await run.handle(offer())
+  assert.equal(run.sent[0].errorCode, code)
+  assert.doesNotMatch(JSON.stringify([run.logs, run.sent]), /private provider/)
+})
+
+test('in-process cache and transport retries resend byte-identical reports with the original identity', async () => {
+  const reports = []
+  let attempts = 0
+  const run = handler({ retryMs: [0, 0], fetchReviewer: async () => replyResponse('{"verdict":"allow"}'),
+    report: async (body, identity) => {
+      reports.push(JSON.stringify({ ...body, ...identity }))
+      if (++attempts === 1) throw new Error('connection reset')
+      if (attempts === 2) return { accepted: false }
+      return { accepted: true }
+    },
+  })
+  await run.handle(offer())
+  run.generation(8)
+  await run.handle(offer({ remainingMs: 1 }))
+  assert.equal(run.calls.length, 1)
+  assert.equal(reports.length, 4)
+  assert.equal(new Set(reports).size, 1)
+  await run.handle(offer({ materialDigest: `sha256:${'b'.repeat(64)}` }))
+  assert.equal(run.calls.length, 2)
+})
+
+test('in-process failed model result is cached and semantic report refusals stop retries', async () => {
+  let reports = 0
+  const run = handler({ retryMs: [0, 0], fetchReviewer: async () => new Response('private', { status: 500 }),
+    report: async () => { reports++; return { accepted: false, errorCode: 'review_expired' } } })
+  await run.handle(offer())
+  await run.handle(offer())
+  assert.equal(run.calls.length, 1)
+  assert.equal(reports, 2)
+  assert.equal(run.logs[0].accepted, false)
+})
+
+for (const reply of valid.slice(1)) test(`in-process completed ${reply.verdict} replay keeps the original report`, async () => {
+  const run = handler({ fetchReviewer: async () => replyResponse(JSON.stringify(reply)) })
+  await run.handle(offer())
+  await run.handle(offer())
+  assert.equal(run.calls.length, 1)
+  assert.equal(run.sent.length, 2)
+  assert.deepEqual(run.sent[0], run.sent[1])
+})
+
+test('in-process material previews pass through unchanged and absent anchors fail', async () => {
+  const preview = { preview: '🙂'.repeat(4096), characters: 4097, truncated: true }
+  const offered = offer({ material: { ...material,
+    proposedCall: { ...material.proposedCall, arguments: { content: preview } } } })
+  const before = JSON.stringify(offered)
+  const run = handler({ fetchReviewer: async () => replyResponse('{"verdict":"allow"}') })
+  await run.handle(offered)
+  assert.equal(JSON.stringify(offered), before)
+  assert.deepEqual(JSON.parse(run.calls[0].messages[1].content).proposedCall.arguments.content, preview)
+  assert.equal(parsePreExecutionReply('{"verdict":"block","node":"F9","advice":"Missing."}', offered.material), undefined)
+})
+
+test('in-process review bundle detects changed bytes, pins and projected definitions', () => {
+  assert.equal(contract.sourceCommit, '45b1be35477354fcbc35ff6be33edfbd736d9633')
+  for (const mutate of [copy => { copy.files[Object.keys(copy.files)[0]].content += '\n' },
+    copy => { copy.files[Object.keys(copy.files)[0]].gitBlobOid = '0'.repeat(40) },
+    copy => { copy.contract.$defs.ReviewerCapability.properties.preExecution.const = false }]) {
+    const copy = structuredClone(bundle)
+    mutate(copy)
+    assert.throws(() => readWorkerReviewContract(copy))
+  }
+})
+
+test('runtime vendored review contract verifies byte-exact against the committed spec', () => {
+  assert.equal(loadWorkerReviewContract().sourceCommit, contract.sourceCommit)
+})
+
+for (const reply of valid) test(`runtime Poll offer takes pre-execution ${reply.verdict} path without ClaimWork`, async () => {
+  let polls = 0
+  const run = await driveWorker({ reviewer: reply,
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+      : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+    done: (_seen, output) => /Pre-execution review.*report accepted=true/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.deepEqual(run.of('Poll')[0].operation.reviewer, { preExecution: true })
+  assert.equal(run.of('ClaimWork').length, 0)
+  assert.equal(run.modelRequests.length, 1)
+  assert.deepEqual(run.of('ReportWork')[0].operation.reply, reply)
+  assert.deepEqual(shapeFaults(run.of('ReportWork')[0].operation, contract.defs.ReportWorkPreExecutionReview, contract.defs), [])
+  assert.equal(run.of('ReportWork')[0].headers['x-rulith-worker-generation'], '7')
+  assert.doesNotMatch(run.output, /SHADOW|Reach this goal|criterion|premise/)
+})
+
+test('runtime cache replays original reports after a reset and repeated Poll offer', async () => {
+  let polls = 0, reports = 0
+  const run = await driveWorker({ reviewer: valid[0],
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls <= 2 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+      : operation.kind === 'ReportWork' ? ++reports === 1 ? RESET : { body: { accepted: true } } : undefined,
+    done: (_seen, output) => output.split('\n').filter(line => /Pre-execution review.*report accepted=true/.test(line)).length === 2,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.modelRequests.length, 1)
+  assert.equal(run.of('ReportWork').length, 3)
+  assert.equal(new Set(run.of('ReportWork').map(entry => entry.raw)).size, 1)
+})
+
+test('runtime constitution offers without purpose still use the old path', async () => {
+  let polls = 0
+  const w = { workType: 'review', tool: 'acme.ship', norm: 'n1', invocation: 'inv-1',
+    requestDigest: `sha256:${'a'.repeat(64)}`, expectedPolicyFingerprint: `sha256:${'b'.repeat(64)}`,
+    caseFile: { rendered: 'Frozen constitution case.' } }
+  const run = await driveWorker({ reviewer: { verdict: 'allow', citedClause: 'n1', reason: 'Reviewed clause.' },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [w] } } } : HOLD
+      : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+    done: (_seen, output) => DONE.review.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  const report = run.of('ReportWork')[0].operation
+  assert.equal(report.purpose, undefined)
+  assert.equal(report.verdict, 'allow')
+  assert.equal(report.invocation, 'inv-1')
+  assert.equal(run.modelRequests[0].body.messages[1].content, 'Frozen constitution case.')
+})
+
+test('runtime capability disappears when either reviewer setting is missing', async () => {
+  for (const env of [{ RULITH_REVIEWER_URL: '', RULITH_REVIEWER_MODEL: 'review-test' },
+    { RULITH_REVIEWER_URL: 'http://127.0.0.1:1/chat', RULITH_REVIEWER_MODEL: '' }]) {
+    const run = await driveWorker({ env,
+      reply: operation => operation.kind === 'Poll' ? HOLD : undefined,
+      done: seen => seen.some(entry => entry.operation.kind === 'Poll'),
+    })
+    assert.equal(run.of('Poll')[0].operation.reviewer, undefined)
+  }
+})
+
+test('runtime lease loss cancels reviewer HTTP and reports its original generation', async () => {
+  let polls = 0
+  const run = await driveWorker({ reviewerReply: () => HOLD,
+    lease: operation => activeLease({ workerId: operation.workerId, windowMs: 5000, heartbeatAfterMs: 100 }),
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+      : operation.kind === 'RenewLease' ? { body: { accepted: false, errorCode: 'worker_lease_lost' } }
+        : operation.kind === 'ReportWork' ? { body: { accepted: false, errorCode: 'review_unavailable' } } : undefined,
+    done: (_seen, output) => /Pre-execution review.*report accepted=false/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.of('ReportWork')[0].operation.errorCode, 'review_lease_lost')
+  assert.equal(run.of('ReportWork')[0].operation.workerGeneration, 7)
+})

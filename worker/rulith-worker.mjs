@@ -118,7 +118,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // Do not edit: `npm run check` regenerates this block and fails on any difference. Every
 // value below is the contract's, read from the bundle exported at the commit named here,
 // except the Runtime version from package.json.
-const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = 'edd1d6294c3a01aa0fa7eefedaa79d56d77155fd'
+const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '45b1be35477354fcbc35ff6be33edfbd736d9633'
 /** This package's own release: a refusal that names a newer one gets an install line. */
 const RULITH_RUNTIME_VERSION = "0.15.1"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
@@ -198,6 +198,11 @@ const SOURCE_UPLOAD_FIELDS = Object.freeze({"sourceRecordId":{"required":true,"r
 const ARTIFACT_POLICY_FIELDS = Object.freeze({"inlineBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"readBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"objectBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"totalBytes":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]},"temporaryRetentionMs":{"required":true,"rules":[{"type":"integer","minimum":1,"maximum":9007199254740991}]}})
 const ARTIFACT_REF_PATTERN = /^art_[a-f0-9]{32}$/
 const UNDELIVERABLE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/
+// Separate Gateway review overlay; its prompt is supplied by the offer, never compiled here.
+const WORKER_REVIEW_SOURCE_COMMIT = '45b1be35477354fcbc35ff6be33edfbd736d9633'
+const PRE_EXECUTION_REVIEW_CAPABILITY = Object.freeze({"preExecution":true})
+const PRE_EXECUTION_REPLY_VARIANTS = Object.freeze([{"type":"object","additionalProperties":false,"required":["verdict"],"properties":{"verdict":{"const":"allow"}}},{"type":"object","additionalProperties":false,"required":["verdict","node","advice"],"properties":{"verdict":{"const":"note"},"node":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"},"advice":{"type":"string","minLength":1,"maxLength":500,"pattern":"^[^\\r\\n]+$"}}},{"type":"object","additionalProperties":false,"required":["verdict","node","advice"],"properties":{"verdict":{"const":"block"},"node":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"},"advice":{"type":"string","minLength":1,"maxLength":500,"pattern":"^[^\\r\\n]+$"}}}])
+const PRE_EXECUTION_ERROR_RULE = Object.freeze({"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z][a-z0-9_]*$"})
 // ── END GENERATED WORKER PROTOCOL PROJECTION ────────────────────────────────
 
 /**
@@ -3872,6 +3877,179 @@ function noteReviewed(seen, w, verdict, expiresAt, now = Date.now()) {
 }
 const REVIEWED = new Map()
 
+/** Gateway 执行前审查只判冻结材料；不用清关的 SAFE 或重审时间闸。 */
+export function reviewerAdvertisement(url = REVIEWER_URL, model = REVIEWER_MODEL) {
+  return url && model ? { reviewer: { ...PRE_EXECUTION_REVIEW_CAPABILITY } } : {}
+}
+
+function reviewNodeIds(material) {
+  const ids = new Set()
+  // Only Board rows and focused nodes are anchors; call arguments and old notes are not.
+  const rows = value => {
+    if (Array.isArray(value)) { value.forEach(rows); return }
+    if (value === null || typeof value !== 'object') return
+    for (const key of ['nodeId', 'id']) if (typeof value[key] === 'string') ids.add(value[key])
+    // A grouped nodes view may contain row arrays. Never descend into a row's business data.
+    if (!Object.hasOwn(value, 'nodeId') && !Object.hasOwn(value, 'id')) {
+      for (const child of Object.values(value)) if (Array.isArray(child)) rows(child)
+    }
+  }
+  rows(material?.boardView?.nodes)
+  rows(material?.boardView?.facts)
+  rows(material?.boardView?.goalNodes)
+  rows(material?.focusedGoalNodes)
+  for (const row of material?.boardView?.actions ?? []) {
+    if (typeof row?.actionNodeId === 'string') ids.add(row.actionNodeId)
+  }
+  const goals = material?.boardView?.goals
+  for (const row of (Array.isArray(goals) ? goals : goals?.directory) ?? []) {
+    if (typeof row?.goal === 'string') ids.add(row.goal)
+  }
+  return ids
+}
+
+/** Strict whole-document JSON, with field rules projected from the separate review schema. */
+export function parsePreExecutionReply(text, material) {
+  if (typeof text !== 'string') return undefined
+  let reply
+  try { reply = JSON.parse(text) } catch { return undefined }
+  if (reply === null || typeof reply !== 'object' || Array.isArray(reply)) return undefined
+  const variant = PRE_EXECUTION_REPLY_VARIANTS.find(shape => shape.properties.verdict.const === reply.verdict)
+  if (variant === undefined || Object.keys(reply).length !== variant.required.length
+    || variant.required.some(key => !Object.hasOwn(reply, key))) return undefined
+  // All reply values are JSON strings. Count names in the original document too: JSON.parse
+  // otherwise silently accepts duplicate keys, even escaped spellings of the same name.
+  const members = [...text.trim().slice(1, -1).matchAll(/\s*("(?:[^"\\]|\\.)*")\s*:\s*"(?:[^"\\]|\\.)*"\s*(?:,|$)/g)]
+  const names = members.map(member => JSON.parse(member[1]))
+  if (names.length !== variant.required.length || new Set(names).size !== names.length) return undefined
+  for (const [key, rule] of Object.entries(variant.properties)) {
+    const value = reply[key]
+    if (typeof value !== 'string') return undefined
+    if (rule.const !== undefined && value !== rule.const) return undefined
+    if (rule.type === 'string' && (value.trim() === ''
+      || [...value].length < rule.minLength || [...value].length > rule.maxLength
+      || !new RegExp(rule.pattern, 'u').test(value) || /[\r\n\u2028\u2029]/u.test(value))) return undefined
+  }
+  if (reply.verdict !== 'allow' && !reviewNodeIds(material).has(reply.node)) return undefined
+  return reply // Gateway re-validates the frozen digest, generation and node membership.
+}
+
+const PRE_EXECUTION_REPORT_MARGIN_MS = 100
+function reviewError(code) {
+  if (code.length > PRE_EXECUTION_ERROR_RULE.maxLength
+    || !new RegExp(PRE_EXECUTION_ERROR_RULE.pattern, 'u').test(code)
+    || (PRE_EXECUTION_ERROR_RULE.enum && !PRE_EXECUTION_ERROR_RULE.enum.includes(code))) {
+    throw new Error('Pre-execution review machine code is outside the vendored contract')
+  }
+  return { errorCode: code }
+}
+
+export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchReviewer = fetch,
+  url = REVIEWER_URL, model = REVIEWER_MODEL } = {}) {
+  if (!url || !model) return reviewError('reviewer_unconfigured')
+  if (!(timeoutMs > 0)) return reviewError('review_timeout')
+  const ac = new AbortController()
+  const onAbort = () => ac.abort(signal.reason)
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => ac.abort('review_timeout'), timeoutMs)
+  try {
+    ac.signal.throwIfAborted()
+    const response = await fetchReviewer(url, {
+      method: 'POST', signal: ac.signal,
+      headers: { 'content-type': 'application/json', ...(process.env.RULITH_REVIEWER_KEY ? { authorization: `Bearer ${process.env.RULITH_REVIEWER_KEY}` } : {}) },
+      body: JSON.stringify({ model, temperature: 0, max_tokens: 2000,
+        messages: [{ role: 'system', content: w.systemPrompt },
+          { role: 'user', content: JSON.stringify(canonical(w.material)) }] }),
+    })
+    if (!response.ok) return reviewError('review_model_http_error')
+    const body = await response.json()
+    ac.signal.throwIfAborted()
+    const choice = body?.choices?.[0], message = choice?.message
+    if ((choice?.finish_reason != null && choice.finish_reason !== 'stop')
+      || message?.tool_calls != null || message?.function_call != null) return reviewError('review_invalid_reply')
+    const reply = parsePreExecutionReply(message?.content, w.material)
+    return reply === undefined ? reviewError('review_invalid_reply') : { reply }
+  } catch {
+    return reviewError(ac.signal.aborted ? String(ac.signal.reason) : 'review_model_error')
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+/** Cache the complete original report, including its generation; retries never re-judge. */
+export function createPreExecutionReviewHandler({ identityOf, alive, keepAlive, report, log,
+  ask = askPreExecutionReviewer, timeoutMs = REVIEWER_TIMEOUT_MS, retryMs = [250, 1000, 3000] }) {
+  const completed = new Map()
+  return async (w, receivedAt = performance.now()) => {
+    const key = JSON.stringify([w.id, w.materialDigest])
+    let cached = completed.get(key)
+    if (cached === undefined) {
+      const identity = identityOf()
+      if (identity === undefined || alive(identity) !== true) return
+      const startedAt = performance.now()
+      const ac = new AbortController()
+      const check = () => {
+        const reason = alive(identity)
+        if (reason !== true) ac.abort(typeof reason === 'string' ? reason : 'review_lease_lost')
+      }
+      const watch = setInterval(check, 25)
+      const settle = keepAlive()
+      const budget = Math.min(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120_000,
+        w.remainingMs - (startedAt - receivedAt) - PRE_EXECUTION_REPORT_MARGIN_MS)
+      const result = (async () => {
+        let outcome
+        try {
+          check()
+          outcome = await ask(w, { signal: ac.signal, timeoutMs: budget })
+          check()
+          if (ac.signal.aborted) outcome = reviewError(String(ac.signal.reason))
+        } finally { await settle(); clearInterval(watch) }
+        check()
+        if (ac.signal.aborted) outcome = reviewError(String(ac.signal.reason))
+        return { body: { kind: 'ReportWork', workType: 'review', purpose: 'pre_execution',
+          id: w.id, materialDigest: w.materialDigest, ...outcome },
+        identity: { workerId: identity.workerId, workerGeneration: identity.workerGeneration },
+        elapsedMs: Math.round(performance.now() - startedAt),
+        tool: ['Set', 'Execute'].includes(w.material?.proposedCall?.tool) ? w.material.proposedCall.tool : undefined }
+      })()
+      completed.set(key, result)
+      cached = result
+    }
+    const result = await cached
+    let accepted = false
+    for (let attempt = 0; attempt <= retryMs.length; attempt++) {
+      let response
+      try { response = await report(result.body, result.identity) } catch (error) {
+        if (error instanceof CredentialRejectedError) throw error
+        // Provider/transport text may contain material or secrets; never put it in the log.
+        response = {}
+      }
+      accepted = response?.accepted === true
+      if (accepted || typeof response?.errorCode === 'string' || attempt === retryMs.length) break
+      await new Promise(resolve => setTimeout(resolve, retryMs[attempt]))
+    }
+    log({ id: w.id, tool: result.tool, verdict: result.body.reply?.verdict,
+      errorCode: result.body.errorCode, elapsedMs: result.elapsedMs,
+      workerGeneration: result.identity.workerGeneration, accepted })
+  }
+}
+
+const handlePreExecutionReview = createPreExecutionReviewHandler({
+  identityOf: () => lease,
+  alive: identity => !running || leaseClosing ? 'review_shutdown'
+    : !leaseIsLive() || lease.workerGeneration !== identity.workerGeneration ? 'review_lease_lost' : true,
+  keepAlive: keepLeaseAlive,
+  report: work,
+  log: event => {
+    if (!WEV_ON) console.log(`○ Pre-execution review ${flatPeerText(event.id, 200)}${event.tool ? ` ${event.tool}` : ''}:`
+      + ` ${event.verdict ?? event.errorCode} · ${event.elapsedMs}ms · generation ${event.workerGeneration}`
+      + ` · report accepted=${event.accepted}`)
+    wev('reported', { kind: 'review', purpose: 'pre_execution', ...event })
+  },
+})
+
 async function handleReview(w) {
   if (typeof w.invocation !== 'string' || !w.invocation
     || !/^sha256:[0-9a-f]{64}$/.test(w.requestDigest ?? '')
@@ -5045,13 +5223,14 @@ if (IS_MAIN) {
       // while waiting, without claiming or executing a second piece of work.
       const beforePoll = lease
       const stopPollRenewal = keepLeaseAlive()
-      let r, pollStartedAt, pollWallStartedAt
+      let r, pollStartedAt, pollWallStartedAt, offersReceivedAt
       try {
         pollAbort = new AbortController()
         pollStartedAt = performance.now()
         pollWallStartedAt = Date.now()
         r = await work({ kind: POLL_KIND, tools: advertised,
-          ...(inputAdoption ? { inputAdoption } : {}) }, lease, { signal: pollAbort.signal })
+          ...(inputAdoption ? { inputAdoption } : {}), ...reviewerAdvertisement() }, lease, { signal: pollAbort.signal })
+        offersReceivedAt = performance.now()
       } finally {
         pollAbort = undefined
         await stopPollRenewal()
@@ -5137,7 +5316,8 @@ if (IS_MAIN) {
           }
           if (w.workType === 'verification') await handleClaimWork(w)
           else if (w.workType === 'action') await handleAction(w)
-          else if (w.workType === 'review') await handleReview(w)
+          else if (w.workType === 'review' && w.purpose === 'pre_execution') await handlePreExecutionReview(w, offersReceivedAt)
+          else if (w.workType === 'review' && w.purpose === undefined) await handleReview(w)
           else if (w.workType === 'evidence') await handleEvidence(w)
           // A work type this Worker does not know is left alone and said out loud. Guessing
           // at one would be this process acting on an instruction it cannot read; dropping

@@ -19,6 +19,10 @@ const CANONICAL_OVERLAY_SHA256 = 'sha256:9b2a4f87d7cd0ce18520bcd06606e7896ba3f91
 const CANONICAL_PRIOR_OVERLAY_SHA256 = 'sha256:f7a0e3ea90f8d94d1698b469d9bc7c75a956c51000399a7876d9506782e173f6'
 const CANONICAL_OLD_OVERLAY_SHA256 = 'sha256:4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e'
 const CANONICAL_BASE_SHA256 = 'sha256:6b8d46675c2104ca814ec54c466133474a7160d04214a2d3d51fc389ff5d16be'
+// D-1013c adds the separate Gateway review arm to the v2 schema. Historical selected
+// material pins still name their original base; accept this exact committed amendment
+// as a compatible current base without rewriting any of those immutable pins.
+const REVIEW_AMENDED_BASE_SHA256 = 'sha256:565aec601411a72191377ded380a3006b2f99797a5601c19fd9d53fac22bbc3e'
 
 if (pin.version !== 'rulith-worker-selected-material-overlay-pin/3'
     || pin.schemaPath !== 'docs/specs/schemas/rulith-worker-selected-material-v3.schema.json'
@@ -39,7 +43,9 @@ if (priorPin.version !== 'rulith-worker-selected-material-overlay-pin/2'
     || priorPin.baseSchemaSha256 !== CANONICAL_BASE_SHA256
     || priorPin.productionAdopted !== false
     || digest(priorSchemaBytes) !== priorPin.schemaSha256) fail('historical v2 overlay pin changed')
-if (base.files[pin.baseSchemaPath]?.sha256 !== pin.baseSchemaSha256) fail('base Worker contract differs from overlay pin')
+const baseFile = base.files[pin.baseSchemaPath]
+if (![pin.baseSchemaSha256, REVIEW_AMENDED_BASE_SHA256].includes(baseFile?.sha256)
+    || digest(Buffer.from(baseFile.content, 'utf8')) !== baseFile.sha256) fail('base Worker contract differs from the pinned compatible bases')
 const defs = schema.$defs
 const grant = defs?.SelectedMaterialExecutionGrant
 const input = defs?.SelectedMaterialInput

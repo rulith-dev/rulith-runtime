@@ -15,13 +15,14 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { loadWorkerContract } from './verify-worker-contract.mjs'
+import { loadWorkerReviewContract } from './verify-worker-review-contract.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const WORKER = resolve(ROOT, 'worker', 'rulith-worker.mjs')
 export const BEGIN = '// ── BEGIN GENERATED WORKER PROTOCOL PROJECTION ──────────────────────────────'
 export const END = '// ── END GENERATED WORKER PROTOCOL PROJECTION ────────────────────────────────'
 
-export function workerProjectionBlock(contract) {
+export function workerProjectionBlock(contract, review = loadWorkerReviewContract(ROOT)) {
   const list = (values) => values.map((value) => `'${value}'`).join(', ')
   const runtimeVersion = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')).version
   return `${BEGIN}
@@ -87,6 +88,11 @@ const SOURCE_UPLOAD_FIELDS = Object.freeze(${JSON.stringify(contract.sourceUploa
 const ARTIFACT_POLICY_FIELDS = Object.freeze(${JSON.stringify(contract.artifactPolicyFields)})
 const ARTIFACT_REF_PATTERN = ${new RegExp(contract.artifactRefPattern).toString()}
 const UNDELIVERABLE_CODE_PATTERN = ${new RegExp(contract.undeliverableCodePattern).toString()}
+// Separate Gateway review overlay; its prompt is supplied by the offer, never compiled here.
+const WORKER_REVIEW_SOURCE_COMMIT = '${review.sourceCommit}'
+const PRE_EXECUTION_REVIEW_CAPABILITY = Object.freeze(${JSON.stringify(review.capability)})
+const PRE_EXECUTION_REPLY_VARIANTS = Object.freeze(${JSON.stringify(review.defs.PreExecutionReviewReply.oneOf)})
+const PRE_EXECUTION_ERROR_RULE = Object.freeze(${JSON.stringify(review.defs.PreExecutionReviewErrorCode)})
 ${END}`
 }
 

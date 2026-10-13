@@ -203,15 +203,15 @@ test('RT-CONTRACT-11 vendoring requires the contract repository\'s own verifier'
   assert.ok(proof > 0 && write > proof, 'the bundle is written before its provenance is proved')
 })
 
-test('the bundled Set offers the model exactly eight operations', () => {
-  // D-1012a: end_goal replaces revise_fact and the batch's apply_action.
+test('the bundled Set offers the model exactly seven operations', () => {
+  // D-1012a: end_goal replaces revise_fact and the batch's apply_action. D-1013a: sign_off retired.
   const tool = RAW.tools.find((row) => row.name === 'Set')
   const defs = tool.inputSchema.$defs
   const resolve = (ref) => defs[ref.split('/').pop()]
   const operation = resolve(tool.inputSchema.properties.operations.items.$ref)
   assert.deepEqual(operation.oneOf.map((variant) => resolve(variant.$ref).properties.op.const),
     ['assert_fact', 'declare_goal', 'add_axiom', 'define_action', 'derive_aggregate',
-      'retract_node', 'sign_off', 'end_goal'])
+      'retract_node', 'end_goal'])
   // A-4: a goal declared without parent starts new work; with parent it breaks a goal down.
   const declare = operation.oneOf.map((variant) => resolve(variant.$ref)).find((row) => row.properties.op.const === 'declare_goal')
   assert.deepEqual(Object.keys(declare.properties).sort(), ['desired', 'id', 'label', 'op', 'parent'])
@@ -226,10 +226,13 @@ test('the bundled end_goal takes a goal, a non-completed disposition and a reaso
   assert.equal(ending.additionalProperties, false)
   const validate = new Ajv({ strict: false }).compile(tool.inputSchema)
   const operation = { op: 'end_goal', goal: 'GOAL_1', disposition: 'cancelled', reason: 'Withdrawn.' }
-  assert.equal(validate({ operations: [operation] }), true)
+  // D-1013c: every Set states its intent.
+  const intent = 'Withdraw GOAL_1 because the user cancelled it.'
+  assert.equal(validate({ intent, operations: [operation] }), true)
+  assert.equal(validate({ operations: [operation] }), false, 'intent is required')
   for (const invalid of [{ ...operation, disposition: 'completed' }, { ...operation, reason: '' }, { op: 'end_goal' },
     { op: 'revise_fact', id: 'F1' }, { op: 'apply_action', action: 'demo.run' }]) {
-    assert.equal(validate({ operations: [invalid] }), false, JSON.stringify(invalid))
+    assert.equal(validate({ intent, operations: [invalid] }), false, JSON.stringify(invalid))
   }
 })
 

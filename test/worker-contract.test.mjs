@@ -523,6 +523,16 @@ test('RT-WKC-15 the runtime-owned open scenarios are the ones this suite answers
       + ' plus RT-WK-SRC-5 (served bytes not rewritten)',
     'action-work-source-free': 'RT-WK-LINK-2/3/4 (committed Source-free link) plus RT-WK-LINK-5'
       + ' (every committed Source invariant) and RT-WK-SRC-4 (real process: no Source manufactured)',
+    // These scenarios are jointly owned with Gateway. These arms answer only the Worker
+    // half; Gateway's durable operation, designation and suggestion semantics remain its tests.
+    'review-reads-never-offered': 'worker-pre-execution-review: offer -> model tests assert no tools or Board reads',
+    'review-block-replay': 'worker-pre-execution-review: completed block/note replay keeps the original report',
+    'review-unavailable': 'worker-pre-execution-review: malformed, timeout, HTTP and cached failure reports',
+    'review-note-recovery': 'worker-pre-execution-review: completed block/note replay (process-local cache only)',
+    'review-report-idempotency': 'worker-pre-execution-review: cache and transport retries preserve report bytes',
+    'review-designation-generation': 'worker-pre-execution-review: lease loss aborts; cached report retains generation',
+    'review-hold-cancellation': 'worker-pre-execution-review: shutdown aborts and queue time consumes remainingMs',
+    'review-material-preview': 'worker-pre-execution-review: material previews pass through unchanged and absent anchors fail',
   }
   const mine = FIXTURE.runtimeScenarios
     .filter((scenario) => /rulith-runtime/u.test(String(scenario.owner)))

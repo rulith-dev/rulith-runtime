@@ -25,8 +25,8 @@
 
 const KNOWN = new Set([
   '$ref', 'type', 'required', 'properties', 'additionalProperties', 'propertyNames',
-  'enum', 'const', 'pattern', 'items', 'minLength', 'minimum', 'maximum',
-  'maxItems', 'uniqueItems', 'anyOf', 'allOf', 'oneOf', 'contains',
+  'enum', 'const', 'pattern', 'items', 'minLength', 'maxLength', 'minimum', 'maximum',
+  'minItems', 'maxItems', 'uniqueItems', 'anyOf', 'allOf', 'oneOf', 'contains',
   'if', 'then', 'else', 'not',
   // Prose, carried by the contract and not a constraint.
   'description', '$comment', 'title',
@@ -118,8 +118,11 @@ export function shapeFaults(value, schema, defs, at = '') {
   if (typeof schema.pattern === 'string' && typeof value === 'string' && !new RegExp(schema.pattern, 'u').test(value)) {
     say(`does not match ${schema.pattern}`)
   }
-  if (typeof schema.minLength === 'number' && typeof value === 'string' && value.length < schema.minLength) {
+  if (typeof schema.minLength === 'number' && typeof value === 'string' && [...value].length < schema.minLength) {
     say(`is shorter than ${schema.minLength}`)
+  }
+  if (typeof schema.maxLength === 'number' && typeof value === 'string' && [...value].length > schema.maxLength) {
+    say(`is longer than ${schema.maxLength}`)
   }
   if (typeof value === 'number') {
     if (typeof schema.minimum === 'number' && value < schema.minimum) say(`is below ${schema.minimum}`)
@@ -127,6 +130,7 @@ export function shapeFaults(value, schema, defs, at = '') {
   }
 
   if (actual === 'array') {
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) say(`carries fewer than ${schema.minItems} items`)
     if (schema.contains !== undefined && !value.some((item, index) =>
       shapeFaults(item, schema.contains, defs, `${at}[${index}]`).length === 0)) {
       say('contains no item matching the required shape')
