@@ -105,6 +105,8 @@ test('RT-REC-11b with nothing unresolved the shadow reviewer does write (calibra
   })
   assert.notEqual(run.code, 'timeout', `${run.stdout}\n${run.stderr}`)
   assert.equal(shadowWrites(run).length, 1, 'the shadow finding was never written')
+  // D-1013c: the authority refuses a Set without intent; the host's own write states one.
+  assert.match(shadowWrites(run)[0].args.intent ?? '', /\S/, 'the shadow finding write states its intent')
 })
 
 test('RT-REC-17 a lost answer is not sold to the model as a de-duplicated retry', async () => {

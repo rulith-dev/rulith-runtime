@@ -4813,7 +4813,8 @@ Otherwise return at most three lines, each formatted FINDING: <one precise issue
     op: 'assert_fact', id: `SF_${Date.now().toString(36)}_${index}`,
     predicate: 'shadow_finding', args: { text: finding.slice(9, 240).trim() },
   }))
-  const answer = await callTool(ctx, 'Set', { operations })
+  // Every Set states its intent (D-1013c); this one is the host's own record of the shadow review.
+  const answer = await callTool(ctx, 'Set', { intent: "Record the shadow review's findings so later steps can see them.", operations })
   // This write is this host's, and its answer is this host's to read. What its strip delivered
   // beyond that — an earlier outcome of the model's own — is the model's to read, next time it
   // is asked. Otherwise this host has read everything the answer delivered, and says so to the
