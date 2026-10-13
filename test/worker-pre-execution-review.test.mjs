@@ -353,6 +353,21 @@ test('runtime cache replays original reports after a reset and repeated Poll off
   assert.equal(new Set(run.of('ReportWork').map(entry => entry.raw)).size, 1)
 })
 
+test('runtime review report with no answer is resent unchanged after its deadline', async () => {
+  let polls = 0, reports = 0
+  const run = await driveWorker({ reviewer: valid[0], env: { RULITH_WORK_CALL_DEADLINE_MS: '1500' },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+      : operation.kind === 'ReportWork' ? ++reports === 1 ? HOLD : { body: { accepted: true } } : undefined,
+    done: (_seen, output) => /Pre-execution review.*report accepted=(?:true|false)/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.match(run.output, /Pre-execution review.*report accepted=true/)
+  assert.equal(run.modelRequests.length, 1)
+  assert.equal(run.of('ReportWork').length, 2)
+  assert.equal(new Set(run.of('ReportWork').map(entry => entry.raw)).size, 1)
+})
+
 test('runtime constitution offers without purpose still use the old path', async () => {
   let polls = 0
   const w = { workType: 'review', tool: 'acme.ship', norm: 'n1', invocation: 'inv-1',

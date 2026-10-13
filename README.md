@@ -635,6 +635,15 @@ generation would be this Worker awarding itself a permission it no longer has. W
 receipt may land is the Gateway's decision, and it cannot decide on a field that was not sent.
 A receipt retry is the same bytes and the same identity; nothing is ever re-executed.
 
+Every Worker call has its own deadline: 60 s for a Poll (above the Gateway's hold), 60 s for
+each claim attempt and 30 s for each attempt of a report, an Artifact registration or a release.
+An unanswered Poll is asked again at once under the same lease. An unanswered claim or report is
+not a refusal — it may already have reached Core — so it is resent, the same bytes under the same
+identity, while the lease it was made under is held and within a wall-clock budget (2 min for a
+claim or registration, 5 min for a report); a server failure, timeout or rate limit counts as no
+answer. The executor runs only on an accepted claim. A claim whose outcome stays unconfirmed is
+left unclaimed and said so: if the Gateway recorded it, it must be resolved in Console.
+
 **Poll** is the whole inbox surface and the only verb that takes the line. It states the
 instance, the Tool Manifest, and — only once a lease is held — the generation that lease
 carries; the acquiring poll of a freshly started process states none, because it has never

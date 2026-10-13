@@ -67,21 +67,29 @@ test('RT-WK-RECEIPT-1: a connection reset on the receipt is retried byte-identic
     'a thrown receipt must be handled by the receipt ladder, not reported as a poll failure')
 })
 
-test('RT-WK-RECEIPT-2: repeated resets exhaust the ladder and say plainly that the world may have moved', async () => {
-  // Calibration for the retry bound: the ladder must not become an unbounded loop, and
-  // the operator-facing line must separate "the hand did it" from "the ledger has it".
+test('RT-WK-RECEIPT-2: once the lease ends, repeated resets exhaust the ladder and say plainly that the world may have moved', async () => {
+  // Calibration for the retry bound. While the dispatching lease is held an unanswered receipt
+  // is resent (RT-WK-DEADLINE-3); once it is gone the original ladder — one attempt plus three
+  // retries — is all that remains, so the loop is not unbounded, and the operator-facing line
+  // must separate "the hand did it" from "the ledger has it".
   let polls = 0
   const run = await driveWorker({
     timeoutMs: 40_000,
-    reply: (operation) => {
+    // Renewed often, so the refusal below ends the lease right after the first receipt.
+    lease: operation => activeLease({ workerId: operation.workerId, heartbeatAfterMs: 200 }),
+    reply: (operation, seen) => {
       if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
       if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
       if (operation.kind === 'ReportWork') return RESET
       if (operation.kind === 'RenewLease') {
         assert.equal(operation.workerGeneration, 7, 'renewal must keep the dispatched lease generation')
+        if (seen.some(entry => entry.operation.kind === 'ReportWork')) {
+          return { body: { accepted: false, errorCode: 'worker_fenced', teaching: 'Not the current holder.' } }
+        }
         return { body: { accepted: true, lease: activeLease({ workerId: operation.workerId,
-          workerGeneration: operation.workerGeneration }) } }
+          workerGeneration: operation.workerGeneration, heartbeatAfterMs: 200 }) } }
       }
+      if (operation.kind === 'ReleaseLease') return { body: { accepted: true } }
       throw new Error(`unexpected operation ${String(operation.kind)}`)
     },
     done: (seen, output) => DONE.action.test(output),
@@ -89,8 +97,9 @@ test('RT-WK-RECEIPT-2: repeated resets exhaust the ladder and say plainly that t
 
   assert.equal(run.timedOut, false, `the ladder never gave up:\n${run.output}`)
   assert.equal(run.ran('ship'), 1, `effect log: ${JSON.stringify(run.effects)}`)
-  assert.equal(run.of('ReportWork').length, 4, 'the ladder is one attempt plus three retries')
-  assert.match(run.output, /receipt not committed \(transport unavailable; retry limit reached\)/)
+  assert.equal(run.of('ReportWork').length, 4, 'without the lease the ladder is one attempt plus three retries')
+  assert.equal(new Set(run.of('ReportWork').map(entry => entry.raw)).size, 1, 'a resend changed the receipt bytes')
+  assert.match(run.output, /receipt not committed \(transport unavailable; the lease ended\)/)
   assert.match(run.output, /executor succeeded/)
   assert.match(run.output, /The executor may have changed the external system, but the Board has no receipt/)
 })

@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { prepareActionReport, actionRowFaults } from '../worker/rulith-worker.mjs'
 import { defaultMaterialRoot, materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
 import { loadWorkerContract } from '../scripts/verify-worker-contract.mjs'
-import { actionRow, CONNECTION, HOLD, driveWorker } from './support/worker-harness.mjs'
+import { actionRow, activeLease, CONNECTION, HOLD, driveWorker, sourceFreeActionRow } from './support/worker-harness.mjs'
 import { authoringDiagnostics, createAuthoringGuidance, authoringGuidanceText } from '../worker/authoring-diagnostics.mjs'
 import { LOCAL_AUTHORING_MODERN_CUE, LOCAL_AUTHORING_REFERENCE_CUE } from '../worker/local-authoring.mjs'
 
@@ -222,19 +222,25 @@ test('ART-WK-3: nested policy and permission shapes are checked from the committ
 for (const kind of ['write', 'run', 'read']) for (const fail of [false, true]) test(`ART-WK-4: the real Worker registers before its ${kind} receipt; registration failure=${fail}`, async () => {
   await withArea(async ({ env }) => {
     let polls = 0
-    const registrations = []
+    const registrations = [], registrationBytes = []
     const run = await driveWorker({
       env,
       extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'; import { join } from 'node:path'; appendFileSync(join(process.env.RULITH_SOURCE_ACCESS, 'effects.log'), 'ship\\n'); console.log(JSON.stringify({result:'x'.repeat(12000)}));" },
+      // An unconfirmed registration (503) is resent while the lease is held, so the failure arm
+      // ends that lease: renewed often, and refused once a registration has been attempted.
+      ...(fail ? { lease: operation => activeLease({ workerId: operation.workerId, heartbeatAfterMs: 200 }) } : {}),
       reply: operation => operation.kind === 'Poll'
         ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow({ toolSpec: JSON.stringify({
           impl: 'worker-tool', exec: 'acme.ship@1', kind, params: {}, sourceTypes: ['file'],
         }) })] } } } : HOLD
-        : { body: { accepted: true, revision: 'r2' } },
-      materialReply: (path, payload) => {
+        : fail && operation.kind === 'RenewLease'
+          ? registrations.length === 0 ? undefined : { body: { accepted: false, errorCode: 'worker_fenced' } }
+          : { body: { accepted: true, revision: 'r2' } },
+      materialReply: (path, payload, entry) => {
         if (path === '/artifact/delivery') return { body: { accepted: true, delivery: null } }
         if (path !== '/artifact/register') return undefined
         registrations.push(payload)
+        registrationBytes.push(entry.raw)
         return fail
           ? { status: 503, body: { accepted: false, errorCode: 'rejected', reason: 'artifact_index_unconfirmed' } }
           : { body: { accepted: true, payload: {
@@ -245,7 +251,10 @@ for (const kind of ['write', 'run', 'read']) for (const fail of [false, true]) t
     })
     assert.equal(run.timedOut, false, run.output)
     assert.deepEqual(run.effects, ['ship'], 'the actual external effect happens exactly once')
-    assert.equal(registrations.length, 1, run.output)
+    if (fail) {
+      assert.ok(registrations.length >= 1, run.output)
+      assert.equal(new Set(registrationBytes).size, 1, 'a resent registration changed its bytes')
+    } else assert.equal(registrations.length, 1, run.output)
     // A manifest, never a payload. The result text is 12 000 identical characters, so its
     // absence from every byte this Worker sent is a real assertion.
     assert.equal(registrations[0].chunkDigests.length, 1)
@@ -266,6 +275,74 @@ for (const kind of ['write', 'run', 'read']) for (const fail of [false, true]) t
       assert.equal(reports[0].operation.undeliverable, undefined)
       assert.match(reports[0].operation.reason, /^result_not_delivered: artifact_index_unconfirmed\./)
     } else assertUndeliverable(run, 'artifact_index_unconfirmed')
+  })
+})
+
+test('ART-WK-4b: an unconfirmed registration is resent unchanged while the lease is held, and its reference is reported', async () => {
+  await withArea(async ({ env }) => {
+    let polls = 0
+    const registrations = []
+    const run = await driveWorker({
+      env,
+      extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'; import { join } from 'node:path'; appendFileSync(join(process.env.RULITH_SOURCE_ACCESS, 'effects.log'), 'ship\\n'); console.log(JSON.stringify({result:'x'.repeat(12000)}));" },
+      reply: operation => operation.kind === 'Poll'
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
+        : operation.kind === 'RenewLease' ? undefined : { body: { accepted: true, revision: 'r2' } },
+      materialReply: (path, payload, entry) => {
+        if (path === '/artifact/delivery') return { body: { accepted: true, delivery: null } }
+        if (path !== '/artifact/register') return undefined
+        registrations.push(entry.raw)
+        // The Gateway's 503 means the index result is unconfirmed and the same request may be resent.
+        return registrations.length === 1
+          ? { status: 503, body: { accepted: false, errorCode: 'rejected', reason: 'artifact_index_unconfirmed' } }
+          : { body: { accepted: true, payload: { ref, mediaType: payload.mediaType, encoding: payload.encoding,
+            totalBytes: payload.totalBytes, digest: payload.digest } } }
+      },
+      done: (_seen, output) => /Reconciliation requested|\| receipt (?:not )?committed|remains pending/.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.deepEqual(run.effects, ['ship'])
+    assert.equal(registrations.length, 2, run.output)
+    assert.equal(registrations[1], registrations[0], 'the resent registration is not the same request')
+    assert.match(run.output, /Registering a result Artifact got no answer \(attempt 1: artifact_index_unconfirmed\); resending it unchanged in 1s\./)
+    const reports = run.of('ReportWork')
+    assert.equal(reports.length, 1, run.output)
+    assert.deepEqual(reports[0].operation.artifacts, [{ ref }])
+    assert.equal(reports[0].operation.ok, true)
+    assert.equal(reports[0].operation.undeliverable, undefined)
+  })
+})
+
+test('ART-WK-4c: a registration answered 503 every time takes the unavailable path within its budget, and the next item runs', async () => {
+  await withArea(async ({ env }) => {
+    let polls = 0
+    const registrations = []
+    const run = await driveWorker({
+      // A 1.5 s call deadline makes the registration budget 6 s (4x); the lease stays held throughout.
+      env: { ...env, RULITH_WORK_CALL_DEADLINE_MS: '1500' },
+      extraAdapters: { 'ship-adapter.mjs': "import { appendFileSync } from 'node:fs'; import { join } from 'node:path'; appendFileSync(join(process.env.RULITH_SOURCE_ACCESS, 'effects.log'), 'ship\\n'); console.log(JSON.stringify({result:'x'.repeat(12000)}));" },
+      reply: operation => operation.kind === 'Poll'
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [actionRow(), sourceFreeActionRow()] } } } : HOLD
+        : operation.kind === 'RenewLease' ? undefined : { body: { accepted: true, revision: 'r2' } },
+      materialReply: (path, _payload, entry) => {
+        if (path === '/artifact/delivery') return { body: { accepted: true, delivery: null } }
+        if (path !== '/artifact/register') return undefined
+        registrations.push({ raw: entry.raw, at: Date.now() })
+        return { status: 503, body: { accepted: false, errorCode: 'rejected', reason: 'artifact_storage_unavailable' } }
+      },
+      done: seen => seen.some(entry => entry.operation.kind === 'ReportWork' && entry.operation.id === 'inv_pure'),
+      timeoutMs: 25_000,
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.ok(registrations.length >= 2, run.output)
+    assert.equal(new Set(registrations.map(entry => entry.raw)).size, 1, 'a resent registration changed its bytes')
+    assert.ok(registrations.at(-1).at - registrations[0].at < 6000,
+      `registration was resent for ${registrations.at(-1).at - registrations[0].at} ms`)
+    const [first, second] = run.of('ReportWork')
+    assert.equal(first.operation.id, 'inv_p2')
+    assert.equal(first.operation.undeliverable, 'artifact_storage_unavailable', run.output)
+    assert.equal(second.operation.id, 'inv_pure', 'the loop did not move on to the next item')
+    assert.equal(second.operation.ok, true)
   })
 })
 

@@ -301,9 +301,11 @@ for (const errorCode of ['ingest_rejected', 'bad_command', 'not_claimer', 'worke
   })
 }
 
+// The answer to a resend is the answer: the Gateway replays the request id and Core returns its
+// original reply. So an ingest rejection that arrives after an unanswered attempt — an HTTP
+// failure, a reset, a cut-off body — still authorizes the one failure receipt.
 for (const prior of ['HTTP', 'reset', 'truncated body']) {
-  const uncertain = prior !== 'HTTP'
-  test(`ingest rejection after ${prior} retry preserves receipt history`, async () => {
+  test(`ingest rejection after ${prior} retry sends one failure receipt and keeps the success attempts byte-identical`, async () => {
     let polls = 0, reports = 0
     const run = await driveWorker({
       ipc: true, env: { RULITH_LOCAL_EVENTS: 'ipc' },
@@ -312,7 +314,7 @@ for (const prior of ['HTTP', 'reset', 'truncated body']) {
           ? { body: { accepted: true, payload: { work: [actionRow()] } } } : HOLD
         if (operation.kind === 'ReportWork') {
           if (++reports === 1) return prior === 'reset' ? RESET
-            : prior === 'truncated body' ? { partial: '{"accepted":true' }
+            : prior === 'truncated body' ? { partial: '{"revision":' }
               : { status: 503, text: 'Unavailable' }
           if (reports === 2) return { body: { accepted: false, errorCode: 'ingest_rejected', teaching: 'PRIVATE_RESULT_123' } }
           return { body: { accepted: true } }
@@ -324,21 +326,16 @@ for (const prior of ['HTTP', 'reset', 'truncated body']) {
     assert.equal(run.timedOut, false, run.output)
     assert.equal(run.ran('ship'), 1)
     const receipts = run.of('ReportWork')
-    assert.equal(receipts.length, uncertain ? 2 : 3)
+    assert.equal(receipts.length, 3)
     assert.equal(receipts[0].raw, receipts[1].raw, 'success retries must stay byte-identical')
+    assert.equal(receipts[0].operation.ok, true)
     const event = run.messages.find(message => message.event?.type === 'reported').event
-    if (uncertain) {
-      assert.equal(event.landed, false)
-      assert.equal(event.failureReceiptSent, undefined)
-      assert.ok(receipts.every(row => row.operation.ok === true))
-    } else {
-      assert.equal(receipts[2].operation.ok, false)
-      assert.equal(event.ok, false)
-      assert.equal(event.resultRecorded, false)
-      assert.equal(event.failureReceiptSent, true)
-      assert.equal(event.result, undefined)
-      assert.match(event.reason, /The Board did not record this result/)
-    }
+    assert.equal(receipts[2].operation.ok, false)
+    assert.equal(event.ok, false)
+    assert.equal(event.resultRecorded, false)
+    assert.equal(event.failureReceiptSent, true)
+    assert.equal(event.result, undefined)
+    assert.match(event.reason, /The Board did not record this result/)
     assert.doesNotMatch(JSON.stringify(run.messages), /PRIVATE_RESULT_123/)
   })
 }

@@ -14,6 +14,32 @@ All notable changes to the local runtime are documented here.
   (malformed JSON, a code fence, an unknown node, multi-line advice, a tool call) still fails closed as
   `review_invalid_reply` without a retry, and HTTP errors, timeouts and aborts are not retried. The strict
   reply parser, the vendored contracts and constitution clearance review are unchanged.
+- Worker: every Worker call has its own deadline. In production on 2026-10-13 one dropped response
+  held every later claim behind Node's built-in fetch timeout (304.6 s measured), because Poll,
+  ClaimWork and ReportWork had none and work is handled one item at a time. A Poll now waits at most
+  60 s (RULITH_POLL_DEADLINE_MS, which must stay above the Gateway's Poll hold), then polls again at
+  once without changing the lease; a takeover still interrupts it. Each attempt of ReportWork,
+  Artifact registration and ReleaseLease waits at most 30 s (RULITH_WORK_CALL_DEADLINE_MS), and each
+  ClaimWork attempt twice that, since the Gateway may serialize a claim behind another dispatch.
+- Worker: an unanswered claim or report is resent with identical bytes and identity, with waits of
+  1 s, 4 s, then 12 s, until it is accepted or refused with an errorCode. A thrown or timed-out
+  request, an unreadable body, and HTTP 5xx, 408 or 429 (including the Gateway's 503
+  `upstream_unavailable`) are no answer, not a refusal. Resending stops when the lease generation it
+  was made under is gone, or after a wall-clock budget, so a persistent server failure cannot hold
+  the work loop or a stop: claims and Artifact registration resend for at most 2 min and stop when
+  the Worker is stopping; reports resend for at most 5 min. Without the lease, receipts and reports
+  keep their original ladder of four attempts and a registration its single attempt. This covers
+  action receipts, verification, evidence, clearance and pre-execution review reports, and Artifact
+  registration; a registration that stays unanswered takes the existing undeliverable path with its
+  code (for example `artifact_storage_unavailable`).
+- Worker: the executor runs only on `accepted: true`. A claim that threw is no longer dropped from its
+  batch. A claim with no confirmed outcome (the lease ended, the budget ran out, the Worker is
+  stopping, or the resend after an unanswered attempt was refused) is left unclaimed with a line
+  saying that, if the Gateway recorded it, it must be resolved in Console. A refusal of a first
+  attempt (an errorCode, or a readable `accepted: false`) skips the item as before. A report answered
+  `accepted: false` without an errorCode is still resent, as the receipt ladder always did.
+- Worker: an `ingest_rejected` answer that arrives on a resend still authorizes the one failure
+  receipt; the Gateway replays the request id, so the resend's answer is the original's.
 
 ## 0.16.0 - 2026-10-13
 

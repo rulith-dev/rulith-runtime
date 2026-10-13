@@ -20,6 +20,14 @@
  *                        granted address): never what the Source is or where or how it connects
  *   RULITH_WORKSPACE_TOOLS   Enable fixed workspace Tools: read or read-write
  *   RULITH_WORKER_RUN_TIMEOUT_SECONDS  How long a run Adapter may take (seconds; default 60)
+ *   RULITH_POLL_DEADLINE_MS  How long one Poll may wait for its answer (default 60000); after it
+ *                        the Worker polls again under the same lease. It must stay above the
+ *                        Gateway's Poll hold (25 s in production): a Gateway configured to hold
+ *                        a Poll for 60 s or more needs this raised with it
+ *   RULITH_WORK_CALL_DEADLINE_MS  How long one attempt of ReportWork, Artifact registration or
+ *                        ReleaseLease may wait (default 30000). The rest scale from it: one
+ *                        ClaimWork attempt 2x (60 s), resending an unanswered claim or
+ *                        registration at most 4x (2 min), an unanswered report at most 10x (5 min)
  *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
  *   RULITH_REVIEWER_MAX_TOKENS  执行前审查每次模型调用的 max_tokens(正整数,默认 8000;
@@ -727,6 +735,50 @@ class PollRefusedError extends Error {
   }
 }
 
+/**
+ * A `/work` call whose own deadline passed before its answer arrived.
+ *
+ * 2026-10-13 生产: 网络吞掉了一发应答,而 Worker 一次只办一件,于是此后每一次领取都排在
+ * Node 内置的 fetch 超时后面(UND_ERR_HEADERS_TIMEOUT 实测 304.6 s)。所以每一发有自己的期限。
+ * 期限到了只说明「这一发没有答复」: 它不说明请求没落账,也不改变租约。
+ */
+class CallDeadlineError extends Error {
+  constructor(kind, deadlineMs) {
+    super(`${kind} got no answer within ${deadlineMs / 1000}s`)
+    this.name = 'CallDeadlineError'
+  }
+}
+
+/** A positive whole number of milliseconds from the environment; any other value keeps the default. */
+function configuredMs(value, fallback) {
+  const text = String(value ?? '').trim()
+  return /^[1-9]\d*$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : fallback
+}
+/**
+ * Poll's deadline sits above the Gateway's hold (25 s in production). This Worker is not told
+ * the configured hold, so the bound is a constant: a Poll still unanswered after it is a lost
+ * answer, not a quiet inbox. The two are coupled: a Gateway hold raised to 60 s or more needs
+ * RULITH_POLL_DEADLINE_MS raised with it, or every quiet Poll ends as a missed answer.
+ */
+const POLL_DEADLINE_MS = configuredMs(process.env.RULITH_POLL_DEADLINE_MS, 60_000)
+/** One attempt of ReportWork, Artifact registration or ReleaseLease. */
+const WORK_CALL_DEADLINE_MS = configuredMs(process.env.RULITH_WORK_CALL_DEADLINE_MS, 30_000)
+/**
+ * One attempt of ClaimWork. The Gateway gives Core 20 s and serializes an action claim behind
+ * any other dispatch on the same Connection, so an answered claim can take two of those.
+ */
+const CLAIM_CALL_DEADLINE_MS = 2 * WORK_CALL_DEADLINE_MS
+/**
+ * 重发不只以租约为界,也以墙钟为界(2026-10-13 审查 P1)。持续的 5xx(存储未配置、索引故障、
+ * Core 对某一条命令恒 ≥500)下续租照常成功,只看租约的重发会永远不停,而 Worker 一次只办一件,
+ * 整条队列和停机都跟着卡住。领取与 Artifact 登记最多 2 分钟,回报最多 5 分钟;到时走原有的
+ * 「未确认」「无法交付」「回执没落账」那几条路,并照实说出来。
+ */
+const CLAIM_RESEND_BUDGET_MS = 4 * WORK_CALL_DEADLINE_MS
+const REPORT_RESEND_BUDGET_MS = 10 * WORK_CALL_DEADLINE_MS
+/** Waits between resends of one unanswered claim, report or registration: 1 s, 4 s, then every 12 s. */
+const RESEND_MS = Object.freeze([1_000, 4_000, 12_000])
+
 const RUN_ADAPTER_TIMEOUT_MS = (() => {
   try { return runAdapterTimeoutMs() } catch (error) {
     if (!IS_MAIN) throw error
@@ -1176,13 +1228,18 @@ if (IS_MAIN) {
  * captured at claim time, because that is the identity the authority granted and the one the
  * Gateway has to judge. A pending renewal must settle before any claim or report; after a
  * loss, a report still carries that captured generation for the Gateway to decide.
+ *
+ * `deadlineMs` bounds this one request, headers and body, and starts when it is sent rather
+ * than while a renewal is awaited; its expiry is a `CallDeadlineError`. It combines with the
+ * caller's `signal` (a takeover interrupting Poll), and that signal keeps its own meaning.
  */
-async function work(operation, identity = lease, { signal } = {}) {
+async function work(operation, identity = lease, { signal, deadlineMs } = {}) {
   if (operation.kind === 'ClaimWork' || operation.kind === 'ReportWork') {
     await keepLeaseAlive()()
     if (operation.kind === 'ClaimWork'
       && (!leaseIsLive() || identity === undefined || lease.workerGeneration !== identity.workerGeneration)) {
-      return { accepted: false, errorCode: 'worker_lease_lost',
+      // `notSent`: this refusal is local. After an unanswered attempt it is not the Gateway's verdict.
+      return { accepted: false, errorCode: 'worker_lease_lost', notSent: true,
         teaching: 'No claim was sent: this Worker no longer holds the confirmed dispatch lease.' }
     }
   }
@@ -1191,20 +1248,31 @@ async function work(operation, identity = lease, { signal } = {}) {
     workerId: WORKER_ID,
     ...(identity === undefined ? {} : { workerGeneration: identity.workerGeneration }),
   }
-  const r = await fetch(WORK_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY,
-      // 版本随每一发走(RT-WK-VER): 网关据它记得下「这台客户机跑的是哪一版」。
-      'x-rulith-worker-version': WORKER_VERSION,
-      [WORKER_HEADER_ID]: WORKER_ID,
-      ...(identity === undefined ? {} : { [WORKER_HEADER_GENERATION]: String(identity.workerGeneration) }),
-    },
-    body: JSON.stringify({ operation: identified }),
-    signal,
-  })
+  const deadline = deadlineMs === undefined ? undefined : AbortSignal.timeout(deadlineMs)
+  const signals = [signal, deadline].filter(value => value !== undefined)
+  const missed = () => deadline?.aborted === true && signal?.aborted !== true
+  let r
+  try {
+    r = await fetch(WORK_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-rulith-connection': CONNECTION_ID, 'x-rulith-connection-key': CONNECTION_KEY,
+        // 版本随每一发走(RT-WK-VER): 网关据它记得下「这台客户机跑的是哪一版」。
+        'x-rulith-worker-version': WORKER_VERSION,
+        [WORKER_HEADER_ID]: WORKER_ID,
+        ...(identity === undefined ? {} : { [WORKER_HEADER_GENERATION]: String(identity.workerGeneration) }),
+      },
+      body: JSON.stringify({ operation: identified }),
+      signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
+    })
+  } catch (error) {
+    if (missed()) throw new CallDeadlineError(operation.kind, deadlineMs)
+    throw error
+  }
   // A body that is not one JSON object (JSON null, an array, bad JSON) says nothing; reading
   // fields off it must not turn a 401 into an endless "polling failed" loop.
   const parsed = await r.json().catch(error => {
+    // The deadline passing while the body streams is the same missing answer as before the headers.
+    if (missed()) throw new CallDeadlineError(operation.kind, deadlineMs)
     // A truncated response is transport-uncertain even if its headers arrived.
     // Complete non-JSON HTTP answers still take the existing unchanged retry path.
     const definiteRenewalRefusal = r.status >= 400 && r.status < 500 && r.status !== 429
@@ -1219,6 +1287,14 @@ async function work(operation, identity = lease, { signal } = {}) {
   // HTTP verdict is final for this report, even when no errorCode made it through.
   if (operation.kind === 'ReportWork' && operation.undeliverable !== undefined && [400, 422].includes(r.status)) {
     return { accepted: false, errorCode: 'undeliverable_not_supported' }
+  }
+  // 服务端失败、超时与限流不是对领取或回报的裁决,哪怕它带着名字: Core 的结果未确认时 Gateway
+  // 答 503 `upstream_unavailable`,原话是「原样重发同一个请求」。RenewLease 下面本就这样读这几种状态。
+  // 名字只留作说明文字,不留在 errorCode 上——否则下游会把它读成一次拒绝,把该重发的请求丢掉。
+  if ((operation.kind === 'ClaimWork' || operation.kind === 'ReportWork')
+      && (r.status === 408 || r.status === 429 || r.status >= 500)) {
+    const named = [j.errorCode, j.reason].filter(value => typeof value === 'string' && value !== '').join('/')
+    return { unconfirmed: `HTTP ${r.status}${named ? ` ${flatPeerText(named, 80)}` : ''}` }
   }
   if (operation.kind === 'RenewLease') {
     // Rate limits and server-side failures cannot tell this Worker that its lease was
@@ -1252,6 +1328,120 @@ async function work(operation, identity = lease, { signal } = {}) {
       typeof j.errorCode === 'string' ? j.errorCode : undefined, typeof j.reason === 'string' ? j.reason : undefined)
   }
   return j
+}
+
+/** Whether the lease generation a request was made under is still the live one here. */
+const holdsLease = identity => leaseIsLive() && lease.workerGeneration === identity?.workerGeneration
+
+/** Wait before resend `attempt` (1-based): the ladder, then its last step. */
+const resendWaitMs = (attempt, ladder = RESEND_MS) => ladder[Math.min(attempt - 1, ladder.length - 1)] ?? 0
+
+/**
+ * Send one ClaimWork or ReportWork until its answer is known, resending the same bytes.
+ *
+ * 一发没有答复,不等于它没落账: Gateway 可能已经交给 Core,Core 可能已经记下。所以没有答复的
+ * 领取不能当成「被拒」——那样这一项就被丢掉了,而 Core 那边它已派发、永不再派;没有答复的回报
+ * 也不能改个写法再发——Gateway 按请求内容认同一个请求号,差一个字节就是另一个请求。只能原样再问。
+ *
+ * The answer is known when it is accepted, or refused with an errorCode; with `explicitRefusal`
+ * (a claim, before which nothing has run) a readable `accepted: false` is a refusal too, as it
+ * always was. Everything else is no answer: a thrown fetch, a passed deadline, an unreadable
+ * body, and a server failure, timeout or rate limit (`work` returns those as `unconfirmed`,
+ * with no `accepted` field). A report answered `accepted: false` with no code is resent, as the
+ * receipt ladder always did. The operation is serialized once and every attempt sends those
+ * bytes under the same identity; the Gateway replays the request id and Core returns its
+ * original reply.
+ *
+ * Resending stops at the first of three bounds, and `ended` says which:
+ *   - the lease the request was made under is gone. Until then this process is the one that
+ *     has to find out; without it `floor` attempts remain in all: a receipt keeps the original
+ *     four, because its executor already ran and the authority decides whether a lost lease may
+ *     still report it; a claim keeps one, because claiming without a lease is not its to do;
+ *   - `budgetMs` of wall clock since the first attempt, because a persistent server failure
+ *     leaves the lease renewable for ever while the one work loop waits behind this request;
+ *   - with `stopWithWorker` (claims), this Worker stopping: a claim not yet confirmed is not
+ *     work in hand, and a stop must not wait on it. Reports finish within their own budget.
+ * `unanswered` says an attempt before the final answer went unanswered: a refusal that follows
+ * one is the answer to a replay, and does not say what became of the first request.
+ */
+async function sendUntilAnswered(operation, identity, { deadlineMs = WORK_CALL_DEADLINE_MS,
+  budgetMs = REPORT_RESEND_BUDGET_MS, floor = 1, explicitRefusal = false, stopWithWorker = false, resendLine } = {}) {
+  const bytes = JSON.stringify(operation)
+  const startedAt = performance.now()
+  const stopping = () => stopWithWorker && (!running || leaseClosing)
+  let unanswered = false
+  for (let attempt = 1; ; attempt++) {
+    let answer
+    try {
+      answer = await work(JSON.parse(bytes), identity, { deadlineMs })
+    } catch (e) {
+      if (e instanceof CredentialRejectedError) throw e
+      answer = { transport: flatPeerText(String(e?.message ?? e), 200) }
+    }
+    // A local "no claim was sent" after an unanswered attempt means the lease ended while the
+    // first answer was still unknown; it is not the Gateway's verdict on that first claim.
+    if (answer.notSent === true && attempt > 1) return { answer: {}, known: false, unanswered, ended: 'the lease ended' }
+    if (answer.accepted === true || typeof answer.errorCode === 'string'
+      || (explicitRefusal && answer.accepted === false)) return { answer, known: true, unanswered }
+    unanswered = true
+    const waitMs = resendWaitMs(attempt)
+    const ended = stopping() ? 'this Worker is stopping'
+      : performance.now() - startedAt + waitMs >= budgetMs ? `no answer within ${Math.round(budgetMs / 1000)}s`
+        : attempt >= floor && !holdsLease(identity) ? 'the lease ended' : undefined
+    if (ended !== undefined) return { answer, known: false, unanswered, ended }
+    if (resendLine !== undefined && !WEV_ON) {
+      console.error(resendLine(attempt, waitMs, answer.transport ?? answer.unconfirmed))
+    }
+    await new Promise(resolve => setTimeout(resolve, waitMs))
+    if (stopping()) return { answer, known: false, unanswered, ended: 'this Worker is stopping' }
+  }
+}
+
+/** One claim attempt, resent within the claim bounds; see `sendUntilAnswered`. */
+const sendClaim = (operation, identity, label) => sendUntilAnswered(operation, identity, {
+  deadlineMs: CLAIM_CALL_DEADLINE_MS, budgetMs: CLAIM_RESEND_BUDGET_MS, explicitRefusal: true,
+  stopWithWorker: true, resendLine: claimResendLine(label) })
+
+/** One report, resent within the report bounds; see `sendUntilAnswered`. */
+const sendReport = (operation, identity, resendLine) => sendUntilAnswered(operation, identity, {
+  floor: RESEND_MS.length + 1, resendLine })
+
+/** The resend line for a report other than an action receipt. */
+const reportResendLine = label => (attempt, waitMs, why) =>
+  `· The report for ${label} got no answer (attempt ${attempt}${why ? `: ${why}` : ''});`
+  + ` resending it unchanged in ${waitMs / 1000}s.`
+
+/** The resend line for a claim: nothing has run, and nothing will until the claim is accepted. */
+const claimResendLine = label => (attempt, waitMs, why) =>
+  `· Claiming ${label} got no answer (attempt ${attempt}${why ? `: ${why}` : ''});`
+  + ` resending the same claim in ${waitMs / 1000}s while the lease is held. Nothing has run.`
+
+/**
+ * Why a claim's outcome stays unconfirmed, or undefined when its answer is the answer.
+ *
+ * A refusal that arrives only after an unanswered attempt is the Gateway's answer to the
+ * replay — `invocation_unconfirmed`, `worker_fenced`, `bad_command` — and says nothing about
+ * whether the first request was recorded, so it is not reported as a plain rejection.
+ */
+function claimUnconfirmedWhy(claimed) {
+  if (!claimed.known) return claimed.ended
+  if (claimed.answer.accepted === true || !claimed.unanswered) return undefined
+  const named = [claimed.answer.errorCode, claimed.answer.reason]
+    .filter(value => typeof value === 'string' && value !== '').join('/')
+  return `the resent claim was refused${named ? `: ${flatPeerText(named, 80)}` : ''}`
+}
+
+/**
+ * A claim with no confirmed outcome, said once and plainly.
+ *
+ * Nothing ran and this Worker will not run it. The claim may still have reached Core, which
+ * would then hold the invocation as dispatched and never dispatch it again; calling this a
+ * rejection would hide exactly that.
+ */
+function claimUnconfirmed(label, event, why) {
+  console.error(`⚠ Claiming ${label} has no confirmed answer (${why}). It was not executed and is left unclaimed here.`
+    + ' If the Gateway recorded the claim, it stays dispatched without an execution; resolve it in Console.')
+  wev('skip', { ...event, why: 'claim_unconfirmed' })
 }
 
 /** HTTP 参数槽：工具包只声明形状，实参随 invocation 来。 */
@@ -1993,7 +2183,7 @@ async function releaseLeaseOnce() {
   if (lease === undefined) return true
   let answer
   try {
-    answer = await work({ kind: 'ReleaseLease' })
+    answer = await work({ kind: 'ReleaseLease' }, lease, { deadlineMs: WORK_CALL_DEADLINE_MS })
   } catch (e) {
     console.error(`⚠ Releasing the lease did not complete (${String(e?.message ?? e).slice(0, 160)}).`
       + ' Whether the Gateway retired this instance is unknown; nothing here treats that as released,'
@@ -2378,20 +2568,27 @@ export async function prepareActionReport(row, execution, { custody, register } 
  * A refusal keeps its name: the wire reports most of them in `reason` and two — `unauthenticated`
  * and `bad_command` — in `errorCode`, so both are read and the more specific one wins.
  */
-async function materialCall(path, payload, identity) {
+async function materialCall(path, payload, identity, { deadlineMs = 35_000 } = {}) {
   const response = await fetch(`${WORK_URL}${path}`, { method: 'POST',
     headers: { 'content-type': 'application/json', 'x-rulith-connection': CONNECTION_ID,
       'x-rulith-connection-key': CONNECTION_KEY, 'x-rulith-worker-version': WORKER_VERSION,
       [WORKER_HEADER_ID]: WORKER_ID, [WORKER_HEADER_GENERATION]: String(identity.workerGeneration) },
-    body: JSON.stringify(payload), signal: AbortSignal.timeout(35_000) })
-  const answer = await response.json().catch(() => undefined)
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(deadlineMs) })
+  // Bad JSON is a complete answer that says nothing; a body cut off or timed out is no answer at
+  // all, except on a 401, whose status alone already refuses the credential.
+  const answer = await response.json().catch(error => {
+    if (error instanceof SyntaxError || response.status === 401) return undefined
+    throw error
+  })
   if (response.status === 401) throw new CredentialRejectedError(answer?.teaching, answer?.reason, answer?.requiredClient)
   // Registration returns the pinned five-field Artifact metadata directly; delivery and
   // claim return accepted envelopes. prepareActionReport verifies every metadata field.
+  // The status travels with the refusal: a 503 means "unconfirmed, the same request may be resent".
   if (!response.ok || answer?.accepted === false
     || (path !== MATERIAL_REGISTER_PATH && answer?.accepted !== true)) {
     const named = String(answer?.reason ?? answer?.errorCode ?? `http_${response.status}`)
-    throw new MaterialError(named, String(answer?.teaching ?? `${path} refused this request (${named}).`))
+    throw Object.assign(new MaterialError(named, String(answer?.teaching ?? `${path} refused this request (${named}).`)),
+      { status: response.status })
   }
   return answer
 }
@@ -2417,9 +2614,42 @@ export function selectedResultProductionMatches(record, expected) {
       && Object.entries(expected).every(([key, value]) => record.production[key] === value)
 }
 
-/** Exchange one durable object's manifest for a Gateway reference. No byte travels. */
+/**
+ * Exchange one durable object's manifest for a Gateway reference. No byte travels.
+ *
+ * Registration is the receipt's first half and is resent the same way: the body is built once,
+ * each attempt has its own deadline, and an attempt with no answer — a thrown fetch, a passed
+ * deadline, a server failure, timeout or rate limit — is resent unchanged while the lease it was
+ * dispatched under is held, for at most the claim budget (2 min), and not once this Worker is
+ * stopping. The Gateway keys a registration by Board, invocation and digest and returns the same
+ * reference for a resend. A named refusal is final, as before; when resending stops, the last
+ * error takes the existing unavailable path (a persistent 503 `artifact_storage_unavailable`
+ * stays that code).
+ */
 async function registerActionArtifact(record, identity, executionGrant) {
-  return materialCall(MATERIAL_REGISTER_PATH, registrationBody(record, executionGrant), identity)
+  const body = registrationBody(record, executionGrant)
+  const startedAt = performance.now()
+  const stopping = () => !running || leaseClosing
+  for (let attempt = 1; ; attempt++) {
+    let failure
+    try {
+      return await materialCall(MATERIAL_REGISTER_PATH, body, identity, { deadlineMs: WORK_CALL_DEADLINE_MS })
+    } catch (error) {
+      if (error instanceof CredentialRejectedError) throw error
+      failure = error
+    }
+    const unanswered = !(failure instanceof MaterialError)
+      || failure.status === 408 || failure.status === 429 || failure.status >= 500
+    const waitMs = resendWaitMs(attempt)
+    if (!unanswered || stopping() || !holdsLease(identity)
+      || performance.now() - startedAt + waitMs >= CLAIM_RESEND_BUDGET_MS) throw failure
+    if (!WEV_ON) {
+      console.error(`· Registering a result Artifact got no answer (attempt ${attempt}:`
+        + ` ${flatPeerText(String(failure?.code ?? failure?.message ?? failure), 120)}); resending it unchanged in ${waitMs / 1000}s.`)
+    }
+    await new Promise(resolve => setTimeout(resolve, waitMs))
+    if (stopping()) throw failure
+  }
 }
 
 /**
@@ -3629,7 +3859,14 @@ async function handleClaimWork(w) {
     console.log(`· Not claiming verification work ${w.work}: this Worker holds no confirmed active lease.`)
     return
   }
-  const claim = await work({ kind: 'ClaimWork', workType: 'verification', id: w.work }, claimedUnder)
+  const claimed = await sendClaim({ kind: 'ClaimWork', workType: 'verification', id: w.work }, claimedUnder,
+    `verification work ${w.work}`)
+  const unconfirmed = claimUnconfirmedWhy(claimed)
+  if (unconfirmed !== undefined) {
+    claimUnconfirmed(`verification work ${w.work}`, { kind: 'verification', id: w.work }, unconfirmed)
+    return
+  }
+  const claim = claimed.answer
   if (claim.accepted !== true) { console.log(`· Claiming work item ${w.work} was rejected (${claim.errorCode ?? ''})`); return }
   say(`● Claimed verification work ${w.work} (${w.claim.predicate}); verifying…`, 'claimed',
     { kind: 'verification', id: w.work, claim: w.claim?.predicate })
@@ -3660,13 +3897,13 @@ async function handleClaimWork(w) {
   }
   // 办不成也要如实回报**为什么**——缘由留在板上,否则没人知道它卡在哪(2026-08-01 真机: 回执被拒,工单死循环)
   if (!ok && !backReason) { try { backReason = JSON.parse(evidence.replace(/^HTTP \d+: /, '')).reason } catch { backReason = evidence } }
-  const rep = await work({
+  const { answer: rep } = await sendReport({
     kind: 'ReportWork', workType: 'verification', id: w.work, outcome,
     tier: weakerTier(t.tier ?? 'attested', backTier),
     ...(Array.isArray(backFacts) && backFacts.length ? { facts: backFacts } : {}),
     ...(!ok && backReason ? { reason: String(backReason).slice(0, 240) } : {}),
     ...(evidence ? { evidenceRefs: [`worker:${CONNECTION_ID}`] } : {}),
-  }, claimedUnder)
+  }, claimedUnder, reportResendLine(`verification work ${w.work}`))
   // 红行带上**为什么**(2026-08-18 站上「经常出回执失败」): 光一个"失败"读起来像系统坏了,
   // 带上探针原话(status=pending 未达 shipped 这类)就看得出是世界还没到位,不是坏。
   say(`○ Work report ${w.work}: ${outcome} → ${rep.accepted === true ? 'accepted by Board' : `rejected by Board (${rep.errorCode ?? ''})`}`, 'reported',
@@ -3738,8 +3975,9 @@ async function handleEvidence(w) {
   // strengths, so collecting under a weak one and filing under a strong one would be a tier
   // upgrade nobody granted. It is `accredited.source`, which is `w.source` after the checks
   // above, so a row this Worker could not resolve never reaches here at all.
-  const rep = await work({ kind: 'ReportWork', workType: 'evidence', material: w.material,
-    source: accredited.source, facts, ...(exhibit ? { exhibit } : {}) }, fetchedUnder)
+  const { answer: rep } = await sendReport({ kind: 'ReportWork', workType: 'evidence', material: w.material,
+    source: accredited.source, facts, ...(exhibit ? { exhibit } : {}) }, fetchedUnder,
+  reportResendLine(`material request ${w.material}`))
   if (!WEV_ON) console.log(`○ Material report ${w.material}: ${facts.length} fact(s) → ${rep.accepted === true ? 'accepted by Board' : `rejected by Board (${rep.errorCode ?? ''}: ${String(rep.teaching ?? '').slice(0, 90)})`}`)
   wev('reported', { kind: 'material', id: w.material, facts: facts.length, landed: rep.accepted === true })
 }
@@ -4014,7 +4252,8 @@ export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchRevie
 
 /** Cache the complete original report, including its generation; retries never re-judge. */
 export function createPreExecutionReviewHandler({ identityOf, alive, keepAlive, report, log,
-  ask = askPreExecutionReviewer, timeoutMs = REVIEWER_TIMEOUT_MS, retryMs = [250, 1000, 3000] }) {
+  ask = askPreExecutionReviewer, timeoutMs = REVIEWER_TIMEOUT_MS, retryMs = [250, 1000, 3000],
+  reportBudgetMs = REPORT_RESEND_BUDGET_MS }) {
   const completed = new Map()
   return async (w, receivedAt = performance.now()) => {
     const key = JSON.stringify([w.id, w.materialDigest])
@@ -4053,7 +4292,11 @@ export function createPreExecutionReviewHandler({ identityOf, alive, keepAlive, 
     }
     const result = await cached
     let accepted = false
-    for (let attempt = 0; attempt <= retryMs.length; attempt++) {
+    // 没有裁决就原样再报: 先走完原有的阶梯,之后只要产出这份报告的那一代租约还活着、且没超出
+    // 回报的墙钟预算,就一直问到有答案(accepted 或带 errorCode 的拒绝)。缓存的是整份报告,
+    // 所以每一次都是同样的字节。
+    const reportStartedAt = performance.now()
+    for (let attempt = 1; ; attempt++) {
       let response
       try { response = await report(result.body, result.identity) } catch (error) {
         if (error instanceof CredentialRejectedError) throw error
@@ -4061,8 +4304,11 @@ export function createPreExecutionReviewHandler({ identityOf, alive, keepAlive, 
         response = {}
       }
       accepted = response?.accepted === true
-      if (accepted || typeof response?.errorCode === 'string' || attempt === retryMs.length) break
-      await new Promise(resolve => setTimeout(resolve, retryMs[attempt]))
+      if (accepted || typeof response?.errorCode === 'string') break
+      const waitMs = resendWaitMs(attempt, retryMs)
+      if (attempt > retryMs.length && (alive(result.identity) !== true
+        || performance.now() - reportStartedAt + waitMs >= reportBudgetMs)) break
+      await new Promise(resolve => setTimeout(resolve, waitMs))
     }
     log({ id: w.id, tool: result.tool, verdict: result.body.reply?.verdict,
       errorCode: result.body.errorCode, elapsedMs: result.elapsedMs,
@@ -4075,7 +4321,7 @@ const handlePreExecutionReview = createPreExecutionReviewHandler({
   alive: identity => !running || leaseClosing ? 'review_shutdown'
     : !leaseIsLive() || lease.workerGeneration !== identity.workerGeneration ? 'review_lease_lost' : true,
   keepAlive: keepLeaseAlive,
-  report: work,
+  report: (body, identity) => work(body, identity, { deadlineMs: WORK_CALL_DEADLINE_MS }),
   log: event => {
     if (!WEV_ON) console.log(`○ Pre-execution review ${flatPeerText(event.id, 200)}${event.tool ? ` ${event.tool}` : ''}:`
       + ` ${event.verdict ?? event.errorCode} · ${event.elapsedMs}ms · generation ${event.workerGeneration}`
@@ -4126,12 +4372,12 @@ async function handleReview(w) {
       + ' take it. No further work will be claimed by this instance.')
     wev('lease', { state: 'lost-mid-execution', norm: w.norm, workerGeneration: reviewedUnder.workerGeneration })
   }
-  const rep = await work({
+  const { answer: rep } = await sendReport({
     kind: 'ReportWork', workType: 'review', tool: w.tool, norm: w.norm,
     invocation: w.invocation, requestDigest: w.requestDigest,
     expectedPolicyFingerprint: w.expectedPolicyFingerprint,
     verdict: v.verdict, reason: v.reason, citedClause: v.citedClause ?? '', feature: v.feature ?? '',
-  }, reviewedUnder)
+  }, reviewedUnder, reportResendLine(`the verdict on ${w.tool} × ${w.norm}`))
   // 只有 Core 已记录且仍有效的判词才进入本机去重；发送过、被拒或已过期都不算。
   if (rep.accepted === true) noteReviewed(REVIEWED, w, v.verdict, rep.payload?.expiresAt)
   const landed = rep.accepted === true ? 'accepted' : `rejected (${rep.errorCode ?? ''}: ${String(rep.teaching ?? '').slice(0, 80)})`
@@ -4298,7 +4544,16 @@ async function handleAction(w) {
     }
     selectedMaterial = { input: w.materialInput, bytes: selected.bytes }
   }
-  const claim = await work({ kind: 'ClaimWork', workType: 'action', id: invocation, executionGrant: w.executionGrant }, grantedUnder)
+  // Only `accepted: true` starts the executor. An unanswered claim is resent unchanged within
+  // the claim bounds; it is never read as a refusal and never left to fall out of this arm.
+  const claimed = await sendClaim({ kind: 'ClaimWork', workType: 'action', id: invocation,
+    executionGrant: w.executionGrant }, grantedUnder, action)
+  const unconfirmed = claimUnconfirmedWhy(claimed)
+  if (unconfirmed !== undefined) {
+    claimUnconfirmed(action, { kind: 'action', id: action, invocationId: invocation }, unconfirmed)
+    return
+  }
+  const claim = claimed.answer
   if (claim.accepted !== true) {
     saySkipOnce(w.work, action, `claim_rejected:${claim.errorCode ?? ''}`,
       `· Claiming ${action} was rejected (${claim.errorCode ?? ''}): ${String(claim.teaching ?? '').slice(0, 80)}`)
@@ -4402,19 +4657,22 @@ async function handleAction(w) {
   //
   // 两条修:① 落不了账就**原样重发**(同 id,板侧本就防重放;不是重跑那只手);
   // ② 那一行把「手成没成」与「账落没落」**分开说**。
-  const RETRY_MS = [1_000, 4_000, 12_000]
-  // **抛出来的传输故障也是"没落账"**(2026-09-02 补齐)。`work()` 只把 `r.json()` 包在
-  // try 里;`fetch` 自己抛(连接被重置/DNS 抖/对端半途关连接)时异常越过整条阶梯,
-  // 落进轮询那个 catch —— 于是这条 invocation 的**手已经动过而回执一次都没重发**,
-  // 与 500 空正文那一发是同一个后果,只是走了另一条通道。
-  // 判据仍是那一条: 没有 errorCode = 板没裁决 = 原样重发。
-  let transportUncertain = false
+  //
+  // **抛出来的传输故障也是"没落账"**(2026-09-02 补齐)。`fetch` 自己抛(连接被重置/DNS 抖/
+  // 对端半途关连接)时异常曾越过整条阶梯落进轮询那个 catch。判据仍是那一条: 没有 errorCode =
+  // 板没裁决 = 原样重发。
+  //
+  // **重发以租约和墙钟为界,不以次数为界**(2026-10-13)。每一发 30 s 期限;派发它的那一代租约
+  // 还在,就原样重发到有答案,最多 5 分钟(`sendUntilAnswered`)。租约不在了,仍保留原来的四次,
+  // 由权威决定丢了租约的回执收不收。
+  let receiptEnded
+  const receiptResendLine = (attempt, waitMs, why) => `· Receipt was not committed (attempt ${attempt});`
+    + ` retrying unchanged in ${waitMs / 1000}s. The action already ran; this retry records its receipt only.`
+    + (why ? ` Transport: ${why}` : '')
   const sendReceipt = async (payload) => {
-    try { return await work(payload, dispatchedUnder) } catch (e) {
-      if (e instanceof CredentialRejectedError) throw e
-      transportUncertain = true
-      return { accepted: false, transport: String(e?.message ?? e).slice(0, 200) }
-    }
+    const sent = await sendReport(payload, dispatchedUnder, receiptResendLine)
+    receiptEnded = sent.ended
+    return sent.answer
   }
   // 只算一次, 循环里原样重发——**上游按操作身份铸幂等键**, 差一个字节就落到另一格缓存,
   // 于是已提交的回执被答成 `already_reported`(RT-WK-RID-1)。所以 body 与身份都在循环外定死:
@@ -4469,16 +4727,8 @@ async function handleAction(w) {
     prepared = undeliverableReport(prepared.unavailable)
   }
   const body = prepared.body
+  // **只重发"没落账"的**: 板语义拒(带 errorCode)是板的裁决,重发一百次也是同一个答案。
   let rep = await sendReceipt(body)
-  for (let i = 0; rep.accepted !== true && i < RETRY_MS.length; i++) {
-    // **只重发"没落账"的**: 板语义拒(带 errorCode)是板的裁决,重发一百次也是同一个答案。
-    // 没有 errorCode = 这一跳没通(与 agent 侧 `board()` 同一条判据)。
-    if (typeof rep.errorCode === 'string') break
-    if (!WEV_ON) console.error(`· Receipt was not committed (attempt ${i + 1}); retrying unchanged in ${RETRY_MS[i] / 1000}s. The action already ran; this retry records its receipt only.`
-      + (rep.transport ? ` Transport: ${rep.transport}` : ''))
-    await new Promise((r) => setTimeout(r, RETRY_MS[i]))
-    rep = await sendReceipt(body)
-  }
   if (body.undeliverable !== undefined) {
     const landed = rep.accepted === true
     console.error(`⚠ Result data for ${action} could not be delivered (${body.undeliverable}).`
@@ -4487,11 +4737,12 @@ async function handleAction(w) {
     wev('reported', { kind: 'action', id: action, landed, undeliverable: body.undeliverable })
     return
   }
-  // Only named result-recording errors authorize a different outcome document.
-  // Ownership/fence refusals and transport uncertainty never authorize this fallback.
+  // Only named result-recording errors authorize a different outcome document. Ownership/fence
+  // refusals never do, and neither does transport uncertainty: the code has to be the answer.
+  // An answer that arrives on a resend is the answer — the Gateway replays the request id and
+  // Core returns its original reply — so an earlier unanswered attempt does not block it.
   let failureReceiptSent = false
-  if (body.ok === true && rep.accepted !== true && !transportUncertain
-      && rep.errorCode === 'ingest_rejected') {
+  if (body.ok === true && rep.accepted !== true && rep.errorCode === 'ingest_rejected') {
     const recordingReason = `result_not_recorded: ${rep.errorCode}. The Board did not record this result; the action already ran; do not repeat it.`
     console.error(`⚠ The success receipt for ${action} was rejected (${rep.errorCode}); sending one failure receipt for the result that could not be recorded.`)
     rep = await sendReceipt({ kind: 'ReportWork', workType: 'action', id: invocation,
@@ -4510,7 +4761,7 @@ async function handleAction(w) {
       : ok ? `succeeded · ${result.slice(0, 60)}` : `failed · ${reason}`
     const ledger = landed ? 'receipt committed'
       : typeof rep.errorCode === 'string' ? `receipt not committed (Board rejected: ${rep.errorCode})`
-        : 'receipt not committed (transport unavailable; retry limit reached)'
+        : `receipt not committed (transport unavailable; ${receiptEnded ?? 'no answer'})`
     console.log(`○ ${action}: executor ${handSaid} | ${ledger}`)
     if (!landed) {
       console.error(`  ⚠ The executor may have changed the external system, but the Board has no receipt.` +
@@ -5262,8 +5513,11 @@ if (IS_MAIN) {
         pollAbort = new AbortController()
         pollStartedAt = performance.now()
         pollWallStartedAt = Date.now()
+        // The deadline is this Poll's own (2026-10-13: an unanswered Poll used to wait for Node's
+        // built-in ~300 s fetch timeout); the takeover abort still interrupts it on its own.
         r = await work({ kind: POLL_KIND, tools: advertised,
-          ...(inputAdoption ? { inputAdoption } : {}), ...reviewerAdvertisement() }, lease, { signal: pollAbort.signal })
+          ...(inputAdoption ? { inputAdoption } : {}), ...reviewerAdvertisement() }, lease,
+        { signal: pollAbort.signal, deadlineMs: POLL_DEADLINE_MS })
         offersReceivedAt = performance.now()
       } finally {
         pollAbort = undefined
@@ -5383,6 +5637,13 @@ if (IS_MAIN) {
       }
     } catch (e) {
       if (takenOver) break
+      // 期限到了 = 这一发没有答复,是一次传输上的落空: 立刻再问,不等 5 秒,也不动租约。租约的
+      // 去留只由续租与 Poll 的答复决定;连不上时续租自会在窗口内失效。
+      if (e instanceof CallDeadlineError) {
+        console.error(`· ${e.message}; polling again now. The lease is unchanged.`)
+        wev('error', { note: 'poll_deadline' })
+        continue
+      }
       reportAvailability(e instanceof CredentialRejectedError ? 'needs setup' : 'offline')
       if (e instanceof CredentialRejectedError) {
         console.error(e.message)
