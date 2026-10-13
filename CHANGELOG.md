@@ -2,6 +2,12 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.16.0 - 2026-10-13
+
+- Worker: when RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are set, Poll advertises reviewer:{preExecution:true} and the Worker judges the platform's pre-execution review offers (D-1013c): the offer's system prompt and frozen material go to the configured model with no tools and no Board reads; the reply is parsed strictly and reported with ReportWork (reply or a machine error code) under the generation that produced it; completed reports are cached by id and material digest. Constitution clearance review keeps its own path.
+- Contracts: the MCP contract and the Worker contracts follow spec 45b1be35 — Set and Execute require a one-sentence intent; sign_off is retired; the Worker review contract is vendored and verified separately.
+- Agent: the opt-in --shadow finding write states its intent; the verified-calculation guide's calls state theirs.
+
 ## 0.15.1 - 2026-10-13
 
 - Agent: the system prompt no longer repeats the Board View and operations explanations that the

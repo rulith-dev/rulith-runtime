@@ -28,7 +28,7 @@ remote endpoints require a provider key. The five-minute run assumes those prere
 PowerShell:
 
 ```powershell
-npm.cmd install --global rulith@0.15.1
+npm.cmd install --global rulith@0.16.0
 node "$(npm.cmd root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
@@ -36,7 +36,7 @@ rulith start
 Bash:
 
 ```bash
-npm install --global rulith@0.15.1
+npm install --global rulith@0.16.0
 node "$(npm root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
 rulith start
 ```
