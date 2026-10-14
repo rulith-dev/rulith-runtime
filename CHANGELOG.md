@@ -2,6 +2,35 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.16.3 - 2026-10-14
+
+- Worker: the post-call review budget comes from the offer's `remainingMs` alone, less the existing
+  100 ms report margin. It was `min(RULITH_REVIEWER_TIMEOUT_MS, remainingMs)`, so with the variable's
+  120 s default a review on an Agent whose owner set a longer review deadline (PSC 0.2.13 allows 60-300 s)
+  timed out at 120 s although the Gateway would have waited. `RULITH_REVIEWER_TIMEOUT_MS` now applies
+  only to the constitution clearance review, with its default of 120000 ms unchanged; a Worker that raised
+  it only for post-call reviews no longer needs it.
+- Worker: `RULITH_REVIEWER_REQUEST_EXTRA` is an optional JSON object merged into the reviewer's chat
+  completions request body, for both the post-call review and the clearance review. It sets engine
+  parameters per request, for example `{"chat_template_kwargs":{"enable_thinking":true}}` so the reviewer
+  thinks while the main agent does not. It may not set what the Worker controls: `model`, `messages`,
+  `max_tokens`, `temperature`, `stream`, `tools`, `tool_choice`, `n`. Invalid JSON, a value that is
+  not an object, or one of those keys is a reviewer configuration error: as when `RULITH_REVIEWER_URL` or
+  `RULITH_REVIEWER_MODEL` is missing, the Worker advertises no reviewer and takes no review work, and it
+  says why at start, naming at most the refused keys. The value itself is never logged. Tools are
+  unaffected.
+- Contracts: the MCP contract, the Worker contract and the Worker review contract follow spec 3b53a055
+  (PSC 0.2.14, D-1014c). The reviewer system prompt gains two lines at its end: a fifth lens,
+  substitute (a test, fake, stub or simulator the agent wrote itself standing in for the real
+  environment), and checking each claimed result against the Board's receipts. The derived-mode
+  `warrant_missing` teaching names facts that trace the step to the user's request or to measured
+  evidence; that text comes from the Kernel, not from this package. The review material, reply shape and
+  the Agent's three MCP tools are unchanged. The Worker takes the prompt from each offer, so a 0.16.2
+  Worker also reviews with the new prompt once the Gateway runs PSC 0.2.14.
+- The selected-material overlay check accepts the v2 base digest of spec 91b9024c (unchanged at
+  3b53a055), which differs from the earlier one only by the reviewer prompt const; the immutable
+  historical pins are untouched.
+
 ## 0.16.2 - 2026-10-14
 
 - Upgrade, read first: the built-in `rulith.workspace.write_text@1` and `rulith.workspace.write_json@1`

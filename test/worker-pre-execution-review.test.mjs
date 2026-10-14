@@ -6,7 +6,7 @@ import { performance } from 'node:perf_hooks'
 import { readWorkerReviewContract, loadWorkerReviewContract } from '../scripts/verify-worker-review-contract.mjs'
 import { readWorkerContract } from '../scripts/verify-worker-contract.mjs'
 import { askPreExecutionReviewer, createPreExecutionReviewHandler, parsePreExecutionReply,
-  reviewerAdvertisement, reviewerMaxTokens } from '../worker/rulith-worker.mjs'
+  reviewerAdvertisement, reviewerMaxTokens, reviewerRequestExtra, REVIEWER_REQUEST_RESERVED_KEYS } from '../worker/rulith-worker.mjs'
 import { shapeFaults } from './support/contract-shape.mjs'
 import { DONE, HOLD, RESET, activeLease, driveWorker } from './support/worker-harness.mjs'
 
@@ -51,7 +51,7 @@ function handler({ fetchReviewer, retryMs = [], ...options } = {}) {
   let generation = 7
   const handle = createPreExecutionReviewHandler({
     identityOf: () => ({ workerId: 'wkr_test_123', workerGeneration: generation }),
-    alive: () => true, keepAlive: () => async () => {}, timeoutMs: 500, retryMs,
+    alive: () => true, keepAlive: () => async () => {}, retryMs,
     ask: (w, settings) => askPreExecutionReviewer(w, { ...settings, url: 'http://reviewer.invalid', model: 'review-test',
       fetchReviewer: async (url, request) => { calls.push(JSON.parse(request.body)); return fetchReviewer(url, request) } }),
     report: async (body, identity) => { sent.push(JSON.parse(JSON.stringify({ ...body, ...identity }))); return { accepted: true } },
@@ -93,7 +93,7 @@ for (const reply of valid) test(`in-process offer -> model -> ${reply.verdict} r
 })
 
 for (const [name, text] of Object.entries(malformed)) test(`in-process malformed ${name} returns a bounded error report`, async () => {
-  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => replyResponse(text) })
+  const run = handler({ fetchReviewer: async () => replyResponse(text) })
   await run.handle(offer())
   assert.equal(run.sent[0].reply, undefined)
   assert.equal(run.sent[0].errorCode, 'review_invalid_reply')
@@ -109,7 +109,7 @@ const cutOffReplies = {
 }
 for (const [name, first] of Object.entries(cutOffReplies)) test(`in-process ${name} is asked once more and the second reply is reported`, async () => {
   let n = 0
-  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => ++n === 1 ? first() : replyResponse('{"verdict":"allow"}') })
+  const run = handler({ fetchReviewer: async () => ++n === 1 ? first() : replyResponse('{"verdict":"allow"}') })
   await run.handle(offer())
   assert.equal(run.calls.length, 2)
   assert.deepEqual(run.calls[0], run.calls[1])
@@ -120,7 +120,7 @@ for (const [name, first] of Object.entries(cutOffReplies)) test(`in-process ${na
 test('in-process two cut-off replies report review_invalid_reply after exactly two model calls', async () => {
   for (const second of [lengthResponse, cutOffReplies['empty content'], () => replyResponse('{"verdict":"allow"}{')]) {
     let n = 0
-    const run = handler({ timeoutMs: 5000, fetchReviewer: async () => ++n === 1 ? lengthResponse() : second() })
+    const run = handler({ fetchReviewer: async () => ++n === 1 ? lengthResponse() : second() })
     await run.handle(offer())
     assert.equal(run.calls.length, 2)
     assert.equal(run.sent[0].errorCode, 'review_invalid_reply')
@@ -162,6 +162,44 @@ test('in-process reviewer max_tokens defaults to 8000 and accepts only a positiv
     fetchReviewer: async (_url, request) => { body = JSON.parse(request.body); return replyResponse('{"verdict":"allow"}') } })
   assert.deepEqual(result, { reply: { verdict: 'allow' } })
   assert.equal(body.max_tokens, 1234)
+})
+
+test('in-process RULITH_REVIEWER_REQUEST_EXTRA reads a JSON object and refuses anything else without echoing it', () => {
+  assert.deepEqual(reviewerRequestExtra(undefined), {})
+  assert.deepEqual(reviewerRequestExtra('  '), {})
+  assert.deepEqual(reviewerRequestExtra('{"chat_template_kwargs":{"enable_thinking":true},"reasoning_effort":"high"}'),
+    { chat_template_kwargs: { enable_thinking: true }, reasoning_effort: 'high' })
+  assert.deepEqual(REVIEWER_REQUEST_RESERVED_KEYS,
+    ['model', 'messages', 'max_tokens', 'temperature', 'stream', 'tools', 'tool_choice', 'n'])
+  for (const [value, message] of [
+    ['{"secret-value-1":', /is not valid JSON$/],
+    ['secret-value-2', /is not valid JSON$/],
+    ['["secret-value-3"]', /must be a JSON object$/],
+    ['null', /must be a JSON object$/],
+    ['"secret-value-4"', /must be a JSON object$/],
+    ['42', /must be a JSON object$/],
+  ]) assert.throws(() => reviewerRequestExtra(value), error => message.test(error.message) && !/secret-value/.test(error.message), value)
+  for (const key of REVIEWER_REQUEST_RESERVED_KEYS) {
+    assert.throws(() => reviewerRequestExtra(JSON.stringify({ [key]: 'secret-value-5', chat_template_kwargs: {} })),
+      error => error.message === `RULITH_REVIEWER_REQUEST_EXTRA may not set ${key}; the Worker controls it`, key)
+  }
+  assert.throws(() => reviewerRequestExtra('{"stream":true,"n":2}'),
+    { message: 'RULITH_REVIEWER_REQUEST_EXTRA may not set stream, n; the Worker controls them' })
+})
+
+test('in-process request extra is merged into the post-call model request beside the Worker keys', async () => {
+  let body
+  const extra = reviewerRequestExtra('{"chat_template_kwargs":{"enable_thinking":true},"reasoning_effort":"low"}')
+  const result = await askPreExecutionReviewer(offer(), { url: 'http://reviewer.invalid', model: 'review-test',
+    timeoutMs: 1000, maxTokens: 1234, extra,
+    fetchReviewer: async (_url, request) => { body = JSON.parse(request.body); return replyResponse('{"verdict":"allow"}') } })
+  assert.deepEqual(result, { reply: { verdict: 'allow' } })
+  assert.deepEqual(Object.keys(body).sort(), ['chat_template_kwargs', 'max_tokens', 'messages', 'model', 'reasoning_effort', 'temperature'])
+  assert.deepEqual(body.chat_template_kwargs, { enable_thinking: true })
+  assert.equal(body.reasoning_effort, 'low')
+  assert.equal(body.model, 'review-test')
+  assert.equal(body.max_tokens, 1234)
+  assert.equal(body.temperature, 0)
 })
 
 test('in-process single-line advice may contain quoted JSON and Unicode at the schema limit', () => {
@@ -233,26 +271,30 @@ test('in-process anchors outside the material still fail with a focusedTheory pr
     assert.equal(parsePreExecutionReply(JSON.stringify({ verdict: 'note', node, advice: 'A defect.' }), theoryMaterial), undefined, node)
   }
   assert.equal(parsePreExecutionReply('{"verdict":"note","node":"R2","advice":"A defect."}', material), undefined)
-  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => replyResponse('{"verdict":"note","node":"rule-arg","advice":"A defect."}') })
+  const run = handler({ fetchReviewer: async () => replyResponse('{"verdict":"note","node":"rule-arg","advice":"A defect."}') })
   await run.handle(offer({ material: theoryMaterial }))
   assert.equal(run.sent[0].reply, undefined)
   assert.equal(run.sent[0].errorCode, 'review_invalid_reply')
   assert.equal(run.calls.length, 1)
 })
 
-test('in-process configured reviewer timeout caps a longer offer budget', async () => {
-  const run = handler({ timeoutMs: 30, fetchReviewer: (_url, { signal }) => new Promise((_resolve, reject) => {
-    signal.addEventListener('abort', () => reject(new Error('abort')), { once: true })
-  }) })
-  const started = performance.now()
-  await run.handle(offer())
-  assert.equal(run.sent[0].errorCode, 'review_timeout')
-  assert.ok(performance.now() - started < 300)
+test('in-process post-call budget comes from the offer remainingMs alone (0.16.3)', async () => {
+  const budgets = []
+  // A timeoutMs option is no longer read: before 0.16.3 the budget was min(RULITH_REVIEWER_TIMEOUT_MS, remainingMs).
+  const run = handler({ timeoutMs: 30, ask: async (_w, settings) => {
+    budgets.push(settings.timeoutMs)
+    return { reply: { verdict: 'allow' } }
+  } })
+  await run.handle(offer({ remainingMs: 200_000 }))
+  assert.equal(budgets.length, 1)
+  // 200 s offered, above the 120 s clearance default: the whole remainder less the 100 ms report margin.
+  assert.ok(budgets[0] > 199_000 && budgets[0] <= 199_900, String(budgets[0]))
+  assert.deepEqual(run.sent[0].reply, { verdict: 'allow' })
 })
 
 test('in-process timeout aborts the HTTP request and keeps the report margin', async () => {
   let aborted = false
-  const run = handler({ timeoutMs: 5000, fetchReviewer: (_url, { signal }) => new Promise((_resolve, reject) => {
+  const run = handler({ fetchReviewer: (_url, { signal }) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () => { aborted = true; reject(new Error('abort')) }, { once: true })
   }) })
   const started = performance.now()
@@ -292,7 +334,7 @@ for (const [name, response, code] of [
   ['truncated', () => new Response(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '{"verdict":"allow"}' } }] })), 'review_invalid_reply'],
   ['tool call', () => new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"allow"}', tool_calls: [] } }] })), 'review_invalid_reply'],
 ]) test(`in-process model ${name} failure reports only a machine code`, async () => {
-  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => response() })
+  const run = handler({ fetchReviewer: async () => response() })
   await run.handle(offer())
   assert.equal(run.sent[0].errorCode, code)
   // Only a truncated reply is asked once more; HTTP, transport, envelope and tool-call failures are not.
@@ -354,7 +396,7 @@ test('in-process material previews pass through unchanged and absent anchors fai
 })
 
 test('in-process review bundle detects changed bytes, pins and projected definitions', () => {
-  assert.equal(contract.sourceCommit, '3fdd4b666c2d3b59bfbfc85199f147368046c524')
+  assert.equal(contract.sourceCommit, '3b53a055e8b1986da2bd479100ff2f6af00c40dd')
   for (const mutate of [copy => { copy.files[Object.keys(copy.files)[0]].content += '\n' },
     copy => { copy.files[Object.keys(copy.files)[0]].gitBlobOid = '0'.repeat(40) },
     copy => { copy.contract.$defs.ReviewerCapability.properties.preExecution.const = false }]) {
@@ -447,6 +489,83 @@ test('runtime constitution offers without purpose still use the old path', async
   assert.equal(report.verdict, 'allow')
   assert.equal(report.invocation, 'inv-1')
   assert.equal(run.modelRequests[0].body.messages[1].content, 'Frozen constitution case.')
+})
+
+const clearanceOffer = () => ({ workType: 'review', tool: 'acme.ship', norm: 'n1', invocation: 'inv-1',
+  requestDigest: `sha256:${'a'.repeat(64)}`, expectedPolicyFingerprint: `sha256:${'b'.repeat(64)}`,
+  caseFile: { rendered: 'Frozen constitution case.' } })
+
+test('runtime RULITH_REVIEWER_TIMEOUT_MS caps only the clearance review, never the post-call review (0.16.3)', async () => {
+  let polls = 0
+  const post = await driveWorker({ reviewer: valid[0], env: { RULITH_REVIEWER_TIMEOUT_MS: '1' },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+      : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+    done: (_seen, output) => /Pre-execution review.*report accepted=/.test(output),
+  })
+  assert.equal(post.timedOut, false, post.output)
+  assert.equal(post.of('ReportWork')[0].operation.errorCode, undefined)
+  assert.deepEqual(post.of('ReportWork')[0].operation.reply, valid[0])
+  polls = 0
+  const clearance = await driveWorker({ reviewerReply: () => HOLD, env: { RULITH_REVIEWER_TIMEOUT_MS: '200' },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [clearanceOffer()] } } } : HOLD
+      : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+    done: (_seen, output) => DONE.review.test(output),
+  })
+  assert.equal(clearance.timedOut, false, clearance.output)
+  assert.equal(clearance.of('ReportWork')[0].operation.verdict, 'uncertain')
+  assert.match(clearance.of('ReportWork')[0].operation.reason, /timed out after 200ms/)
+})
+
+test('runtime RULITH_REVIEWER_REQUEST_EXTRA reaches the post-call and the clearance model requests', async () => {
+  const extra = { chat_template_kwargs: { enable_thinking: false } }
+  let polls = 0
+  const post = await driveWorker({ reviewer: valid[0], env: { RULITH_REVIEWER_REQUEST_EXTRA: JSON.stringify(extra) },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+      : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+    done: (_seen, output) => /Pre-execution review.*report accepted=true/.test(output),
+  })
+  assert.equal(post.timedOut, false, post.output)
+  assert.deepEqual(post.modelRequests[0].body.chat_template_kwargs, extra.chat_template_kwargs)
+  assert.equal(post.modelRequests[0].body.model, 'p2-reviewer')
+  assert.equal(post.modelRequests[0].body.max_tokens, 8000)
+  polls = 0
+  const clearance = await driveWorker({ reviewer: { verdict: 'allow', citedClause: 'n1', reason: 'Reviewed clause.' },
+    env: { RULITH_REVIEWER_REQUEST_EXTRA: JSON.stringify(extra) },
+    reply: operation => operation.kind === 'Poll'
+      ? ++polls === 1 ? { body: { accepted: true, payload: { work: [clearanceOffer()] } } } : HOLD
+      : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+    done: (_seen, output) => DONE.review.test(output),
+  })
+  assert.equal(clearance.timedOut, false, clearance.output)
+  assert.deepEqual(clearance.modelRequests[0].body.chat_template_kwargs, extra.chat_template_kwargs)
+  assert.equal(clearance.modelRequests[0].body.max_tokens, 2000)
+  assert.equal(clearance.of('ReportWork')[0].operation.verdict, 'allow')
+})
+
+test('runtime an invalid RULITH_REVIEWER_REQUEST_EXTRA leaves the Worker without a reviewer and never logs the value', async () => {
+  for (const [value, reason] of [
+    ['{"enable_thinking": secret-value', /RULITH_REVIEWER_REQUEST_EXTRA is not valid JSON/],
+    ['["secret-value"]', /RULITH_REVIEWER_REQUEST_EXTRA must be a JSON object/],
+    ['{"model":"secret-value","max_tokens":1}', /RULITH_REVIEWER_REQUEST_EXTRA may not set model, max_tokens; the Worker controls them/],
+  ]) {
+    let polls = 0
+    const run = await driveWorker({ reviewer: valid[0], env: { RULITH_REVIEWER_REQUEST_EXTRA: value },
+      reply: operation => operation.kind === 'Poll'
+        ? ++polls === 1 ? { body: { accepted: true, payload: { work: [offer()] } } } : HOLD
+        : operation.kind === 'ReportWork' ? { body: { accepted: true } } : undefined,
+      done: (_seen, output) => /Pre-execution review.*report accepted=/.test(output),
+    })
+    assert.equal(run.timedOut, false, run.output)
+    assert.equal(run.of('Poll')[0].operation.reviewer, undefined)
+    assert.equal(run.modelRequests.length, 0)
+    assert.equal(run.of('ReportWork')[0].operation.errorCode, 'reviewer_unconfigured')
+    assert.match(run.output, reason)
+    assert.match(run.output, /Reviewer disabled: /)
+    assert.doesNotMatch(run.output, /secret-value/)
+  }
 })
 
 test('runtime capability disappears when either reviewer setting is missing', async () => {

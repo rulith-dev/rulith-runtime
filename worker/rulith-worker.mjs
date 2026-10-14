@@ -32,6 +32,14 @@
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
  *   RULITH_REVIEWER_MAX_TOKENS  执行前审查每次模型调用的 max_tokens(正整数,默认 8000;
  *                        思维链模型的 reasoning 也计入,不合法的值按默认)
+ *   RULITH_REVIEWER_REQUEST_EXTRA  并入审查员请求体的 JSON 对象(事后审查与宪法清关审查都用),
+ *                        如 {"chat_template_kwargs":{"enable_thinking":true}} 让本地引擎这一席思考;
+ *                        不许设 Worker 掌管的 model、messages、max_tokens、temperature、stream、
+ *                        tools、tool_choice、n。不是 JSON、不是对象或含这些键 = 审查员配置错误:
+ *                        这台不当审查员(不广告、不领审查),启动时说明原因;值从不写进日志
+ *   RULITH_REVIEWER_TIMEOUT_MS  只管宪法清关审查一次模型调用的上限(毫秒,默认 120000)。
+ *                        事后审查(0.16.3 起)不读它:预算只来自 offer 的 remainingMs,
+ *                        即 Gateway 冻结的审查期限(owner 按 Agent 设 60~300 秒)扣掉排队后的余额
  *
  * 一台 worker 可以只持工具、只判卷、或两样都干——**看你给它配了什么,不看它叫什么**。
  * 判卷那一席另需板侧把这个通道列进 reviewerChannels(治理配置,运营方定),
@@ -130,9 +138,9 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // Do not edit: `npm run check` regenerates this block and fails on any difference. Every
 // value below is the contract's, read from the bundle exported at the commit named here,
 // except the Runtime version from package.json.
-const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '3fdd4b666c2d3b59bfbfc85199f147368046c524'
+const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '3b53a055e8b1986da2bd479100ff2f6af00c40dd'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.16.2"
+const RULITH_RUNTIME_VERSION = "0.16.3"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -211,7 +219,7 @@ const ARTIFACT_POLICY_FIELDS = Object.freeze({"inlineBytes":{"required":true,"ru
 const ARTIFACT_REF_PATTERN = /^art_[a-f0-9]{32}$/
 const UNDELIVERABLE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/
 // Separate Gateway review overlay; its prompt is supplied by the offer, never compiled here.
-const WORKER_REVIEW_SOURCE_COMMIT = '3fdd4b666c2d3b59bfbfc85199f147368046c524'
+const WORKER_REVIEW_SOURCE_COMMIT = '3b53a055e8b1986da2bd479100ff2f6af00c40dd'
 const PRE_EXECUTION_REVIEW_CAPABILITY = Object.freeze({"preExecution":true})
 const PRE_EXECUTION_REPLY_VARIANTS = Object.freeze([{"type":"object","additionalProperties":false,"required":["verdict"],"properties":{"verdict":{"const":"allow"}}},{"type":"object","additionalProperties":false,"required":["verdict","node","advice"],"properties":{"verdict":{"const":"note"},"node":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"},"advice":{"type":"string","minLength":1,"maxLength":500,"pattern":"^[^\\r\\n]+$"}}}])
 const PRE_EXECUTION_ERROR_RULE = Object.freeze({"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z][a-z0-9_]*$"})
@@ -614,9 +622,47 @@ async function selectedHttpSourceSnapshot(sourceRecordId, expectedAccess) {
   return Object.freeze({ ...local, type: 'http', access, url: access })
 }
 
+/**
+ * 审查员请求体的附加字段(RULITH_REVIEWER_REQUEST_EXTRA,0.16.3):一个 JSON 对象,原样并入事后审查与
+ * 宪法清关审查的 chat completions 请求体。用途是按请求设引擎参数,例如本地引擎的思考开关
+ * {"chat_template_kwargs":{"enable_thinking":true}}:主智能体不思考、影子审查员思考。
+ * Worker 掌管的键不许覆盖:model、messages 与 max_tokens、temperature 定了问什么、问谁、答多长,
+ * stream、tools、tool_choice、n 会改变回复的形状,而严格回复解析只认一个非流式、无工具调用的回答。
+ * 不是 JSON、不是对象或含这些键就是审查员配置错误,与没配 URL/MODEL 同样处理:这台 Worker 不当审查员。
+ * 值里可能有凭据或私有参数,所以报错只说哪类错或哪些键名,从不带值(JSON.parse 的报错会引用原文,不用)。
+ */
+export const REVIEWER_REQUEST_RESERVED_KEYS = Object.freeze(
+  ['model', 'messages', 'max_tokens', 'temperature', 'stream', 'tools', 'tool_choice', 'n'])
+export function reviewerRequestExtra(value = process.env.RULITH_REVIEWER_REQUEST_EXTRA) {
+  if (value === undefined || String(value).trim() === '') return Object.freeze({})
+  let parsed
+  try { parsed = JSON.parse(String(value)) } catch {
+    throw new Error('RULITH_REVIEWER_REQUEST_EXTRA is not valid JSON')
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('RULITH_REVIEWER_REQUEST_EXTRA must be a JSON object')
+  }
+  const reserved = Object.keys(parsed).filter(key => REVIEWER_REQUEST_RESERVED_KEYS.includes(key))
+  if (reserved.length > 0) {
+    throw new Error(`RULITH_REVIEWER_REQUEST_EXTRA may not set ${reserved.join(', ')}; the Worker controls ${reserved.length === 1 ? 'it' : 'them'}`)
+  }
+  return Object.freeze(parsed)
+}
+const REVIEWER_REQUEST_EXTRA_READ = (() => {
+  try { return { extra: reviewerRequestExtra() } } catch (error) { return { error: error.message } }
+})()
+const REVIEWER_REQUEST_EXTRA = REVIEWER_REQUEST_EXTRA_READ.extra ?? Object.freeze({})
+/** Why the reviewer configuration is refused, or undefined. A refused configuration leaves this Worker no reviewer. */
+const REVIEWER_CONFIG_ERROR = REVIEWER_REQUEST_EXTRA_READ.error
+
 /** 审查员(清关工人的"判卷"那一席): OpenAI 兼容 chat 端点。不配=这台不是清关工人,review 案卷不领。 */
-const REVIEWER_URL = process.env.RULITH_REVIEWER_URL
-const REVIEWER_MODEL = process.env.RULITH_REVIEWER_MODEL
+const REVIEWER_URL = REVIEWER_CONFIG_ERROR === undefined ? process.env.RULITH_REVIEWER_URL : undefined
+const REVIEWER_MODEL = REVIEWER_CONFIG_ERROR === undefined ? process.env.RULITH_REVIEWER_MODEL : undefined
+/**
+ * 宪法清关审查一次模型调用的上限。事后审查不用它(0.16.3):那边的预算是 offer 的 remainingMs,
+ * 由 Gateway 按 owner 为该 Agent 设的审查期限冻结;再拿这里的 120 秒去截,会让设了 180 秒的审查
+ * 在 120 秒处无故超时。
+ */
 const REVIEWER_TIMEOUT_MS = Number(process.env.RULITH_REVIEWER_TIMEOUT_MS ?? 120_000)
 /**
  * 执行前审查一次模型调用的 max_tokens。思维链模型的 reasoning 计入这个上限:
@@ -788,6 +834,11 @@ const RUN_ADAPTER_TIMEOUT_MS = (() => {
     process.exit(2)
   }
 })()
+
+if (IS_MAIN && REVIEWER_CONFIG_ERROR !== undefined) {
+  // The tools seat still starts; only the reviewer seat is refused, as when URL or MODEL is missing.
+  console.error(`Reviewer disabled: ${REVIEWER_CONFIG_ERROR}. This Worker takes no review work until it is fixed.`)
+}
 
 if (IS_MAIN && (!CONNECTION_ID || !CONNECTION_KEY)) {
   console.error('Missing RULITH_CONNECTION / RULITH_CONNECTION_KEY. Register a Connection in Console; its key is shown once.')
@@ -4079,6 +4130,7 @@ async function askReviewer(caseFile) {
       method: 'POST', signal: ac.signal,
       headers: { 'content-type': 'application/json', ...(process.env.RULITH_REVIEWER_KEY ? { authorization: `Bearer ${process.env.RULITH_REVIEWER_KEY}` } : {}) },
       body: JSON.stringify({
+        ...REVIEWER_REQUEST_EXTRA,
         model: REVIEWER_MODEL,
         temperature: 0,
         max_tokens: 2000, // 思维链模型的 reasoning 计入 completion——400 会把 content 截没,判词恒 uncertain
@@ -4230,7 +4282,7 @@ function reviewError(code) {
 }
 
 export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchReviewer = fetch,
-  url = REVIEWER_URL, model = REVIEWER_MODEL, maxTokens = REVIEWER_MAX_TOKENS } = {}) {
+  url = REVIEWER_URL, model = REVIEWER_MODEL, maxTokens = REVIEWER_MAX_TOKENS, extra = REVIEWER_REQUEST_EXTRA } = {}) {
   if (!url || !model) return reviewError('reviewer_unconfigured')
   if (!(timeoutMs > 0)) return reviewError('review_timeout')
   const ac = new AbortController()
@@ -4243,7 +4295,7 @@ export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchRevie
     const request = {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(process.env.RULITH_REVIEWER_KEY ? { authorization: `Bearer ${process.env.RULITH_REVIEWER_KEY}` } : {}) },
-      body: JSON.stringify({ model, temperature: 0, max_tokens: maxTokens,
+      body: JSON.stringify({ ...extra, model, temperature: 0, max_tokens: maxTokens,
         messages: [{ role: 'system', content: w.systemPrompt },
           { role: 'user', content: JSON.stringify(canonical(w.material)) }] }),
     }
@@ -4283,7 +4335,7 @@ export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchRevie
 
 /** Cache the complete original report, including its generation; retries never re-judge. */
 export function createPreExecutionReviewHandler({ identityOf, alive, keepAlive, report, log,
-  ask = askPreExecutionReviewer, timeoutMs = REVIEWER_TIMEOUT_MS, retryMs = [250, 1000, 3000],
+  ask = askPreExecutionReviewer, retryMs = [250, 1000, 3000],
   reportBudgetMs = REPORT_RESEND_BUDGET_MS }) {
   const completed = new Map()
   return async (w, receivedAt = performance.now()) => {
@@ -4300,8 +4352,9 @@ export function createPreExecutionReviewHandler({ identityOf, alive, keepAlive, 
       }
       const watch = setInterval(check, 25)
       const settle = keepAlive()
-      const budget = Math.min(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120_000,
-        w.remainingMs - (startedAt - receivedAt) - PRE_EXECUTION_REPORT_MARGIN_MS)
+      // 预算只来自 offer 的 remainingMs(0.16.3):Gateway 冻结的审查期限(owner 按 Agent 设 60~300 秒)
+      // 扣掉排队后的余额,再留回报余量。RULITH_REVIEWER_TIMEOUT_MS 只管宪法清关审查,这里不再取二者之小。
+      const budget = w.remainingMs - (startedAt - receivedAt) - PRE_EXECUTION_REPORT_MARGIN_MS
       const result = (async () => {
         let outcome
         try {
@@ -4369,7 +4422,9 @@ async function handleReview(w) {
   }
   // 没配审查员=这台不是清关工人,别人的活不抢(与"表里没有的动作不领"同律)
   if (!REVIEWER_URL || !REVIEWER_MODEL) {
-    console.log(`· Skipping review ${w.norm}: RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are not configured`)
+    console.log(REVIEWER_CONFIG_ERROR === undefined
+      ? `· Skipping review ${w.norm}: RULITH_REVIEWER_URL and RULITH_REVIEWER_MODEL are not configured`
+      : `· Skipping review ${w.norm}: the reviewer configuration is refused (${REVIEWER_CONFIG_ERROR})`)
     return
   }
   // review v1 **无领取语义**(案卷无租约,板侧金样 47): 不 ClaimWork,直接判完回报。

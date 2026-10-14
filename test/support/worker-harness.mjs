@@ -534,6 +534,7 @@ export async function driveWorker({
       RULITH_REVIEWER_MODEL: '',
       RULITH_REVIEWER_KEY: '',
       RULITH_REVIEWER_MAX_TOKENS: '',
+      RULITH_REVIEWER_REQUEST_EXTRA: '',
       P2_EFFECT_LOG: effectLog,
       ...(reviewer === undefined && reviewerReply === undefined ? {} : {
         RULITH_REVIEWER_URL: `http://127.0.0.1:${port}/chat/completions`,
