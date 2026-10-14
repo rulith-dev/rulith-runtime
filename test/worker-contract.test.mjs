@@ -533,6 +533,10 @@ test('RT-WKC-15 the runtime-owned open scenarios are the ones this suite answers
     'review-designation-generation': 'worker-pre-execution-review: lease loss aborts; cached report retains generation',
     'review-hold-cancellation': 'worker-pre-execution-review: shutdown aborts and queue time consumes remainingMs',
     'review-material-preview': 'worker-pre-execution-review: material previews pass through unchanged and absent anchors fail',
+    // PSC 0.2.10: the Worker half is only the anchor; selection, priority and the 12000-character
+    // budget of focusedTheory and the caps on prior advice are the Gateway's to assemble.
+    'review-material-bounds': 'worker-pre-execution-review: anchors include focusedTheory fact and rule rows;'
+      + ' anchors outside the material still fail with a focusedTheory present',
   }
   const mine = FIXTURE.runtimeScenarios
     .filter((scenario) => /rulith-runtime/u.test(String(scenario.owner)))

@@ -30,6 +30,8 @@ import {
 } from '../worker/rulith-worker.mjs'
 
 const DESCRIPTOR_FIELDS = ['adapter', 'digest', 'id', 'kind', 'params', 'returns', 'sourceTypes']
+/** D-1013e: `content` is optional and appears only when a Tool declares content parameters. */
+const fieldsOf = ({ content: _content, ...rest }) => Object.keys(rest).sort()
 
 /** A manifest exercising every adapter, including one Tool no pack anywhere references. */
 const DECLARED = {
@@ -61,8 +63,12 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   assert.ok(advertised.length >= 18, `only ${advertised.length} Tools reached the advertisement`)
 
   for (const descriptor of advertised) {
-    assert.deepEqual(Object.keys(descriptor).sort(), DESCRIPTOR_FIELDS,
+    assert.deepEqual(fieldsOf(descriptor), DESCRIPTOR_FIELDS,
       `${descriptor.id} is advertised in a different shape from the rest`)
+    if (Object.hasOwn(descriptor, 'content')) {
+      assert.ok(Array.isArray(descriptor.content) && descriptor.content.length > 0, `${descriptor.id} advertises an empty content`)
+      for (const name of descriptor.content) assert.ok(Object.hasOwn(descriptor.params, name), `${descriptor.id}.content names ${name}`)
+    }
     assert.equal(typeof descriptor.adapter, 'string', `${descriptor.id} must expose its pinned local adapter`)
     assert.match(descriptor.id, /^[a-z][a-z0-9_.-]{1,95}@[1-9][0-9]*$/)
     assert.match(descriptor.digest, /^[a-f0-9]{64}$/)
@@ -95,8 +101,13 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   // Built-in and declared are one family: pick one of each and compare their shapes.
   const builtin = advertised.find((row) => row.id === 'rulith.workspace.write_text@1')
   const declared = advertised.find((row) => row.id === 'acme.catalog.get@1')
-  assert.deepEqual(Object.keys(builtin).sort(), Object.keys(declared).sort())
+  assert.deepEqual(fieldsOf(builtin), fieldsOf(declared))
   assert.deepEqual(builtin.params, { path: 'string', text: 'string' })
+  // D-1013e: the shipped write Tools declare their content parameter; nothing else does.
+  assert.deepEqual(builtin.content, ['text'])
+  assert.deepEqual(advertised.find((row) => row.id === 'rulith.workspace.write_json@1').content, ['value'])
+  assert.deepEqual(advertised.filter((row) => Object.hasOwn(row, 'content')).map((row) => row.id).sort(),
+    ['acme.notes.write@1', 'rulith.workspace.write_json@1', 'rulith.workspace.write_text@1'])
   assert.deepEqual(builtin.returns, [{ predicate: 'rulith.worker.file_written', args: { source: '$source', path: '$path', digest: '$digest' } }])
   assert.deepEqual(declared.params, { item_id: 'string' })
   assert.deepEqual(declared.returns, [{ predicate: 'acme.catalog.stock', args: { item_id: '$item_id', in_stock: '$in_stock' } }])
@@ -106,6 +117,7 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   const manifestWorkspace = advertised.find((row) => row.id === 'acme.notes.write@1')
   assert.deepEqual(manifestWorkspace.params, builtin.params)
   assert.deepEqual(manifestWorkspace.returns, builtin.returns)
+  assert.deepEqual(manifestWorkspace.content, builtin.content)
   assert.equal(manifestWorkspace.kind, 'write')
 
   // kind derivation, each adapter named once. Every guess falls to write.
@@ -351,4 +363,54 @@ test('RT-WK-TOOLS-4: every built-in read Tool lands the facts its advertisement 
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// ── RT-WK-TOOLS-5 ────────────────────────────────────────────────────────────
+
+test('RT-WK-TOOLS-5: a Manifest content declaration is accepted, refused by name, and advertised', () => {
+  // D-1013e (PSC 0.2.9): the Tool author names which params carry content. Only the derived
+  // exploration mode reads it; every name must be a key of params, and empty is no declaration.
+  const manifest = (extra) => ({ format: 'rulith-worker-tools/1', tools: {
+    'acme.report.write@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/report.mjs', kind: 'write',
+      params: { report: 'string', body: 'string', note: 'string?' }, returns: [], ...extra },
+  } })
+  const declared = workerToolsOf(manifest({ content: ['body', 'note'] }))['acme.report.write@1']
+  const descriptor = workerToolManifest({ 'acme.report.write@1': declared })[0]
+  assert.deepEqual(descriptor.content, ['body', 'note'])
+  assert.deepEqual(Object.keys(descriptor), ['id', 'digest', 'adapter', 'sourceTypes', 'kind', 'params', 'content', 'returns'])
+
+  // Omitted and empty both declare no content parameter, and neither is advertised.
+  const plain = workerToolsOf(manifest({}))['acme.report.write@1']
+  const empty = workerToolsOf(manifest({ content: [] }))['acme.report.write@1']
+  for (const definition of [plain, empty]) {
+    assert.equal(Object.hasOwn(workerToolDescriptor('acme.report.write@1', definition), 'content'), false)
+  }
+  // content is part of the written definition, so a changed declaration moves the Tool pin
+  // and the operator must lock it again; a Manifest without content keeps its old pin.
+  assert.notEqual(declared.digest, plain.digest)
+  assert.notEqual(workerToolsOf(manifest({ content: ['body'] }))['acme.report.write@1'].digest, declared.digest)
+  assert.equal(plain.digest, workerToolsOf(manifest({}))['acme.report.write@1'].digest)
+
+  // A name outside params is refused, naming the Tool and the parameter.
+  assert.throws(() => workerToolsOf(manifest({ content: ['text'] })),
+    /Worker Tool acme\.report\.write@1\.content names "text", which is not a key of its params \(report, body, note\)/)
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.thing@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/thing.mjs', content: ['body'] },
+  } }), /Worker Tool acme\.thing@1\.content names "body", which is not a key of its params \(none declared\)/)
+  assert.throws(() => workerToolsOf(manifest({ content: ['body', 'body'] })), /acme\.report\.write@1\.content names the parameter body twice/)
+  assert.throws(() => workerToolsOf(manifest({ content: 'body' })), /acme\.report\.write@1\.content must be an array/)
+  assert.throws(() => workerToolsOf(manifest({ content: [1] })), /acme\.report\.write@1\.content names 1, which is not a key/)
+  // An entry naming a shipped handler cannot restate its content, as with params.
+  assert.throws(() => workerToolsOf({ format: 'rulith-worker-tools/1', tools: {
+    'acme.notes.write@1': { adapter: 'workspace', sourceTypes: ['file'], entry: 'write_text', content: ['path'] },
+  } }), /names the built-in "write_text" implementation, so its content cannot be redeclared: .*"content":\["text"\]/)
+
+  // The built-ins advertise their fixed content without moving their pins.
+  const builtins = workerToolManifest(builtinWorkspaceTools('read-write'))
+  const byId = Object.fromEntries(builtins.map((row) => [row.id, row]))
+  assert.deepEqual(byId['rulith.workspace.write_text@1'].content, ['text'])
+  assert.deepEqual(byId['rulith.workspace.write_json@1'].content, ['value'])
+  assert.equal(byId['rulith.workspace.write_text@1'].digest, '55fa5db6a65d88b69e262eceaafd3f47f02b13ff00507eafb801192d32cc40da')
+  assert.equal(byId['rulith.workspace.write_json@1'].digest, '0efca0ee8ba32da13648648ac57c30566500f47a72cd892b2be048e0614c8b37')
+  for (const row of builtins.filter((row) => row.kind === 'read')) assert.equal(Object.hasOwn(row, 'content'), false, row.id)
 })

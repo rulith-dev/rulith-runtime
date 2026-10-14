@@ -2,6 +2,44 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.16.2 - 2026-10-14
+
+- Upgrade, read first: the built-in `rulith.workspace.write_text@1` and `rulith.workspace.write_json@1`
+  now advertise `content`, so their descriptors differ from the ones locked under 0.16.1 although their
+  digests do not. The Gateway compares the whole locked descriptor and refuses a changed one with
+  `worker_tool_manifest_drift`, so those Tools receive no work until they are locked again. After
+  upgrading, re-lock in Console every Source and Tool that uses the built-in write_text or write_json,
+  and any local Tool whose `content` you add or change. Upgrade the Gateway to PSC 0.2.12 before you
+  run a 0.16.2 Worker in read-write workspace mode (`RULITH_WORKSPACE_TOOLS=read-write`).
+- Contracts: the MCP contract, the Worker contract and the Worker review contract follow spec 3fdd4b66
+  (PSC 0.2.12, which includes PSC 0.2.11, 0.2.10 and 0.2.9 / D-1013e; 0.2.11 and 0.2.12 do not change
+  the Worker schema). The Board View carries `userRequests`; the Worker Tool descriptor may carry
+  `content`; the post-call review material carries `focusedTheory` and at most 10 each of
+  `priorSuggestions` and `priorNotes`; the reviewer system prompt is text 6 with the D-1013e lines
+  appended. An operations-strip entry's `result`, and the one a `previous_result_undelivered`
+  refusal carries, no longer contains the original Board `view` or its own `operations`
+  (`EmbeddedResultBody`, PSC 0.2.12 / D-1014a). The Agent's three MCP tools are unchanged.
+- Agent: nothing that reads a strip entry's result needs `view` or `operations` inside it. A held call
+  answered from the strip (ACC-MCP-12) is answered with the result as the strip carries it, now
+  without the original view, beside the position read as `currentView` and that read's strip; a
+  pre-0.2.12 Gateway's result with its original view is still answered as before.
+- Worker: the built-in `rulith.workspace.write_text@1` declares `content: ["text"]` and
+  `rulith.workspace.write_json@1` declares `content: ["value"]`. The advertised descriptor carries
+  `content` when the shipped contract or a Tool Manifest entry declares it, and omits it when empty.
+  Built-in Tool digests do not move, but these two descriptors do: re-lock them (see Upgrade above).
+- Worker: a Tool Manifest entry (`rulith-worker-tools/1`) may declare an optional `content` array. Every
+  name must be a key of its `params`; any other name, or a repeated one, refuses the Manifest with a
+  message naming the Tool and the parameter. `content` is part of the written definition, so it enters
+  the Tool digest and a changed declaration must be locked again. An entry that names a built-in
+  implementation cannot redeclare `content`, as with `kind`, `params` and `returns`.
+- Worker: a `note` anchored on a row of the review material's `focusedTheory` (a fact or a rule, for
+  example a rule that derives a `warrant`), or on the `node` of a `boardView.userRequests` row (a
+  `user_request`, which the reviewer prompt tells it to name), is accepted; an anchor that is not a
+  node in the Board View, its user requests, the focused goal nodes or the focused theory is still
+  `review_invalid_reply`.
+- The selected-material overlay check accepts the v2 base digest of spec 155c1d1d (unchanged at
+  3fdd4b66) in place of the ee6fb706 one; the immutable historical pins are untouched.
+
 ## 0.16.1 - 2026-10-13
 
 - Worker: the pre-execution reviewer call asks for `max_tokens` 8000 instead of 2000, overridable with

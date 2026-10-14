@@ -15,7 +15,7 @@ const contract = readWorkerReviewContract(bundle)
 const workerContract = readWorkerContract(JSON.parse(readFileSync(new URL('../protocol/worker-contract.json', import.meta.url), 'utf8')))
 const material = {
   boardView: { nodes: [{ nodeId: 'F1', args: { id: 'business-id' } }], goals: { directory: [{ goal: 'G1' }] } },
-  focusedGoalNodes: [{ id: 'G2' }], delta: {}, priorSuggestions: [],
+  focusedGoalNodes: [{ id: 'G2' }], focusedTheory: { facts: [], rules: [] }, delta: {}, priorSuggestions: [],
   priorNotes: [{ verdict: 'note', node: 'old-node', advice: 'old advice' }],
   call: { tool: 'Set', kind: 'Set', arguments: { z: 1, a: { y: 2, b: 3 } },
     result: { accepted: true, status: 'accepted', summary: 'Recorded the goal.' } },
@@ -182,6 +182,64 @@ test('in-process anchors include public fact, goal-node and Board action rows', 
   }
 })
 
+// PSC 0.2.10 (review-material-bounds, Worker half): a note anchored on a focusedTheory row,
+// such as the rule that derives a warrant, is a note on a node the material actually gives.
+const theoryMaterial = { ...material, focusedTheory: {
+  facts: [{ nodeId: 'F7', label: 'design_ok(path=src/a.txt)' },
+    { nodeId: 'D3', label: 'warrant(action=write_file, path=src/a.txt)', derived: true }],
+  rules: [{ nodeId: 'R2', label: 'design permits writing its file',
+    when: [{ predicate: 'design_ok', args: { path: '?p', id: 'rule-arg' } }],
+    then: [{ predicate: 'warrant', args: { action: 'write_file', path: '?p' } }], createdBy: 'agent' }],
+  truncated: true, omitted: 4 },
+priorSuggestions: [{ nodeId: 'S1', label: 'suggestion(id=s1, node=G1, advice=advice 1)' }] }
+
+test('in-process anchors include focusedTheory fact and rule rows', async () => {
+  assert.deepEqual(shapeFaults(offer({ material: theoryMaterial }), contract.defs.WorkerPreExecutionReviewOffer, contract.defs), [])
+  for (const node of ['F7', 'D3', 'R2', 'F1', 'G2']) {
+    const reply = { verdict: 'note', node, advice: 'The warrant rule admits writes the design does not justify.' }
+    assert.deepEqual(parsePreExecutionReply(JSON.stringify(reply), theoryMaterial), reply)
+  }
+  // The same reply is reported, not refused, on the whole offer -> model -> report path.
+  const reply = { verdict: 'note', node: 'R2', advice: 'The warrant rule admits writes the design does not justify.' }
+  const run = handler({ fetchReviewer: async () => replyResponse(JSON.stringify(reply)) })
+  await run.handle(offer({ material: theoryMaterial }))
+  assert.deepEqual(run.sent[0].reply, reply)
+  assert.equal(run.sent[0].errorCode, undefined)
+  assert.deepEqual(JSON.parse(run.calls[0].messages[1].content).focusedTheory, theoryMaterial.focusedTheory)
+})
+
+test('in-process anchors include the node of each boardView.userRequests row', async () => {
+  // PSC 0.2.9 (D-1013e): the reviewer prompt tells it to name the user_request node a goal drops.
+  const requestMaterial = { ...theoryMaterial, boardView: { ...material.boardView,
+    userRequests: [{ node: 'HREQ_1', text: 'Load 10,000 rows in under a minute.' },
+      { node: 'HREQ_2', text: 'Keep the import idempotent.' }] } }
+  assert.deepEqual(shapeFaults(offer({ material: requestMaterial }), contract.defs.WorkerPreExecutionReviewOffer, contract.defs), [])
+  const reply = { verdict: 'note', node: 'HREQ_2', advice: 'The acceptance criterion drops the idempotency the person asked for.' }
+  assert.deepEqual(parsePreExecutionReply(JSON.stringify(reply), requestMaterial), reply)
+  const run = handler({ fetchReviewer: async () => replyResponse(JSON.stringify(reply)) })
+  await run.handle(offer({ material: requestMaterial }))
+  assert.deepEqual(run.sent[0].reply, reply)
+  // The request text, a rule's condition argument and a request absent from this view are not anchors.
+  for (const node of ['Keep the import idempotent.', 'rule-arg', 'HREQ_3']) {
+    assert.equal(parsePreExecutionReply(JSON.stringify({ verdict: 'note', node, advice: 'A defect.' }), requestMaterial), undefined, node)
+  }
+  assert.equal(parsePreExecutionReply('{"verdict":"note","node":"HREQ_1","advice":"A defect."}', theoryMaterial), undefined)
+})
+
+test('in-process anchors outside the material still fail with a focusedTheory present', async () => {
+  // A rule's condition arguments, a prior suggestion, a prior note and an unknown node are not
+  // anchors; neither is a theory row in a material that does not carry it.
+  for (const node of ['rule-arg', 'S1', 'old-node', 'F9', '?p', 'warrant']) {
+    assert.equal(parsePreExecutionReply(JSON.stringify({ verdict: 'note', node, advice: 'A defect.' }), theoryMaterial), undefined, node)
+  }
+  assert.equal(parsePreExecutionReply('{"verdict":"note","node":"R2","advice":"A defect."}', material), undefined)
+  const run = handler({ timeoutMs: 5000, fetchReviewer: async () => replyResponse('{"verdict":"note","node":"rule-arg","advice":"A defect."}') })
+  await run.handle(offer({ material: theoryMaterial }))
+  assert.equal(run.sent[0].reply, undefined)
+  assert.equal(run.sent[0].errorCode, 'review_invalid_reply')
+  assert.equal(run.calls.length, 1)
+})
+
 test('in-process configured reviewer timeout caps a longer offer budget', async () => {
   const run = handler({ timeoutMs: 30, fetchReviewer: (_url, { signal }) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () => reject(new Error('abort')), { once: true })
@@ -296,7 +354,7 @@ test('in-process material previews pass through unchanged and absent anchors fai
 })
 
 test('in-process review bundle detects changed bytes, pins and projected definitions', () => {
-  assert.equal(contract.sourceCommit, 'ee6fb706e7b8c22c11e823585c1247cff2a97734')
+  assert.equal(contract.sourceCommit, '3fdd4b666c2d3b59bfbfc85199f147368046c524')
   for (const mutate of [copy => { copy.files[Object.keys(copy.files)[0]].content += '\n' },
     copy => { copy.files[Object.keys(copy.files)[0]].gitBlobOid = '0'.repeat(40) },
     copy => { copy.contract.$defs.ReviewerCapability.properties.preExecution.const = false }]) {

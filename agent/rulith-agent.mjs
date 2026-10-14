@@ -80,8 +80,8 @@ const MCP_URL = `${URL_BASE}/mcp`
 // operations and their results carry a Board View; the artifact read is the Gateway's private result
 // data plane and returns bytes. Treating an artifact read as a Board answer would let a
 // data read update focus and lifecycle, which is exactly the confusion the targets prevent.
-const RULITH_CONTRACT_SOURCE_COMMIT = 'ee6fb706e7b8c22c11e823585c1247cff2a97734'
-const RULITH_RUNTIME_VERSION = "0.16.1"
+const RULITH_CONTRACT_SOURCE_COMMIT = '3fdd4b666c2d3b59bfbfc85199f147368046c524'
+const RULITH_RUNTIME_VERSION = "0.16.2"
 const MCP_PROTOCOL_VERSION = '2025-11-25'
 /** The reserved key for host metadata. It never appears in model content or tool schemas. */
 const RULITH_META = 'rulith/v4'
@@ -1572,7 +1572,8 @@ function publicToolResultOf(value) {
  * used to answer it.
  *
  * The entry comes back with what it says of the outcome: `result` — the operation's own public
- * tool result, carried while that result waits to be acknowledged — or a bounded `summary`,
+ * tool result, carried while that result waits to be acknowledged, without its Board View and its
+ * own strip since PSC 0.2.12 — or a bounded `summary`,
  * and the `decision` or `reason` text. A `result` that is not a public MCP tool result is
  * dropped rather than repaired: it is the one field the model's open call may be answered with,
  * and an answer this host rebuilt would be this host's words.
@@ -3334,9 +3335,11 @@ async function answerFromStrip(ctx, name, input, first, own, look, { atBound = f
   }
   let readable = true
   if (SETTLED_STATES.has(state) && entry?.result !== undefined) {
-    // The call's own public result, as the held call would have returned it — intact, its own
-    // Board View included, which shows what that step touched — and with the position of the
-    // answer that found it: that answer's strip, and its Board View as it is now (`currentView`).
+    // The call's own public result as the strip carries it, and with the position of the answer
+    // that found it: that answer's strip, and its Board View as it is now (`currentView`).
+    // PSC 0.2.12(D-1014a):操作栏里的这一份原结果不带原 Board 视图 `view`,也不带它自己的操作栏;
+    // 其余字段(accepted、teaching 与建议行、结果与回执字段)原样保留。这里不要求、也不补造这两样:
+    // 当前局面由 `currentView` 给出,操作栏由读取的那一份给出。旧 Gateway 仍带原视图时照原样转交。
     // The result passes the same checks a direct answer does — a JSON answer in this tool's shape,
     // and no success verdict inside an MCP error envelope — or it is not presented as the result.
     const ownText = entry.result.content.map((item) => item.text).join('\n')

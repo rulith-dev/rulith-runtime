@@ -316,10 +316,11 @@ unacknowledged — so the model is answered from it at once, before anything els
 the host asks the model nothing, reads the state form on `ping` until that operation — found by
 the ordinal its progress named, or, until a ping names it, by its own entry on its `running`
 answer — is no longer running, then reads the position once with a public `QueryBoard`, whose
-strip carries the operation's own result. The model's call is answered with that result, intact —
-its own Board View included, which shows what that step touched — and with the position of that
-read beside it: its strip, and its Board View as `currentView`. The model sees what a synchronous
-call would have shown it. The strip carries a result without its host metadata, so the goals such
+strip carries the operation's own result. The model's call is answered with that result as the
+strip carries it — since PSC 0.2.12 without the original Board View and without a strip of its own,
+everything else as saved — and with the position of that read beside it: its strip, and its Board
+View as `currentView`. The model sees what a synchronous call would have shown it, with the Board
+as it is now. The strip carries a result without its host metadata, so the goals such
 a result affected are reported to Local as not reported, rather than as none.
 `waiting_for_decision` and `needs_person` reach the model at once. After `RULITH_HOST_WAIT_MS`
 (ten minutes) the model is answered `running` with the current position; the operation goes
@@ -520,7 +521,7 @@ grants the Agent permission to use a Tool.
 A built-in Tool and one declared in the Tool Manifest have the same standing. Both are
 resolved by the same code, pinned by the same digest over their definition, and
 advertised in the same descriptor — `id`, `digest`, `sourceTypes`, `kind` (`read`,
-`write`, or `run`), `params`, and `returns` — so a host can synthesize a governed Action
+`write`, or `run`), `params`, `content` when declared, and `returns` — so a host can synthesize a governed Action
 for either without a Capability having declared it first. The Worker advertises every
 Tool it has and authorizes none of them: a Tool is usable only while it is locked on this
 Connection in Console, and one that is not locked simply never receives work. The startup
@@ -530,6 +531,14 @@ state `kind`, `params`, and `returns` itself; left out, `kind` is derived from t
 adapter and falls to `write` wherever the entry has not said otherwise. An entry that
 names a built-in implementation states none of the three — that contract is fixed, and
 restating it is refused when the manifest is read rather than quietly ignored.
+
+**Upgrading to 0.16.2: re-lock the built-in write Tools.** `rulith.workspace.write_text@1` and
+`rulith.workspace.write_json@1` now advertise `content` (`["text"]` and `["value"]`). Their
+digests are unchanged, but their descriptors are not, and the Gateway compares the whole locked
+descriptor: until you lock them again it refuses them with `worker_tool_manifest_drift` and they
+receive no work. After upgrading, re-lock in Console every Source and Tool that uses the built-in
+write_text or write_json, and any local Tool whose `content` you add or change. Upgrade the
+Gateway to PSC 0.2.12 before you run a 0.16.2 Worker with `RULITH_WORKSPACE_TOOLS=read-write`.
 
 For a package that needs no private credential, run:
 
@@ -708,7 +717,11 @@ example:
 A governed Action may declare the typed `order_id` slot and its own result mapping; a Tool
 that states `params` and `returns` — the same `[{predicate, args}]` mapping an Action uses,
 with each fact argument read from a `$column` of the result row — is one a host can build a
-direct Action from without a Capability having declared it. The Worker
+direct Action from without a Capability having declared it. A Tool may also list `content`,
+the keys of its `params` that carry content, such as the text a write Tool stores; only the
+derived exploration mode reads it, where every other parameter must be warranted. A name
+outside `params` is refused, and the shipped `write_text` and `write_json` declare `text` and
+`value`. The Worker
 compiles database placeholders to driver parameters, never SQL interpolation. MCP
 discovery is read-only; it does not grant a generic call surface. Each remote MCP Tool
 must still be approved as its own versioned local Tool and governed Action.

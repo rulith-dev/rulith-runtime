@@ -718,23 +718,50 @@ test('RT-HELD-27 an entry of the same tool and label admitted earlier is never t
   assert.ok(!alike.some((entry) => entry.state === 'failed'), 'the earlier failed call was taken for the waited one')
 })
 
-test('RT-HELD-28 a waited result is given intact, its own Board View included, with the position beside it', async () => {
-  // The result's own view shows what that step touched, which may lie outside the focus a later
-  // read covers. The read the wait ends with is the position now, and goes beside it.
+test('RT-HELD-28 a waited result from the strip carries no original Board View; the position goes beside it', async () => {
+  // PSC 0.2.12 (D-1014a): the strip's copy of a result has no `view` and no strip of its own. The
+  // answer to the open call is that copy — every other field as saved, a suggestion line included —
+  // with the position the wait read beside it. Nothing here requires the original view.
   const touched = { goals: { directory: [{ goal: 'GOAL_ELSEWHERE', label: 'GOAL_ELSEWHERE', status: 'running' }], total: 1 } }
+  const suggestion = 'Board suggestion (advisory; you decide whether to act): Check the invoice total. [node F1]'
   const run = await runAgent({
     argv: [], chatLines: ['Ship it.'], env: FAST, captureLocalEvents: true,
     hold: heldUntil(2),
     tool: (name, args, board, session) => name !== 'Execute' ? undefined
-      : { ...confirmed(board.tool('Set', declareGoal(), session), args), view: touched },
+      : { ...confirmed(board.tool('Set', declareGoal(), session), args), view: touched, teaching: suggestion },
     model: (round) => round === 1 ? ship : 'Shipped.',
   })
-  assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
+  assert.equal(run.code, 0, `${run.stdout}
+${run.stderr}`)
   const [answer] = toolResults(run)
-  assert.deepEqual(answer.view, touched, 'the result\'s own Board View was replaced by the read\'s')
+  assert.deepEqual(answer.result, { action: 'demo.ship', done: true, ok: true, status: 'confirmed' })
+  assert.equal(answer.accepted, true)
+  assert.equal(answer.teaching, suggestion, 'the saved teaching, with its suggestion line, was not given intact')
+  assert.equal(Object.hasOwn(answer, 'view'), false, 'a Board View the strip did not carry was put in the answer')
+  assert.equal(Object.hasOwn(answer, 'state'), false, 'the settled call was answered with its state, not its result')
   assert.ok(Array.isArray(answer.currentView?.goals?.directory), 'the position the wait read was not given with it')
+  assert.equal(answer.operations.find((entry) => entry.label === 'Execute demo.ship').summary, 'This answer is its result.')
+  assert.doesNotMatch(JSON.stringify(answer), /GOAL_ELSEWHERE/, 'the original view reached the model through the strip')
   const affected = run.localEvents.find((event) => event.type === 'affected' && event.cmd === 'Execute')
   assert.equal(affected?.unreported, true, 'the affected goals of a result taken from the strip were not said to be unreported')
+})
+
+test('RT-HELD-28b a strip result from a pre-0.2.12 Gateway, with its original view, is still answered as the result', async () => {
+  // A Gateway that has not yet taken PSC 0.2.12 embeds the original view; the answer stays readable.
+  const touched = { goals: { directory: [{ goal: 'GOAL_ELSEWHERE', label: 'GOAL_ELSEWHERE', status: 'running' }], total: 1 } }
+  const legacy = JSON.stringify({ accepted: true, result: { action: 'demo.ship', done: true, ok: true, status: 'confirmed' }, view: touched })
+  const run = await runAgent({
+    argv: [], chatLines: ['Ship it.'], env: FAST,
+    hold: heldUntil(2, { text: legacy, isError: false }),
+    tool: (name, args, board, session) => name !== 'Execute' ? undefined : confirmed(board.tool('Set', declareGoal(), session), args),
+    model: (round) => round === 1 ? ship : 'Shipped.',
+  })
+  assert.equal(run.code, 0, `${run.stdout}
+${run.stderr}`)
+  const [answer] = toolResults(run)
+  assert.equal(answer.result?.status, 'confirmed')
+  assert.deepEqual(answer.view, touched)
+  assert.ok(Array.isArray(answer.currentView?.goals?.directory), 'the position the wait read was not given with it')
 })
 
 test('RT-HELD-29 a goal a waited end_goal batch ended is logged with the disposition it asked for', async () => {

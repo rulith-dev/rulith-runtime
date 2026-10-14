@@ -15,6 +15,7 @@
  *     propertyNames              items       minLength    minimum / maximum
  *     maxItems                   uniqueItems anyOf       allOf
  *     oneOf                      contains    if / then / else / not
+ *     dependencies (draft-07: a member that requires other members, or a schema)
  *
  * An unknown keyword is a fault rather than a shrug: a validator that silently ignores what
  * it does not understand reports "valid" for a rule it never checked, which is the one
@@ -27,7 +28,7 @@ const KNOWN = new Set([
   '$ref', 'type', 'required', 'properties', 'additionalProperties', 'propertyNames',
   'enum', 'const', 'pattern', 'items', 'minLength', 'maxLength', 'minimum', 'maximum',
   'minItems', 'maxItems', 'uniqueItems', 'anyOf', 'allOf', 'oneOf', 'contains',
-  'if', 'then', 'else', 'not',
+  'if', 'then', 'else', 'not', 'dependencies',
   // Prose, carried by the contract and not a constraint.
   'description', '$comment', 'title',
 ])
@@ -50,6 +51,11 @@ function unknownKeywordFaults(schema, at) {
   }
   for (const key of ['additionalProperties', 'propertyNames', 'items', 'contains', 'if', 'then', 'else', 'not']) {
     if (schema[key] !== undefined) faults.push(...unknownKeywordFaults(schema[key], `${at}.${key}`))
+  }
+  for (const [name, dependency] of Object.entries(schema.dependencies ?? {})) {
+    if (Array.isArray(dependency)) {
+      if (dependency.some((member) => typeof member !== 'string')) faults.push(`${at || '(root)'}: dependencies.${name} must name members`)
+    } else faults.push(...unknownKeywordFaults(dependency, `${at}.dependencies.${name}`))
   }
   for (const key of ['anyOf', 'allOf', 'oneOf']) {
     if (schema[key] === undefined) continue
@@ -152,6 +158,15 @@ export function shapeFaults(value, schema, defs, at = '') {
   if (actual === 'object') {
     for (const name of schema.required ?? []) {
       if (!Object.hasOwn(value, name)) say(`is missing the required ${JSON.stringify(name)}`)
+    }
+    // PSC 0.2.10 focusedTheory: truncated and omitted appear together or not at all.
+    for (const [name, dependency] of Object.entries(schema.dependencies ?? {})) {
+      if (!Object.hasOwn(value, name)) continue
+      if (Array.isArray(dependency)) {
+        for (const member of dependency) {
+          if (!Object.hasOwn(value, member)) say(`carries ${JSON.stringify(name)} without ${JSON.stringify(member)}, which the contract requires with it`)
+        }
+      } else faults.push(...shapeFaults(value, dependency, defs, at))
     }
     const declared = schema.properties ?? {}
     for (const [name, held] of Object.entries(value)) {

@@ -406,7 +406,9 @@ function renderModelAnswer(answer, provider) {
  *   `settle` receives `{ pings, queries, toolCalls, requests, sinceMs, method, tool }` — `method` and
  *   `tool` name the request being answered, absent inside a hold — and returns the operation's next
  *   state — `{ state, core, contentWithheld, summary, reason, decision, stage, text, isError }` —
- *   or undefined. `text` and `isError` replace the recorded result's text and error flag.
+ *   or undefined. `text` and `isError` replace the recorded result's text and error flag; the strip
+ *   carries a scripted `text` verbatim, and otherwise the result without `view` and `operations`
+ *   (PSC 0.2.12).
  *   `settlesAsAnswered` (a state such as `{ state: 'done' }`) settles the call in the instant its
  *   `running` answer is written: the answer still says `running`, and its strip — written after —
  *   carries the call's own result in full, as a Gateway's can.
@@ -551,7 +553,18 @@ export async function runAgent({
     if (['failed', 'refused', 'unknown'].includes(status)) return status
     return core?.accepted === true ? 'done' : 'refused'
   }
-  const publicResultOf = (op) => ({ content: [{ type: 'text', text: op.text ?? JSON.stringify(op.core) }],
+  /**
+   * PSC 0.2.12 (D-1014a): the copy of a result the strip carries is an EmbeddedResultBody — the
+   * original without its Board View and without its own strip. This fake's Core shape may carry
+   * its Board View as `payload` (what a Gateway projects to `view`), so that goes too. A scripted
+   * `text` is the recorded result verbatim, which is how a test shows a pre-0.2.12 Gateway.
+   */
+  const embeddedBodyOf = (core) => {
+    if (core === null || typeof core !== 'object' || Array.isArray(core)) return core
+    const { view: _view, operations: _strip, payload: _payload, ...body } = core
+    return body
+  }
+  const publicResultOf = (op) => ({ content: [{ type: 'text', text: op.text ?? JSON.stringify(embeddedBodyOf(op.core)) }],
     isError: op.isError ?? op.core?.accepted !== true })
   /** Move an operation along its plan, once per request; `method` and `tool` name the request, when there is one. */
   const advance = (method, tool) => {

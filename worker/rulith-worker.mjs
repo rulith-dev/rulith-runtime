@@ -54,14 +54,16 @@
  *
  * A declared Tool and a built-in are the same family (board-spec TOOL-08): same resolver,
  * same digest pinning the definition, same advertised descriptor `{id, digest,
- * sourceTypes, kind, params, returns}`, same Connection lock. `kind` is read / write /
+ * sourceTypes, kind, params, content, returns}`, same Connection lock. `kind` is read / write /
  * run and may be left out — it is then derived from the adapter. `params` names the
  * arguments an invocation may carry (string / number / boolean / json, `?` = optional);
  * `returns` maps each result row to the facts it may land as — `[{predicate, args:
  * {fact_arg: "$column"}}]`, the one shape a Capability Action's `returns` uses and the
  * Board's tool-pack parser reads, so a host installs the advertisement verbatim as a
- * direct Action. An entry naming a handler that ships here (a
- * workspace operation, MCP discovery) states none of the three: that contract is fixed,
+ * direct Action. The optional `content` (D-1013e) lists the keys of `params` that carry
+ * content, such as the text of a file write; only the derived exploration mode reads it,
+ * and a name outside `params` is refused. An entry naming a handler that ships here (a
+ * workspace operation, MCP discovery) states none of these: that contract is fixed,
  * and a restatement is refused rather than ignored. This Worker advertises everything it
  * has and authorizes nothing: a Tool receives work only while its Connection lock holds.
  *
@@ -128,9 +130,9 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // Do not edit: `npm run check` regenerates this block and fails on any difference. Every
 // value below is the contract's, read from the bundle exported at the commit named here,
 // except the Runtime version from package.json.
-const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = 'ee6fb706e7b8c22c11e823585c1247cff2a97734'
+const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '3fdd4b666c2d3b59bfbfc85199f147368046c524'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.16.1"
+const RULITH_RUNTIME_VERSION = "0.16.2"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -209,7 +211,7 @@ const ARTIFACT_POLICY_FIELDS = Object.freeze({"inlineBytes":{"required":true,"ru
 const ARTIFACT_REF_PATTERN = /^art_[a-f0-9]{32}$/
 const UNDELIVERABLE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/
 // Separate Gateway review overlay; its prompt is supplied by the offer, never compiled here.
-const WORKER_REVIEW_SOURCE_COMMIT = 'ee6fb706e7b8c22c11e823585c1247cff2a97734'
+const WORKER_REVIEW_SOURCE_COMMIT = '3fdd4b666c2d3b59bfbfc85199f147368046c524'
 const PRE_EXECUTION_REVIEW_CAPABILITY = Object.freeze({"preExecution":true})
 const PRE_EXECUTION_REPLY_VARIANTS = Object.freeze([{"type":"object","additionalProperties":false,"required":["verdict"],"properties":{"verdict":{"const":"allow"}}},{"type":"object","additionalProperties":false,"required":["verdict","node","advice"],"properties":{"verdict":{"const":"note"},"node":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^\\r\\n]+$"},"advice":{"type":"string","minLength":1,"maxLength":500,"pattern":"^[^\\r\\n]+$"}}}])
 const PRE_EXECUTION_ERROR_RULE = Object.freeze({"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z][a-z0-9_]*$"})
@@ -974,9 +976,9 @@ const WORKSPACE_TOOL_CONTRACTS = Object.freeze({
     returns: [{ predicate: 'rulith.worker.json_file', args: { source: '$source', path: '$path', json: '$json', digest: '$digest' } }] },
   hash: { kind: 'read', params: { path: 'string' },
     returns: [{ predicate: 'rulith.worker.file_hash', args: { source: '$source', path: '$path', sha256: '$sha256', size: '$size' } }] },
-  write_text: { kind: 'write', params: { path: 'string', text: 'string' },
+  write_text: { kind: 'write', params: { path: 'string', text: 'string' }, content: ['text'],
     returns: [{ predicate: 'rulith.worker.file_written', args: { source: '$source', path: '$path', digest: '$digest' } }] },
-  write_json: { kind: 'write', params: { path: 'string', value: 'json' },
+  write_json: { kind: 'write', params: { path: 'string', value: 'json' }, content: ['value'],
     returns: [{ predicate: 'rulith.worker.file_written', args: { source: '$source', path: '$path', digest: '$digest' } }] },
 })
 const SOURCE_TOOL_CONTRACTS = Object.freeze({
@@ -1042,10 +1044,14 @@ export function toolKind(definition) {
 }
 
 /**
- * The advertised descriptor of one installed Tool. Built-in or declared, the shape is
- * the same and every field is a function of what the digest already pins: the written
- * definition for a manifest entry, and the adapter entry for a built-in (whose fixed
- * table is selected by that entry). So a descriptor cannot move without the pin moving.
+ * The advertised descriptor of one installed Tool. Built-in or declared, the shape is the
+ * same. For a manifest entry every field is a function of the written definition the digest
+ * pins, so its descriptor cannot move without its pin moving. A built-in's pin covers only
+ * its adapter, Source types and entry; the rest is this release's fixed contract table, so a
+ * Runtime release can change a built-in's descriptor while its pin stays — 0.16.2 added
+ * `content` to write_text and write_json. The Gateway compares the whole locked descriptor,
+ * so such a change is refused as worker_tool_manifest_drift until the operator locks the Tool
+ * again in Console: fail closed, never a silent widening.
  */
 export function workerToolDescriptor(id, definition) {
   const contract = builtinContract(definition)
@@ -1058,6 +1064,7 @@ export function workerToolDescriptor(id, definition) {
     throw new Error(`Worker Tool ${id} would be advertised with the pin ${JSON.stringify(digest)}, which is not the bare`
       + ' lowercase sha256 the Connection lock holds. A re-prefixed pin unlocks every Tool on this Connection at once.')
   }
+  const content = contentOf(contract, definition)
   return {
     id,
     digest,
@@ -1068,10 +1075,19 @@ export function workerToolDescriptor(id, definition) {
     // an operator's to restate. `workerToolsOf` refuses the restatement outright, so
     // this order only matters for a definition assembled in code.
     params: { ...(contract?.params ?? definition.params ?? {}) },
+    // D-1013e(PSC 0.2.9):Tool 作者声明的内容参数(如写文件的正文 text)。只供推导探索模式用:
+    // 内容参数不进担保,其余公开输入都是关键输入。空数组与不报同义(全部是关键输入,封闭失败),
+    // 所以空时不发。它不授予任何执行许可。
+    ...(content.length > 0 ? { content: [...content] } : {}),
     returns: (contract?.returns ?? definition.returns ?? []).map((row) => ({ predicate: row.predicate, args: { ...row.args } })),
     ...(definition.adapter === 'http' && definition.fence?.textWrite !== undefined
       ? { entry: definition.entry, fence: structuredClone(definition.fence) } : {}),
   }
+}
+
+/** The content parameters a Tool declares: the shipped contract's first, as for params and returns. */
+function contentOf(contract, definition) {
+  return contract !== undefined ? contract.content ?? [] : definition.content ?? []
 }
 
 /**
@@ -1086,10 +1102,11 @@ export function builtinWorkspaceTools(mode = 'read') {
   const tools = {}
   for (const [id, entry] of Object.entries(catalog)) {
     // The digest covers the definition — adapter, Source types, entry — and nothing else,
-    // exactly as before this Worker learned to state kind/params/returns. Those three are
-    // derived from `entry`, which is inside the digest, so the pin already fixes them and
-    // no built-in digest moves. A manifest entry is the other case: there an operator
-    // writes them, so they are part of the definition and do enter its digest.
+    // exactly as before this Worker learned to state kind/params/content/returns. Those are
+    // read from this release's table for `entry`, so no built-in digest moves; but a release
+    // that changes the table changes the advertised descriptor, which the Connection lock
+    // compares whole (see workerToolDescriptor). A manifest entry is the other case: there an
+    // operator writes them, so they are part of the definition and do enter its digest.
     const definition = { adapter: 'workspace', sourceTypes: ['file'], entry }
     tools[id] = { ...definition, ...WORKSPACE_TOOL_CONTRACTS[entry], digest: toolDigest(definition) }
   }
@@ -4136,7 +4153,8 @@ export function reviewerAdvertisement(url = REVIEWER_URL, model = REVIEWER_MODEL
 
 function reviewNodeIds(material) {
   const ids = new Set()
-  // Only Board rows and focused nodes are anchors; call arguments and old notes are not.
+  // Only Board rows, user requests, focused nodes and focused-theory rows are anchors; call arguments
+  // and old notes are not.
   const rows = value => {
     if (Array.isArray(value)) { value.forEach(rows); return }
     if (value === null || typeof value !== 'object') return
@@ -4150,6 +4168,16 @@ function reviewNodeIds(material) {
   rows(material?.boardView?.facts)
   rows(material?.boardView?.goalNodes)
   rows(material?.focusedGoalNodes)
+  // PSC 0.2.10:焦点理论的事实行与规则行(nodeId)同样是锚点,例如一条推出 warrant 的规则。
+  // 规则行带 nodeId,所以不会下钻到它的 when/then 里把条件实参当成节点。
+  rows(material?.focusedTheory?.facts)
+  rows(material?.focusedTheory?.rules)
+  // PSC 0.2.9(D-1013e):当前 Board View 带 userRequests[] {node, text},审查员提示词要求点名那个
+  // user_request 节点,所以 node 也是锚点。只取 node,不读 text。
+  const userRequests = material?.boardView?.userRequests
+  for (const row of Array.isArray(userRequests) ? userRequests : []) {
+    if (typeof row?.node === 'string') ids.add(row.node)
+  }
   for (const row of material?.boardView?.actions ?? []) {
     if (typeof row?.actionNodeId === 'string') ids.add(row.actionNodeId)
   }
@@ -5023,6 +5051,27 @@ function validateInvocationArgs(params, argsJson) {
   return supplied
 }
 
+/**
+ * D-1013e(PSC 0.2.9):Manifest 的 `content` 由 Tool 作者声明哪些参数是内容。每个名字必须是
+ * `params` 的键——不在其中的按名拒绝整张表,与 Poll 解析同一条规则;本机不按参数名、类型或描述
+ * 猜内容。空数组合法,与不报同义。它写在定义里,所以进 Tool digest:改了声明就是合同改变,须重新锁定。
+ */
+function assertContentNames(content, params, label) {
+  if (!Array.isArray(content)) {
+    throw new Error(`${label}.content must be an array of parameter names that carry content, such as ["text"]; an empty array declares none`)
+  }
+  const seen = new Set()
+  for (const name of content) {
+    if (typeof name !== 'string' || !Object.hasOwn(params ?? {}, name)) {
+      throw new Error(`${label}.content names ${JSON.stringify(name)}, which is not a key of its params`
+        + ` (${Object.keys(params ?? {}).join(', ') || 'none declared'}). Every content parameter must be one of the Tool's own parameters.`)
+    }
+    if (seen.has(name)) throw new Error(`${label}.content names the parameter ${name} twice`)
+    seen.add(name)
+  }
+  return content
+}
+
 export function toolDigest(definition) {
   return createHash('sha256').update(JSON.stringify(canonical(definition))).digest('hex')
 }
@@ -5066,20 +5115,21 @@ export function workerToolsOf(raw) {
         + ' The material area is reached through the built-in rulith.materials.read@1 and a governed file Source;'
         + ' a declared copy could map raw bytes onto Board predicates, which is the one thing a material read must never do.')
     }
-    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'sourceTypes', 'entry', 'fence', 'handles', 'kind', 'params', 'returns', 'tier'].includes(key))
+    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'sourceTypes', 'entry', 'fence', 'handles', 'kind', 'params', 'content', 'returns', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
     // A declared Tool states the same three things a built-in states, and they are
     // checked here rather than at dispatch: the advertisement goes out at the first
     // poll, so a malformed contract must fail while the operator is still reading the
     // startup output, not on the work item that finally exercises it.
     const shipped = builtinContract(value)
-    const restated = ['kind', 'params', 'returns'].filter((key) => value[key] !== undefined)
+    const restated = ['kind', 'params', 'content', 'returns'].filter((key) => value[key] !== undefined)
     if (shipped !== undefined && restated.length > 0) {
       // Refused, not ignored — the same rule as a misplaced `env.pass`. This entry names
       // a handler in this file, whose contract is fixed; a restatement here would be
       // dropped on the floor while reading like the thing that governs the Tool.
       throw new Error(`Worker Tool ${id} names the built-in "${value.entry}" implementation, so its ${restated.join(' / ')} `
-        + `cannot be redeclared: it is ${JSON.stringify({ kind: shipped.kind, params: shipped.params, returns: shipped.returns })}.`)
+        + `cannot be redeclared: it is ${JSON.stringify({ kind: shipped.kind, params: shipped.params,
+          ...(shipped.content === undefined ? {} : { content: shipped.content }), returns: shipped.returns })}.`)
     }
     if (value.kind !== undefined && !TOOL_KINDS.includes(value.kind)) {
       throw new Error(`Worker Tool ${id}.kind must be ${TOOL_KINDS.length > 1
@@ -5096,6 +5146,7 @@ export function workerToolsOf(raw) {
       refuseReservedParameter(value.params, `Worker Tool ${id}`)
     }
     if (value.returns !== undefined) assertReturnRows(value.returns, `Worker Tool ${id}.returns`)
+    if (value.content !== undefined) assertContentNames(value.content, value.params, `Worker Tool ${id}`)
     if (value.fence !== undefined && (!value.fence || typeof value.fence !== 'object' || Array.isArray(value.fence))) {
       throw new Error(`Worker Tool ${id}.fence must be an object`)
     }

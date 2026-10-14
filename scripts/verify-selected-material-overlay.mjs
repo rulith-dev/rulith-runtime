@@ -19,11 +19,13 @@ const CANONICAL_OVERLAY_SHA256 = 'sha256:9b2a4f87d7cd0ce18520bcd06606e7896ba3f91
 const CANONICAL_PRIOR_OVERLAY_SHA256 = 'sha256:f7a0e3ea90f8d94d1698b469d9bc7c75a956c51000399a7876d9506782e173f6'
 const CANONICAL_OLD_OVERLAY_SHA256 = 'sha256:4ef69f2735b23ea7163af55a90a7b881f8d4bcaaeae7066906233c9540768a3e'
 const CANONICAL_BASE_SHA256 = 'sha256:6b8d46675c2104ca814ec54c466133474a7160d04214a2d3d51fc389ff5d16be'
-// D-1013c added the separate Gateway review arm to the v2 schema and D-1013f (PSC 0.2.8)
-// reshaped only that arm (post-call `call`, no block reply). Historical selected material
-// pins still name their original base; accept this exact committed amendment (spec
-// ee6fb706) as the compatible current base without rewriting any of those immutable pins.
-const REVIEW_AMENDED_BASE_SHA256 = 'sha256:6410b8cef586835519d70bdd666c2121f842039be1d6bbc1db0bad029f46f3b8'
+// D-1013c added the separate Gateway review arm to the v2 schema, D-1013f (PSC 0.2.8)
+// reshaped only that arm (post-call `call`, no block reply), D-1013e (PSC 0.2.9) added the
+// optional Manifest `content` and PSC 0.2.10 added the review material's `focusedTheory`.
+// Historical selected material pins still name their original base; accept this exact
+// committed amendment (spec 155c1d1d, unchanged through 3fdd4b66) as the compatible current
+// base without rewriting any of those immutable pins.
+const REVIEW_AMENDED_BASE_SHA256 = 'sha256:77839481e060e7336169e546c35123c741266ccefe417308515b2cd010fe576c'
 
 if (pin.version !== 'rulith-worker-selected-material-overlay-pin/3'
     || pin.schemaPath !== 'docs/specs/schemas/rulith-worker-selected-material-v3.schema.json'
