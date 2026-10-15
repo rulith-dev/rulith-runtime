@@ -4,6 +4,9 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Address D-1015c review findings: opt-in image artifact custody, bounded web text conversion,
+  dead-holder lock recovery, stricter SSRF ranges, complete patch edges and per-line EOLs,
+  link refusal, bounded glob matching and Sources package v2. Web calls skip project walks/locks.
 - Ship the opt-in general Worker kit (D-1015c), preserving the engineering tool contracts,
   receipts and command guards. Install per Agent with `rulith kit install general`.
 - Add bounded globbing, prevalidated multi-file Codex patches, image artifacts, `eng.read@2`

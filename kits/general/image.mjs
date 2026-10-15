@@ -1,13 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fenced, sha, refuse } from './lib.mjs';
+import { plainFenced, sha, refuse } from './lib.mjs';
 import { generalSettings } from './general-settings.mjs';
 
 export function readImage(ctx, args) {
   if (typeof args.path !== 'string' || !args.path) refuse('path refused');
-  const target = fenced(ctx.root, args.path);
-  for (let cursor = target; cursor !== ctx.root; cursor = path.dirname(cursor))
-    if (fs.lstatSync(cursor).isSymbolicLink()) refuse('path refused');
+  const target = plainFenced(ctx.root, args.path);
   const limit = generalSettings(ctx.home).imageMaxBytes;
   if (!fs.statSync(target).isFile()) refuse('image refused');
   if (fs.statSync(target).size > limit) refuse('image size exceeded');
@@ -26,5 +24,5 @@ export function readImage(ctx, args) {
   else if (/^GIF8[79]a$/.test(bytes.subarray(0, 6).toString('ascii'))) mediaType = 'image/gif';
   else if (bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') mediaType = 'image/webp';
   else refuse('image refused');
-  return { rows: [], artifacts: [{ path: path.relative(ctx.root, target).replaceAll('\\', '/'), mediaType, digest: `sha256:${sha(bytes)}` }] };
+  return { rows: [], 'rulith.artifacts': [{ path: path.relative(ctx.root, target).replaceAll('\\', '/'), mediaType, digest: `sha256:${sha(bytes)}` }] };
 }

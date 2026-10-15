@@ -5,11 +5,14 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { perform } from '../kits/general/adapter.mjs';
-import { context, sha, save, tree } from '../kits/general/lib.mjs';
-import { fetchPage, searchWeb, guardedAddresses, publicAddress, deepseekSearch } from '../kits/general/web.mjs';
+import { context, sha, save, tree, locked, plainFenced } from '../kits/general/lib.mjs';
+import { fetchPage, searchWeb, guardedAddresses, publicAddress, deepseekSearch, readableHtml, WEB_TEXT_PREFIX } from '../kits/general/web.mjs';
+import { globMatcher } from '../kits/general/glob-files.mjs';
+import { applyPatch } from '../kits/general/apply-patch.mjs';
+import { readImage } from '../kits/general/image.mjs';
 import { parseKitInstall, installGeneral } from '../kits/general/installer.mjs';
 import { parseLocalCli } from '../local/rulith-local.mjs';
-import { adapterEnv, workerToolsOf, resultFactsFromRows, prepareActionReport } from '../worker/rulith-worker.mjs';
+import { adapterEnv, workerToolsOf, toolFromSpec, resultFactsFromRows, prepareActionReport } from '../worker/rulith-worker.mjs';
 import { runArtifactOutput } from '../worker/run-artifacts.mjs';
 import { openMaterialStore, materialIdentity } from '../worker/material-store.mjs';
 
@@ -109,13 +112,13 @@ test('patch restores every changed file on a write failure and supports empty ad
   assert.equal(f.read('empty'), '');
 });
 
-test('patch replays the passing test invalidation without duplicate file rows; inline receipts stay bounded', async t => {
+test('patch replays both the passing test invalidation and current mutation; inline receipts stay bounded', async t => {
   const f = fixture(t); f.write('a', 'a\n');
   const snapshot = tree(f.ctx);
   save(f.ctx.stateFile, { gen: 0, digest: snapshot.digest, test_gen: 0 });
   for (const [before, after] of [['a', 'b'], ['b', 'c']]) {
     const out = await f.call('apply_patch', { patch: `*** Begin Patch\n*** Update File: a\n@@\n-${before}\n+${after}\n*** End Patch` });
-    assert.equal(out.rows.length, 1); assert.equal(out.rows[0].from_gen, 0); assert.equal(out.rows[0].to_gen, 1);
+    assert.deepEqual(out.rows.map(({ from_gen, to_gen }) => [from_gen, to_gen]), before === 'a' ? [[0, 1]] : [[0, 1], [1, 2]]);
     assert.ok(Buffer.byteLength(JSON.stringify({ result: JSON.stringify(out), facts: resultFactsFromRows(manifest.tools['eng.apply_patch@1'], out.rows) })) < 8192);
   }
 });
@@ -124,10 +127,10 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 test('read_image enters real Worker custody and report registration, without inline bytes or facts', async t => {
   const f = fixture(t); f.write('tiny.png', png);
   const out = await f.call('read_image', { path: 'tiny.png' });
-  assert.deepEqual(out.rows, []); assert.deepEqual(out.artifacts, [{ path: 'tiny.png', mediaType: 'image/png', digest: `sha256:${sha(png)}` }]);
+  assert.deepEqual(out.rows, []); assert.deepEqual(out['rulith.artifacts'], [{ path: 'tiny.png', mediaType: 'image/png', digest: `sha256:${sha(png)}` }]);
   const identity = materialIdentity({ configFile: path.join(f.dir, 'fixture-config.json'), gatewayUrl: 'https://example.invalid', connectionId: 'fixture' });
   const store = openMaterialStore(path.join(f.dir, 'materials'), identity);
-  const executed = await runArtifactOutput(JSON.stringify(out), { sourceRoot: f.root, maxBytes: 1000, putResult: data => store.putResult(data) });
+  const executed = await runArtifactOutput(JSON.stringify(out), { artifactOutput: true, sourceRoot: f.root, maxBytes: 1000, putResult: data => store.putResult(data) });
   assert.equal(executed.localArtifact.digest, `sha256:${sha(png)}`); assert.equal(executed.localArtifact.mediaType, 'image/png');
   let registered = 0;
   const prepared = await prepareActionReport({ work: 'read-image', artifactPolicy: { inlineBytes: 8192, objectBytes: 1000 } }, { ok: true, ...executed }, {
@@ -135,9 +138,9 @@ test('read_image enters real Worker custody and report registration, without inl
   });
   assert.equal(registered, 1); assert.deepEqual(prepared.body.artifacts, [{ ref: 'art_' + 'a'.repeat(32) }]);
   assert.equal(prepared.body.facts, undefined); assert.doesNotMatch(JSON.stringify(prepared.body), /iVBOR|tiny.png/);
-  await assert.rejects(runArtifactOutput(JSON.stringify({ ...out, artifacts: [{ ...out.artifacts[0], path: '../escape' }] }), { sourceRoot: f.root, maxBytes: 1000 }), /refused/);
+  await assert.rejects(runArtifactOutput(JSON.stringify({ ...out, 'rulith.artifacts': [{ ...out['rulith.artifacts'][0], path: '../escape' }] }), { artifactOutput: true, sourceRoot: f.root, maxBytes: 1000 }), /refused/);
   f.write('tiny.png', Buffer.concat([png, Buffer.from('changed')]));
-  await assert.rejects(runArtifactOutput(JSON.stringify(out), { sourceRoot: f.root, maxBytes: 1000 }), /refused/);
+  await assert.rejects(runArtifactOutput(JSON.stringify(out), { artifactOutput: true, sourceRoot: f.root, maxBytes: 1000 }), /refused/);
 });
 
 test('read_image refuses oversize, non-images, and paths outside the project', async t => {
@@ -270,11 +273,10 @@ test('CLI is explicit; installer merges tools and passes only the named search e
 
 test('kit Capability accredits every return predicate with the same arguments', () => {
   assert.equal(Object.keys(workerToolsOf(manifest)).length, 18);
-  const descriptions = JSON.parse(fs.readFileSync(new URL('../kits/general/tool-descriptions.json', import.meta.url)));
-  assert.deepEqual(Object.keys(descriptions).sort(), Object.keys(manifest.tools).sort());
-  assert.ok(Object.values(descriptions).every(text => typeof text === 'string' && text.length < 100 && !text.includes('\n')));
   const program = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/program.json', import.meta.url)));
   const sources = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/sources.json', import.meta.url)));
+  assert.equal(sources.meta.version, 2);
+  assert.equal(fs.existsSync(new URL('../kits/general/tool-descriptions.json', import.meta.url)), false);
   const definitions = new Map(program.vocabulary.defines.map(d => [d.id, d.args]));
   for (const tool of Object.values(manifest.tools)) for (const row of tool.returns) assert.deepEqual(definitions.get(row.predicate), Object.keys(row.args));
   assert.deepEqual(sources.sources[0].words, [...definitions.keys()]); assert.equal(sources.sources[0].name, 'lab');
@@ -286,4 +288,210 @@ test('all twelve original contract objects retain their canonical source bytes',
   const baseline = JSON.parse(fs.readFileSync(new URL('./fixtures/general-kit-legacy-contract-digests.json', import.meta.url)));
   assert.equal(Object.keys(baseline).length, 12);
   for (const [id, digest] of Object.entries(baseline)) assert.equal(sha(JSON.stringify(manifest.tools[id])), digest, id);
+});
+
+test('artifact custody is opt-in and namespaced; ordinary run stdout is byte-for-byte', async t => {
+  const f = fixture(t);
+  for (const stdout of [' {"artifacts":[{"id":1}]}\n', ' {"rulith.artifacts":[{}]}\n', 'plain\n'])
+    assert.equal(await runArtifactOutput(stdout, {}), stdout);
+  const legacy = ' {"artifacts":[{"id":1}]}\n';
+  assert.equal(await runArtifactOutput(legacy, { artifactOutput: true }), legacy);
+  assert.equal(manifest.tools['eng.read_image@1'].artifactOutput, true);
+  assert.equal(Object.values(manifest.tools).filter(tool => tool.artifactOutput).length, 1);
+  assert.equal(workerToolsOf(manifest)['eng.read_image@1'].artifactOutput, true);
+  for (const artifactOutput of ['true', 1, null]) {
+    const invalid = structuredClone(manifest); invalid.tools['eng.read_image@1'].artifactOutput = artifactOutput;
+    assert.throws(() => workerToolsOf(invalid), /artifactOutput/);
+  }
+  const invalid = structuredClone(manifest);
+  invalid.tools['eng.read_image@1'] = { ...invalid.tools['eng.read_image@1'], adapter: 'http' };
+  assert.throws(() => workerToolsOf(invalid), /artifactOutput/);
+  f.write('a', 'text');
+  for (const mediaType of ['text/plain', 'application/json', 'application/pdf', 'image/svg+xml']) {
+    await assert.rejects(runArtifactOutput(JSON.stringify({ rows: [], 'rulith.artifacts': [{
+      path: 'a', mediaType, digest: `sha256:${sha('text')}`,
+    }] }), { artifactOutput: true, sourceRoot: f.root }), { message: 'Run adapter Artifact refused' });
+  }
+});
+
+test('artifact filesystem failures never expose a local path', async t => {
+  const f = fixture(t);
+  const stdout = JSON.stringify({ rows: [], 'rulith.artifacts': [{ path: 'missing.png', mediaType: 'image/png', digest: `sha256:${sha(png)}` }] });
+  for (const sourceRoot of [f.root, path.join(f.dir, 'missing-root')])
+    await assert.rejects(runArtifactOutput(stdout, { artifactOutput: true, sourceRoot }), { message: 'Run adapter Artifact refused' });
+  f.write('tiny.png', png);
+  for (const method of ['lstatSync', 'openSync', 'realpathSync', 'fstatSync', 'readSync']) {
+    const saved = fs[method]; fs[method] = () => { throw new Error(`denied: ${f.root}`); };
+    try {
+      await assert.rejects(runArtifactOutput(stdout.replace('missing.png', 'tiny.png'), { artifactOutput: true, sourceRoot: f.root }), { message: 'Run adapter Artifact refused' });
+    } finally { fs[method] = saved; }
+  }
+});
+
+test('artifact opt-in survives compilation only from the pinned local manifest', t => {
+  const f = fixture(t), tools = workerToolsOf(manifest), sources = { lab: { type: 'file', access: f.root } };
+  for (const id of ['eng.read_image@1', 'eng.read@1']) {
+    const def = manifest.tools[id];
+    const spec = { impl: 'worker-tool', exec: id, kind: 'read', sourceTypes: ['file'], params: def.params, returns: def.returns, artifactOutput: true };
+    const compiled = toolFromSpec(JSON.stringify(spec), JSON.stringify({ source: 'lab', path: 'tiny.png' }), tools, tools[id].digest, sources, 'lab');
+    assert.equal(compiled.artifactOutput, id === 'eng.read_image@1' ? true : undefined);
+  }
+});
+
+test('patch preflight budgets two edges per file and refuses before oversized receipts mutate files', async t => {
+  const f = fixture(t);
+  const names = Array.from({ length: 4 }, (_, i) => `${i}-${'x'.repeat(170)}`);
+  for (const name of names) f.write(name, 'a\n');
+  save(f.ctx.stateFile, { gen: 1, digest: tree(f.ctx).digest, test_gen: 0, invalidation: { from_gen: 0, to_gen: 1 } });
+  const patch = `*** Begin Patch\n${names.map(name => `*** Update File: ${name}\n@@\n-a\n+b`).join('\n')}\n*** End Patch`;
+  await assert.rejects(f.call('apply_patch', { patch }), /patch file count refused/);
+  for (const name of names) assert.equal(f.read(name), 'a\n');
+});
+
+test('HTML scanning is bounded and linear on unterminated and repeated hostile tags', async t => {
+  const f = fixture(t);
+  const hostile = '<'.repeat(256 * 1024);
+  const start = performance.now();
+  assert.equal(readableHtml(hostile), '');
+  assert.ok(performance.now() - start < 500, 'HTML prefix must finish within 500 ms');
+  assert.equal(readableHtml('visible' + ' '.repeat(WEB_TEXT_PREFIX) + 'tail'), 'visible');
+  assert.equal(readableHtml('a<!-- hidden -->b<script>hide</script>c<style>hide</style>d'), 'abcd');
+  assert.equal(readableHtml('ok<!--' + '<'.repeat(200000)), 'ok');
+  assert.equal(readableHtml('<a>'.repeat(10000) + 'visible'), 'visible');
+  const url = await server(t, (_req, res) => { res.setHeader('content-type', 'text/html'); res.end(hostile); });
+  const out = await fetchPage(f.ctx, { url }, { guard: testOnlyGuard });
+  assert.equal(out.rows[0].digest, sha(hostile)); assert.equal(out.truncated, true);
+});
+
+test('Source locks recover a dead pid, record holder start time, and keep live holders exclusive', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
+  const deadPid = 2147483647;
+  assert.throws(() => process.kill(deadPid, 0), { code: 'ESRCH' });
+  for (const record of [String(deadPid), JSON.stringify({ pid: deadPid, startedAt: '2020-01-01T00:00:00Z' })]) {
+    fs.writeFileSync(lock, record);
+    assert.equal(await locked(f.ctx, async () => {
+      const holder = JSON.parse(fs.readFileSync(lock, 'utf8'));
+      assert.equal(holder.pid, process.pid); assert.ok(Number.isFinite(Date.parse(holder.startedAt)));
+      await assert.rejects(locked(f.ctx, () => assert.fail('live lock stolen')), /adapter busy/);
+      return 'recovered';
+    }), 'recovered');
+    assert.equal(fs.existsSync(lock), false);
+  }
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  await assert.rejects(f.call('read', { path: 'a' }), /adapter busy/);
+});
+
+test('a competing stale-lock recoverer cannot enter or unlink the elected holder lock', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
+  fs.writeFileSync(lock, JSON.stringify({ pid: 2147483647, startedAt: '2020-01-01T00:00:00Z' }));
+  let competing, injected = false, entered = false, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const read = fs.readFileSync;
+  // Inject the other acquisition between the original holder's stale read and unlink.
+  fs.readFileSync = (file, ...rest) => {
+    const bytes = read(file, ...rest);
+    if (file === lock && !injected) {
+      injected = true;
+      competing = locked(f.ctx, async () => { entered = true; await gate; });
+      competing.catch(() => {});
+    }
+    return bytes;
+  };
+  try {
+    await locked(f.ctx, async () => {
+      assert.equal(entered, false);
+      await assert.rejects(competing, /adapter busy/);
+      assert.equal(JSON.parse(read(lock, 'utf8')).pid, process.pid);
+    });
+  } finally { fs.readFileSync = read; release(); await competing?.catch(() => {}); }
+  assert.equal(injected, true); assert.equal(fs.existsSync(lock), false);
+  // A killed participant left in the middle of choosing also cannot wedge recovery.
+  const deadClaim = path.join(`${lock}.claims`, '2147483647-00000000-0000-0000-0000-000000000000');
+  fs.mkdirSync(deadClaim);
+  assert.equal(await locked(f.ctx, async () => 'recovered'), 'recovered');
+});
+
+test('patch accepts both Codex blank context forms and preserves EOL per line', async t => {
+  const f = fixture(t);
+  for (const blank of ['', ' ']) {
+    f.write('mixed', 'head\r\n\nx\r\ny\nlast');
+    await f.call('apply_patch', { patch: `*** Begin Patch\n*** Update File: mixed\n@@\n head\n${blank}\n-x\n+xx\n-y\n+yy\n last\n*** End Patch` });
+    assert.equal(f.read('mixed'), 'head\r\n\nxx\r\nyy\nlast');
+  }
+  f.write('mixed', 'head\nkeep\r\nend\r\n');
+  await f.call('apply_patch', { patch: '*** Begin Patch\n*** Update File: mixed\n@@\n-head\n+new\n keep\n*** End Patch' });
+  assert.equal(f.read('mixed'), 'new\nkeep\r\nend\r\n');
+});
+
+for (const directory of [false, true]) test(`patch and image refuse ${directory ? 'directory links/junctions' : 'file symlinks'} before resolving their targets`, async t => {
+  const f = fixture(t);
+  f.settings({ allow: ['delete'] }); f.write('real/a', 'a\n'); f.write('real/image.png', png);
+  const link = path.join(f.root, 'link');
+  try { fs.symlinkSync(path.join(f.root, directory ? 'real' : 'real/a'), link, directory ? process.platform === 'win32' ? 'junction' : 'dir' : 'file'); }
+  catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS', 'ENOTSUP'].includes(error.code)) { t.skip(`link creation unavailable: ${error.code}`); return; }
+    throw error;
+  }
+  const name = directory ? 'link/a' : 'link';
+  for (const body of [`*** Update File: ${name}\n@@\n-a\n+changed`, `*** Delete File: ${name}`, ...(directory ? ['*** Add File: link/new\n+new'] : [])])
+    await assert.rejects(f.call('apply_patch', { patch: `*** Begin Patch\n${body}\n*** End Patch` }), /path refused/);
+  await assert.rejects(f.call('read_image', { path: directory ? 'link/image.png' : 'link' }), /path refused/);
+  assert.equal(f.read('real/a'), 'a\n'); assert.deepEqual(fs.readFileSync(path.join(f.root, 'real/image.png')), png);
+  assert.equal(fs.existsSync(path.join(f.root, 'real/new')), false);
+});
+
+test('plain path checks terminate with different Windows root casing', { skip: process.platform !== 'win32' }, t => {
+  const f = fixture(t); f.write('a', 'a\n'); f.write('tiny.png', png);
+  const ctx = { ...f.ctx, root: f.ctx.root.toUpperCase() };
+  assert.ok(plainFenced(ctx.root, 'a'));
+  assert.equal(readImage(ctx, { path: 'tiny.png' })['rulith.artifacts'].length, 1);
+  applyPatch(ctx, '*** Begin Patch\n*** Update File: a\n@@\n-a\n+b\n*** End Patch');
+  assert.equal(f.read('a'), 'b\n');
+});
+
+test('web tools skip tree walks and Source locks throughout network waits', async t => {
+  const f = fixture(t);
+  f.settings({ webSearch: { provider: 'deepseek', keyEnv: 'FIXTURE_SEARCH_KEY' } });
+  const cache = path.join(f.home, 'tree-cache.json'), lock = `${f.ctx.stateFile}.lock`;
+  let waiting, resume;
+  const started = new Promise(resolve => { waiting = resolve; });
+  const gate = new Promise(resolve => { resume = resolve; });
+  const url = await server(t, async (_req, res) => { waiting(); await gate; res.end('page'); });
+  const fetching = perform('web_fetch', { url }, f.env, { guard: testOnlyGuard });
+  await started;
+  try {
+    assert.equal(fs.existsSync(lock), false); assert.equal(fs.existsSync(cache), false);
+    await locked(f.ctx, async () => {
+      const searching = await perform('web_search', { query: 'query' }, { ...f.env, FIXTURE_SEARCH_KEY: 'fixture' }, { provider: async () => 'answer' });
+      assert.equal(searching.text, 'answer');
+    });
+  } finally { resume(); await fetching; }
+  assert.equal(fs.existsSync(f.ctx.stateFile), false); assert.equal(fs.existsSync(cache), false);
+});
+
+test('SSRF guard refuses benchmarking, protocol, documentation, reserved and multicast ranges', async () => {
+  for (const address of ['198.18.0.0', '198.19.255.255', '192.0.0.0', '192.0.0.255', '192.0.2.1',
+    '198.51.100.9', '203.0.113.2', '240.0.0.1', '255.255.255.255', '224.0.0.1', '239.255.255.255',
+    '2001:db8::1', '2001:db8:ffff::1', 'ff02::1', '::ffff:c612:1', '::ffff:c000:201',
+    '2001:2::1', '2001:10::1', '2001:1f:ffff::1', '2001:20::1', '2001:2f:ffff::1',
+    '3fff::1', '3fff:fff:ffff::1', '192.88.99.1']) {
+    assert.equal(publicAddress(address), false, address);
+    await assert.rejects(guardedAddresses(new URL('http://fixture.invalid'), { lookup: async () => [{ address, family: address.includes(':') ? 6 : 4 }] }), /web address refused/, address);
+  }
+  for (const address of ['198.17.255.255', '198.20.0.0', '192.0.1.1', '2001:db9::1', '2001:30::1', '3fff:1000::1']) assert.equal(publicAddress(address), true, address);
+});
+
+test('glob refuses excess wildcard tokens and total matching work with a fixed verdict', async t => {
+  const f = fixture(t); f.write('a', 'a');
+  await assert.rejects(f.call('glob', { pattern: '*a'.repeat(21) }), { message: 'glob complexity refused' });
+  assert.throws(() => globMatcher('**/'.repeat(21) + 'a'), { message: 'glob complexity refused' });
+  const matcher = globMatcher('*a'.repeat(20) + 'b');
+  assert.throws(() => { for (let i = 0; i < 100; i++) matcher.test('a'.repeat(2000)); }, { message: 'glob complexity refused' });
+});
+
+test('README explains search key custody and the command user trust boundary', () => {
+  const readme = fs.readFileSync(new URL('../kits/general/README.md', import.meta.url), 'utf8');
+  assert.match(readme, /Worker process environment/);
+  assert.match(readme, /eng\.run.*eng\.job_start/);
+  assert.match(readme, /dedicated low-privilege search key/);
 });

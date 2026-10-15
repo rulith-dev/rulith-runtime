@@ -23,27 +23,33 @@ export function globMatcher(pattern) {
       tokens.push({ kind: 'class', regex }); i = end;
     } else tokens.push({ kind: 'literal', value: ch });
   }
-  // Memoized matching avoids exponential regular-expression backtracking on model input.
-  return { test(name) {
-    const memo = new Map();
-    function match(i, j) {
-      const key = i + ':' + j;
-      if (memo.has(key)) return memo.get(key);
-      let yes;
-      if (i === tokens.length) yes = j === name.length;
-      else {
-        const token = tokens[i], ch = name[j];
+  if (tokens.filter(t => ['any', 'star', 'directories'].includes(t.kind)).length > 20) refuse('glob complexity refused');
+  const deadline = performance.now() + 1000;
+  let remaining = 2_000_000;
+  const check = () => { if (--remaining < 0 || performance.now() > deadline) refuse('glob complexity refused'); };
+  // Iterative prefix matching uses O(name.length) memory, with no recursion or backtracking.
+  // The operation/time budget is shared by every match in this walk.
+  return { check, test(name) {
+    check();
+    if (name.length > 32768) refuse('glob complexity refused');
+    let previous = new Uint8Array(name.length + 1); previous[0] = 1;
+    for (const token of tokens) {
+      const next = new Uint8Array(name.length + 1);
+      let directoryPrefix = false;
+      for (let j = 0; j <= name.length; j++) {
+        check();
+        const ch = name[j - 1];
         if (token.kind === 'any' || token.kind === 'star')
-          yes = match(i + 1, j) || j < name.length && (token.kind === 'any' || ch !== '/') && match(i, j + 1);
+          next[j] = previous[j] || j > 0 && (token.kind === 'any' || ch !== '/') && next[j - 1];
         else if (token.kind === 'directories') {
-          yes = match(i + 1, j);
-          for (let at = name.indexOf('/', j); !yes && at >= 0; at = name.indexOf('/', at + 1)) yes = match(i + 1, at + 1);
-        } else yes = j < name.length && (token.kind === 'literal' ? token.value === ch
-          : ch !== '/' && (token.kind === 'one' || token.regex.test(ch))) && match(i + 1, j + 1);
+          next[j] = previous[j] || j > 0 && ch === '/' && directoryPrefix;
+          directoryPrefix ||= !!previous[j];
+        } else next[j] = j > 0 && previous[j - 1] && (token.kind === 'literal' ? token.value === ch
+          : ch !== '/' && (token.kind === 'one' || token.regex.test(ch)));
       }
-      memo.set(key, yes); return yes;
+      previous = next;
     }
-    return match(0, 0);
+    return !!previous[name.length];
   } };
 }
 
@@ -53,7 +59,9 @@ export function globFiles(ctx, { pattern, limit = 64 }) {
   const skip = exclusions(ctx), names = [];
   let visited = 0;
   function walk(prefix) {
+    regex.check();
     for (const entry of fs.readdirSync(fenced(ctx.root, prefix || '.'), { withFileTypes: true })) {
+      regex.check();
       if (++visited > 20000) refuse('glob walk limit exceeded');
       const name = prefix + entry.name;
       if (entry.name === '.git' || entry.isSymbolicLink() || skipped(skip, name)) continue;

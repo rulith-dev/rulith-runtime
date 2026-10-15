@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fenced, refuse, settings, sha, textLimit } from './lib.mjs';
+import { plainFenced, refuse, settings, sha, textLimit } from './lib.mjs';
 
 // No fuzzy matching: each context hunk must match exactly once after the preceding hunk.
 function update(original, lines) {
-  const eol = original.includes('\r\n') ? '\r\n' : '\n';
-  const source = original.replaceAll('\r\n', '\n').split('\n');
-  const trailing = source.at(-1) === '';
+  const source = original.split('\n').map((text, i, lines) => ({
+    text: i < lines.length - 1 && text.endsWith('\r') ? text.slice(0, -1) : text,
+    eol: i === lines.length - 1 ? '' : text.endsWith('\r') ? '\r\n' : '\n',
+  }));
+  const trailing = source.at(-1).text === '';
   if (trailing) source.pop();
+  const defaultEol = source.find(line => line.eol)?.eol ?? '\n';
   let cursor = 0, index = 0, hunks = 0;
   while (index < lines.length) {
     const marker = lines[index++];
@@ -15,40 +18,53 @@ function update(original, lines) {
     // Codex's optional @@ section text anchors the following context.
     if (marker !== '@@') {
       const anchor = marker.slice(3);
-      const found = source.indexOf(anchor, cursor);
+      const found = source.findIndex((line, i) => i >= cursor && line.text === anchor);
       if (found < 0) refuse('patch hunk refused');
       cursor = found + 1;
     }
-    const old = [], next = [];
+    const old = [], operations = [];
     let eof = false;
     while (index < lines.length && !lines[index].startsWith('@@')) {
       const line = lines[index++];
       if (line === '*** End of File') { eof = true; break; }
-      if (![' ', '+', '-'].includes(line[0])) refuse('patch format refused');
-      if (line[0] !== '+') old.push(line.slice(1));
-      if (line[0] !== '-') next.push(line.slice(1));
+      if (line !== '' && ![' ', '+', '-'].includes(line[0])) refuse('patch format refused');
+      const kind = line === '' ? ' ' : line[0], text = line.slice(1);
+      if (kind !== '+') old.push(text);
+      operations.push({ kind, text });
     }
     if (!old.length && source.length) refuse('patch hunk refused');
     const matches = [];
     for (let at = cursor; at <= source.length - old.length; at++)
-      if ((!eof || at + old.length === source.length) && old.every((line, n) => source[at + n] === line)) matches.push(at);
+      if ((!eof || at + old.length === source.length) && old.every((line, n) => source[at + n].text === line)) matches.push(at);
     if (matches.length !== 1) refuse('patch hunk refused');
+    const next = [];
+    let at = matches[0];
+    for (let i = 0; i < operations.length;) {
+      if (operations[i].kind === ' ') { next.push(source[at++]); i++; continue; }
+      const removed = [], added = [];
+      while (i < operations.length && operations[i].kind !== ' ') {
+        const op = operations[i++];
+        if (op.kind === '-') removed.push(source[at++]); else added.push(op.text);
+      }
+      const localEol = removed.find(line => line.eol)?.eol || next.at(-1)?.eol || source[at]?.eol || defaultEol;
+      next.push(...added.map((text, n) => ({ text, eol: removed[n]?.eol ?? localEol })));
+    }
     source.splice(matches[0], old.length, ...next);
+    // Inserting after an unterminated line must create a separator; the new last line
+    // keeps the original file's final-newline convention. Untouched lines keep their EOL.
+    for (let i = 0; i < source.length - 1; i++) if (!source[i].eol) source[i] = { ...source[i], eol: defaultEol };
+    if (source.length && !trailing) source[source.length - 1] = { ...source.at(-1), eol: '' };
     cursor = matches[0] + next.length;
     hunks++;
   }
   if (!hunks) refuse('patch format refused');
-  return source.join(eol) + (trailing && source.length ? eol : '');
+  return source.map(line => line.text + line.eol).join('');
 }
 
 function targetPath(ctx, name) {
   if (!name || name.length > 240 || name.includes('\\') || name.includes(':') || name.startsWith('/')
     || name.split('/').some(p => !p || p === '.' || p === '..')) refuse('path refused');
-  const target = fenced(ctx.root, name);
-  for (let cursor = target; cursor !== ctx.root; cursor = path.dirname(cursor)) {
-    try { if (fs.lstatSync(cursor).isSymbolicLink()) refuse('path refused'); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-  }
+  const target = plainFenced(ctx.root, name);
   if (!fs.existsSync(path.dirname(target))) refuse('parent directory missing');
   return target;
 }
@@ -86,10 +102,11 @@ export function applyPatch(ctx, patch) {
   if (!changes.length || changes.length > 4) refuse('patch file count refused');
   const preview = changes.map(c => ({ path: c.name, prev_digest: sha(c.original), digest: sha(c.output ?? ''),
     readback_digest: sha(c.output ?? ''), bytes: c.output?.length ?? 0, from_gen: Number.MAX_SAFE_INTEGER, to_gen: Number.MAX_SAFE_INTEGER }));
-  const facts = preview.flatMap(({ from_gen, to_gen, ...args }) => [
+  const reportRows = preview.flatMap(row => [row, row]); // invalidation replay and this mutation
+  const facts = reportRows.flatMap(({ from_gen, to_gen, ...args }) => [
     { predicate: 'eng.file_state', args }, { predicate: 'eng.tree_step', args: { from_gen, to_gen } },
   ]);
-  if (Buffer.byteLength(JSON.stringify({ result: JSON.stringify({ rows: preview }), facts })) > 7400) refuse('patch file count refused');
+  if (Buffer.byteLength(JSON.stringify({ result: JSON.stringify({ rows: reportRows }), facts })) > 7400) refuse('patch file count refused');
   for (const change of changes) {
     targetPath(ctx, change.name);
     if (fs.existsSync(change.target) !== change.exists || change.exists && !fs.readFileSync(change.target).equals(change.original)) refuse('file digest changed');

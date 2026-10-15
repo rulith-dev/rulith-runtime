@@ -35,6 +35,9 @@ function fit(bytes, budget) {
 
 export async function perform(tool, args = {}, env = process.env, dependencies = {}) {
   const ctx = context(env);
+  // Web receipts use lab's accreditation but neither observe nor mutate its files.
+  if (tool === 'web_fetch') return fetchPage(ctx, args, dependencies);
+  if (tool === 'web_search') return searchWeb(ctx, args, env, dependencies);
   return locked(ctx, async () => {
     let job = readJson(ctx.jobFile, {});
     // While a job runs it owns the tree's changes: other writes and runs wait, but reads go ahead. Such a read leaves
@@ -49,9 +52,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     switch (tool) {
       case 'glob': { const out = globFiles(ctx, args); rows = out.rows; more = out.truncated; break; }
       case 'apply_patch': rows = applyPatch(ctx, args.patch); break;
-      case 'read_image': { const out = readImage(ctx, args); text = { artifacts: out.artifacts }; break; }
-      case 'web_fetch': { const out = await fetchPage(ctx, args, dependencies); rows = out.rows; text = { text: out.text, ...(out.truncated ? { truncated: true } : {}) }; break; }
-      case 'web_search': { const out = await searchWeb(ctx, args, env, dependencies); rows = out.rows; text = { text: out.text, ...(out.truncated ? { truncated: true } : {}) }; break; }
+      case 'read_image': { const out = readImage(ctx, args); text = { 'rulith.artifacts': out['rulith.artifacts'] }; break; }
       case 'list': {
         const target = file();
         const entries = fs.readdirSync(target, { withFileTypes: true }); more = entries.length > 128;
@@ -269,9 +270,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     if (tool === 'test') { rows[0].tree_digest = after.digest; rows[0].gen = gen; }
     const testGen = tool === 'test' && rows[0].exit_code === 0 ? gen : state.test_gen;
     save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
-    // The patch contract keeps one file row per file. Replay the first invalidating edge,
-    // when needed, in that row just as the legacy adapters replay it in extra rows.
-    const reportEdges = tool === 'apply_patch' ? [invalidation ?? step] : edges;
+    const reportEdges = edges;
     const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => reportEdges.map(edge => ({ ...row, ...edge }))), reportEdges.length);
     return { rows: out.rows, ...text, ...(more || out.cut ? { truncated: true } : {}) };
   });
@@ -315,7 +314,7 @@ export async function main(tool) {
     process.stdout.write(JSON.stringify(await perform(tool, args)));
   } catch (error) {
     // Never echo paths, arbitrary exception messages, commands, or spec contents.
-    const messages = [...(['glob','apply_patch','read_image','read_v2','web_fetch','web_search'].includes(tool) ? ['settings refused','glob refused','glob limit refused','glob walk limit exceeded','patch format refused','patch hunk refused','patch path repeated','delete refused','patch file refused','patch file count refused','image refused','image size exceeded','web URL refused','web address refused','web size exceeded','web redirects exceeded','web timeout','web encoding refused','web media type refused','web metadata too large','web request failed','web search key unavailable','web search failed'] : []),'path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll, stop and reads accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted','parent directory missing'];
+    const messages = [...(['glob','apply_patch','read_image','read_v2','web_fetch','web_search'].includes(tool) ? ['settings refused','glob refused','glob limit refused','glob walk limit exceeded','glob complexity refused','patch format refused','patch hunk refused','patch path repeated','delete refused','patch file refused','patch file count refused','image refused','image size exceeded','web URL refused','web address refused','web size exceeded','web redirects exceeded','web timeout','web encoding refused','web media type refused','web metadata too large','web request failed','web search key unavailable','web search failed'] : []),'path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll, stop and reads accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted','parent directory missing'];
     // A spec refusal names its field in fixed words (no path, no value); a file-system error says only what kind it was.
     const fileErrors = { ENOENT: 'path not found', EISDIR: 'path is a directory', ENOTDIR: 'path not found', EACCES: 'path not readable', EPERM: 'path not readable', EBUSY: 'path not readable' };
     const verdict = messages.includes(error.message) || /^spec refused: [A-Za-z0-9_ ,()-]+$/.test(error.message) ? error.message

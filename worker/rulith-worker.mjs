@@ -1924,6 +1924,7 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       if (err) return reject(new Error(String(err.message)))
       // Capture stays bounded; Artifact routing sees the complete result, never a silent prefix.
       runArtifactOutput(String(stdout) || '(no output)', {
+        artifactOutput: t.artifactOutput === true,
         sourceRoot: source.sourceType === 'file' ? access : undefined,
         maxBytes: Number.isSafeInteger(context.resultBytes) ? context.resultBytes : 20 * 1024 * 1024,
         putResult: data => materialStore().putResult(data),
@@ -4996,6 +4997,7 @@ function adapterToolFromSpec(specJson, argsJson) {
     return {
       impl: 'run', ...(typeof spec.source === 'string' ? { source: spec.source } : {}),
       cmd: process.execPath, args: [adapter], passArgs: true,
+      ...(spec.artifactOutput === true ? { artifactOutput: true } : {}),
       ...(Array.isArray(spec.env?.pass) ? { envPass: spec.env.pass } : {}),
       ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}),
       _args: rargs,
@@ -5175,8 +5177,11 @@ export function workerToolsOf(raw) {
         + ' The material area is reached through the built-in rulith.materials.read@1 and a governed file Source;'
         + ' a declared copy could map raw bytes onto Board predicates, which is the one thing a material read must never do.')
     }
-    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'sourceTypes', 'entry', 'fence', 'handles', 'kind', 'params', 'content', 'returns', 'tier'].includes(key))
+    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'artifactOutput', 'sourceTypes', 'entry', 'fence', 'handles', 'kind', 'params', 'content', 'returns', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
+    if (Object.hasOwn(value, 'artifactOutput') && (adapter !== 'run' || typeof value.artifactOutput !== 'boolean')) {
+      throw new Error(`Worker Tool ${id}.artifactOutput must be a boolean on a run Adapter`)
+    }
     // A declared Tool states the same three things a built-in states, and they are
     // checked here rather than at dispatch: the advertisement goes out at the first
     // poll, so a malformed contract must fail while the operator is still reading the
@@ -5357,6 +5362,7 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
   const local = {
     name: ref, kind: spec.kind, impl: def.adapter, ...(source === undefined ? {} : { source }),
     exec: def.entry, params: spec.params ?? {}, returns: spec.returns ?? [],
+    ...(def.artifactOutput === true ? { artifactOutput: true } : {}),
     ...(def.fence && typeof def.fence === 'object' ? { fence: def.fence } : {}),
     ...(Array.isArray(def.env?.pass) ? { env: { pass: def.env.pass } } : {}),
   }

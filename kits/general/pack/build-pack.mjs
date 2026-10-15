@@ -23,7 +23,7 @@ const program = {
 };
 const sources = {
   format: 'rulith-sources/1',
-  meta: { name: 'engineering_work_sources', version: 1 },
+  meta: { name: 'engineering_work_sources', version: 2 },
   sources: [{ name: 'lab', type: 'file', words: defines.map((d) => d.id), tier: 'attested',
     territoryHint: 'The local engineering workspace a person bound for this Agent' }],
 };

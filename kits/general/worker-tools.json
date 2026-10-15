@@ -453,7 +453,8 @@
         "pass": [
           "ENG_KIT_HOME"
         ]
-      }
+      },
+      "artifactOutput": true
     },
     "eng.read@2": {
       "adapter": "run",

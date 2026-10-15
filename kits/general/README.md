@@ -8,10 +8,6 @@ Worker receipt. This toolkit ships with the Runtime and is off by default. Deep 
 the agent host; capability packages adopt these bare tool contracts through their own business
 Actions, adding preconditions and effects. The kit itself adds no business Actions.
 
-`tool-descriptions.json` provides short model-facing text for packages adopting the contracts.
-Use it in the package's Action descriptions. It is separate from `worker-tools.json` because the
-fixed Worker manifest/protocol has no description field; it is not silently dropped on that hop.
-
 This is a side-effect fence, not a sandbox: commands run as the Worker's operating-system user.
 
 ## Install on a Worker
@@ -33,10 +29,13 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    start a Worker, bind a Source, or contact a service.
 3. Run it again after changing `settings.json` limits or `webSearch.keyEnv`. Export the search
    key in the environment that launches the Worker; the installer stores only the variable's name,
-   adding it to `web.search@1`'s `env.pass`. Commands and other tools do not receive that key.
+   adding it to `web.search@1`'s `env.pass`. The key sits in the Worker process environment.
+   Any command the model runs through `eng.run`/`eng.job_start` as the same OS user can read it,
+   even though it is not passed directly into those adapters. Use a dedicated low-privilege search key.
 4. Accreditation: the Board records a Worker result only for predicates its Source accredits.
    Build the Capability with `node pack/build-pack.mjs` and install it on the Agent; it declares
-   Source `lab` with the `eng.*` and `web.*` words and adds no rules or Actions.
+   Source `lab` with the `eng.*` and `web.*` words and adds no rules or Actions. Its Sources
+   package is `engineering_work_sources` version 2; version 1 keeps its original digest.
 5. Console: bind Source `lab` to the project root and the Worker Connection, pin the desired
    kit tools (allow direct use) and lock. Non-strict exploration mode lets the model supply
    write and run inputs; each such call is marked as not grounded.
@@ -72,29 +71,34 @@ are preserved. New contracts:
 
 | Tool | Inputs | Result |
 | --- | --- | --- |
-| `eng.glob@1` | `pattern`, optional `limit` (1–128; default 64) | Sorted project files, at most 1.8 KiB of rows; `truncated` if capped. Supports `*`, `**`, `?`, character classes. Skips `.git` at every depth, tree exclusions, and links; refuses walks over 20,000 entries. |
+| `eng.glob@1` | `pattern`, optional `limit` (1–128; default 64) | Sorted project files, at most 1.8 KiB of rows; `truncated` if capped. Supports `*`, `**`, `?`, character classes. Skips `.git` at every depth, tree exclusions, and links; refuses walks over 20,000 entries. At most 20 wildcard tokens; matching/walking has a one-second and two-million-operation budget (`glob complexity refused`). |
 | `eng.apply_patch@1` | `patch` | Up to four files, 16 KiB patch, 1 MiB per existing text file. Codex `*** Begin Patch` / `*** Add File` / `*** Update File` / `*** Delete File` / `*** End Patch`. Exact `@@` context hunks, optional section anchor and `*** End of File`. Every hunk/path is validated before writes; I/O errors restore prior files. Existing parent directories are required. Deletes require `allow: ["delete"]`. |
-| `eng.read_image@1` | `path` | PNG/JPEG/GIF/WebP, identified by magic bytes. No facts or inline image bytes; the Worker takes custody, verifies the digest and registers an artifact reference through its existing reporting path. |
+| `eng.read_image@1` | `path` | PNG/JPEG/GIF/WebP, identified by magic bytes. No facts or inline image bytes; its manifest opts into `artifactOutput: true` and the `rulith.artifacts` envelope. The Worker takes custody, verifies the digest and registers an artifact reference through its existing reporting path. Other run adapters retain their ordinary stdout. |
 | `eng.read@2` | `path`, optional byte `offset` | Same bounded read result as `eng.read@1`, plus `eng.file_read{path,digest,bytes}`. This digest describes the full file; the inline text may be a window. `eng.read@1` still returns no facts. |
 | `web.fetch@1` | `url` | GET of HTTP(S) without credentials/cookies; HTML becomes readable text. `web.page{url,final_url,status,digest,fetched_at}`; the digest covers the complete fetched response bytes. |
 | `web.search@1` | `query` | Bounded provider result text and `web.search{query,provider,digest,fetched_at}`. The digest covers the complete scrubbed result text. Missing key refuses with `web search key unavailable`. |
 
-Patch receipts have one `eng.file_state` row per file (the same arguments as `eng.write_file`)
+Patch receipts report `eng.file_state` for each file (the same arguments as `eng.write_file`)
 and `eng.tree_step`. Deletion uses the SHA-256 of empty bytes and zero bytes as its absent
 readback. A receipt replays the first genuine edge that invalidates the last passing test when
-needed. Patches too large to report every file state within the inline budget refuse before writes.
-Files with CRLF keep their line endings on update. Ambiguous hunks, repeated paths, moves, binary
+needed, alongside the current mutation edge. The budget allows two edges per file; patches too
+large to report every file state refuse before writes. Each retained or replaced line keeps its
+original EOL, including mixed LF/CRLF files. Blank hunk context accepts an empty line or a single
+space. Ambiguous hunks, repeated paths, moves, binary
 patches, absolute paths, traversal and links are refused.
 
 Web fetch checks every resolved DNS address and every redirect (at most five), then pins a checked
 address to the actual connection. Loopback, unspecified, private, link-local, multicast, shared
-carrier NAT and IPv6 transition destinations are refused. Responses use identity encoding; compressed
+carrier NAT, benchmarking/fake-IP, protocol/documentation, reserved and IPv6 transition destinations
+are refused. Responses use identity encoding; compressed
 responses and binary media are refused. Search uses the DeepSeek Anthropic-compatible Messages API
 and its native `web_search_20250305` tool, with a small provider interface for later providers.
 Redirects from that API are refused. Keys and upstream error bodies are never logged or reported.
 Tests use local HTTP stubs with a directly injected guard/provider; no setting, environment flag or
 tool argument can bypass the production SSRF guard. Web calls remain read tools bound to the `file`
-Source `lab`, which accredits the new receipt words as well as the engineering words.
+Source `lab`, which accredits the new receipt words as well as the engineering words. They skip
+the project tree digest and Source lock, including during network waits. Fetch converts only the
+first 32 KiB to inline text with a linear scanner; its digest still covers every fetched byte.
 
 - `eng.run` takes a command line and a project-relative `cwd`.
 - `eng.read` returns as much text as fits the Worker's inline receipt (8 KiB on rulith.ai; the text is
@@ -124,7 +128,10 @@ Source `lab`, which accredits the new receipt words as well as the engineering w
   time. The generation advances once per receipt whose tree differs from the last one.
 - Only `eng.test` produces `eng.test_result` and only `eng.measure_pinned` produces measurement
   facts; numbers printed by other commands never become facts.
-- All adapters for one Source serialize through a lock in the kit home.
+- File and command adapters for one Source serialize through a lock in the kit home. The lock
+  records its holder pid and start time; a lock left by a process that no longer exists is recovered.
+  Recovery contenders also serialize, so they cannot remove another holder's fresh lock. A live or
+  unverifiable pid (including pid reuse) remains busy; the recorded start time is diagnostic.
 
 ## Pinned measurements
 

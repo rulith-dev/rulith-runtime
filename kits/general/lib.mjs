@@ -40,6 +40,20 @@ export function fenced(root, name = '.') {
   if (!inside(root, real)) refuse('path refused');
   return real;
 }
+// Inspect the lexical path before realpath can erase a link or junction component.
+// Descend a finite list of components instead of comparing realpath spellings in a parent loop.
+export function plainFenced(root, name) {
+  if (typeof name !== 'string' || name.includes('\0')) refuse('path refused');
+  const target = path.resolve(root, name);
+  if (!inside(root, target)) refuse('path refused');
+  let cursor = root;
+  for (const component of path.relative(root, target).split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, component);
+    try { if (fs.lstatSync(cursor).isSymbolicLink()) refuse('path refused'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  return fenced(root, name);
+}
 export function context(env = process.env) {
   if (env.RULITH_SOURCE_TYPE !== 'file' || !env.RULITH_SOURCE_ACCESS || !path.isAbsolute(env.RULITH_SOURCE_ACCESS)) refuse('file Source required');
   const root = fs.realpathSync(env.RULITH_SOURCE_ACCESS);
@@ -299,10 +313,67 @@ export async function execute(command, cwd, { deadlineMs = 35000, onStart, shell
 }
 export async function locked(ctx, action) {
   const lock = `${ctx.stateFile}.lock`;
-  let fd;
-  try { fd = fs.openSync(lock, 'wx', 0o600); } catch { refuse('adapter busy'); }
-  try { fs.writeFileSync(fd, String(process.pid)); return await action(); }
-  finally { fs.closeSync(fd); fs.unlinkSync(lock); }
+  const claims = `${lock}.claims`, token = `${process.pid}-${randomUUID()}`, claim = path.join(claims, token);
+  const holder = { pid: process.pid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(), token };
+  const alive = pid => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return error.code !== 'ESRCH'; } // EPERM/unknown stays live.
+  };
+  const removeClaim = directory => {
+    // Only our uniquely named participant's files; never follow a directory recursively.
+    try {
+      for (const name of fs.readdirSync(directory)) fs.unlinkSync(path.join(directory, name));
+      fs.rmdirSync(directory);
+    } catch {}
+  };
+  const participants = () => fs.readdirSync(claims).flatMap(name => {
+    if (name === token) return [];
+    const match = /^(\d+)-[a-f0-9-]{36}$/.exec(name);
+    if (!match) refuse('adapter busy');
+    const pid = Number(match[1]), directory = path.join(claims, name);
+    if (!Number.isSafeInteger(pid) || pid <= 0) refuse('adapter busy');
+    if (!alive(pid)) { removeClaim(directory); return []; }
+    let record;
+    try { record = JSON.parse(fs.readFileSync(path.join(directory, 'ticket.json'), 'utf8')); }
+    catch (error) {
+      // An absent ticket is a participant still choosing. A vanished participant
+      // may already have finished; conservatively treating it as choosing is safe.
+      if (error.code === 'ENOENT') return [{ token: name, choosing: true }];
+      refuse('adapter busy');
+    }
+    if (!Number.isSafeInteger(record.ticket) || record.ticket < 1) refuse('adapter busy');
+    return [{ token: name, ticket: record.ticket }];
+  });
+  // A filesystem bakery try-lock serializes acquisition AND stale recovery. The
+  // stable participant directory announces choosing before its ticket is published
+  // by atomic rename. Losers return busy; no process waits holding another lock.
+  fs.mkdirSync(claims, { recursive: true });
+  fs.mkdirSync(claim);
+  try {
+    const ticket = Math.max(0, ...participants().filter(p => !p.choosing).map(p => p.ticket)) + 1;
+    if (!Number.isSafeInteger(ticket)) refuse('adapter busy');
+    save(path.join(claim, 'ticket.json'), { ...holder, ticket });
+    if (participants().some(p => p.choosing || p.ticket < ticket || p.ticket === ticket && p.token < token)) refuse('adapter busy');
+    // Only the elected participant can touch the shared legacy lock path.
+    let record;
+    try { record = JSON.parse(fs.readFileSync(lock, 'utf8')); }
+    catch (error) {
+      if (error.code !== 'ENOENT') refuse('adapter busy');
+    }
+    if (record !== undefined) {
+      const pid = typeof record === 'number' ? record : record?.pid;
+      if (!Number.isSafeInteger(pid) || pid <= 0 || alive(pid)) refuse('adapter busy');
+    }
+    // Publish the holder atomically too: death between open and write must never
+    // leave an empty shared lock whose owner cannot be identified.
+    save(lock, holder);
+    try {
+      return await action();
+    } finally {
+      try { if (JSON.parse(fs.readFileSync(lock, 'utf8')).token === token) fs.unlinkSync(lock); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  } finally { removeClaim(claim); }
 }
 export function resultText(result) {
   // stdout and stderr share the head/tail budget.

@@ -108,7 +108,6 @@ const files = [
   'kits/general/supervisor.mjs',
   'kits/general/test.mjs',
   'kits/general/tree_state.mjs',
-  'kits/general/tool-descriptions.json',
   'kits/general/web.mjs',
   'kits/general/web_fetch.mjs',
   'kits/general/web_search.mjs',

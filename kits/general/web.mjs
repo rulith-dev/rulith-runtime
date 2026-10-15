@@ -8,9 +8,12 @@ import { generalSettings } from './general-settings.mjs';
 export function publicAddress(raw) {
   const address = raw.toLowerCase().replace(/^\[|\]$/g, '');
   if (isIP(address) === 4) {
-    const [a, b] = address.split('.').map(Number);
+    const [a, b, c] = address.split('.').map(Number);
     return !(a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31
-      || a === 192 && b === 168 || a >= 224 || a === 100 && b >= 64 && b <= 127);
+      || a === 192 && (b === 168 || b === 0 && (c === 0 || c === 2))
+      || a === 192 && b === 88 && c === 99
+      || a === 198 && (b === 18 || b === 19 || b === 51 && c === 100)
+      || a === 203 && b === 0 && c === 113 || a >= 224 || a === 100 && b >= 64 && b <= 127);
   }
   if (isIP(address) !== 6 || address.includes('%')) return false;
   // Normalize IPv4-mapped IPv6 too (URL serializes dotted suffixes as two hex words).
@@ -23,7 +26,11 @@ export function publicAddress(raw) {
   }
   // Accept global unicast only; this also refuses unspecified, loopback, multicast,
   // private, link-local, IPv4-compatible and transition/NAT64 ranges.
-  return /^[23][0-9a-f]{3}:/.test(canonical) && !/^2001:(?:0:|:)/.test(canonical) && !canonical.startsWith('2002:');
+  const [first, second = ''] = canonical.split(':');
+  const subnet = parseInt(second || '0', 16);
+  return /^[23][0-9a-f]{3}:/.test(canonical) && !/^2001:(?:0:|:|db8:)/.test(canonical) && !canonical.startsWith('2002:')
+    && !(first === '2001' && (subnet === 2 || subnet >= 0x10 && subnet <= 0x2f))
+    && !(first === '3fff' && subnet <= 0xfff);
 }
 
 function urlOf(input) {
@@ -77,9 +84,33 @@ export async function requestBytes(url, { signal, maxBytes, method = 'GET', head
   });
 }
 
-export function readableHtml(html) {
-  return html.replace(/<!--[\s\S]*?-->/g, '').replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
-    .replace(/<(?:br|\/p|\/div|\/h[1-6]|\/li|\/tr)\b[^>]*>/gi, '\n').replace(/<[^>]*>/g, '')
+export const WEB_TEXT_PREFIX = 32 * 1024;
+export function readableHtml(input) {
+  // Only a bounded prefix can enter a ~7 KB receipt. Every scan advances past the
+  // consumed region, including unterminated tags/comments and hostile '<' runs.
+  const html = input.slice(0, WEB_TEXT_PREFIX), parts = [];
+  let hidden;
+  for (let i = 0; i < html.length;) {
+    if (html[i] !== '<') {
+      const end = html.indexOf('<', i), next = end < 0 ? html.length : end;
+      if (!hidden) parts.push(html.slice(i, next));
+      i = next; continue;
+    }
+    if (html.startsWith('<!--', i)) {
+      const end = html.indexOf('-->', i + 4); i = end < 0 ? html.length : end + 3; continue;
+    }
+    const end = html.indexOf('>', i + 1);
+    if (end < 0) break;
+    const tag = /^\s*(\/?)([a-z][a-z0-9]*)\b/i.exec(html.slice(i + 1, end));
+    if (tag) {
+      const closing = tag[1], name = tag[2].toLowerCase();
+      if (hidden) { if (closing && name === hidden) hidden = undefined; }
+      else if (!closing && ['script', 'style', 'noscript'].includes(name)) hidden = name;
+      else if (name === 'br' || closing && /^(?:p|div|h[1-6]|li|tr)$/.test(name)) parts.push('\n');
+    }
+    i = end + 1;
+  }
+  return parts.join('')
     .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (all, entity) => {
       const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
       if (entity[0] !== '#') return named[entity.toLowerCase()] ?? all;
@@ -117,10 +148,12 @@ export async function fetchPage(ctx, args, deps = {}) {
       if (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity') refuse('web encoding refused');
       const type = (response.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
       if (type && !type.startsWith('text/') && type !== 'application/json' && type !== 'application/xhtml+xml') refuse('web media type refused');
-      const raw = response.bytes.toString('utf8');
+      const raw = response.bytes.subarray(0, WEB_TEXT_PREFIX).toString('utf8');
       const text = type.includes('html') ? readableHtml(raw) : raw;
-      return boundedReceipt({ url: initial.href, final_url: url.href, status: response.status,
+      const out = boundedReceipt({ url: initial.href, final_url: url.href, status: response.status,
         digest: sha(response.bytes), fetched_at: new Date().toISOString() }, text, 'web.page');
+      if (response.bytes.length > WEB_TEXT_PREFIX) out.truncated = true;
+      return out;
     }
   } catch (error) {
     if (signal.aborted) refuse('web timeout');
