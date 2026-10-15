@@ -71,7 +71,7 @@ are preserved. New contracts:
 
 | Tool | Inputs | Result |
 | --- | --- | --- |
-| `eng.glob@1` | `pattern`, optional `limit` (1–128; default 64) | Sorted project files, at most 1.8 KiB of rows; `truncated` if capped. Supports `*`, `**`, `?`, character classes. Skips `.git` at every depth, tree exclusions, and links; refuses walks over 20,000 entries. At most 20 wildcard tokens; matching/walking has a one-second and two-million-operation budget (`glob complexity refused`). |
+| `eng.glob@1` | `pattern`, optional `limit` (1–128; default 64) | Sorted project files, at most 1.8 KiB of rows; `truncated` if capped. Supports `*`, `**`, `?`, character classes. Skips `.git` at every depth, tree exclusions, and links; refuses walks over 20,000 entries. At most 20 wildcard tokens; walking and matching share a five-second deadline (`glob complexity refused`). This allows ordinary repositories on slower disks while bounding pathological requests. |
 | `eng.apply_patch@1` | `patch` | Up to four files, 16 KiB patch, 1 MiB per existing text file. Codex `*** Begin Patch` / `*** Add File` / `*** Update File` / `*** Delete File` / `*** End Patch`. Exact `@@` context hunks, optional section anchor and `*** End of File`. Every hunk/path is validated before writes; I/O errors restore prior files. Existing parent directories are required. Deletes require `allow: ["delete"]`. |
 | `eng.read_image@1` | `path` | PNG/JPEG/GIF/WebP, identified by magic bytes. No facts or inline image bytes; its manifest opts into `artifactOutput: true` and the `rulith.artifacts` envelope. The Worker takes custody, verifies the digest and registers an artifact reference through its existing reporting path. Other run adapters retain their ordinary stdout. |
 | `eng.read@2` | `path`, optional byte `offset` | Same bounded read result as `eng.read@1`, plus `eng.file_read{path,digest,bytes}`. This digest describes the full file; the inline text may be a window. `eng.read@1` still returns no facts. |
@@ -97,8 +97,9 @@ Redirects from that API are refused. Keys and upstream error bodies are never lo
 Tests use local HTTP stubs with a directly injected guard/provider; no setting, environment flag or
 tool argument can bypass the production SSRF guard. Web calls remain read tools bound to the `file`
 Source `lab`, which accredits the new receipt words as well as the engineering words. They skip
-the project tree digest and Source lock, including during network waits. Fetch converts only the
-first 32 KiB to inline text with a linear scanner; its digest still covers every fetched byte.
+the project tree digest and Source lock, including during network waits. Fetch scans the complete
+fetched body with a linear HTML scanner, stopping once extracted text exceeds 16 KiB.
+The receipt then clips text to its inline byte budget; its digest covers every fetched byte.
 
 - `eng.run` takes a command line and a project-relative `cwd`.
 - `eng.read` returns as much text as fits the Worker's inline receipt (8 KiB on rulith.ai; the text is
@@ -128,10 +129,15 @@ first 32 KiB to inline text with a linear scanner; its digest still covers every
   time. The generation advances once per receipt whose tree differs from the last one.
 - Only `eng.test` produces `eng.test_result` and only `eng.measure_pinned` produces measurement
   facts; numbers printed by other commands never become facts.
-- File and command adapters for one Source serialize through a lock in the kit home. The lock
-  records its holder pid and start time; a lock left by a process that no longer exists is recovered.
-  Recovery contenders also serialize, so they cannot remove another holder's fresh lock. A live or
-  unverifiable pid (including pid reuse) remains busy; the recorded start time is diagnostic.
+- The Worker runs items one at a time per Source. File and command adapters serialize through
+  an exclusive lock in the kit home, compatible with the original engineering kit's lock.
+  Contenders retry with jitter for up to two seconds before reporting `adapter busy`.
+  The lock records its holder pid and acquisition time; a dead pid is recovered immediately.
+  Locks and election claims expire after the installed Worker's maximum adapter run time
+  (`max(runDeadlineSeconds, pollMaxWaitSeconds, webTimeoutSeconds) + 60` seconds), even if the
+  pid was reused or cannot be probed. Restart the Worker after reinstalling changed limits.
+  Recovery contenders serialize; fresh live holders remain exclusive. Stale temporary files
+  left by interrupted kit saves are cleaned up on the next acquisition.
 
 ## Pinned measurements
 

@@ -24,20 +24,21 @@ export function globMatcher(pattern) {
     } else tokens.push({ kind: 'literal', value: ch });
   }
   if (tokens.filter(t => ['any', 'star', 'directories'].includes(t.kind)).length > 20) refuse('glob complexity refused');
-  const deadline = performance.now() + 1000;
-  let remaining = 2_000_000;
-  const check = () => { if (--remaining < 0 || performance.now() > deadline) refuse('glob complexity refused'); };
+  // Five seconds covers traversal plus matching on ordinary repositories, including
+  // slower disks. Token/name/walk caps bound memory and per-name matching work.
+  const deadline = performance.now() + 5000;
+  const check = () => { if (performance.now() > deadline) refuse('glob complexity refused'); };
   // Iterative prefix matching uses O(name.length) memory, with no recursion or backtracking.
-  // The operation/time budget is shared by every match in this walk.
+  // The wall-clock deadline is shared by every match in this walk.
   return { check, test(name) {
     check();
     if (name.length > 32768) refuse('glob complexity refused');
     let previous = new Uint8Array(name.length + 1); previous[0] = 1;
     for (const token of tokens) {
+      check();
       const next = new Uint8Array(name.length + 1);
       let directoryPrefix = false;
       for (let j = 0; j <= name.length; j++) {
-        check();
         const ch = name[j - 1];
         if (token.kind === 'any' || token.kind === 'star')
           next[j] = previous[j] || j > 0 && (token.kind === 'any' || ch !== '/') && next[j - 1];

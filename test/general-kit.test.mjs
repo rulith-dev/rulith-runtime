@@ -6,8 +6,8 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { perform } from '../kits/general/adapter.mjs';
 import { context, sha, save, tree, locked, plainFenced } from '../kits/general/lib.mjs';
-import { fetchPage, searchWeb, guardedAddresses, publicAddress, deepseekSearch, readableHtml, WEB_TEXT_PREFIX } from '../kits/general/web.mjs';
-import { globMatcher } from '../kits/general/glob-files.mjs';
+import { fetchPage, searchWeb, guardedAddresses, publicAddress, deepseekSearch, readableHtml, WEB_TEXT_LIMIT } from '../kits/general/web.mjs';
+import { globMatcher, globFiles } from '../kits/general/glob-files.mjs';
 import { applyPatch } from '../kits/general/apply-patch.mjs';
 import { readImage } from '../kits/general/image.mjs';
 import { parseKitInstall, installGeneral } from '../kits/general/installer.mjs';
@@ -352,9 +352,9 @@ test('HTML scanning is bounded and linear on unterminated and repeated hostile t
   const f = fixture(t);
   const hostile = '<'.repeat(256 * 1024);
   const start = performance.now();
-  assert.equal(readableHtml(hostile), '');
-  assert.ok(performance.now() - start < 500, 'HTML prefix must finish within 500 ms');
-  assert.equal(readableHtml('visible' + ' '.repeat(WEB_TEXT_PREFIX) + 'tail'), 'visible');
+  assert.equal(readableHtml(hostile), hostile.slice(0, WEB_TEXT_LIMIT));
+  assert.ok(performance.now() - start < 500, 'HTML scanner must finish within 500 ms');
+  assert.equal(readableHtml('visible' + ' '.repeat(100000) + 'tail'), 'visible tail');
   assert.equal(readableHtml('a<!-- hidden -->b<script>hide</script>c<style>hide</style>d'), 'abcd');
   assert.equal(readableHtml('ok<!--' + '<'.repeat(200000)), 'ok');
   assert.equal(readableHtml('<a>'.repeat(10000) + 'visible'), 'visible');
@@ -372,6 +372,7 @@ test('Source locks recover a dead pid, record holder start time, and keep live h
     assert.equal(await locked(f.ctx, async () => {
       const holder = JSON.parse(fs.readFileSync(lock, 'utf8'));
       assert.equal(holder.pid, process.pid); assert.ok(Number.isFinite(Date.parse(holder.startedAt)));
+      assert.ok(Math.abs(Date.now() - Date.parse(holder.startedAt)) < 1000, 'lease starts at acquisition');
       await assert.rejects(locked(f.ctx, () => assert.fail('live lock stolen')), /adapter busy/);
       return 'recovered';
     }), 'recovered');
@@ -481,12 +482,158 @@ test('SSRF guard refuses benchmarking, protocol, documentation, reserved and mul
   for (const address of ['198.17.255.255', '198.20.0.0', '192.0.1.1', '2001:db9::1', '2001:30::1', '3fff:1000::1']) assert.equal(publicAddress(address), true, address);
 });
 
-test('glob refuses excess wildcard tokens and total matching work with a fixed verdict', async t => {
+test('glob refuses excess wildcard tokens and an expired walk deadline with a fixed verdict', async t => {
   const f = fixture(t); f.write('a', 'a');
   await assert.rejects(f.call('glob', { pattern: '*a'.repeat(21) }), { message: 'glob complexity refused' });
   assert.throws(() => globMatcher('**/'.repeat(21) + 'a'), { message: 'glob complexity refused' });
+  const now = performance.now.bind(performance); let elapsed = 0;
+  t.mock.method(performance, 'now', () => now() + elapsed);
   const matcher = globMatcher('*a'.repeat(20) + 'b');
-  assert.throws(() => { for (let i = 0; i < 100; i++) matcher.test('a'.repeat(2000)); }, { message: 'glob complexity refused' });
+  assert.equal(matcher.test('a'.repeat(2000)), false);
+  elapsed = 5001;
+  assert.throws(() => matcher.test('a'.repeat(2000)), { message: 'glob complexity refused' });
+  elapsed = 0;
+  const readdir = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (...args) => { const entries = readdir(...args); if (args[0] === f.root) elapsed = 5001; return entries; });
+  assert.throws(() => globFiles(f.ctx, { pattern: '**/*.java' }), { message: 'glob complexity refused' });
+});
+
+test('glob handles 5000 realistic repository files without a shared operation limit', t => {
+  const f = fixture(t);
+  f.settings({ treeExclude: ['**/node_modules', '**/target', '**/dist'] });
+  for (let i = 0; i < 1250; i++) {
+    f.write(`src/main/java/com/example/component${i % 25}/Application${i}Service.java`, 'class Example {}');
+    f.write(`console-web/src/components/feature${i % 25}/Component${i}.vue`, '<template/>');
+    f.write(`docs/reference/component${i % 25}/guide${i}.md`, '# Guide');
+    f.write(`src/test/java/com/example/component${i % 25}/Application${i}Test.java`, 'class Test {}');
+  }
+  for (const pattern of ['**/*.java', '**/*.md', 'console-web/src/**/*.vue', 'src/main/java/**/*Service.java']) {
+    const out = globFiles(f.ctx, { pattern });
+    assert.ok(out.rows.length > 0, pattern); assert.equal(out.truncated, true);
+    assert.ok(out.rows.every(row => globMatcher(pattern).test(row.path)), pattern);
+  }
+});
+
+test('exclusive lock publication cannot overwrite a legacy wx holder arriving after the read', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`, read = fs.readFileSync;
+  let fd, injected = false, entered = false;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    try { return read(file, ...args); }
+    catch (error) {
+      if (file === lock && !injected && error.code === 'ENOENT') {
+        injected = true; fd = fs.openSync(lock, 'wx', 0o600); fs.writeFileSync(fd, String(process.pid));
+      }
+      throw error;
+    }
+  });
+  try {
+    await assert.rejects(locked(f.ctx, () => { entered = true; }), /adapter busy/);
+    assert.equal(entered, false); assert.equal(read(lock, 'utf8'), String(process.pid));
+  } finally { if (fd !== undefined) { fs.closeSync(fd); fs.unlinkSync(lock); } }
+  assert.equal(injected, true);
+  assert.deepEqual(fs.readdirSync(f.home).filter(name => name.endsWith('.tmp')), []);
+});
+
+test('Source lock leases recover old live pids and choosing claims, but fresh live holders block', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
+  f.settings({ runDeadlineSeconds: 1, pollMaxWaitSeconds: 2, webTimeoutSeconds: 3 });
+  const old = new Date(Date.now() - 64000);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: old.toISOString() }));
+  assert.equal(await locked(f.ctx, () => 'recovered'), 'recovered');
+  // Legacy pid-only locks use their filesystem timestamp.
+  fs.writeFileSync(lock, String(process.pid)); fs.utimesSync(lock, old, old);
+  assert.equal(await locked(f.ctx, () => 'legacy recovered'), 'legacy recovered');
+  fs.writeFileSync(lock, ''); fs.utimesSync(lock, old, old);
+  assert.equal(await locked(f.ctx, () => 'empty legacy recovered'), 'empty legacy recovered');
+  const claim = path.join(`${lock}.claims`, `${process.pid}-00000000-0000-0000-0000-000000000000`);
+  fs.mkdirSync(claim); fs.utimesSync(claim, old, old);
+  assert.equal(await locked(f.ctx, () => 'claim recovered'), 'claim recovered');
+  assert.equal(fs.existsSync(claim), false);
+  fs.mkdirSync(claim);
+  fs.writeFileSync(path.join(claim, 'ticket.json'), JSON.stringify({ pid: process.pid, ticket: 1, startedAt: old.toISOString() }));
+  fs.utimesSync(claim, old, old);
+  assert.equal(await locked(f.ctx, () => 'published claim recovered'), 'published claim recovered');
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  await assert.rejects(locked(f.ctx, () => assert.fail('fresh lock stolen')), /adapter busy/);
+  fs.unlinkSync(lock);
+  fs.mkdirSync(claim);
+  await assert.rejects(locked(f.ctx, () => assert.fail('fresh choosing claim stolen')), /adapter busy/);
+});
+
+test('lock lease uses the same maximum of run, poll and web deadlines plus 60 as installation', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
+  for (const field of ['runDeadlineSeconds', 'pollMaxWaitSeconds', 'webTimeoutSeconds']) {
+    f.settings({ runDeadlineSeconds: 1, pollMaxWaitSeconds: 1, webTimeoutSeconds: 1, [field]: 100 });
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 110000).toISOString() }));
+    await assert.rejects(locked(f.ctx, () => assert.fail(`${field} ignored`)), /adapter busy/);
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 161000).toISOString() }));
+    assert.equal(await locked(f.ctx, () => 'recovered'), 'recovered');
+  }
+});
+
+test('unrelated claims directory files do not block a Source', async t => {
+  const f = fixture(t), claims = `${f.ctx.stateFile}.lock.claims`;
+  fs.mkdirSync(claims);
+  for (const name of ['.DS_Store', 'desktop.ini']) fs.writeFileSync(path.join(claims, name), 'metadata');
+  assert.equal(await locked(f.ctx, () => 'entered'), 'entered');
+  assert.deepEqual(fs.readdirSync(claims).sort(), ['.DS_Store', 'desktop.ini']);
+});
+
+test('standalone lock callers can derive the kit home from the state file', async t => {
+  const f = fixture(t);
+  assert.equal(await locked({ stateFile: f.ctx.stateFile }, () => 'entered'), 'entered');
+});
+
+test('simultaneous choosing callers retry and serialize rather than both returning busy', async t => {
+  const f = fixture(t), claims = `${f.ctx.stateFile}.lock.claims`, read = fs.readdirSync;
+  let injected = false, competing, active = 0, entered = 0;
+  const action = async () => {
+    assert.equal(active++, 0); entered++;
+    await new Promise(resolve => setTimeout(resolve, 40)); active--; return 'entered';
+  };
+  t.mock.method(fs, 'readdirSync', (directory, ...args) => {
+    if (directory === claims && !injected) { injected = true; competing = locked(f.ctx, action); }
+    return read(directory, ...args);
+  });
+  const first = locked(f.ctx, action);
+  assert.deepEqual(await Promise.all([first, competing]), ['entered', 'entered']);
+  assert.equal(entered, 2); assert.equal(active, 0);
+});
+
+test('next Source acquisition removes only stale kit save temporaries', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
+  const uuid = '00000000-0000-0000-0000-000000000000';
+  const stale = [`${path.basename(lock)}.${uuid}.tmp`, `tree-cache.json.${uuid}.tmp`, `${path.basename(f.ctx.stateFile)}.${uuid}.tmp`, `${path.basename(f.ctx.jobFile)}.${uuid}.tmp`];
+  const keep = [`${path.basename(lock)}.11111111-1111-1111-1111-111111111111.tmp`, 'owner.tmp', `owner.json.${uuid}.tmp`];
+  const old = new Date(Date.now() - 200000);
+  for (const name of [...stale, ...keep]) fs.writeFileSync(path.join(f.home, name), 'partial');
+  for (const name of [...stale, ...keep.slice(1)]) fs.utimesSync(path.join(f.home, name), old, old);
+  assert.equal(await locked(f.ctx, () => 'entered'), 'entered');
+  for (const name of stale) assert.equal(fs.existsSync(path.join(f.home, name)), false, name);
+  for (const name of keep) assert.equal(fs.existsSync(path.join(f.home, name)), true, name);
+});
+
+test('failed kit save removes its temporary file immediately', t => {
+  const f = fixture(t);
+  t.mock.method(fs, 'renameSync', () => { throw Object.assign(new Error('fixture rename refused'), { code: 'EACCES' }); });
+  assert.throws(() => save(f.ctx.stateFile, { value: 1 }), /fixture rename refused/);
+  assert.deepEqual(fs.readdirSync(f.home), ['specs']);
+});
+
+test('HTML fetch reaches body text after 100 KiB of head and still hashes every byte', async t => {
+  const f = fixture(t);
+  const html = `<html><head><style>${'x'.repeat(110000)}</style><script>${'y'.repeat(110000)}</script></head><body><p>late body text</p></body></html>`;
+  const url = await server(t, (_req, res) => { res.setHeader('content-type', 'text/html'); res.end(html); });
+  const out = await fetchPage(f.ctx, { url }, { guard: testOnlyGuard });
+  assert.equal(out.text, 'late body text'); assert.equal(out.rows[0].digest, sha(html));
+  assert.equal(out.truncated, undefined);
+  const text = readableHtml('<p>' + 'visible '.repeat(100000) + '</p>');
+  assert.ok(text.length <= WEB_TEXT_LIMIT); assert.ok(text.startsWith('visible'));
+});
+
+test('HTML preserves visible text after an unterminated less-than sign', () => {
+  for (const text of ['value < 3', 'before <unfinished', '<', '<<tail']) assert.equal(readableHtml(text), text);
+  assert.equal(readableHtml('<script>hidden <unfinished'), '');
 });
 
 test('README explains search key custody and the command user trust boundary', () => {

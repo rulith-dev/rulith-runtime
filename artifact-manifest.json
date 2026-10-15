@@ -186,7 +186,7 @@
       "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     },
     "kits/general/README.md": {
-      "sha256": "55a6acc577a6ade2839946760f937747060ee34eb36f67f6d6ff73209fa9fbb9"
+      "sha256": "d6adccb9e54e030f337573c304344523c208581adfff6ab5605abb8727d37b0a"
     },
     "kits/general/adapter.mjs": {
       "sha256": "541b60c0411bb7d7358e93536c87562a9b3ac134a8398e26e9fe91bfc6cce534"
@@ -201,7 +201,7 @@
       "sha256": "480adcbcf168d752529ad1ba1f63d6f819b9f2cac79f94e785ad3168dab73fe1"
     },
     "kits/general/glob-files.mjs": {
-      "sha256": "39afb1a634aa6869d55590a2d5fa21f560c902e1d642799a04f282d9bff7eab6"
+      "sha256": "75bf61f5b35b505b44fa86b6a36c1106bb922cf1677c852698237faa34f06b5a"
     },
     "kits/general/glob.mjs": {
       "sha256": "39f2f19f49d1cc71818da8d24a21129fa5106a9b9d7582f7c7b7e9f32b4bbc85"
@@ -213,7 +213,7 @@
       "sha256": "9a40935ceb511799d5f1aa34e9d2502410a77f3ddc70e5cace2b59cf3cf58c16"
     },
     "kits/general/installer.mjs": {
-      "sha256": "476dafc5cebadfb29a919ddc60a0871f2237041f5d92263fe52661761739f27c"
+      "sha256": "f40973074565388ddda456ca909314ecae9abc53b8347031cd82f336ed4bd4be"
     },
     "kits/general/job_poll.mjs": {
       "sha256": "6c3b65c8dae24c612fa02b3f59cb5dc9b32115eba60a47bc9e0d510c13e1d5df"
@@ -225,7 +225,7 @@
       "sha256": "561cd7d025f61bb14e0d5d0f41b3ec95d583ba7f7661b26c25681f10f32509b0"
     },
     "kits/general/lib.mjs": {
-      "sha256": "fab7693a5404806aed8184f9319aecf9f823d069d94520f22ef8ac1be3d5357e"
+      "sha256": "fe06d5379fd7d34544ea865af11f9248ab720a02dccad1b2aaf8f021c90a3c69"
     },
     "kits/general/list.mjs": {
       "sha256": "20c483146b77a998d06cc25ac96d3d08e41d1d59943cd350989b67cc7a3960eb"
@@ -282,7 +282,7 @@
       "sha256": "1b127111ae00157f785d70cef8209ebbd0533dae61ddddb0a18f848fadf31c24"
     },
     "kits/general/web.mjs": {
-      "sha256": "e284c3ff78d451b8a6a7ccfae2e4f0e3cc371aba565ba537adf76b37e1cb33c5"
+      "sha256": "88b951e33b6bfcd5cd635cfa86d13e03071fb7ff94ebbf8f51463b4043954860"
     },
     "kits/general/web_fetch.mjs": {
       "sha256": "fee536c1e1acfe278b565799affbb08bca93563cfdf8cd6b8e0a5b157f698b18"

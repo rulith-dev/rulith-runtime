@@ -84,40 +84,53 @@ export async function requestBytes(url, { signal, maxBytes, method = 'GET', head
   });
 }
 
-export const WEB_TEXT_PREFIX = 32 * 1024;
-export function readableHtml(input) {
-  // Only a bounded prefix can enter a ~7 KB receipt. Every scan advances past the
-  // consumed region, including unterminated tags/comments and hostile '<' runs.
-  const html = input.slice(0, WEB_TEXT_PREFIX), parts = [];
+export const WEB_TEXT_LIMIT = 16 * 1024;
+function decodeEntities(text) {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (all, entity) => {
+    const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+    if (entity[0] !== '#') return named[entity.toLowerCase()] ?? all;
+    const code = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+    return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : '';
+  });
+}
+function scanHtml(html) {
+  // The response is already bounded by webMaxBytes. Scan through head/CSS/script
+  // material until extracted text exceeds the receipt's preparation budget.
+  // Every branch consumes its region once, even for hostile '<' runs.
+  const parts = []; let length = 0, last = '';
+  const append = raw => {
+    let text = decodeEntities(raw).replace(/[ \t]+/g, ' ');
+    if (!length) text = text.trimStart();
+    else if (last === ' ' && text.startsWith(' ')) text = text.slice(1);
+    text = text.slice(0, WEB_TEXT_LIMIT + 1 - length);
+    if (text) { parts.push(text); length += text.length; last = text.at(-1); }
+  };
   let hidden;
-  for (let i = 0; i < html.length;) {
+  for (let i = 0; i < html.length && length <= WEB_TEXT_LIMIT;) {
     if (html[i] !== '<') {
       const end = html.indexOf('<', i), next = end < 0 ? html.length : end;
-      if (!hidden) parts.push(html.slice(i, next));
+      if (!hidden) append(html.slice(i, next));
       i = next; continue;
     }
     if (html.startsWith('<!--', i)) {
       const end = html.indexOf('-->', i + 4); i = end < 0 ? html.length : end + 3; continue;
     }
     const end = html.indexOf('>', i + 1);
-    if (end < 0) break;
+    if (end < 0) { if (!hidden) append(html.slice(i)); break; }
     const tag = /^\s*(\/?)([a-z][a-z0-9]*)\b/i.exec(html.slice(i + 1, end));
     if (tag) {
       const closing = tag[1], name = tag[2].toLowerCase();
       if (hidden) { if (closing && name === hidden) hidden = undefined; }
       else if (!closing && ['script', 'style', 'noscript'].includes(name)) hidden = name;
-      else if (name === 'br' || closing && /^(?:p|div|h[1-6]|li|tr)$/.test(name)) parts.push('\n');
+      else if (name === 'br' || closing && /^(?:p|div|h[1-6]|li|tr)$/.test(name)) append('\n');
     }
     i = end + 1;
   }
-  return parts.join('')
-    .replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (all, entity) => {
-      const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
-      if (entity[0] !== '#') return named[entity.toLowerCase()] ?? all;
-      const code = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
-      return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : '';
-    }).replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n\n').trim();
+  let text = parts.join('').slice(0, WEB_TEXT_LIMIT).replace(/\n\s*\n/g, '\n\n').trim();
+  if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
+  return { text, truncated: length > WEB_TEXT_LIMIT };
 }
+export function readableHtml(input) { return scanHtml(input).text; }
 
 // Account for the result text and the facts together, including JSON escaping.
 export function boundedReceipt(row, text, predicate) {
@@ -148,11 +161,11 @@ export async function fetchPage(ctx, args, deps = {}) {
       if (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity') refuse('web encoding refused');
       const type = (response.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
       if (type && !type.startsWith('text/') && type !== 'application/json' && type !== 'application/xhtml+xml') refuse('web media type refused');
-      const raw = response.bytes.subarray(0, WEB_TEXT_PREFIX).toString('utf8');
-      const text = type.includes('html') ? readableHtml(raw) : raw;
+      const raw = response.bytes.toString('utf8');
+      const extracted = type.includes('html') ? scanHtml(raw) : { text: raw.slice(0, WEB_TEXT_LIMIT), truncated: raw.length > WEB_TEXT_LIMIT };
       const out = boundedReceipt({ url: initial.href, final_url: url.href, status: response.status,
-        digest: sha(response.bytes), fetched_at: new Date().toISOString() }, text, 'web.page');
-      if (response.bytes.length > WEB_TEXT_PREFIX) out.truncated = true;
+        digest: sha(response.bytes), fetched_at: new Date().toISOString() }, extracted.text, 'web.page');
+      if (extracted.truncated) out.truncated = true;
       return out;
     }
   } catch (error) {

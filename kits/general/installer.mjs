@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { settings, save } from './lib.mjs';
+import { workerRunTimeoutSeconds, save } from './lib.mjs';
 import { generalSettings } from './general-settings.mjs';
 
 export function parseKitInstall(argv, env = process.env) {
@@ -35,9 +35,8 @@ export function installGeneral(options) {
   const kitHome = plainPath(options['kit-home']);
   if (!fs.statSync(plainPath(path.join(kitHome, 'specs', 'test.json'))).isFile())
     throw new Error('Kit home needs specs/test.json (see pinned-test.example.json)');
-  const limits = settings(kitHome);
   const general = generalSettings(kitHome);
-  const runTimeout = Math.max(limits.runSeconds, limits.pollSeconds, general.webTimeoutSeconds) + 60;
+  const runTimeout = workerRunTimeoutSeconds(kitHome);
   const registry = read(path.join(plainPath(options['manager-home']), 'registry.json'));
   const rows = (registry.instances ?? []).filter(row => row.mode === 'local_agent' && !row.signedOutAt && row.agentName === options.agent);
   if (rows.length !== 1) throw new Error(`Expected one paired Agent; found ${rows.length}`);
