@@ -1,0 +1,125 @@
+{
+  "id": "engineering_work",
+  "title": "General Worker tools",
+  "summary": "Result vocabulary of the general Worker tools: files, commands, tests, measurements and web receipts.",
+  "vocabulary": {
+    "defines": [
+      {
+        "id": "eng.command_result",
+        "as": "eng_command_result",
+        "args": [
+          "run_id",
+          "command_digest",
+          "exit_code",
+          "timed_out",
+          "duration_ms",
+          "stdout_digest",
+          "stderr_digest",
+          "stdout_bytes",
+          "stderr_bytes",
+          "tree_before",
+          "tree_after",
+          "changed_files"
+        ]
+      },
+      {
+        "id": "eng.file_read",
+        "as": "eng_file_read",
+        "args": [
+          "path",
+          "digest",
+          "bytes"
+        ]
+      },
+      {
+        "id": "eng.file_state",
+        "as": "eng_file_state",
+        "args": [
+          "path",
+          "prev_digest",
+          "digest",
+          "readback_digest",
+          "bytes"
+        ]
+      },
+      {
+        "id": "eng.job_state",
+        "as": "eng_job_state",
+        "args": [
+          "job_id",
+          "status",
+          "exit_code",
+          "command_digest",
+          "tree_before"
+        ]
+      },
+      {
+        "id": "eng.measurement",
+        "as": "eng_measurement",
+        "args": [
+          "spec_id",
+          "repeat",
+          "value_milli",
+          "unit",
+          "spec_digest",
+          "binary_digest",
+          "candidate_digest",
+          "workload_digest",
+          "config_digest"
+        ]
+      },
+      {
+        "id": "eng.test_result",
+        "as": "eng_test_result",
+        "args": [
+          "spec_digest",
+          "gen",
+          "tree_digest",
+          "exit_code"
+        ]
+      },
+      {
+        "id": "eng.tree",
+        "as": "eng_tree",
+        "args": [
+          "gen",
+          "tree_digest"
+        ]
+      },
+      {
+        "id": "eng.tree_step",
+        "as": "eng_tree_step",
+        "args": [
+          "from_gen",
+          "to_gen"
+        ]
+      },
+      {
+        "id": "web.page",
+        "as": "web_page",
+        "args": [
+          "url",
+          "final_url",
+          "status",
+          "digest",
+          "fetched_at"
+        ]
+      },
+      {
+        "id": "web.search",
+        "as": "web_search",
+        "args": [
+          "query",
+          "provider",
+          "digest",
+          "fetched_at"
+        ]
+      }
+    ],
+    "imports": []
+  },
+  "pins": [],
+  "rules": [],
+  "acceptance": [],
+  "actions": []
+}

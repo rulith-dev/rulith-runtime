@@ -1509,6 +1509,7 @@ Usage:
   rulith                      Open the manager: accounts and independent Agent instances
   rulith setup                Same manager page, for a first installation
   rulith start                Same manager page
+  rulith kit install general --agent <name> --kit-home <dir> [--manager-home <dir>]
 
 Environment:
   RULITH_MANAGER_HOME   Manager directory (default ~/.rulith/manager)
@@ -1516,9 +1517,13 @@ Environment:
   RULITH_MANAGER_KEY    Fixed manager browser key: 16-128 of A-Z a-z 0-9 - _
                         (default: 32 random hex characters, new on every run)`
 
-/** Parse without touching state. All supported commands open the same workbench. */
+/** Parse without touching state. Kit installation is explicit; the other commands open the workbench. */
 export function parseLocalCli(argv, env = {}) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true }
+  if (argv[0] === 'kit') {
+    if (argv[1] !== 'install' || argv[2] !== 'general') throw new Error('Expected rulith kit install general')
+    return { command: 'kit', args: argv.slice(3) }
+  }
   const input = [...argv]
   const command = ['setup', 'start', 'manager'].includes(input[0]) ? input.shift() : 'start'
   if (input.length > 0) throw new Error('Unknown Rulith option: ' + input[0])
@@ -1541,7 +1546,11 @@ if (IS_MAIN) {
    * cycle that never settles and exits with nothing printed. Loading it from a callback
    * lets this module complete first, which is all the cycle needs.
    */
-  void import('./manager-server.mjs').then(async ({ createManagerServer }) => {
+  void (cli.command === 'kit'
+    ? import('../kits/general/installer.mjs').then(({ installGeneral, parseKitInstall }) => {
+      console.log(installGeneral(parseKitInstall(cli.args, process.env)))
+    })
+    : import('./manager-server.mjs').then(async ({ createManagerServer }) => {
     const { defaultManagerRoot } = await import('./manager-registry.mjs')
     const root = (process.env.RULITH_MANAGER_HOME ?? '').trim() || defaultManagerRoot()
     const manager = createManagerServer({
@@ -1554,7 +1563,7 @@ if (IS_MAIN) {
     console.log(`Workbench: http://127.0.0.1:${manager.port}/?k=${manager.key}`)
     console.log(`Instances: ${resolve(root)} · credentials are stored here; execution credentials are sent to their own configured Gateway.`)
     process.on('SIGINT', async () => { await manager.close(); process.exit(0) })
-  }).catch((error) => {
+  })).catch((error) => {
     console.error(String(error?.message ?? error))
     process.exit(1)
   })

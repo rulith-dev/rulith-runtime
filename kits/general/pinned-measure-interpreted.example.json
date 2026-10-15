@@ -1,0 +1,31 @@
+{
+  "interpreter": "python",
+  "command": [
+    "python",
+    "tools/bench.py",
+    "--config",
+    "prefill"
+  ],
+  "cwd": ".",
+  "binary": "tools/bench.py",
+  "binary_digest": "REPLACE_WITH_SHA256_OF_THE_SCRIPT",
+  "candidate_binary": "bin/server.exe",
+  "workload": "tmp/prompt.txt",
+  "workload_digest": "REPLACE_WITH_SHA256_OF_WORKLOAD",
+  "config": "config/profile.json",
+  "config_digest": "REPLACE_WITH_SHA256_OF_CONFIG",
+  "parser": {
+    "kind": "json_file_number_milli",
+    "file": "logs/results.json",
+    "path": [
+      "prefill",
+      -1,
+      "prompt_per_second"
+    ]
+  },
+  "unit": "tokens_per_second",
+  "repeats": 1,
+  "output_dirs": [
+    "logs"
+  ]
+}

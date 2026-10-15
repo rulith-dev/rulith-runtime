@@ -1,0 +1,27 @@
+{
+  "format": "rulith-sources/1",
+  "meta": {
+    "name": "engineering_work_sources",
+    "version": 1
+  },
+  "sources": [
+    {
+      "name": "lab",
+      "type": "file",
+      "words": [
+        "eng.command_result",
+        "eng.file_read",
+        "eng.file_state",
+        "eng.job_state",
+        "eng.measurement",
+        "eng.test_result",
+        "eng.tree",
+        "eng.tree_step",
+        "web.page",
+        "web.search"
+      ],
+      "tier": "attested",
+      "territoryHint": "The local engineering workspace a person bound for this Agent"
+    }
+  ]
+}

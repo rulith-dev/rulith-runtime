@@ -2,6 +2,14 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Ship the opt-in general Worker kit (D-1015c), preserving the engineering tool contracts,
+  receipts and command guards. Install per Agent with `rulith kit install general`.
+- Add bounded globbing, prevalidated multi-file Codex patches, image artifacts, `eng.read@2`
+  evidence, guarded web fetch and environment-keyed DeepSeek search. The kit Capability
+  accredits their result vocabulary; no business Actions or tools are enabled automatically.
+
 ## 0.16.3 - 2026-10-14
 
 - Worker: the post-call review budget comes from the offer's `remainingMs` alone, less the existing

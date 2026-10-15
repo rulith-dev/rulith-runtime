@@ -1,0 +1,15 @@
+{
+  "command": ["./build/measure.exe", "workload.json", "config.json"],
+  "cwd": ".",
+  "parser": { "kind": "json_integer_milli", "field": "value_milli" },
+  "unit": "tokens_per_second",
+  "binary": "build/measure.exe",
+  "binary_digest": "REPLACE_WITH_SHA256_OF_MEASURING_BINARY",
+  "candidate_binary": "build/candidate.exe",
+  "workload": "workload.json",
+  "workload_digest": "REPLACE_WITH_SHA256_OF_WORKLOAD",
+  "config": "config.json",
+  "config_digest": "REPLACE_WITH_SHA256_OF_CONFIG",
+  "repeats": 3,
+  "output_dirs": ["build", "out"]
+}

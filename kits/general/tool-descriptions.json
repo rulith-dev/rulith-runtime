@@ -1,0 +1,20 @@
+{
+  "eng.list@1": "List files in a project directory.",
+  "eng.read@1": "Read text from a project file.",
+  "eng.search@1": "Find text in project files.",
+  "eng.tree_state@1": "Read the project tree state.",
+  "eng.write_file@1": "Write a file after checking its digest.",
+  "eng.patch_file@1": "Replace one exact match in a file.",
+  "eng.run@1": "Run a command in the project.",
+  "eng.job_start@1": "Start a background command.",
+  "eng.job_poll@1": "Read the state of a background command.",
+  "eng.job_stop@1": "Stop a background command.",
+  "eng.test@1": "Run the pinned project test.",
+  "eng.measure_pinned@1": "Run a pinned measurement.",
+  "eng.glob@1": "Find project files by glob pattern.",
+  "eng.apply_patch@1": "Apply a patch to up to four project files.",
+  "eng.read_image@1": "Read a project image as an artifact.",
+  "eng.read@2": "Read a file and record its digest.",
+  "web.fetch@1": "Fetch a public web page as text.",
+  "web.search@1": "Search the web with the configured provider."
+}

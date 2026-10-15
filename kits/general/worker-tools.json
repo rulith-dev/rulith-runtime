@@ -1,0 +1,541 @@
+{
+  "format": "rulith-worker-tools/1",
+  "tools": {
+    "eng.list@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "path": "string"
+      },
+      "returns": [],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/list.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.read@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "path": "string",
+        "offset": "number?"
+      },
+      "returns": [],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/read.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.search@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "path": "string",
+        "query": "string"
+      },
+      "returns": [],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/search.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.tree_state@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {},
+      "returns": [
+        {
+          "predicate": "eng.tree",
+          "args": {
+            "gen": "$gen",
+            "tree_digest": "$tree_digest"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/tree_state.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.write_file@1": {
+      "adapter": "run",
+      "kind": "write",
+      "params": {
+        "path": "string",
+        "text": "string",
+        "expect_digest": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.file_state",
+          "args": {
+            "path": "$path",
+            "prev_digest": "$prev_digest",
+            "digest": "$digest",
+            "readback_digest": "$readback_digest",
+            "bytes": "$bytes"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/write_file.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      },
+      "content": [
+        "text",
+        "expect_digest"
+      ]
+    },
+    "eng.patch_file@1": {
+      "adapter": "run",
+      "kind": "write",
+      "params": {
+        "path": "string",
+        "old_text": "string",
+        "text": "string",
+        "expect_digest": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.file_state",
+          "args": {
+            "path": "$path",
+            "prev_digest": "$prev_digest",
+            "digest": "$digest",
+            "readback_digest": "$readback_digest",
+            "bytes": "$bytes"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/patch_file.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      },
+      "content": [
+        "old_text",
+        "text",
+        "expect_digest"
+      ]
+    },
+    "eng.run@1": {
+      "adapter": "run",
+      "kind": "run",
+      "params": {
+        "command": "string",
+        "cwd": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.command_result",
+          "args": {
+            "run_id": "$run_id",
+            "command_digest": "$command_digest",
+            "exit_code": "$exit_code",
+            "timed_out": "$timed_out",
+            "duration_ms": "$duration_ms",
+            "stdout_digest": "$stdout_digest",
+            "stderr_digest": "$stderr_digest",
+            "stdout_bytes": "$stdout_bytes",
+            "stderr_bytes": "$stderr_bytes",
+            "tree_before": "$tree_before",
+            "tree_after": "$tree_after",
+            "changed_files": "$changed_files"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/run.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.job_start@1": {
+      "adapter": "run",
+      "kind": "run",
+      "params": {
+        "command": "string",
+        "cwd": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.job_state",
+          "args": {
+            "job_id": "$job_id",
+            "status": "$status",
+            "exit_code": "$exit_code",
+            "command_digest": "$command_digest",
+            "tree_before": "$tree_before"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/job_start.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.job_poll@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "job_id": "string",
+        "wait_s": "number"
+      },
+      "returns": [
+        {
+          "predicate": "eng.job_state",
+          "args": {
+            "job_id": "$job_id",
+            "status": "$status",
+            "exit_code": "$exit_code",
+            "command_digest": "$command_digest",
+            "tree_before": "$tree_before"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/job_poll.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.job_stop@1": {
+      "adapter": "run",
+      "kind": "run",
+      "params": {
+        "job_id": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.job_state",
+          "args": {
+            "job_id": "$job_id",
+            "status": "$status",
+            "exit_code": "$exit_code",
+            "command_digest": "$command_digest",
+            "tree_before": "$tree_before"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/job_stop.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.test@1": {
+      "adapter": "run",
+      "kind": "run",
+      "params": {},
+      "returns": [
+        {
+          "predicate": "eng.test_result",
+          "args": {
+            "spec_digest": "$spec_digest",
+            "gen": "$gen",
+            "tree_digest": "$tree_digest",
+            "exit_code": "$exit_code"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/test.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.measure_pinned@1": {
+      "adapter": "run",
+      "kind": "run",
+      "params": {
+        "spec_id": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.measurement",
+          "args": {
+            "spec_id": "$spec_id",
+            "repeat": "$repeat",
+            "value_milli": "$value_milli",
+            "unit": "$unit",
+            "spec_digest": "$spec_digest",
+            "binary_digest": "$binary_digest",
+            "candidate_digest": "$candidate_digest",
+            "workload_digest": "$workload_digest",
+            "config_digest": "$config_digest"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/measure_pinned.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.glob@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "pattern": "string",
+        "limit": "number?"
+      },
+      "returns": [],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/glob.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.apply_patch@1": {
+      "adapter": "run",
+      "kind": "write",
+      "params": {
+        "patch": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.file_state",
+          "args": {
+            "path": "$path",
+            "prev_digest": "$prev_digest",
+            "digest": "$digest",
+            "readback_digest": "$readback_digest",
+            "bytes": "$bytes"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/apply_patch.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      },
+      "content": [
+        "patch"
+      ]
+    },
+    "eng.read_image@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "path": "string"
+      },
+      "returns": [],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/read_image.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.read@2": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "path": "string",
+        "offset": "number?"
+      },
+      "returns": [
+        {
+          "predicate": "eng.file_read",
+          "args": {
+            "path": "$path",
+            "digest": "$digest",
+            "bytes": "$bytes"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/read_v2.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "web.fetch@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "url": "string"
+      },
+      "returns": [
+        {
+          "predicate": "web.page",
+          "args": {
+            "url": "$url",
+            "final_url": "$final_url",
+            "status": "$status",
+            "digest": "$digest",
+            "fetched_at": "$fetched_at"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/web_fetch.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "web.search@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {
+        "query": "string"
+      },
+      "returns": [
+        {
+          "predicate": "web.search",
+          "args": {
+            "query": "$query",
+            "provider": "$provider",
+            "digest": "$digest",
+            "fetched_at": "$fetched_at"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/web_search.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    }
+  }
+}

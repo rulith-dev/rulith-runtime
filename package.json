@@ -16,6 +16,7 @@
     "agent/",
     "worker/",
     "local/",
+    "kits/",
     "config/",
     "protocol/mcp-contract.json",
     "protocol/worker-contract.json",
@@ -55,7 +56,7 @@
   },
   "scripts": {
     "start": "node local/rulith-local.mjs start",
-    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check scripts/verify-published.mjs && node --check scripts/published-authoring-verifier.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/verify-worker-review-contract.mjs && node scripts/generate-worker-protocol.mjs --check && node scripts/verify-selected-material-overlay.mjs",
+    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check worker/run-artifacts.mjs && node --check kits/general/adapter.mjs && node --check kits/general/installer.mjs && node --check kits/general/web.mjs && node --check scripts/verify-published.mjs && node --check scripts/published-authoring-verifier.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/verify-worker-review-contract.mjs && node scripts/generate-worker-protocol.mjs --check && node scripts/verify-selected-material-overlay.mjs",
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "verify:manifest": "node scripts/update-artifact-manifest.mjs --check",
     "test": "node --test test/*.test.mjs",

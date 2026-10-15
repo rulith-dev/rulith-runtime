@@ -96,6 +96,7 @@
  *   Poll(长轮询,有活即回) → 逐个: 有工具才 ClaimWork(领取,板发租约) → 本地执行
  *   → ReportWork(回执,与领取配对,板侧防重放) → 立即回到 Poll。
  */
+import { runArtifactOutput } from './run-artifacts.mjs'
 import { readFileSync, existsSync } from 'node:fs'
 import { lstat, mkdir, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
@@ -1922,7 +1923,11 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       if (err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return reject(new ResultDeliveryError('adapter_output_exceeds_object_budget'))
       if (err) return reject(new Error(String(err.message)))
       // Capture stays bounded; Artifact routing sees the complete result, never a silent prefix.
-      finish(String(stdout) || '(no output)')
+      runArtifactOutput(String(stdout) || '(no output)', {
+        sourceRoot: source.sourceType === 'file' ? access : undefined,
+        maxBytes: Number.isSafeInteger(context.resultBytes) ? context.resultBytes : 20 * 1024 * 1024,
+        putResult: data => materialStore().putResult(data),
+      }).then(finish, reject)
     })
   })
 }

@@ -488,6 +488,25 @@ to the configured model endpoint. It does not upload the model key to Rulith.
 
 ## Worker
 
+The optional [general toolkit](kits/general/README.md) supplies files, globbing, patches,
+images, commands, background jobs, pinned tests and measurements, web fetch and web search.
+It ships with the Runtime and is **off by default**. Enable it for one paired Agent in one
+environment, after creating a kit home outside the project with `specs/test.json`:
+
+```bash
+rulith kit install general --agent <name> --kit-home <dir> [--manager-home <dir>]
+```
+
+Restart that Agent's Worker, install the kit's vocabulary/Source Capability from `kits/general/pack/`,
+and bind Source `lab` to the project. Capability packages adopt these bare Worker contracts through
+their own business Actions and preconditions/effects; the kit declares no business Actions.
+Commands run as the **Worker's OS user**. The guards confine file access to the project,
+check command paths, enforce deadlines, and refuse elevation, push/publish, global installs/config,
+and inline interpreter code. Destructive operations and shells need owner settings; these guards
+classify commands and do not sandbox programs. Web fetch refuses private and local destinations,
+including redirects; search uses only an explicitly named Worker environment key. See the kit README
+for limits, receipts and settings.
+
 The Agent's governed Actions name versioned Tools and Sources. The Worker ships one
 small built-in `workspace` Adapter and also accepts a local Tool Manifest for custom
 integrations (`http`, `run`, `db-query`, `db-exec-fenced`, or `mcp`). Adapter
@@ -562,6 +581,13 @@ node worker/rulith-worker.mjs
 `RULITH_WORKER_RUN_TIMEOUT_SECONDS` optionally sets the maximum time for a `run` Adapter
 in whole seconds from `1` to `604800` (7 days); the default is `60`. An invalid value stops
 the Worker at startup.
+
+A `run` Adapter can return one file artifact as JSON
+`{"rows":[],"artifacts":[{"path":"image.png","mediaType":"image/png","digest":"sha256:…"}]}`.
+The path is relative to its governed file Source. The Worker refuses links, escapes and changed
+digests, reads at most the smaller of 20 MiB and the offered object budget, and takes local custody.
+Its existing artifact registration/reporting path supplies the reference; the Adapter cannot supply
+a reference itself. This envelope carries no facts and sends no file bytes inline.
 
 Each work item names a governed file Source bound to this Agent Connection and configured
 with an allowed root directory. Presenting a Tool never authorizes it: a Tool is usable only

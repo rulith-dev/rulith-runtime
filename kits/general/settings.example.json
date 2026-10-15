@@ -1,0 +1,20 @@
+{
+  "runDeadlineSeconds": 600,
+  "jobLimitSeconds": 0,
+  "pollMaxWaitSeconds": 600,
+  "allowedPaths": [],
+  "allow": [],
+  "shell": false,
+  "treeExclude": [
+    "node_modules",
+    "build",
+    "dist"
+  ],
+  "imageMaxBytes": 5242880,
+  "webMaxBytes": 1048576,
+  "webTimeoutSeconds": 20,
+  "webSearch": {
+    "provider": "deepseek",
+    "keyEnv": "DEEPSEEK_API_KEY"
+  }
+}
