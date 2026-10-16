@@ -190,7 +190,8 @@ test('deadline kills child and grandchild process tree',async t=>{
   fs.writeFileSync(path.join(f.root,'grandchild.mjs'),"import fs from 'node:fs'; fs.writeFileSync('grandchild.pid',String(process.pid)); setInterval(()=>fs.appendFileSync('heart','x'),50); setTimeout(()=>process.exit(0),60000)");
   fs.writeFileSync(path.join(f.root,'child.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['grandchild.mjs'],{stdio:'inherit'}); setTimeout(()=>process.exit(0),60000)");
   fs.writeFileSync(path.join(f.root,'parent.mjs'),"import {spawn} from 'node:child_process'; spawn(process.execPath,['child.mjs'],{stdio:'inherit'}); setTimeout(()=>process.exit(0),60000)");
-  const r=await execute(['node','parent.mjs'],f.root,{deadlineMs:1200}); assert.equal(r.timed_out,true); assert.ok(r.duration_ms<8000);
+  // 三层 node 在整套测试满载时要一秒多才都起来（1.2 秒的期限曾在孙进程写心跳之前就到，心跳文件不存在）：期限给 4 秒，确保要杀的是一棵已经跑起来的树。
+  const r=await execute(['node','parent.mjs'],f.root,{deadlineMs:4000}); assert.equal(r.timed_out,true); assert.ok(r.duration_ms<12000);
   const bytes=fs.statSync(path.join(f.root,'heart')).size; await sleep(300); assert.equal(fs.statSync(path.join(f.root,'heart')).size,bytes);
 });
 test('job survives adapter exit, blocks other tools, then poll and stop kill descendants',async t=>{
