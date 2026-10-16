@@ -23,7 +23,8 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    Agent's own tool manifest and sets the Worker environment: `ENG_KIT_HOME`,
    `RULITH_WORKSPACE_TOOLS=read` (Console uses the built-in read tools to bind the Source) and
    `RULITH_WORKER_RUN_TIMEOUT_SECONDS` (the longer of `runDeadlineSeconds` and
-   `pollMaxWaitSeconds` and `webTimeoutSeconds`, plus 60). The adapter directory remains
+   `pollMaxWaitSeconds` and `webTimeoutSeconds`, plus 60, capped at 604,800 seconds).
+   The adapter directory remains
    `adapters/engineering-work/` so the original engineering tool entries stay compatible.
    Turn the Agent's Worker off and on afterwards. Installation is local; it does not pair,
    start a Worker, bind a Source, or contact a service.
@@ -125,6 +126,8 @@ The receipt then clips text to its inline byte budget; its digest covers every f
   digest of empty bytes for a new file) and read the bytes back after writing.
 - Long work goes through `eng.job_start`, `eng.job_poll`, `eng.job_stop`. Jobs run in a detached
   supervisor and survive the adapter; while a job is live, only poll and stop are accepted.
+  Stop confirmation waits up to five seconds, bounded by `runDeadlineSeconds`, independently
+  of the polling wait limit.
 - The tree digest covers the project except exclusions; it is cached by size and modification
   time. The generation advances once per receipt whose tree differs from the last one.
 - Only `eng.test` produces `eng.test_result` and only `eng.measure_pinned` produces measurement
@@ -134,8 +137,9 @@ The receipt then clips text to its inline byte budget; its digest covers every f
   Contenders retry with jitter for up to two seconds before reporting `adapter busy`.
   The lock records its holder pid and acquisition time; a dead pid is recovered immediately.
   Locks and election claims expire after the installed Worker's maximum adapter run time
-  (`max(runDeadlineSeconds, pollMaxWaitSeconds, webTimeoutSeconds) + 60` seconds), even if the
-  pid was reused or cannot be probed. Restart the Worker after reinstalling changed limits.
+  plus another 60 seconds, even if the pid was reused or cannot be probed. Start times more
+  than that lease in the future also expire after a clock correction. Restart the Worker
+  after reinstalling changed limits.
   Recovery contenders serialize; fresh live holders remain exclusive. Stale temporary files
   left by interrupted kit saves are cleaned up on the next acquisition.
 

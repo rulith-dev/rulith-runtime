@@ -100,6 +100,7 @@ function scanHtml(html) {
   const parts = []; let length = 0, last = '';
   const append = raw => {
     let text = decodeEntities(raw).replace(/[ \t]+/g, ' ');
+    if (/\s/.test(last) && /^\s*$/.test(text)) return;
     if (!length) text = text.trimStart();
     else if (last === ' ' && text.startsWith(' ')) text = text.slice(1);
     text = text.slice(0, WEB_TEXT_LIMIT + 1 - length);

@@ -158,8 +158,11 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
       case 'job_stop': {
         if (!job.id || args.job_id !== job.id) refuse('job refused');
         if (tool === 'job_stop' && ['starting','running','stopping'].includes(job.status)) fs.writeFileSync(`${ctx.jobFile}.stop`, job.id, { mode: 0o600 });
-        const wait = tool === 'job_stop' ? 5000 : (args.wait_s ?? 0) * 1000;
-        if (!Number.isInteger(wait) || wait < 0 || wait > settings(ctx.home).pollSeconds * 1000) refuse('wait refused');
+        const limits = settings(ctx.home);
+        // Stopping has its own grace period; shorter poll settings must not refuse it.
+        const budget = (tool === 'job_stop' ? limits.runSeconds : limits.pollSeconds) * 1000;
+        const wait = tool === 'job_stop' ? Math.min(5000, budget) : (args.wait_s ?? 0) * 1000;
+        if (!Number.isInteger(wait) || wait < 0 || wait > budget) refuse('wait refused');
         const until = Date.now() + wait;
         while (['starting','running','stopping'].includes(job.status) && Date.now() < until) { await sleep(Math.min(100, Math.max(1,until-Date.now()))); job = readJson(ctx.jobFile); }
         if (tool === 'job_stop' && ['starting','running','stopping'].includes(job.status)) refuse('job stop unconfirmed');

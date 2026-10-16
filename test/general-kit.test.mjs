@@ -5,14 +5,14 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { perform } from '../kits/general/adapter.mjs';
-import { context, sha, save, tree, locked, plainFenced } from '../kits/general/lib.mjs';
+import { context, sha, save, tree, locked, plainFenced, workerRunTimeoutSeconds } from '../kits/general/lib.mjs';
 import { fetchPage, searchWeb, guardedAddresses, publicAddress, deepseekSearch, readableHtml, WEB_TEXT_LIMIT } from '../kits/general/web.mjs';
 import { globMatcher, globFiles } from '../kits/general/glob-files.mjs';
 import { applyPatch } from '../kits/general/apply-patch.mjs';
 import { readImage } from '../kits/general/image.mjs';
 import { parseKitInstall, installGeneral } from '../kits/general/installer.mjs';
 import { parseLocalCli } from '../local/rulith-local.mjs';
-import { adapterEnv, workerToolsOf, toolFromSpec, resultFactsFromRows, prepareActionReport } from '../worker/rulith-worker.mjs';
+import { adapterEnv, workerToolsOf, toolFromSpec, resultFactsFromRows, prepareActionReport, runAdapterTimeoutMs } from '../worker/rulith-worker.mjs';
 import { runArtifactOutput } from '../worker/run-artifacts.mjs';
 import { openMaterialStore, materialIdentity } from '../worker/material-store.mjs';
 
@@ -269,6 +269,11 @@ test('CLI is explicit; installer merges tools and passes only the named search e
   assert.equal(local.worker.env.RULITH_WORKER_RUN_TIMEOUT_SECONDS, '105');
   assert.equal(local.worker.env.FIXTURE_SEARCH_KEY, undefined);
   assert.equal(parseKitInstall(['--agent', 'a', '--kit-home', f.home], { RULITH_MANAGER_HOME: manager })['manager-home'], manager);
+  f.settings({ runDeadlineSeconds: 7 * 86400 });
+  installGeneral(parseKitInstall(args));
+  const maxEnv = JSON.parse(fs.readFileSync(config)).worker.env;
+  assert.equal(maxEnv.RULITH_WORKER_RUN_TIMEOUT_SECONDS, '604800');
+  assert.equal(runAdapterTimeoutMs(maxEnv), 604800000);
 });
 
 test('kit Capability accredits every return predicate with the same arguments', () => {
@@ -537,7 +542,7 @@ test('exclusive lock publication cannot overwrite a legacy wx holder arriving af
 test('Source lock leases recover old live pids and choosing claims, but fresh live holders block', async t => {
   const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
   f.settings({ runDeadlineSeconds: 1, pollMaxWaitSeconds: 2, webTimeoutSeconds: 3 });
-  const old = new Date(Date.now() - 64000);
+  const old = new Date(Date.now() - 124000);
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: old.toISOString() }));
   assert.equal(await locked(f.ctx, () => 'recovered'), 'recovered');
   // Legacy pid-only locks use their filesystem timestamp.
@@ -560,13 +565,13 @@ test('Source lock leases recover old live pids and choosing claims, but fresh li
   await assert.rejects(locked(f.ctx, () => assert.fail('fresh choosing claim stolen')), /adapter busy/);
 });
 
-test('lock lease uses the same maximum of run, poll and web deadlines plus 60 as installation', async t => {
+test('lock lease adds 60 seconds beyond the installed Worker timeout for every deadline', async t => {
   const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
   for (const field of ['runDeadlineSeconds', 'pollMaxWaitSeconds', 'webTimeoutSeconds']) {
     f.settings({ runDeadlineSeconds: 1, pollMaxWaitSeconds: 1, webTimeoutSeconds: 1, [field]: 100 });
-    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 110000).toISOString() }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 170000).toISOString() }));
     await assert.rejects(locked(f.ctx, () => assert.fail(`${field} ignored`)), /adapter busy/);
-    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 161000).toISOString() }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 221000).toISOString() }));
     assert.equal(await locked(f.ctx, () => 'recovered'), 'recovered');
   }
 });
@@ -641,4 +646,128 @@ test('README explains search key custody and the command user trust boundary', (
   assert.match(readme, /Worker process environment/);
   assert.match(readme, /eng\.run.*eng\.job_start/);
   assert.match(readme, /dedicated low-privilege search key/);
+});
+
+test('P3 choosing and published claims retain the extra lease margin', async t => {
+  const f = fixture(t), claims = `${f.ctx.stateFile}.lock.claims`;
+  const claim = path.join(claims, `${process.pid}-00000000-0000-0000-0000-000000000000`);
+  fs.mkdirSync(claim, { recursive: true });
+  const age = new Date(Date.now() - (workerRunTimeoutSeconds(f.home) + 10) * 1000);
+  for (const published of [false, true]) {
+    if (published) fs.writeFileSync(path.join(claim, 'ticket.json'), JSON.stringify({ pid: process.pid, ticket: 1, startedAt: age.toISOString() }));
+    fs.utimesSync(claim, age, age);
+    await assert.rejects(locked(f.ctx, () => assert.fail('claim lease margin ignored')), /adapter busy/);
+    assert.equal(fs.existsSync(claim), true);
+  }
+});
+
+test('P3 stale temporary cleanup ignores every unlink failure', async t => {
+  const f = fixture(t), unlink = fs.unlinkSync;
+  const file = `${f.ctx.stateFile}.00000000-0000-0000-0000-000000000000.tmp`;
+  fs.writeFileSync(file, 'partial');
+  const old = new Date(Date.now() - 300000); fs.utimesSync(file, old, old);
+  for (const code of ['EACCES', 'EPERM', 'EBUSY', 'EIO']) {
+    let attempted = false;
+    const mock = t.mock.method(fs, 'unlinkSync', (target, ...args) => {
+      if (target === file) { attempted = true; throw Object.assign(new Error('fixture cleanup failure'), { code }); }
+      return unlink(target, ...args);
+    });
+    try { assert.equal(await locked(f.ctx, () => 'action result'), 'action result'); assert.equal(attempted, true); }
+    finally { mock.mock.restore(); }
+    assert.equal(fs.existsSync(file), true);
+  }
+});
+
+for (const code of ['ENOTSUP', 'ENOSYS', 'EISDIR', 'EPERM', 'EXDEV']) {
+  test(`P3 unsupported hard links fall back to exclusive creation: ${code}`, async t => {
+    const f = fixture(t), lock = `${f.ctx.stateFile}.lock`, read = fs.readFileSync;
+    const link = t.mock.method(fs, 'linkSync', () => { throw Object.assign(new Error('fixture link unsupported'), { code }); });
+    assert.equal(await locked(f.ctx, () => {
+      const holder = JSON.parse(read(lock, 'utf8'));
+      assert.equal(holder.pid, process.pid); assert.ok(holder.token);
+      return 'action result';
+    }), 'action result');
+    assert.ok(link.mock.callCount() > 0); assert.equal(fs.existsSync(lock), false);
+    let injected = false;
+    const reader = t.mock.method(fs, 'readFileSync', (file, ...args) => {
+      if (file === lock && !injected) {
+        injected = true; fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+        throw Object.assign(new Error('fixture read race'), { code: 'ENOENT' });
+      }
+      return read(file, ...args);
+    });
+    try {
+      await assert.rejects(locked(f.ctx, () => assert.fail('legacy holder overwritten')), /adapter busy/);
+      assert.equal(read(lock, 'utf8'), String(process.pid));
+    } finally { reader.mock.restore(); }
+  });
+}
+
+test('P3 pretty-printed tag whitespace cannot exhaust the HTML text budget', () => {
+  for (const tag of ['span', 'div']) {
+    const html = '<html><head><title>T</title></head><body>' + `\n      <${tag} class="i"></${tag}>`.repeat(9000) + '\n<p>BODY TEXT HERE</p></body></html>';
+    assert.match(readableHtml(html), /BODY TEXT HERE/);
+  }
+  assert.equal(readableHtml('<p>first</p>\n  <span>second</span>'), 'first\nsecond');
+});
+
+test('P3 foreign malformed or unreadable claims are skipped and expiry still cleans them', async t => {
+  const f = fixture(t), claims = `${f.ctx.stateFile}.lock.claims`, read = fs.readFileSync;
+  const names = ['0', String(Number.MAX_SAFE_INTEGER + 1), ...Array(6).fill(String(process.pid))];
+  const dirs = names.map((pid, i) => path.join(claims, `${pid}-${String(i).padStart(8, '0')}-0000-0000-0000-000000000000`));
+  const records = ['{}', '{}', 'not json', 'null', '{"ticket":0}', '{"ticket":9007199254740992}', '{}', '{}'];
+  for (const [i, dir] of dirs.entries()) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'ticket.json'), records[i]); }
+  const unreadable = dirs.slice(-2).map(dir => path.join(dir, 'ticket.json'));
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    const i = unreadable.indexOf(file);
+    if (i >= 0) throw Object.assign(new Error('fixture unreadable ticket'), { code: ['EACCES', 'EIO'][i] });
+    return read(file, ...args);
+  });
+  assert.equal(await locked(f.ctx, () => 'entered'), 'entered');
+  for (const dir of dirs) assert.equal(fs.existsSync(dir), true);
+  const old = new Date(Date.now() - 300000);
+  for (const dir of dirs) fs.utimesSync(dir, old, old);
+  assert.equal(await locked(f.ctx, () => 'expired'), 'expired');
+  for (const dir of dirs) assert.equal(fs.existsSync(dir), false);
+});
+
+test('P3 lock release leaves empty and non-JSON replacement holders without masking results', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
+  for (const replacement of ['', 'old kit partial record', 'null']) {
+    assert.equal(await locked(f.ctx, () => { fs.writeFileSync(lock, replacement); return 'action result'; }), 'action result');
+    assert.equal(fs.readFileSync(lock, 'utf8'), replacement); fs.unlinkSync(lock);
+    const failure = new Error('action failure');
+    await assert.rejects(locked(f.ctx, () => { fs.writeFileSync(lock, replacement); throw failure; }), error => error === failure);
+    assert.equal(fs.readFileSync(lock, 'utf8'), replacement); fs.unlinkSync(lock);
+  }
+});
+
+test('P3 job_stop uses its run budget even when poll maximum is below five seconds', async t => {
+  const f = fixture(t);
+  for (const runDeadlineSeconds of [1, 10]) {
+    f.settings({ pollMaxWaitSeconds: 1, runDeadlineSeconds });
+    const job = { id: 'fixture-job', status: 'running', command: ['node', 'job.mjs'], before: 'fixture-tree', pid: 0, supervisor_pid: 0, exit_code: -1 };
+    save(f.ctx.jobFile, job);
+    const timer = setTimeout(() => save(f.ctx.jobFile, { ...job, status: 'stopped' }), runDeadlineSeconds === 1 ? 50 : 1200);
+    try {
+      const out = await f.call('job_stop', { job_id: job.id });
+      assert.equal(out.rows[0].status, 'stopped');
+      assert.equal(fs.readFileSync(`${f.ctx.jobFile}.stop`, 'utf8'), job.id);
+    } finally { clearTimeout(timer); }
+  }
+});
+
+test('P3 future-dated live holders beyond the lease recover after clock corrections', async t => {
+  const f = fixture(t), lock = `${f.ctx.stateFile}.lock`;
+  const lease = (workerRunTimeoutSeconds(f.home) + 60) * 1000;
+  const future = new Date(Date.now() + lease + 60000);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: future.toISOString() }));
+  assert.equal(await locked(f.ctx, () => 'lock recovered'), 'lock recovered');
+  const claim = path.join(`${lock}.claims`, `${process.pid}-00000000-0000-0000-0000-000000000000`);
+  fs.mkdirSync(claim);
+  fs.writeFileSync(path.join(claim, 'ticket.json'), JSON.stringify({ pid: process.pid, ticket: 1, startedAt: future.toISOString() }));
+  assert.equal(await locked(f.ctx, () => 'claim recovered'), 'claim recovered');
+  assert.equal(fs.existsSync(claim), false);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() + lease / 2).toISOString() }));
+  await assert.rejects(locked(f.ctx, () => assert.fail('within-lease clock skew stolen')), /adapter busy/);
 });

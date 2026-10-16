@@ -316,16 +316,16 @@ export async function execute(command, cwd, { deadlineMs = 35000, onStart, shell
   if (timedOut || process.platform !== 'win32') await killTree(child.pid);
   return { exit_code: exitCode, timed_out: timedOut, duration_ms: Date.now() - start, stdout: stdout.finish(), stderr: stderr.finish() };
 }
-// Shared by installation and stale-lock recovery: the Worker kills an adapter by
-// this deadline, even when the OS has reused its pid or cannot probe it (EPERM).
+// Shared by installation and stale-lock recovery, clamped to the Worker's maximum.
+// Recovery grants another 60 seconds beyond this deadline before reclaiming a pid.
 export function workerRunTimeoutSeconds(home) {
   const limits = settings(home);
-  return Math.max(limits.runSeconds, limits.pollSeconds, generalSettings(home).webTimeoutSeconds) + 60;
+  return Math.min(7 * 86400, Math.max(limits.runSeconds, limits.pollSeconds, generalSettings(home).webTimeoutSeconds) + 60);
 }
 
 export async function locked(ctx, action) {
   ctx = { ...ctx, home: ctx.home ?? path.dirname(ctx.stateFile) };
-  const leaseMs = workerRunTimeoutSeconds(ctx.home) * 1000;
+  const leaseMs = workerRunTimeoutSeconds(ctx.home) * 1000 + 60_000;
   const retryDeadline = performance.now() + 2000;
   const busy = Symbol('busy');
   for (;;) {
@@ -341,7 +341,8 @@ async function tryLocked(ctx, action, leaseMs, busy) {
   const lock = `${ctx.stateFile}.lock`;
   const claims = `${lock}.claims`, token = `${process.pid}-${randomUUID()}`, claim = path.join(claims, token);
   const holder = { pid: process.pid, startedAt: new Date().toISOString(), token };
-  const expired = timestamp => Date.now() - timestamp > leaseMs;
+  // A clock correction can leave a reused pid with a far-future start time.
+  const expired = timestamp => Math.abs(Date.now() - timestamp) > leaseMs;
   const alive = pid => {
     try { process.kill(pid, 0); return true; }
     catch (error) { return error.code !== 'ESRCH'; } // EPERM/unknown stays live.
@@ -358,20 +359,22 @@ async function tryLocked(ctx, action, leaseMs, busy) {
     const match = /^(\d+)-[a-f0-9-]{36}$/.exec(name);
     if (!match) return [];
     const pid = Number(match[1]), directory = path.join(claims, name);
-    if (!Number.isSafeInteger(pid) || pid <= 0) refuse('adapter busy');
     let stat;
     try { stat = fs.statSync(directory); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
     // Directory creation announces choosing, before the ticket is written.
-    if (expired(stat.mtimeMs) || !alive(pid)) { removeClaim(directory); return []; }
+    if (expired(stat.mtimeMs)) { removeClaim(directory); return []; }
+    if (!Number.isSafeInteger(pid) || pid <= 0) return [];
+    if (!alive(pid)) { removeClaim(directory); return []; }
     let record;
     try { record = JSON.parse(fs.readFileSync(path.join(directory, 'ticket.json'), 'utf8')); }
     catch (error) {
       // An absent ticket is a participant still choosing. A vanished participant
       // may already have finished; conservatively treating it as choosing is safe.
       if (error.code === 'ENOENT') return [{ token: name, choosing: true }];
-      refuse('adapter busy');
+      return [];
     }
-    if (!Number.isSafeInteger(record.ticket) || record.ticket < 1) refuse('adapter busy');
+    if (expired(Date.parse(record?.startedAt))) { removeClaim(directory); return []; }
+    if (!Number.isSafeInteger(record?.ticket) || record.ticket < 1) return [];
     return [{ token: name, ticket: record.ticket }];
   });
   // A filesystem bakery try-lock serializes acquisition AND stale recovery. The
@@ -408,8 +411,8 @@ async function tryLocked(ctx, action, leaseMs, busy) {
     for (const entry of fs.readdirSync(ctx.home, { withFileTypes: true })) {
       if (!entry.isFile() || !/^(?:tree-[a-f0-9]{64}\.json(?:\.lock)?|job-[a-f0-9]{64}\.json|tree-cache\.json)\.[a-f0-9-]{36}\.tmp$/.test(entry.name)) continue;
       const file = path.join(ctx.home, entry.name);
-      try { if (expired(fs.statSync(file).mtimeMs)) fs.unlinkSync(file); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try { if (Date.now() - fs.statSync(file).mtimeMs > leaseMs) fs.unlinkSync(file); }
+      catch {} // Stale save cleanup is best-effort, including locked/read-only files.
     }
     // Publish the holder atomically too: death between open and write must never
     // leave an empty shared lock whose owner cannot be identified.
@@ -417,15 +420,26 @@ async function tryLocked(ctx, action, leaseMs, busy) {
     try {
       fs.writeFileSync(tmp, JSON.stringify(holder), { mode: 0o600, flag: 'wx' });
       // link is atomic and exclusive, including against the legacy kit's wx open.
-      try { fs.linkSync(tmp, lock); } catch (error) { if (error.code === 'EEXIST') return busy; throw error; }
+      try { fs.linkSync(tmp, lock); }
+      catch (error) {
+        if (error.code === 'EEXIST') return busy;
+        if (!['ENOTSUP', 'ENOSYS', 'EISDIR', 'EPERM', 'EXDEV'].includes(error.code)) throw error;
+        // Filesystems without hard links still arbitrate with legacy wx holders.
+        // A crash before the write leaves an empty lock, recovered by its lease.
+        let fd;
+        try { fd = fs.openSync(lock, 'wx', 0o600); }
+        catch (error) { if (error.code === 'EEXIST') return busy; throw error; }
+        try { fs.writeFileSync(fd, JSON.stringify(holder)); }
+        finally { fs.closeSync(fd); }
+      }
     } finally {
       try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
     try {
       return await action();
     } finally {
-      try { if (JSON.parse(fs.readFileSync(lock, 'utf8')).token === token) fs.unlinkSync(lock); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try { if (JSON.parse(fs.readFileSync(lock, 'utf8'))?.token === token) fs.unlinkSync(lock); }
+      catch (error) { if (!(error instanceof SyntaxError) && error.code !== 'ENOENT') throw error; }
     }
   } finally { removeClaim(claim); }
 }
