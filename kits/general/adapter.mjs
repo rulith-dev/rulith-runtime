@@ -7,7 +7,7 @@ import { applyPatch } from './apply-patch.mjs';
 import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
-import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, FIELD_ERRORS } from './acceptance-specs.mjs';
+import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, FIELD_ERRORS, isFieldError } from './acceptance-specs.mjs';
 import { settings, context, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
@@ -393,7 +393,7 @@ export async function main(tool) {
     const fileErrors = { ENOENT: 'path not found', EISDIR: 'path is a directory', ENOTDIR: 'path not found', EACCES: 'path not readable', EPERM: 'path not readable', EBUSY: 'path not readable' };
     const acceptanceError = ['test_v2', 'acceptance'].includes(tool) &&
       (['acceptance spec invalid', ...FIELD_ERRORS, 'acceptance spec changed', 'acceptance spec too large', 'acceptance shell refused', 'acceptance check invalid', 'acceptance takes no arguments'].includes(error.message)
-        || /^acceptance file changed: [^\x00-\x1f\x7f]+$/.test(error.message));
+        || isFieldError(error.message) || /^acceptance file changed: [^\x00-\x1f\x7f]+$/.test(error.message));
     const verdict = acceptanceError || messages.includes(error.message) || /^spec refused: [A-Za-z0-9_ ,()-]+$/.test(error.message) ? error.message
       : fileErrors[error.code] ?? 'adapter failed';
     process.stdout.write(JSON.stringify({ rows: [], verdict }));

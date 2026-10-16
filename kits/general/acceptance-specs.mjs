@@ -19,8 +19,20 @@ const projectPath = value => typeof value === 'string' && value.length <= 512
 // the field. Invisible and look-alike characters (homoglyphs, U+2800, U+0336, ...) cannot be listed by category with
 // confidence, so v1 accepts ASCII only: a project path outside ASCII cannot be an acceptance check.
 const displayable = value => typeof value !== 'string' || /^[\x21-\x7e]([\x20-\x7e]*[\x21-\x7e])?$/.test(value);
-export const FIELD_ERRORS = ['command', 'cwd', 'files'].map(field => `acceptance spec invalid: ${field}`);
-const invalidField = field => refuse(`acceptance spec invalid: ${field}`);
+// 规格错误的完整词表在这一处：模型照着错误改规格，所以每条都说出哪里错了，但只用固定词。`<name>` 是唯一的变量，
+// 只回显安全的字段名或键名（字母、数字和 _ . / -，至多 64 个）；其他名字退回不带说明的 `acceptance spec invalid`。
+// The complete spec error vocabulary lives here: the model repairs a spec from its error, so each names what is wrong
+// in fixed words. `<name>` is the only variable and echoes a safe field or key name only (letters, digits, _ . / -,
+// at most 64); any other name falls back to the bare `acceptance spec invalid`.
+export const FIELD_ERRORS = ['command', 'cwd', 'files', 'not JSON', 'duplicate key <name>', 'unknown field <name>', 'command must be an array of words (or one string with shell:true)', 'files must map each path to its sha256'].map(field => `acceptance spec invalid: ${field}`);
+const SAFE_NAME = /^[A-Za-z0-9_./-]{1,64}$/;
+// True for a spec error this module raises: a fixed entry, or a `<name>` entry with a safe name.
+export const isFieldError = message => typeof message === 'string' && FIELD_ERRORS.some(entry => entry === message
+  || entry.endsWith(' <name>') && message.startsWith(entry.slice(0, -6)) && SAFE_NAME.test(message.slice(entry.length - 6)));
+const invalidField = (field, name) => name === undefined ? refuse(`acceptance spec invalid: ${field}`)
+  : SAFE_NAME.test(name) ? refuse(`acceptance spec invalid: ${field} ${name}`) : invalid();
+const COMMAND_SHAPE = 'command must be an array of words (or one string with shell:true)';
+const FILES_SHAPE = 'files must map each path to its sha256';
 // 项目根的 .git 被树摘要排除，运行时也拒绝在其中运行或依赖其中的文件；解析时就按字段拒绝，任何大小写或
 // Windows 会去掉的尾随点和空格都算。
 // The root .git is excluded from the tree digest and refused at run time; a spec naming it is refused when parsed,
@@ -29,7 +41,8 @@ const rootGit = value => value.split('/')[0].toLowerCase().replace(/[. ]+$/, '')
 const invalid = () => refuse('acceptance spec invalid');
 
 // JSON.parse accepts a repeated key and keeps the last value; a reader of the file may see the first.
-// One meaning only: any object with a repeated key (compared after unescaping) is refused.
+// One meaning only: any object with a repeated key (compared after unescaping) is refused. Returns the first
+// repeated key, or undefined.
 export function duplicateKeys(text) {
   const stack = [];
   for (let i = 0; i < text.length; i++) {
@@ -45,13 +58,13 @@ export function duplicateKeys(text) {
       const keys = stack.at(-1);
       if (text[next] === ':' && keys) {
         const key = JSON.parse(text.slice(i, end + 1));
-        if (keys.has(key)) return true;
+        if (keys.has(key)) return key;
         keys.add(key);
       }
       i = end;
     }
   }
-  return false;
+  return undefined;
 }
 
 // The digest covers the spec {command, cwd, files, shell} with its default written out (`shell: false`), so it is
@@ -62,6 +75,21 @@ export function canonicalSpec(value) {
   if (object(value)) return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonicalSpec(value[k])}`).join(',')}}`;
   return JSON.stringify(value);
 }
+// `files` is written either as {path: sha256} or, mirroring the eng.check_spec fact, as [{path, sha256}, ...]; both
+// spellings become one object with sorted keys before anything else reads it, so they have one digest.
+// 两种写法在校验和摘要之前合成同一个按键排序的对象：摘要只取决于内容，不取决于写法。重复路径一律拒绝。
+function filesMap(files) {
+  let entries;
+  if (object(files)) entries = Object.entries(files);
+  else if (Array.isArray(files) && files.every(item => object(item) && Object.keys(item).length === 2
+    && Object.hasOwn(item, 'path') && Object.hasOwn(item, 'sha256') && typeof item.path === 'string'))
+    entries = files.map(item => [item.path, item.sha256]);
+  else invalidField(FILES_SHAPE);
+  if (new Set(entries.map(([name]) => name)).size !== entries.length) invalidField(FILES_SHAPE);
+  if (entries.length > MAX_FILES) invalid();
+  if (entries.some(([, digest]) => typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))) invalidField(FILES_SHAPE);
+  return Object.fromEntries(entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+}
 export const normalizedSpec = spec => ({ command: spec.command, cwd: spec.cwd, files: spec.files, shell: spec.shell === true });
 
 export function acceptanceSpec(ctx, check) {
@@ -69,31 +97,35 @@ export function acceptanceSpec(ctx, check) {
   try {
     const target = plainFenced(ctx.root, `.rulith/acceptance/${check}.json`);
     if (!fs.statSync(target).isFile() || fs.statSync(target).size > 16384) invalid();
-    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(target));
-    const spec = JSON.parse(text);
-    if (duplicateKeys(text)) invalid();
+    let text, spec;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(target));
+      spec = JSON.parse(text);
+    } catch { invalidField('not JSON'); }
+    const repeated = duplicateKeys(text);
+    if (repeated !== undefined) invalidField('duplicate key', repeated);
     // 没有 output_dirs：主人的 treeExclude 是唯一的排除；检查运行改动的任何东西都和其他工具一样算一步。
     // 模型写的排除会让别的检查在它们从未测过的新代码上继续“通过”。
     // No output_dirs: the owner's treeExclude is the only exclusion, and any change a check run makes is a tree
     // step like any other tool's (a model-written exclusion kept other checks passing on code they never tested).
-    if (!object(spec) || Object.keys(spec).some(k => !['command', 'cwd', 'files', 'shell'].includes(k))) invalid();
+    if (!object(spec)) invalid();
+    const unknown = Object.keys(spec).find(k => !['command', 'cwd', 'files', 'shell'].includes(k));
+    if (unknown !== undefined) invalidField('unknown field', unknown);
     if (spec.shell !== undefined && typeof spec.shell !== 'boolean') invalid();
     // With shell the spec gives one command line, run and shown exactly as written; without it, an argv array
     // that never meets a shell.
     const words = spec.shell === true ? [spec.command] : spec.command;
-    if (!Array.isArray(words) || !words.length || words.some(s => typeof s !== 'string' || !s || s.includes('\0'))) invalid();
+    if (!Array.isArray(words) || !words.length || words.some(s => typeof s !== 'string' || !s || s.includes('\0'))) invalidField(COMMAND_SHAPE);
     if (!words.every(displayable)) invalidField('command');
     if (!displayable(spec.cwd)) invalidField('cwd');
-    if (spec.cwd !== '.' && !projectPath(spec.cwd)) invalid();
+    if (spec.cwd !== '.' && !projectPath(spec.cwd)) invalidField('cwd');
     if (rootGit(spec.cwd)) invalidField('cwd');
-    if (!object(spec.files) || Object.keys(spec.files).length > MAX_FILES) invalid();
-    if (!Object.keys(spec.files).every(displayable)) invalidField('files');
-    for (const [name, digest] of Object.entries(spec.files))
-      if (!projectPath(name) || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) invalid();
-    if (Object.keys(spec.files).some(rootGit)) invalidField('files');
-    const normal = normalizedSpec(spec);
+    const files = filesMap(spec.files);
+    if (!Object.keys(files).every(displayable)) invalidField('files');
+    if (!Object.keys(files).every(projectPath) || Object.keys(files).some(rootGit)) invalidField('files');
+    const normal = normalizedSpec({ ...spec, files });
     return { spec: normal, digest: sha(canonicalSpec(normal)) };
-  } catch (error) { if (FIELD_ERRORS.includes(error.message)) throw error; invalid(); }
+  } catch (error) { if (isFieldError(error.message)) throw error; invalid(); }
 }
 
 // The command as one readable line. A shell command line (a string) is shown exactly as the shell receives it.
@@ -125,7 +157,7 @@ export function acceptanceEntries(ctx) {
   return names.filter(name => name.endsWith('.json')).sort().map(name => {
     const check = name.slice(0, -5);
     try { return { check, row: checkSpecRow(check, acceptanceSpec(ctx, check)) }; }
-    catch (error) { return { check, error: ['acceptance spec too large', ...FIELD_ERRORS].includes(error.message) ? error.message : 'acceptance spec invalid' }; }
+    catch (error) { return { check, error: ['acceptance spec too large'].includes(error.message) || isFieldError(error.message) ? error.message : 'acceptance spec invalid' }; }
   });
 }
 

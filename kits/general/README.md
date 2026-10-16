@@ -315,7 +315,10 @@ Specs are UTF-8 JSON objects, at most 16 KiB, without a repeated key in any obje
 fields `command`, `cwd`, `files` and optional `shell`. `command` is a nonempty array of nonempty
 strings, or with `shell: true` one nonempty string (the command line); `cwd` is required and is `.`
 or a project-relative directory.
-`files` maps at most 32 test dependency paths to lowercase, 64-character SHA-256 hex strings. Paths
+`files` maps at most 32 test dependency paths to lowercase, 64-character SHA-256 hex strings. It may
+also be written as the `eng.check_spec` fact shows it, an array of `{"path": …, "sha256": …}` objects
+(exactly those two fields, each path once); both spellings become the same sorted map before
+validation, so they have the same spec digest. Paths
 are at most 512 UTF-16 code units and use `/`, with no empty, `.` or `..` components, backslashes,
 colons or control characters. `shell` is an optional boolean (default false). Unknown fields are
 refused. Include every test dependency in `files`; each digest hashes that file's exact bytes,
@@ -326,6 +329,16 @@ is refused, naming the field: `acceptance spec invalid: command`, `acceptance sp
 `acceptance spec invalid: files`. Invisible and look-alike characters (look-alikes such as the
 Cyrillic e U+0435, the blank U+2800, combining marks) cannot be listed reliably by category, so in v1 a project path or
 argument outside ASCII cannot be part of an acceptance check.
+
+A refused spec says what is wrong in fixed words (the complete list is `FIELD_ERRORS` in
+`acceptance-specs.mjs`): `acceptance spec invalid: not JSON`, `acceptance spec invalid: duplicate key
+<name>`, `acceptance spec invalid: unknown field <name>` (the first unknown field),
+`acceptance spec invalid: command must be an array of words (or one string with shell:true)`,
+`acceptance spec invalid: files must map each path to its sha256`, and the field-named
+`acceptance spec invalid: command`, `acceptance spec invalid: cwd` (also an illegal or `.git`
+directory) and `acceptance spec invalid: files` (also an illegal or `.git` path). `<name>` is echoed
+only when it is letters, digits, `_`, `.`, `/` or `-` (at most 64); any other name, a non-object, a
+non-boolean `shell`, more than 32 files or a spec over 16 KiB gives the bare `acceptance spec invalid`.
 
 A spec has no output directories (an `output_dirs` field makes it invalid). The owner's `treeExclude`
 setting is the only exclusion: every change a check's own run makes outside it is a tree step like
@@ -361,7 +374,7 @@ command as one line: a shell command line stands exactly as written; for an argv
 without whitespace, quotes or control characters stands as written and any other word is a JSON
 string (a token starting with `"` is JSON, every other token is literal). `files` is the JSON text
 `[{"path":…,"sha256":…},…]` sorted by path. It does not read or verify dependencies. Each invalid
-spec has an `error: "acceptance spec invalid"` text row (or the field-named form above) in `errors` and contributes no fact. A spec
+spec has an `error: "acceptance spec invalid"` text row (or one of the specific forms above) in `errors` and contributes no fact. A spec
 whose row alone would not fit the Worker's inline receipt (7 KiB of the 8 KiB budget, measured as the
 result text plus its facts) has `error: "acceptance spec too large"` instead. A legal filename's check
 is included on its error row. A missing acceptance directory returns no rows; one that cannot be
@@ -373,7 +386,7 @@ and blocks no other tool. Results stop at whole rows within the same budget and 
 (`acceptance spec too large`), verifies all listed files before execution, classifies the command,
 then runs it. A missing, unreadable, linked or changed dependency refuses with
 `acceptance file changed: <project-relative path>`, with no facts and no command execution. Invalid
-specs refuse with `acceptance spec invalid`; invalid check names/arguments use
+specs refuse with `acceptance spec invalid` or one of the specific forms above; invalid check names/arguments use
 `acceptance check invalid`. Receipts contain `eng.check_result{check, spec_digest, gen, tree_digest,
 exit_code}` plus the usual `eng.tree_step`. A test whose own run changed the tree is stamped at the
 pre-run generation, with the step from it to the new generation in the same receipt, so it cannot

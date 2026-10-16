@@ -4,6 +4,10 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Acceptance specs may write `files` as the `eng.check_spec` array of `{path, sha256}` objects as well
+  as the `{path: sha256}` map; both spellings have one spec digest. A refused spec now says what is
+  wrong in fixed words (`not JSON`, `duplicate key <name>`, `unknown field <name>`, the `command` and
+  `files` shapes, an illegal `cwd` or `files` path); the vocabulary is `FIELD_ERRORS`.
 - Add project acceptance specs, `eng.acceptance@1` discovery and `eng.test@2` digest-checked
   receipts (D-1016a, PSC 0.2.17). The engineering_work v2 package, emitted in the Gateway's
   authoring format, derives the pinned criterion `eng.check_passed` from `eng.check_result` with a

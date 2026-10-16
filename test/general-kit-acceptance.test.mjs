@@ -65,30 +65,84 @@ test('acceptance digest hashes compact recursively sorted JSON with its default 
   }
 });
 
-test('acceptance spec validation refuses malformed fields and paths with a fixed verdict', async t => {
+test('files may be written as the eng.check_spec array: one digest for both spellings (live run 2026-10-16)', async t => {
   const f = fixture(t);
-  for (const spec of [null, [], {}, { ...f.spec, extra: 1 }, { ...f.spec, command: [] },
-    { ...f.spec, command: [''] }, { ...f.spec, command: ['x\0'] }, { ...f.spec, command: 'node test.mjs' },
-    { ...f.spec, cwd: undefined }, { ...f.spec, cwd: '../outside' }, { ...f.spec, shell: 'true' },
-    { ...f.spec, files: [] }, { ...f.spec, files: { '/absolute': 'a'.repeat(64) } },
-    { ...f.spec, files: { '../escape': 'a'.repeat(64) } }, { ...f.spec, files: { 'C:/escape': 'a'.repeat(64) } },
-    { ...f.spec, files: { 'a\\b': 'a'.repeat(64) } },
-    { ...f.spec, files: { './test.mjs': 'a'.repeat(64) } }, { ...f.spec, files: { 'test.mjs': 'A'.repeat(64) } },
-    { ...f.spec, files: { 'test.mjs': 123 } },
+  f.write('tests/acceptance/runner.mjs', 'process.exitCode = 0;\n');
+  const files = { 'tests/acceptance/runner.mjs': sha('process.exitCode = 0;\n'), 'test.mjs': f.spec.files['test.mjs'] };
+  const command = [process.execPath, 'tests/acceptance/runner.mjs'];
+  // The spec as the model wrote it: mirroring the receipt's files array, plus two fields a spec does not have.
+  const array = Object.keys(files).map(name => ({ path: name, sha256: files[name] }));
+  f.put({ check: 'stock-cli', command, cwd: '.', files: array, expect_exit: 0 }, 'stock-cli');
+  const unknown = 'acceptance spec invalid: unknown field check';
+  await assert.rejects(f.call('test_v2', { check: 'stock-cli' }), { message: unknown });
+  assert.deepEqual((await f.call('acceptance')).errors, [{ error: unknown, check: 'stock-cli' }]);
+  const cli = f.cli('test_v2', { check: 'stock-cli' });
+  assert.equal(cli.status, 2); assert.equal(cli.stderr, unknown);
+  f.put({ command, cwd: '.', files: array, expect_exit: 0 }, 'stock-cli');
+  assert.deepEqual(JSON.parse(f.cli('acceptance').stdout).errors,
+    [{ error: 'acceptance spec invalid: unknown field expect_exit', check: 'stock-cli' }]);
+  // Without the extra fields the array spelling is valid and denotes exactly the object spelling.
+  f.put({ command, cwd: '.', files: array }, 'stock-cli');
+  const fromArray = acceptanceSpec(f.ctx, 'stock-cli');
+  const rowArray = (await f.call('acceptance')).rows.find(r => r.check === 'stock-cli');
+  f.put({ command, cwd: '.', files }, 'stock-cli');
+  const fromObject = acceptanceSpec(f.ctx, 'stock-cli');
+  assert.equal(fromArray.digest, fromObject.digest);
+  assert.deepEqual(fromArray.spec, fromObject.spec);
+  assert.deepEqual(Object.keys(fromArray.spec.files), ['test.mjs', 'tests/acceptance/runner.mjs']);
+  assert.deepEqual((await f.call('acceptance')).rows.find(r => r.check === 'stock-cli'), rowArray);
+  // Array order does not matter either, and the check runs.
+  f.put({ command, cwd: '.', files: [...array].reverse() }, 'stock-cli');
+  assert.equal(acceptanceSpec(f.ctx, 'stock-cli').digest, fromObject.digest);
+  const out = await f.call('test_v2', { check: 'stock-cli' });
+  assert.equal(out.rows[0].exit_code, 0); assert.equal(out.rows[0].spec_digest, fromObject.digest);
+});
+
+test('acceptance spec validation refuses malformed fields and paths, naming the problem in fixed words', async t => {
+  const f = fixture(t);
+  const COMMAND = 'acceptance spec invalid: command must be an array of words (or one string with shell:true)';
+  const FILES = 'acceptance spec invalid: files must map each path to its sha256';
+  for (const [spec, message] of [
+    [null, 'acceptance spec invalid'], [[], 'acceptance spec invalid'], [{}, COMMAND],
+    [{ ...f.spec, extra: 1 }, 'acceptance spec invalid: unknown field extra'],
+    [{ ...f.spec, 'a b': 1 }, 'acceptance spec invalid'], // a name unsafe to echo falls back to the bare verdict
+    [{ ...f.spec, command: [] }, COMMAND], [{ ...f.spec, command: [''] }, COMMAND], [{ ...f.spec, command: ['x\0'] }, COMMAND],
+    [{ ...f.spec, command: 'node test.mjs' }, COMMAND],
+    [{ ...f.spec, cwd: undefined }, 'acceptance spec invalid: cwd'], [{ ...f.spec, cwd: '../outside' }, 'acceptance spec invalid: cwd'],
+    [{ ...f.spec, shell: 'true' }, 'acceptance spec invalid'],
+    [{ ...f.spec, files: undefined }, FILES], [{ ...f.spec, files: null }, FILES], [{ ...f.spec, files: 'test.mjs' }, FILES],
+    [{ ...f.spec, files: { '/absolute': 'a'.repeat(64) } }, 'acceptance spec invalid: files'],
+    [{ ...f.spec, files: { '../escape': 'a'.repeat(64) } }, 'acceptance spec invalid: files'],
+    [{ ...f.spec, files: { 'C:/escape': 'a'.repeat(64) } }, 'acceptance spec invalid: files'],
+    [{ ...f.spec, files: { 'a\\b': 'a'.repeat(64) } }, 'acceptance spec invalid: files'],
+    [{ ...f.spec, files: { './test.mjs': 'a'.repeat(64) } }, 'acceptance spec invalid: files'],
+    [{ ...f.spec, files: { 'test.mjs': 'A'.repeat(64) } }, FILES], [{ ...f.spec, files: { 'test.mjs': 123 } }, FILES],
+    // The array spelling: exactly {path, sha256} per item, each path once.
+    [{ ...f.spec, files: ['test.mjs'] }, FILES], [{ ...f.spec, files: [{ path: 'test.mjs' }] }, FILES],
+    [{ ...f.spec, files: [{ path: 'test.mjs', sha256: 'a'.repeat(64), size: 1 }] }, FILES],
+    [{ ...f.spec, files: [{ path: 1, sha256: 'a'.repeat(64) }] }, FILES],
+    [{ ...f.spec, files: [{ path: 'test.mjs', sha256: 'a'.repeat(64) }, { path: 'test.mjs', sha256: 'a'.repeat(64) }] }, FILES],
+    [{ ...f.spec, files: [{ path: '../escape', sha256: 'a'.repeat(64) }] }, 'acceptance spec invalid: files'],
     // With shell the command is one string; without it, an argv array.
-    { ...f.spec, shell: true }, { ...f.spec, shell: true, command: '' }, { ...f.spec, shell: true, command: ['node test.mjs'] },
+    [{ ...f.spec, shell: true }, COMMAND], [{ ...f.spec, shell: true, command: '' }, COMMAND],
+    [{ ...f.spec, shell: true, command: ['node test.mjs'] }, COMMAND],
   ]) {
     f.put(spec);
-    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' });
+    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message }, JSON.stringify(spec));
+    assert.deepEqual((await f.call('acceptance')).errors, [{ error: message, check: 'unit' }], JSON.stringify(spec));
   }
-  for (const text of ['{', '\uFEFF{}', ' '.repeat(16385) + '{}']) {
+  for (const [text, message] of [['{', 'acceptance spec invalid: not JSON'], ['\uFEFF{}', 'acceptance spec invalid: not JSON'],
+    [' '.repeat(16385) + '{}', 'acceptance spec invalid']]) {
     f.write('.rulith/acceptance/unit.json', text);
-    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' });
+    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message });
   }
   f.write('.rulith/acceptance/unit.json', Buffer.concat([
     Buffer.from('{"command":["node","'), Buffer.from([0xff]), Buffer.from('"],"cwd":".","files":{}}'),
   ]));
-  assert.throws(() => acceptanceSpec(f.ctx, 'unit'), { message: 'acceptance spec invalid' });
+  assert.throws(() => acceptanceSpec(f.ctx, 'unit'), { message: 'acceptance spec invalid: not JSON' });
+  // An empty dependency list is one meaning in either spelling.
+  f.put({ ...f.spec, files: {} }); const empty = acceptanceSpec(f.ctx, 'unit').digest;
+  f.put({ ...f.spec, files: [] }); assert.equal(acceptanceSpec(f.ctx, 'unit').digest, empty);
   for (const check of ['', 'A', '../unit', 'x'.repeat(41), 1])
     await assert.rejects(f.call('test_v2', { check }), { message: 'acceptance check invalid' });
   for (const args of [{}, { check: 'unit', command: 'override' }])
@@ -115,8 +169,9 @@ test('a spec has no output_dirs: any value, even an empty list, makes it invalid
   const f = fixture(t);
   for (const dirs of [[], ['out'], ['src'], ['**/acceptance']]) {
     f.put({ ...f.spec, output_dirs: dirs });
-    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' }, JSON.stringify(dirs));
-    assert.deepEqual(await f.call('acceptance'), { rows: [], errors: [{ error: 'acceptance spec invalid', check: 'unit' }] });
+    const message = 'acceptance spec invalid: unknown field output_dirs';
+    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message }, JSON.stringify(dirs));
+    assert.deepEqual(await f.call('acceptance'), { rows: [], errors: [{ error: message, check: 'unit' }] });
   }
   assert.equal(fs.existsSync(f.ctx.stateFile), false);
 });
@@ -125,11 +180,12 @@ test('a spec with a repeated key has two readings and is refused', async t => {
   const f = fixture(t);
   const body = JSON.stringify(f.spec).slice(1, -1);
   const digest = 'a'.repeat(64);
-  for (const text of [`{${body},"cwd":"."}`, `{${body},"c\\u0077d":"."}`,
-    `{${body.replace('"files":{', `"files":{"test.mjs":"${digest}",`)}}`]) {
+  for (const [text, key] of [[`{${body},"cwd":"."}`, 'cwd'], [`{${body},"c\\u0077d":"."}`, 'cwd'],
+    [`{${body.replace('"files":{', `"files":{"test.mjs":"${digest}",`)}}`, 'test.mjs'], [`{${body},"a b":1,"a b":2}`, undefined]]) {
     assert.doesNotThrow(() => JSON.parse(text));
     f.write('.rulith/acceptance/unit.json', text);
-    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' }, text);
+    const message = key ? `acceptance spec invalid: duplicate key ${key}` : 'acceptance spec invalid';
+    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message }, text);
   }
   // The same key in sibling objects and key-like text inside strings are fine.
   f.put({ ...f.spec, command: [process.execPath, 'test.mjs', '{"cwd":1,"cwd":2}'] });
@@ -282,7 +338,7 @@ test('a check run that rewrites code is a step: a signed check stops passing (re
   const gen = { command: [process.execPath, 'rw.cjs'], cwd: '.', files: { 'rw.cjs': sha(rw) } };
   record('eng.write_file@1', await f.call('write_file', { path: '.rulith/acceptance/gen.json', expect_digest: '',
     text: JSON.stringify({ ...gen, output_dirs: ['src'] }) }));
-  await assert.rejects(f.call('test_v2', { check: 'gen' }), { message: 'acceptance spec invalid' });
+  await assert.rejects(f.call('test_v2', { check: 'gen' }), { message: 'acceptance spec invalid: unknown field output_dirs' });
   record('eng.test@2', await f.call('test_v2', { check: 'a' }));
   assert.deepEqual(passing(facts), ['a']);
   const specPath = '.rulith/acceptance/gen.json';
@@ -381,8 +437,9 @@ test('with the owner shell the Board shows exactly the line the shell runs (revi
   f.write('x.mjs', 'process.exitCode = 0;');
   // The reviewer's spec: an argv word that a space-join would hand to the shell unquoted.
   f.put({ command: ['node', 'x.mjs & echo pwned > p.txt'], cwd: '.', files: { 'x.mjs': sha('process.exitCode = 0;') }, shell: true }, 's');
-  await assert.rejects(f.call('test_v2', { check: 's' }), { message: 'acceptance spec invalid' });
-  assert.deepEqual((await f.call('acceptance')).errors, [{ error: 'acceptance spec invalid', check: 's' }]);
+  const command = 'acceptance spec invalid: command must be an array of words (or one string with shell:true)';
+  await assert.rejects(f.call('test_v2', { check: 's' }), { message: command });
+  assert.deepEqual((await f.call('acceptance')).errors, [{ error: command, check: 's' }]);
   // As one string the line is shown and run as written: the quotes keep `&` and `>` inside node's argument.
   const line = 'node "x.mjs & echo pwned > p.txt"';
   f.put({ command: line, cwd: '.', files: { 'x.mjs': sha('process.exitCode = 0;') }, shell: true }, 's');
@@ -513,7 +570,7 @@ test('a running check cannot change its frozen dependencies or replace its spec 
   const f = fixture(t);
   for (const [script, message] of [
     ["import fs from 'node:fs'; fs.appendFileSync('test.mjs', '// changed');", 'acceptance file changed: test.mjs'],
-    ["import fs from 'node:fs'; fs.writeFileSync('.rulith/acceptance/unit.json', '{}');", 'acceptance spec invalid'],
+    ["import fs from 'node:fs'; fs.writeFileSync('.rulith/acceptance/unit.json', '{}');", 'acceptance spec invalid: command must be an array of words (or one string with shell:true)'],
     ["import fs from 'node:fs'; const p='.rulith/acceptance/unit.json'; const s=JSON.parse(fs.readFileSync(p)); s.command.push('x'); fs.writeFileSync(p,JSON.stringify(s));", 'acceptance spec changed'],
   ]) {
     f.write('test.mjs', script); f.put({ ...f.spec, files: { 'test.mjs': sha(script) } });
@@ -551,7 +608,7 @@ test('acceptance lists valid and invalid specs without reading dependencies, tre
     assert.ok(String(target).startsWith(path.join(f.root, '.rulith/acceptance') + path.sep)); return read(target, ...args);
   });
   const out = await f.call('acceptance');
-  assert.deepEqual(out.errors, [{ error: 'acceptance spec invalid' }, { error: 'acceptance spec invalid', check: 'bad' }]);
+  assert.deepEqual(out.errors, [{ error: 'acceptance spec invalid' }, { error: 'acceptance spec invalid: not JSON', check: 'bad' }]);
   assert.deepEqual(out.rows.map(r => [r.check, r.spec_digest, JSON.parse(r.files).length]), [
     ['a', acceptanceSpec(f.ctx, 'a').digest, 2], ['unit', acceptanceSpec(f.ctx, 'unit').digest, 1]]);
   assert.equal(resultFactsFromRows(tools['eng.acceptance@1'], out.rows).length, 2);
