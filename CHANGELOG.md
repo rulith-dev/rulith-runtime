@@ -8,14 +8,20 @@ All notable changes to the local runtime are documented here.
   receipts (D-1016a, PSC 0.2.17). The engineering_work v2 package, emitted in the Gateway's
   authoring format, derives the pinned criterion `eng.check_passed` from `eng.check_result` with a
   freshness rule and an acceptance bridge for signed leaves; Sources package version 3.
-  `eng.check_spec` carries the command, cwd, shell, output directories and file digests the spec
-  digest denotes. Spec commands pass the `eng.run` classifier and the owner's shell setting.
+  `eng.check_spec` carries the command, cwd, shell and file digests the spec digest denotes. Spec commands pass the `eng.run` classifier and the owner's shell setting.
   Specs have no `output_dirs`: the owner's `treeExclude` is the only exclusion, and a check whose own
   run changes the tree is stamped at the pre-run generation, so it never passes on the tree it made.
   With shell the spec command is one string, shown on the Board exactly as the shell runs it;
   control/format characters and lone surrogates in command words and paths are refused by field.
   The inline-code fence (shared with `eng.run`) also refuses combined/attached flags (`-pe`,
-  `-e<code>`, `-c<code>`) and `data:` loader/import URLs.
+  `-e<code>`, `-c<code>`) and `data:` loader/import URLs. It reads only the interpreter's options
+  before the script (`node test.mjs -p 8080` runs) and covers `bun`, `tsx`, `deno eval` and launchers
+  (`npx`, `npm exec`, `uv run`, `bundle exec`, ...) followed by an interpreter with inline code.
+  Display safety also refuses default-ignorable, separator (other than U+0020), private-use and
+  unassigned code points. A check run that reverts a change made outside the kit is still a step,
+  its row paired with the pre-run digest. Agent-written `self-` measurement specs add no tree
+  exclusion and may not carry `output_dirs`; their commands pass the `eng.run` classifier and
+  their interpreter is a common one or an absolute path under `allowedPaths`.
 - Address D-1015c review findings: opt-in image artifact custody, bounded web text conversion,
   dead-holder lock recovery, stricter SSRF ranges, complete patch edges and per-line EOLs,
   link refusal, bounded glob matching and Sources package v2. Web calls skip project walks/locks.

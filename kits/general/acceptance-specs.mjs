@@ -11,11 +11,17 @@ export const RECEIPT_BYTES = 7168;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const projectPath = value => typeof value === 'string' && value.length <= 512
   && !/[\\:\x00-\x1f\x7f]/.test(value) && value.split('/').every(p => p && p !== '.' && p !== '..');
-// 显示安全：命令字与文件路径原样显示在 Board 上，由人签字。控制字符与格式字符（Unicode Cc、Cf，
-// 例如 U+202E 从右到左覆盖）以及孤立代理项会让人读到的文字与实际运行的不同，所以一律拒绝，错误说出字段名。
-// Display safety: command words and paths are shown on the Board for a person to sign; a control or format
-// character (Cc, Cf, e.g. U+202E) or an unpaired surrogate can make the shown text differ from what runs.
-const displayable = value => typeof value !== 'string' || (value.isWellFormed() && !/[\p{Cc}\p{Cf}]/u.test(value));
+// 显示安全：命令字与文件路径原样显示在 Board 上，由人签字。看不见或看起来和别的字一样的字符会让人读到的文字
+// 与实际运行的不同，所以一律拒绝，错误说出字段名：控制与格式字符（Cc、Cf，例如 U+202E 从右到左覆盖）、默认可忽略
+// 字符（例如 U+3164 韩文填充符、U+034F 组合字形连接符、U+FE0F 变体选择符）、行与段分隔符（Zl、Zp）、
+// 普通空格 U+0020 以外的空白（Zs，例如 U+00A0）、私用区（Co）、未分配码位（Cn）以及孤立代理项。
+// Display safety: command words and paths are shown on the Board for a person to sign. A character that is invisible
+// or looks like another can make the shown text differ from what runs: control and format characters (Cc, Cf, e.g.
+// U+202E), default-ignorable code points (e.g. U+3164, U+115F, U+FFA0, U+034F, U+FE0F), line and paragraph separators
+// (Zl, Zp), any space separator other than U+0020 (Zs, e.g. U+00A0), private use (Co), unassigned code points (Cn) and
+// unpaired surrogates are refused.
+const displayable = value => typeof value !== 'string' || (value.isWellFormed()
+  && !/[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}\p{Co}\p{Cn}]|[^\P{Zs} ]/u.test(value));
 export const FIELD_ERRORS = ['command', 'cwd', 'files'].map(field => `acceptance spec invalid: ${field}`);
 const invalidField = field => refuse(`acceptance spec invalid: ${field}`);
 const invalid = () => refuse('acceptance spec invalid');

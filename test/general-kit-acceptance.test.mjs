@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { perform, main } from '../kits/general/adapter.mjs';
-import { context, sha, save } from '../kits/general/lib.mjs';
+import { context, sha, save, classify, exclusions, tree, fileDigest } from '../kits/general/lib.mjs';
 import { acceptanceSpec, canonicalSpec, commandLine } from '../kits/general/acceptance-specs.mjs';
 import { buildPackages } from '../kits/general/pack/build-pack.mjs';
 import { resultFactsFromRows } from '../worker/rulith-worker.mjs';
@@ -309,7 +309,9 @@ test('a check whose own run changes the tree is stamped at the pre-run generatio
   assert.equal(row.exit_code, 0);
   assert.equal(row.gen, start.gen); // the tree it tested, not the one it made
   assert.deepEqual([row.from_gen, row.to_gen], [start.gen, start.gen + 1]);
-  assert.equal(row.tree_digest, (await f.call('tree_state')).rows[0].tree_digest);
+  // The row pairs the pre-run generation with the pre-run digest; the step carries pre -> post (review 3 P2-1).
+  assert.equal(row.tree_digest, start.tree_digest);
+  assert.notEqual(row.tree_digest, (await f.call('tree_state')).rows[0].tree_digest);
   assert.deepEqual(passing(factsOf('eng.test@2', out)), []);
   // The step is replayed on the next mutating receipt even if this receipt were lost.
   const later = await f.call('write_file', { path: 'other.txt', expect_digest: '', text: 'x' });
@@ -425,10 +427,10 @@ test('command words and paths with control or format characters or lone surrogat
   }
   const cli = f.cli('test_v2', { check: 'spoof' });
   assert.equal(cli.status, 2); assert.equal(cli.stderr, 'acceptance spec invalid: files');
-  // Visible non-ASCII text is fine: letters, and a no-break space shown as a JSON string.
-  f.put({ command: ['node', 't.mjs', 'ünï', '\u00A0nb'], cwd: '.', files }, 'spoof');
+  // Visible non-ASCII text is fine: letters, and the ordinary space shown as a JSON string.
+  f.put({ command: ['node', 't.mjs', 'ünï', 'a b', '中文'], cwd: '.', files }, 'spoof');
   const row = (await f.call('acceptance')).rows.find(r => r.check === 'spoof');
-  assert.equal(row.command, 'node t.mjs ünï "\u00A0nb"');
+  assert.equal(row.command, 'node t.mjs ünï "a b" 中文');
 });
 
 test('inline code in combined, attached and data: URL forms is refused like -e (review 2 P2-4)', async t => {
@@ -460,12 +462,12 @@ test('test@2 receipts land eng.check_result; a run that changed the tree is stam
   const f = fixture(t);
   f.write('test.mjs', "import fs from 'node:fs'; fs.writeFileSync('generated', 'yes');\n");
   f.put({ ...f.spec, files: { 'test.mjs': sha(fs.readFileSync(path.join(f.root, 'test.mjs'))) } });
-  await f.call('tree_state');
+  const pre = (await f.call('tree_state')).rows[0].tree_digest;
   const out = await f.call('test_v2', { check: 'unit' });
   const row = out.rows[0];
   assert.equal(row.check, 'unit'); assert.equal(row.exit_code, 0); assert.equal(row.gen, 0);
   assert.equal(row.spec_digest, acceptanceSpec(f.ctx, 'unit').digest);
-  assert.equal(row.tree_digest, (await f.call('tree_state')).rows[0].tree_digest);
+  assert.equal(row.tree_digest, pre); // generation 0 with its own digest; the step 0 -> 1 is in the same receipt
   assert.deepEqual([row.from_gen, row.to_gen], [0, 1]);
   assert.deepEqual(factsOf('eng.test@2', out), [
     { predicate: 'eng.check_result', args: { check: 'unit', spec_digest: row.spec_digest, gen: 0, tree_digest: row.tree_digest, exit_code: 0 } },
@@ -709,4 +711,149 @@ test('the builder reproduces the exact v2 package files and refuses incompatible
   assert.throws(() => buildPackages({ tools: { ...tools, 'bad.tool@1': { returns: [
     { predicate: 'acme.other', args: { x: '$x' } },
   ] } } }), /outside eng and web/);
+});
+
+// A model-written measurement spec (.deep-rulith/measure/<name>.json, spec_id self-<name>).
+function selfSpec(f, name, extra = {}) {
+  f.write('measure.mjs', 'console.log(JSON.stringify({ value_milli: 1 }));\n');
+  const d = fileDigest(path.join(f.root, 'measure.mjs'));
+  const spec = { command: ['node', 'measure.mjs'], interpreter: 'node', binary: 'measure.mjs', candidate_binary: 'measure.mjs',
+    workload: 'measure.mjs', config: 'measure.mjs', binary_digest: d, workload_digest: d, config_digest: d,
+    parser: { kind: 'json_integer_milli', field: 'value_milli' }, unit: 'ms', repeats: 1, ...extra };
+  f.write(`.deep-rulith/measure/${name}.json`, JSON.stringify(spec));
+  return spec;
+}
+
+test('a self- measurement spec never excludes anything from the tree digest (review 3 PoC poc1)', async t => {
+  const f = fixture(t);
+  f.write('src/flag.txt', 'good');
+  const strict = "import fs from 'node:fs'; process.exitCode = fs.readFileSync('src/flag.txt', 'utf8') === 'good' ? 0 : 1;\n";
+  f.write('test.mjs', strict); f.put({ ...f.spec, files: { 'test.mjs': sha(strict) } });
+  const spec = selfSpec(f, 'x', { output_dirs: ['src'] });
+  const facts = [];
+  const record = (id, out) => { facts.push(...factsOf(id, out)); return out; };
+  record('eng.tree_state@1', await f.call('tree_state'));
+  // The PoC: the spec is refused at pin time and never frozen.
+  await assert.rejects(f.call('measure_pinned', { spec_id: 'self-x' }), { message: 'spec refused: a self- spec has no output_dirs' });
+  assert.equal(fs.existsSync(path.join(f.home, 'specs', 'self-x.json')), false);
+  record('eng.test@2', await f.call('test_v2', { check: 'unit' }));
+  assert.deepEqual(passing(facts), ['unit']);
+  record('eng.write_file@1', await f.call('write_file', { path: 'src/flag.txt', text: 'BROKEN', expect_digest: sha('good') }));
+  assert.deepEqual(passing(facts), []);
+  // A self- spec frozen into the kit home before this rule (or written there under a self- name) adds no exclusion
+  // either; an owner spec's output_dirs still do.
+  fs.writeFileSync(path.join(f.home, 'specs', 'self-x.json'), JSON.stringify(spec));
+  fs.writeFileSync(path.join(f.home, 'specs', 'owner.json'), JSON.stringify({ ...spec, output_dirs: ['build'] }));
+  assert.deepEqual(exclusions(f.ctx), ['.git', 'build']);
+  await assert.rejects(f.call('measure_pinned', { spec_id: 'self-x' }), { message: 'spec refused: a self- spec has no output_dirs' });
+  const digest = tree(f.ctx).digest;
+  f.write('src/flag.txt', 'changed again');
+  assert.notEqual(tree(f.ctx).digest, digest);
+  // The adapter process reports the refusal in its fixed words.
+  const cli = f.cli('measure_pinned', { spec_id: 'self-x' });
+  assert.equal(cli.status, 2); assert.equal(cli.stderr, 'spec refused: a self- spec has no output_dirs');
+});
+
+test('a self- spec command passes the eng.run classifier and its interpreter is a common one (review 3 P2-4, PoC poc1b)', async t => {
+  const f = fixture(t);
+  f.write('config', 'x');
+  const d = fileDigest(path.join(f.root, 'config'));
+  const fields = { binary: 'config', candidate_binary: 'config', workload: 'config', config: 'config', binary_digest: d,
+    workload_digest: d, config_digest: d, parser: { kind: 'json_integer_milli', field: 'value_milli' }, unit: 'ms', repeats: 1 };
+  // The reviewer's spec: interpreter git, binary a project file named config -> `git config ...`.
+  f.write('.deep-rulith/measure/g.json', JSON.stringify({ ...fields, interpreter: 'git', command: ['git', 'config', '--file', 'out.ini', 'a.b', 'c'] }));
+  await assert.rejects(f.call('measure_pinned', { spec_id: 'self-g' }), /^Error: spec refused: interpreter must be/);
+  // Without an interpreter the classifier sees the line itself.
+  f.write('.deep-rulith/measure/h.json', JSON.stringify({ ...fields, command: ['git', 'config', '--file', 'out.ini', 'a.b', 'c'] }));
+  await assert.rejects(f.call('measure_pinned', { spec_id: 'self-h' }), { message: 'command refused' });
+  assert.equal(fs.existsSync(path.join(f.root, 'out.ini')), false);
+  for (const name of ['g', 'h']) assert.equal(fs.existsSync(path.join(f.home, 'specs', `self-${name}.json`)), false);
+  // A classified word after the script: push/publish stay refused for self- specs, unchanged for the owner's.
+  const spec = selfSpec(f, 'p', { command: ['node', 'measure.mjs', 'publish'] });
+  await assert.rejects(f.call('measure_pinned', { spec_id: 'self-p' }), { message: 'command refused' });
+  fs.writeFileSync(path.join(f.home, 'specs', 'owner.json'), JSON.stringify(spec));
+  assert.deepEqual((await f.call('measure_pinned', { spec_id: 'owner' })).rows.map(r => r.value_milli), [1]);
+  // Absolute interpreters only under the owner's allowedPaths (the fixture allows node's directory).
+  selfSpec(f, 'abs', { interpreter: process.execPath, command: [process.execPath, 'measure.mjs'] });
+  assert.deepEqual((await f.call('measure_pinned', { spec_id: 'self-abs' })).rows.map(r => r.value_milli), [1]);
+  f.settings({ allowedPaths: [] });
+  selfSpec(f, 'abs2', { interpreter: process.execPath, command: [process.execPath, 'measure.mjs'] });
+  await assert.rejects(f.call('measure_pinned', { spec_id: 'self-abs2' }), /^Error: spec refused: interpreter must be/);
+  for (const interpreter of ['bash', 'cmd', 'node.exe', '../node', '']) {
+    selfSpec(f, 'bad', { interpreter, command: [interpreter || 'node', 'measure.mjs'] });
+    await assert.rejects(f.call('measure_pinned', { spec_id: 'self-bad' }), /^Error: spec refused: interpreter must be/, interpreter);
+  }
+  // The ordinary self- spec still runs and is frozen.
+  selfSpec(f, 'ok');
+  assert.deepEqual((await f.call('measure_pinned', { spec_id: 'self-ok' })).rows.map(r => r.value_milli), [1]);
+  assert.ok(fs.existsSync(path.join(f.home, 'specs', 'self-ok.json')));
+});
+
+test('a check run that reverts an unrecorded change is a step and never current (review 3 PoC poc2 case b)', async t => {
+  const f = fixture(t);
+  f.write('src/flag.txt', 'good');
+  // Passes when the flag it sees is "bad", then writes "good" back.
+  const reverting = "import fs from 'node:fs'; const v = fs.readFileSync('src/flag.txt', 'utf8'); fs.writeFileSync('src/flag.txt', 'good'); process.exitCode = v === 'bad' ? 0 : 1;\n";
+  f.write('t.mjs', reverting);
+  f.put({ command: [process.execPath, 't.mjs'], cwd: '.', files: { 't.mjs': sha(reverting) } }, 'rev');
+  const start = (await f.call('tree_state')).rows[0];
+  fs.writeFileSync(path.join(f.root, 'src/flag.txt'), 'bad'); // an edit outside the kit, no receipt
+  const tested = tree(f.ctx).digest;
+  const out = await f.call('test_v2', { check: 'rev' });
+  assert.equal(fs.readFileSync(path.join(f.root, 'src/flag.txt'), 'utf8'), 'good');
+  assert.equal(tree(f.ctx).digest, start.tree_digest); // the run ended on the recorded tree
+  const [row] = out.rows;
+  assert.equal(row.exit_code, 0);
+  assert.deepEqual([row.gen, row.from_gen, row.to_gen], [start.gen, start.gen, start.gen + 1]);
+  assert.equal(row.tree_digest, tested); // the digest of the tree it ran on, paired with the pre-run generation
+  assert.deepEqual(passing(factsOf('eng.test@2', out)), []);
+  assert.equal((await f.call('tree_state')).rows[0].gen, start.gen + 1);
+});
+
+test('display safety refuses invisible, look-alike and unassigned characters by field (review 3 PoC poc3)', async t => {
+  const f = fixture(t);
+  f.write('test.mjs', 'process.exitCode = 1; // the real, strict test\n');
+  const files = { 'test.mjs': sha('process.exitCode = 1; // the real, strict test\n') };
+  for (const ch of ['\u3164', '\u115F', '\uFFA0', '\u034F', '\uFE0F', '\u00A0', '\u3000', '\u2028', '\u2029', '\uE000', '\u0378']) {
+    const hidden = `test.mjs${ch}`;
+    const label = `U+${ch.codePointAt(0).toString(16).toUpperCase()}`;
+    for (const [spec, field] of [
+      [{ command: [process.execPath, hidden], cwd: '.', files }, 'command'],
+      [{ command: `node ${hidden}`, cwd: '.', files, shell: true }, 'command'],
+      [{ command: [process.execPath, 'test.mjs'], cwd: `src${ch}`, files }, 'cwd'],
+      [{ command: [process.execPath, 'test.mjs'], cwd: '.', files: { ...files, [hidden]: files['test.mjs'] } }, 'files'],
+    ]) {
+      f.put(spec, 'spoof');
+      await assert.rejects(f.call('test_v2', { check: 'spoof' }), { message: `acceptance spec invalid: ${field}` }, `${label} ${field}`);
+      assert.deepEqual((await f.call('acceptance')).errors, [{ error: `acceptance spec invalid: ${field}`, check: 'spoof' }], label);
+    }
+  }
+});
+
+test('interpreter options are read only before the script; launchers with inline code are refused (review 3 PoC poc5)', t => {
+  const f = fixture(t);
+  const verdict = command => { try { classify(f.ctx, command); return 'allowed'; } catch (error) { return error.message; } };
+  for (const command of ['node test.mjs -p 8080', 'node test.mjs -help', 'node server.mjs -port 3000', 'node --test test/ -r',
+    'node build.mjs -release', 'node test.mjs -verbose', 'node test.mjs data:x', 'node --test --test-reporter=spec',
+    'node --enable-source-maps test.mjs', 'node --experimental-vm-modules x.mjs', 'node --test-reporter spec test.mjs -e',
+    'node --stack-size 2000 test.mjs -e', 'node -C dev x.mjs -p', 'node --no-warnings x.mjs -e',
+    'python -m pytest -c pytest.ini', 'python -m pytest -x -q', 'python run.py -config a.yml', 'python -m unittest -v',
+    'python -B -m pytest', 'python -m pytest --cov', 'python -W ignore run.py -c x', 'python3 -X dev -m pytest -c x',
+    'ruby test.rb -verbose', 'perl Makefile.PL -verbose', 'ruby -Ilib -rminitest test.rb', 'perl -Ilib t/x.t', 'ruby -I lib test.rb -e',
+    'npx eslint .', 'npm exec -- vitest run', 'uv run pytest -c x', 'bundle exec rake test', 'deno test', 'bun test.ts -e']) {
+    assert.equal(verdict(command), 'allowed', command);
+  }
+  for (const command of ['node -e 1', 'node -pe 1', 'node -p 1', 'node --eval=1', 'node --eval 1', 'node --print 1',
+    'node --input-type=module --eval 1', 'node --env-file=.env -e 1', 'node -C dev -e 1', 'node --inspect -e 1',
+    'node --title x -e 1', 'node --stack-size -e 1', 'node --unknown-flag value -e 1', 'node --experimental-loader=data:text/javascript,1 x.mjs',
+    'node --loader data:text/javascript,1 x.mjs', 'node data:text/javascript,1', 'node --import=./x.mjs a.mjs', 'node --require ./x.cjs a.mjs',
+    'node -r ./x.cjs a.mjs', 'python -c 1', 'python -Xdev -c 1', 'python3 -Wignore -c 1', 'python -W ignore -c 1', 'python -X dev -c 1',
+    'python -OO -c 1', 'python -Ic 1', 'python --check-hash-based-pycs always -c 1', 'perl -Mstrict -e 1', 'perl -w -e1', 'perl -I lib -e 1',
+    'perl -ne print', 'ruby -le 1', 'ruby -r json -e 1', 'ruby -I lib -e 1',
+    'nodejs -e 1', 'bun -e 1', 'bun --eval 1', 'bun run --eval 1', 'tsx -e 1', 'tsx --eval 1', 'deno eval 1', 'deno run --eval 1',
+    'npx node -e 1', 'npx -y node -e 1', 'npx tsx -e 1', 'npx -c "node x"', 'npm exec -- node -e 1', 'npm exec -c "node x"', 'npm x node -e 1',
+    'pnpm exec node -e 1', 'pnpm dlx tsx -e 1', 'yarn exec node -e 1', 'bunx node -e 1', 'uv run python -c 1', 'uv run --python 3.12 python -c 1',
+    'poetry run python -c 1', 'bundle exec ruby -e 1']) {
+    assert.equal(verdict(command), 'command refused', command);
+  }
 });

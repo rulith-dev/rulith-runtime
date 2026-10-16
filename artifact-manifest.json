@@ -186,16 +186,16 @@
       "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     },
     "kits/general/README.md": {
-      "sha256": "b09d094584cb3fcfdc33a442795f0205a3e15395ff60f96d8f58acd70b6ddcc3"
+      "sha256": "5109f9ad8da50016865baf765c1b1552ec672fa5a761a3a73db50f2774d0f3d4"
     },
     "kits/general/acceptance.mjs": {
       "sha256": "889e8e8a2df0d6247711370aec8563054513dd8c901833399e2b3de86fc52414"
     },
     "kits/general/acceptance-specs.mjs": {
-      "sha256": "903ee98801dfd8c52b5e2894d8ff43d1f4ca7797e9617ef0d0b35c7b83df0f3f"
+      "sha256": "18696fca8c420713332832e16af4f653a939333e443feda09ec7c74ff81b99ab"
     },
     "kits/general/adapter.mjs": {
-      "sha256": "f899861d3c2c470aa9242974370dbbd2720bdf10066db05954c4cee7ab72896b"
+      "sha256": "90224e99f5e89efc2de16cf342515bb59b90665d22ffbf001dec37b73677754b"
     },
     "kits/general/apply-patch.mjs": {
       "sha256": "ae12f95ce8d9b2779875f6516068c5d0b633dfd129cd9ea09f57415dfa908e68"
@@ -231,7 +231,7 @@
       "sha256": "561cd7d025f61bb14e0d5d0f41b3ec95d583ba7f7661b26c25681f10f32509b0"
     },
     "kits/general/lib.mjs": {
-      "sha256": "bff8584f4db02620792191375e77d4fa8cca8d61dd4c4b3ea41baefd5a014f05"
+      "sha256": "3f144c3a96f0fec06be27e3eeb2fba35c21ab0cad8771deed9e9d2a989c3d308"
     },
     "kits/general/list.mjs": {
       "sha256": "20c483146b77a998d06cc25ac96d3d08e41d1d59943cd350989b67cc7a3960eb"

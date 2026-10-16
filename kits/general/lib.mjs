@@ -105,11 +105,14 @@ export function exclusions(ctx) {
   const names = new Set(['.git']);
   // The owner's treeExclude (settings.json): large or generated folders the tree digest skips, like the output_dirs
   // of the owner's pinned specs in the kit home. Project acceptance specs add nothing: the model writes them.
+  // 模型写的 self- 测量规格（冻结到 kit home 后也一样）不贡献任何排除：否则模型写一个 output_dirs 就能让
+  // 每个工具的树摘要都看不见那里的改动。只有主人写的规格和 treeExclude 算数。
+  // A self- spec is model-written even once frozen into the kit home: its output_dirs never hide anything.
   for (const name of settings(ctx.home).treeExclude) names.add(name.replaceAll('\\', '/').replace(/\/$/, ''));
   const directory = path.join(ctx.home, 'specs');
   if (!inside(ctx.home, fs.realpathSync(directory))) refuse('spec refused');
   for (const entry of fs.readdirSync(directory).sort()) {
-    if (!/^[a-zA-Z0-9_-]+\.json$/.test(entry)) continue;
+    if (!/^[a-zA-Z0-9_-]+\.json$/.test(entry) || entry.startsWith('self-')) continue;
     const { spec } = pin(ctx, entry.slice(0, -5));
     for (const name of spec.output_dirs ?? []) {
       if (typeof name !== 'string' || !name || name === '.' || path.isAbsolute(name) || name.split(/[\\/]/).includes('..')) refuse('spec refused');
@@ -200,6 +203,76 @@ export function argv(command) {
   if (open) out.push(word);
   return out;
 }
+// Inline code is a command the classifier cannot read. The fence is about visible intent, not a sandbox: a script
+// file named on the line can still do anything the Worker's user can, but its text is a project file anyone reads.
+// 解释器只把脚本（或 python -m）之前的词当作自己的选项；之后的词是脚本的参数（`node test.mjs -p 8080`、
+// `python run.py -config a.yml`），不再检查。带值的选项连同它的值一起读过；不认识、没有 `=` 的长选项按“带值”处理，
+// 这样一个未知的带值选项不会让扫描提前停在它的值上（宁可误拒，不可漏放）。
+// An interpreter reads options only before its script (or python -m); later words are the script's arguments and are
+// not inline code. An option's separate value is read with it; an unknown long option without `=` is taken to have
+// one (fail closed: a value-taking option must not end the scan early).
+const basename = word => path.basename(word).replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
+const NODE_FLAGS = new Set(('abort-on-uncaught-exception allow-addons allow-child-process allow-inspector allow-wasi allow-worker '
+  + 'build-snapshot check completion-bash cpu-prof disable-sigusr1 disable-wasm-trap-handler disallow-code-generation-from-strings '
+  + 'enable-etw-stack-walking enable-fips enable-source-maps entry-url enable-network-family-autoselection experimental-addon-modules '
+  + 'experimental-default-config-file experimental-eventsource experimental-import-meta-resolve experimental-inspector-network-resource '
+  + 'experimental-network-inspection experimental-print-required-tla experimental-require-module experimental-strip-types '
+  + 'experimental-test-coverage experimental-test-module-mocks experimental-transform-types experimental-vm-modules '
+  + 'experimental-webstorage experimental-worker-inspection expose-gc force-context-aware force-fips '
+  + 'force-node-api-uncaught-exceptions-policy frozen-intrinsics heap-prof help insecure-http-parser inspect inspect-brk inspect-wait '
+  + 'interactive interpreted-frames-native-stack jitless node-memory-debug openssl-legacy-provider openssl-shared-config '
+  + 'pending-deprecation permission preserve-symlinks preserve-symlinks-main prof prof-process report-compact report-exclude-env '
+  + 'report-exclude-network report-on-fatalerror report-on-signal report-uncaught-exception test test-force-exit test-only '
+  + 'test-update-snapshots throw-deprecation tls-max-v1.2 tls-max-v1.3 tls-min-v1.0 tls-min-v1.1 tls-min-v1.2 tls-min-v1.3 '
+  + 'trace-deprecation trace-env trace-env-js-stack trace-env-native-stack trace-exit trace-promises trace-sigint trace-sync-io '
+  + 'trace-tls trace-uncaught trace-warnings track-heap-objects use-bundled-ca use-env-proxy use-openssl-ca use-system-ca '
+  + 'v8-options version watch watch-preserve-output zero-fill-buffers').split(' '));
+const INTERPRETERS = {
+  // node and the runners that take node's flags: -e/-p/-r alone, combined (-pe, -ep) or attached (-e<code>); the long
+  // forms; and data: URLs, the inline module a loader or import flag (--loader, --experimental-loader, --import, -r) runs.
+  node: { flags: name => NODE_FLAGS.has(name) || name.startsWith('no-'), shortValue: ['-C'],
+    inline: x => /^-[a-z]*[epr]/.test(x.toLowerCase()) || /^--(eval|print|require|import)(=|$)/.test(x)
+      || /^(--loader|--experimental-loader|--import|-r)=data:/.test(x) || x.startsWith('data:') },
+  // python: -c alone, attached (-c<code>) or after no-argument flags (-Ic); -m ends the options; -W and -X take a value.
+  python: { flags: name => ['help', 'version', 'help-env', 'help-xoptions', 'help-all'].includes(name),
+    inline: x => /^-[bBdEhiIOPqsSuvVx]*c/.test(x),
+    cluster: x => { const at = x.slice(1).search(/[mWX]/); return at < 0 ? 'none' : x[at + 1] === 'm' ? 'end' : at + 2 === x.length ? 'value' : 'none'; } },
+  // perl and ruby: -e/-E alone, attached or after no-argument flags (-ne, -le).
+  perl: { flags: () => false, shortValue: ['-I', '-M', '-m', '-x'], inline: x => /^-[acdlnpsStTuUvwWx0-9]*[eE]/.test(x) },
+  ruby: { flags: name => ['verbose', 'version', 'help', 'copyright', 'yjit', 'jit'].includes(name),
+    shortValue: ['-I', '-r', '-C', '-E', '-x', '-F'], inline: x => /^-[acdlnpsStTuUvwWx0-9]*[eE]/.test(x) },
+};
+const interpreterKind = exe => ['node', 'nodejs', 'bun', 'tsx'].includes(exe) ? 'node' : /^python[0-9.]*$|^py$/.test(exe) ? 'python'
+  : ['perl', 'ruby'].includes(exe) ? exe : null;
+function inlineCode(command) {
+  const exe = basename(command[0]);
+  // deno evaluates code with a subcommand.
+  if (exe === 'deno') return command.slice(1).some(x => x === 'eval' || /^--(eval|print)(=|$)|^-[ep]$/.test(x));
+  // Launchers run another program: npx/npm exec/uv run/bundle exec ... `-c`/`--call` hands npx and npm exec a shell line.
+  const launcher = ['npx', 'bunx', 'pnpx'].includes(exe) ? 1
+    : (['npm', 'pnpm', 'yarn'].includes(exe) && ['exec', 'x', 'dlx'].includes(command[1])) || (['uv', 'poetry', 'pipenv'].includes(exe) && command[1] === 'run')
+      || (exe === 'bundle' && command[1] === 'exec') ? 2 : 0;
+  if (launcher) {
+    for (let i = launcher; i < command.length && command[i].startsWith('-') && command[i] !== '--'; i++) if (/^(-c|--call)(=|$)/.test(command[i])) return true;
+    return command.slice(launcher).some((word, i) => interpreterKind(basename(word)) && inlineCode(command.slice(launcher + i)));
+  }
+  const kind = interpreterKind(exe);
+  if (!kind) return false;
+  const rules = INTERPRETERS[kind];
+  // `bun run` may stand before bun's options; they are read after it as well.
+  for (let i = exe === 'bun' && command[1] === 'run' ? 2 : 1; i < command.length; i++) {
+    const word = command[i];
+    // The script: node cannot be handed an inline data: module in its place either.
+    if (word === '--' || word === '-' || !word.startsWith('-')) return kind === 'node' && word.startsWith('data:');
+    if (rules.inline(word)) return true;
+    const long = word.startsWith('--');
+    const shape = !long && rules.cluster ? rules.cluster(word) : null;
+    if (shape === 'end') return false;
+    const value = long ? !word.includes('=') && !rules.flags(word.slice(2)) : rules.cluster ? shape === 'value' : (rules.shortValue ?? []).includes(word);
+    if (value && i + 1 < command.length) { i++; if (rules.inline(command[i]) || command[i].startsWith('data:')) return true; }
+  }
+  return false;
+}
 export function classify(ctx, input, cwd = '.') {
   const opts = settings(ctx.home);
   const command = argv(input);
@@ -219,15 +292,7 @@ export function classify(ctx, input, cwd = '.') {
   if ((['net', 'sc', 'systemctl', 'service', 'docker', 'supervisorctl', 'launchctl', 'brew'].includes(exe) && /\b(stop|restart|kill|delete|down)\b/.test(joined))
     || /\b(stop-service|stop-process)\b/.test(joined)) refuse('command refused');
   if (git('config')) refuse('command refused');
-  // Inline code is a command the classifier cannot read. The fence is about visible intent, not a sandbox: a script
-  // file named on the line can still do anything the Worker's user can, but its text is a project file anyone reads.
-  // node: -e/-p/-r alone, combined (-pe, -ep) or attached (-e<code>); the long forms; and data: URLs, the inline
-  // module a loader or import flag (--loader, --experimental-loader, --import, -r) would run.
-  // python: -c alone, attached (-c<code>) or after no-argument flags (-Ic). perl/ruby: -e/-E likewise (-ne, -le).
-  if ((exe === 'node' && words.some(x => /^-[a-z]*[epr]/.test(x) || /^(--eval|--print|--require|--import)(=|$)/.test(x)
-      || /^(--loader|--experimental-loader|--import|-r)=data:/.test(x) || x.startsWith('data:')))
-    || (/^python[0-9.]*$|^py$/.test(exe) && command.some(x => /^-[bBdEhiIOPqsSuvVx]*c/.test(x)))
-    || (/^(perl|ruby)$/.test(exe) && command.some(x => /^-[acdlnpsStTuUvwWx0-9]*[eE]/.test(x)))) refuse('command refused');
+  if (inlineCode(command)) refuse('command refused');
   // Relaxable by the owner's settings.
   if (/^(sh|bash|cmd|powershell|pwsh|wscript|cscript)$/.test(exe) && !opts.shell) refuse('command refused');
   if (!opts.shell && command.some(x => /[;&|<>`]/.test(x) || /\$\(|%[^%]+%/.test(x))) refuse('command refused');

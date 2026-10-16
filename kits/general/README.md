@@ -72,12 +72,24 @@ See `settings.example.json`. All fields are optional.
 Always refused: privilege elevation, killing processes or stopping services, push/publish, global
 installs or configuration (git subcommands are checked anywhere in a shell line), inline interpreter code (`node -e`, `python -c`, …) and paths that
 escape the project or the allowed directories. Inline code includes combined and attached forms
-(`node -pe`, `node -e<code>`, `python -c<code>`, `python -Ic`, `perl -ne`) and `data:` URLs given to
-`--loader`, `--experimental-loader`, `--import` or `-r`. The fence is about visible intent, not a
-sandbox: a script file named on the line can do anything the Worker's user can; what it buys is that
-the code is a project file anyone can read. With `shell: true` these checks see only the
-command line as written: a shell or script can still run anything the Worker's user can, so enable
-it only for a project you trust.
+(`node -pe`, `node -e<code>`, `python -c<code>`, `python -Ic`, `perl -ne`), `data:` URLs given to
+`--loader`, `--experimental-loader`, `--import` or `-r` or named as the script, and preloading with
+`-r`/`--require`/`--import`. Only the interpreter's own options are read: the words before the script
+(or `python -m`), an option's separate value included. Words after the script are its arguments, so
+`node test.mjs -p 8080`, `python run.py -config a.yml` and `node --test test/ -r` run. An unknown long
+option without `=` is taken to have a value, so it cannot end the scan early (a rare false refusal
+rather than a gap). The same rules cover `nodejs`, `bun`, `tsx`, `deno eval`, and `npx`, `bunx`,
+`npm exec`/`npm x`, `pnpm exec`/`dlx`, `yarn exec`/`dlx`, `uv run`, `poetry run`, `pipenv run` and
+`bundle exec` followed by an interpreter (and `npx -c`/`npm exec -c`, which take a shell line).
+The fence is about visible intent, not a sandbox: other launchers, wrappers and a script file named
+on the line can still do anything the Worker's user can; what it buys is that the ordinary ways to
+hide code in a command line are refused and the code is a project file anyone can read.
+
+With the owner's `shell: true` the classifier is advisory only. It splits the line into words with
+its own quoting rules (`argv`), not the shell's, and the shell then interprets the line as written:
+variables, substitutions, globbing and the shell's own quoting can run what the classifier never saw.
+The line is shown verbatim (in `eng.check_spec` for a check) and the owner chose the shell, so
+enable it only for a project you trust.
 
 ## Behaviour
 
@@ -181,6 +193,14 @@ where it never changes; later edits of the project copy are ignored. A refused s
 can be corrected under its name. The `self-` prefix stays on every receipt, so the
 owner can review such specs afterwards and tell them from the owner's own.
 
+A `self-` spec is written by the model, so it is held to what the model may do anyway. Its command
+passes the same classifier as `eng.run` (`command refused`, `path refused`) and never goes through a
+shell. Its `interpreter`, if any, is `node`, `python`, `python3`, `ruby` or `perl`, or an absolute
+path under the owner's `allowedPaths`. It has no `output_dirs` (`spec refused: a self- spec has no
+output_dirs`): a measurement's own outputs belong under the owner's `treeExclude`. A `self-` file in
+`<kit home>/specs` never adds a tree exclusion, even one frozen by an earlier version with
+`output_dirs`; only the owner's own specs and `treeExclude` do. The owner's specs are unchanged.
+
 ## Completing a goal
 
 Certification means an acceptance contract was fulfilled: a root goal, criterion leaves and a signer.
@@ -193,8 +213,8 @@ so its signed digest must hold. A bridge match for a different digest cannot ful
 The Board's contract machinery completes the root when all signed leaves fulfill.
 
 Console renders the `eng.check_spec` fact whose `check` and `spec_digest` match a proposed leaf
-next to that leaf, so the person reads the command, working directory, shell flag, output
-directories and every frozen file digest the leaf's digest denotes before signing. Without such a
+next to that leaf, so the person reads the command, working directory, shell flag and every
+frozen file digest the leaf's digest denotes before signing. Without such a
 fact there is nothing to read; `eng.test@2` refuses a spec that `eng.acceptance@1` cannot report.
 
 `eng.check_passed`, `eng.check_result`, `eng.check_spec` and `eng.tree_step` are package pins
@@ -241,15 +261,20 @@ colons or control characters. `shell` is an optional boolean (default false). Un
 refused. Include every test dependency in `files`; each digest hashes that file's exact bytes,
 without EOL normalization. Files and specs cannot be links or pass through linked directories.
 Command words (or the shell line), `cwd` and `files` paths are shown on the Board for a person to
-sign, so a control or format character (Unicode categories Cc and Cf, for example U+202E or a
-zero-width space) or an unpaired surrogate is refused, naming the field:
+sign, so a character that is invisible or can pass for another is refused, naming the field: control
+and format characters (Unicode Cc and Cf, for example U+202E or a zero-width space), default-ignorable
+code points (for example U+3164, U+115F, U+FFA0, U+034F, U+FE0F), line and paragraph separators (Zl,
+Zp), any space separator other than U+0020 (Zs, for example U+00A0), private-use (Co) and unassigned
+(Cn, as of the Worker's Node.js Unicode version) code points, and unpaired surrogates:
 `acceptance spec invalid: command`, `acceptance spec invalid: cwd` or `acceptance spec invalid: files`.
 
 A spec has no output directories (an `output_dirs` field makes it invalid). The owner's `treeExclude`
 setting is the only exclusion: every change a check's own run makes outside it is a tree step like
 any other tool's, so a model-written spec cannot keep other checks passing on code they never tested.
-A check whose own run changes the tree is stamped at the generation before the run and the same
-receipt records the step to the new one, so such a run never passes on the tree it created. A
+A check whose own run changes the tree is stamped at the generation and digest before the run and
+the same receipt records the step to the new one, so such a run never passes on the tree it created.
+This holds when the run ends on the last recorded tree too (it reverted a change made outside the kit):
+it tested the changed tree, so its receipt still carries a step. A
 check that writes output must write it under a `treeExclude` directory the owner set, or outside the
 project (for example the system temporary directory).
 

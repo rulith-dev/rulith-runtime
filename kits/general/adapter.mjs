@@ -8,7 +8,7 @@ import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
 import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, FIELD_ERRORS } from './acceptance-specs.mjs';
-import { settings, context, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
+import { settings, context, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
 // A receipt carries every row twice (the result text and its facts) inside the Worker's inline budget (8 KiB on
@@ -197,7 +197,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
       case 'measure_pinned': {
         if (Object.keys(args).some(k => k !== 'spec_id')) refuse('spec refused: the only argument is spec_id');
         const pinned = pin(ctx, args.spec_id); const spec = pinned.spec;
-        const command = pinnedCommand(ctx, spec);
+        const command = pinnedCommand(ctx, spec, args.spec_id.startsWith('self-'));
         // Each refusal names the field at fault (field names and fixed words only: never a path or a value).
         // Two ways to read the number: the measuring program prints one small JSON object with an integer milli-value
         // (json_integer_milli), or it writes a JSON result file inside the project and the spec names the path to one
@@ -277,7 +277,12 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     const after = read ? before : tree(ctx);
     if (tool === 'run') { rows[0].tree_after = after.digest; rows[0].changed_files = JSON.stringify(changed(before, after)); }
     // Every change is a step, a check's own run included: the owner's treeExclude is the only exclusion.
-    const mutated = state.digest !== after.digest;
+    // eng.test@2 也比较运行前后：一次运行把外部改动（d0 → d1，无回执）又改回 d0 时，结束的树等于记录的树，
+    // 但它测的是 d1，所以仍然是一步，结果不能算当前通过。
+    // eng.test@2 also compares before with after: a run that reverts an unrecorded change (d0 -> d1, then the run
+    // writes d0 back) ends on the recorded tree but tested d1, so it is still a step and never current.
+    const ranOver = tool === 'test_v2' && before.digest !== after.digest;
+    const mutated = state.digest !== after.digest || ranOver;
     const gen = state.gen + (mutated ? 1 : 0);
     if (!Number.isSafeInteger(gen)) refuse('generation exhausted');
     const step = mutated ? { from_gen: state.gen, to_gen: gen } : { from_gen: -1, to_gen: -1 };
@@ -287,9 +292,10 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     // A check whose own run changed the tree tested the tree before, not the one it made: its result is stamped at the
     // pre-run generation, and the step pre → post in the same receipt leaves it, so it can never be current.
     // (eng.test@1 keeps its original behaviour: the final generation.)
+    // Such a row pairs the pre-run generation with the pre-run digest; the step in the same receipt carries pre -> post.
     if (tool === 'test' || tool === 'test_v2') {
-      rows[0].tree_digest = after.digest;
-      rows[0].gen = tool === 'test_v2' && before.digest !== after.digest ? state.gen : gen;
+      rows[0].tree_digest = ranOver ? before.digest : after.digest;
+      rows[0].gen = ranOver ? state.gen : gen;
     }
     const testGen = (tool === 'test' || tool === 'test_v2') && rows[0].exit_code === 0 ? rows[0].gen : state.test_gen;
     // Replay the genuine first edge after the latest passing test. If an adapter finished but its Worker receipt was
@@ -335,11 +341,29 @@ function acceptanceCommand(ctx, spec) {
   return spec.shell ? { command: command.command, cwd: command.cwd, shell: true, line: spec.command }
     : { command: command.command, cwd: command.cwd, shell: false };
 }
-function pinnedCommand(ctx, spec) {
+function pinnedCommand(ctx, spec, self = false) {
   // Owner-pinned executable may be an absolute toolchain path outside the Source.
   if (!Array.isArray(spec.command) || !spec.command.length || spec.command.some(x => typeof x !== 'string' || !x || x.includes('\0'))) refuse('spec refused: command must be a list of non-empty strings');
+  // 模型自己写的 self- 规格：命令和 eng.run 一样过分类器（不许推送、发布、提权、内联代码……，主人的 allow 与
+  // allowedPaths 适用），从不经过 shell；它没有输出目录（排除只由主人定）；解释器只能是常见解释器的名字或主人
+  // allowedPaths 下的绝对路径。主人在 kit home 写的规格不变。
+  // A self- spec is model-written: its command passes eng.run's classifier and never meets a shell; it has no
+  // output_dirs (exclusions are the owner's); its interpreter is a bare common interpreter name or an absolute path
+  // under the owner's allowedPaths. The owner's own specs in the kit home are unchanged.
+  if (self) {
+    if (spec.output_dirs !== undefined) refuse('spec refused: a self- spec has no output_dirs');
+    if (spec.interpreter !== undefined && !(['node', 'python', 'python3', 'ruby', 'perl'].includes(spec.interpreter)
+      || (typeof spec.interpreter === 'string' && path.isAbsolute(spec.interpreter) && underAllowedPath(ctx, spec.interpreter))))
+      refuse('spec refused: interpreter must be node, python, python3, ruby, perl or an absolute path under allowedPaths');
+    const command = classify(ctx, [...spec.command], spec.cwd ?? '.');
+    return { command: command.command, cwd: command.cwd, shell: false };
+  }
   // A pinned spec may ask for the system shell (for example `npm test` on Windows, which is a .cmd script).
   return { command: spec.command, cwd: fenced(ctx.root, spec.cwd ?? '.'), shell: spec.shell === true, line: spec.command.join(' ') };
+}
+function underAllowedPath(ctx, file) {
+  let real = path.resolve(file); try { real = fs.realpathSync(file); } catch {}
+  return settings(ctx.home).allowedPaths.some(dir => inside(dir, real) && inside(dir, path.resolve(file)));
 }
 function commandRow(r, command, before) {
   return { run_id: randomUUID(), command_digest: sha(JSON.stringify(command)), exit_code: r.exit_code, timed_out: r.timed_out, duration_ms: r.duration_ms, stdout_digest: r.stdout.digest, stderr_digest: r.stderr.digest, stdout_bytes: r.stdout.bytes, stderr_bytes: r.stderr.bytes, tree_before: before, tree_after: '', changed_files: '' };
