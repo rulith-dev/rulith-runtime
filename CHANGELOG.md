@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.17.0 - 2026-10-16
 
 - Acceptance specs may write `files` as the `eng.check_spec` array of `{path, sha256}` objects as well
   as the `{path: sha256}` map; both spellings have one spec digest. A refused spec now says what is
