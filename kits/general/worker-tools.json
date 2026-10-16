@@ -546,7 +546,7 @@
       },
       "returns": [
         {
-          "predicate": "eng.test_result",
+          "predicate": "eng.check_result",
           "args": {
             "check": "$check",
             "spec_digest": "$spec_digest",
@@ -583,6 +583,10 @@
           "args": {
             "check": "$check",
             "spec_digest": "$spec_digest",
+            "command": "$command",
+            "cwd": "$cwd",
+            "shell": "$shell",
+            "output_dirs": "$output_dirs",
             "files": "$files"
           }
         }

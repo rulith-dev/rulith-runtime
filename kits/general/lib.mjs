@@ -3,7 +3,6 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { generalSettings } from './general-settings.mjs';
-import { acceptanceOutputDirs } from './acceptance-specs.mjs';
 
 export const sha = value => createHash('sha256').update(value).digest('hex');
 export function fileDigest(file) {
@@ -105,8 +104,9 @@ export function pin(ctx, id) {
 export function exclusions(ctx) {
   const names = new Set(['.git']);
   // The owner's treeExclude (settings.json): large or generated folders the tree digest skips, like a spec's output_dirs.
+  // Project acceptance specs add nothing here: the model writes them, so their output_dirs cover only the changes of
+  // their own eng.test@2 run (adapter.mjs); every other tool keeps hashing those directories.
   for (const name of settings(ctx.home).treeExclude) names.add(name.replaceAll('\\', '/').replace(/\/$/, ''));
-  for (const name of acceptanceOutputDirs(ctx)) names.add(name);
   const directory = path.join(ctx.home, 'specs');
   if (!inside(ctx.home, fs.realpathSync(directory))) refuse('spec refused');
   for (const entry of fs.readdirSync(directory).sort()) {

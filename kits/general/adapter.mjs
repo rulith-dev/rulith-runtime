@@ -7,7 +7,7 @@ import { applyPatch } from './apply-patch.mjs';
 import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
-import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles } from './acceptance-specs.mjs';
+import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, onlyOutput } from './acceptance-specs.mjs';
 import { settings, context, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
@@ -51,7 +51,10 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     if (tool === 'test_v2') {
       if (Object.keys(args).length !== 1 || !Object.hasOwn(args, 'check')) refuse('acceptance check invalid');
       acceptance = acceptanceSpec(ctx, args.check);
+      // A spec the person cannot read in full on the Board (eng.check_spec) can never pass.
+      checkSpecRow(args.check, acceptance);
       verifyAcceptanceFiles(ctx, acceptance.spec);
+      acceptance.command = acceptanceCommand(ctx, acceptance.spec);
     }
     const before = observing && tool !== 'search' ? null : tree(ctx);
     const state = readJson(ctx.stateFile, { gen: 0, digest: before?.digest ?? '' });
@@ -182,7 +185,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
       case 'test': {
         if (tool === 'test' && Object.keys(args).length) refuse('test takes no arguments');
         const pinned = tool === 'test' ? pin(ctx, 'test') : acceptance;
-        const command = pinnedCommand(ctx, pinned.spec);
+        const command = tool === 'test' ? pinnedCommand(ctx, pinned.spec) : acceptance.command;
         const result = await execute(command.command, command.cwd, { deadlineMs: settings(ctx.home).runSeconds * 1000, shell: command.shell, line: command.line });
         if (tool === 'test_v2') {
           verifyAcceptanceFiles(ctx, pinned.spec);
@@ -273,7 +276,11 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     }
     const after = read ? before : tree(ctx);
     if (tool === 'run') { rows[0].tree_after = after.digest; rows[0].changed_files = JSON.stringify(changed(before, after)); }
-    const mutated = state.digest !== after.digest;
+    // A check's own output_dirs cover only what its own run wrote there: the generation stays and the post-run
+    // digest is saved, so later receipts see no change. A change made before the run, or outside those
+    // directories, is a step as for any tool.
+    const mutated = state.digest !== after.digest && !(tool === 'test_v2' && state.digest === before.digest
+      && onlyOutput(changed(before, after), acceptance.spec.output_dirs));
     const gen = state.gen + (mutated ? 1 : 0);
     if (!Number.isSafeInteger(gen)) refuse('generation exhausted');
     const step = mutated ? { from_gen: state.gen, to_gen: gen } : { from_gen: -1, to_gen: -1 };
@@ -313,6 +320,14 @@ function measureSpecs(ctx) {
   const proposed = names(path.join(ctx.root, '.deep-rulith', 'measure')).map((n) => `self-${n}`).filter((n) => n.length <= 64);
   return [...new Set([...names(path.join(ctx.home, 'specs')).filter((n) => n !== 'test'), ...proposed])].sort();
 }
+// A project spec is written by the model, so its command passes the same classifier as eng.run (no push, publish,
+// privilege, process control, global installs or inline interpreter code; the owner's allow and allowedPaths).
+// Its own shell flag cannot widen the owner's settings: shell runs only where the owner enabled it.
+function acceptanceCommand(ctx, spec) {
+  if (spec.shell && !settings(ctx.home).shell) refuse('acceptance shell refused');
+  const command = classify(ctx, spec.command, spec.cwd);
+  return { command: command.command, cwd: command.cwd, shell: spec.shell, line: spec.command.join(' ') };
+}
 function pinnedCommand(ctx, spec) {
   // Owner-pinned executable may be an absolute toolchain path outside the Source.
   if (!Array.isArray(spec.command) || !spec.command.length || spec.command.some(x => typeof x !== 'string' || !x || x.includes('\0'))) refuse('spec refused: command must be a list of non-empty strings');
@@ -334,7 +349,7 @@ export async function main(tool) {
     // A spec refusal names its field in fixed words (no path, no value); a file-system error says only what kind it was.
     const fileErrors = { ENOENT: 'path not found', EISDIR: 'path is a directory', ENOTDIR: 'path not found', EACCES: 'path not readable', EPERM: 'path not readable', EBUSY: 'path not readable' };
     const acceptanceError = ['test_v2', 'acceptance'].includes(tool) &&
-      (['acceptance spec invalid', 'acceptance spec changed', 'acceptance check invalid', 'acceptance takes no arguments'].includes(error.message)
+      (['acceptance spec invalid', 'acceptance spec changed', 'acceptance spec too large', 'acceptance shell refused', 'acceptance check invalid', 'acceptance takes no arguments'].includes(error.message)
         || /^acceptance file changed: [^\x00-\x1f\x7f]+$/.test(error.message));
     const verdict = acceptanceError || messages.includes(error.message) || /^spec refused: [A-Za-z0-9_ ,()-]+$/.test(error.message) ? error.message
       : fileErrors[error.code] ?? 'adapter failed';

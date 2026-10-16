@@ -36,11 +36,17 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    even though it is not passed directly into those adapters. Use a dedicated low-privilege search key.
 4. Accreditation: the Board records a Worker result only for predicates its Source accredits.
    From this directory run `node pack/build-pack.mjs`. Install `pack/program-v2.json`
-   (`engineering_work` version 2, native `rulith-domain-program`) and `pack/sources-v2.json`
-   (`engineering_work_sources` version 2). Source `lab` accredits the `eng.*` and `web.*` words.
+   (`engineering_work`, the second edition, in the Gateway's authoring format: `id`, `title`,
+   `vocabulary.defines/imports`, `rules`, `acceptance`, `pins`, `actions`) and `pack/sources-v3.json`
+   (`engineering_work_sources` version 3). The Gateway compiles the program to the Kernel's
+   `rulith-domain-program`; the native format is not an install input. One authoring program defines
+   one namespace, so the program defines the `eng.*` words only; Source `lab` accredits the `eng.*`
+   receipt words and `web.page`/`web.search` (accreditation needs no definition). The criterion
+   `eng.check_passed` is not accredited: only the package rule derives it.
    The program adds the check criterion rule and acceptance bridge, and no business Actions.
-   The older `pack/program.json` and `pack/sources.json` stay byte-identical. Install v2 on a new
-   Board: same-name packages cannot be installed together or hot-upgraded.
+   The older `pack/program.json` and `pack/sources.json` stay byte-identical (that program defines two
+   namespaces and does not compile). Install v2 on a new Board: same-name packages cannot be installed
+   together or hot-upgraded.
 5. Console: bind Source `lab` to the project root and the Worker Connection, pin the desired
    kit tools (allow direct use) and lock. Non-strict exploration mode lets the model supply
    write and run inputs; each such call is marked as not grounded.
@@ -182,15 +188,35 @@ name to `acceptance_met(node)`. The leaf's own `goal_met` also requires the exac
 so its signed digest must hold. A bridge match for a different digest cannot fulfill that leaf.
 The Board's contract machinery completes the root when all signed leaves fulfill.
 
-`eng.check_passed`, `eng.test_result`, `eng.tree_step` and `eng.check_spec` are package pins
+Console renders the `eng.check_spec` fact whose `check` and `spec_digest` match a proposed leaf
+next to that leaf, so the person reads the command, working directory, shell flag, output
+directories and every frozen file digest the leaf's digest denotes before signing. Without such a
+fact there is nothing to read; `eng.test@2` refuses a spec that `eng.acceptance@1` cannot report.
+
+`eng.check_passed`, `eng.check_result`, `eng.check_spec` and `eng.tree_step` are package pins
 (committed derivation). Model assertions and model rule heads using them are refused with
 `goalpost_moved`; Worker receipts and package rules provide the evidence. The model does not
 write a completion rule. Console signing and certification require the D-1016a Kernel/Gateway work.
 
+Limits of the vocabulary, stated rather than enforced here:
+
+- The authoring format's definitions carry only `id`, `as` and `args`; it has no `key` notion. A leaf
+  whose desired atom omits `spec_digest` would match any digest. Console and the Kernel's signing
+  guard must require both arguments of `eng.check_passed` on a signed leaf.
+- The receipt facts carry no Source column. A run adapter is not told its Source name (the Worker
+  passes only `RULITH_SOURCE_ACCESS` and `RULITH_SOURCE_TYPE`), so `"$source"` cannot be mapped.
+  Each receipt is still bound to its invocation's Source by the Kernel's accreditation. Generations
+  are per project: bind one `lab` project per Board when checks are used as criteria.
+- The check observes what its process reports. Code under test runs inside the test process and can
+  sabotage it (for example `process.exit(0)` before an assertion, or a wrapper that swaps code and
+  restores it). The contract covers what the check observes, not an adversarial project; the person
+  reads the command and every frozen file, wrappers included, in `eng.check_spec` before signing.
+
 ## Project acceptance specs
 
 Write `.rulith/acceptance/<check>.json` in the project, with a check matching
-`^[a-z0-9][a-z0-9_-]{0,39}$`. For example (replace the digest with the actual test file SHA-256):
+`^[a-z][a-z0-9_-]{0,39}$` (a letter first: an all-digit name would become a number on the Board).
+For example (replace the digest with the actual test file SHA-256):
 
 ```json
 {
@@ -202,46 +228,67 @@ Write `.rulith/acceptance/<check>.json` in the project, with a check matching
 }
 ```
 
-Specs are UTF-8 JSON objects, at most 16 KiB. `command` is a nonempty array of nonempty strings;
-`cwd` is required and is `.` or a project-relative directory. `files` is an object mapping
-test dependency paths to lowercase, 64-character SHA-256 hex strings. Paths are at most 512 UTF-16
-code units and use `/`, with no
-empty, `.` or `..` components, backslashes, colons or control characters. `shell` is an optional
-boolean (default false); true uses the system shell as for the legacy pinned test. Unknown fields
-are refused. `output_dirs` optionally lists paths excluded from tree digests, across all valid project
-specs. They cannot hide `.rulith/acceptance`, any part of that directory, or their own test dependencies;
-an output exclusion overlapping another spec's dependency is ignored for tree digests.
-Include every test dependency in `files`; each digest hashes that file's exact bytes, without EOL
-normalization. Files and specs cannot be links or pass through linked directories.
+Specs are UTF-8 JSON objects, at most 16 KiB, without a repeated key in any object. `command` is a
+nonempty array of nonempty strings; `cwd` is required and is `.` or a project-relative directory.
+`files` maps at most 32 test dependency paths to lowercase, 64-character SHA-256 hex strings. Paths
+are at most 512 UTF-16 code units and use `/`, with no empty, `.` or `..` components, backslashes,
+colons or control characters. `shell` is an optional boolean (default false). Unknown fields are
+refused. Include every test dependency in `files`; each digest hashes that file's exact bytes,
+without EOL normalization. Files and specs cannot be links or pass through linked directories.
 
-The **spec digest** hashes canonical JSON bytes: parse with `JSON.parse` (duplicate keys have its
-last-key-wins meaning), recursively sort every object's keys by UTF-16 code unit order, retain array
-order, encode keys and primitive values with `JSON.stringify`, and serialize compactly without
-whitespace. Hash the UTF-8 encoding with SHA-256, with no BOM and no trailing newline. Optional
-fields remain absent when omitted; defaults are not inserted. Object key order and JSON formatting
-do not change the digest; changing a command, dependency digest or optional field does.
+`output_dirs` optionally lists literal project directories (no `*` or `?` in any component) where
+the check writes its output. They apply only to the check's own `eng.test@2` run: when everything
+that run changed lies inside them, the generation stays and the post-run tree digest is recorded,
+so the next receipt sees no step. Every other tool keeps hashing those directories, and a later
+change there is an ordinary step. They cannot cover `.rulith/acceptance`, any part of it, or the
+spec's own dependencies. The owner's `treeExclude` setting is the only exclusion applied to every tool.
+
+The model writes specs, so the command is classified exactly like `eng.run`: privilege elevation,
+process control, push/publish, global installs, inline interpreter code, shell executables and
+shell metacharacters are refused (`command refused`), paths outside the project need the owner's
+`allowedPaths` (`path refused`), and the owner's `allow` list applies. `shell: true` runs through
+the system shell only when the owner's `settings.json` enables `shell`; otherwise the check refuses
+with `acceptance shell refused`. Without `shell: true` the command never goes through a shell.
+
+The **spec digest** hashes canonical JSON bytes of the spec with its defaults written out
+(`output_dirs: []` and `shell: false` when omitted): recursively sort every object's keys by UTF-16
+code unit order, retain array order, encode keys and primitive values with `JSON.stringify`, and
+serialize compactly without whitespace. Hash the UTF-8 encoding with SHA-256, with no BOM and no
+trailing newline. Object key order, JSON formatting and omitted defaults do not change the digest;
+changing the command, the working directory, a dependency digest, `output_dirs` or `shell` does.
+The digest is thus a function of the `eng.check_spec` fact alone.
 
 `eng.acceptance@1` takes no parameters. It reads only `.rulith/acceptance`, without the Source lock
-or project tree walk, and returns sorted `eng.check_spec{check, spec_digest, files}` receipt rows,
-where `files` is the dependency count. It does not read or verify dependencies. Each invalid spec
-has an `error: "acceptance spec invalid"` text row in `errors` and contributes no fact. Worker
-fact mappings apply only to valid spec `rows`. A legal filename's check is
-included on its error row. Missing acceptance directories return no rows. Results stop at whole
-rows within 1.8 KB and say `truncated: true` when further specs remain.
+or project tree walk, and returns sorted
+`eng.check_spec{check, spec_digest, command, cwd, shell, output_dirs, files}` receipt rows. `command`
+is the command as one line: a word without whitespace, quotes or control characters stands as
+written, any other word is a JSON string (a token starting with `"` is JSON, every other token is
+literal). `output_dirs` is a JSON array text, and `files` is the JSON text
+`[{"path":…,"sha256":…},…]` sorted by path. It does not read or verify dependencies. Each invalid
+spec has an `error: "acceptance spec invalid"` text row in `errors` and contributes no fact. A spec
+whose row alone would not fit the Worker's inline receipt (7 KiB of the 8 KiB budget, measured as the
+result text plus its facts) has `error: "acceptance spec too large"` instead. A legal filename's check
+is included on its error row. A missing acceptance directory returns no rows; one that cannot be
+listed (a file, a link, unreadable) returns the single error row `acceptance directory unreadable`
+and blocks no other tool. Results stop at whole rows within the same budget and say
+`truncated: true` when further specs remain.
 
-`eng.test@2` takes only `check`. It validates the project spec, verifies all listed files before
-execution, then runs its command. A missing, unreadable, linked or changed dependency refuses with
+`eng.test@2` takes only `check`. It validates the project spec, refuses one too large to report
+(`acceptance spec too large`), verifies all listed files before execution, classifies the command,
+then runs it. A missing, unreadable, linked or changed dependency refuses with
 `acceptance file changed: <project-relative path>`, with no facts and no command execution. Invalid
 specs refuse with `acceptance spec invalid`; invalid check names/arguments use
-`acceptance check invalid`. Receipts contain `eng.test_result{check, spec_digest, gen, tree_digest,
-exit_code}` plus the usual `eng.tree_step`. A test that changes the tree stamps its final generation;
-a no-change step is `(-1,-1)`. A nonzero exit is still reported, but cannot derive the criterion.
-After execution the adapter rechecks dependencies and the spec digest, so a command cannot rewrite
-its own frozen tests/spec and produce a passing fact. A changed valid spec uses `acceptance spec changed`.
+`acceptance check invalid`. Receipts contain `eng.check_result{check, spec_digest, gen, tree_digest,
+exit_code}` plus the usual `eng.tree_step`. A test that changes the tree outside its output
+directories stamps its final generation; a no-change step is `(-1,-1)`. A nonzero exit is still
+reported, but cannot derive the criterion. After execution the adapter rechecks dependencies and the
+spec digest, so a command cannot rewrite its own frozen tests/spec and produce a passing fact. A
+changed valid spec uses `acceptance spec changed`.
 
-The rule `ENG_CHECK_PASSED` derives `eng.check_passed(check, spec_digest)` from a successful result
-at generation `g` unless an `eng.tree_step(from_gen:g, to_gen:n)` exists. The NAF variable `n` is
-intentionally free. Later writes retract the criterion via closure. The frozen acceptance digest
-lives on the Board in the signed leaf's desired atom: the kit does not copy specs into its home,
-and the Source lock does not freeze the acceptance contract. `eng.test@1` still reads only
-`<kit home>/specs/test.json` and retains its original contract and receipt shape.
+The rule `ENG_CHECK_PASSED` derives `eng.check_passed(check, spec_digest)` from a successful
+`eng.check_result` at generation `g` unless an `eng.tree_step(from_gen:g, to_gen:n)` exists. The NAF
+variable `n` is intentionally free. Later writes retract the criterion via closure. The frozen
+acceptance digest lives on the Board in the signed leaf's desired atom: the kit does not copy specs
+into its home, and the Source lock does not freeze the acceptance contract. `eng.test@1` still reads
+only `<kit home>/specs/test.json` and returns its original four-argument `eng.test_result`, which
+the v2 program defines unchanged and from which nothing is derived.

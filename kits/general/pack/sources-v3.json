@@ -2,14 +2,14 @@
   "format": "rulith-sources/1",
   "meta": {
     "name": "engineering_work_sources",
-    "version": 2
+    "version": 3
   },
   "sources": [
     {
       "name": "lab",
       "type": "file",
       "words": [
-        "eng.check_passed",
+        "eng.check_result",
         "eng.check_spec",
         "eng.command_result",
         "eng.file_read",

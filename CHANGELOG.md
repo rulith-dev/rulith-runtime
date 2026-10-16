@@ -5,8 +5,12 @@ All notable changes to the local runtime are documented here.
 ## Unreleased
 
 - Add project acceptance specs, `eng.acceptance@1` discovery and `eng.test@2` digest-checked
-  receipts (D-1016a, PSC 0.2.17). The native engineering_work v2 package derives the pinned
-  criterion `eng.check_passed` with a freshness rule and an acceptance bridge for signed leaves.
+  receipts (D-1016a, PSC 0.2.17). The engineering_work v2 package, emitted in the Gateway's
+  authoring format, derives the pinned criterion `eng.check_passed` from `eng.check_result` with a
+  freshness rule and an acceptance bridge for signed leaves; Sources package version 3.
+  `eng.check_spec` carries the command, cwd, shell, output directories and file digests the spec
+  digest denotes. Spec commands pass the `eng.run` classifier and the owner's shell setting; a
+  spec's `output_dirs` cover only its own run.
 - Address D-1015c review findings: opt-in image artifact custody, bounded web text conversion,
   dead-holder lock recovery, stricter SSRF ranges, complete patch edges and per-line EOLs,
   link refusal, bounded glob matching and Sources package v2. Web calls skip project walks/locks.

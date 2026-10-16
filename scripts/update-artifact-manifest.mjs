@@ -98,7 +98,7 @@ const files = [
   'kits/general/pack/program.json',
   'kits/general/pack/program-v2.json',
   'kits/general/pack/sources.json',
-  'kits/general/pack/sources-v2.json',
+  'kits/general/pack/sources-v3.json',
   'kits/general/patch_file.mjs',
   'kits/general/pinned-measure-interpreted.example.json',
   'kits/general/pinned-measure.example.json',
