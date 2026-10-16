@@ -586,7 +586,6 @@
             "command": "$command",
             "cwd": "$cwd",
             "shell": "$shell",
-            "output_dirs": "$output_dirs",
             "files": "$files"
           }
         }

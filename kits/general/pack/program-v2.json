@@ -32,7 +32,6 @@
           "command",
           "cwd",
           "shell",
-          "output_dirs",
           "files"
         ]
       },

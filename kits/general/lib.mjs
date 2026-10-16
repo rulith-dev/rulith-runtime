@@ -103,9 +103,8 @@ export function pin(ctx, id) {
 }
 export function exclusions(ctx) {
   const names = new Set(['.git']);
-  // The owner's treeExclude (settings.json): large or generated folders the tree digest skips, like a spec's output_dirs.
-  // Project acceptance specs add nothing here: the model writes them, so their output_dirs cover only the changes of
-  // their own eng.test@2 run (adapter.mjs); every other tool keeps hashing those directories.
+  // The owner's treeExclude (settings.json): large or generated folders the tree digest skips, like the output_dirs
+  // of the owner's pinned specs in the kit home. Project acceptance specs add nothing: the model writes them.
   for (const name of settings(ctx.home).treeExclude) names.add(name.replaceAll('\\', '/').replace(/\/$/, ''));
   const directory = path.join(ctx.home, 'specs');
   if (!inside(ctx.home, fs.realpathSync(directory))) refuse('spec refused');
@@ -220,9 +219,15 @@ export function classify(ctx, input, cwd = '.') {
   if ((['net', 'sc', 'systemctl', 'service', 'docker', 'supervisorctl', 'launchctl', 'brew'].includes(exe) && /\b(stop|restart|kill|delete|down)\b/.test(joined))
     || /\b(stop-service|stop-process)\b/.test(joined)) refuse('command refused');
   if (git('config')) refuse('command refused');
-  // Inline code is a command the classifier cannot read.
-  if ((exe === 'node' && words.some(x => /^(-[epr]|--eval|--print|--require|--import)(=|$)/.test(x)))
-    || (/^python[0-9.]*$|^py$/.test(exe) && words.includes('-c')) || (/^(perl|ruby)$/.test(exe) && words.includes('-e'))) refuse('command refused');
+  // Inline code is a command the classifier cannot read. The fence is about visible intent, not a sandbox: a script
+  // file named on the line can still do anything the Worker's user can, but its text is a project file anyone reads.
+  // node: -e/-p/-r alone, combined (-pe, -ep) or attached (-e<code>); the long forms; and data: URLs, the inline
+  // module a loader or import flag (--loader, --experimental-loader, --import, -r) would run.
+  // python: -c alone, attached (-c<code>) or after no-argument flags (-Ic). perl/ruby: -e/-E likewise (-ne, -le).
+  if ((exe === 'node' && words.some(x => /^-[a-z]*[epr]/.test(x) || /^(--eval|--print|--require|--import)(=|$)/.test(x)
+      || /^(--loader|--experimental-loader|--import|-r)=data:/.test(x) || x.startsWith('data:')))
+    || (/^python[0-9.]*$|^py$/.test(exe) && command.some(x => /^-[bBdEhiIOPqsSuvVx]*c/.test(x)))
+    || (/^(perl|ruby)$/.test(exe) && command.some(x => /^-[acdlnpsStTuUvwWx0-9]*[eE]/.test(x)))) refuse('command refused');
   // Relaxable by the owner's settings.
   if (/^(sh|bash|cmd|powershell|pwsh|wscript|cscript)$/.test(exe) && !opts.shell) refuse('command refused');
   if (!opts.shell && command.some(x => /[;&|<>`]/.test(x) || /\$\(|%[^%]+%/.test(x))) refuse('command refused');

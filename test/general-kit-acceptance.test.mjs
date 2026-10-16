@@ -45,10 +45,10 @@ const factsOf = (id, out) => resultFactsFromRows(tools[id], out.rows ?? []);
 // Reverse of commandLine: a token that starts with `"` is a JSON string, any other token is literal.
 const parseLine = line => line.match(/"(?:[^"\\]|\\.)*"|\S+/g).map(token => token.startsWith('"') ? JSON.parse(token) : token);
 
-test('acceptance digest hashes compact recursively sorted JSON with defaults written out', t => {
+test('acceptance digest hashes compact recursively sorted JSON with its default written out', t => {
   const f = fixture(t);
   const a = acceptanceSpec(f.ctx, 'unit');
-  const expected = `{"command":${JSON.stringify(f.spec.command)},"cwd":".","files":{"test.mjs":"${f.spec.files['test.mjs']}"},"output_dirs":[],"shell":false}`;
+  const expected = `{"command":${JSON.stringify(f.spec.command)},"cwd":".","files":{"test.mjs":"${f.spec.files['test.mjs']}"},"shell":false}`;
   assert.equal(a.digest, sha(Buffer.from(expected, 'utf8')));
   f.write('.rulith/acceptance/unit.json', JSON.stringify({ files: f.spec.files, cwd: '.', command: f.spec.command }, null, 4) + '\r\n');
   assert.equal(acceptanceSpec(f.ctx, 'unit').digest, a.digest);
@@ -57,10 +57,10 @@ test('acceptance digest hashes compact recursively sorted JSON with defaults wri
   f.put({ files: { 'test.mjs': f.spec.files['test.mjs'], 'z.mjs': 'a'.repeat(64) }, command: f.spec.command, cwd: '.' });
   assert.equal(acceptanceSpec(f.ctx, 'unit').digest, reordered);
   // Defaults are written out, so the digest is a function of the eng.check_spec fact.
-  for (const same of [{ shell: false }, { output_dirs: [] }, { shell: false, output_dirs: [] }]) {
+  for (const same of [{ shell: false }]) {
     f.put({ ...f.spec, ...same }); assert.equal(acceptanceSpec(f.ctx, 'unit').digest, a.digest);
   }
-  for (const change of [{ command: [...f.spec.command, 'extra'] }, { shell: true }, { output_dirs: ['out'] }, { cwd: 'src' }, { files: { 'test.mjs': 'b'.repeat(64) } }]) {
+  for (const change of [{ command: [...f.spec.command, 'extra'] }, { shell: true, command: 'node test.mjs' }, { cwd: 'src' }, { files: { 'test.mjs': 'b'.repeat(64) } }]) {
     f.put({ ...f.spec, ...change }); assert.notEqual(acceptanceSpec(f.ctx, 'unit').digest, a.digest);
   }
 });
@@ -72,11 +72,11 @@ test('acceptance spec validation refuses malformed fields and paths with a fixed
     { ...f.spec, cwd: undefined }, { ...f.spec, cwd: '../outside' }, { ...f.spec, shell: 'true' },
     { ...f.spec, files: [] }, { ...f.spec, files: { '/absolute': 'a'.repeat(64) } },
     { ...f.spec, files: { '../escape': 'a'.repeat(64) } }, { ...f.spec, files: { 'C:/escape': 'a'.repeat(64) } },
-    { ...f.spec, files: { 'a\\b': 'a'.repeat(64) } }, { ...f.spec, files: { 'a\nb': 'a'.repeat(64) } },
+    { ...f.spec, files: { 'a\\b': 'a'.repeat(64) } },
     { ...f.spec, files: { './test.mjs': 'a'.repeat(64) } }, { ...f.spec, files: { 'test.mjs': 'A'.repeat(64) } },
-    { ...f.spec, files: { 'test.mjs': 123 } }, { ...f.spec, output_dirs: 'out' },
-    ...['.', '..', '/out', 'out/../src', '.rulith', '.rulith/acceptance', '.rulith/acceptance/unit.json', 'test.mjs']
-      .map(dir => ({ ...f.spec, output_dirs: [dir] })),
+    { ...f.spec, files: { 'test.mjs': 123 } },
+    // With shell the command is one string; without it, an argv array.
+    { ...f.spec, shell: true }, { ...f.spec, shell: true, command: '' }, { ...f.spec, shell: true, command: ['node test.mjs'] },
   ]) {
     f.put(spec);
     await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' });
@@ -111,12 +111,14 @@ test('check names start with a letter, so the Kernel keeps the leaf first argume
   f.put(f.spec, 'a0'); assert.ok(acceptanceSpec(f.ctx, 'a0').digest);
 });
 
-test('output_dirs are literal paths: wildcards in any component are refused', async t => {
+test('a spec has no output_dirs: any value, even an empty list, makes it invalid (review 2 P1)', async t => {
   const f = fixture(t);
-  for (const dir of ['**/acceptance', '**/tests', 'out*', 'a/?/b', '*', 'build/**']) {
-    f.put({ ...f.spec, output_dirs: [dir] });
-    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' }, dir);
+  for (const dirs of [[], ['out'], ['src'], ['**/acceptance']]) {
+    f.put({ ...f.spec, output_dirs: dirs });
+    await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' }, JSON.stringify(dirs));
+    assert.deepEqual(await f.call('acceptance'), { rows: [], errors: [{ error: 'acceptance spec invalid', check: 'unit' }] });
   }
+  assert.equal(fs.existsSync(f.ctx.stateFile), false);
 });
 
 test('a spec with a repeated key has two readings and is refused', async t => {
@@ -159,21 +161,20 @@ test('eng.check_spec carries everything the digest denotes, so the digest is rec
   const f = fixture(t);
   f.write('tests/a b.mjs', 'x');
   const spec = { command: [process.execPath, 'test.mjs', '--name', 'two words', 'quote"d', ''], cwd: '.', shell: false,
-    files: { 'tests/a b.mjs': sha('x'), 'test.mjs': f.spec.files['test.mjs'] }, output_dirs: ['out', 'tmp/cache'] };
+    files: { 'tests/a b.mjs': sha('x'), 'test.mjs': f.spec.files['test.mjs'] } };
   // An empty word is invalid in a spec; drop it from this fixture.
   spec.command.pop();
   f.put(spec);
   const out = await f.call('acceptance');
   const [fact] = factsOf('eng.acceptance@1', out);
   assert.equal(fact.predicate, 'eng.check_spec');
-  assert.deepEqual(Object.keys(fact.args), ['check', 'spec_digest', 'command', 'cwd', 'shell', 'output_dirs', 'files']);
+  assert.deepEqual(Object.keys(fact.args), ['check', 'spec_digest', 'command', 'cwd', 'shell', 'files']);
   assert.equal(fact.args.command, commandLine(spec.command));
   assert.match(fact.args.command, / --name "two words" "quote\\"d"$/);
   assert.deepEqual(JSON.parse(fact.args.files), [{ path: 'test.mjs', sha256: spec.files['test.mjs'] },
     { path: 'tests/a b.mjs', sha256: sha('x') }]);
   // Console renders this fact beside the proposed leaf: the person reads what the digest freezes.
   const rebuilt = { command: parseLine(fact.args.command), cwd: fact.args.cwd, shell: fact.args.shell,
-    output_dirs: JSON.parse(fact.args.output_dirs),
     files: Object.fromEntries(JSON.parse(fact.args.files).map(file => [file.path, file.sha256])) };
   assert.deepEqual(rebuilt.command, spec.command);
   assert.equal(sha(canonicalSpec(rebuilt)), fact.args.spec_digest);
@@ -263,64 +264,75 @@ test('a broken acceptance directory blocks no tree-walking tool and is reported 
   await assert.rejects(f.call('test_v2', { check: 'unit' }), { message: 'acceptance spec invalid' });
 });
 
-test('a project spec output_dirs never hides changes from other tools (reviewer PoC 1 and 4)', async t => {
+test('a check run that rewrites code is a step: a signed check stops passing (review 2 PoC p1-absorb)', async t => {
   const f = fixture(t);
-  // PoC 1: an unsigned spec whose only purpose is output_dirs ["src"] must not hide the code under test.
-  f.write('src/value.mjs', 'export const VALUE = 0;\n');
+  f.write('src/value.mjs', 'export const VALUE = 1;\n');
   const ta = "import { VALUE } from './src/value.mjs'; process.exitCode = VALUE === 1 ? 0 : 1;\n";
-  const tb = "import { VALUE } from './src/value.mjs'; process.exitCode = VALUE === 2 ? 0 : 1;\n";
-  f.write('ta.mjs', ta); f.write('tb.mjs', tb);
+  f.write('ta.mjs', ta);
   f.put({ command: [process.execPath, 'ta.mjs'], cwd: '.', files: { 'ta.mjs': sha(ta) } }, 'a');
-  f.put({ command: [process.execPath, 'tb.mjs'], cwd: '.', files: { 'tb.mjs': sha(tb) } }, 'b');
   const facts = [];
   const record = (id, out) => { facts.push(...factsOf(id, out)); return out; };
   record('eng.tree_state@1', await f.call('tree_state'));
-  record('eng.write_file@1', await f.call('write_file', { path: '.rulith/acceptance/zz-hide.json', expect_digest: '',
-    text: JSON.stringify({ command: [process.execPath, '--version'], cwd: '.', files: {}, output_dirs: ['src'] }) }));
-  record('eng.write_file@1', await f.call('write_file', { path: 'src/value.mjs', expect_digest: sha('export const VALUE = 0;\n'), text: 'export const VALUE = 1;\n' }));
   record('eng.test@2', await f.call('test_v2', { check: 'a' }));
-  record('eng.write_file@1', await f.call('write_file', { path: 'src/value.mjs', expect_digest: sha('export const VALUE = 1;\n'), text: 'export const VALUE = 2;\n' }));
-  record('eng.test@2', await f.call('test_v2', { check: 'b' }));
-  // Only b holds on the current tree: the write that made b pass left a's generation.
-  assert.deepEqual(passing(facts), ['b']);
-  // PoC 4 (shape now refused, see the wildcard test): a plain output dir of one spec hides nothing from tree_state.
-  f.write('tests/a.mjs', 'first');
-  f.put({ ...f.spec, output_dirs: ['tests', '.rulith-out'] }, 'c');
-  const t0 = (await f.call('tree_state')).rows[0];
-  f.write('tests/a.mjs', 'second');
-  const t1 = (await f.call('tree_state')).rows[0];
-  assert.equal(t1.gen, t0.gen + 1); assert.notEqual(t1.tree_digest, t0.tree_digest);
-  f.put({ command: ['anything-else'], cwd: '.', files: {} }, 'a');
-  assert.equal((await f.call('tree_state')).rows[0].gen, t1.gen + 1);
+  assert.deepEqual(passing(facts), ['a']); // The signed check passes on the current tree.
+  // The model writes a rewriting script and an unsigned spec for it (both visible steps), then re-runs a.
+  const rw = "require('fs').writeFileSync('src/value.mjs', 'export const VALUE = 666;');";
+  record('eng.write_file@1', await f.call('write_file', { path: 'rw.cjs', expect_digest: '', text: rw }));
+  // The former output_dirs ["src"] is refused; the same spec without it is valid and its run is an ordinary step.
+  const gen = { command: [process.execPath, 'rw.cjs'], cwd: '.', files: { 'rw.cjs': sha(rw) } };
+  record('eng.write_file@1', await f.call('write_file', { path: '.rulith/acceptance/gen.json', expect_digest: '',
+    text: JSON.stringify({ ...gen, output_dirs: ['src'] }) }));
+  await assert.rejects(f.call('test_v2', { check: 'gen' }), { message: 'acceptance spec invalid' });
+  record('eng.test@2', await f.call('test_v2', { check: 'a' }));
+  assert.deepEqual(passing(facts), ['a']);
+  const specPath = '.rulith/acceptance/gen.json';
+  record('eng.write_file@1', await f.call('write_file', { path: specPath,
+    expect_digest: sha(fs.readFileSync(path.join(f.root, specPath))), text: JSON.stringify(gen) }));
+  record('eng.test@2', await f.call('test_v2', { check: 'a' }));
+  assert.deepEqual(passing(facts), ['a']);
+  const run = record('eng.test@2', await f.call('test_v2', { check: 'gen' }));
+  assert.equal(fs.readFileSync(path.join(f.root, 'src/value.mjs'), 'utf8'), 'export const VALUE = 666;');
+  assert.ok(run.rows.some(r => r.from_gen >= 0 && r.to_gen === r.from_gen + 1), 'the rewriting run emits a tree step');
+  // Neither the signed check (tested before the rewrite) nor the rewriting run itself passes on the new tree.
+  assert.deepEqual(passing(facts), []);
+  assert.equal((await f.call('test_v2', { check: 'a' })).rows[0].exit_code, 1);
 });
 
-test('a check output_dirs cover only its own run: generation kept, post-run digest saved, later edits seen', async t => {
+test('a check whose own run changes the tree is stamped at the pre-run generation and never passes (review 2 PoC p4)', async t => {
   const f = fixture(t);
-  const script = "import fs from 'node:fs'; fs.mkdirSync('out', {recursive:true}); fs.writeFileSync('out/result', String(Date.now()));\n";
-  f.write('test.mjs', script);
-  f.put({ ...f.spec, files: { 'test.mjs': sha(script) }, output_dirs: ['out'] });
-  assert.equal((await f.call('tree_state')).rows[0].gen, 0);
-  const run = await f.call('test_v2', { check: 'unit' });
-  assert.equal(run.rows[0].gen, 0); assert.deepEqual([run.rows[0].from_gen, run.rows[0].to_gen], [-1, -1]);
-  assert.ok(fs.existsSync(path.join(f.root, 'out/result')));
-  const seen = (await f.call('tree_state')).rows[0];
-  assert.deepEqual([seen.gen, seen.tree_digest], [0, run.rows[0].tree_digest]);
-  // Every other tool hashes the directory: a write there is a step that leaves the passing generation.
-  const edit = await f.call('write_file', { path: 'out/other', expect_digest: '', text: 'x' });
-  assert.ok(edit.rows.some(r => r.from_gen === 0 && r.to_gen === 1));
-  // A run that also writes outside its output_dirs is a step and stamps the final generation.
-  const wide = "import fs from 'node:fs'; fs.mkdirSync('out', {recursive:true}); fs.writeFileSync('out/result', 'r'); fs.writeFileSync('elsewhere', String(Date.now()));\n";
-  f.write('test.mjs', wide);
-  f.put({ ...f.spec, files: { 'test.mjs': sha(wide) }, output_dirs: ['out'] });
+  f.write('src.mjs', 'export const V = 1;');
+  const script = "import fs from 'node:fs'; fs.writeFileSync('src.mjs', 'export const V = 666;');";
+  f.write('test.mjs', script); f.put({ ...f.spec, files: { 'test.mjs': sha(script) } });
+  const start = (await f.call('tree_state')).rows[0];
+  const out = await f.call('test_v2', { check: 'unit' });
+  const row = out.rows[0];
+  assert.equal(row.exit_code, 0);
+  assert.equal(row.gen, start.gen); // the tree it tested, not the one it made
+  assert.deepEqual([row.from_gen, row.to_gen], [start.gen, start.gen + 1]);
+  assert.equal(row.tree_digest, (await f.call('tree_state')).rows[0].tree_digest);
+  assert.deepEqual(passing(factsOf('eng.test@2', out)), []);
+  // The step is replayed on the next mutating receipt even if this receipt were lost.
+  const later = await f.call('write_file', { path: 'other.txt', expect_digest: '', text: 'x' });
+  assert.ok(later.rows.some(r => r.from_gen === start.gen && r.to_gen === start.gen + 1));
+  // A change made before the run (and none by the run) is a step and the run is stamped at the new generation.
+  const quiet = "process.exitCode = 0;\n";
+  f.write('test.mjs', quiet); f.put({ ...f.spec, files: { 'test.mjs': sha(quiet) } });
   const before = (await f.call('tree_state')).rows[0].gen;
-  const widened = await f.call('test_v2', { check: 'unit' });
-  assert.equal(widened.rows[0].gen, before + 1);
-  // A change made before the run is a step even when the run itself writes only its output.
-  f.write('test.mjs', script); f.put({ ...f.spec, files: { 'test.mjs': sha(script) }, output_dirs: ['out'] });
-  const start = (await f.call('tree_state')).rows[0].gen;
   f.write('unseen.txt', 'changed outside the kit');
   const after = await f.call('test_v2', { check: 'unit' });
-  assert.equal(after.rows[0].gen, start + 1); assert.ok(after.rows.some(r => r.from_gen === start && r.to_gen === start + 1));
+  assert.equal(after.rows[0].gen, before + 1);
+  assert.ok(after.rows.some(r => r.from_gen === before && r.to_gen === before + 1));
+  assert.deepEqual(passing(factsOf('eng.test@2', after)), ['unit']);
+  // The owner's treeExclude is the only exclusion: output there is no step, and the check passes at its generation.
+  f.settings({ treeExclude: ['out'] });
+  const writer = "import fs from 'node:fs'; fs.mkdirSync('out', {recursive:true}); fs.writeFileSync('out/r', String(Date.now()));";
+  f.write('test.mjs', writer); f.put({ ...f.spec, files: { 'test.mjs': sha(writer) } });
+  const settled = (await f.call('tree_state')).rows[0].gen;
+  const excludedRun = await f.call('test_v2', { check: 'unit' });
+  assert.equal(excludedRun.rows[0].gen, settled);
+  assert.deepEqual([excludedRun.rows.at(-1).from_gen, excludedRun.rows.at(-1).to_gen], [-1, -1]);
+  assert.ok(excludedRun.rows.every(r => r.from_gen !== settled));
+  assert.deepEqual(passing(factsOf('eng.test@2', excludedRun)), ['unit']);
 });
 
 test('spec commands pass the eng.run classifier and cannot widen the owner shell setting (reviewer PoC 2)', async t => {
@@ -342,7 +354,7 @@ test('spec commands pass the eng.run classifier and cannot widen the owner shell
   f.put(f.spec);
   assert.equal((await f.tryCall('test_v2', { check: 'unit' })).error, 'path refused');
   f.settings();
-  f.put({ ...f.spec, command: ['echo', 'piped', '|', 'findstr', 'piped', '>', 'shell-out.txt'], shell: true });
+  f.put({ ...f.spec, command: 'echo piped | findstr piped > shell-out.txt', shell: true });
   assert.equal((await f.tryCall('test_v2', { check: 'unit' })).error, 'acceptance shell refused');
   assert.equal(fs.existsSync(path.join(f.root, 'shell-out.txt')), false);
   const cli = f.cli('test_v2', { check: 'unit' });
@@ -350,10 +362,10 @@ test('spec commands pass the eng.run classifier and cannot widen the owner shell
   // The owner's shell setting enables it; push/publish stay refused even then.
   f.settings({ shell: true });
   fs.mkdirSync(path.join(f.root, 'shell-output'));
-  f.put({ ...f.spec, command: ['echo', 'acceptance', '>', 'shell-output/result'], shell: true, output_dirs: ['shell-output'] });
+  f.put({ ...f.spec, command: 'echo acceptance > shell-output/result', shell: true });
   assert.equal((await f.call('test_v2', { check: 'unit' })).rows[0].exit_code, 0);
   assert.match(fs.readFileSync(path.join(f.root, 'shell-output/result'), 'utf8'), /acceptance/);
-  f.put({ ...f.spec, command: ['git', 'push'], shell: true });
+  f.put({ ...f.spec, command: 'git push', shell: true });
   assert.equal((await f.tryCall('test_v2', { check: 'unit' })).error, 'command refused');
   // Without shell in the spec, the owner's shell setting does not route the spec command through a shell.
   f.put({ ...f.spec, command: [process.execPath, 'test.mjs', '>', 'not-redirected'] });
@@ -361,23 +373,109 @@ test('spec commands pass the eng.run classifier and cannot widen the owner shell
   assert.equal(fs.existsSync(path.join(f.root, 'not-redirected')), false);
 });
 
-test('test@2 receipts land eng.check_result with the final tree generation; later writes invalidate it', async t => {
+test('with the owner shell the Board shows exactly the line the shell runs (review 2 P2-2)', async t => {
+  const f = fixture(t);
+  f.settings({ shell: true });
+  f.write('x.mjs', 'process.exitCode = 0;');
+  // The reviewer's spec: an argv word that a space-join would hand to the shell unquoted.
+  f.put({ command: ['node', 'x.mjs & echo pwned > p.txt'], cwd: '.', files: { 'x.mjs': sha('process.exitCode = 0;') }, shell: true }, 's');
+  await assert.rejects(f.call('test_v2', { check: 's' }), { message: 'acceptance spec invalid' });
+  assert.deepEqual((await f.call('acceptance')).errors, [{ error: 'acceptance spec invalid', check: 's' }]);
+  // As one string the line is shown and run as written: the quotes keep `&` and `>` inside node's argument.
+  const line = 'node "x.mjs & echo pwned > p.txt"';
+  f.put({ command: line, cwd: '.', files: { 'x.mjs': sha('process.exitCode = 0;') }, shell: true }, 's');
+  const [row] = (await f.call('acceptance')).rows.filter(r => r.check === 's');
+  assert.equal(row.command, line); assert.equal(row.shell, true);
+  const out = await f.call('test_v2', { check: 's' });
+  assert.notEqual(out.rows[0].exit_code, 0); // node found no script of that name
+  assert.equal(fs.existsSync(path.join(f.root, 'p.txt')), false);
+  // The shown line is the line the shell receives, metacharacters included.
+  const honest = 'node x.mjs && echo shown > shown.txt';
+  f.put({ command: honest, cwd: '.', files: { 'x.mjs': sha('process.exitCode = 0;') }, shell: true }, 's');
+  assert.equal((await f.call('acceptance')).rows.find(r => r.check === 's').command, honest);
+  assert.equal((await f.call('test_v2', { check: 's' })).rows[0].exit_code, 0);
+  assert.match(fs.readFileSync(path.join(f.root, 'shown.txt'), 'utf8'), /shown/);
+  // The digest is recomputable from the fact: the string is the command.
+  const fact = (await f.call('acceptance')).rows.find(r => r.check === 's');
+  assert.equal(sha(canonicalSpec({ command: fact.command, cwd: fact.cwd, shell: fact.shell,
+    files: Object.fromEntries(JSON.parse(fact.files).map(x => [x.path, x.sha256])) })), fact.spec_digest);
+});
+
+test('command words and paths with control or format characters or lone surrogates are refused by field (review 2 PoC p3)', async t => {
+  const f = fixture(t);
+  f.write('t.mjs', 'x');
+  const files = { 't.mjs': sha('x') };
+  for (const [spec, field] of [
+    [{ command: ['node', '\u202Eevil'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 't.mjs', 'tab\there'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 'a\u0085b'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 'zero\u200Bwidth'], cwd: '.', files }, 'command'],
+    [{ command: ['node', '\uFEFFt.mjs'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 'x\uD800'], cwd: '.', files }, 'command'],
+    [{ command: 'node t.mjs \u2066hidden\u2069', cwd: '.', files, shell: true }, 'command'],
+    [{ command: 'node t.mjs\nrm -rf x', cwd: '.', files, shell: true }, 'command'],
+    [{ command: ['node', 't.mjs'], cwd: 'sr\u202Ec', files }, 'cwd'],
+    [{ command: ['node', 't.mjs'], cwd: '.', files: { ...files, 'te\u202Est.mjs': sha('x') } }, 'files'],
+    [{ command: ['node', 't.mjs'], cwd: '.', files: { ...files, 'a\uDC00.mjs': sha('x') } }, 'files'],
+  ]) {
+    f.put(spec, 'spoof');
+    const message = `acceptance spec invalid: ${field}`;
+    await assert.rejects(f.call('test_v2', { check: 'spoof' }), { message }, JSON.stringify(spec));
+    assert.deepEqual((await f.call('acceptance')).errors, [{ error: message, check: 'spoof' }]);
+  }
+  const cli = f.cli('test_v2', { check: 'spoof' });
+  assert.equal(cli.status, 2); assert.equal(cli.stderr, 'acceptance spec invalid: files');
+  // Visible non-ASCII text is fine: letters, and a no-break space shown as a JSON string.
+  f.put({ command: ['node', 't.mjs', 'ünï', '\u00A0nb'], cwd: '.', files }, 'spoof');
+  const row = (await f.call('acceptance')).rows.find(r => r.check === 'spoof');
+  assert.equal(row.command, 'node t.mjs ünï "\u00A0nb"');
+});
+
+test('inline code in combined, attached and data: URL forms is refused like -e (review 2 P2-4)', async t => {
+  const f = fixture(t);
+  f.settings({ shell: false });
+  const outside = path.join(f.dir, 'outside.txt').split(path.sep).join('/');
+  const code = `require('fs').writeFileSync('${outside}', 'x')`;
+  const loader = 'data:text/javascript,' + encodeURIComponent(`import fs from 'fs'; fs.writeFileSync('${outside}', 'x')`);
+  f.write('x.mjs', 'process.exit(0)');
+  for (const command of [['node', '-pe', code], ['node', '-ep', code], [process.execPath, '-pe', code],
+    ['node', `-e${code}`], ['node', `-p${code}`], ['node', '-ce', code],
+    ['node', `--experimental-loader=${loader}`, 'x.mjs'], ['node', `--loader=${loader}`, 'x.mjs'],
+    ['node', '--experimental-loader', loader, 'x.mjs'], ['node', `--import=${loader}`, 'x.mjs'], ['node', '-r', loader, 'x.mjs'],
+    ['python', '-cprint(1)'], ['python3', '-Ic', 'print(1)'], ['py', '-Bc', 'print(1)'],
+    ['perl', '-ne', 'print'], ['perl', '-eprint 1'], ['perl', '-E', 'say 1'], ['ruby', '-le', 'puts 1']]) {
+    f.put({ command, cwd: '.', files: {} }, 'inline');
+    assert.equal((await f.tryCall('test_v2', { check: 'inline' })).error, 'command refused', command.join(' '));
+    assert.equal((await f.tryCall('run', { command: command.map(w => JSON.stringify(w)).join(' ') })).error, 'command refused', command.join(' '));
+  }
+  assert.equal(fs.existsSync(outside), false);
+  // Ordinary flags and script files stay allowed: the fence is about visible intent, not a sandbox.
+  for (const command of [['node', '--version'], ['node', '-C', 'dev', 'x.mjs'], ['node', '--test', 'x.mjs'], ['node', 'x.mjs']]) {
+    f.put({ command, cwd: '.', files: {} }, 'plain');
+    assert.equal((await f.call('test_v2', { check: 'plain' })).rows[0].exit_code, 0, command.join(' '));
+  }
+});
+
+test('test@2 receipts land eng.check_result; a run that changed the tree is stamped before it; later writes invalidate', async t => {
   const f = fixture(t);
   f.write('test.mjs', "import fs from 'node:fs'; fs.writeFileSync('generated', 'yes');\n");
   f.put({ ...f.spec, files: { 'test.mjs': sha(fs.readFileSync(path.join(f.root, 'test.mjs'))) } });
   await f.call('tree_state');
   const out = await f.call('test_v2', { check: 'unit' });
   const row = out.rows[0];
-  assert.equal(row.check, 'unit'); assert.equal(row.exit_code, 0); assert.equal(row.gen, 1);
+  assert.equal(row.check, 'unit'); assert.equal(row.exit_code, 0); assert.equal(row.gen, 0);
   assert.equal(row.spec_digest, acceptanceSpec(f.ctx, 'unit').digest);
   assert.equal(row.tree_digest, (await f.call('tree_state')).rows[0].tree_digest);
   assert.deepEqual([row.from_gen, row.to_gen], [0, 1]);
   assert.deepEqual(factsOf('eng.test@2', out), [
-    { predicate: 'eng.check_result', args: { check: 'unit', spec_digest: row.spec_digest, gen: 1, tree_digest: row.tree_digest, exit_code: 0 } },
+    { predicate: 'eng.check_result', args: { check: 'unit', spec_digest: row.spec_digest, gen: 0, tree_digest: row.tree_digest, exit_code: 0 } },
     { predicate: 'eng.tree_step', args: { from_gen: 0, to_gen: 1 } },
   ]);
+  assert.deepEqual(passing(factsOf('eng.test@2', out)), []);
+  // The second run rewrites the same bytes: no change, so it passes at the current generation.
   const again = await f.call('test_v2', { check: 'unit' });
   assert.equal(again.rows[0].gen, 1); assert.equal(again.rows.at(-1).from_gen, -1);
+  assert.deepEqual(passing([...factsOf('eng.test@2', out), ...factsOf('eng.test@2', again)]), ['unit']);
   const edit = await f.call('write_file', { path: 'production.txt', expect_digest: '', text: 'changed' });
   assert.ok(edit.rows.some(r => r.from_gen === 1 && r.to_gen === 2));
 });
@@ -399,7 +497,7 @@ test('a running check cannot change its frozen dependencies or replace its spec 
   for (const [script, message] of [
     ["import fs from 'node:fs'; fs.appendFileSync('test.mjs', '// changed');", 'acceptance file changed: test.mjs'],
     ["import fs from 'node:fs'; fs.writeFileSync('.rulith/acceptance/unit.json', '{}');", 'acceptance spec invalid'],
-    ["import fs from 'node:fs'; const p='.rulith/acceptance/unit.json'; const s=JSON.parse(fs.readFileSync(p)); s.output_dirs=['x']; fs.writeFileSync(p,JSON.stringify(s));", 'acceptance spec changed'],
+    ["import fs from 'node:fs'; const p='.rulith/acceptance/unit.json'; const s=JSON.parse(fs.readFileSync(p)); s.command.push('x'); fs.writeFileSync(p,JSON.stringify(s));", 'acceptance spec changed'],
   ]) {
     f.write('test.mjs', script); f.put({ ...f.spec, files: { 'test.mjs': sha(script) } });
     await assert.rejects(f.call('test_v2', { check: 'unit' }), { message });
@@ -526,7 +624,7 @@ test('v2 is an authoring-format package the Gateway installs: criterion, freshne
   assert.deepEqual(defines.get('eng.check_result').args, ['check', 'spec_digest', 'gen', 'tree_digest', 'exit_code']);
   // eng.test@1's predicate keeps its four arguments: a legacy call on a v2 Board has no vocabulary clash.
   assert.deepEqual(defines.get('eng.test_result').args, ['spec_digest', 'gen', 'tree_digest', 'exit_code']);
-  assert.deepEqual(defines.get('eng.check_spec').args, ['check', 'spec_digest', 'command', 'cwd', 'shell', 'output_dirs', 'files']);
+  assert.deepEqual(defines.get('eng.check_spec').args, ['check', 'spec_digest', 'command', 'cwd', 'shell', 'files']);
   for (const [id, tool] of Object.entries(tools)) for (const row of tool.returns) {
     if (row.predicate.startsWith('web.')) { assert.equal(defines.has(row.predicate), false); continue; }
     assert.deepEqual(defines.get(row.predicate).args, Object.keys(row.args), id);
@@ -553,11 +651,34 @@ test('v2 is an authoring-format package the Gateway installs: criterion, freshne
     defines: [...program.vocabulary.defines, { id: 'web.page', as: 'web_page', args: ['url'] }] } }), []);
 });
 
+// The authoring compiler jar: RULITH_AUTHORING_JAR, else the rulith-java checkout beside this repository's directory.
+// A skip names every path it looked for, so a skipped run says what to build or set.
+function authoringCompiler(env = process.env) {
+  const jar = env.RULITH_AUTHORING_JAR
+    || path.resolve(repo, '..', 'rulith-java', 'gateway', 'target', 'gateway-0.1.0-SNAPSHOT-authoring.jar');
+  const java = env.JAVA_HOME ? path.join(env.JAVA_HOME, 'bin', 'java') : 'C:/Program Files/Java/jdk-25/bin/java';
+  const missing = [];
+  if (!fs.existsSync(jar)) missing.push(`authoring jar not found at ${jar} (build rulith-java or set RULITH_AUTHORING_JAR)`);
+  if (!fs.existsSync(java) && !fs.existsSync(`${java}.exe`)) missing.push(`Java 25 not found at ${java} (set JAVA_HOME)`);
+  return { jar, java, skip: missing.length ? missing.join('; ') : null };
+}
+
+test('the authoring compiler lookup honours RULITH_AUTHORING_JAR and names the paths it looked for', t => {
+  fs.mkdirSync(path.join(repo, '.scratch'), { recursive: true });
+  const scratch = fs.mkdtempSync(path.join(repo, '.scratch', 'jar-'));
+  t.after(() => fs.rmSync(scratch, { force: true, recursive: true }));
+  const jar = path.join(scratch, 'authoring.jar'); fs.writeFileSync(jar, '');
+  const absent = path.join(scratch, 'absent');
+  assert.equal(authoringCompiler({ RULITH_AUTHORING_JAR: jar, JAVA_HOME: absent }).jar, jar);
+  assert.equal(authoringCompiler({ RULITH_AUTHORING_JAR: jar, JAVA_HOME: absent }).skip, `Java 25 not found at ${path.join(absent, 'bin', 'java')} (set JAVA_HOME)`);
+  const missing = authoringCompiler({ RULITH_AUTHORING_JAR: path.join(absent, 'x.jar'), JAVA_HOME: absent }).skip;
+  assert.ok(missing.includes(`authoring jar not found at ${path.join(absent, 'x.jar')}`), missing);
+  assert.equal(authoringCompiler({}).jar, path.resolve(repo, '..', 'rulith-java', 'gateway', 'target', 'gateway-0.1.0-SNAPSHOT-authoring.jar'));
+});
+
 test('the Gateway authoring compiler accepts program-v2.json (skipped without its jar and Java 25)', t => {
-  const jar = process.env.RULITH_AUTHORING_JAR
-    ?? fileURLToPath(new URL('../../rulith-java/gateway/target/gateway-0.1.0-SNAPSHOT-authoring.jar', import.meta.url));
-  const java = process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', 'java') : 'C:/Program Files/Java/jdk-25/bin/java';
-  if (!fs.existsSync(jar) || !(fs.existsSync(java) || fs.existsSync(`${java}.exe`))) return t.skip('authoring jar or Java 25 not found');
+  const { jar, java, skip } = authoringCompiler();
+  if (skip) return t.skip(skip);
   const run = spawnSync(java, ['-jar', jar, path.join(repo, 'kits/general/pack/program-v2.json')], { encoding: 'utf8', windowsHide: true, timeout: 120000 });
   assert.equal(run.status, 0, run.stderr);
   const result = JSON.parse(run.stdout);

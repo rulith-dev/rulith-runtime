@@ -9,8 +9,13 @@ All notable changes to the local runtime are documented here.
   authoring format, derives the pinned criterion `eng.check_passed` from `eng.check_result` with a
   freshness rule and an acceptance bridge for signed leaves; Sources package version 3.
   `eng.check_spec` carries the command, cwd, shell, output directories and file digests the spec
-  digest denotes. Spec commands pass the `eng.run` classifier and the owner's shell setting; a
-  spec's `output_dirs` cover only its own run.
+  digest denotes. Spec commands pass the `eng.run` classifier and the owner's shell setting.
+  Specs have no `output_dirs`: the owner's `treeExclude` is the only exclusion, and a check whose own
+  run changes the tree is stamped at the pre-run generation, so it never passes on the tree it made.
+  With shell the spec command is one string, shown on the Board exactly as the shell runs it;
+  control/format characters and lone surrogates in command words and paths are refused by field.
+  The inline-code fence (shared with `eng.run`) also refuses combined/attached flags (`-pe`,
+  `-e<code>`, `-c<code>`) and `data:` loader/import URLs.
 - Address D-1015c review findings: opt-in image artifact custody, bounded web text conversion,
   dead-holder lock recovery, stricter SSRF ranges, complete patch edges and per-line EOLs,
   link refusal, bounded glob matching and Sources package v2. Web calls skip project walks/locks.

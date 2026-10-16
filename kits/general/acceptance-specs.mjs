@@ -11,12 +11,13 @@ export const RECEIPT_BYTES = 7168;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const projectPath = value => typeof value === 'string' && value.length <= 512
   && !/[\\:\x00-\x1f\x7f]/.test(value) && value.split('/').every(p => p && p !== '.' && p !== '..');
-// An output directory is a literal path: `*` and `?` would read as glob patterns to a reader and to the tree walk.
-const outputPath = value => projectPath(value) && !/[*?]/.test(value);
-export const below = (name, dir) => {
-  if (process.platform === 'win32') { name = name.toLowerCase(); dir = dir.toLowerCase(); }
-  return name === dir || name.startsWith(`${dir}/`);
-};
+// 显示安全：命令字与文件路径原样显示在 Board 上，由人签字。控制字符与格式字符（Unicode Cc、Cf，
+// 例如 U+202E 从右到左覆盖）以及孤立代理项会让人读到的文字与实际运行的不同，所以一律拒绝，错误说出字段名。
+// Display safety: command words and paths are shown on the Board for a person to sign; a control or format
+// character (Cc, Cf, e.g. U+202E) or an unpaired surrogate can make the shown text differ from what runs.
+const displayable = value => typeof value !== 'string' || (value.isWellFormed() && !/[\p{Cc}\p{Cf}]/u.test(value));
+export const FIELD_ERRORS = ['command', 'cwd', 'files'].map(field => `acceptance spec invalid: ${field}`);
+const invalidField = field => refuse(`acceptance spec invalid: ${field}`);
 const invalid = () => refuse('acceptance spec invalid');
 
 // JSON.parse accepts a repeated key and keeps the last value; a reader of the file may see the first.
@@ -45,16 +46,15 @@ export function duplicateKeys(text) {
   return false;
 }
 
-// The digest covers the spec with its defaults written out (`output_dirs: []`, `shell: false`), so it is a
-// function of the eng.check_spec fact alone. Keys are sorted recursively (UTF-16 code unit order), arrays keep
+// The digest covers the spec {command, cwd, files, shell} with its default written out (`shell: false`), so it is
+// a function of the eng.check_spec fact alone. Keys are sorted recursively (UTF-16 code unit order), arrays keep
 // their order, JSON.stringify encodes keys and values, no whitespace; SHA-256 of the UTF-8 bytes, no BOM or newline.
 export function canonicalSpec(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalSpec).join(',')}]`;
   if (object(value)) return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonicalSpec(value[k])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-export const normalizedSpec = spec => ({ command: spec.command, cwd: spec.cwd, files: spec.files,
-  output_dirs: spec.output_dirs ?? [], shell: spec.shell === true });
+export const normalizedSpec = spec => ({ command: spec.command, cwd: spec.cwd, files: spec.files, shell: spec.shell === true });
 
 export function acceptanceSpec(ctx, check) {
   if (typeof check !== 'string' || !CHECK.test(check)) refuse('acceptance check invalid');
@@ -64,31 +64,38 @@ export function acceptanceSpec(ctx, check) {
     const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(target));
     const spec = JSON.parse(text);
     if (duplicateKeys(text)) invalid();
-    if (!object(spec) || Object.keys(spec).some(k => !['command', 'cwd', 'files', 'output_dirs', 'shell'].includes(k))) invalid();
-    if (!Array.isArray(spec.command) || !spec.command.length || spec.command.some(s => typeof s !== 'string' || !s || s.includes('\0'))) invalid();
+    // 没有 output_dirs：主人的 treeExclude 是唯一的排除；检查运行改动的任何东西都和其他工具一样算一步。
+    // 模型写的排除会让别的检查在它们从未测过的新代码上继续“通过”。
+    // No output_dirs: the owner's treeExclude is the only exclusion, and any change a check run makes is a tree
+    // step like any other tool's (a model-written exclusion kept other checks passing on code they never tested).
+    if (!object(spec) || Object.keys(spec).some(k => !['command', 'cwd', 'files', 'shell'].includes(k))) invalid();
+    if (spec.shell !== undefined && typeof spec.shell !== 'boolean') invalid();
+    // With shell the spec gives one command line, run and shown exactly as written; without it, an argv array
+    // that never meets a shell.
+    const words = spec.shell === true ? [spec.command] : spec.command;
+    if (!Array.isArray(words) || !words.length || words.some(s => typeof s !== 'string' || !s || s.includes('\0'))) invalid();
+    if (!words.every(displayable)) invalidField('command');
+    if (!displayable(spec.cwd)) invalidField('cwd');
     if (spec.cwd !== '.' && !projectPath(spec.cwd)) invalid();
     if (!object(spec.files) || Object.keys(spec.files).length > MAX_FILES) invalid();
+    if (!Object.keys(spec.files).every(displayable)) invalidField('files');
     for (const [name, digest] of Object.entries(spec.files))
       if (!projectPath(name) || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) invalid();
-    if (spec.shell !== undefined && typeof spec.shell !== 'boolean') invalid();
-    if (spec.output_dirs !== undefined && (!Array.isArray(spec.output_dirs) || spec.output_dirs.some(dir =>
-      !outputPath(dir) || below('.rulith/acceptance', dir) || below(dir, '.rulith/acceptance')
-      || Object.keys(spec.files).some(name => below(name, dir))))) invalid();
     const normal = normalizedSpec(spec);
     return { spec: normal, digest: sha(canonicalSpec(normal)) };
-  } catch { invalid(); }
+  } catch (error) { if (FIELD_ERRORS.includes(error.message)) throw error; invalid(); }
 }
 
-// The command as one readable line: a word without whitespace, quotes or control characters stands as written;
-// any other word is a JSON string. Reversible: a token that starts with `"` is JSON, every other token is literal.
-export const commandLine = command =>
-  command.map(word => /^[^\s"\x00-\x1f\x7f]+$/.test(word) ? word : JSON.stringify(word)).join(' ');
+// The command as one readable line. A shell command line (a string) is shown exactly as the shell receives it.
+// An argv array: a word without whitespace, quotes or control characters stands as written; any other word is a
+// JSON string. Reversible: a token that starts with `"` is JSON, every other token is literal.
+export const commandLine = command => typeof command === 'string' ? command
+  : command.map(word => /^[^\s"\x00-\x1f\x7f]+$/.test(word) ? word : JSON.stringify(word)).join(' ');
 
 // The eng.check_spec row: everything the spec digest denotes, so the person who signs a leaf reads on the Board
-// what the digest freezes. `files` and `output_dirs` are JSON text (facts hold scalars only).
+// what the digest freezes. `files` is JSON text (facts hold scalars only).
 export function checkSpecRow(check, { spec, digest }) {
   const row = { check, spec_digest: digest, command: commandLine(spec.command), cwd: spec.cwd, shell: spec.shell,
-    output_dirs: JSON.stringify(spec.output_dirs),
     files: JSON.stringify(Object.keys(spec.files).sort().map(name => ({ path: name, sha256: spec.files[name] }))) };
   if (receiptBytes({ rows: [row] }) > RECEIPT_BYTES) refuse('acceptance spec too large');
   return row;
@@ -108,7 +115,7 @@ export function acceptanceEntries(ctx) {
   return names.filter(name => name.endsWith('.json')).sort().map(name => {
     const check = name.slice(0, -5);
     try { return { check, row: checkSpecRow(check, acceptanceSpec(ctx, check)) }; }
-    catch (error) { return { check, error: error.message === 'acceptance spec too large' ? error.message : 'acceptance spec invalid' }; }
+    catch (error) { return { check, error: ['acceptance spec too large', ...FIELD_ERRORS].includes(error.message) ? error.message : 'acceptance spec invalid' }; }
   });
 }
 
@@ -137,10 +144,4 @@ export function verifyAcceptanceFiles(ctx, spec) {
       if (!fs.statSync(target).isFile() || fileDigest(target) !== spec.files[name]) throw new Error();
     } catch { refuse(`acceptance file changed: ${name}`); }
   }
-}
-
-// True when every path the run changed lies in one of the spec's own output directories. Only the spec's own
-// eng.test@2 run is measured this way; every other tool hashes those directories like any other.
-export function onlyOutput(paths, outputDirs) {
-  return paths.length > 0 && paths.every(name => outputDirs.some(dir => below(name, dir)));
 }

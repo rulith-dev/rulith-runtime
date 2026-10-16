@@ -71,7 +71,11 @@ See `settings.example.json`. All fields are optional.
 
 Always refused: privilege elevation, killing processes or stopping services, push/publish, global
 installs or configuration (git subcommands are checked anywhere in a shell line), inline interpreter code (`node -e`, `python -c`, …) and paths that
-escape the project or the allowed directories. With `shell: true` these checks see only the
+escape the project or the allowed directories. Inline code includes combined and attached forms
+(`node -pe`, `node -e<code>`, `python -c<code>`, `python -Ic`, `perl -ne`) and `data:` URLs given to
+`--loader`, `--experimental-loader`, `--import` or `-r`. The fence is about visible intent, not a
+sandbox: a script file named on the line can do anything the Worker's user can; what it buys is that
+the code is a project file anyone can read. With `shell: true` these checks see only the
 command line as written: a shell or script can still run anything the Worker's user can, so enable
 it only for a project you trust.
 
@@ -223,49 +227,57 @@ For example (replace the digest with the actual test file SHA-256):
   "command": ["node", "test/acceptance.mjs"],
   "cwd": ".",
   "files": { "test/acceptance.mjs": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
-  "output_dirs": ["test-output"],
   "shell": false
 }
 ```
 
-Specs are UTF-8 JSON objects, at most 16 KiB, without a repeated key in any object. `command` is a
-nonempty array of nonempty strings; `cwd` is required and is `.` or a project-relative directory.
+Specs are UTF-8 JSON objects, at most 16 KiB, without a repeated key in any object, with exactly the
+fields `command`, `cwd`, `files` and optional `shell`. `command` is a nonempty array of nonempty
+strings, or with `shell: true` one nonempty string (the command line); `cwd` is required and is `.`
+or a project-relative directory.
 `files` maps at most 32 test dependency paths to lowercase, 64-character SHA-256 hex strings. Paths
 are at most 512 UTF-16 code units and use `/`, with no empty, `.` or `..` components, backslashes,
 colons or control characters. `shell` is an optional boolean (default false). Unknown fields are
 refused. Include every test dependency in `files`; each digest hashes that file's exact bytes,
 without EOL normalization. Files and specs cannot be links or pass through linked directories.
+Command words (or the shell line), `cwd` and `files` paths are shown on the Board for a person to
+sign, so a control or format character (Unicode categories Cc and Cf, for example U+202E or a
+zero-width space) or an unpaired surrogate is refused, naming the field:
+`acceptance spec invalid: command`, `acceptance spec invalid: cwd` or `acceptance spec invalid: files`.
 
-`output_dirs` optionally lists literal project directories (no `*` or `?` in any component) where
-the check writes its output. They apply only to the check's own `eng.test@2` run: when everything
-that run changed lies inside them, the generation stays and the post-run tree digest is recorded,
-so the next receipt sees no step. Every other tool keeps hashing those directories, and a later
-change there is an ordinary step. They cannot cover `.rulith/acceptance`, any part of it, or the
-spec's own dependencies. The owner's `treeExclude` setting is the only exclusion applied to every tool.
+A spec has no output directories (an `output_dirs` field makes it invalid). The owner's `treeExclude`
+setting is the only exclusion: every change a check's own run makes outside it is a tree step like
+any other tool's, so a model-written spec cannot keep other checks passing on code they never tested.
+A check whose own run changes the tree is stamped at the generation before the run and the same
+receipt records the step to the new one, so such a run never passes on the tree it created. A
+check that writes output must write it under a `treeExclude` directory the owner set, or outside the
+project (for example the system temporary directory).
 
 The model writes specs, so the command is classified exactly like `eng.run`: privilege elevation,
 process control, push/publish, global installs, inline interpreter code, shell executables and
 shell metacharacters are refused (`command refused`), paths outside the project need the owner's
 `allowedPaths` (`path refused`), and the owner's `allow` list applies. `shell: true` runs through
 the system shell only when the owner's `settings.json` enables `shell`; otherwise the check refuses
-with `acceptance shell refused`. Without `shell: true` the command never goes through a shell.
+with `acceptance shell refused`. With `shell: true` the command is one string that the shell receives
+exactly as written, and `eng.check_spec` shows exactly that string. Without `shell: true` the
+command is an argv array and never goes through a shell.
 
-The **spec digest** hashes canonical JSON bytes of the spec with its defaults written out
-(`output_dirs: []` and `shell: false` when omitted): recursively sort every object's keys by UTF-16
+The **spec digest** hashes canonical JSON bytes of the spec `{command, cwd, files, shell}` with its
+default written out (`shell: false` when omitted): recursively sort every object's keys by UTF-16
 code unit order, retain array order, encode keys and primitive values with `JSON.stringify`, and
 serialize compactly without whitespace. Hash the UTF-8 encoding with SHA-256, with no BOM and no
 trailing newline. Object key order, JSON formatting and omitted defaults do not change the digest;
-changing the command, the working directory, a dependency digest, `output_dirs` or `shell` does.
+changing the command, the working directory, a dependency digest or `shell` does.
 The digest is thus a function of the `eng.check_spec` fact alone.
 
 `eng.acceptance@1` takes no parameters. It reads only `.rulith/acceptance`, without the Source lock
 or project tree walk, and returns sorted
-`eng.check_spec{check, spec_digest, command, cwd, shell, output_dirs, files}` receipt rows. `command`
-is the command as one line: a word without whitespace, quotes or control characters stands as
-written, any other word is a JSON string (a token starting with `"` is JSON, every other token is
-literal). `output_dirs` is a JSON array text, and `files` is the JSON text
+`eng.check_spec{check, spec_digest, command, cwd, shell, files}` receipt rows. `command` is the
+command as one line: a shell command line stands exactly as written; for an argv array, a word
+without whitespace, quotes or control characters stands as written and any other word is a JSON
+string (a token starting with `"` is JSON, every other token is literal). `files` is the JSON text
 `[{"path":…,"sha256":…},…]` sorted by path. It does not read or verify dependencies. Each invalid
-spec has an `error: "acceptance spec invalid"` text row in `errors` and contributes no fact. A spec
+spec has an `error: "acceptance spec invalid"` text row (or the field-named form above) in `errors` and contributes no fact. A spec
 whose row alone would not fit the Worker's inline receipt (7 KiB of the 8 KiB budget, measured as the
 result text plus its facts) has `error: "acceptance spec too large"` instead. A legal filename's check
 is included on its error row. A missing acceptance directory returns no rows; one that cannot be
@@ -279,8 +291,10 @@ then runs it. A missing, unreadable, linked or changed dependency refuses with
 `acceptance file changed: <project-relative path>`, with no facts and no command execution. Invalid
 specs refuse with `acceptance spec invalid`; invalid check names/arguments use
 `acceptance check invalid`. Receipts contain `eng.check_result{check, spec_digest, gen, tree_digest,
-exit_code}` plus the usual `eng.tree_step`. A test that changes the tree outside its output
-directories stamps its final generation; a no-change step is `(-1,-1)`. A nonzero exit is still
+exit_code}` plus the usual `eng.tree_step`. A test whose own run changed the tree is stamped at the
+pre-run generation, with the step from it to the new generation in the same receipt, so it cannot
+derive the criterion; a no-change step is `(-1,-1)`. (`eng.test@1` keeps stamping its final
+generation.) A nonzero exit is still
 reported, but cannot derive the criterion. After execution the adapter rechecks dependencies and the
 spec digest, so a command cannot rewrite its own frozen tests/spec and produce a passing fact. A
 changed valid spec uses `acceptance spec changed`.

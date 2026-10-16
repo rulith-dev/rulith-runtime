@@ -186,16 +186,16 @@
       "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     },
     "kits/general/README.md": {
-      "sha256": "15dce79b8c61be66276845d329817522e7f26b6c94353da9f5650d96813a34fa"
+      "sha256": "b09d094584cb3fcfdc33a442795f0205a3e15395ff60f96d8f58acd70b6ddcc3"
     },
     "kits/general/acceptance.mjs": {
       "sha256": "889e8e8a2df0d6247711370aec8563054513dd8c901833399e2b3de86fc52414"
     },
     "kits/general/acceptance-specs.mjs": {
-      "sha256": "5c81cdbec011e8723828f0f18295dc24177041e3f923dca9597c298f19fc71b2"
+      "sha256": "903ee98801dfd8c52b5e2894d8ff43d1f4ca7797e9617ef0d0b35c7b83df0f3f"
     },
     "kits/general/adapter.mjs": {
-      "sha256": "348febb43a798af5cb8ae71afde60af31afb864f112933a4f8b57d310dd99b50"
+      "sha256": "f899861d3c2c470aa9242974370dbbd2720bdf10066db05954c4cee7ab72896b"
     },
     "kits/general/apply-patch.mjs": {
       "sha256": "ae12f95ce8d9b2779875f6516068c5d0b633dfd129cd9ea09f57415dfa908e68"
@@ -231,7 +231,7 @@
       "sha256": "561cd7d025f61bb14e0d5d0f41b3ec95d583ba7f7661b26c25681f10f32509b0"
     },
     "kits/general/lib.mjs": {
-      "sha256": "26a2601a36570f7d004423631cd49dbfd066f2992b5698b06da36632c1c7fcba"
+      "sha256": "bff8584f4db02620792191375e77d4fa8cca8d61dd4c4b3ea41baefd5a014f05"
     },
     "kits/general/list.mjs": {
       "sha256": "20c483146b77a998d06cc25ac96d3d08e41d1d59943cd350989b67cc7a3960eb"
@@ -246,7 +246,7 @@
       "sha256": "c2f89403a4cca7444613ef74f2925c4caf6e47d0a930985f2fdb73bdbbbb8b36"
     },
     "kits/general/pack/program-v2.json": {
-      "sha256": "64a810c00db474205e721238e782c896d1629e5c0b844ddcf419d9cab0614fb5"
+      "sha256": "66930fe07ff4f9ce220032b4b66d726d936ebd72ed7a62d4fb4e9ac1d0efc16c"
     },
     "kits/general/pack/sources.json": {
       "sha256": "107ba4be2c057c50d8815a5aa7375eb4ea938f90fcdd32251481981984aa9b1f"
@@ -306,7 +306,7 @@
       "sha256": "8333142a93cf9e346fdf6f16207afec19410b35e997b84bf0f2d468ca2304f9f"
     },
     "kits/general/worker-tools.json": {
-      "sha256": "94129ab06eb10a2ea245e89fd96ccfb219beb5edf8de6ed8dd16192c00d43272"
+      "sha256": "30f939a8e913abce71fb968f5ef5d6d5cc20771b5e3ab1583772b604aafd0cdb"
     },
     "kits/general/write_file.mjs": {
       "sha256": "f4de93e4dd78719380a309b7000bd14996163090c7c949f4ca9dfffba4536632"

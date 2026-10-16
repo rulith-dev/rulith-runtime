@@ -7,7 +7,7 @@ import { applyPatch } from './apply-patch.mjs';
 import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
-import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, onlyOutput } from './acceptance-specs.mjs';
+import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, FIELD_ERRORS } from './acceptance-specs.mjs';
 import { settings, context, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
@@ -276,22 +276,27 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     }
     const after = read ? before : tree(ctx);
     if (tool === 'run') { rows[0].tree_after = after.digest; rows[0].changed_files = JSON.stringify(changed(before, after)); }
-    // A check's own output_dirs cover only what its own run wrote there: the generation stays and the post-run
-    // digest is saved, so later receipts see no change. A change made before the run, or outside those
-    // directories, is a step as for any tool.
-    const mutated = state.digest !== after.digest && !(tool === 'test_v2' && state.digest === before.digest
-      && onlyOutput(changed(before, after), acceptance.spec.output_dirs));
+    // Every change is a step, a check's own run included: the owner's treeExclude is the only exclusion.
+    const mutated = state.digest !== after.digest;
     const gen = state.gen + (mutated ? 1 : 0);
     if (!Number.isSafeInteger(gen)) refuse('generation exhausted');
     const step = mutated ? { from_gen: state.gen, to_gen: gen } : { from_gen: -1, to_gen: -1 };
+    if (tool === 'tree_state') rows[0] = { gen, tree_digest: after.digest };
+    // 检查自己改了代码树（主人 treeExclude 之外的任何东西）：它测的是运行前的树，不是它造出来的树。结果记在运行前的
+    // 代数上，同一回执里的这一步（运行前 → 运行后）让它立刻失效，所以这样的检查永远不能算“当前通过”。
+    // A check whose own run changed the tree tested the tree before, not the one it made: its result is stamped at the
+    // pre-run generation, and the step pre → post in the same receipt leaves it, so it can never be current.
+    // (eng.test@1 keeps its original behaviour: the final generation.)
+    if (tool === 'test' || tool === 'test_v2') {
+      rows[0].tree_digest = after.digest;
+      rows[0].gen = tool === 'test_v2' && before.digest !== after.digest ? state.gen : gen;
+    }
+    const testGen = (tool === 'test' || tool === 'test_v2') && rows[0].exit_code === 0 ? rows[0].gen : state.test_gen;
     // Replay the genuine first edge after the latest passing test. If an adapter finished but its Worker receipt was
     // lost, or a read saw the change first, the next receipt of a tool that can change the tree still invalidates it.
     let invalidation = state.invalidation;
-    if (mutated && state.test_gen === state.gen) invalidation = step;
+    if (mutated && (state.test_gen === state.gen || testGen === state.gen)) invalidation = step;
     const edges = invalidation && invalidation.from_gen !== step.from_gen ? [invalidation,step] : [step];
-    if (tool === 'tree_state') rows[0] = { gen, tree_digest: after.digest };
-    if (tool === 'test' || tool === 'test_v2') { rows[0].tree_digest = after.digest; rows[0].gen = gen; }
-    const testGen = (tool === 'test' || tool === 'test_v2') && rows[0].exit_code === 0 ? gen : state.test_gen;
     save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
     const reportEdges = edges;
     const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => reportEdges.map(edge => ({ ...row, ...edge }))), reportEdges.length);
@@ -323,10 +328,12 @@ function measureSpecs(ctx) {
 // A project spec is written by the model, so its command passes the same classifier as eng.run (no push, publish,
 // privilege, process control, global installs or inline interpreter code; the owner's allow and allowedPaths).
 // Its own shell flag cannot widen the owner's settings: shell runs only where the owner enabled it.
+// With shell the spec's command is one string: the shell receives exactly the line eng.check_spec shows.
 function acceptanceCommand(ctx, spec) {
   if (spec.shell && !settings(ctx.home).shell) refuse('acceptance shell refused');
   const command = classify(ctx, spec.command, spec.cwd);
-  return { command: command.command, cwd: command.cwd, shell: spec.shell, line: spec.command.join(' ') };
+  return spec.shell ? { command: command.command, cwd: command.cwd, shell: true, line: spec.command }
+    : { command: command.command, cwd: command.cwd, shell: false };
 }
 function pinnedCommand(ctx, spec) {
   // Owner-pinned executable may be an absolute toolchain path outside the Source.
@@ -349,7 +356,7 @@ export async function main(tool) {
     // A spec refusal names its field in fixed words (no path, no value); a file-system error says only what kind it was.
     const fileErrors = { ENOENT: 'path not found', EISDIR: 'path is a directory', ENOTDIR: 'path not found', EACCES: 'path not readable', EPERM: 'path not readable', EBUSY: 'path not readable' };
     const acceptanceError = ['test_v2', 'acceptance'].includes(tool) &&
-      (['acceptance spec invalid', 'acceptance spec changed', 'acceptance spec too large', 'acceptance shell refused', 'acceptance check invalid', 'acceptance takes no arguments'].includes(error.message)
+      (['acceptance spec invalid', ...FIELD_ERRORS, 'acceptance spec changed', 'acceptance spec too large', 'acceptance shell refused', 'acceptance check invalid', 'acceptance takes no arguments'].includes(error.message)
         || /^acceptance file changed: [^\x00-\x1f\x7f]+$/.test(error.message));
     const verdict = acceptanceError || messages.includes(error.message) || /^spec refused: [A-Za-z0-9_ ,()-]+$/.test(error.message) ? error.message
       : fileErrors[error.code] ?? 'adapter failed';
