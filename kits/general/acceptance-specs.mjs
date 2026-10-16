@@ -21,6 +21,11 @@ const projectPath = value => typeof value === 'string' && value.length <= 512
 const displayable = value => typeof value !== 'string' || /^[\x21-\x7e]([\x20-\x7e]*[\x21-\x7e])?$/.test(value);
 export const FIELD_ERRORS = ['command', 'cwd', 'files'].map(field => `acceptance spec invalid: ${field}`);
 const invalidField = field => refuse(`acceptance spec invalid: ${field}`);
+// 项目根的 .git 被树摘要排除，运行时也拒绝在其中运行或依赖其中的文件；解析时就按字段拒绝，任何大小写或
+// Windows 会去掉的尾随点和空格都算。
+// The root .git is excluded from the tree digest and refused at run time; a spec naming it is refused when parsed,
+// by field, in any case and with the trailing dots or spaces Windows drops.
+const rootGit = value => value.split('/')[0].toLowerCase().replace(/[. ]+$/, '') === '.git';
 const invalid = () => refuse('acceptance spec invalid');
 
 // JSON.parse accepts a repeated key and keeps the last value; a reader of the file may see the first.
@@ -80,10 +85,12 @@ export function acceptanceSpec(ctx, check) {
     if (!words.every(displayable)) invalidField('command');
     if (!displayable(spec.cwd)) invalidField('cwd');
     if (spec.cwd !== '.' && !projectPath(spec.cwd)) invalid();
+    if (rootGit(spec.cwd)) invalidField('cwd');
     if (!object(spec.files) || Object.keys(spec.files).length > MAX_FILES) invalid();
     if (!Object.keys(spec.files).every(displayable)) invalidField('files');
     for (const [name, digest] of Object.entries(spec.files))
       if (!projectPath(name) || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) invalid();
+    if (Object.keys(spec.files).some(rootGit)) invalidField('files');
     const normal = normalizedSpec(spec);
     return { spec: normal, digest: sha(canonicalSpec(normal)) };
   } catch (error) { if (FIELD_ERRORS.includes(error.message)) throw error; invalid(); }

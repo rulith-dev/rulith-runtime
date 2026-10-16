@@ -23,10 +23,17 @@ export function inside(root, target) {
   return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
 }
 // Resolve the nearest existing ancestor too, for new files below symlinked directories.
+// 项目内的相对路径不能含冒号：在 NTFS 上 `src/impl.txt:code` 是 impl.txt 的一个备用数据流，读写都能成功，
+// 但目录遍历（tree()）看不见它，被测代码却能读到。所有工具（包括读工具）一律拒绝，与 apply_patch 和验收规格的路径
+// 规则一致。只检查相对于项目根的部分，所以 Windows 盘符不受影响。
+// A project-relative path never contains a colon: on NTFS `src/impl.txt:code` is an alternate data stream of
+// impl.txt that reads and writes succeed on but no directory walk (tree()) sees, while tested code can read it.
+// Every tool refuses it, reads too, as apply_patch and acceptance spec paths do. Only the part relative to the
+// project root is checked, so a Windows drive letter is unaffected.
 export function fenced(root, name = '.') {
   if (typeof name !== 'string' || name.includes('\0')) refuse('path refused');
   const target = path.resolve(root, name);
-  if (!inside(root, target)) refuse('path refused');
+  if (!inside(root, target) || path.relative(root, target).includes(':')) refuse('path refused');
   let ancestor = target;
   const missing = [];
   while (!fs.existsSync(ancestor)) {
@@ -46,7 +53,7 @@ export function fenced(root, name = '.') {
 export function plainFenced(root, name) {
   if (typeof name !== 'string' || name.includes('\0')) refuse('path refused');
   const target = path.resolve(root, name);
-  if (!inside(root, target)) refuse('path refused');
+  if (!inside(root, target) || path.relative(root, target).includes(':')) refuse('path refused');
   let cursor = root;
   for (const component of path.relative(root, target).split(path.sep).filter(Boolean)) {
     cursor = path.join(cursor, component);
@@ -183,7 +190,11 @@ export function tree(ctx) {
   }
   visit(ctx.root);
   try { fs.writeFileSync(cacheFile, JSON.stringify(next)); } catch {}
-  const specs = fs.readdirSync(path.join(ctx.home,'specs')).filter(e => /^[a-zA-Z0-9_-]+\.json$/.test(e)).sort().map(e => [e, sha(fs.readFileSync(path.join(ctx.home, 'specs', e)))]);
+  // 只哈希主人的规格。冻结的 self- 副本由测量第一次写入且之后不变，它的来源（.deep-rulith/measure/）本来就在项目树里；
+  // 把它算进来会让第一次测量凭空记一步。
+  // Only the owner's specs: a frozen self- copy is written by its first measurement and never changes, and its source
+  // (.deep-rulith/measure/) is in the project tree already; counting it made that first measurement a spurious step.
+  const specs = fs.readdirSync(path.join(ctx.home,'specs')).filter(e => /^[a-zA-Z0-9_-]+\.json$/.test(e) && !/^self-/i.test(e)).sort().map(e => [e, sha(fs.readFileSync(path.join(ctx.home, 'specs', e)))]);
   return { files, digest: sha(sha(JSON.stringify({ specs, files })) + treeSettings(ctx, skip)) };
 }
 // 树的身份包括决定“哪些文件被哈希、什么可以运行”的设置：生效的排除集合、shell、allow 与 allowedPaths。

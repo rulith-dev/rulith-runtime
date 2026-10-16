@@ -106,6 +106,28 @@ variables, substitutions, globbing and the shell's own quoting can run what the 
 The line is shown verbatim (in `eng.check_spec` for a check) and the owner chose the shell, so
 enable it only for a project you trust.
 
+## What a pass means
+
+The kit is a fence, not a sandbox. Everything a command, check, measurement or job runs executes as
+the Worker's operating-system user, and the kit cannot stop such a process from doing what that user
+can. In particular:
+
+- A project script can find the kit home (it is an ordinary directory that user can read; removing
+  `ENG_KIT_HOME` from its environment only avoids handing it the path) and forge currency: rewrite
+  the tree cache so a changed file keeps its recorded digest (an unchanged size and modification time
+  are trusted), rewrite the state file, or edit `settings.json`. A settings change is a tree step,
+  but a script can rewrite all three consistently.
+- A pass is therefore only as trustworthy as the project scripts the check runs, and the scripts
+  they in turn run. The signed `eng.check_spec` pins the check's own files, not everything they
+  import or start.
+- A command's own writes under an owner exclusion or the root `.git` are not seen by the tree digest.
+  In particular a script can write `.git/config` (`core.fsmonitor`, aliases), and a later
+  `git status` or `git <alias>` in a check then runs code the digest never sees.
+- Launchers, wrappers and interpreters not on the list above can hide inline code, and with the
+  owner's `shell: true` the classifier is advisory only.
+- A project path outside printable ASCII cannot be an acceptance check in v1 (`cwd`, `files` and
+  command words are refused by field).
+
 ## Behaviour
 
 The original twelve `eng.*@1` contracts, parameter tables, predicate mappings and receipt fields
@@ -185,10 +207,13 @@ The receipt then clips text to its inline byte budget; its digest covers every f
   tree step even though the digest cannot see the change: owner exclusions are for build outputs and
   caches, not for tested code. A command's own writes there are not seen.
 - Commands, checks, measurements and jobs run without the kit's and the Worker's variables: every
-  `ENG_*` (including `ENG_KIT_HOME`) and `RULITH_*` variable is removed from their environment, so a
-  script is not handed the location of the owner's settings, specs, tree cache or state file. It runs
-  as the Worker's user, so the kit home must still be protected by its location, not by secrecy; a
-  settings change it made anyway is a tree step (above).
+  `ENG_*` (including `ENG_KIT_HOME`) and `RULITH_*` variable is removed from their environment, and a
+  job's supervisor receives its job file through such a variable rather than its command line, so a
+  script is not handed the location of the owner's settings, specs, tree cache or state file. That is
+  not secrecy and not protection: see "What a pass means" below.
+- A project-relative path containing `:` is refused by every tool, reads included (`path refused`):
+  on NTFS `file:name` is an alternate data stream that no directory walk sees. On POSIX, where `:` is
+  an ordinary file-name character, a project containing such a name cannot be walked by the kit.
 - Only `eng.test` produces `eng.test_result` and only `eng.measure_pinned` produces measurement
   facts; numbers printed by other commands never become facts.
 - The Worker runs items one at a time per Source. File and command adapters serialize through
@@ -232,7 +257,9 @@ shell. Its `interpreter`, if any, is `node`, `python`, `python3`, `ruby` or `per
 path under the owner's `allowedPaths`. It has no `output_dirs` (`spec refused: a self- spec has no
 output_dirs`): a measurement's own outputs belong under the owner's `treeExclude`. A `self-` file in
 `<kit home>/specs` never adds a tree exclusion, even one frozen by an earlier version with
-`output_dirs`; only the owner's own specs and `treeExclude` do. The owner's specs are unchanged.
+`output_dirs`; only the owner's own specs and `treeExclude` do. Freezing it is no tree step either: the
+tree digest covers the owner's spec files only (a change to one of those is a step), while a `self-`
+spec's source under `.deep-rulith/measure/` is part of the project tree. The owner's specs are unchanged.
 
 ## Completing a goal
 

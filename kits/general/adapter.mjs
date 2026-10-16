@@ -158,7 +158,12 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
         const command = classify(ctx, args.command, args.cwd);
         job = { id: randomUUID(), status: 'starting', root: ctx.root, home: ctx.home, command: command.command, line: command.line, shell: command.shell, cwd: command.cwd, before: before.digest, pid: 0, supervisor_pid: 0, exit_code: -1 };
         save(ctx.jobFile, job);
-        const child = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.mjs', import.meta.url)), ctx.jobFile, job.id], { env: childEnv(), detached: true, windowsHide: true, stdio: 'ignore' });
+        // 任务文件经 ENG_ 变量交给监督进程而不是命令行：任务命令是监督进程的子进程，读父进程的命令行就会找到 kit home；
+        // 监督进程运行命令时 childEnv() 去掉所有 ENG_ 变量。这不是保密（见 README），只是不把位置递到脚本手里。
+        // The job file reaches the supervisor through ENG_ variables, not argv: the job's command is the supervisor's child
+        // and could read its parent's command line to find the kit home. execute() strips every ENG_ variable again for
+        // the command itself. Not secrecy (see README), just not handing the location to the script.
+        const child = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.mjs', import.meta.url))], { env: { ...childEnv(), ENG_JOB_FILE: ctx.jobFile, ENG_JOB_ID: job.id }, detached: true, windowsHide: true, stdio: 'ignore' });
         await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
         child.unref();
         const limit = Date.now() + 5000;

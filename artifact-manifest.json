@@ -186,16 +186,16 @@
       "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     },
     "kits/general/README.md": {
-      "sha256": "f57f48231390a98347a575c8b0c8f8cab486c6a348665dcdc7a723395bd75e28"
+      "sha256": "c6bf3a8eda779b1613458b79840830fd7baf3cf4bdff1c9d313280b7fc35cc38"
     },
     "kits/general/acceptance.mjs": {
       "sha256": "889e8e8a2df0d6247711370aec8563054513dd8c901833399e2b3de86fc52414"
     },
     "kits/general/acceptance-specs.mjs": {
-      "sha256": "e2f39de1b336e27f2e1b6bc0b19b6f721258a608109a8d65032512e0989a4905"
+      "sha256": "10500a321f91e0d3a4729f77f7f7ca2a317c92b404f1623b14640c0a63eb5374"
     },
     "kits/general/adapter.mjs": {
-      "sha256": "74f8de1bce0c21ace3c492f069f6bda6c5ffe158e51729cc145497d52632ed75"
+      "sha256": "9735dba621d3ffbbd76a06ba8c5f19c5440776736b5f8d99599763c8dcb6f70e"
     },
     "kits/general/apply-patch.mjs": {
       "sha256": "a49d90c039ac56d3673573a1aac0fa27b6798a966d733146f6ef97d0a4c54786"
@@ -231,7 +231,7 @@
       "sha256": "561cd7d025f61bb14e0d5d0f41b3ec95d583ba7f7661b26c25681f10f32509b0"
     },
     "kits/general/lib.mjs": {
-      "sha256": "480c20398dee89e2a06fd187730620268af0f4f948d5881b00ce92665864e71c"
+      "sha256": "04f1260cb9ebb5e1b7d058cb84284572ead969fc0692ddf1aa8290c85e520d25"
     },
     "kits/general/list.mjs": {
       "sha256": "20c483146b77a998d06cc25ac96d3d08e41d1d59943cd350989b67cc7a3960eb"
@@ -285,7 +285,7 @@
       "sha256": "03f53d7dbd74481e0e5c7e2584bb84a50e327cb5593e8bc8c179f7a849a717a6"
     },
     "kits/general/supervisor.mjs": {
-      "sha256": "35d0f8cf5f68ecb00d4f3e825930e57924f6da4803721b6de5d218d8bf265f3f"
+      "sha256": "e4c49935175bb11ae0891e55eb870672185962e382caafdfc23c8d9d0152739d"
     },
     "kits/general/test.mjs": {
       "sha256": "e41ceeeb24eaaeae94cf46f1800d64ea5ba2f30f6e8c5e64325242423099ff25"

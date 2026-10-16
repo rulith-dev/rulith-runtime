@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { readJson, save, execute, killTree, settings } from './lib.mjs';
 
-const [file, id] = process.argv.slice(2);
+const { ENG_JOB_FILE: file, ENG_JOB_ID: id } = process.env;
 let job = readJson(file);
 if (job.id !== id || job.status !== 'starting') process.exit(2);
 let childPid;

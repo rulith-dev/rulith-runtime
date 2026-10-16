@@ -1031,3 +1031,73 @@ test('inline-code fence: review 4 bypasses are refused and its false refusals ru
     assert.equal(verdict(command), 'allowed', JSON.stringify(command));
   }
 });
+
+test('a path with a colon is refused by every tool: an NTFS stream is invisible to the tree walk (review 5 P1-1, PoC pocG)', async t => {
+  const f = fixture(t); const r = recorder();
+  f.write('src/impl.txt', 'host');
+  // The tested code reads the stream; a stream write the tree cannot see must never leave this pass current.
+  const strict = "import fs from 'node:fs'; let v = ''; try { v = fs.readFileSync('src/impl.txt:code', 'utf8'); } catch {} process.exitCode = v === 'BAD' ? 1 : 0;\n";
+  f.write('test.mjs', strict); f.put({ ...f.spec, files: { 'test.mjs': sha(strict) } });
+  r.record('eng.tree_state@1', await f.call('tree_state'));
+  r.record('eng.test@2', await f.call('test_v2', { check: 'unit' }));
+  assert.deepEqual(r.passing(), ['unit']);
+  await assert.rejects(f.call('write_file', { path: 'src/impl.txt:code', text: 'BAD', expect_digest: '' }), { message: 'path refused' });
+  await assert.rejects(f.call('patch_file', { path: 'src/impl.txt:code', old_text: 'host', text: 'BAD', expect_digest: sha('host') }), { message: 'path refused' });
+  for (const [tool, args] of [['read', { path: 'src/impl.txt:code' }], ['read_v2', { path: 'src/impl.txt::$DATA' }], ['list', { path: 'src:x' }],
+    ['search', { path: 'src/impl.txt:code', query: 'x' }], ['run', { command: 'node -v', cwd: 'src:x' }], ['read_image', { path: 'a.png:x' }]])
+    await assert.rejects(f.call(tool, args), { message: 'path refused' }, tool);
+  assert.ok(!fs.readdirSync(path.join(f.root, 'src')).some(name => name.includes(':')));
+  if (process.platform === 'win32') assert.throws(() => fs.readFileSync(path.join(f.root, 'src/impl.txt:code')), { code: 'ENOENT' });
+  assert.deepEqual(r.passing(), ['unit']);
+  // An absolute project path (a drive letter on Windows) is unaffected.
+  assert.equal((await f.call('read', { path: path.join(f.root, 'src/impl.txt') })).head, 'host');
+});
+
+test('the first measurement of a new self- spec is no tree step; an owner spec change still is (review 5 P2-1, PoC pocI)', async t => {
+  const f = fixture(t); const r = recorder();
+  selfSpec(f, 'x'); selfSpec(f, 'y');
+  r.record('eng.tree_state@1', await f.call('tree_state'));
+  r.record('eng.test@2', await f.call('test_v2', { check: 'unit' }));
+  assert.deepEqual(r.passing(), ['unit']);
+  for (const id of ['self-x', 'self-x', 'self-y']) {
+    r.record('eng.measure_pinned@1', await f.call('measure_pinned', { spec_id: id }));
+    assert.equal((await f.call('tree_state')).rows[0].gen, 0, id);
+  }
+  assert.ok(fs.existsSync(path.join(f.home, 'specs/self-x.json')));
+  assert.deepEqual(r.passing(), ['unit']);
+  fs.writeFileSync(path.join(f.home, 'specs/owner.json'), JSON.stringify({ command: ['node', 'measure.mjs'] }));
+  const step = r.record('eng.run@1', await f.call('run', { command: 'node -v' }));
+  assert.deepEqual([step.rows[0].from_gen, step.rows[0].to_gen], [0, 1]);
+  assert.deepEqual(r.passing(), []);
+});
+
+test('a job command cannot read the kit home from its supervisor command line (review 5 P2-2)', { skip: !['win32', 'linux'].includes(process.platform) }, async t => {
+  const f = fixture(t);
+  f.write('probe.mjs', process.platform === 'win32'
+    ? "import { execFileSync } from 'node:child_process'; console.log(execFileSync('powershell', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${process.ppid}').CommandLine`]).toString());\n"
+    : "import fs from 'node:fs'; console.log(fs.readFileSync(`/proc/${process.ppid}/cmdline`, 'utf8').replaceAll('\0', ' '));\n");
+  const job = await f.call('job_start', { command: 'node probe.mjs' });
+  let poll; do poll = await f.call('job_poll', { job_id: job.rows[0].job_id, wait_s: 5 }); while (!['done', 'failed'].includes(poll.rows[0].status));
+  assert.equal(poll.rows[0].status, 'done');
+  assert.match(poll.head, /supervisor\.mjs/);
+  assert.ok(!poll.head.includes(path.basename(f.home)) && !/job-[0-9a-f]{64}/.test(poll.head), poll.head);
+});
+
+test('an acceptance spec naming the root .git is refused by field when parsed (review 5 cosmetic)', t => {
+  const f = fixture(t);
+  for (const cwd of ['.git', '.GIT', '.git/hooks', '.git./x'])
+    { f.put({ ...f.spec, cwd }); assert.throws(() => acceptanceSpec(f.ctx, 'unit'), { message: 'acceptance spec invalid: cwd' }, cwd); }
+  for (const name of ['.git/config', '.Git/HEAD'])
+    { f.put({ ...f.spec, files: { ...f.spec.files, [name]: 'a'.repeat(64) } }); assert.throws(() => acceptanceSpec(f.ctx, 'unit'), { message: 'acceptance spec invalid: files' }, name); }
+  f.put({ ...f.spec, files: { ...f.spec.files, '.gitignore': 'a'.repeat(64), 'src/.git/x': 'a'.repeat(64) } });
+  assert.equal(Object.keys(acceptanceSpec(f.ctx, 'unit').spec.files).length, 3);
+});
+
+test('the README states what a pass means: a fence, not a sandbox (review 5 P2-2, P2-3)', () => {
+  const readme = fs.readFileSync(path.join(repo, 'kits/general/README.md'), 'utf8');
+  const section = readme.slice(readme.indexOf('## What a pass means'), readme.indexOf('## Behaviour'));
+  for (const claim of [/fence, not a sandbox/, /forge currency/, /tree cache/, /only as trustworthy as the project scripts/,
+    /owner exclusion or the root `\.git`/, /core\.fsmonitor/, /git <alias>/, /not on the list/, /`shell: true` the classifier is advisory/, /printable ASCII/])
+    assert.match(section, claim);
+  assert.doesNotMatch(readme, /protected by its location/);
+});
