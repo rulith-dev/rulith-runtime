@@ -4,6 +4,9 @@ All notable changes to the local runtime are documented here.
 
 ## Unreleased
 
+- Add project acceptance specs, `eng.acceptance@1` discovery and `eng.test@2` digest-checked
+  receipts (D-1016a, PSC 0.2.17). The native engineering_work v2 package derives the pinned
+  criterion `eng.check_passed` with a freshness rule and an acceptance bridge for signed leaves.
 - Address D-1015c review findings: opt-in image artifact custody, bounded web text conversion,
   dead-holder lock recovery, stricter SSRF ranges, complete patch edges and per-line EOLs,
   link refusal, bounded glob matching and Sources package v2. Web calls skip project walks/locks.

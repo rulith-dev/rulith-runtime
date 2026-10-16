@@ -3,7 +3,7 @@
 Worker adapters for programming work on one project directory, bound in Rulith as Source `lab`
 (type `file`). Plain Node 20+, no dependencies. They give the model ordinary engineering moves —
 read, search, list, glob, write, patch, view an image, run a command, run a long job, run the
-owner-pinned test or measurement, fetch a web page and search the web. Every call returns a
+named project acceptance check or owner-pinned test/measurement, fetch a web page and search the web. Every call returns a
 Worker receipt. This toolkit ships with the Runtime and is off by default. Deep Rulith remains
 the agent host; capability packages adopt these bare tool contracts through their own business
 Actions, adding preconditions and effects. The kit itself adds no business Actions.
@@ -12,14 +12,15 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
 
 ## Install on a Worker
 
-1. Create a kit home directory outside the project with `specs/test.json` (the pinned test; see
-   `pinned-test.example.json`), optional `specs/<id>.json` measurements
+1. Create a kit home directory outside the project. Only legacy `eng.test@1` needs
+   `specs/test.json` (see `pinned-test.example.json`); v2 uses project files below.
+   Optional `specs/<id>.json` measurements
    (`pinned-measure.example.json`) and optional `settings.json` (below).
 2. With the Agent paired and its Worker enabled once in the Rulith Runtime manager, run
    `rulith kit install general --agent <name> --kit-home <dir> [--manager-home <dir>]`.
    The manager directory defaults to `RULITH_MANAGER_HOME` or `~/.rulith/manager`.
    For scripts, `node kits/general/install.mjs` accepts the same flags.
-   It copies the adapters into that Agent's Worker root, merges the eighteen kit tools into the
+   It copies the adapters into that Agent's Worker root, merges the twenty kit tools into the
    Agent's own tool manifest and sets the Worker environment: `ENG_KIT_HOME`,
    `RULITH_WORKSPACE_TOOLS=read` (Console uses the built-in read tools to bind the Source) and
    `RULITH_WORKER_RUN_TIMEOUT_SECONDS` (the longer of `runDeadlineSeconds` and
@@ -34,9 +35,12 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    Any command the model runs through `eng.run`/`eng.job_start` as the same OS user can read it,
    even though it is not passed directly into those adapters. Use a dedicated low-privilege search key.
 4. Accreditation: the Board records a Worker result only for predicates its Source accredits.
-   Build the Capability with `node pack/build-pack.mjs` and install it on the Agent; it declares
-   Source `lab` with the `eng.*` and `web.*` words and adds no rules or Actions. Its Sources
-   package is `engineering_work_sources` version 2; version 1 keeps its original digest.
+   From this directory run `node pack/build-pack.mjs`. Install `pack/program-v2.json`
+   (`engineering_work` version 2, native `rulith-domain-program`) and `pack/sources-v2.json`
+   (`engineering_work_sources` version 2). Source `lab` accredits the `eng.*` and `web.*` words.
+   The program adds the check criterion rule and acceptance bridge, and no business Actions.
+   The older `pack/program.json` and `pack/sources.json` stay byte-identical. Install v2 on a new
+   Board: same-name packages cannot be installed together or hot-upgraded.
 5. Console: bind Source `lab` to the project root and the Worker Connection, pin the desired
    kit tools (allow direct use) and lock. Non-strict exploration mode lets the model supply
    write and run inputs; each such call is marked as not grounded.
@@ -112,7 +116,8 @@ The receipt then clips text to its inline byte budget; its digest covers every f
   pass the digest `eng.read` reported for it.
 - Refusals say what is wrong in fixed words: `spec refused: <the field at fault>`, `parent directory missing`,
   `path not found`, `path is a directory`, `path not readable` (never a path or a value). The verdict is also
-  written to stderr, which the Worker reports as the failure reason.
+  written to stderr, which the Worker reports as the failure reason. Acceptance file-change refusals
+  additionally name the validated project-relative file, as described below.
 - While a job runs, writes, runs and measurements are refused but reads go ahead (recording no generation
   step). `eng.list` gives the folder's `entries` count (a receipt holds at most 32 rows); `eng.search` skips
   files it cannot read and counts them in `unreadable_files`.
@@ -168,6 +173,75 @@ owner can review such specs afterwards and tell them from the owner's own.
 
 ## Completing a goal
 
-Declare the goal with a `desired` outcome, then propose with `add_axiom` a rule that derives that outcome
-from the pinned test that passed (`exit_code 0`) at the final generation and tree digest. Nobody closes
-the goal: the Board completes it by itself once it certifies the outcome from that test receipt.
+Certification means an acceptance contract was fulfilled: a root goal, criterion leaves and a signer.
+After discovering check receipts, declare child goals with `desired` atoms
+`eng.check_passed(check, spec_digest)` under the root using `declare_goal`. The person signs the
+leaves in Console (`SignAcceptance`); the Kernel plants `acceptance(node, test)` with `test` equal
+to the value of the atom's first declared argument, `check`. The package bridge connects that check
+name to `acceptance_met(node)`. The leaf's own `goal_met` also requires the exact desired atom,
+so its signed digest must hold. A bridge match for a different digest cannot fulfill that leaf.
+The Board's contract machinery completes the root when all signed leaves fulfill.
+
+`eng.check_passed`, `eng.test_result`, `eng.tree_step` and `eng.check_spec` are package pins
+(committed derivation). Model assertions and model rule heads using them are refused with
+`goalpost_moved`; Worker receipts and package rules provide the evidence. The model does not
+write a completion rule. Console signing and certification require the D-1016a Kernel/Gateway work.
+
+## Project acceptance specs
+
+Write `.rulith/acceptance/<check>.json` in the project, with a check matching
+`^[a-z0-9][a-z0-9_-]{0,39}$`. For example (replace the digest with the actual test file SHA-256):
+
+```json
+{
+  "command": ["node", "test/acceptance.mjs"],
+  "cwd": ".",
+  "files": { "test/acceptance.mjs": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+  "output_dirs": ["test-output"],
+  "shell": false
+}
+```
+
+Specs are UTF-8 JSON objects, at most 16 KiB. `command` is a nonempty array of nonempty strings;
+`cwd` is required and is `.` or a project-relative directory. `files` is an object mapping
+test dependency paths to lowercase, 64-character SHA-256 hex strings. Paths are at most 512 UTF-16
+code units and use `/`, with no
+empty, `.` or `..` components, backslashes, colons or control characters. `shell` is an optional
+boolean (default false); true uses the system shell as for the legacy pinned test. Unknown fields
+are refused. `output_dirs` optionally lists paths excluded from tree digests, across all valid project
+specs. They cannot hide `.rulith/acceptance`, any part of that directory, or their own test dependencies;
+an output exclusion overlapping another spec's dependency is ignored for tree digests.
+Include every test dependency in `files`; each digest hashes that file's exact bytes, without EOL
+normalization. Files and specs cannot be links or pass through linked directories.
+
+The **spec digest** hashes canonical JSON bytes: parse with `JSON.parse` (duplicate keys have its
+last-key-wins meaning), recursively sort every object's keys by UTF-16 code unit order, retain array
+order, encode keys and primitive values with `JSON.stringify`, and serialize compactly without
+whitespace. Hash the UTF-8 encoding with SHA-256, with no BOM and no trailing newline. Optional
+fields remain absent when omitted; defaults are not inserted. Object key order and JSON formatting
+do not change the digest; changing a command, dependency digest or optional field does.
+
+`eng.acceptance@1` takes no parameters. It reads only `.rulith/acceptance`, without the Source lock
+or project tree walk, and returns sorted `eng.check_spec{check, spec_digest, files}` receipt rows,
+where `files` is the dependency count. It does not read or verify dependencies. Each invalid spec
+has an `error: "acceptance spec invalid"` text row in `errors` and contributes no fact. Worker
+fact mappings apply only to valid spec `rows`. A legal filename's check is
+included on its error row. Missing acceptance directories return no rows. Results stop at whole
+rows within 1.8 KB and say `truncated: true` when further specs remain.
+
+`eng.test@2` takes only `check`. It validates the project spec, verifies all listed files before
+execution, then runs its command. A missing, unreadable, linked or changed dependency refuses with
+`acceptance file changed: <project-relative path>`, with no facts and no command execution. Invalid
+specs refuse with `acceptance spec invalid`; invalid check names/arguments use
+`acceptance check invalid`. Receipts contain `eng.test_result{check, spec_digest, gen, tree_digest,
+exit_code}` plus the usual `eng.tree_step`. A test that changes the tree stamps its final generation;
+a no-change step is `(-1,-1)`. A nonzero exit is still reported, but cannot derive the criterion.
+After execution the adapter rechecks dependencies and the spec digest, so a command cannot rewrite
+its own frozen tests/spec and produce a passing fact. A changed valid spec uses `acceptance spec changed`.
+
+The rule `ENG_CHECK_PASSED` derives `eng.check_passed(check, spec_digest)` from a successful result
+at generation `g` unless an `eng.tree_step(from_gen:g, to_gen:n)` exists. The NAF variable `n` is
+intentionally free. Later writes retract the criterion via closure. The frozen acceptance digest
+lives on the Board in the signed leaf's desired atom: the kit does not copy specs into its home,
+and the Source lock does not freeze the acceptance contract. `eng.test@1` still reads only
+`<kit home>/specs/test.json` and retains its original contract and receipt shape.

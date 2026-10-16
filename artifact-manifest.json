@@ -186,10 +186,16 @@
       "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     },
     "kits/general/README.md": {
-      "sha256": "5594347b076a9b75c879c8d189454a6e45d6214fb3ddaefb33d662a2dce82670"
+      "sha256": "08318447be35d8bd196a92154e8010f4a39ac95e1a87a83c75d8f17f6224c349"
+    },
+    "kits/general/acceptance.mjs": {
+      "sha256": "889e8e8a2df0d6247711370aec8563054513dd8c901833399e2b3de86fc52414"
+    },
+    "kits/general/acceptance-specs.mjs": {
+      "sha256": "3b1e14e2196137e9e57f5635dfa529dce82a10d7e40ba412985a61a732ecc0e6"
     },
     "kits/general/adapter.mjs": {
-      "sha256": "2d19f4a8150a8c254bedc7bf857fce44c3ab4d805777dd986706ff7b380ac430"
+      "sha256": "9f018102d09c8de482e6e32990aed19eaf54bdb267ffe997795c040838c40ef1"
     },
     "kits/general/apply-patch.mjs": {
       "sha256": "ae12f95ce8d9b2779875f6516068c5d0b633dfd129cd9ea09f57415dfa908e68"
@@ -213,7 +219,7 @@
       "sha256": "9a40935ceb511799d5f1aa34e9d2502410a77f3ddc70e5cace2b59cf3cf58c16"
     },
     "kits/general/installer.mjs": {
-      "sha256": "f40973074565388ddda456ca909314ecae9abc53b8347031cd82f336ed4bd4be"
+      "sha256": "1e88d9859cee211dcbb65c2682ab6e34d818c59d4d65a204d34f26b864bcd926"
     },
     "kits/general/job_poll.mjs": {
       "sha256": "6c3b65c8dae24c612fa02b3f59cb5dc9b32115eba60a47bc9e0d510c13e1d5df"
@@ -225,7 +231,7 @@
       "sha256": "561cd7d025f61bb14e0d5d0f41b3ec95d583ba7f7661b26c25681f10f32509b0"
     },
     "kits/general/lib.mjs": {
-      "sha256": "af91127bec71337057e8b8e7e214fbdd98c0836f94b8f40f085cac7bc43d0181"
+      "sha256": "19b724ca83539fd4481c9b6eacb256856b645b9a7748e9e01bb87fd9dab2d731"
     },
     "kits/general/list.mjs": {
       "sha256": "20c483146b77a998d06cc25ac96d3d08e41d1d59943cd350989b67cc7a3960eb"
@@ -234,13 +240,19 @@
       "sha256": "37bf5919a041e31bb1b4fffc63dae39cb08b63802c160de68129c615935f0d76"
     },
     "kits/general/pack/build-pack.mjs": {
-      "sha256": "cf53af6d40205e953aad2b76a2da82a25a121e102bafdea5345ca058073c1ec9"
+      "sha256": "ade858ce20703844e5f51ef51ce358be65c66d48957e49eb7b822d40645099cf"
     },
     "kits/general/pack/program.json": {
       "sha256": "c2f89403a4cca7444613ef74f2925c4caf6e47d0a930985f2fdb73bdbbbb8b36"
     },
+    "kits/general/pack/program-v2.json": {
+      "sha256": "f1d519b96bbb52fd74e5ac5fac7195fe4f4cc66011a0d52297ab08b6d3390014"
+    },
     "kits/general/pack/sources.json": {
       "sha256": "107ba4be2c057c50d8815a5aa7375eb4ea938f90fcdd32251481981984aa9b1f"
+    },
+    "kits/general/pack/sources-v2.json": {
+      "sha256": "e19d3c1a6f2f6e472dd95a88853765dc18c89de4e102ea0e548097621fc01ade"
     },
     "kits/general/patch_file.mjs": {
       "sha256": "09de5162816b5698e1774af8aba8286552b02a26d22e15c1528de1975143ad22"
@@ -278,6 +290,9 @@
     "kits/general/test.mjs": {
       "sha256": "e41ceeeb24eaaeae94cf46f1800d64ea5ba2f30f6e8c5e64325242423099ff25"
     },
+    "kits/general/test_v2.mjs": {
+      "sha256": "09f15f34954f3804334917181d31a6fad5dcaced12a014bc0bb45bfeecb0c0a9"
+    },
     "kits/general/tree_state.mjs": {
       "sha256": "1b127111ae00157f785d70cef8209ebbd0533dae61ddddb0a18f848fadf31c24"
     },
@@ -291,7 +306,7 @@
       "sha256": "8333142a93cf9e346fdf6f16207afec19410b35e997b84bf0f2d468ca2304f9f"
     },
     "kits/general/worker-tools.json": {
-      "sha256": "a7ce9a3b04e9d8f6ac0828ed66f6741e864a907933de6d0270d2f0dd53b5b0b2"
+      "sha256": "716720e7be309c5f014b0804f0394a11abcc88be9427cf1b7f86ad3f4f493473"
     },
     "kits/general/write_file.mjs": {
       "sha256": "f4de93e4dd78719380a309b7000bd14996163090c7c949f4ca9dfffba4536632"

@@ -1,0 +1,202 @@
+{
+  "format": "rulith-domain-program",
+  "meta": {
+    "name": "engineering_work",
+    "version": 2
+  },
+  "vocab": [
+    {
+      "predicate": "eng.check_passed",
+      "args": [
+        "check",
+        "spec_digest"
+      ],
+      "description": "The named acceptance check passed on the current tree."
+    },
+    {
+      "predicate": "eng.check_spec",
+      "args": [
+        "check",
+        "spec_digest",
+        "files"
+      ]
+    },
+    {
+      "predicate": "eng.command_result",
+      "args": [
+        "run_id",
+        "command_digest",
+        "exit_code",
+        "timed_out",
+        "duration_ms",
+        "stdout_digest",
+        "stderr_digest",
+        "stdout_bytes",
+        "stderr_bytes",
+        "tree_before",
+        "tree_after",
+        "changed_files"
+      ]
+    },
+    {
+      "predicate": "eng.file_read",
+      "args": [
+        "path",
+        "digest",
+        "bytes"
+      ]
+    },
+    {
+      "predicate": "eng.file_state",
+      "args": [
+        "path",
+        "prev_digest",
+        "digest",
+        "readback_digest",
+        "bytes"
+      ]
+    },
+    {
+      "predicate": "eng.job_state",
+      "args": [
+        "job_id",
+        "status",
+        "exit_code",
+        "command_digest",
+        "tree_before"
+      ]
+    },
+    {
+      "predicate": "eng.measurement",
+      "args": [
+        "spec_id",
+        "repeat",
+        "value_milli",
+        "unit",
+        "spec_digest",
+        "binary_digest",
+        "candidate_digest",
+        "workload_digest",
+        "config_digest"
+      ]
+    },
+    {
+      "predicate": "eng.test_result",
+      "args": [
+        "check",
+        "spec_digest",
+        "gen",
+        "tree_digest",
+        "exit_code"
+      ]
+    },
+    {
+      "predicate": "eng.tree",
+      "args": [
+        "gen",
+        "tree_digest"
+      ]
+    },
+    {
+      "predicate": "eng.tree_step",
+      "args": [
+        "from_gen",
+        "to_gen"
+      ]
+    },
+    {
+      "predicate": "web.page",
+      "args": [
+        "url",
+        "final_url",
+        "status",
+        "digest",
+        "fetched_at"
+      ]
+    },
+    {
+      "predicate": "web.search",
+      "args": [
+        "query",
+        "provider",
+        "digest",
+        "fetched_at"
+      ]
+    }
+  ],
+  "pins": [
+    "eng.check_passed",
+    "eng.test_result",
+    "eng.tree_step",
+    "eng.check_spec"
+  ],
+  "axioms": [
+    {
+      "id": "ENG_CHECK_PASSED",
+      "description": "A passing named check remains current until a tree step leaves its generation.",
+      "source": "engineering_work",
+      "tier": "verified",
+      "when": [
+        {
+          "predicate": "eng.test_result",
+          "args": {
+            "check": "?c",
+            "spec_digest": "?d",
+            "gen": "?g",
+            "exit_code": 0
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "?g",
+            "to_gen": "?n"
+          },
+          "naf": true
+        }
+      ],
+      "then": [
+        {
+          "predicate": "eng.check_passed",
+          "args": {
+            "check": "?c",
+            "spec_digest": "?d"
+          }
+        }
+      ]
+    }
+  ],
+  "acceptance": [
+    {
+      "id": "ENG_CHECK_ACCEPTANCE",
+      "description": "The signed leaf names the check; its desired atom fixes the spec digest.",
+      "when": [
+        {
+          "predicate": "acceptance",
+          "args": {
+            "node": "?n",
+            "test": "?c"
+          }
+        },
+        {
+          "predicate": "eng.check_passed",
+          "args": {
+            "check": "?c",
+            "spec_digest": "?d"
+          }
+        }
+      ],
+      "then": [
+        {
+          "predicate": "acceptance_met",
+          "args": {
+            "node": "?n"
+          }
+        }
+      ]
+    }
+  ],
+  "empirical": [],
+  "theorems": [],
+  "actions": []
+}

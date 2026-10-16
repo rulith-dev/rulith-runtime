@@ -33,8 +33,7 @@ const read = file => JSON.parse(fs.readFileSync(plainPath(file), 'utf8'));
 
 export function installGeneral(options) {
   const kitHome = plainPath(options['kit-home']);
-  if (!fs.statSync(plainPath(path.join(kitHome, 'specs', 'test.json'))).isFile())
-    throw new Error('Kit home needs specs/test.json (see pinned-test.example.json)');
+  fs.mkdirSync(plainPath(path.join(kitHome, 'specs')), { recursive: true });
   const general = generalSettings(kitHome);
   const runTimeout = workerRunTimeoutSeconds(kitHome);
   const registry = read(path.join(plainPath(options['manager-home']), 'registry.json'));

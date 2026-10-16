@@ -7,6 +7,7 @@ import { applyPatch } from './apply-patch.mjs';
 import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
+import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles } from './acceptance-specs.mjs';
 import { settings, context, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
@@ -38,6 +39,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
   // Web receipts use lab's accreditation but neither observe nor mutate its files.
   if (tool === 'web_fetch') return fetchPage(ctx, args, dependencies);
   if (tool === 'web_search') return searchWeb(ctx, args, env, dependencies);
+  if (tool === 'acceptance') return acceptanceRows(ctx, args);
   return locked(ctx, async () => {
     let job = readJson(ctx.jobFile, {});
     // While a job runs it owns the tree's changes: other writes and runs wait, but reads go ahead. Such a read leaves
@@ -45,6 +47,12 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     const live = ['starting', 'running', 'stopping'].includes(job.status);
     const observing = live && READ_TOOLS.includes(tool);
     if (live && !observing && !['job_poll', 'job_stop'].includes(tool)) refuse('job live: only poll, stop and reads accepted');
+    let acceptance;
+    if (tool === 'test_v2') {
+      if (Object.keys(args).length !== 1 || !Object.hasOwn(args, 'check')) refuse('acceptance check invalid');
+      acceptance = acceptanceSpec(ctx, args.check);
+      verifyAcceptanceFiles(ctx, acceptance.spec);
+    }
     const before = observing && tool !== 'search' ? null : tree(ctx);
     const state = readJson(ctx.stateFile, { gen: 0, digest: before?.digest ?? '' });
     let rows = []; let text = {}; let more = false; let unreadable = 0;
@@ -170,12 +178,17 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
         if (job.result) text = resultText(job.result);
         break;
       }
+      case 'test_v2':
       case 'test': {
-        if (Object.keys(args).length) refuse('test takes no arguments');
-        const pinned = pin(ctx, 'test');
+        if (tool === 'test' && Object.keys(args).length) refuse('test takes no arguments');
+        const pinned = tool === 'test' ? pin(ctx, 'test') : acceptance;
         const command = pinnedCommand(ctx, pinned.spec);
         const result = await execute(command.command, command.cwd, { deadlineMs: settings(ctx.home).runSeconds * 1000, shell: command.shell, line: command.line });
-        rows = [{ spec_digest: pinned.digest, gen: state.gen, tree_digest: '', exit_code: result.exit_code }];
+        if (tool === 'test_v2') {
+          verifyAcceptanceFiles(ctx, pinned.spec);
+          if (acceptanceSpec(ctx, args.check).digest !== pinned.digest) refuse('acceptance spec changed');
+        }
+        rows = [{ ...(tool === 'test_v2' ? { check: args.check } : {}), spec_digest: pinned.digest, gen: state.gen, tree_digest: '', exit_code: result.exit_code }];
         text = resultText(result); break;
       }
       case 'measure_pinned': {
@@ -270,8 +283,8 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     if (mutated && state.test_gen === state.gen) invalidation = step;
     const edges = invalidation && invalidation.from_gen !== step.from_gen ? [invalidation,step] : [step];
     if (tool === 'tree_state') rows[0] = { gen, tree_digest: after.digest };
-    if (tool === 'test') { rows[0].tree_digest = after.digest; rows[0].gen = gen; }
-    const testGen = tool === 'test' && rows[0].exit_code === 0 ? gen : state.test_gen;
+    if (tool === 'test' || tool === 'test_v2') { rows[0].tree_digest = after.digest; rows[0].gen = gen; }
+    const testGen = (tool === 'test' || tool === 'test_v2') && rows[0].exit_code === 0 ? gen : state.test_gen;
     save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
     const reportEdges = edges;
     const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => reportEdges.map(edge => ({ ...row, ...edge }))), reportEdges.length);
@@ -320,7 +333,10 @@ export async function main(tool) {
     const messages = [...(['glob','apply_patch','read_image','read_v2','web_fetch','web_search'].includes(tool) ? ['settings refused','glob refused','glob limit refused','glob walk limit exceeded','glob complexity refused','patch format refused','patch hunk refused','patch path repeated','delete refused','patch file refused','patch file count refused','image refused','image size exceeded','web URL refused','web address refused','web size exceeded','web redirects exceeded','web timeout','web encoding refused','web media type refused','web metadata too large','web request failed','web search key unavailable','web search failed'] : []),'path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll, stop and reads accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted','parent directory missing'];
     // A spec refusal names its field in fixed words (no path, no value); a file-system error says only what kind it was.
     const fileErrors = { ENOENT: 'path not found', EISDIR: 'path is a directory', ENOTDIR: 'path not found', EACCES: 'path not readable', EPERM: 'path not readable', EBUSY: 'path not readable' };
-    const verdict = messages.includes(error.message) || /^spec refused: [A-Za-z0-9_ ,()-]+$/.test(error.message) ? error.message
+    const acceptanceError = ['test_v2', 'acceptance'].includes(tool) &&
+      (['acceptance spec invalid', 'acceptance spec changed', 'acceptance check invalid', 'acceptance takes no arguments'].includes(error.message)
+        || /^acceptance file changed: [^\x00-\x1f\x7f]+$/.test(error.message));
+    const verdict = acceptanceError || messages.includes(error.message) || /^spec refused: [A-Za-z0-9_ ,()-]+$/.test(error.message) ? error.message
       : fileErrors[error.code] ?? 'adapter failed';
     process.stdout.write(JSON.stringify({ rows: [], verdict }));
     // The Worker reports a failed run with what the command wrote to stderr: the verdict goes there too.

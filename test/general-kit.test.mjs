@@ -253,10 +253,13 @@ test('CLI is explicit; installer merges tools and passes only the named search e
   assert.throws(() => parseLocalCli(['kit', 'install', 'unknown']), /Expected/);
   assert.throws(() => parseKitInstall(['--agent', 'Fixture']), /required/);
   assert.throws(() => parseKitInstall([...args, '--agent', 'Duplicate']), /Expected/);
-  assert.match(installGeneral(parseKitInstall(args)), /Installed 18/);
+  fs.unlinkSync(path.join(f.home, 'specs/test.json')); // Project acceptance needs no owner-pinned legacy test.
+  assert.match(installGeneral(parseKitInstall(args)), /Installed 20/);
   installGeneral(parseKitInstall(args));
   const installed = JSON.parse(fs.readFileSync(tools));
-  assert.equal(Object.keys(installed.tools).length, 19);
+  assert.equal(Object.keys(installed.tools).length, 21);
+  assert.deepEqual(installed.tools['eng.test@2'], manifest.tools['eng.test@2']);
+  assert.deepEqual(installed.tools['eng.acceptance@1'], manifest.tools['eng.acceptance@1']);
   assert.deepEqual(installed.tools['web.search@1'].env.pass, ['ENG_KIT_HOME', 'FIXTURE_SEARCH_KEY']);
   assert.deepEqual(installed.tools['eng.run@1'].env.pass, ['ENG_KIT_HOME']);
   const ambient = { ENG_KIT_HOME: f.home, FIXTURE_SEARCH_KEY: 'fixture-key' };
@@ -277,13 +280,14 @@ test('CLI is explicit; installer merges tools and passes only the named search e
 });
 
 test('kit Capability accredits every return predicate with the same arguments', () => {
-  assert.equal(Object.keys(workerToolsOf(manifest)).length, 18);
+  assert.equal(Object.keys(workerToolsOf(manifest)).length, 20);
   const program = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/program.json', import.meta.url)));
   const sources = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/sources.json', import.meta.url)));
   assert.equal(sources.meta.version, 2);
   assert.equal(fs.existsSync(new URL('../kits/general/tool-descriptions.json', import.meta.url)), false);
   const definitions = new Map(program.vocabulary.defines.map(d => [d.id, d.args]));
-  for (const tool of Object.values(manifest.tools)) for (const row of tool.returns) assert.deepEqual(definitions.get(row.predicate), Object.keys(row.args));
+  for (const [id, tool] of Object.entries(manifest.tools)) if (!['eng.test@2', 'eng.acceptance@1'].includes(id))
+    for (const row of tool.returns) assert.deepEqual(definitions.get(row.predicate), Object.keys(row.args));
   assert.deepEqual(sources.sources[0].words, [...definitions.keys()]); assert.equal(sources.sources[0].name, 'lab');
   assert.deepEqual(program.actions, []);
 });

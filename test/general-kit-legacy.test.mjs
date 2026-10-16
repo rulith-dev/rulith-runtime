@@ -224,7 +224,7 @@ test('measurement refuses a changed binary digest before execution',async t=>{
 });
 test('manifest matches Worker scalar mapping',t=>{
   const manifest=JSON.parse(fs.readFileSync(new URL('../kits/general/worker-tools.json',import.meta.url)));
-  assert.equal(Object.keys(manifest.tools).length,18);
+  assert.equal(Object.keys(manifest.tools).length,20);
   for(const [id,tool]of Object.entries(manifest.tools)){assert.match(id,/@[1-9][0-9]*$/);assertParamTable(tool.params,id);assertReturnRows(tool.returns,id);}
   for(const [id,tool]of Object.entries(manifest.tools)) { assert.equal(tool.adapter,'run'); assert.deepEqual(tool.sourceTypes,['file']); assert.ok(tool.returns.length<=32); assert.ok(tool.returns.every(r=>Object.keys(r.args).length<=32)); assert.ok(fs.existsSync(path.join(workspace,'kits/general',tool.entry.split('/').at(-1)))); }
 });

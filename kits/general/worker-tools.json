@@ -537,6 +537,65 @@
           "ENG_KIT_HOME"
         ]
       }
+    },
+    "eng.test@2": {
+      "adapter": "run",
+      "kind": "run",
+      "params": {
+        "check": "string"
+      },
+      "returns": [
+        {
+          "predicate": "eng.test_result",
+          "args": {
+            "check": "$check",
+            "spec_digest": "$spec_digest",
+            "gen": "$gen",
+            "tree_digest": "$tree_digest",
+            "exit_code": "$exit_code"
+          }
+        },
+        {
+          "predicate": "eng.tree_step",
+          "args": {
+            "from_gen": "$from_gen",
+            "to_gen": "$to_gen"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/test_v2.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
+    },
+    "eng.acceptance@1": {
+      "adapter": "run",
+      "kind": "read",
+      "params": {},
+      "returns": [
+        {
+          "predicate": "eng.check_spec",
+          "args": {
+            "check": "$check",
+            "spec_digest": "$spec_digest",
+            "files": "$files"
+          }
+        }
+      ],
+      "sourceTypes": [
+        "file"
+      ],
+      "entry": "adapters/engineering-work/acceptance.mjs",
+      "env": {
+        "pass": [
+          "ENG_KIT_HOME"
+        ]
+      }
     }
   }
 }
