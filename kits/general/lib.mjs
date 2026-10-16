@@ -79,6 +79,11 @@ export function save(file, value) {
 }
 export function pin(ctx, id) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(id)) refuse('spec refused: spec_id is letters, digits, - and _ (at most 64)');
+  // self- 规格只认小写的规范写法：在不区分大小写的文件系统上 SELF-x 会打开冻结的 specs/self-x.json，却走主人规格的
+  // 分支（不过分类器、可用 shell、解释器不受限）。任何大小写变体都拒绝。
+  // A self- spec_id is canonical lower case: on a case-insensitive file system SELF-x opens the frozen specs/self-x.json
+  // through the owner's branch (no classifier, shell honoured, any interpreter). Every other case is refused.
+  if (/^self-/i.test(id) && !/^self-[a-z0-9_-]+$/.test(id)) refuse('spec refused: a self- spec_id is lower case');
   const file = path.join(ctx.home, 'specs', `${id}.json`);
   // A spec the agent wrote itself (spec_id self-<name>, from <project>/.deep-rulith/measure/<name>.json) is frozen into
   // the kit home when a measurement first runs on it (after the spec passed every check, so a refused spec can still
@@ -112,7 +117,7 @@ export function exclusions(ctx) {
   const directory = path.join(ctx.home, 'specs');
   if (!inside(ctx.home, fs.realpathSync(directory))) refuse('spec refused');
   for (const entry of fs.readdirSync(directory).sort()) {
-    if (!/^[a-zA-Z0-9_-]+\.json$/.test(entry) || entry.startsWith('self-')) continue;
+    if (!/^[a-zA-Z0-9_-]+\.json$/.test(entry) || /^self-/i.test(entry)) continue;
     const { spec } = pin(ctx, entry.slice(0, -5));
     for (const name of spec.output_dirs ?? []) {
       if (typeof name !== 'string' || !name || name === '.' || path.isAbsolute(name) || name.split(/[\\/]/).includes('..')) refuse('spec refused');
@@ -128,7 +133,7 @@ export function skipped(skip, name) {
   return skip.some(s => s.startsWith('**/') ? parts.includes(s.slice(3)) : name === s || name.startsWith(`${s}/`));
 }
 export function excluded(ctx, name) { return name !== '' && skipped(exclusions(ctx), name); }
-// The files under a folder the tree digest skips, walked on demand (at most 20000; .git and **/ folders skipped).
+// The files under a folder the tree digest skips, walked on demand (at most 20000; **/ folders and links skipped).
 export function filesUnder(ctx, prefix) {
   const skip = exclusions(ctx).filter(s => s.startsWith('**/'));
   const start = fenced(ctx.root, prefix);
@@ -138,7 +143,7 @@ export function filesUnder(ctx, prefix) {
     const dir = queue.shift();
     for (const entry of fs.readdirSync(fenced(ctx.root, dir), { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const name = `${dir}/${entry.name}`;
-      if (entry.name === '.git' || entry.isSymbolicLink() || skipped(skip, name)) continue;
+      if (entry.isSymbolicLink() || skipped(skip, name)) continue;
       if (entry.isDirectory()) queue.push(name); else if (entry.isFile() && out.length < 20000) out.push(name);
     }
   }
@@ -157,8 +162,10 @@ export function tree(ctx) {
   function visit(dir, prefix = '') {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
       const name = prefix + entry.name;
-      // Every nested repository's .git is skipped, not only the top one.
-      if (entry.name === '.git') continue;
+      // 只有项目根的 .git 被排除（它在 exclusions() 里）；更深处名为 .git 的文件或目录和其他文件一样计入摘要，
+      // 否则模型可以把代码藏进 src/.git。主人可以在 treeExclude 里写 **/.git 排除嵌套仓库。
+      // Only <root>/.git is excluded (it is in exclusions()); a .git entry deeper down is hashed like any other, or
+      // code could hide under src/.git. The owner may add **/.git to treeExclude for nested repositories.
       if (skipped(skip, name)) continue;
       const file = fenced(ctx.root, name);
       // Links are recorded, never followed (cycles and aliases do not duplicate files).
@@ -176,8 +183,38 @@ export function tree(ctx) {
   }
   visit(ctx.root);
   try { fs.writeFileSync(cacheFile, JSON.stringify(next)); } catch {}
-  const specs = fs.readdirSync(path.join(ctx.home,'specs')).filter(e => /^[a-zA-Z0-9_-]+\.json$/.test(e)).sort().map(e => [e, pin(ctx,e.slice(0,-5)).digest]);
-  return { files, digest: sha(JSON.stringify({ skip, specs, files })) };
+  const specs = fs.readdirSync(path.join(ctx.home,'specs')).filter(e => /^[a-zA-Z0-9_-]+\.json$/.test(e)).sort().map(e => [e, sha(fs.readFileSync(path.join(ctx.home, 'specs', e)))]);
+  return { files, digest: sha(sha(JSON.stringify({ specs, files })) + treeSettings(ctx, skip)) };
+}
+// 树的身份包括决定“哪些文件被哈希、什么可以运行”的设置：生效的排除集合、shell、allow 与 allowedPaths。
+// 放宽 treeExclude（或改动其中任何一项）会改变 tree_digest，所以和一次写入一样记一步，之前的通过随之失效。
+// The tree's identity includes the settings that decide what is hashed and what may run: the effective exclusions,
+// shell, allow and allowedPaths. tree_digest = sha256(file-tree digest ‖ this digest), so widening treeExclude (or
+// changing any of these settings) changes the digest and is a tree step like a write: earlier passes stop being current.
+function treeSettings(ctx, skip) {
+  const opts = settings(ctx.home);
+  return sha(JSON.stringify({ exclusions: [...skip].sort(), shell: opts.shell, allow: [...opts.allow].sort(), allowedPaths: [...opts.allowedPaths].sort() }));
+}
+// The spellings a project path can be known by: as given, and as the file system spells its existing part (case,
+// Windows 8.3 short names); each component in lower case without the trailing dots and spaces Windows drops. Used
+// only to refuse or to force a step, so a spelling that matches too much costs a refusal or a step, never a gap.
+function spellings(ctx, target) {
+  const names = [path.relative(ctx.root, target)];
+  let ancestor = target; const missing = [];
+  while (!fs.existsSync(ancestor) && path.dirname(ancestor) !== ancestor) { missing.unshift(path.basename(ancestor)); ancestor = path.dirname(ancestor); }
+  try { names.push(path.relative(fs.realpathSync.native(ctx.root), path.join(fs.realpathSync.native(ancestor), ...missing))); } catch {}
+  return names.map(name => name.split(/[\\/]/).map(part => part.toLowerCase().replace(/[. ]+$/, '')).join('/'));
+}
+// <root>/.git is always excluded from the tree digest, so the kit never writes there or runs a command inside it.
+export function refuseRootGit(ctx, target) {
+  if (spellings(ctx, target).some(name => name.split('/')[0] === '.git')) refuse('path refused');
+}
+// 主人的排除不是放被测代码的地方：写工具或 apply_patch 写到排除路径下时强制记一步（当作树身份的改变）。
+// Owner exclusions are not a place for tested code: a write tool or apply_patch touching a path under an exclusion
+// forces a tree step, as a change to the tree's identity.
+export function underExclusion(ctx, targets) {
+  const skip = exclusions(ctx).map(name => name.toLowerCase());
+  return targets.some(target => spellings(ctx, target).some(name => skipped(skip, name)));
 }
 export function changed(before, after) {
   return [...new Set([...Object.keys(before.files), ...Object.keys(after.files)])].filter(p => before.files[p] !== after.files[p]).sort();
@@ -218,7 +255,7 @@ const NODE_FLAGS = new Set(('abort-on-uncaught-exception allow-addons allow-chil
   + 'experimental-default-config-file experimental-eventsource experimental-import-meta-resolve experimental-inspector-network-resource '
   + 'experimental-network-inspection experimental-print-required-tla experimental-require-module experimental-strip-types '
   + 'experimental-test-coverage experimental-test-module-mocks experimental-transform-types experimental-vm-modules '
-  + 'experimental-webstorage experimental-worker-inspection expose-gc force-context-aware force-fips '
+  + 'experimental-webstorage experimental-worker-inspection expose-gc expose-internals force-context-aware force-fips '
   + 'force-node-api-uncaught-exceptions-policy frozen-intrinsics heap-prof help insecure-http-parser inspect inspect-brk inspect-wait '
   + 'interactive interpreted-frames-native-stack jitless node-memory-debug openssl-legacy-provider openssl-shared-config '
   + 'pending-deprecation permission preserve-symlinks preserve-symlinks-main prof prof-process report-compact report-exclude-env '
@@ -227,34 +264,106 @@ const NODE_FLAGS = new Set(('abort-on-uncaught-exception allow-addons allow-chil
   + 'trace-deprecation trace-env trace-env-js-stack trace-env-native-stack trace-exit trace-promises trace-sigint trace-sync-io '
   + 'trace-tls trace-uncaught trace-warnings track-heap-objects use-bundled-ca use-env-proxy use-openssl-ca use-system-ca '
   + 'v8-options version watch watch-preserve-output zero-fill-buffers').split(' '));
+// A short option takes a separate value when its first value letter ends the word (`-W x`, `-Ilib` has it attached).
+const valueAtEnd = (word, letters) => { const at = [...word.slice(1)].findIndex(c => letters.includes(c)); return at >= 0 && at + 2 === word.length; };
+// 每种解释器：inline 认出内联代码选项（单独、组合或附带值的写法）；flags 是不带值的长选项；value 判断短选项是否带一个
+// 单独的值。认不出的短选项一律按“带值”处理（宁可误拒）：把带值的当作不带值，会让它的值被当成脚本而提前结束扫描。
+// Per interpreter: `inline` recognises an inline-code option (alone, combined or attached); `flags` names the long
+// options without a value; `value` says whether a short option takes a separate value. Where unsure a short option is
+// taken to have one (fail closed): reading a value-taking option as a flag would end the scan early on its value.
 const INTERPRETERS = {
-  // node and the runners that take node's flags: -e/-p/-r alone, combined (-pe, -ep) or attached (-e<code>); the long
-  // forms; and data: URLs, the inline module a loader or import flag (--loader, --experimental-loader, --import, -r) runs.
-  node: { flags: name => NODE_FLAGS.has(name) || name.startsWith('no-'), shortValue: ['-C'],
-    inline: x => /^-[a-z]*[epr]/.test(x.toLowerCase()) || /^--(eval|print|require|import)(=|$)/.test(x)
-      || /^(--loader|--experimental-loader|--import|-r)=data:/.test(x) || x.startsWith('data:') },
-  // python: -c alone, attached (-c<code>) or after no-argument flags (-Ic); -m ends the options; -W and -X take a value.
+  // node and the runners that take its flags (nodejs, bun, tsx, ts-node): -e/-p alone, combined (-pe) or attached
+  // (-e<code>); --eval and --print. -r/--require/--import/--loader preload a module named by their value: a module
+  // (tsx, ts-node/register) is a file anyone can read, a data: URL is inline code.
+  node: { flags: name => NODE_FLAGS.has(name) || name.startsWith('no-'),
+    value: word => !['-v', '-h', '-i', '-b', '-T'].includes(word),
+    inline: x => /^-[a-z]*[ep]/i.test(x) && !x.startsWith('--') || /^--(eval|print)(=|$)/.test(x) },
+  // python (python3, pythonw, pypy3, py): c in a short cluster before m, W or X (-c, -Ic, -Rc); -m ends the options,
+  // and the modules that evaluate their own arguments (timeit, pdb, profile, cProfile, code, IPython) count as inline.
   python: { flags: name => ['help', 'version', 'help-env', 'help-xoptions', 'help-all'].includes(name),
-    inline: x => /^-[bBdEhiIOPqsSuvVx]*c/.test(x),
+    inline: x => /^-[^-mWX]*c/.test(x),
     cluster: x => { const at = x.slice(1).search(/[mWX]/); return at < 0 ? 'none' : x[at + 1] === 'm' ? 'end' : at + 2 === x.length ? 'value' : 'none'; } },
-  // perl and ruby: -e/-E alone, attached or after no-argument flags (-ne, -le).
-  perl: { flags: () => false, shortValue: ['-I', '-M', '-m', '-x'], inline: x => /^-[acdlnpsStTuUvwWx0-9]*[eE]/.test(x) },
+  // perl: e/E in a cluster before a letter that takes a value (-ne, -lE).
+  perl: { flags: () => false, value: word => valueAtEnd(word, 'IMmxiCdD'), inline: x => /^-[^-IMmxiCdD]*[eE]/.test(x) },
+  // ruby: e in a cluster before a letter that takes a value; -E is the encoding (ruby -E UTF-8 x.rb runs).
   ruby: { flags: name => ['verbose', 'version', 'help', 'copyright', 'yjit', 'jit'].includes(name),
-    shortValue: ['-I', '-r', '-C', '-E', '-x', '-F'], inline: x => /^-[acdlnpsStTuUvwWx0-9]*[eE]/.test(x) },
+    value: word => valueAtEnd(word, 'IrCExFi'), inline: x => /^-[^-IrCExFi]*e/.test(x) },
+  // php: -r, -B, -R, -E run code.
+  php: { flags: () => false, value: word => valueAtEnd(word, 'bcdfFStz'), inline: x => /^-[^-bcdfFStz]*[rBRE]/.test(x) },
+  // R and Rscript: -e.
+  r: { flags: name => ['vanilla', 'verbose', 'version', 'help', 'no-environ', 'no-site-file', 'no-init-file', 'restore',
+    'no-restore', 'save', 'no-save', 'quiet', 'silent', 'slave', 'interactive', 'no-echo'].includes(name),
+    value: word => valueAtEnd(word, 'fdg'), inline: x => /^-[^-fdg]*e/.test(x) },
 };
-const interpreterKind = exe => ['node', 'nodejs', 'bun', 'tsx'].includes(exe) ? 'node' : /^python[0-9.]*$|^py$/.test(exe) ? 'python'
-  : ['perl', 'ruby'].includes(exe) ? exe : null;
-function inlineCode(command) {
+const INLINE_MODULES = new Set(['timeit', 'pdb', 'profile', 'cprofile', 'code', 'ipython']);
+const interpreterKind = exe => ['node', 'nodejs', 'bun', 'tsx', 'ts-node'].includes(exe) ? 'node'
+  : /^(python[0-9.]*w?|pythonw[0-9.]*|pypy[0-9.]*|pyw?)$/.test(exe) ? 'python'
+  : ['perl', 'ruby', 'php'].includes(exe) ? exe : ['r', 'rscript'].includes(exe) ? 'r' : null;
+const SHELLS = ['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'cmd', 'powershell', 'pwsh', 'wscript', 'cscript'];
+// deno options that take a separate value; the others are flags or use `=`.
+const DENO_VALUES = ['-c', '--config', '--import-map', '--lock', '--cert', '--location', '--seed', '--filter', '--reporter',
+  '--coverage', '--log-level', '-L', '--preload', '--ext', '--junit-path', '--env-file'];
+// Launcher options that take no value; every other launcher option without `=` is taken to have one (fail closed).
+const LAUNCHER_FLAGS = ['-y', '--yes', '--no', '-q', '--quiet', '--silent', '-s', '--no-install', '--ignore-existing',
+  '--prefer-offline', '--offline', '--verbose', '-v', '--no-capture-output', '--live-stream', '--frozen', '--locked',
+  '--isolated', '--no-sync', '--no-project', '-0', '-t', '-r'];
+// Where a launcher's own options start: it runs another program named on the line. 0 when the word is no launcher.
+function launcherAt(command) {
+  const exe = basename(command[0]), sub = command[1];
+  if (['npx', 'bunx', 'pnpx', 'uvx', 'time', 'nice', 'nohup', 'timeout', 'xargs', 'find', 'stdbuf'].includes(exe)) return 1;
+  if ((['npm', 'pnpm', 'yarn', 'bun', 'deno'].includes(exe) && ['exec', 'x', 'dlx'].includes(sub))
+    || (['uv', 'poetry', 'pipenv', 'pdm', 'hatch', 'pipx', 'conda', 'rye'].includes(exe) && sub === 'run')
+    || (exe === 'bundle' && sub === 'exec')) return 2;
+  if (exe === 'uv' && sub === 'tool' && command[2] === 'run') return 3;
+  return 0;
+}
+// shellAllowed: the owner's shell setting. A shell named after a launcher is refused without it, like one named first.
+function inlineCode(command, shellAllowed, depth = 0) {
+  // A launcher inside a launcher inside ...: past four levels the line is refused rather than read further.
+  if (depth > 4) return true;
   const exe = basename(command[0]);
-  // deno evaluates code with a subcommand.
-  if (exe === 'deno') return command.slice(1).some(x => x === 'eval' || /^--(eval|print)(=|$)|^-[ep]$/.test(x));
-  // Launchers run another program: npx/npm exec/uv run/bundle exec ... `-c`/`--call` hands npx and npm exec a shell line.
-  const launcher = ['npx', 'bunx', 'pnpx'].includes(exe) ? 1
-    : (['npm', 'pnpm', 'yarn'].includes(exe) && ['exec', 'x', 'dlx'].includes(command[1])) || (['uv', 'poetry', 'pipenv'].includes(exe) && command[1] === 'run')
-      || (exe === 'bundle' && command[1] === 'exec') ? 2 : 0;
+  if (SHELLS.includes(exe)) return !shellAllowed && depth > 0;
+  // git -c and --config-env set configuration for one command (alias.*, core.pager, core.sshCommand, ... run programs).
+  if (exe === 'git') {
+    for (let i = 1; i < command.length; i++) {
+      const word = command[i];
+      if (word === '-c' || /^--config-env(=|$)/.test(word)) return true;
+      if (['-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--attr-source'].includes(word)) { i++; continue; }
+      if (!word.startsWith('-')) break;
+    }
+    return false;
+  }
+  // awk runs the program text given on the line; only a program file (-f) is read from the project.
+  if (/^[gmn]?awk$/.test(exe)) {
+    const words = command.slice(1);
+    return !words.some(w => /^(-f|--file)(=|$)/.test(w) || /^-f./.test(w)) || words.some(w => /^(-e|--source)(=|$)/.test(w) || /^-e./.test(w));
+  }
+  // deno evaluates code with eval (and repl --eval), --eval/--print/-e/-p before the script, and any data: module.
+  if (exe === 'deno' && !['exec', 'x', 'dlx'].includes(command[1])) {
+    if (command[1] === 'eval' || command.some(w => /^data:/i.test(w))) return true;
+    if (command[1] === 'repl' && command.some(w => /^--eval(=|$)/.test(w))) return true;
+    for (let i = command[1] && !command[1].startsWith('-') ? 2 : 1; i < command.length; i++) {
+      const word = command[i];
+      if (word === '--' || !word.startsWith('-')) return false;
+      if (/^--(eval|print)(=|$)|^-[ep]$/.test(word)) return true;
+      if (DENO_VALUES.includes(word)) i++;
+    }
+    return false;
+  }
+  const launcher = launcherAt(command);
   if (launcher) {
-    for (let i = launcher; i < command.length && command[i].startsWith('-') && command[i] !== '--'; i++) if (/^(-c|--call)(=|$)/.test(command[i])) return true;
-    return command.slice(launcher).some((word, i) => interpreterKind(basename(word)) && inlineCode(command.slice(launcher + i)));
+    // yarn exec runs its argument as a shell line.
+    if (exe === 'yarn' && command[1] === 'exec' && !shellAllowed) return true;
+    // The launcher's options up to the program it runs: -c/--call/--shell-mode hand npx, npm exec and pnpm exec a shell line.
+    for (let i = launcher; ['npx', 'bunx', 'pnpx', 'npm', 'pnpm', 'yarn', 'bun'].includes(exe) && i < command.length; i++) {
+      const word = command[i];
+      if (word === '--' || !word.startsWith('-')) break;
+      if (/^-[^-]*c/.test(word) || /^--(call|shell-mode)(=|$)/.test(word)) return true;
+      if (!word.includes('=') && !LAUNCHER_FLAGS.includes(word)) i++;
+    }
+    // Every later word may be the program (or a value the scan above took for it): each is read as a command.
+    for (let i = launcher; i < command.length; i++) if (inlineCode(command.slice(i), shellAllowed, depth + 1)) return true;
+    return false;
   }
   const kind = interpreterKind(exe);
   if (!kind) return false;
@@ -263,13 +372,16 @@ function inlineCode(command) {
   for (let i = exe === 'bun' && command[1] === 'run' ? 2 : 1; i < command.length; i++) {
     const word = command[i];
     // The script: node cannot be handed an inline data: module in its place either.
-    if (word === '--' || word === '-' || !word.startsWith('-')) return kind === 'node' && word.startsWith('data:');
+    if (word === '--' || word === '-' || !word.startsWith('-')) return kind === 'node' && /^data:/i.test(word);
     if (rules.inline(word)) return true;
     const long = word.startsWith('--');
     const shape = !long && rules.cluster ? rules.cluster(word) : null;
-    if (shape === 'end') return false;
-    const value = long ? !word.includes('=') && !rules.flags(word.slice(2)) : rules.cluster ? shape === 'value' : (rules.shortValue ?? []).includes(word);
-    if (value && i + 1 < command.length) { i++; if (rules.inline(command[i]) || command[i].startsWith('data:')) return true; }
+    if (shape === 'end') {
+      const attached = word.slice(word.indexOf('m') + 1);
+      return INLINE_MODULES.has((attached || command[i + 1] || '').toLowerCase());
+    }
+    const value = long ? !word.includes('=') && !rules.flags(word.slice(2)) : rules.cluster ? shape === 'value' : rules.value(word);
+    if (value && i + 1 < command.length) { i++; if (rules.inline(command[i]) || /^data:/i.test(command[i])) return true; }
   }
   return false;
 }
@@ -279,6 +391,7 @@ export function classify(ctx, input, cwd = '.') {
   if (command.length === 0 || command.some(x => typeof x !== 'string' || !x || /[\0\r\n]/.test(x))) refuse('command refused');
   const resolvedCwd = fenced(ctx.root, cwd);
   if (!fs.statSync(resolvedCwd).isDirectory()) refuse('path refused');
+  refuseRootGit(ctx, resolvedCwd);
   const exe = path.basename(command[0]).replace(/\.(exe|cmd|bat)$/i, '').toLowerCase();
   const words = command.map(x => x.toLowerCase());
   const joined = words.join(' ');
@@ -292,9 +405,11 @@ export function classify(ctx, input, cwd = '.') {
   if ((['net', 'sc', 'systemctl', 'service', 'docker', 'supervisorctl', 'launchctl', 'brew'].includes(exe) && /\b(stop|restart|kill|delete|down)\b/.test(joined))
     || /\b(stop-service|stop-process)\b/.test(joined)) refuse('command refused');
   if (git('config')) refuse('command refused');
-  if (inlineCode(command)) refuse('command refused');
+  if (inlineCode(command, opts.shell)) refuse('command refused');
+  // A data: URL given to any option (--import=data:..., --test-reporter=data:..., --loader=data:...) is inline code.
+  if (command.some(x => /^-[^=]*=data:/i.test(x))) refuse('command refused');
   // Relaxable by the owner's settings.
-  if (/^(sh|bash|cmd|powershell|pwsh|wscript|cscript)$/.test(exe) && !opts.shell) refuse('command refused');
+  if (SHELLS.includes(exe) && !opts.shell) refuse('command refused');
   if (!opts.shell && command.some(x => /[;&|<>`]/.test(x) || /\$\(|%[^%]+%/.test(x))) refuse('command refused');
   if (/^(rm|rmdir|del|erase|remove-item|rd|unlink)$/.test(exe) && !has('delete')) refuse('command refused');
   if (/\b(delete|rmdir|erase|unlink|remove-item)\b/.test(joined) && !has('delete')) refuse('command refused');
@@ -306,6 +421,9 @@ export function classify(ctx, input, cwd = '.') {
   for (const arg of command) {
     const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
     if (/^[a-z]+:\/\//i.test(value)) continue;
+    // The root .git is outside the tree digest: no command names a path in it.
+    const named = path.resolve(resolvedCwd, value);
+    if (inside(ctx.root, named)) refuseRootGit(ctx, named);
     if (path.isAbsolute(value) || /^[a-z]:[\/]/i.test(value) || value.startsWith('\\')) commandPath(ctx.root, opts.allowedPaths, value);
     if (value.split(/[\/]/).includes('..')) commandPath(ctx.root, opts.allowedPaths, path.resolve(resolvedCwd, value));
     const drive = value.match(/[a-z]:[\/].*/i)?.[0]; if (drive) commandPath(ctx.root, opts.allowedPaths, drive);
@@ -371,13 +489,19 @@ function commandPath(root, extra, value) {
 // POSIX needs its own process group so the whole tree can be stopped; Windows stops the tree with taskkill /T, and a
 // detached console there loses a shell redirect's output.
 const GROUP = process.platform !== 'win32';
+// 子进程不继承 kit 与 Worker 的变量：ENG_*（ENG_KIT_HOME 指向主人的 settings.json、规格、树缓存与状态文件，脚本拿到
+// 它就能放宽 treeExclude 或改写状态）和 RULITH_*。变量名在 Windows 上不分大小写，所以按不分大小写比较。
+// Children never inherit the kit's or the Worker's variables: ENG_* (ENG_KIT_HOME names the owner's settings.json,
+// specs, tree cache and state file, which a script could rewrite) and RULITH_*. Compared without case (Windows).
+export const childEnv = (env = process.env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^(ENG_|RULITH_)/i.test(name)));
 export async function execute(command, cwd, { deadlineMs = 35000, onStart, shell = false, line } = {}) {
   const stdout = capture(); const stderr = capture(); const start = Date.now();
   let timedOut = false;
+  const env = childEnv();
   // With the owner's shell setting the command line goes to the system shell as written; otherwise argv, no shell.
   const child = shell
-    ? spawn(line ?? command.join(' '), { cwd, shell: true, detached: GROUP, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
-    : spawn(command[0], command.slice(1), { cwd, shell: false, detached: GROUP, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    ? spawn(line ?? command.join(' '), { cwd, env, shell: true, detached: GROUP, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(command[0], command.slice(1), { cwd, env, shell: false, detached: GROUP, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   onStart?.(child.pid);
   child.stdout.on('data', b => stdout.add(b)); child.stderr.on('data', b => stderr.add(b));
   let rejectExecution;

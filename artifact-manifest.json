@@ -186,19 +186,19 @@
       "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     },
     "kits/general/README.md": {
-      "sha256": "5109f9ad8da50016865baf765c1b1552ec672fa5a761a3a73db50f2774d0f3d4"
+      "sha256": "f57f48231390a98347a575c8b0c8f8cab486c6a348665dcdc7a723395bd75e28"
     },
     "kits/general/acceptance.mjs": {
       "sha256": "889e8e8a2df0d6247711370aec8563054513dd8c901833399e2b3de86fc52414"
     },
     "kits/general/acceptance-specs.mjs": {
-      "sha256": "18696fca8c420713332832e16af4f653a939333e443feda09ec7c74ff81b99ab"
+      "sha256": "e2f39de1b336e27f2e1b6bc0b19b6f721258a608109a8d65032512e0989a4905"
     },
     "kits/general/adapter.mjs": {
-      "sha256": "90224e99f5e89efc2de16cf342515bb59b90665d22ffbf001dec37b73677754b"
+      "sha256": "74f8de1bce0c21ace3c492f069f6bda6c5ffe158e51729cc145497d52632ed75"
     },
     "kits/general/apply-patch.mjs": {
-      "sha256": "ae12f95ce8d9b2779875f6516068c5d0b633dfd129cd9ea09f57415dfa908e68"
+      "sha256": "a49d90c039ac56d3673573a1aac0fa27b6798a966d733146f6ef97d0a4c54786"
     },
     "kits/general/apply_patch.mjs": {
       "sha256": "d3ca1befd29f511292757c1268889cfd5329306ad4810852f947b3f3f27a1982"
@@ -207,7 +207,7 @@
       "sha256": "480adcbcf168d752529ad1ba1f63d6f819b9f2cac79f94e785ad3168dab73fe1"
     },
     "kits/general/glob-files.mjs": {
-      "sha256": "75bf61f5b35b505b44fa86b6a36c1106bb922cf1677c852698237faa34f06b5a"
+      "sha256": "770badfb88913ca38c46747b438a254b0e810d6ea0097ec30acb841dd21a9861"
     },
     "kits/general/glob.mjs": {
       "sha256": "39f2f19f49d1cc71818da8d24a21129fa5106a9b9d7582f7c7b7e9f32b4bbc85"
@@ -231,7 +231,7 @@
       "sha256": "561cd7d025f61bb14e0d5d0f41b3ec95d583ba7f7661b26c25681f10f32509b0"
     },
     "kits/general/lib.mjs": {
-      "sha256": "3f144c3a96f0fec06be27e3eeb2fba35c21ab0cad8771deed9e9d2a989c3d308"
+      "sha256": "480c20398dee89e2a06fd187730620268af0f4f948d5881b00ce92665864e71c"
     },
     "kits/general/list.mjs": {
       "sha256": "20c483146b77a998d06cc25ac96d3d08e41d1d59943cd350989b67cc7a3960eb"

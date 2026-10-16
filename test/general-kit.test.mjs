@@ -34,10 +34,13 @@ function fixture(t) {
   };
 }
 
-test('glob sorts, bounds results, handles recursive patterns, and excludes every .git and treeExclude', async t => {
+test('glob sorts, bounds results, handles recursive patterns, and excludes the root .git and treeExclude (a nested .git only by **/.git)', async t => {
   const f = fixture(t);
   f.settings({ treeExclude: ['out', '**/node_modules'] });
   for (const name of ['z.js', 'a.js', 'src/b.js', 'src/a.txt', '.git/secret.js', 'src/.git/nested.js', 'out/result.js', 'src/node_modules/dep.js']) f.write(name, 'x');
+  // Review 4 P1-1: only <root>/.git is always excluded; src/.git is a file like any other unless the owner excludes **/.git.
+  assert.deepEqual((await f.call('glob', { pattern: '**/*.js' })).rows.map(r => r.path), ['a.js', 'src/.git/nested.js', 'src/b.js', 'z.js']);
+  f.settings({ treeExclude: ['out', '**/node_modules', '**/.git'] });
   assert.deepEqual((await f.call('glob', { pattern: '**/*.js' })).rows.map(r => r.path), ['a.js', 'src/b.js', 'z.js']);
   assert.deepEqual((await f.call('glob', { pattern: 'src/[ab].?s' })).rows, [{ path: 'src/b.js' }]);
   const capped = await f.call('glob', { pattern: '**/*.js', limit: 2 });

@@ -65,7 +65,7 @@ export function globFiles(ctx, { pattern, limit = 64 }) {
       regex.check();
       if (++visited > 20000) refuse('glob walk limit exceeded');
       const name = prefix + entry.name;
-      if (entry.name === '.git' || entry.isSymbolicLink() || skipped(skip, name)) continue;
+      if (entry.isSymbolicLink() || skipped(skip, name)) continue;
       if (entry.isDirectory()) walk(name + '/');
       else if (entry.isFile() && regex.test(name)) names.push(name);
     }

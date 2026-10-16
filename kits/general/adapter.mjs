@@ -8,7 +8,7 @@ import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
 import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, FIELD_ERRORS } from './acceptance-specs.mjs';
-import { settings, context, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
+import { settings, context, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
 // A receipt carries every row twice (the result text and its facts) inside the Worker's inline budget (8 KiB on
@@ -128,6 +128,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
       case 'write_file':
       case 'patch_file': {
         const target = file(); const content = textLimit(args.text);
+        refuseRootGit(ctx, target);
         const original = fs.existsSync(target) ? fs.readFileSync(target) : Buffer.alloc(0);
         // expect_digest is the digest of the file being replaced; an empty one creates a file that must not exist yet.
         if (typeof args.expect_digest !== 'string') refuse('file digest changed');
@@ -157,7 +158,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
         const command = classify(ctx, args.command, args.cwd);
         job = { id: randomUUID(), status: 'starting', root: ctx.root, home: ctx.home, command: command.command, line: command.line, shell: command.shell, cwd: command.cwd, before: before.digest, pid: 0, supervisor_pid: 0, exit_code: -1 };
         save(ctx.jobFile, job);
-        const child = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.mjs', import.meta.url)), ctx.jobFile, job.id], { detached: true, windowsHide: true, stdio: 'ignore' });
+        const child = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.mjs', import.meta.url)), ctx.jobFile, job.id], { env: childEnv(), detached: true, windowsHide: true, stdio: 'ignore' });
         await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
         child.unref();
         const limit = Date.now() + 5000;
@@ -282,7 +283,11 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     // eng.test@2 also compares before with after: a run that reverts an unrecorded change (d0 -> d1, then the run
     // writes d0 back) ends on the recorded tree but tested d1, so it is still a step and never current.
     const ranOver = tool === 'test_v2' && before.digest !== after.digest;
-    const mutated = state.digest !== after.digest || ranOver;
+    // 写工具与 apply_patch 写到主人排除的路径下也是一步：排除不是放被测代码的地方（树摘要看不见那里的改动）。
+    // A write tool or apply_patch touching a path under an exclusion is a step too: exclusions are not a place for
+    // tested code (the tree digest cannot see a change there).
+    const written = ['write_file', 'patch_file'].includes(tool) ? [file()] : tool === 'apply_patch' ? rows.map(row => path.resolve(ctx.root, row.path)) : [];
+    const mutated = state.digest !== after.digest || ranOver || underExclusion(ctx, written);
     const gen = state.gen + (mutated ? 1 : 0);
     if (!Number.isSafeInteger(gen)) refuse('generation exhausted');
     const step = mutated ? { from_gen: state.gen, to_gen: gen } : { from_gen: -1, to_gen: -1 };
@@ -328,8 +333,10 @@ function lineAt(file, offset) {
 // the project and has not run yet (<project>/.deep-rulith/measure/<name>.json is spec_id self-<name>).
 function measureSpecs(ctx) {
   const names = (dir) => { try { return fs.readdirSync(dir).filter((n) => /^[a-zA-Z0-9_-]{1,64}[.]json$/.test(n)).map((n) => n.slice(0, -5)); } catch { return []; } };
-  const proposed = names(path.join(ctx.root, '.deep-rulith', 'measure')).map((n) => `self-${n}`).filter((n) => n.length <= 64);
-  return [...new Set([...names(path.join(ctx.home, 'specs')).filter((n) => n !== 'test'), ...proposed])].sort();
+  // Only canonical lower-case self- ids can run (pin refuses every other case), so only they are listed.
+  const canonical = (n) => !/^self-/i.test(n) || /^self-[a-z0-9_-]+$/.test(n);
+  const proposed = names(path.join(ctx.root, '.deep-rulith', 'measure')).map((n) => `self-${n}`).filter((n) => n.length <= 64 && canonical(n));
+  return [...new Set([...names(path.join(ctx.home, 'specs')).filter((n) => n !== 'test' && canonical(n)), ...proposed])].sort();
 }
 // A project spec is written by the model, so its command passes the same classifier as eng.run (no push, publish,
 // privilege, process control, global installs or inline interpreter code; the owner's allow and allowedPaths).

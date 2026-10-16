@@ -427,10 +427,25 @@ test('command words and paths with control or format characters or lone surrogat
   }
   const cli = f.cli('test_v2', { check: 'spoof' });
   assert.equal(cli.status, 2); assert.equal(cli.stderr, 'acceptance spec invalid: files');
-  // Visible non-ASCII text is fine: letters, and the ordinary space shown as a JSON string.
-  f.put({ command: ['node', 't.mjs', 'ünï', 'a b', '中文'], cwd: '.', files }, 'spoof');
+  // Review 4 P2-3: printable ASCII only, no leading or trailing space. Look-alikes (Cyrillic e, U+2800 braille blank,
+  // U+0336 combining overlay, U+00A0) and any other non-ASCII text are refused by field; an inner space is fine.
+  for (const [spec, field] of [
+    [{ command: ['node', 't\u0435st.mjs'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 'test.mjs\u2800'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 'te\u0336st.mjs'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 'a\u00a0b'], cwd: '.', files }, 'command'],
+    [{ command: ['node', 't.mjs', '\u00fcn\u00ef'], cwd: '.', files }, 'command'],
+    [{ command: ['node', ' t.mjs'], cwd: '.', files }, 'command'],
+    [{ command: 'node t.mjs ', cwd: '.', files, shell: true }, 'command'],
+    [{ command: ['node', 't.mjs'], cwd: '\u4e2d\u6587', files }, 'cwd'],
+    [{ command: ['node', 't.mjs'], cwd: '.', files: { ...files, 't\u0435st.mjs': sha('x') } }, 'files'],
+  ]) {
+    f.put(spec, 'spoof');
+    await assert.rejects(f.call('test_v2', { check: 'spoof' }), { message: `acceptance spec invalid: ${field}` }, JSON.stringify(spec));
+  }
+  f.put({ command: ['node', 't.mjs', 'a b', '~!@#$%^&*()_+{}|:<>?'], cwd: '.', files }, 'spoof');
   const row = (await f.call('acceptance')).rows.find(r => r.check === 'spoof');
-  assert.equal(row.command, 'node t.mjs ünï "a b" 中文');
+  assert.equal(row.command, 'node t.mjs "a b" ~!@#$%^&*()_+{}|:<>?');
 });
 
 test('inline code in combined, attached and data: URL forms is refused like -e (review 2 P2-4)', async t => {
@@ -840,14 +855,16 @@ test('interpreter options are read only before the script; launchers with inline
     'python -m pytest -c pytest.ini', 'python -m pytest -x -q', 'python run.py -config a.yml', 'python -m unittest -v',
     'python -B -m pytest', 'python -m pytest --cov', 'python -W ignore run.py -c x', 'python3 -X dev -m pytest -c x',
     'ruby test.rb -verbose', 'perl Makefile.PL -verbose', 'ruby -Ilib -rminitest test.rb', 'perl -Ilib t/x.t', 'ruby -I lib test.rb -e',
-    'npx eslint .', 'npm exec -- vitest run', 'uv run pytest -c x', 'bundle exec rake test', 'deno test', 'bun test.ts -e']) {
+    'npx eslint .', 'npm exec -- vitest run', 'uv run pytest -c x', 'bundle exec rake test', 'deno test', 'bun test.ts -e',
+    // Review 4 P2-5: a preloaded module that is a file or package (not a data: URL) is readable code.
+    'node --import=./x.mjs a.mjs', 'node --require ./x.cjs a.mjs', 'node -r ./x.cjs a.mjs']) {
     assert.equal(verdict(command), 'allowed', command);
   }
   for (const command of ['node -e 1', 'node -pe 1', 'node -p 1', 'node --eval=1', 'node --eval 1', 'node --print 1',
     'node --input-type=module --eval 1', 'node --env-file=.env -e 1', 'node -C dev -e 1', 'node --inspect -e 1',
     'node --title x -e 1', 'node --stack-size -e 1', 'node --unknown-flag value -e 1', 'node --experimental-loader=data:text/javascript,1 x.mjs',
-    'node --loader data:text/javascript,1 x.mjs', 'node data:text/javascript,1', 'node --import=./x.mjs a.mjs', 'node --require ./x.cjs a.mjs',
-    'node -r ./x.cjs a.mjs', 'python -c 1', 'python -Xdev -c 1', 'python3 -Wignore -c 1', 'python -W ignore -c 1', 'python -X dev -c 1',
+    'node --loader data:text/javascript,1 x.mjs', 'node data:text/javascript,1', 'node --import data:text/javascript,1 a.mjs',
+    'node -r data:text/javascript,1 a.mjs', 'python -c 1', 'python -Xdev -c 1', 'python3 -Wignore -c 1', 'python -W ignore -c 1', 'python -X dev -c 1',
     'python -OO -c 1', 'python -Ic 1', 'python --check-hash-based-pycs always -c 1', 'perl -Mstrict -e 1', 'perl -w -e1', 'perl -I lib -e 1',
     'perl -ne print', 'ruby -le 1', 'ruby -r json -e 1', 'ruby -I lib -e 1',
     'nodejs -e 1', 'bun -e 1', 'bun --eval 1', 'bun run --eval 1', 'tsx -e 1', 'tsx --eval 1', 'deno eval 1', 'deno run --eval 1',
@@ -855,5 +872,162 @@ test('interpreter options are read only before the script; launchers with inline
     'pnpm exec node -e 1', 'pnpm dlx tsx -e 1', 'yarn exec node -e 1', 'bunx node -e 1', 'uv run python -c 1', 'uv run --python 3.12 python -c 1',
     'poetry run python -c 1', 'bundle exec ruby -e 1']) {
     assert.equal(verdict(command), 'command refused', command);
+  }
+});
+
+// Review 4. Each test reproduces one reviewer PoC (D:/Work/Temp/review-d1016a-kit4) and fails without its fix.
+const recorder = () => {
+  const facts = [];
+  return { facts, record: (id, out) => { facts.push(...factsOf(id, out)); return out; }, passing: () => passing(facts) };
+};
+
+test('a nested .git is hashed like any other file; only <root>/.git is excluded and never written (review 4 P1-1, PoC pocA)', async t => {
+  const f = fixture(t); const r = recorder();
+  const strict = "import fs from 'node:fs'; process.exitCode = fs.readFileSync(new URL('./src/.git', import.meta.url), 'utf8') === 'good' ? 0 : 1;\n";
+  f.write('test.mjs', strict); f.put({ ...f.spec, files: { 'test.mjs': sha(strict) } });
+  fs.mkdirSync(path.join(f.root, 'src'));
+  r.record('eng.tree_state@1', await f.call('tree_state'));
+  const created = r.record('eng.write_file@1', await f.call('write_file', { path: 'src/.git', text: 'good', expect_digest: '' }));
+  assert.deepEqual([created.rows[0].from_gen, created.rows[0].to_gen], [0, 1]);
+  r.record('eng.test@2', await f.call('test_v2', { check: 'unit' }));
+  assert.deepEqual(r.passing(), ['unit']);
+  r.record('eng.write_file@1', await f.call('write_file', { path: 'src/.git', text: 'BROKEN', expect_digest: sha('good') }));
+  assert.deepEqual(r.passing(), []);
+  // A nested .git directory: its files count too.
+  fs.mkdirSync(path.join(f.root, 'lib/.git'), { recursive: true });
+  const before = tree(f.ctx).digest;
+  fs.writeFileSync(path.join(f.root, 'lib/.git/impl.mjs'), 'export default 1;\n');
+  assert.notEqual(tree(f.ctx).digest, before);
+  // The owner may exclude nested repositories with **/.git.
+  f.settings({ treeExclude: ['**/.git'] });
+  const excluded = tree(f.ctx).digest;
+  fs.writeFileSync(path.join(f.root, 'lib/.git/impl.mjs'), 'export default 2;\n');
+  assert.equal(tree(f.ctx).digest, excluded);
+  // <root>/.git: excluded, so no tool writes there and no command names it or runs inside it, in any spelling.
+  f.settings();
+  fs.mkdirSync(path.join(f.root, '.git'));
+  const rootDigest = tree(f.ctx).digest;
+  fs.writeFileSync(path.join(f.root, '.git/config'), 'x');
+  assert.equal(tree(f.ctx).digest, rootDigest);
+  const names = ['.git/hook.mjs', '.GIT/hook.mjs', ...(process.platform === 'win32' ? ['.git./hook.mjs', '.git /hook.mjs'] : [])];
+  for (const name of names) {
+    await assert.rejects(f.call('write_file', { path: name, text: 'x', expect_digest: '' }), { message: 'path refused' }, name);
+    await assert.rejects(f.call('apply_patch', { patch: `*** Begin Patch\n*** Add File: ${name}\n+x\n*** End Patch` }), { message: 'path refused' }, name);
+  }
+  await assert.rejects(f.call('write_file', { path: '.git', text: 'x', expect_digest: '' }), { message: 'path refused' });
+  await assert.rejects(f.call('run', { command: 'node -v', cwd: '.git' }), { message: 'path refused' });
+  await assert.rejects(f.call('run', { command: 'node .git/x.mjs' }), { message: 'path refused' });
+  assert.throws(() => classify(f.ctx, ['node', '.GIT/x.mjs']), { message: 'path refused' });
+  // A file whose name only starts with .git is an ordinary file.
+  f.write('.gitignore', 'x\n');
+  assert.equal(classify(f.ctx, ['node', '.gitignore']).command[1], '.gitignore');
+});
+
+test('commands run without the kit and Worker variables; a script cannot rewrite the owner settings (review 4 P1-2 a, PoC pocD)', async t => {
+  const f = fixture(t); const r = recorder();
+  const saved = { ...process.env };
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]; Object.assign(process.env, saved); });
+  Object.assign(process.env, { ENG_KIT_HOME: f.home, RULITH_REVIEW_SECRET: 'x', eng_lower_case: 'x', Rulith_Mixed: 'x' });
+  f.write('env.mjs', "console.log(JSON.stringify(Object.keys(process.env).filter(name => /^(ENG_|RULITH_)/i.test(name))));\n");
+  assert.equal((await f.call('run', { command: 'node env.mjs' })).head.trim(), '[]');
+  const job = await f.call('job_start', { command: 'node env.mjs' });
+  let poll; do poll = await f.call('job_poll', { job_id: job.rows[0].job_id, wait_s: 5 }); while (!['done', 'failed'].includes(poll.rows[0].status));
+  assert.equal(poll.rows[0].status, 'done'); assert.equal(poll.head.trim(), '[]');
+  // PoC pocD: the script that rewrote <kit home>/settings.json (treeExclude: ["src"]) through ENG_KIT_HOME.
+  f.write('src/flag.txt', 'good');
+  const strict = "import fs from 'node:fs'; process.exitCode = fs.readFileSync('src/flag.txt', 'utf8') === 'good' ? 0 : 1;\n";
+  f.write('test.mjs', strict); f.put({ ...f.spec, files: { 'test.mjs': sha(strict) } });
+  f.write('tool.mjs', "import fs from 'node:fs'; import path from 'node:path'; const s = path.join(process.env.ENG_KIT_HOME, 'settings.json'); const v = JSON.parse(fs.readFileSync(s, 'utf8')); v.treeExclude = ['src']; fs.writeFileSync(s, JSON.stringify(v));\n");
+  const settingsBefore = fs.readFileSync(path.join(f.home, 'settings.json'), 'utf8');
+  r.record('eng.tree_state@1', await f.call('tree_state'));
+  r.record('eng.run@1', await f.call('run', { command: 'node tool.mjs' }));
+  assert.equal(fs.readFileSync(path.join(f.home, 'settings.json'), 'utf8'), settingsBefore);
+  r.record('eng.test@2', await f.call('test_v2', { check: 'unit' }));
+  assert.deepEqual(r.passing(), ['unit']);
+  r.record('eng.write_file@1', await f.call('write_file', { path: 'src/flag.txt', text: 'BROKEN', expect_digest: sha('good') }));
+  assert.deepEqual(r.passing(), []);
+});
+
+test('the tree identity covers the effective exclusions, shell, allow and allowedPaths: a settings change is a step (review 4 P1-2 b)', async t => {
+  const f = fixture(t); const r = recorder();
+  f.write('src/flag.txt', 'good');
+  r.record('eng.tree_state@1', await f.call('tree_state'));
+  r.record('eng.test@2', await f.call('test_v2', { check: 'unit' }));
+  assert.deepEqual(r.passing(), ['unit']);
+  // The settings rewrite pocD made (treeExclude widened to src), with no file change: the earlier pass stops being current.
+  f.settings({ treeExclude: ['src'] });
+  const step = r.record('eng.run@1', await f.call('run', { command: 'node -v' }));
+  assert.deepEqual([step.rows[0].from_gen, step.rows[0].to_gen], [0, 1]);
+  assert.deepEqual(r.passing(), []);
+  let gen = 1;
+  const node = path.dirname(process.execPath);
+  for (const value of [{ treeExclude: ['src'], shell: true }, { treeExclude: ['src'], shell: true, allow: ['delete'] },
+    { treeExclude: ['src'], shell: true, allow: ['delete'], allowedPaths: [node, f.dir] }]) {
+    fs.writeFileSync(path.join(f.home, 'settings.json'), JSON.stringify({ allowedPaths: [node], ...value }));
+    assert.equal((await f.call('tree_state')).rows[0].gen, ++gen, JSON.stringify(value));
+  }
+  // A limit that changes neither what is hashed nor what may run is no step.
+  fs.writeFileSync(path.join(f.home, 'settings.json'), JSON.stringify({ treeExclude: ['src'], shell: true, allow: ['delete'],
+    allowedPaths: [node, f.dir], runDeadlineSeconds: 30 }));
+  assert.equal((await f.call('tree_state')).rows[0].gen, gen);
+});
+
+test('a write into an owner exclusion is a tree step: exclusions are no place for tested code (review 4 P2-2)', async t => {
+  const f = fixture(t); const r = recorder();
+  f.settings({ treeExclude: ['out'] });
+  f.write('out/dep.mjs', 'export const ok = true;\n');
+  const strict = "import { ok } from './out/dep.mjs'; process.exitCode = ok ? 0 : 1;\n";
+  f.write('test.mjs', strict); f.put({ ...f.spec, files: { 'test.mjs': sha(strict) } });
+  r.record('eng.tree_state@1', await f.call('tree_state'));
+  r.record('eng.test@2', await f.call('test_v2', { check: 'unit' }));
+  assert.deepEqual(r.passing(), ['unit']);
+  const write = r.record('eng.write_file@1', await f.call('write_file', { path: 'out/dep.mjs', text: 'export const ok = false;\n', expect_digest: sha('export const ok = true;\n') }));
+  assert.deepEqual([write.rows.at(-1).from_gen, write.rows.at(-1).to_gen], [0, 1]);
+  assert.deepEqual(r.passing(), []);
+  // apply_patch, under another spelling of the excluded folder (case), is a step too.
+  const patch = r.record('eng.apply_patch@1', await f.call('apply_patch', { patch: '*** Begin Patch\n*** Add File: OUT/other.mjs\n+x\n*** End Patch' }));
+  assert.deepEqual([patch.rows.at(-1).from_gen, patch.rows.at(-1).to_gen], [1, 2]);
+  // A write outside every exclusion that leaves the tree as it was is still no step.
+  f.write('same.txt', 'x');
+  const gen = (await f.call('tree_state')).rows[0].gen;
+  const same = await f.call('write_file', { path: 'same.txt', text: 'x', expect_digest: sha('x') });
+  assert.deepEqual([same.rows.at(-1).from_gen, same.rows.at(-1).to_gen], [-1, -1]);
+  assert.equal((await f.call('tree_state')).rows[0].gen, gen);
+});
+
+test('a self- spec_id is canonical lower case; SELF-x never opens the owner branch (review 4 P2-1, PoC pocB)', async t => {
+  const f = fixture(t);
+  selfSpec(f, 'x');
+  assert.deepEqual((await f.call('measure_pinned', { spec_id: 'self-x' })).rows.map(row => [row.spec_id, row.value_milli]), [['self-x', 1]]);
+  for (const id of ['SELF-x', 'Self-x', 'self-X', 'sElF-y'])
+    await assert.rejects(f.call('measure_pinned', { spec_id: id }), { message: 'spec refused: a self- spec_id is lower case' }, id);
+  selfSpec(f, 'Upper');
+  assert.ok(!(await f.call('tree_state')).measure_specs.includes('self-Upper'));
+  const cli = f.cli('measure_pinned', { spec_id: 'SELF-x' });
+  assert.equal(cli.status, 2); assert.equal(cli.stderr, 'spec refused: a self- spec_id is lower case');
+});
+
+test('inline-code fence: review 4 bypasses are refused and its false refusals run (review 4 P2-4/P2-5, PoC pocC)', t => {
+  const f = fixture(t);
+  const verdict = command => { try { classify(f.ctx, command); return 'allowed'; } catch (error) { return error.message; } };
+  for (const command of [['python', '-Rc', 'print(1)'], ['pythonw', '-c', 'print(1)'], ['pypy3', '-c', 'print(1)'], ['pypy', '-c', '1'],
+    ['python', '-m', 'timeit', '-n1', 'import os'], ['python', '-mtimeit', '1'], ['python', '-m', 'pdb', '-c', '!import os', 'x.py'],
+    ['python', '-m', 'cProfile', 'x.py'], ['python', '-m', 'profile', 'x.py'], ['python', '-m', 'code'],
+    ['node', '--test', '--test-reporter=data:text/javascript,export default async function*(){}', 't/'], ['node', '--anything=DATA:x', 'a.mjs'],
+    ['ts-node', '-e', '1'], ['npx', 'ts-node', '-e', '1'], ['deno', 'run', 'data:application/javascript,console.log(1)'],
+    ['deno', 'run', '-A', 'DATA:application/javascript,1'], ['deno', 'repl', '--eval', '1'],
+    ['npx', '-p', 'cowsay', '-c', 'git pu""sh'], ['npm', 'exec', '--package', 'x', '-c', 'echo hi'], ['pnpm', 'exec', '--shell-mode', 'echo hi'],
+    ['yarn', 'exec', 'echo hi'], ['npx', 'bash', 'x.sh'], ['git', '-c', 'alias.y=!git pu""sh', 'y'], ['git', '-C', 'src', '-c', 'core.pager=x', 'log'],
+    ['git', '--config-env=alias.y=V', 'y'], ['conda', 'run', 'python', '-c', '1'], ['conda', 'run', '-n', 'env', 'python', '-c', '1'],
+    ['uvx', 'python', '-c', '1'], ['uv', 'tool', 'run', 'python', '-c', '1'], ['pipx', 'run', 'x', 'python', '-c', '1'], ['timeout', '5', 'node', '-e', '1'],
+    ['php', '-r', 'echo(1)'], ['Rscript', '-e', '1'], ['R', '--vanilla', '-e', '1'], ['awk', 'BEGIN{system("calc")}'], ['gawk', '-f', 'p.awk', '-e', '1'],
+    ['ruby', '-wE', 'UTF-8', '-e', '1'], ['npx', 'npx', 'npx', 'npx', 'npx', 'npx', 'x']]) {
+    assert.equal(verdict(command), 'command refused', JSON.stringify(command));
+  }
+  for (const command of [['node', '--import', 'tsx', 'x.ts'], ['node', '-r', 'ts-node/register', 'x.ts'], ['ruby', '-E', 'UTF-8', 'x.rb'],
+    ['deno', 'run', '-A', 'main.ts', '-p', '8080'], ['deno', 'test', '--filter', 'eval'], ['node', '--expose-internals', 'x.js', '-p', '1'],
+    ['awk', '-f', 'p.awk', 'data.txt'], ['git', '-C', 'src', 'log'], ['git', 'switch', '-c', 'topic'], ['npx', 'jest', '-c', 'jest.config.js'],
+    ['python', '-m', 'pytest', '-c', 'x'], ['php', 'x.php', '-r'], ['Rscript', 'x.R', '-e']]) {
+    assert.equal(verdict(command), 'allowed', JSON.stringify(command));
   }
 });

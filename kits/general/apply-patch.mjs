@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { plainFenced, refuse, settings, sha, textLimit } from './lib.mjs';
+import { plainFenced, refuse, refuseRootGit, settings, sha, textLimit } from './lib.mjs';
 
 // No fuzzy matching: each context hunk must match exactly once after the preceding hunk.
 function update(original, lines) {
@@ -65,6 +65,7 @@ function targetPath(ctx, name) {
   if (!name || name.length > 240 || name.includes('\\') || name.includes(':') || name.startsWith('/')
     || name.split('/').some(p => !p || p === '.' || p === '..')) refuse('path refused');
   const target = plainFenced(ctx.root, name);
+  refuseRootGit(ctx, target);
   if (!fs.existsSync(path.dirname(target))) refuse('parent directory missing');
   return target;
 }

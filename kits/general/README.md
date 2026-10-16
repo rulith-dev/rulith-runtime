@@ -63,27 +63,42 @@ See `settings.example.json`. All fields are optional.
 | `allowedPaths` | `[]` | Absolute directories outside the project that commands may name (toolchains, model files). Reads and writes stay inside the project. |
 | `allow` | `[]` | Relaxed rules: `install` (project-local dependency installs), `delete` (deletion inside the project), `git_rewrite` (`git reset`, `git clean`), `git_commit` (commits, merges, rebases, tags). |
 | `shell` | `false` | Run commands through the system shell (pipes, redirects, `.cmd` scripts). |
-| `treeExclude` | `[]` | Project-relative directories left out of the tree digest (build outputs, caches). `.git` is always excluded. |
+| `treeExclude` | `[]` | Project-relative directories left out of the tree digest (build outputs, caches); `**/<name>` matches that folder at any depth. `.git` at the root is always excluded; a nested `.git` is hashed like any other folder unless you add `**/.git`. Owner exclusions are not a place for tested code: a write tool or `eng.apply_patch` writing under one is a tree step. |
 | `imageMaxBytes` | 5242880 | Maximum image bytes (up to 20 MiB); the Worker's object budget also applies. |
 | `webMaxBytes` | 1048576 | Maximum response bytes for fetch/search (up to 8 MiB). |
 | `webTimeoutSeconds` | 20 | Total fetch/search deadline, including redirects and DNS (up to 120 seconds). |
 | `webSearch` | absent | `{ "provider": "deepseek", "keyEnv": "DEEPSEEK_API_KEY" }`; no literal keys or credential files. |
 
 Always refused: privilege elevation, killing processes or stopping services, push/publish, global
-installs or configuration (git subcommands are checked anywhere in a shell line), inline interpreter code (`node -e`, `python -c`, …) and paths that
-escape the project or the allowed directories. Inline code includes combined and attached forms
-(`node -pe`, `node -e<code>`, `python -c<code>`, `python -Ic`, `perl -ne`), `data:` URLs given to
-`--loader`, `--experimental-loader`, `--import` or `-r` or named as the script, and preloading with
-`-r`/`--require`/`--import`. Only the interpreter's own options are read: the words before the script
-(or `python -m`), an option's separate value included. Words after the script are its arguments, so
-`node test.mjs -p 8080`, `python run.py -config a.yml` and `node --test test/ -r` run. An unknown long
-option without `=` is taken to have a value, so it cannot end the scan early (a rare false refusal
-rather than a gap). The same rules cover `nodejs`, `bun`, `tsx`, `deno eval`, and `npx`, `bunx`,
-`npm exec`/`npm x`, `pnpm exec`/`dlx`, `yarn exec`/`dlx`, `uv run`, `poetry run`, `pipenv run` and
-`bundle exec` followed by an interpreter (and `npx -c`/`npm exec -c`, which take a shell line).
-The fence is about visible intent, not a sandbox: other launchers, wrappers and a script file named
-on the line can still do anything the Worker's user can; what it buys is that the ordinary ways to
-hide code in a command line are refused and the code is a project file anyone can read.
+installs or configuration (git subcommands are checked anywhere in a shell line; `git -c` and
+`--config-env` too), inline interpreter code (`node -e`, `python -c`, …), paths in the root `.git` (as
+the working directory or a command word) and paths that escape the project or the allowed directories.
+Inline code includes combined and attached forms (`node -pe`, `node -e<code>`, `python -c<code>`,
+`python -Ic`, `python -Rc`, `perl -ne`), a `data:` URL in any `--option=data:…`, given as an option's
+value (`--import data:…`, `-r data:…`) or named as the script, and the Python modules that evaluate
+their arguments (`-m timeit`, `pdb`, `profile`, `cProfile`, `code`, `IPython`). A preloaded module that
+is a file or package (`node --import tsx`, `-r ts-node/register`) is readable code and runs. Only the
+interpreter's own options are read: the words before the script (or `python -m`), an option's separate
+value included. Words after the script are its arguments, so `node test.mjs -p 8080`,
+`python run.py -config a.yml`, `node --test test/ -r` and `deno run -A main.ts -p 8080` run. An unknown
+long option without `=`, and for node an unknown short option, is taken to have a value, so it cannot
+end the scan early (a rare false refusal rather than a gap). Interpreters: `node`, `nodejs`, `bun`,
+`tsx`, `ts-node`, `python`/`python3`/`pythonw`/`pypy`/`pypy3`/`py`, `perl`, `ruby` (`-E` is the
+encoding), `php` (`-r`, `-B`, `-R`, `-E`), `R`/`Rscript` (`-e`), `deno` (`eval`, `repl --eval`,
+`--eval`/`--print` before the script, any `data:` word), and `awk` unless its program is a file (`-f`).
+Launchers and wrappers are read through: `npx`, `bunx`, `pnpx`, `uvx`, `npm exec`/`x`, `pnpm exec`/`dlx`,
+`yarn dlx`, `bun x`, `deno x`, `uv run`, `uv tool run`, `poetry run`, `pipenv run`, `pdm run`, `hatch run`,
+`pipx run`, `conda run`, `rye run`, `bundle exec`, `time`, `nice`, `nohup`, `timeout`, `xargs`, `find` and
+`stdbuf`: every later word is read as a command (an interpreter, a shell, git, awk or another launcher), so
+a value the launcher takes cannot hide the program. Their whole option list is scanned for `-c`, `--call`
+and `--shell-mode` (a shell line); `yarn exec` is itself a shell line and, like a shell named after a
+launcher, needs the owner's `shell` setting. More than four nested launchers are refused.
+The fence is about visible intent, not a sandbox. Known gaps: other launchers and wrappers not listed
+above, interpreters not listed (for example `java`/`jshell`, `lua -e`, `R CMD`), program text in other
+tools' arguments (`sed`'s `e` command, `find -exec sh` with the shell enabled, a build tool's inline
+scripts), and a script file named on the line, which can still do anything the Worker's user can; what
+the fence buys is that the ordinary ways to hide code in a command line are refused and the code is a
+project file anyone can read.
 
 With the owner's `shell: true` the classifier is advisory only. It splits the line into words with
 its own quoting rules (`argv`), not the shell's, and the shell then interprets the line as written:
@@ -98,7 +113,7 @@ are preserved. New contracts:
 
 | Tool | Inputs | Result |
 | --- | --- | --- |
-| `eng.glob@1` | `pattern`, optional `limit` (1–128; default 64) | Sorted project files, at most 1.8 KiB of rows; `truncated` if capped. Supports `*`, `**`, `?`, character classes. Skips `.git` at every depth, tree exclusions, and links; refuses walks over 20,000 entries. At most 20 wildcard tokens; walking and matching share a five-second deadline (`glob complexity refused`). This allows ordinary repositories on slower disks while bounding pathological requests. |
+| `eng.glob@1` | `pattern`, optional `limit` (1–128; default 64) | Sorted project files, at most 1.8 KiB of rows; `truncated` if capped. Supports `*`, `**`, `?`, character classes. Skips the root `.git`, tree exclusions (a nested `.git` only under `**/.git`), and links; refuses walks over 20,000 entries. At most 20 wildcard tokens; walking and matching share a five-second deadline (`glob complexity refused`). This allows ordinary repositories on slower disks while bounding pathological requests. |
 | `eng.apply_patch@1` | `patch` | Up to four files, 16 KiB patch, 1 MiB per existing text file. Codex `*** Begin Patch` / `*** Add File` / `*** Update File` / `*** Delete File` / `*** End Patch`. Exact `@@` context hunks, optional section anchor and `*** End of File`. Every hunk/path is validated before writes; I/O errors restore prior files. Existing parent directories are required. Deletes require `allow: ["delete"]`. |
 | `eng.read_image@1` | `path` | PNG/JPEG/GIF/WebP, identified by magic bytes. No facts or inline image bytes; its manifest opts into `artifactOutput: true` and the `rulith.artifacts` envelope. The Worker takes custody, verifies the digest and registers an artifact reference through its existing reporting path. Other run adapters retain their ordinary stdout. |
 | `eng.read@2` | `path`, optional byte `offset` | Same bounded read result as `eng.read@1`, plus `eng.file_read{path,digest,bytes}`. This digest describes the full file; the inline text may be a window. `eng.read@1` still returns no facts. |
@@ -157,6 +172,23 @@ The receipt then clips text to its inline byte budget; its digest covers every f
   of the polling wait limit.
 - The tree digest covers the project except exclusions; it is cached by size and modification
   time. The generation advances once per receipt whose tree differs from the last one.
+- The tree's identity includes the settings that decide what is hashed and what may run:
+  `tree_digest = sha256(file-tree digest ‖ sha256(the sorted effective exclusions, shell, allow and
+  allowedPaths))`, both inner digests as lowercase hex. Widening `treeExclude` or changing `shell`,
+  `allow` or `allowedPaths` therefore changes the digest even with no file changed: the next receipt
+  records a tree step from the previous generation, and earlier passes stop being current like after
+  a write. Time limits and web settings are not part of it.
+- `.git` at the root is always excluded, so no write tool or `eng.apply_patch` writes there and no
+  command runs in it or names a path in it (`path refused`), in any spelling the file system accepts
+  (case, trailing dots or spaces, short names). A `.git` file or folder anywhere else is hashed.
+- A write tool or `eng.apply_patch` that touches a path under an exclusion (the root `.git` aside) is a
+  tree step even though the digest cannot see the change: owner exclusions are for build outputs and
+  caches, not for tested code. A command's own writes there are not seen.
+- Commands, checks, measurements and jobs run without the kit's and the Worker's variables: every
+  `ENG_*` (including `ENG_KIT_HOME`) and `RULITH_*` variable is removed from their environment, so a
+  script is not handed the location of the owner's settings, specs, tree cache or state file. It runs
+  as the Worker's user, so the kit home must still be protected by its location, not by secrecy; a
+  settings change it made anyway is a tree step (above).
 - Only `eng.test` produces `eng.test_result` and only `eng.measure_pinned` produces measurement
   facts; numbers printed by other commands never become facts.
 - The Worker runs items one at a time per Source. File and command adapters serialize through
@@ -188,7 +220,8 @@ and `pinned-measure-interpreted.example.json`.
 
 The agent may pin a measurement itself instead of waiting for the owner: it writes the spec to
 `<project>/.deep-rulith/measure/<name>.json` and runs `eng.measure_pinned` with `spec_id`
-`self-<name>`. The first run that passes every check copies the spec to `<kit home>/specs/self-<name>.json`,
+`self-<name>`, all in lower case (`spec refused: a self- spec_id is lower case` for any other case, so a
+case-insensitive file system cannot open a frozen `self-` file as an owner spec). The first run that passes every check copies the spec to `<kit home>/specs/self-<name>.json`,
 where it never changes; later edits of the project copy are ignored. A refused spec is not frozen, so it
 can be corrected under its name. The `self-` prefix stays on every receipt, so the
 owner can review such specs afterwards and tell them from the owner's own.
@@ -261,12 +294,11 @@ colons or control characters. `shell` is an optional boolean (default false). Un
 refused. Include every test dependency in `files`; each digest hashes that file's exact bytes,
 without EOL normalization. Files and specs cannot be links or pass through linked directories.
 Command words (or the shell line), `cwd` and `files` paths are shown on the Board for a person to
-sign, so a character that is invisible or can pass for another is refused, naming the field: control
-and format characters (Unicode Cc and Cf, for example U+202E or a zero-width space), default-ignorable
-code points (for example U+3164, U+115F, U+FFA0, U+034F, U+FE0F), line and paragraph separators (Zl,
-Zp), any space separator other than U+0020 (Zs, for example U+00A0), private-use (Co) and unassigned
-(Cn, as of the Worker's Node.js Unicode version) code points, and unpaired surrogates:
-`acceptance spec invalid: command`, `acceptance spec invalid: cwd` or `acceptance spec invalid: files`.
+sign, so they must be printable ASCII (0x20–0x7E) without a leading or trailing space; anything else
+is refused, naming the field: `acceptance spec invalid: command`, `acceptance spec invalid: cwd` or
+`acceptance spec invalid: files`. Invisible and look-alike characters (look-alikes such as the
+Cyrillic e U+0435, the blank U+2800, combining marks) cannot be listed reliably by category, so in v1 a project path or
+argument outside ASCII cannot be part of an acceptance check.
 
 A spec has no output directories (an `output_dirs` field makes it invalid). The owner's `treeExclude`
 setting is the only exclusion: every change a check's own run makes outside it is a tree step like
