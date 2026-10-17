@@ -2,6 +2,13 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.17.2 - 2026-10-17
+
+- Local manager: `/manager/conversations/end-preview` and `/manager/conversations/end` let the signed-in
+  owner's client delete one conversation (PSC 0.2.21): the preview reports its open goals and whether a
+  call is still without a result; deleting seals the conversation's Board and closes its open goals as
+  abandoned, keeping every record. Forwarded over the device grant like the other conversation settings.
+
 ## 0.17.1 - 2026-10-17
 
 - Local manager: `/manager/conversations/state`, `/manager/conversations/exploration-mode` and

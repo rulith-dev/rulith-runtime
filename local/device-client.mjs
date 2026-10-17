@@ -520,6 +520,9 @@ export function createDeviceClient({ root } = {}) {
     conversationState: (body = {}) => conversationCall('/local-devices/conversations/state', body),
     conversationExplorationMode: (body = {}) => conversationCall('/local-devices/conversations/exploration-mode', body),
     conversationReview: (body = {}) => conversationCall('/local-devices/conversations/review', body),
+    // PSC 0.2.21: what deleting a conversation would do, and deleting it (seal its Board, close its open goals as abandoned).
+    conversationEndPreview: (body = {}) => conversationCall('/local-devices/conversations/end-preview', body),
+    conversationEnd: (body = {}) => conversationCall('/local-devices/conversations/end', body),
     /** Register one durable Host selection; the Agent and browser never receive this bearer. */
     registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, custodyBindings, proofDigest, selectionDigest, targetCaseId }) => {
       const current = linked()

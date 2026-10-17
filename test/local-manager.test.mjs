@@ -1572,6 +1572,7 @@ test('the manager answers exactly its documented control-plane operations', asyn
     const routes = [...source.matchAll(/'(\/manager\/[a-z/-]+)':/g)].map((match) => match[1]).sort()
     assert.deepEqual(routes, [
       '/manager/authoring/install-checker', '/manager/authoring/review', '/manager/authoring/save',
+      '/manager/conversations/end', '/manager/conversations/end-preview',
       '/manager/conversations/exploration-mode', '/manager/conversations/review', '/manager/conversations/state',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
       '/manager/device/start', '/manager/health', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
@@ -1632,6 +1633,16 @@ test('the signed-in client switches one conversation\'s exploration mode and rev
     const routes = gateway.requests.filter(row => row.path.startsWith('/local-devices/conversations/'))
     assert.equal(routes.length, sent)
     assert.ok(routes.every(row => row.origin === undefined), 'device routes never carry a browser Origin')
+    // PSC 0.2.21: the preview the confirmation dialog shows, then the deletion itself.
+    const preview = await post('/manager/conversations/end-preview', { agentId: 'agent-alpha', conversationKey: key })
+    assert.equal(preview.status, 200, JSON.stringify(preview.body))
+    assert.equal(preview.body.openGoals.length, 1)
+    assert.equal(preview.body.ended, false)
+    const ended = await post('/manager/conversations/end', { agentId: 'agent-alpha', conversationKey: key, requestId: 'end-1' })
+    assert.equal(ended.status, 200, JSON.stringify(ended.body))
+    assert.equal(ended.body.ended, true)
+    assert.deepEqual(ended.body.closedGoals, ['case-1'])
+    assert.equal((await post('/manager/conversations/end', { agentId: 'agent-zeta', conversationKey: key, requestId: 'end-2' })).status, 400)
   })
 })
 

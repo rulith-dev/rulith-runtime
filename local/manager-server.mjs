@@ -319,6 +319,8 @@ export function createManagerServer({
     '/manager/conversations/exploration-mode': (body) => instances.admit(() => device.conversationExplorationMode(
       onlyFields(body, ['agentId', 'conversationKey', 'connectionId', 'mode', 'requestId']))),
     '/manager/conversations/review': (body) => instances.admit(() => device.conversationReview(onlyFields(body, ['agentId', 'conversationKey', 'enabled']))),
+    '/manager/conversations/end-preview': (body) => instances.admit(() => device.conversationEndPreview(onlyFields(body, ['agentId', 'conversationKey']))),
+    '/manager/conversations/end': (body) => instances.admit(() => device.conversationEnd(onlyFields(body, ['agentId', 'conversationKey', 'requestId']))),
     '/manager/instances/open': (body) => {
       const fields = onlyFields(body, ['instanceId', 'page'])
       return instances.open(String(fields.instanceId ?? ''), String(fields.page ?? '/'))

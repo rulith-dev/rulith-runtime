@@ -68,6 +68,7 @@ export function createDevicesGateway({
   /** Conversation settings by conversation key (ACC-CONV-05/06). */
   const conversationModes = new Map()
   const conversationReview = new Map()
+  const conversationEnded = new Set()
   const conversationRow = (key) => ({ boardId: 'board-' + sha256(String(key)).slice(0, 12), createdAt: '2026-10-17T00:00:00Z', lastActivityAt: null,
     postCallReview: conversationReview.get(key) ?? true, explorationModes: { 'conn-1': conversationModes.get(key) ?? 'strict' } })
   const enabled = new Map(agents.map((row) => [row.id, { ...row, enabled: true }]))
@@ -215,6 +216,21 @@ export function createDevicesGateway({
         refuse(409, 'Switch this conversation out of derived mode before turning its review off.', 'derived_requires_review')
       conversationReview.set(body.conversationKey, body.enabled)
       return conversationRow(body.conversationKey)
+    },
+    'POST /local-devices/conversations/end-preview': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'conversationKey'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
+      return { agentId: body.agentId, found: true, boardId: conversationRow(body.conversationKey).boardId, ended: conversationEnded.has(body.conversationKey),
+        pendingCall: false, openGoals: [{ caseId: 'case-1', root: 'root-1', title: 'goal' }] }
+    },
+    'POST /local-devices/conversations/end': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'conversationKey', 'requestId'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
+      conversationEnded.add(body.conversationKey)
+      return { agentId: body.agentId, found: true, boardId: conversationRow(body.conversationKey).boardId, ended: true,
+        endedAt: '2026-10-17T00:00:00Z', closedGoals: ['case-1'], unconfirmedGoals: [] }
     },
     'POST /local-devices/authoring/cases': (body, { bearer }) => {
       onlyFields(body, ['expectedAccountId', 'agentId', 'materialId', 'documentDigest', 'proposalDigest'])
