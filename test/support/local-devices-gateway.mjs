@@ -65,6 +65,11 @@ export function createDevicesGateway({
   const boards = new Map()
   const sessions = new Map()
   const materialSubmissions = new Map()
+  /** Conversation settings by conversation key (ACC-CONV-05/06). */
+  const conversationModes = new Map()
+  const conversationReview = new Map()
+  const conversationRow = (key) => ({ boardId: 'board-' + sha256(String(key)).slice(0, 12), createdAt: '2026-10-17T00:00:00Z', lastActivityAt: null,
+    postCallReview: conversationReview.get(key) ?? true, explorationModes: { 'conn-1': conversationModes.get(key) ?? 'strict' } })
   const enabled = new Map(agents.map((row) => [row.id, { ...row, enabled: true }]))
   /** Paths whose next request answers 503, for the recoverable-delivery arms. */
   const faults = new Map()
@@ -184,6 +189,32 @@ export function createDevicesGateway({
         selectionDigest: body.selectionDigest }
       materialSubmissions.set(key, { body: structuredClone(body), reply })
       return reply
+    },
+    // ACC-CONV-05/06: one conversation's settings, by its key; the Agent must be inside the grant.
+    'POST /local-devices/conversations/state': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'conversationKey'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
+      return { agentId: body.agentId, found: true, connections: [{ connectionId: 'conn-1', name: 'Workspace' }], reviewer: null,
+        conversation: conversationRow(body.conversationKey) }
+    },
+    'POST /local-devices/conversations/exploration-mode': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'conversationKey', 'connectionId', 'mode', 'requestId'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
+      if (!['strict', 'derived', 'non_strict'].includes(body.mode)) refuse(400, 'Unknown exploration mode', 'bad_command')
+      conversationModes.set(body.conversationKey, body.mode)
+      return { requestId: body.requestId, boardId: conversationRow(body.conversationKey).boardId, state: 'complete', result: { accepted: true } }
+    },
+    'POST /local-devices/conversations/review': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'conversationKey', 'enabled'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
+      if (typeof body.enabled !== 'boolean') refuse(400, 'enabled must be true or false', 'bad_command')
+      if (body.enabled === false && conversationModes.get(body.conversationKey) === 'derived')
+        refuse(409, 'Switch this conversation out of derived mode before turning its review off.', 'derived_requires_review')
+      conversationReview.set(body.conversationKey, body.enabled)
+      return conversationRow(body.conversationKey)
     },
     'POST /local-devices/authoring/cases': (body, { bearer }) => {
       onlyFields(body, ['expectedAccountId', 'agentId', 'materialId', 'documentDigest', 'proposalDigest'])

@@ -312,6 +312,13 @@ export function createManagerServer({
             : {}) }
       })
     },
+    // ACC-CONV-05/06 (PSC 0.2.16 ③): the signed-in owner's client (Deep Rulith) switches one conversation's exploration
+    // mode or post-call review through this computer's device grant. The manager only forwards the exact fields; the
+    // device client checks the Agent is one of the grant's, the Gateway does the rest.
+    '/manager/conversations/state': (body) => instances.admit(() => device.conversationState(onlyFields(body, ['agentId', 'conversationKey']))),
+    '/manager/conversations/exploration-mode': (body) => instances.admit(() => device.conversationExplorationMode(
+      onlyFields(body, ['agentId', 'conversationKey', 'connectionId', 'mode', 'requestId']))),
+    '/manager/conversations/review': (body) => instances.admit(() => device.conversationReview(onlyFields(body, ['agentId', 'conversationKey', 'enabled']))),
     '/manager/instances/open': (body) => {
       const fields = onlyFields(body, ['instanceId', 'page'])
       return instances.open(String(fields.instanceId ?? ''), String(fields.page ?? '/'))

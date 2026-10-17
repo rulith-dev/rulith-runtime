@@ -2,6 +2,21 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.17.1 - 2026-10-17
+
+- Local manager: `/manager/conversations/state`, `/manager/conversations/exploration-mode` and
+  `/manager/conversations/review` let the signed-in owner's client (Deep Rulith) read and switch one
+  conversation's exploration mode and post-call review switch through this computer's device grant
+  (PSC 0.2.16 ③, ACC-CONV-05/06). The manager forwards the exact fields over the device bearer to the
+  Gateway's `/local-devices/conversations/*` routes; the Agent must be inside the grant.
+- General kit: the tree digest no longer trusts its size/mtime cache for a file modified within the last two
+  seconds (git's racy-timestamp rule). Two equal-size writes inside one clock tick (about 15 ms on Windows)
+  shared size and mtime, so the second write read as unchanged and a step was lost; `apply_patch` replays
+  showed it as `from_gen -1`.
+- `npm test` runs at most three test files at once. With one file per core on a 32-core machine the
+  process-timing tests (Worker registration windows, lease renewal, stale-lock pid checks) failed under
+  load while passing alone, so `release:verify` could not be trusted there.
+
 ## 0.17.0 - 2026-10-16
 
 - Acceptance specs may write `files` as the `eng.check_spec` array of `{path, sha256}` objects as well

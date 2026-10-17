@@ -181,7 +181,13 @@ export function tree(ctx) {
       else if (entry.isFile()) {
         const stat = fs.statSync(file);
         const known = cache[name];
-        const digest = known && known[0] === stat.size && known[1] === stat.mtimeMs ? known[2] : fileDigest(file);
+        // 刚改过的文件不信缓存（与 git 的 racy 处理相同）：文件时间按系统时钟节拍（Windows 约 15 ms）更新，同一节拍内两次
+        // 等长写入的 size 与 mtime 相同，缓存会把第二次写入当成没变，一步就被看漏（2026-10-17 在 apply_patch 回放测试里实测）。
+        // A file modified within the last two seconds is always rehashed (git's racy-timestamp rule): file times move
+        // at the clock tick (about 15 ms on Windows), so two equal-size writes inside one tick share size and mtime
+        // and the cache would call the second one unchanged, losing a step (seen in the apply_patch replay test).
+        const racy = Date.now() - stat.mtimeMs < 2000;
+        const digest = !racy && known && known[0] === stat.size && known[1] === stat.mtimeMs ? known[2] : fileDigest(file);
         next[name] = [stat.size, stat.mtimeMs, digest];
         files[name] = `${stat.mode & 0o777}:${digest}`;
       }

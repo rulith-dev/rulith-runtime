@@ -242,6 +242,11 @@ export function createDeviceClient({ root } = {}) {
     }
     throw error
   }
+  const conversationCall = (path, body) => {
+    const current = linked()
+    if (!current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+    return call(current.origin, path, { bearer: current.token, body }).catch(operationRefusal)
+  }
   const linked = () => {
     const current = load()
     if (current.state !== 'linked' || !text(current.token)) {
@@ -507,6 +512,14 @@ export function createDeviceClient({ root } = {}) {
       if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
       return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
     },
+    /**
+     * ACC-CONV-05/06 (PSC 0.2.16 ③): the signed-in owner's client reads and switches ONE conversation's exploration mode
+     * or post-call review through this device grant. The conversation names itself by its key (the Gateway keeps only its
+     * digest); the Agent must be one of this grant's. Nothing else of the manager's state is involved.
+     */
+    conversationState: (body = {}) => conversationCall('/local-devices/conversations/state', body),
+    conversationExplorationMode: (body = {}) => conversationCall('/local-devices/conversations/exploration-mode', body),
+    conversationReview: (body = {}) => conversationCall('/local-devices/conversations/review', body),
     /** Register one durable Host selection; the Agent and browser never receive this bearer. */
     registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, custodyBindings, proofDigest, selectionDigest, targetCaseId }) => {
       const current = linked()

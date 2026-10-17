@@ -1572,6 +1572,7 @@ test('the manager answers exactly its documented control-plane operations', asyn
     const routes = [...source.matchAll(/'(\/manager\/[a-z/-]+)':/g)].map((match) => match[1]).sort()
     assert.deepEqual(routes, [
       '/manager/authoring/install-checker', '/manager/authoring/review', '/manager/authoring/save',
+      '/manager/conversations/exploration-mode', '/manager/conversations/review', '/manager/conversations/state',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
       '/manager/device/start', '/manager/health', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
@@ -1588,6 +1589,49 @@ test('the manager answers exactly its documented control-plane operations', asyn
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}',
     })
     assert.equal(unknown.status, 404)
+  })
+})
+
+test('the signed-in client switches one conversation\'s exploration mode and review through the device grant', async t => {
+  // ACC-CONV-05/06 (PSC 0.2.16 ③): the owner's own Deep Rulith client is the one Local path that changes a Cloud setting,
+  // and only for a conversation of an Agent inside this device grant. The manager forwards the exact fields over the device
+  // bearer; a browser Origin never reaches those routes; an Agent outside the grant and an unexpected field are refused
+  // before anything is sent.
+  await withManager(t, async ({ manager, gateway }) => {
+    const post = async (path, body) => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}${path}`, { method: 'POST',
+        headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: response.status, body: await response.json() }
+    }
+    const key = 'dsh:session-1'
+    const before = await post('/manager/conversations/state', { agentId: 'agent-alpha', conversationKey: key })
+    assert.equal(before.status, 200, JSON.stringify(before.body))
+    assert.equal(before.body.found, true)
+    assert.equal(before.body.conversation.explorationModes['conn-1'], 'strict')
+    assert.equal(before.body.conversation.postCallReview, true)
+    const widened = await post('/manager/conversations/exploration-mode',
+      { agentId: 'agent-alpha', conversationKey: key, connectionId: 'conn-1', mode: 'derived', requestId: 'req-1' })
+    assert.equal(widened.status, 200, JSON.stringify(widened.body))
+    assert.equal(widened.body.state, 'complete')
+    assert.equal(widened.body.result.accepted, true)
+    const after = await post('/manager/conversations/state', { agentId: 'agent-alpha', conversationKey: key })
+    assert.equal(after.body.conversation.explorationModes['conn-1'], 'derived')
+    // Derived and review-off exclude each other; the Gateway's refusal reaches the client with its code.
+    const refused = await post('/manager/conversations/review', { agentId: 'agent-alpha', conversationKey: key, enabled: false })
+    assert.equal(refused.status, 400)
+    assert.match(refused.body.teaching, /out of derived mode/)
+    await post('/manager/conversations/exploration-mode',
+      { agentId: 'agent-alpha', conversationKey: key, connectionId: 'conn-1', mode: 'strict', requestId: 'req-2' })
+    const off = await post('/manager/conversations/review', { agentId: 'agent-alpha', conversationKey: key, enabled: false })
+    assert.equal(off.status, 200, JSON.stringify(off.body))
+    assert.equal(off.body.postCallReview, false)
+    // Outside the grant, or with a field the route does not take: refused before any request leaves this computer.
+    const sent = gateway.requests.filter(row => row.path.startsWith('/local-devices/conversations/')).length
+    assert.equal((await post('/manager/conversations/state', { agentId: 'agent-zeta', conversationKey: key })).status, 400)
+    assert.equal((await post('/manager/conversations/review', { agentId: 'agent-alpha', conversationKey: key, enabled: false, extra: 1 })).status, 400)
+    const routes = gateway.requests.filter(row => row.path.startsWith('/local-devices/conversations/'))
+    assert.equal(routes.length, sent)
+    assert.ok(routes.every(row => row.origin === undefined), 'device routes never carry a browser Origin')
   })
 })
 
