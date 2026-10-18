@@ -302,6 +302,30 @@ test('Windows: a counter and a running job kept under the caller\'s former spell
     assert.equal(polled.out.rows[0].status, 'running');
   });
 
+test('Windows: a pre-upgrade state file left beside the root record never outranks it; it is retired once migrated',
+  { skip: process.platform !== 'win32' && 'the root spelling differs from its identity spelling on Windows only' }, async t => {
+    const p = project(t);
+    assert.ok(p.ctx.spelledStateFile, 'the fixture root is already in its identity spelling');
+    // Upgrade: the former spelling's counter (generation 3) is migrated, then retired.
+    save(p.ctx.spelledStateFile, { gen: 3, digest: tree(p.ctx).digest });
+    const key = (await p.call('acceptance_v2')).facts[0].args.key;
+    const pass = await p.call('test_v3', { check: 'unit' });
+    assert.equal(pass.facts[0].args.gen, 3);
+    assert.equal(fs.existsSync(p.ctx.spelledStateFile), false, 'the migrated state under the former spelling was kept');
+    // A leftover with a smaller generation reappears (an older copy, a restore) and the current state is lost.
+    save(p.ctx.spelledStateFile, { gen: 1, digest: tree(p.ctx).digest });
+    fs.rmSync(p.ctx.stateFile);
+    const write = await p.call('write_file_v2', { path: 'n.txt', text: 'n', expect_digest: '' });
+    assert.deepEqual(write.facts.filter(f => f.predicate === 'eng.tree_step').map(f => [f.args.from_gen, f.args.to_gen]), [[3, 4]]);
+    assert.deepEqual([...evaluate([...pass.facts, ...write.facts], [{ predicate: 'acceptance', args: { node: 'leaf', test: key } }]).met], [],
+      'the pass outlived a write because a leftover counter replaced the lost one');
+    // A leftover with a larger generation wins the other way: the counter resumes above both.
+    save(p.ctx.spelledStateFile, { gen: 9, digest: tree(p.ctx).digest });
+    fs.rmSync(p.ctx.stateFile);
+    const again = await p.call('write_file_v2', { path: 'm.txt', text: 'm', expect_digest: '' });
+    assert.deepEqual(again.facts.filter(f => f.predicate === 'eng.tree_step').map(f => [f.args.from_gen, f.args.to_gen]), [[9, 10]]);
+  });
+
 test('nested project roots under one kit home are refused, either way round; a refused root leaves no record behind', async t => {
   const dir = scratchDir(t, 'nested-');
   const outer = project(t, { dir, name: 'wrap/outer' });
@@ -347,6 +371,7 @@ test('a spec command that finds a program inside the project needs that program 
   const p = project(t);
   const exe = process.platform === 'win32' ? '.exe' : '';
   p.write(`bin/probe${exe}`, 'not a program\n');
+  if (!exe) fs.chmodSync(path.join(p.root, 'bin/probe'), 0o755); // execvp only runs executable files
   const digest = sha('not a program\n');
   // Named with a path: resolved against the spec cwd.
   p.put({ command: [`bin/probe${exe}`, 'test.mjs'], cwd: '.', files: passingSpec.files });
@@ -366,6 +391,49 @@ test('a spec command that finds a program inside the project needs that program 
   // A program outside the project (node itself) needs nothing more.
   p.put();
   assert.equal((await p.call('test_v3', { check: 'unit' })).out.rows[0].exit_code, 0);
+});
+
+// PATH for one call: the adapter resolves and runs with this process's environment.
+async function withPath(entries, action) {
+  const saved = process.env.PATH;
+  process.env.PATH = [...entries, saved ?? ''].join(path.delimiter);
+  try { return await action(); } finally { process.env.PATH = saved; }
+}
+
+test('Windows: without a shell a bare name is found as libuv finds it (.com, .exe; never .cmd), so the program that runs is the one checked',
+  { skip: process.platform !== 'win32' && 'PATHEXT and .com/.exe lookup are Windows only' }, async t => {
+    const dir = scratchDir(t, 'lookup-');
+    const p = project(t, { dir, name: 'proj' });
+    // Earlier on PATH, outside the project: probe.cmd, which cmd.exe would run but libuv never does. Later, inside
+    // the project: probe.exe, which libuv runs.
+    const outside = path.join(dir, 'tools'); fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'probe.cmd'), '@exit 0\r\n');
+    p.write('bin/probe.exe', 'not a program\n');
+    p.write('bin/lone.cmd', '@exit 0\r\n');
+    p.put({ command: ['probe', 'test.mjs'], cwd: '.', files: passingSpec.files });
+    await withPath([outside, path.join(p.root, 'bin')], async () => {
+      assert.equal(resolveProgram('probe', p.root), fs.realpathSync(path.join(p.root, 'bin/probe.exe')));
+      assert.equal(resolveProgram('lone', p.root), undefined, 'a .cmd file found by PATHEXT, which libuv would not start');
+      await assert.rejects(p.call('test_v3', { check: 'unit' }), { message: 'acceptance spec invalid: command program must be listed in files' });
+    });
+  });
+
+test('with shell: true every word of the line is checked against every program it could start', async t => {
+  const p = project(t);
+  fs.writeFileSync(path.join(p.home, 'settings.json'), JSON.stringify({ allowedPaths: [path.dirname(process.execPath)], shell: true }));
+  const windows = process.platform === 'win32';
+  const name = windows ? 'bin/probe.cmd' : 'bin/probe';
+  p.write(name, windows ? '@exit 0\r\n' : '#!/bin/sh\nexit 0\n');
+  if (!windows) fs.chmodSync(path.join(p.root, name), 0o755);
+  // The second program of the line, by bare name on a PATH entry inside the project.
+  const line = `"${process.execPath}" test.mjs && probe`;
+  p.put({ command: line, shell: true, cwd: '.', files: passingSpec.files });
+  await withPath([path.join(p.root, 'bin')], async () => {
+    await assert.rejects(p.call('test_v3', { check: 'unit' }), { message: 'acceptance spec invalid: command program must be listed in files' });
+    // Listed, its bytes are frozen: the check runs.
+    p.put({ command: line, shell: true, cwd: '.', files: { ...passingSpec.files, [name]: sha(fs.readFileSync(path.join(p.root, name))) } });
+    assert.equal((await p.call('test_v3', { check: 'unit' })).out.rows[0].exit_code, 0);
+  });
 });
 
 test('Windows: a program in the check\'s working directory never stands in for one on PATH',

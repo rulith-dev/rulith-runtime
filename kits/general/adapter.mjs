@@ -8,7 +8,7 @@ import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
 import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, checkKey, FIELD_ERRORS, isFieldError } from './acceptance-specs.mjs';
-import { settings, context, keptProject, projectIdentity, keepRoot, resolveProgram, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
+import { settings, context, keptProject, projectIdentity, keepRoot, programCandidates, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
 // 项目版工具（官方编程能力，编程包第三版）：行为与括号里的原工具相同，只是回执带上项目——每行带 project（所以
@@ -92,14 +92,20 @@ export async function perform(name, args = {}, env = process.env, dependencies =
       acceptance.command = acceptanceCommand(ctx, acceptance.spec);
     }
     const before = observing && tool !== 'search' ? null : tree(ctx);
-    // 状态文件丢了而根登记还记得上一个代数 H：从 H 接着数，摘要未知，所以这次一定记一步 H -> H+1，并像"通过之后的
-    // 第一步"一样重放，H 时的通过因此被撤回，而不是从 0 重数让它一直有效。
-    // A lost state file whose root record still knows the last generation H resumes at H with an unknown digest: this
-    // call records the step H -> H+1 and replays it like the first step after a pass, so a pass at H is withdrawn
-    // instead of outliving a counter restarted at 0.
+    // 状态文件丢了而根登记还记得上一个代数 H：从 H（与原写法遗留状态里更大的那个代数）接着数，摘要未知，所以这次
+    // 一定记一步并像"通过之后的第一步"一样重放，那时的通过因此被撤回，而不是从更小的代数（0，或升级前的遗留文件）
+    // 重数让它一直有效。只有从未有过身份写法状态的根（根登记里没有代数）才从原写法的状态接着数：那是升级迁移。
+    // A lost state file whose root record still knows the last generation H resumes at the higher of H and any state
+    // left under the caller's former spelling, with an unknown digest: this call records a step and replays it like the
+    // first step after a pass, so a pass made there is withdrawn instead of outliving a smaller counter (0, or a
+    // pre-upgrade leftover). Only a root that never had state under its identity spelling (no generation in its record)
+    // continues the former spelling's state as it is: that is the upgrade migration.
     const record = readJson(ctx.rootFile, {});
-    const state = prior ?? (Number.isSafeInteger(record.gen) ? { gen: record.gen, digest: '', test_gen: record.gen }
-      : { gen: 0, digest: before?.digest ?? '' });
+    const current = readJson(ctx.stateFile, null);
+    const leftover = current || !ctx.spelledStateFile ? null : readJson(ctx.spelledStateFile, null);
+    const resumed = Math.max(record.gen ?? -1, Number.isSafeInteger(leftover?.gen) ? leftover.gen : -1);
+    const state = current ?? (Number.isSafeInteger(record.gen) ? { gen: resumed, digest: '', test_gen: resumed }
+      : leftover ?? { gen: 0, digest: before?.digest ?? '' });
     let rows = []; let text = {}; let more = false; let unreadable = 0;
     const file = () => fenced(ctx.root, args.path);
     switch (tool) {
@@ -360,6 +366,9 @@ export async function perform(name, args = {}, env = process.env, dependencies =
     const saved = { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}),
       ...(project ?? kept ? { project: project ?? kept } : {}) };
     save(ctx.stateFile, saved);
+    // Migrated: the former spelling's state is retired. Best effort: should it stay, the root record's generation
+    // still outranks it (above), so a leftover can never be taken for the current counter.
+    if (ctx.spelledStateFile) try { fs.unlinkSync(ctx.spelledStateFile); } catch {}
     keepRoot(ctx, saved);
     const reportEdges = edges;
     const projected = project === undefined ? {} : { project };
@@ -399,14 +408,18 @@ function acceptanceCommand(ctx, spec) {
   if (spec.shell && !settings(ctx.home).shell) refuse('acceptance shell refused');
   const command = classify(ctx, spec.command, spec.cwd);
   // 规格冻结的是命令字：命令字找到的程序若在项目里，它的字节必须在 files 里（进摘要），否则改了它检查照样"通过"。
-  // 找法与运行时相同、但不看当前目录（运行时也不看，见 lib.mjs execute）；PATH 指进项目的也算。
+  // 不经 shell 只看第一个词，按运行时的找法（lib.mjs programCandidates）；经 shell 则行里每个词（引号内算一个词，
+  // 按空白与 & | ; < > ( ) 切开）所有可能启动的文件都查。PATH 指进项目的也算。
   // A spec freezes command words: a program they find inside the project must be listed in files (its bytes in the
-  // digest), or rewriting it would leave the check passing. It is found as the run finds it, without the current
-  // directory (which the run does not search either; see lib.mjs execute); a PATH entry into the project counts too.
-  const program = resolveProgram(command.command[0], command.cwd);
-  if (program !== undefined && inside(ctx.root, program)) {
+  // digest), or rewriting it would leave the check passing. Without a shell the first word is resolved as the run
+  // resolves it (lib.mjs programCandidates); with a shell every word of the line (a quoted stretch is one word; split on
+  // whitespace and & | ; < > ( )) is checked against every file it could start. A PATH entry into the project counts too.
+  const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const words = spec.shell ? (spec.command.match(/"[^"]*"|[^\s&|;<>()"]+/g) ?? []).map(word => word.replace(/^"|"$/g, '')).filter(Boolean)
+    : [command.command[0]];
+  for (const word of words) for (const program of programCandidates(word, command.cwd, { shell: spec.shell === true })) {
+    if (!inside(ctx.root, program)) continue;
     const name = path.relative(ctx.root, program).split(path.sep).join('/');
-    const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
     if (!Object.keys(spec.files).some(file => same(file, name))) refuse('acceptance spec invalid: command program must be listed in files');
   }
   return spec.shell ? { command: command.command, cwd: command.cwd, shell: true, line: spec.command }

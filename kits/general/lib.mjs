@@ -614,22 +614,45 @@ export const childEnv = (env = process.env) => ({
     && !(process.platform === 'win32' && name.toLowerCase() === WINDOWS_NO_CWD_LOOKUP.toLowerCase()))),
   ...(process.platform === 'win32' ? { [WINDOWS_NO_CWD_LOOKUP]: '1' } : {}),
 });
-// The file a command word starts, as the system would find it without the current directory: a word with a path is
-// taken relative to cwd; a bare name is looked up on PATH (with PATHEXT on Windows), a relative PATH entry taken
-// relative to cwd as the system takes it. Undefined when nothing is found.
-export function resolveProgram(word, cwd, env = childEnv()) {
+// 命令字会启动哪个文件，与真正运行时的查找一致（都不看当前目录，见 execute）。
+// 不经 shell：Node 交给 libuv。Windows 上 libuv 只在名字自带扩展名时试原名，然后试 .com、.exe——从不试 PATHEXT 里的
+// .cmd、.bat；其他系统按 execvp：带 / 的相对 cwd，裸名查 PATH（空项是当前目录，缺 PATH 用 /usr/bin:/bin），只认可执行文件。
+// 带路径的名字相对 cwd；PATH 里的相对项也相对 cwd。返回第一个命中，就是会运行的那个。
+// 经 shell（规格 shell: true）：shell 自己找程序（cmd.exe 用 PATHEXT），一行还能启动好几个程序。这里不模仿 shell 的
+// 解析，而是返回这个词所有可能被启动的文件（Windows 上原名加每个 PATHEXT 扩展名，所有目录），调用方对行里每个词都查：
+// 多查只会多拒，不会漏。变量与替换展开出来的名字看不见（README：shell 下分类器只是参考）。
+// The file a command word starts, found as the run finds it (neither looks in the current directory; see execute).
+// Without a shell Node hands the word to libuv. On Windows libuv tries the name itself only when it has an extension,
+// then name.com and name.exe, never PATHEXT's .cmd or .bat; elsewhere it follows execvp: a word with / is relative to
+// cwd, a bare name is looked up on PATH (an empty entry is the current directory, no PATH means /usr/bin:/bin), and
+// only executable files count. A relative PATH entry is taken relative to cwd. The first hit is what runs.
+// With a shell (a spec with shell: true) the shell finds programs itself (cmd.exe with PATHEXT) and one line can start
+// several. Rather than imitate its parsing, `shell` returns every file the word could start (on Windows the name and
+// the name with each PATHEXT extension, in every directory), and the caller checks every word of the line: checking
+// more can only refuse more, never miss one. Names produced by variables or substitutions are not seen (the README:
+// with a shell the classifier is advisory).
+export function programCandidates(word, cwd, { env = childEnv(), shell = false } = {}) {
   const windows = process.platform === 'win32';
-  const value = name => Object.entries(env).find(([key]) => windows ? key.toLowerCase() === name.toLowerCase() : key === name)?.[1] ?? '';
-  const extensions = windows ? ['', ...value('PATHEXT').split(';').filter(Boolean).map(ext => ext.toLowerCase())] : [''];
-  const named = /[\\/]/.test(word) || path.isAbsolute(word);
-  const directories = named ? [cwd] : value('PATH').split(path.delimiter).map(dir => dir.replace(/^"(.*)"$/, '$1'))
-    .filter(Boolean).map(dir => path.resolve(cwd, dir));
+  const value = name => Object.entries(env).find(([key]) => windows ? key.toLowerCase() === name.toLowerCase() : key === name)?.[1];
+  const base = word.split(windows ? /[\\/:]/ : '/').at(-1), dot = base.lastIndexOf('.');
+  const extensions = !windows ? [''] : shell ? ['', ...(value('PATHEXT') ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+    : [...(dot >= 0 && dot < base.length - 1 ? [''] : []), '.com', '.exe'];
+  const named = windows ? /[\\/:]/.test(word) : word.includes('/');
+  const entries = (value('PATH') ?? (windows ? '' : '/usr/bin:/bin')).split(path.delimiter).map(dir => dir.replace(/^"(.*)"$/, '$1'));
+  const directories = named ? [cwd] : entries.flatMap(dir => dir ? [path.resolve(cwd, dir)] : windows ? [] : [cwd]);
+  const found = [];
   for (const directory of directories) for (const extension of extensions) {
     const candidate = path.resolve(directory, word + extension);
-    try { if (fs.statSync(candidate).isFile()) return fs.realpathSync(candidate); } catch {}
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+      if (!windows) fs.accessSync(candidate, fs.constants.X_OK);
+      found.push(fs.realpathSync(candidate));
+      if (!shell) return found;
+    } catch {}
   }
-  return undefined;
+  return found;
 }
+export const resolveProgram = (word, cwd, env = childEnv()) => programCandidates(word, cwd, { env })[0];
 export async function execute(command, cwd, { deadlineMs = 35000, onStart, shell = false, line } = {}) {
   const stdout = capture(); const stderr = capture(); const start = Date.now();
   let timedOut = false;

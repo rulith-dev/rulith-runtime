@@ -192,7 +192,7 @@
       "sha256": "7ff5729d7f01fa3832e5b3328ae22085ab6d696c9b974f61eb2354b655841703"
     },
     "kits/general/README.md": {
-      "sha256": "1983bda7ae5c6f1ef46a30d9a141af8fb19054494e7e271eb31f1856dfafd9ef"
+      "sha256": "5a9c0ca97cd74e5fdbd5e9d5bb45aeba523acf70139f23b07141d12b0255ba72"
     },
     "kits/general/acceptance.mjs": {
       "sha256": "889e8e8a2df0d6247711370aec8563054513dd8c901833399e2b3de86fc52414"
@@ -204,7 +204,7 @@
       "sha256": "7ec9770e8f1755f0897bd60a6562821eeeac495a3930c4c4119fa36535d9c39a"
     },
     "kits/general/adapter.mjs": {
-      "sha256": "d74c3ceaff672d9f4fcf3e0723b78f313aad0a6326510a27fb705e59e992fa17"
+      "sha256": "3c76ccce1cce8702c3eae0bb6d166437fe1394ac239e29b96a511d3d5480090f"
     },
     "kits/general/apply-patch.mjs": {
       "sha256": "b53c0863f5655a916050ffabb1354cc69f9eaca9ec5b265679f1d25b10bdb244"
@@ -252,7 +252,7 @@
       "sha256": "50a296390d1ab07485068424d8b1fb592e008edb580815d3081c482db716dca7"
     },
     "kits/general/lib.mjs": {
-      "sha256": "6369ee6eb1bfadc4c8a291d8745ef5081933063c5e57afd3c10fd67ec86f2ab9"
+      "sha256": "9afc3e03c6422fd3a560aa214507b8012d92b9312a47efc77cc9f88366197c20"
     },
     "kits/general/list.mjs": {
       "sha256": "20c483146b77a998d06cc25ac96d3d08e41d1d59943cd350989b67cc7a3960eb"
@@ -264,7 +264,7 @@
       "sha256": "b3d04cba785fedd960ec80983be6125b928b840f4590eb51812b83ab50370101"
     },
     "kits/general/pack/official-recipe.json": {
-      "sha256": "173e16dc54a2db2452115946a329810017604a35933e989574d408ab01064384"
+      "sha256": "538a2607a2752f823d19b2af4a5ee8419b97469f9ac6f3af22c84389c5499cc1"
     },
     "kits/general/pack/program.json": {
       "sha256": "c2f89403a4cca7444613ef74f2925c4caf6e47d0a930985f2fdb73bdbbbb8b36"
@@ -282,7 +282,7 @@
       "sha256": "8ea21cb841a70af479987de755ab673488bff4549581de092f7e376e54d16ff6"
     },
     "kits/general/pack/sources-v4.json": {
-      "sha256": "e003ee75b2db14416727ac86e65064dee5b92a6a08cbbd5fd43a37ac0e0ea75e"
+      "sha256": "eec7854b47c2cfe4a75f298781b7c5d3c3a4670082ad0b69d5bc8a4f52e582e3"
     },
     "kits/general/patch_file.mjs": {
       "sha256": "09de5162816b5698e1774af8aba8286552b02a26d22e15c1528de1975143ad22"

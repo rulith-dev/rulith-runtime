@@ -142,9 +142,15 @@ can. In particular:
 - Cloning a kit home (copying `kit-id`, the state files and the root records to another machine or
   directory) clones its project identities: passes made under the copy count for the original's
   signed leaves. Give every Worker its own kit home.
-- Removing both a project's state file and its root record (`root-<key>.json`), or the whole kit home,
-  loses its generation history: a pass made before that is never withdrawn by later receipts. Sign
-  such leaves again.
+- Never delete a project's state file (`tree-<key>.json`) together with its root record
+  (`root-<key>.json`), nor the whole kit home: either one alone is recovered from the other, but both
+  together lose the generation history, and a pass made before that is never withdrawn by later
+  receipts. Sign such leaves again.
+- Moving or renaming a project directory (other than a change of case) makes it a new root with a new
+  identity and a new counter; the old identity's passes are never withdrawn. Sign the leaves again
+  after a move.
+- Nested roots are detected within one kit home only. Two kit homes (two Workers, two devices) bound
+  to overlapping directories do not see each other's records.
 - On Windows the identity spelling of a root is lower case. Two directories that differ only in case
   (possible only where per-directory case sensitivity is turned on) are one project to the kit.
 - A command's own writes under an owner exclusion or the root `.git` are not seen by the tree digest.
@@ -427,10 +433,17 @@ with `acceptance shell refused`. With `shell: true` the command is one string th
 exactly as written, and `eng.check_spec` shows exactly that string. Without `shell: true` the
 command is an argv array and never goes through a shell.
 
-The spec freezes command words, so the program they start is checked before the run: the first word
-is resolved as the run resolves it (a word with a path against `cwd`; a bare name on PATH, with PATHEXT
-on Windows, a relative PATH entry against `cwd`), and a program found inside the project must be listed
-in `files` (`acceptance spec invalid: command program must be listed in files`). On Windows every
+The spec freezes command words, so the programs they start are checked before the run, and a program
+found inside the project must be listed in `files` (`acceptance spec invalid: command program must be
+listed in files`). Without `shell` the first word is resolved exactly as the run resolves it: a word
+with a path against `cwd`, a bare name on PATH (a relative entry against `cwd`); on Windows, as libuv
+does, the name itself only when it has an extension, then `.com` and `.exe` (never `.cmd` or `.bat`);
+elsewhere the first executable file, as execvp finds it. With `shell: true` the shell finds programs
+itself and one line can start several, so every word of the line (a quoted stretch is one word; the
+line is split at whitespace and `& | ; < > ( )`) is checked against every file it could start, on
+Windows with each PATHEXT extension: any word with a path that names a project file (a program or an
+argument), and any bare word found on a PATH entry inside the project, must be listed. Names that only variables or substitutions produce are not seen (with a shell the classifier is
+advisory). On Windows every
 command, check, job and measurement runs with `NoDefaultCurrentDirectoryInExePath=1` (set for the adapter
 and handed to the child), so a `node.exe` in the working directory never stands in for the one on PATH.
 
