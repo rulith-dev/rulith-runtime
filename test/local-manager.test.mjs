@@ -1579,12 +1579,15 @@ test('the manager answers exactly its documented control-plane operations', asyn
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll',
       '/manager/instances/tools', '/manager/instances/worker-setting', '/manager/model/default',
+      '/manager/projects/open', '/manager/projects/state',
       '/manager/tools/mcp-apply', '/manager/tools/mcp-detail', '/manager/tools/mcp-downloads', '/manager/tools/mcp-install',
       '/manager/tools/mcp-prepare', '/manager/tools/mcp-probe', '/manager/tools/mcp-remove', '/manager/tools/mcp-search',
       '/manager/tools/remove', '/manager/tools/save', '/manager/tools/state',
     ], 'a new manager operation is a new way to act on this computer and must be deliberate')
+    // PSC 0.2.24: opening a project (/manager/projects/*) is the one device operation that grants tool and Source
+    // authorization, and it is forwarded to the Gateway, which decides; nothing else here names a grant.
     assert.equal(routes.some((route) => /resource|source|grant|authorize/.test(route)), false,
-      'the library configures local tools; only Console grants permission')
+      'the library configures local tools; only Console, or the owner opening a project, grants permission')
 
     const unknown = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/delete?k=${KEY}`, {
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}',
@@ -1643,6 +1646,88 @@ test('the signed-in client switches one conversation\'s exploration mode and rev
     assert.equal(ended.body.ended, true)
     assert.deepEqual(ended.body.closedGoals, ['case-1'])
     assert.equal((await post('/manager/conversations/end', { agentId: 'agent-zeta', conversationKey: key, requestId: 'end-2' })).status, 400)
+  })
+})
+
+test('the signed-in client opens a folder as a project through the device grant: confirmation content, progress, terminal states, refusals', async t => {
+  // PSC 0.2.24 (D-1018b batch 3): the owner's client reads what opening a folder would grant, then opens it with the
+  // version of that content the owner confirmed. The manager forwards exactly the documented fields over the device
+  // bearer; in progress is an answer to show (retry), a terminal state of this opening is an answer to show (confirm
+  // again), and a refusal reaches the client with its code. Nothing the client cannot say ever leaves this computer.
+  await withManager(t, async ({ manager, gateway, deviceId }) => {
+    const created = await addInstance(manager, 'Project computer', { agentId: 'agent-alpha' })
+    const connectionId = manager.instances.overview().find(row => row.id === created.id).connectionId
+    assert.ok(connectionId, 'pairing gave this computer a Connection')
+    const post = async (path, body) => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}${path}`, { method: 'POST',
+        headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: response.status, body: await response.json() }
+    }
+    const account = manager.device.status().account.id
+    const target = { expectedAccountId: account, agentId: 'agent-alpha', connectionId, directory: '/home/owner/game', platform: 'posix' }
+    const shown = await post('/manager/projects/state', target)
+    assert.equal(shown.status, 200, JSON.stringify(shown.body))
+    assert.equal(shown.body.state, 'not_open')
+    assert.equal(shown.body.agentName, 'Alpha')
+    assert.equal(shown.body.directory, '/home/owner/game')
+    assert.equal(shown.body.computer.label, 'Test computer')
+    assert.deepEqual(shown.body.tools.map(tool => tool.id), ['eng.read', 'eng.write', 'eng.run'])
+    assert.equal(shown.body.mode.requested, 'non_strict')
+    assert.match(shown.body.authorizationVersion, /^sha256:[0-9a-f]{64}$/)
+
+    // In progress: the open answers 202 with recovery "retry"; reading the state walks the stages to ready.
+    gateway.projectInProgress(3)
+    const opening = await post('/manager/projects/open', { ...target, requestId: 'open-1', authorizationVersion: shown.body.authorizationVersion })
+    assert.equal(opening.status, 200, JSON.stringify(opening.body))
+    assert.deepEqual([opening.body.state, opening.body.stage, opening.body.recovery], ['pending', 'configuration', 'retry'])
+    assert.equal(opening.body.requestId, 'open-1')
+    const stages = []
+    for (let read = 0; read < 3; read++) {
+      const step = await post('/manager/projects/state', target)
+      assert.equal(step.status, 200, JSON.stringify(step.body))
+      stages.push(step.body.state === 'ready' ? 'ready' : step.body.stage)
+    }
+    assert.deepEqual(stages, ['program', 'mode', 'ready'])
+    const again = await post('/manager/projects/open', { ...target, requestId: 'open-1', authorizationVersion: shown.body.authorizationVersion })
+    assert.deepEqual([again.body.state, again.body.alreadyOpen, again.body.changed], ['ready', true, false])
+
+    // A terminal state of this opening (409 at the Gateway) is the full state, not a refusal; retrying the same request
+    // does not relax anything, and only a new confirmation (a new request id) starts a new opening.
+    gateway.projectInProgress(0)
+    gateway.projectTerminalNext('mode_changed')
+    const changed = await post('/manager/projects/state', target)
+    assert.equal(changed.status, 200, JSON.stringify(changed.body))
+    assert.deepEqual([changed.body.state, changed.body.recovery], ['mode_changed', 'confirm_again'])
+    assert.equal(changed.body.errorCode, undefined)
+    const retried = await post('/manager/projects/open', { ...target, requestId: 'open-1', authorizationVersion: shown.body.authorizationVersion })
+    assert.deepEqual([retried.body.state, retried.body.recovery], ['mode_changed', 'confirm_again'])
+    const confirmed = await post('/manager/projects/open', { ...target, requestId: 'open-2', authorizationVersion: changed.body.authorizationVersion })
+    assert.equal(confirmed.body.state, 'ready', JSON.stringify(confirmed.body))
+
+    // A confirmation of other content is refused with its code; the device stays signed in.
+    const other = { ...target, directory: '/home/owner/other' }
+    const stale = await post('/manager/projects/open', { ...other, requestId: 'open-3', authorizationVersion: shown.body.authorizationVersion })
+    assert.equal(stale.status, 400)
+    assert.equal(stale.body.errorCode, 'authorization_changed')
+    // A Connection this computer did not pair: the Gateway refuses it, and that refusal does not sign the device out.
+    const foreign = await post('/manager/projects/state', { ...target, connectionId: 'conn-elsewhere' })
+    assert.equal(foreign.status, 400)
+    assert.equal(foreign.body.errorCode, 'connection_not_of_this_device')
+    assert.equal(manager.device.status().state, 'linked')
+
+    // Refused before anything is sent: a field the client may not say, an Agent outside the grant, another account.
+    const sent = gateway.requests.filter(row => row.path.startsWith('/local-devices/projects/')).length
+    for (const body of [{ ...target, tools: ['eng.run'] }, { ...target, mode: 'non_strict' },
+      { ...target, agentId: 'agent-zeta' }, { ...target, expectedAccountId: 'acct-other' }]) {
+      const refused = await post('/manager/projects/state', body)
+      assert.equal(refused.status, 400, JSON.stringify(body))
+    }
+    const projectRequests = gateway.requests.filter(row => row.path.startsWith('/local-devices/projects/'))
+    assert.equal(projectRequests.length, sent)
+    assert.ok(projectRequests.every(row => row.origin === undefined), 'device routes never carry a browser Origin')
+    const allowed = ['requestId', 'expectedAccountId', 'agentId', 'connectionId', 'directory', 'platform', 'authorizationVersion']
+    assert.ok(projectRequests.every(row => Object.keys(row.body).every(field => allowed.includes(field))))
+    assert.ok(gateway.devices.get(deviceId), 'the grant that opened the project is this computer\'s')
   })
 })
 

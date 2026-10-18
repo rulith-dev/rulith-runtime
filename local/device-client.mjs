@@ -98,7 +98,7 @@ export class DeviceRecordUnreadableError extends Error {
  * query string, no redirects — a 30x to another origin would re-send a Bearer credential
  * to a host the operator never configured — and a hard cap on how much will be read.
  */
-async function call(origin, path, { body, bearer, method } = {}) {
+async function call(origin, path, { body, bearer, method, terminalState = false } = {}) {
   const response = await fetch(setupOrigin(origin) + path, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
     redirect: 'error',
@@ -122,6 +122,12 @@ async function call(origin, path, { body, bearer, method } = {}) {
   }
   let value
   try { value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { value = {} }
+  // Opening a project (PSC 0.2.24) answers 409 with its full state when *this opening* reached a terminal state
+  // (`recovery: "confirm_again"` or `"console"`): that is an outcome to show the owner, not a refusal, and it carries
+  // no `errorCode`. A refusal of the request itself always names one and still throws below.
+  if (!response.ok && terminalState && response.status === 409 && value && typeof value === 'object'
+    && !Array.isArray(value) && value.errorCode === undefined && typeof value.state === 'string'
+    && typeof value.recovery === 'string') return value
   if (!response.ok) {
     let teaching = text(value.teaching) || `The account service refused this step (HTTP ${response.status}).`
     // Even a refusal from the configured service must not reflect its bearer into a page.
@@ -246,6 +252,21 @@ export function createDeviceClient({ root } = {}) {
     const current = linked()
     if (!current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
     return call(current.origin, path, { bearer: current.token, body }).catch(operationRefusal)
+  }
+  /**
+   * Opening a project (PSC 0.2.24 SYS-LOCAL-01): the one device operation that changes tool and Source authorization.
+   * The client says only which Agent, which Connection, which folder, on which platform, and (to open) which version of
+   * the confirmation the owner saw; the Gateway takes the capability, tools, digests and mode from the Agent's installed
+   * first-party Release and refuses a request that names any of them. The account the owner was shown must still be
+   * this grant's account, and the Agent one of its Agents, before anything leaves this computer.
+   */
+  const projectCall = (path, body) => {
+    const current = linked()
+    if (text(body.expectedAccountId) !== text(current.account?.id)) {
+      throw new Error('The account shown on this computer is no longer the signed-in account. Nothing was changed.')
+    }
+    if (!current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+    return call(current.origin, path, { bearer: current.token, body, terminalState: true }).catch(operationRefusal)
   }
   const linked = () => {
     const current = load()
@@ -523,6 +544,11 @@ export function createDeviceClient({ root } = {}) {
     // PSC 0.2.21: what deleting a conversation would do, and deleting it (seal its Board, close its open goals as abandoned).
     conversationEndPreview: (body = {}) => conversationCall('/local-devices/conversations/end-preview', body),
     conversationEnd: (body = {}) => conversationCall('/local-devices/conversations/end', body),
+    // PSC 0.2.24: what opening a folder as a project would grant (the confirmation's content and its version), and
+    // opening it. In progress answers `recovery: "retry"`; a terminal state of this opening answers its full state
+    // with `recovery: "confirm_again"` (or `"console"`); `state: "ready"` when the project is open.
+    projectState: (body = {}) => projectCall('/local-devices/projects/state', body),
+    projectOpen: (body = {}) => projectCall('/local-devices/projects/open', body),
     /** Register one durable Host selection; the Agent and browser never receive this bearer. */
     registerMaterialSubmission: async ({ expectedAccountId, agentId, submissionId, requestId, sessionKey, attachments, custodyBindings, proofDigest, selectionDigest, targetCaseId }) => {
       const current = linked()

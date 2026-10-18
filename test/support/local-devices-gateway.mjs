@@ -39,6 +39,10 @@ class Refusal extends Error {
   constructor(status, teaching, errorCode) { super(teaching); this.status = status; this.errorCode = errorCode }
 }
 const refuse = (status, teaching, errorCode) => { throw new Refusal(status, teaching, errorCode) }
+/** A route's answer with a status other than 200 (opening a project answers 202 in progress, 409 at a terminal state). */
+class Answer {
+  constructor(status, value) { this.status = status; this.value = value }
+}
 
 /** Exactly these fields, no more: an unexpected one is a different request. */
 function onlyFields(body, allowed) {
@@ -71,6 +75,16 @@ export function createDevicesGateway({
   const conversationEnded = new Set()
   const conversationRow = (key) => ({ boardId: 'board-' + sha256(String(key)).slice(0, 12), createdAt: '2026-10-17T00:00:00Z', lastActivityAt: null,
     postCallReview: conversationReview.get(key) ?? true, explorationModes: { 'conn-1': conversationModes.get(key) ?? 'strict' } })
+  /**
+   * Opened projects by Agent, Connection and folder (PSC 0.2.24). Each holds its opening's request ids and how many more
+   * reads it stays in progress, reporting configuration -> program -> mode as the real Gateway does.
+   */
+  const projects = new Map()
+  let projectSteps = 0
+  let projectTerminal
+  const projectTools = [{ id: 'eng.read', digest: 'sha256:' + 'a'.repeat(64), directUse: true },
+    { id: 'eng.write', digest: 'sha256:' + 'b'.repeat(64), directUse: true },
+    { id: 'eng.run', digest: 'sha256:' + 'c'.repeat(64), directUse: true }]
   const enabled = new Map(agents.map((row) => [row.id, { ...row, enabled: true }]))
   /** Paths whose next request answers 503, for the recoverable-delivery arms. */
   const faults = new Map()
@@ -98,6 +112,55 @@ export function createDevicesGateway({
     .filter((row) => row !== undefined && row.enabled)
     .map((row) => ({ id: row.id, name: row.name,
       ...(row.reconnectable === undefined ? {} : { reconnectable: row.reconnectable }) }))
+
+  const projectContext = (body, allowed, bearer) => {
+    for (const field of ['release', 'tools', 'digest', 'directUse', 'mode', 'explorationMode', 'source', 'command']) {
+      if (body !== null && typeof body === 'object' && Object.hasOwn(body, field)) {
+        refuse(400, `A client cannot supply ${field}. Nothing was changed.`, 'client_authority_refused')
+      }
+    }
+    onlyFields(body, allowed)
+    const device = grantUsable(deviceByToken(bearer))
+    if (body.expectedAccountId !== device.accountId) refuse(409, 'The account shown on this computer is not this device\'s account.', 'account_changed')
+    if (!device.agentIds.includes(body.agentId)) refuse(403, 'This device is not currently authorized for that Agent', 'not_authorized')
+    const connection = connections.get(String(body.connectionId ?? ''))
+    if (connection === undefined || connection.agentId !== body.agentId || connection.deviceId !== device.id || connection.revoked) {
+      refuse(403, 'This Connection was not paired by this computer.', 'connection_not_of_this_device')
+    }
+    if (!['windows', 'posix'].includes(body.platform)) refuse(400, 'platform must be windows or posix', 'bad_command')
+    const directory = String(body.directory ?? '')
+    if (body.platform === 'windows' ? !/^[A-Za-z]:\\[^\\]/.test(directory) : !/^\/[^/]/.test(directory)) {
+      refuse(400, body.platform === 'windows' ? 'Choose a folder such as D:\\folder.' : 'Choose a folder such as /home/you/folder.', 'bad_command')
+    }
+    const authorizationVersion = 'sha256:' + sha256(JSON.stringify([device.accountId, body.agentId, body.connectionId, device.id,
+      directory, projectTools, 'non_strict']))
+    return { device, accountId: device.accountId, agentId: body.agentId, connectionId: body.connectionId, directory,
+      authorizationVersion, key: `${body.agentId}|${body.connectionId}|${directory}` }
+  }
+  const projectBase = (context, state) => ({
+    state, accountId: context.accountId, agentId: context.agentId, agentName: enabled.get(context.agentId)?.name ?? '',
+    connectionId: context.connectionId, connectionName: 'Workspace', directory: context.directory,
+    authorizationVersion: context.authorizationVersion, computer: { deviceId: context.device.id, label: context.device.name },
+    capability: { releaseDigest: 'sha256:' + 'e'.repeat(64), id: 'engineering_work', version: '1.0.0' },
+    tools: projectTools.map((tool) => ({ ...tool })), mode: { requested: 'non_strict' },
+  })
+  /** An opened project's state: in progress (202, `retry`) for its remaining steps, a terminal state (409), or ready. */
+  const projectAdvance = (context, opened) => {
+    const out = { ...projectBase(context, 'pending'), openRequestId: opened.openRequestId,
+      project: { source: 'project', openRequestId: opened.openRequestId, originalRequestId: opened.originalRequestId } }
+    if (opened.state === undefined && projectTerminal !== undefined) { opened.state = projectTerminal; projectTerminal = undefined }
+    if (opened.state !== undefined) {
+      return new Answer(409, { ...out, state: opened.state, recovery: 'confirm_again',
+        teaching: 'Confirm the folder again from this computer to start a new opening.' })
+    }
+    if (opened.steps > 0) {
+      const stage = ['mode', 'program', 'configuration'][Math.min(opened.steps, 3) - 1]
+      opened.steps -= 1
+      return new Answer(202, { ...out, stage, recovery: 'retry',
+        waitingFor: stage === 'configuration' ? 'agent_call_pending' : 'kernel_confirmation' })
+    }
+    return { ...out, state: 'ready', mode: { requested: 'non_strict', state: 'complete', current: 'non_strict' } }
+  }
 
   const deviceRoutes = {
     'GET /local-devices/health': (_body, { bearer }) => {
@@ -231,6 +294,33 @@ export function createDevicesGateway({
       conversationEnded.add(body.conversationKey)
       return { agentId: body.agentId, found: true, boardId: conversationRow(body.conversationKey).boardId, ended: true,
         endedAt: '2026-10-17T00:00:00Z', closedGoals: ['case-1'], unconfirmedGoals: [] }
+    },
+    // PSC 0.2.24: opening a project. The client names only the Agent, Connection, folder, platform and (to open) the
+    // version of the confirmation the owner saw; the capability, tools, digests and mode are the server's.
+    'POST /local-devices/projects/state': (body, { bearer }) => {
+      const context = projectContext(body, ['expectedAccountId', 'agentId', 'connectionId', 'directory', 'platform'], bearer)
+      const opened = projects.get(context.key)
+      return opened === undefined ? projectBase(context, 'not_open') : projectAdvance(context, opened)
+    },
+    'POST /local-devices/projects/open': (body, { bearer }) => {
+      const context = projectContext(body, ['requestId', 'expectedAccountId', 'agentId', 'connectionId', 'directory', 'platform',
+        'authorizationVersion'], bearer)
+      if (typeof body.requestId !== 'string' || body.requestId === '') refuse(400, 'requestId is required', 'bad_command')
+      const answer = (value, extra) => value instanceof Answer
+        ? new Answer(value.status, { ...value.value, ...extra }) : { ...value, ...extra }
+      const opened = projects.get(context.key)
+      // Already open: the same opening continues. Only a new confirmation after a terminal state starts a new opening.
+      if (opened !== undefined && (opened.state === undefined || body.requestId === opened.originalRequestId)) {
+        return answer(projectAdvance(context, opened), { requestId: body.requestId, changed: false, alreadyOpen: true })
+      }
+      if (body.authorizationVersion !== context.authorizationVersion) {
+        refuse(409, 'What this computer showed for confirmation no longer matches what opening the project would grant.'
+          + ' Show the confirmation again. Nothing was changed.', 'authorization_changed')
+      }
+      const next = { openRequestId: 'open.' + sha256(body.requestId).slice(0, 16), originalRequestId: body.requestId, steps: projectSteps }
+      projects.set(context.key, next)
+      return answer(projectAdvance(context, next), { requestId: body.requestId, changed: true, alreadyOpen: opened !== undefined,
+        ...(opened === undefined ? {} : { renews: opened.openRequestId }) })
     },
     'POST /local-devices/authoring/cases': (body, { bearer }) => {
       onlyFields(body, ['expectedAccountId', 'agentId', 'materialId', 'documentDigest', 'proposalDigest'])
@@ -408,7 +498,9 @@ export function createDevicesGateway({
       }
       const handler = deviceRoutes[`${method} ${url.pathname}`] ?? setupRoutes[`${method} ${url.pathname}`]
       if (handler !== undefined) {
-        const value = handler(body, { bearer }) ?? {}
+        const answered = handler(body, { bearer }) ?? {}
+        const status = answered instanceof Answer ? answered.status : 200
+        const value = answered instanceof Answer ? answered.value : answered
         // The effect happened and the answer never arrived — the shape a client must not read
         // as "nothing happened". Applied after the handler, deliberately.
         const drops = dropAfterEffect.get(url.pathname) ?? 0
@@ -416,7 +508,7 @@ export function createDevicesGateway({
           dropAfterEffect.set(url.pathname, drops - 1)
           return void request.socket.destroy()
         }
-        return void reply(200, value)
+        return void reply(status, value)
       }
       if (url.pathname === '/local-setup/context' && method === 'GET') {
         const connection = [...connections.values()].find((row) => row.id === request.headers['x-rulith-connection'])
@@ -525,6 +617,11 @@ export function createDevicesGateway({
     enableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = true },
     setReconnectable(agentId, rows) { enabled.get(agentId).reconnectable = rows },
     setHealth(reply) { healthReply = reply },
+    /** The next opening stays in progress for this many reads (configuration, program, mode, in that order). */
+    projectInProgress(steps) { projectSteps = steps },
+    /** The next read of an opened project finds that opening at this terminal state (for example `mode_changed`). */
+    projectTerminalNext(state) { projectTerminal = state },
+    projects,
     refuseHealth(teaching) { healthRefusal = teaching },
     /** Console has already invalidated the old key; Local must prove and save this replacement. */
     replaceConnectionKey(connectionId, key) {

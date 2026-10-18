@@ -2,6 +2,18 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Local manager: `/manager/projects/state` and `/manager/projects/open` let the signed-in owner's client
+  (Deep Rulith) open a folder of this computer as a project (PSC 0.2.24 SYS-LOCAL-01, D-1018b batch 3).
+  `state` returns what opening would grant, for the confirmation, and its `authorizationVersion`; `open`
+  sends the version the owner confirmed with a request id. The manager forwards only `requestId`,
+  `expectedAccountId`, `agentId`, `connectionId`, `directory`, `platform` and `authorizationVersion` over
+  the device grant to the Gateway's `/local-devices/projects/*`; the account must be the signed-in one and the
+  Agent inside the grant before anything is sent. In progress answers `recovery: "retry"`; a terminal state
+  of the opening (the Gateway's 409 with the full state, `recovery: "confirm_again"` or `"console"`) is
+  returned as that state rather than thrown; refusals keep their `errorCode`.
+
 ## 0.17.2 - 2026-10-17
 
 - Local manager: `/manager/conversations/end-preview` and `/manager/conversations/end` let the signed-in
