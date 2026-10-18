@@ -2,6 +2,38 @@
 
 All notable changes to the local runtime are documented here.
 
+## Unreleased
+
+- Upgrade, read first: every run Tool digest and every built-in Tool digest changes. Re-pin and re-lock
+  them in Console after upgrading; until then the old locks refuse the changed Tools. Reinstall the
+  general kit (`rulith kit install general`) and lock its tools again.
+- Implementation byte pins (SYS-TOOL-01, ACC-TOOL-09; PSC 0.2.24): a run Tool's digest now covers the bytes
+  of its entry and of every file its optional `implementation` list names, and the Worker runs only those
+  verified bytes. An Adapter starts under the implementation boundary
+  (`node --import worker/implementation-boundary.mjs`), which hashes each module as it loads and refuses
+  files outside the pin, CommonJS and native addons; `NODE_OPTIONS` never reaches a run Tool. A run Tool
+  whose files cannot be pinned is not advertised.
+- Built-in Tools (`rulith.workspace.*`, `mcp.discover`, `materials.read`, `official_authoring.*`) are pinned
+  to the Runtime release that implements them (`runtime: rulith@<version>`).
+- Worker: a run Adapter also receives `RULITH_SOURCE_NAME`, the governed name of the Source it serves.
+- General kit: the engineering pack v3 (`pack/program-v3.json`, `pack/sources-v4.json` with the `project`
+  Source template and its tool adoption contract, and `pack/official-recipe.json` for the Gateway's
+  first-party Release; D-1018c). A signed criterion is `eng.check_passed(key)` with
+  `key = <project>:<check>:<spec_digest>`, so a check loosened after signing, or a pass in another project,
+  cannot fulfil the leaf, and tree steps withdraw only passes of their own project. Nine new tool versions
+  report the project (`eng.write_file@2`, `eng.patch_file@2`, `eng.apply_patch@2`, `eng.run@2`,
+  `eng.job_start@2`, `eng.job_poll@2`, `eng.job_stop@2`, `eng.test@3`, `eng.acceptance@2`); `eng.check_spec`
+  also shows the Source name and project root. Program v2 and the older tool versions are unchanged.
+- General kit: a project root inside or around another root used under the same kit home is refused
+  (`project root overlaps another project`). Existing v2 setups with nested `lab` Sources will have one of
+  them refused; remove the other root's `root-*.json` from the kit home to choose which one stays.
+- General kit: on a root a project tool has used, the older tool versions that write, run, test or measure
+  are refused (`project tools required`); reads are unaffected.
+- General kit: a spec whose command starts a program inside the project must list it in `files`; on Windows
+  commands run with `NoDefaultCurrentDirectoryInExePath=1`. Generation state is keyed by the root's
+  identity spelling (lower case on Windows), with a per-root tree cache; state kept under an earlier
+  spelling is migrated.
+
 ## 0.17.2 - 2026-10-17
 
 - Local manager: `/manager/conversations/end-preview` and `/manager/conversations/end` let the signed-in

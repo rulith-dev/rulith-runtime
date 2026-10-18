@@ -868,9 +868,10 @@ field is part of the Tool digest, so adding it changes what the Cloud pin author
   `RULITH_` is stripped before an Adapter starts — on the deny path and against an
   `env.pass` allow-list alike — because that namespace is the runtime's to fill, not the
   environment's. What an Adapter receives from it is exactly what the work item decides:
-  `RULITH_INVOCATION_ID` from the trusted work item, and `RULITH_SOURCE_ACCESS` and
-  `RULITH_SOURCE_TYPE` from the Source this invocation selected. A Source-free execution
-  is given neither of the last two, so an Adapter that needs a location finds nothing
+  `RULITH_INVOCATION_ID` from the trusted work item, and `RULITH_SOURCE_ACCESS`,
+  `RULITH_SOURCE_TYPE` and `RULITH_SOURCE_NAME` (the governed Source name, for display) from
+  the Source this invocation selected. A Source-free execution
+  is given none of the last three, so an Adapter that needs a location finds nothing
   rather than something left over. An Adapter is told no Case: one execution may be
   reached by several Cases, and which ones is the shared graph's answer rather than
   something this hop could state.
@@ -880,6 +881,29 @@ An Adapter's own configuration lives outside that namespace — `ACME_REGION` is
 Source root they are handed and nothing else: they have no path override and no default
 directory, so an Adapter granted no Source, or one of the wrong type, refuses instead of
 reading a file of its own choosing.
+
+**Implementation pin.** A `run` Tool's digest covers its implementation bytes: the entry and
+every other `.mjs` file it may load, listed in `implementation` with paths relative to the
+Worker root like `entry` (`"implementation": ["adapters/acme/lib.mjs"]`). Changing any byte of
+them changes the advertised digest, and a Connection lock on the old digest no longer runs the
+Tool until it is locked again. The Worker checks the files before it claims work and again just
+before it starts the Adapter, and the Adapter starts under a loader that compiles only those
+files, at their declared paths (links are not followed), and only the verified bytes. Any other
+local file, an import through a package name or a `#` map, a CommonJS `require` or a native addon
+is refused; the compile cache stays off; a Tool cannot add module hooks of its own. A Worker
+thread or a Node child process the Tool starts (fork, spawn of `process.execPath` with or without
+its `.exe`, or `node` by name on a pinned file) starts under the same boundary, and one from source
+text or with options that load code is refused, as is any other command that names a pinned file or
+another file in the directories that hold the pinned files (by argument, command line or
+environment value, under any alias of its name), `process.binding('spawn_sync')`/`('process_wrap')`
+and `process.execve`. Keep project Sources outside those directories. Other programs, such as
+the project commands a kit runs (including `node` on the project's own scripts), start as usual. The Adapter receives no
+`NODE_*` variable but `NODE_EXTRA_CA_CERTS` and `NODE_USE_ENV_PROXY`, no `OPENSSL_*` variable,
+and `env.pass` cannot name them. If a refusal comes after the Adapter started, the receipt says
+what was refused and that what ran before it may already have taken effect. Built-in Tools are pinned to the Runtime
+release that implements them, so a Runtime upgrade asks for their locks again. The pin
+identifies local implementation code; it does not attest to the machine, a remote service or
+the truth of a result.
 
 ## Managed local profiles
 

@@ -70,15 +70,105 @@ export function context(env = process.env) {
   // The owner creates this directory, never the model.
   const home = fs.realpathSync(env.ENG_KIT_HOME);
   if (inside(root, home) || inside(home, root)) refuse('pin directory refused');
-  return { root, home, stateFile: path.join(home, `tree-${sha(root)}.json`), jobFile: path.join(home, `job-${sha(root)}.json`) };
+  // 项目根有两种写法：canonical 是文件系统自己的拼写（Windows 上取原生 realpath：大小写、短名都按磁盘），只用于显示；
+  // folded 是身份写法（Windows 上再转小写，因为路径不分大小写），代数状态、根登记与项目身份都按它记——所以只改大小写的
+  // 改名（Proj -> proj）仍是同一个项目、同一份代数。拿不到原生写法（个别虚拟卷）时退回原写法。升级时：身份写法的状态文件
+  // 还不存在、原写法的存在，就从原写法的状态接着数（spelledStateFile / spelledJobFile），代数不归零。
+  // A project root has two spellings: `canonical`, the file system's own (the native realpath on Windows: case and short
+  // names as on disk), for display only; and `folded`, the identity spelling (lower-cased on Windows, whose paths ignore
+  // case), which keys the generation state, the root record and the project identity, so a case-only rename (Proj ->
+  // proj) is the same project with the same counter. Where no native spelling is available (some virtual volumes) the
+  // given one stands. On upgrade, state kept under the caller's spelling is continued (spelledStateFile, spelledJobFile).
+  const canonical = canonicalRoot(root);
+  const folded = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+  const key = sha(folded), spelled = sha(root);
+  const ctx = { root, home, canonical, folded, stateFile: path.join(home, `tree-${key}.json`), jobFile: path.join(home, `job-${key}.json`),
+    rootFile: path.join(home, `root-${key}.json`), cacheFile: path.join(home, `tree-cache-${key}.json`),
+    ...(spelled === key ? {} : { spelledStateFile: path.join(home, `tree-${spelled}.json`), spelledJobFile: path.join(home, `job-${spelled}.json`) }) };
+  recordRoot(ctx);
+  return ctx;
+}
+function canonicalRoot(root) {
+  if (process.platform !== 'win32') return root;
+  try { return fs.realpathSync.native(root); } catch { return root; }
+}
+// 每个用过的项目根都登记在 kit home（root-<key>.json）。一个根若在另一个已登记的根里面、或包着它，就拒绝：代数按根计，
+// 经外层根的写入不会撤回内层根的通过（反之亦然）。先登记、再检查，所以两个同时第一次出现的嵌套根至少有一个被拒绝；
+// 被拒绝的根撤回它这次刚写下的登记。要改用旧项目里面或外面的目录，主人删掉旧项目的 root-*.json。
+// Every project root used is recorded in the kit home (root-<key>.json). A root inside or around another recorded root
+// is refused: generations are counted per root, so a write through the outer root would not withdraw a pass of the
+// inner one (or the reverse). The record is written before the check, so of two nested roots appearing at once at least
+// one is refused; a refused root removes the record it has just written. To use a directory inside or around a former
+// project, the owner removes that project's root-*.json.
+function recordRoot(ctx) {
+  let created = false;
+  if (!fs.existsSync(ctx.rootFile)) { save(ctx.rootFile, { root: ctx.canonical }); created = true; }
+  for (const other of recordedRoots(ctx.home)) {
+    if (other.file === path.basename(ctx.rootFile)) continue;
+    if (inside(other.folded, ctx.folded) || inside(ctx.folded, other.folded)) {
+      if (created) try { fs.unlinkSync(ctx.rootFile); } catch {}
+      refuse('project root overlaps another project');
+    }
+  }
+}
+function recordedRoots(home) {
+  const out = [];
+  for (const file of fs.readdirSync(home).filter(name => /^root-[a-f0-9]{64}\.json$/.test(name))) {
+    let record;
+    try { record = JSON.parse(fs.readFileSync(path.join(home, file), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') continue; refuse('pin directory refused'); }
+    if (typeof record?.root !== 'string' || !path.isAbsolute(record.root)) refuse('pin directory refused');
+    out.push({ file, folded: process.platform === 'win32' ? record.root.toLowerCase() : record.root });
+  }
+  return out;
+}
+// 本 kit home 的随机身份（<kit home>/kit-id）：只在一个项目第一次需要身份时读，用来算这个新项目的身份。先写临时文件再
+// 改名，读者永远看不到半个文件；缺了或坏了就重写一个——已有项目的身份已经固定（见 projectIdentity），不受影响。
+// This kit home's random identity (<kit home>/kit-id), read only when a project first needs an identity, to derive it.
+// Written to a temporary file and renamed, so no reader ever sees part of it; a missing or damaged one is written
+// anew, which changes no existing project: their identities are already fixed (projectIdentity).
+const KIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export function kitId(home) {
+  const file = path.join(home, 'kit-id');
+  const read = () => { try { const value = fs.readFileSync(file, 'utf8'); return KIT_ID.test(value) ? value : null; } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+  const known = read();
+  if (known) return known;
+  saveText(file, randomUUID());
+  // Two first uses may each write one; whichever stands is read back and used from here on.
+  return read() ?? refuse('pin directory refused');
+}
+// 项目身份第一次用时定下，之后随代数状态保存（state.project），根登记里另存一份（root-<key>.json 的 project）；以后只读
+// 保存的值，从不重算。所以删 kit-id、或同一目录换个大小写写法，都不会让同一份代数换一个身份（换了身份，旧身份下的通过
+// 就再也没有树步撤回）。两份都没有时才由 kit-id 与身份写法算出，并在根锁内写下。
+// A project's identity is fixed at first use and kept with its generation state (state.project), with a copy in its root
+// record (root-<key>.json `project`); from then on the kept value is read, never recomputed. Removing kit-id, or
+// another spelling of the same directory, therefore never gives one counter a new identity (under which a pass made with
+// the old identity would never again meet a tree step). Only when neither copy exists is it derived from kit-id and the
+// identity spelling, and written under the root's lock.
+const PROJECT = /^[0-9a-f]{64}$/;
+export function keptProject(ctx, state = readJson(ctx.stateFile, null) ?? (ctx.spelledStateFile ? readJson(ctx.spelledStateFile, null) : null)) {
+  if (PROJECT.test(state?.project ?? '')) return state.project;
+  const record = readJson(ctx.rootFile, {});
+  return PROJECT.test(record?.project ?? '') ? record.project : undefined;
+}
+export const projectIdentity = (ctx, state) => keptProject(ctx, state) ?? sha(`${kitId(ctx.home)}\n${ctx.folded}`);
+// The root record after a save of the generation state: the identity and the last generation, so a lost state file
+// resumes from that generation with a step out of it (see the adapter) instead of restarting at 0.
+export function keepRoot(ctx, state) {
+  const record = readJson(ctx.rootFile, {});
+  const project = state.project ?? record.project, gen = state.gen ?? record.gen;
+  const next = { root: ctx.canonical, ...(project ? { project } : {}), ...(gen === undefined ? {} : { gen }) };
+  if (JSON.stringify(record) !== JSON.stringify(next)) save(ctx.rootFile, next);
 }
 export function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT' && fallback !== undefined) return fallback; throw e; }
 }
-export function save(file, value) {
+export function save(file, value) { saveText(file, JSON.stringify(value)); }
+// Written whole to a fresh temporary file, then renamed over the target: a reader sees the old bytes or the new ones.
+export function saveText(file, text) {
   const tmp = `${file}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+    fs.writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' });
     fs.renameSync(tmp, file);
   } finally {
     try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -161,8 +251,9 @@ export function tree(ctx) {
   const files = {};
   // Large trees (a large source checkout can be tens of GB) cannot be rehashed on every step: a file whose size and
   // modification time are unchanged since the last walk keeps its recorded digest. The cache lives in the kit home,
-  // outside the project. It is a speed-up for an honest tree, not a guard against deliberate mtime forgery.
-  const cacheFile = path.join(ctx.home, 'tree-cache.json');
+  // outside the project, one per project root (tree-cache-<key>.json), so alternating projects do not evict each other.
+  // It is a speed-up for an honest tree, not a guard against deliberate mtime forgery.
+  const cacheFile = ctx.cacheFile ?? path.join(ctx.home, 'tree-cache.json');
   let cache = {};
   try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch {}
   const next = {};
@@ -510,10 +601,62 @@ const GROUP = process.platform !== 'win32';
 // 它就能放宽 treeExclude 或改写状态）和 RULITH_*。变量名在 Windows 上不分大小写，所以按不分大小写比较。
 // Children never inherit the kit's or the Worker's variables: ENG_* (ENG_KIT_HOME names the owner's settings.json,
 // specs, tree cache and state file, which a script could rewrite) and RULITH_*. Compared without case (Windows).
-export const childEnv = (env = process.env) => Object.fromEntries(Object.entries(env).filter(([name]) => !/^(ENG_|RULITH_)/i.test(name)));
+// Windows 上程序名还会先在当前目录里找：项目里一个 node.exe 就能顶替 PATH 上的 node，而验收规格冻结的是命令字，
+// 不是它找到的程序。NoDefaultCurrentDirectoryInExePath=1 关掉这一步：给子进程（cmd.exe 与它再启动的程序读它），也给
+// 本进程（Node 不经 shell 启动程序时，查找按本进程的环境）。
+// On Windows a bare program name is looked up in the current directory first: a node.exe in the project would stand in
+// for the node on PATH, while an acceptance spec freezes the command words, not what they find.
+// NoDefaultCurrentDirectoryInExePath=1 turns that lookup off, for the child (cmd.exe and what it starts read it) and for
+// this process (Node's own lookup without a shell follows this process's environment).
+const WINDOWS_NO_CWD_LOOKUP = 'NoDefaultCurrentDirectoryInExePath';
+export const childEnv = (env = process.env) => ({
+  ...Object.fromEntries(Object.entries(env).filter(([name]) => !/^(ENG_|RULITH_)/i.test(name)
+    && !(process.platform === 'win32' && name.toLowerCase() === WINDOWS_NO_CWD_LOOKUP.toLowerCase()))),
+  ...(process.platform === 'win32' ? { [WINDOWS_NO_CWD_LOOKUP]: '1' } : {}),
+});
+// 命令字会启动哪个文件，与真正运行时的查找一致（都不看当前目录，见 execute）。
+// 不经 shell：Node 交给 libuv。Windows 上 libuv 只在名字自带扩展名时试原名，然后试 .com、.exe——从不试 PATHEXT 里的
+// .cmd、.bat；其他系统按 execvp：带 / 的相对 cwd，裸名查 PATH（空项是当前目录，缺 PATH 用 /usr/bin:/bin），只认可执行文件。
+// 带路径的名字相对 cwd；PATH 里的相对项也相对 cwd。返回第一个命中，就是会运行的那个。
+// 经 shell（规格 shell: true）：shell 自己找程序（cmd.exe 用 PATHEXT），一行还能启动好几个程序。这里不模仿 shell 的
+// 解析，而是返回这个词所有可能被启动的文件（Windows 上原名加每个 PATHEXT 扩展名，所有目录），调用方对行里每个词都查：
+// 多查只会多拒，不会漏。变量与替换展开出来的名字看不见（README：shell 下分类器只是参考）。
+// The file a command word starts, found as the run finds it (neither looks in the current directory; see execute).
+// Without a shell Node hands the word to libuv. On Windows libuv tries the name itself only when it has an extension,
+// then name.com and name.exe, never PATHEXT's .cmd or .bat; elsewhere it follows execvp: a word with / is relative to
+// cwd, a bare name is looked up on PATH (an empty entry is the current directory, no PATH means /usr/bin:/bin), and
+// only executable files count. A relative PATH entry is taken relative to cwd. The first hit is what runs.
+// With a shell (a spec with shell: true) the shell finds programs itself (cmd.exe with PATHEXT) and one line can start
+// several. Rather than imitate its parsing, `shell` returns every file the word could start (on Windows the name and
+// the name with each PATHEXT extension, in every directory), and the caller checks every word of the line: checking
+// more can only refuse more, never miss one. Names produced by variables or substitutions are not seen (the README:
+// with a shell the classifier is advisory).
+export function programCandidates(word, cwd, { env = childEnv(), shell = false } = {}) {
+  const windows = process.platform === 'win32';
+  const value = name => Object.entries(env).find(([key]) => windows ? key.toLowerCase() === name.toLowerCase() : key === name)?.[1];
+  const base = word.split(windows ? /[\\/:]/ : '/').at(-1), dot = base.lastIndexOf('.');
+  const extensions = !windows ? [''] : shell ? ['', ...(value('PATHEXT') ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+    : [...(dot >= 0 && dot < base.length - 1 ? [''] : []), '.com', '.exe'];
+  const named = windows ? /[\\/:]/.test(word) : word.includes('/');
+  const entries = (value('PATH') ?? (windows ? '' : '/usr/bin:/bin')).split(path.delimiter).map(dir => dir.replace(/^"(.*)"$/, '$1'));
+  const directories = named ? [cwd] : entries.flatMap(dir => dir ? [path.resolve(cwd, dir)] : windows ? [] : [cwd]);
+  const found = [];
+  for (const directory of directories) for (const extension of extensions) {
+    const candidate = path.resolve(directory, word + extension);
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+      if (!windows) fs.accessSync(candidate, fs.constants.X_OK);
+      found.push(fs.realpathSync(candidate));
+      if (!shell) return found;
+    } catch {}
+  }
+  return found;
+}
+export const resolveProgram = (word, cwd, env = childEnv()) => programCandidates(word, cwd, { env })[0];
 export async function execute(command, cwd, { deadlineMs = 35000, onStart, shell = false, line } = {}) {
   const stdout = capture(); const stderr = capture(); const start = Date.now();
   let timedOut = false;
+  if (process.platform === 'win32') process.env[WINDOWS_NO_CWD_LOOKUP] = '1';
   const env = childEnv();
   // With the owner's shell setting the command line goes to the system shell as written; otherwise argv, no shell.
   const child = shell
@@ -622,7 +765,7 @@ async function tryLocked(ctx, action, leaseMs, busy) {
     // A killed write/rename or write/link leaves these behind; fresh temps belong
     // to callers that may still be active (including another Source).
     for (const entry of fs.readdirSync(ctx.home, { withFileTypes: true })) {
-      if (!entry.isFile() || !/^(?:tree-[a-f0-9]{64}\.json(?:\.lock)?|job-[a-f0-9]{64}\.json|tree-cache\.json)\.[a-f0-9-]{36}\.tmp$/.test(entry.name)) continue;
+      if (!entry.isFile() || !/^(?:tree-[a-f0-9]{64}\.json(?:\.lock)?|job-[a-f0-9]{64}\.json|root-[a-f0-9]{64}\.json|kit-id|tree-cache(?:-[a-f0-9]{64})?\.json)\.[a-f0-9-]{36}\.tmp$/.test(entry.name)) continue;
       const file = path.join(ctx.home, entry.name);
       try { if (Date.now() - fs.statSync(file).mtimeMs > leaseMs) fs.unlinkSync(file); }
       catch {} // Stale save cleanup is best-effort, including locked/read-only files.

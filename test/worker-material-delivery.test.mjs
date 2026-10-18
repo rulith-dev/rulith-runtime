@@ -23,7 +23,8 @@ import test from 'node:test'
 import {
   MATERIAL_CHUNK_BYTES, defaultMaterialRoot, materialIdentity, openMaterialStore,
 } from '../worker/material-store.mjs'
-import { HOLD, actionRow, driveWorker, toolDigest } from './support/worker-harness.mjs'
+import { builtinMaterialTools } from '../worker/rulith-worker.mjs'
+import { HOLD, actionRow, driveWorker, runPin } from './support/worker-harness.mjs'
 
 const REF = `art_${'1'.repeat(32)}`
 const REQUEST = `mdr_${'2'.repeat(32)}`
@@ -86,7 +87,8 @@ const materialActionRow = (root, material) => actionRow({
   tool: 'rulith.materials.read',
   toolContractId: 'rulith.materials.read@1',
   sourceRecordId: 'materials',
-  toolDigest: toolDigest({ adapter: 'material', sourceTypes: ['file'], entry: 'read' }),
+  // A built-in's pin includes the Runtime release that implements it (builtinPin).
+  toolDigest: builtinMaterialTools(root)['rulith.materials.read@1'].digest,
   args: JSON.stringify({ source: 'materials', material }),
   toolSpec: JSON.stringify({
     impl: 'worker-tool', exec: 'rulith.materials.read@1', kind: 'read',
@@ -170,7 +172,8 @@ test('an over-budget ordinary result is taken into custody here and registered, 
         dispatched = true
         return { body: { accepted: true, payload: { work: [actionRow({
           work: 'inv_bulk', tool: 'acme.bulk', toolContractId: 'acme.bulk@1',
-          toolDigest: toolDigest({ adapter: 'run', sourceTypes: ['file'], entry: 'bulk-adapter.mjs' }),
+          toolDigest: runPin({ adapter: 'run', sourceTypes: ['file'], entry: 'bulk-adapter.mjs' },
+            { 'bulk-adapter.mjs': "process.stdout.write('BULK-RESULT-'.repeat(400))\n" }),
           toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.bulk@1', kind: 'act', params: {}, sourceTypes: ['file'] }),
           // A budget this result plainly exceeds, so the arm is about the custody path rather
           // than about whatever the shared fixture's default policy happens to be today.

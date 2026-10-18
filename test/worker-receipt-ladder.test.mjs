@@ -19,7 +19,7 @@ import test from 'node:test'
 
 import {
   DONE, HOLD, RESET,
-  actionRow, activeLease, driveWorker, leasingGateway, toolDigest,
+  actionRow, activeLease, driveWorker, leasingGateway, runPin,
 } from './support/worker-harness.mjs'
 
 /** The declared-environment Tool, defined once so its pin and its installation agree. */
@@ -161,7 +161,7 @@ test('RT-WK-RECEIPT-4: a run Adapter does not receive the Worker credentials it 
         return ++polls === 1
           ? { body: { accepted: true, payload: { work: [actionRow({
               work: 'inv_probe', tool: 'acme.probe', toolContractId: 'acme.probe@1',
-              toolDigest: toolDigest({ adapter: 'run', sourceTypes: ['file'], entry: 'env-probe.mjs' }),
+              toolDigest: runPin({ adapter: 'run', sourceTypes: ['file'], entry: 'env-probe.mjs' }, probe),
               toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.probe@1', kind: 'act', params: {}, sourceTypes: ['file'] }),
             })] } } }
           : HOLD
@@ -218,7 +218,7 @@ test('RT-WK-RECEIPT-5: a run Tool that declares env.pass receives only what it d
         return ++polls === 1
           ? { body: { accepted: true, payload: { work: [actionRow({
               work: 'inv_allow', tool: 'acme.allow', toolContractId: 'acme.allow@1',
-              toolDigest: toolDigest(ALLOW_TOOL['acme.allow@1']),
+              toolDigest: runPin(ALLOW_TOOL['acme.allow@1'], probe),
               toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.allow@1', kind: 'act', params: {}, sourceTypes: ['file'] }),
             })] } } }
           : HOLD

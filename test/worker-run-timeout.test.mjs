@@ -65,7 +65,7 @@ for (const scenario of ['recover', 'expire', '409', 'timeout', 'late', '503-reco
       timeoutMs: 9000,
       reply: (operation) => {
         if (operation.kind === 'Poll') return ++polls === 1
-          ? { body: { accepted: true, payload: { work: [slowActionRow(), actionRow()] } } } : HOLD
+          ? { body: { accepted: true, payload: { work: [slowActionRow({}, slowAdapters['slow-adapter.mjs']), actionRow()] } } } : HOLD
         if (operation.kind === 'RenewLease') {
           renewals++
           if (scenario === '409') return { status: 409, body: { accepted: false, errorCode: 'worker_lease_superseded' } }

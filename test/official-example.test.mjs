@@ -6,7 +6,7 @@
  * contracts, `worker-tools.json` for the local Tool Manifest, `data/input.json` for the Source
  * material — and hands them to the Worker binary the way a Gateway dispatch does. Nothing is
  * restated: a row's `toolSpec` carries the `sourceTypes`, `params` and `returns` the recipe
- * declares, and its `toolDigest` is the pin of the manifest entry as written.
+ * declares, and its `toolDigest` is the pin of the manifest entry as written and of the Adapter bytes it runs.
  *
  * That coupling is the point. The two defects this file was written against were both invisible
  * to a field-presence assertion:
@@ -31,7 +31,8 @@ import { basename, join } from 'node:path'
 import Ajv from 'ajv'
 
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
-import { BOARD, CONNECTION, HOLD, ROOT, SIGNED, driveWorker, toolDigest, artifactWorkFields } from './support/worker-harness.mjs'
+import { runImplementation } from '../worker/rulith-worker.mjs'
+import { BOARD, CONNECTION, HOLD, ROOT, SIGNED, driveWorker, runPin, artifactWorkFields } from './support/worker-harness.mjs'
 
 const EXAMPLE = join(ROOT, 'examples', 'verified-calculation')
 const RECIPE = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/verified-calculation-recipe.json'), 'utf8'))
@@ -74,7 +75,7 @@ function exampleRow(name, args, overrides = {}) {
     sourceRecordId: SOURCE,
     ...artifactWorkFields(SOURCE),
     connectionId: CONNECTION,
-    toolDigest: toolDigest(MANIFEST.tools[execution.tool]),
+    toolDigest: runPin(MANIFEST.tools[execution.tool], ADAPTERS),
     executionGrant: SIGNED,
     args: JSON.stringify({ source: SOURCE, ...args }),
     target: '',
@@ -432,7 +433,7 @@ test('prepared example workspace and manifest run through the configured Worker 
   assert.equal(existsSync(join(prepared, 'rulith-local.json')), false)
   const tools = JSON.parse(readFileSync(join(prepared, 'worker-tools.json'), 'utf8')).tools
   const action = ACTIONS.load_calculation_input
-  const row = exampleRow('load_calculation_input', {}, { toolDigest: toolDigest(tools[action.execution.tool]) })
+  const row = exampleRow('load_calculation_input', {}, { toolDigest: runImplementation(tools[action.execution.tool], prepared).digest })
   const result = await runExample([row], { tools, files: {},
     env: { RULITH_WORKER_ROOT: prepared, RULITH_TOOLS_FILE: join(prepared, 'worker-tools.json') },
     sources: () => [{ name: SOURCE, type: 'file', access: join(prepared, 'runtime') }],
@@ -494,7 +495,7 @@ test('a sample the workbench prepares is read by the Worker at the Release\'s de
   assert.equal(proposed, realpathSync(join(prepared, RELEASE_LOCATION)))
 
   const tools = JSON.parse(readFileSync(saved.RULITH_TOOLS_FILE, 'utf8')).tools
-  const row = exampleRow('load_calculation_input', {}, { toolDigest: toolDigest(tools[ACTIONS.load_calculation_input.execution.tool]) })
+  const row = exampleRow('load_calculation_input', {}, { toolDigest: runImplementation(tools[ACTIONS.load_calculation_input.execution.tool], saved.RULITH_WORKER_ROOT).digest })
   for (const access of [RELEASE_LOCATION, proposed]) {
     const result = await runExample([row], { tools, files: {},
       env: { RULITH_WORKER_ROOT: saved.RULITH_WORKER_ROOT, RULITH_TOOLS_FILE: saved.RULITH_TOOLS_FILE },

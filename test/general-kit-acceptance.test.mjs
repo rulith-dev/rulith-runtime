@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { perform, main } from '../kits/general/adapter.mjs';
 import { context, sha, save, classify, exclusions, tree, fileDigest } from '../kits/general/lib.mjs';
 import { acceptanceSpec, canonicalSpec, commandLine } from '../kits/general/acceptance-specs.mjs';
-import { buildPackages } from '../kits/general/pack/build-pack.mjs';
+import { buildPackages, PROJECT_TOOLS } from '../kits/general/pack/build-pack.mjs';
 import { resultFactsFromRows } from '../worker/rulith-worker.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
@@ -601,11 +601,13 @@ test('acceptance lists valid and invalid specs without reading dependencies, tre
   save(`${f.ctx.stateFile}.lock`, { pid: process.pid, startedAt: new Date().toISOString() });
   save(f.ctx.jobFile, { status: 'running' });
   const readdir = fs.readdirSync, read = fs.readFileSync;
+  // Besides the acceptance directory, only the kit home's project root records are read (the nesting check).
+  const record = target => path.dirname(String(target)) === f.home && /^root-[a-f0-9]{64}\.json$/.test(path.basename(String(target)));
   t.mock.method(fs, 'readdirSync', (target, ...args) => {
-    assert.equal(target, path.join(f.root, '.rulith/acceptance')); return readdir(target, ...args);
+    assert.ok(target === path.join(f.root, '.rulith/acceptance') || target === f.home, String(target)); return readdir(target, ...args);
   });
   t.mock.method(fs, 'readFileSync', (target, ...args) => {
-    assert.ok(String(target).startsWith(path.join(f.root, '.rulith/acceptance') + path.sep)); return read(target, ...args);
+    assert.ok(String(target).startsWith(path.join(f.root, '.rulith/acceptance') + path.sep) || record(target), String(target)); return read(target, ...args);
   });
   const out = await f.call('acceptance');
   assert.deepEqual(out.errors, [{ error: 'acceptance spec invalid' }, { error: 'acceptance spec invalid: not JSON', check: 'bad' }]);
@@ -613,7 +615,7 @@ test('acceptance lists valid and invalid specs without reading dependencies, tre
     ['a', acceptanceSpec(f.ctx, 'a').digest, 2], ['unit', acceptanceSpec(f.ctx, 'unit').digest, 1]]);
   assert.equal(resultFactsFromRows(tools['eng.acceptance@1'], out.rows).length, 2);
   assert.equal(fs.existsSync(f.ctx.stateFile), false);
-  assert.equal(fs.existsSync(path.join(f.home, 'tree-cache.json')), false);
+  assert.equal(fs.existsSync(f.ctx.cacheFile), false);
   await assert.rejects(f.call('acceptance', { check: 'unit' }), { message: 'acceptance takes no arguments' });
 });
 
@@ -699,7 +701,9 @@ test('v2 is an authoring-format package the Gateway installs: criterion, freshne
   // eng.test@1's predicate keeps its four arguments: a legacy call on a v2 Board has no vocabulary clash.
   assert.deepEqual(defines.get('eng.test_result').args, ['spec_digest', 'gen', 'tree_digest', 'exit_code']);
   assert.deepEqual(defines.get('eng.check_spec').args, ['check', 'spec_digest', 'command', 'cwd', 'shell', 'files']);
-  for (const [id, tool] of Object.entries(tools)) for (const row of tool.returns) {
+  // The project tool versions belong to program v3 (their eng.tree_step carries the project).
+  const v2Tools = Object.entries(tools).filter(([id]) => !PROJECT_TOOLS.includes(id));
+  for (const [id, tool] of v2Tools) for (const row of tool.returns) {
     if (row.predicate.startsWith('web.')) { assert.equal(defines.has(row.predicate), false); continue; }
     assert.deepEqual(defines.get(row.predicate).args, Object.keys(row.args), id);
   }
@@ -716,7 +720,7 @@ test('v2 is an authoring-format package the Gateway installs: criterion, freshne
   assert.deepEqual(program.actions, []);
   assert.deepEqual(sources.meta, { name: 'engineering_work_sources', version: 3 });
   assert.equal(sources.sources[0].name, 'lab');
-  const receiptWords = [...new Set(Object.values(tools).flatMap(tool => tool.returns.map(row => row.predicate)))].sort();
+  const receiptWords = [...new Set(v2Tools.flatMap(([, tool]) => tool.returns.map(row => row.predicate)))].sort();
   assert.deepEqual(sources.sources[0].words, receiptWords);
   assert.equal(sources.sources[0].words.includes('eng.check_passed'), false);
   for (const word of ['eng.check_result', 'eng.check_spec', 'web.page', 'web.search']) assert.ok(sources.sources[0].words.includes(word));
@@ -763,6 +767,22 @@ test('the Gateway authoring compiler accepts program-v2.json (skipped without it
   assert.deepEqual(native.vocab.find(v => v.predicate === 'eng.check_passed').args, ['check', 'spec_digest']);
   assert.deepEqual(native.axioms[0].when[1], { predicate: 'eng.tree_step', args: { from_gen: '?g', to_gen: '?n' }, naf: true });
   assert.deepEqual(native.acceptance[0].when[1].predicate, 'eng.check_passed');
+});
+
+test('the Gateway authoring compiler accepts program-v3.json, the official program (skipped without its jar and Java 25)', t => {
+  const { jar, java, skip } = authoringCompiler();
+  if (skip) return t.skip(skip);
+  const run = spawnSync(java, ['-jar', jar, path.join(repo, 'kits/general/pack/program-v3.json')], { encoding: 'utf8', windowsHide: true, timeout: 120000 });
+  assert.equal(run.status, 0, run.stderr);
+  const result = JSON.parse(run.stdout);
+  assert.deepEqual(result.errors, []); assert.equal(result.valid, true);
+  const native = result.program.packs[0].pack;
+  assert.equal(native.meta.name, 'engineering_work');
+  assert.deepEqual(native.pins, ['eng.check_passed', 'eng.check_result', 'eng.check_spec', 'eng.tree_step']);
+  assert.deepEqual(native.vocab.find(v => v.predicate === 'eng.check_passed').args, ['key']);
+  assert.deepEqual(native.axioms[0].when[1], { predicate: 'eng.tree_step', args: { project: '?p', from_gen: '?g', to_gen: '?n' }, naf: true });
+  assert.deepEqual(native.acceptance[0].when, [{ predicate: 'acceptance', args: { node: '?n', test: '?k' } },
+    { predicate: 'eng.check_passed', args: { key: '?k' } }]);
 });
 
 test('v1 entry and legacy package bytes stay frozen', () => {

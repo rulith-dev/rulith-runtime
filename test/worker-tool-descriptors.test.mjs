@@ -25,7 +25,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import {
-  builtinSourceTools, builtinWorkspaceTools, execute, toolFromSpec, toolKind,
+  builtinSourceTools, builtinWorkspaceTools, execute, toolDigest, toolFromSpec, toolKind,
   workerToolDescriptor, workerToolManifest, workerToolsOf,
 } from '../worker/rulith-worker.mjs'
 
@@ -144,12 +144,12 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
   assert.equal(toolKind({ adapter: 'nothing-this-worker-knows' }), 'write',
     'an unrecognized adapter must not be advertised as a read')
 
-  // The pins clients already carry. Stating kind/params/returns describes what `entry`
-  // already fixed, so no built-in digest may move: a moved digest is refused at dispatch
-  // against the Connection pin, and every deployed Worker would stop claiming work.
-  assert.deepEqual(Object.fromEntries(advertised
-    .filter((row) => row.id.startsWith('rulith.'))
-    .map((row) => [row.id, row.digest])), {
+  // The built-in pins: adapter, Source types, entry and the Runtime release that implements them
+  // (ACC-TOOL-09: a changed built-in Runtime artifact must not run under the old pin), and nothing
+  // else — stating kind/params/returns describes what `entry` already fixed and moves no pin.
+  // Before the release was bound these were the definition digests listed here; a Connection lock
+  // on one of those is refused at dispatch until the operator locks the Tool again.
+  const before = {
     'rulith.workspace.list@1': 'e66ce0387c343d9d7aeff683977e980e0664cb11b2dfda49092a5a58ad29b27b',
     'rulith.workspace.count@1': '124c07af84f51b8e269602a99138d2fbcb469aa03564cb5660c62c08fa7ec5d9',
     'rulith.workspace.search@1': '98fd70212067ab79adaf0e396089939da1a4d9cf945842333ee41fbdbc9011c0',
@@ -159,7 +159,15 @@ test('RT-WK-TOOLS-1: every advertised Tool carries kind, params and returns in o
     'rulith.workspace.write_text@1': '55fa5db6a65d88b69e262eceaafd3f47f02b13ff00507eafb801192d32cc40da',
     'rulith.workspace.write_json@1': '0efca0ee8ba32da13648648ac57c30566500f47a72cd892b2be048e0614c8b37',
     'rulith.mcp.discover@1': '85b8b3b4edd3e92baf997de6a0c9a19aa87eb7dcb60d74416e270d2f900456f3',
-  })
+  }
+  const release = `rulith@${JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version}`
+  const shipped = advertised.filter((row) => row.id.startsWith('rulith.'))
+  assert.deepEqual(shipped.map((row) => row.id).sort(), Object.keys(before).sort())
+  for (const row of shipped) {
+    const definition = { adapter: row.adapter, sourceTypes: row.sourceTypes, entry: everyInstalledTool()[row.id].entry }
+    assert.equal(toolDigest(definition), before[row.id], `${row.id}: its definition moved`)
+    assert.equal(row.digest, toolDigest({ ...definition, runtime: release }), `${row.id} is not pinned to ${release}`)
+  }
 
   // A declared contract is part of the definition, so it does travel in the digest:
   // an operator cannot change what a Tool claims to take without the pin moving.
@@ -410,7 +418,7 @@ test('RT-WK-TOOLS-5: a Manifest content declaration is accepted, refused by name
   const byId = Object.fromEntries(builtins.map((row) => [row.id, row]))
   assert.deepEqual(byId['rulith.workspace.write_text@1'].content, ['text'])
   assert.deepEqual(byId['rulith.workspace.write_json@1'].content, ['value'])
-  assert.equal(byId['rulith.workspace.write_text@1'].digest, '55fa5db6a65d88b69e262eceaafd3f47f02b13ff00507eafb801192d32cc40da')
-  assert.equal(byId['rulith.workspace.write_json@1'].digest, '0efca0ee8ba32da13648648ac57c30566500f47a72cd892b2be048e0614c8b37')
+  assert.equal(byId['rulith.workspace.write_text@1'].digest, everyInstalledTool()['rulith.workspace.write_text@1'].digest)
+  assert.equal(byId['rulith.workspace.write_json@1'].digest, everyInstalledTool()['rulith.workspace.write_json@1'].digest)
   for (const row of builtins.filter((row) => row.kind === 'read')) assert.equal(Object.hasOwn(row, 'content'), false, row.id)
 })

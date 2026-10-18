@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { ENVIRONMENT_KEY_FIELDS, execute, grantedSourceContext, localSourceEntry } from '../worker/rulith-worker.mjs'
-import { DONE, HOLD, actionRow, driveWorker, toolDigest } from './support/worker-harness.mjs'
+import { DONE, HOLD, actionRow, driveWorker, pinnedRunTool, toolDigest } from './support/worker-harness.mjs'
 
 const granted = (...names) => names.map((name) => ({ name, type: 'file', access: '/granted/' + name }))
 
@@ -203,9 +203,10 @@ test('a database key is used only for the address Console granted, whatever its 
   assert.deepEqual(grantedSourceContext(http, {}, { orders: { dsn: 'postgres://u:PW@staging.internal/orders' } }).refused, [{ name: 'orders', mismatch: 'address' }])
 })
 
-test('a database Adapter is handed the environment\'s DSN only for the address that was granted', async () => {
-  const tool = { impl: 'run', source: 'orders', cmd: process.execPath,
-    args: ['-e', 'process.stdout.write(JSON.stringify({ access: process.env.RULITH_SOURCE_ACCESS, type: process.env.RULITH_SOURCE_TYPE }))'] }
+test('a database Adapter is handed the environment\'s DSN only for the address that was granted', async (t) => {
+  const tool = pinnedRunTool(t, {
+    'probe.mjs': 'process.stdout.write(JSON.stringify({ access: process.env.RULITH_SOURCE_ACCESS, type: process.env.RULITH_SOURCE_TYPE }))',
+  }, { source: 'orders' })
   const handed = async (dsn) => JSON.parse(await execute('job', {}, { job: tool }, dsnOf(dsn).context))
   assert.deepEqual(await handed('postgres://app:PW@staging.internal/orders'), { access: 'postgres://app:PW@staging.internal/orders', type: 'db' })
   assert.deepEqual(await handed('postgres://app:PW@prod.internal/orders'), { access: DATABASE, type: 'db' },

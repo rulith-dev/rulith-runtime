@@ -24,7 +24,7 @@ const displayable = value => typeof value !== 'string' || /^[\x21-\x7e]([\x20-\x
 // The complete spec error vocabulary lives here: the model repairs a spec from its error, so each names what is wrong
 // in fixed words. `<name>` is the only variable and echoes a safe field or key name only (letters, digits, _ . / -,
 // at most 64); any other name falls back to the bare `acceptance spec invalid`.
-export const FIELD_ERRORS = ['command', 'cwd', 'files', 'not JSON', 'duplicate key <name>', 'unknown field <name>', 'command must be an array of words (or one string with shell:true)', 'files must map each path to its sha256'].map(field => `acceptance spec invalid: ${field}`);
+export const FIELD_ERRORS = ['command', 'cwd', 'files', 'not JSON', 'duplicate key <name>', 'unknown field <name>', 'command must be an array of words (or one string with shell:true)', 'files must map each path to its sha256', 'command program must be listed in files'].map(field => `acceptance spec invalid: ${field}`);
 const SAFE_NAME = /^[A-Za-z0-9_./-]{1,64}$/;
 // True for a spec error this module raises: a fixed entry, or a `<name>` entry with a safe name.
 export const isFieldError = message => typeof message === 'string' && FIELD_ERRORS.some(entry => entry === message
@@ -134,10 +134,33 @@ export function acceptanceSpec(ctx, check) {
 export const commandLine = command => typeof command === 'string' ? command
   : command.map(word => /^[^\s"\x00-\x1f\x7f]+$/.test(word) ? word : JSON.stringify(word)).join(' ');
 
+// 验收键（编程包第三版，D-1018c 补充）：一个常量同时绑定项目、检查名与规格摘要，签字叶的标准原子只带它。
+// 三段都不含冒号（项目与规格摘要是 64 位小写十六进制，检查名合 CHECK），所以按冒号拆开恰好三段，写法唯一；
+// 含冒号也保证 Kernel 把它当文本，不当数字。
+// The check key (engineering program v3, D-1018c supplement): one constant binding the project, the check name and
+// the spec digest; a signed leaf's criterion atom carries only it. No part contains a colon (project and spec digest
+// are 64 lowercase hex, the check name matches CHECK), so it splits into exactly three parts: one spelling per triple.
+// The colon also keeps it text on the Board, never a number.
+export const checkKey = (project, check, digest) => `${project}:${check}:${digest}`;
+
+// 签字人要能认出键指的是哪个项目：项目身份是摘要，所以回执另带 Source 名与项目根的显示写法。它们只供阅读，不参与绑定
+// （绑定的是键）。显示写法：路径分隔符写作 /，0x20–0x7E 之外的字符与反斜杠写作 \uXXXX，所以任何 \u 都是转义，一个字面
+// 叫 中 的目录名不会显示成另一个字。
+// The signer must tell which project a key names: the project identity is a digest, so the receipt also carries the
+// Source name and a display spelling of the project root. They are for reading only; the key is what binds. Display
+// spelling: path separators as /, every character outside 0x20-0x7E and every backslash as \uXXXX, so any \u is an
+// escape and a directory literally named 中 cannot show as another character.
+export const displayText = value => String(value).replace(/[^\x20-\x5b\x5d-\x7e]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+export const displayRoot = root => displayText(process.platform === 'win32' ? root.replaceAll('\\', '/') : root);
+
 // The eng.check_spec row: everything the spec digest denotes, so the person who signs a leaf reads on the Board
-// what the digest freezes. `files` is JSON text (facts hold scalars only).
-export function checkSpecRow(check, { spec, digest }) {
-  const row = { check, spec_digest: digest, command: commandLine(spec.command), cwd: spec.cwd, shell: spec.shell,
+// what the digest freezes. `files` is JSON text (facts hold scalars only). With a project (eng.acceptance@2, given as
+// { id, source, root }) the row leads with the check key, the Source name and the project root, and the receipt
+// budget is measured with them.
+export function checkSpecRow(check, { spec, digest }, project) {
+  const row = { ...(project === undefined ? {} : { key: checkKey(project.id, check, digest), source_name: displayText(project.source ?? ''),
+    project_root: displayRoot(project.root) }), check, spec_digest: digest,
+    command: commandLine(spec.command), cwd: spec.cwd, shell: spec.shell,
     files: JSON.stringify(Object.keys(spec.files).sort().map(name => ({ path: name, sha256: spec.files[name] }))) };
   if (receiptBytes({ rows: [row] }) > RECEIPT_BYTES) refuse('acceptance spec too large');
   return row;
@@ -147,7 +170,7 @@ const receiptBytes = out => Buffer.byteLength(JSON.stringify({ result: JSON.stri
 
 // Enumerates this directory only. No dependency files, project tree, state, or Source lock are touched.
 // A directory that cannot be listed (a file, a link, unreadable) is reported, never thrown: only this tool reads it.
-export function acceptanceEntries(ctx) {
+export function acceptanceEntries(ctx, project) {
   let names;
   try {
     names = fs.readdirSync(plainFenced(ctx.root, '.rulith/acceptance'));
@@ -156,14 +179,14 @@ export function acceptanceEntries(ctx) {
   }
   return names.filter(name => name.endsWith('.json')).sort().map(name => {
     const check = name.slice(0, -5);
-    try { return { check, row: checkSpecRow(check, acceptanceSpec(ctx, check)) }; }
+    try { return { check, row: checkSpecRow(check, acceptanceSpec(ctx, check), project) }; }
     catch (error) { return { check, error: ['acceptance spec too large'].includes(error.message) || isFieldError(error.message) ? error.message : 'acceptance spec invalid' }; }
   });
 }
 
-export function acceptanceRows(ctx, args) {
+export function acceptanceRows(ctx, args, project) {
   if (Object.keys(args).length) refuse('acceptance takes no arguments');
-  const entries = acceptanceEntries(ctx);
+  const entries = acceptanceEntries(ctx, project);
   if (entries === null) return { rows: [], errors: [{ error: 'acceptance directory unreadable' }] };
   const rows = [], errors = [];
   let truncated = false;

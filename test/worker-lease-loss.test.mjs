@@ -38,7 +38,7 @@ const SLOW_ADAPTER = {
     + "process.stdout.write(JSON.stringify({ rows: [] }))\n",
 }
 const SLOW_TOOL = { 'acme.slow@1': { adapter: 'run', sourceTypes: ['file'], entry: 'slow-adapter.mjs' } }
-const slowRow = () => slowActionRow()
+const slowRow = () => slowActionRow({}, SLOW_ADAPTER['slow-adapter.mjs'])
 /** A lease whose heartbeat falls due while the slow adapter is still running. */
 const shortLease = (operation) => activeLease({ workerId: operation.workerId, windowMs: 14_000, heartbeatAfterMs: 200 })
 /** Identity carried on both the operation and the protected headers. */

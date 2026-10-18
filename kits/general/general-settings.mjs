@@ -13,7 +13,8 @@ export function generalSettings(home) {
   if (webSearch !== undefined && (!webSearch || Array.isArray(webSearch)
     || Object.keys(webSearch).some(k => !['provider', 'keyEnv'].includes(k))
     || webSearch.provider !== 'deepseek' || typeof webSearch.keyEnv !== 'string'
-    || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(webSearch.keyEnv) || /^RULITH_/i.test(webSearch.keyEnv))) refuse('settings refused');
+    // RULITH_ is the runtime's namespace; NODE_ and OPENSSL_ names can load code, so a run Tool never receives them.
+    || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(webSearch.keyEnv) || /^(?:RULITH|NODE|OPENSSL)_/i.test(webSearch.keyEnv))) refuse('settings refused');
   return {
     imageMaxBytes: number('imageMaxBytes', 5 * 1024 * 1024, 20 * 1024 * 1024),
     webMaxBytes: number('webMaxBytes', 1024 * 1024, 8 * 1024 * 1024),

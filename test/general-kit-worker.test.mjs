@@ -6,6 +6,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { materialIdentity, openMaterialStore } from '../worker/material-store.mjs';
 
+/** The kit library every kit Tool declares, as file names beside its entry. */
+const kitLibrary = () => JSON.parse(fs.readFileSync(new URL('../kits/general/worker-tools.json', import.meta.url), 'utf8'))
+  .tools['eng.read_image@1'].implementation.map(name => name.replace('adapters/engineering-work/', ''));
+
 test('a real run adapter hands its image to Worker custody and reports a registered artifact', t => {
   const repo = fileURLToPath(new URL('../', import.meta.url));
   const scratch = path.join(repo, '.scratch'); fs.mkdirSync(scratch, { recursive: true });
@@ -20,9 +24,12 @@ test('a real run adapter hands its image to Worker custody and reports a registe
   const probe = path.join(dir, 'probe.mjs');
   fs.writeFileSync(probe, `
     import assert from 'node:assert/strict';
-    import { execute, prepareActionReport } from ${JSON.stringify(pathToFileURL(path.join(repo, 'worker/rulith-worker.mjs')).href)};
+    import { execute, prepareActionReport, runImplementation } from ${JSON.stringify(pathToFileURL(path.join(repo, 'worker/rulith-worker.mjs')).href)};
+    // The kit's read_image entry with the kit library it declares, verified where it ships.
+    const implementation = runImplementation({ adapter:'run', sourceTypes:['file'], entry:'read_image.mjs',
+      implementation:${JSON.stringify(kitLibrary())} }, ${JSON.stringify(path.join(repo, 'kits/general'))});
     const execution = await execute('image', {path:'tiny.png'}, {image:{
-      impl:'run', cmd:process.execPath, args:[${JSON.stringify(path.join(repo, 'kits/general/read_image.mjs'))}],
+      impl:'run', entry:implementation.entry, implementation,
       passArgs:true, artifactOutput:true, returns:[], envPass:['ENG_KIT_HOME'], source:'lab',
     }}, {lab:{type:'file',access:${JSON.stringify(root)}}}, {resultBytes:1000});
     assert.equal(execution.localArtifact.mediaType, 'image/png');
@@ -56,9 +63,10 @@ test('an existing run adapter relays artifacts JSON byte-for-byte through the re
   const adapter = path.join(dir, 'relay.mjs'), probe = path.join(dir, 'probe.mjs');
   fs.writeFileSync(adapter, `process.stdout.write(${JSON.stringify(stdout)});`);
   fs.writeFileSync(probe, `
-    import { execute } from ${JSON.stringify(pathToFileURL(path.join(repo, 'worker/rulith-worker.mjs')).href)};
-    const out = await execute('relay', {}, { relay: { impl:'run', cmd:process.execPath,
-      args:[${JSON.stringify(adapter)}], returns:[], source:'lab' } }, {lab:{type:'file',access:${JSON.stringify(dir)}}});
+    import { execute, runImplementation } from ${JSON.stringify(pathToFileURL(path.join(repo, 'worker/rulith-worker.mjs')).href)};
+    const implementation = runImplementation({ adapter:'run', sourceTypes:['file'], entry:'relay.mjs' }, ${JSON.stringify(dir)});
+    const out = await execute('relay', {}, { relay: { impl:'run', entry:implementation.entry, implementation,
+      passArgs:true, returns:[], source:'lab' } }, {lab:{type:'file',access:${JSON.stringify(dir)}}});
     process.stdout.write(out);
   `);
   const out = execFileSync(process.execPath, [probe], { encoding: 'utf8', windowsHide: true, env: {

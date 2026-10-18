@@ -11,8 +11,9 @@ import { globMatcher, globFiles } from '../kits/general/glob-files.mjs';
 import { applyPatch } from '../kits/general/apply-patch.mjs';
 import { readImage } from '../kits/general/image.mjs';
 import { parseKitInstall, installGeneral } from '../kits/general/installer.mjs';
+import { PROJECT_TOOLS } from '../kits/general/pack/build-pack.mjs';
 import { parseLocalCli } from '../local/rulith-local.mjs';
-import { adapterEnv, workerToolsOf, toolFromSpec, resultFactsFromRows, prepareActionReport, runAdapterTimeoutMs } from '../worker/rulith-worker.mjs';
+import { adapterEnv, workerToolsOf, toolFromSpec, resultFactsFromRows, prepareActionReport, runAdapterTimeoutMs, withImplementationPins } from '../worker/rulith-worker.mjs';
 import { runArtifactOutput } from '../worker/run-artifacts.mjs';
 import { openMaterialStore, materialIdentity } from '../worker/material-store.mjs';
 
@@ -257,10 +258,10 @@ test('CLI is explicit; installer merges tools and passes only the named search e
   assert.throws(() => parseKitInstall(['--agent', 'Fixture']), /required/);
   assert.throws(() => parseKitInstall([...args, '--agent', 'Duplicate']), /Expected/);
   fs.unlinkSync(path.join(f.home, 'specs/test.json')); // Project acceptance needs no owner-pinned legacy test.
-  assert.match(installGeneral(parseKitInstall(args)), /Installed 20/);
+  assert.match(installGeneral(parseKitInstall(args)), /Installed 29/);
   installGeneral(parseKitInstall(args));
   const installed = JSON.parse(fs.readFileSync(tools));
-  assert.equal(Object.keys(installed.tools).length, 21);
+  assert.equal(Object.keys(installed.tools).length, 30);
   assert.deepEqual(installed.tools['eng.test@2'], manifest.tools['eng.test@2']);
   assert.deepEqual(installed.tools['eng.acceptance@1'], manifest.tools['eng.acceptance@1']);
   assert.deepEqual(installed.tools['web.search@1'].env.pass, ['ENG_KIT_HOME', 'FIXTURE_SEARCH_KEY']);
@@ -283,13 +284,13 @@ test('CLI is explicit; installer merges tools and passes only the named search e
 });
 
 test('kit Capability accredits every return predicate with the same arguments', () => {
-  assert.equal(Object.keys(workerToolsOf(manifest)).length, 20);
+  assert.equal(Object.keys(workerToolsOf(manifest)).length, 29);
   const program = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/program.json', import.meta.url)));
   const sources = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/sources.json', import.meta.url)));
   assert.equal(sources.meta.version, 2);
   assert.equal(fs.existsSync(new URL('../kits/general/tool-descriptions.json', import.meta.url)), false);
   const definitions = new Map(program.vocabulary.defines.map(d => [d.id, d.args]));
-  for (const [id, tool] of Object.entries(manifest.tools)) if (!['eng.test@2', 'eng.acceptance@1'].includes(id))
+  for (const [id, tool] of Object.entries(manifest.tools)) if (!['eng.test@2', 'eng.acceptance@1', ...PROJECT_TOOLS].includes(id))
     for (const row of tool.returns) assert.deepEqual(definitions.get(row.predicate), Object.keys(row.args));
   assert.deepEqual(sources.sources[0].words, [...definitions.keys()]); assert.equal(sources.sources[0].name, 'lab');
   assert.deepEqual(program.actions, []);
@@ -299,7 +300,13 @@ test('all twelve original contract objects retain their canonical source bytes',
   // Digests captured from the engineering kit when ported; no external checkout is needed.
   const baseline = JSON.parse(fs.readFileSync(new URL('./fixtures/general-kit-legacy-contract-digests.json', import.meta.url)));
   assert.equal(Object.keys(baseline).length, 12);
-  for (const [id, digest] of Object.entries(baseline)) assert.equal(sha(JSON.stringify(manifest.tools[id])), digest, id);
+  // `implementation` (SYS-TOOL-01) is the declared file set the Tool pin covers, added later; the
+  // contract object itself — kind, params, returns, Source types, entry, env — keeps its bytes.
+  for (const [id, digest] of Object.entries(baseline)) {
+    const { implementation, ...contract } = manifest.tools[id];
+    assert.ok(Array.isArray(implementation), `${id} declares no implementation files`);
+    assert.equal(sha(JSON.stringify(contract)), digest, id);
+  }
 });
 
 test('artifact custody is opt-in and namespaced; ordinary run stdout is byte-for-byte', async t => {
@@ -341,11 +348,17 @@ test('artifact filesystem failures never expose a local path', async t => {
 });
 
 test('artifact opt-in survives compilation only from the pinned local manifest', t => {
-  const f = fixture(t), tools = workerToolsOf(manifest), sources = { lab: { type: 'file', access: f.root } };
+  const f = fixture(t), sources = { lab: { type: 'file', access: f.root } };
+  // The kit as installed in a Worker root, pinned to its bytes the way the Worker pins it at start.
+  const workerRoot = path.join(f.dir, 'worker'), installed = path.join(workerRoot, 'adapters', 'engineering-work');
+  fs.mkdirSync(installed, { recursive: true });
+  for (const name of fs.readdirSync(new URL('../kits/general/', import.meta.url)).filter(n => n.endsWith('.mjs')))
+    fs.copyFileSync(new URL(`../kits/general/${name}`, import.meta.url), path.join(installed, name));
+  const tools = withImplementationPins(workerToolsOf(manifest), workerRoot);
   for (const id of ['eng.read_image@1', 'eng.read@1']) {
     const def = manifest.tools[id];
     const spec = { impl: 'worker-tool', exec: id, kind: 'read', sourceTypes: ['file'], params: def.params, returns: def.returns, artifactOutput: true };
-    const compiled = toolFromSpec(JSON.stringify(spec), JSON.stringify({ source: 'lab', path: 'tiny.png' }), tools, tools[id].digest, sources, 'lab');
+    const compiled = toolFromSpec(JSON.stringify(spec), JSON.stringify({ source: 'lab', path: 'tiny.png' }), tools, tools[id].digest, sources, 'lab', workerRoot);
     assert.equal(compiled.artifactOutput, id === 'eng.read_image@1' ? true : undefined);
   }
 });
@@ -629,7 +642,7 @@ test('failed kit save removes its temporary file immediately', t => {
   const f = fixture(t);
   t.mock.method(fs, 'renameSync', () => { throw Object.assign(new Error('fixture rename refused'), { code: 'EACCES' }); });
   assert.throws(() => save(f.ctx.stateFile, { value: 1 }), /fixture rename refused/);
-  assert.deepEqual(fs.readdirSync(f.home), ['specs']);
+  assert.deepEqual(fs.readdirSync(f.home).filter(name => !/^root-[a-f0-9]{64}\.json$/.test(name)), ['specs']);
 });
 
 test('HTML fetch reaches body text after 100 KiB of head and still hashes every byte', async t => {

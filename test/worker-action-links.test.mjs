@@ -29,7 +29,7 @@ import {
   actionRowFaults, executionDigest, grantMismatch, parseLease, readExecutionGrant,
   requestVectorOf, resolveInvocationSource,
 } from '../worker/rulith-worker.mjs'
-import { CONNECTION_KEY, DONE, HOLD, driveWorker, signGrant, toolDigest } from './support/worker-harness.mjs'
+import { CONNECTION_KEY, DONE, HOLD, TOOLS, driveWorker, runPin, signGrant } from './support/worker-harness.mjs'
 
 const CONTRACT = loadWorkerContract()
 const FIXTURE = CONTRACT.fixture
@@ -157,7 +157,7 @@ test('RT-WK-LINK-6 a committed dispatch runs end to end once its grant is reboun
   const committed = ROWS.get(link.work)
   // The fixture's Tool pin is a placeholder; the local install has a real one, so the row's
   // pin and the grant's `adapterDigest` move together to the local Tool being run.
-  const localPin = toolDigest({ adapter: 'run', sourceTypes: ['file'], entry: 'ship-adapter.mjs' })
+  const localPin = runPin(TOOLS.tools['acme.ship@1'])
   const rebound = {
     ...committed,
     connectionId: 'conn-p2',

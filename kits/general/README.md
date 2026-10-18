@@ -20,13 +20,17 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    `rulith kit install general --agent <name> --kit-home <dir> [--manager-home <dir>]`.
    The manager directory defaults to `RULITH_MANAGER_HOME` or `~/.rulith/manager`.
    For scripts, `node kits/general/install.mjs` accepts the same flags.
-   It copies the adapters into that Agent's Worker root, merges the twenty kit tools into the
+   It copies the adapters into that Agent's Worker root, merges the twenty-nine kit tools into the
    Agent's own tool manifest and sets the Worker environment: `ENG_KIT_HOME`,
    `RULITH_WORKSPACE_TOOLS=read` (Console uses the built-in read tools to bind the Source) and
    `RULITH_WORKER_RUN_TIMEOUT_SECONDS` (the longer of `runDeadlineSeconds` and
    `pollMaxWaitSeconds` and `webTimeoutSeconds`, plus 60, capped at 604,800 seconds).
    The adapter directory remains
    `adapters/engineering-work/` so the original engineering tool entries stay compatible.
+   Each kit tool declares the kit library it may load (`implementation`), and its pin covers the bytes of
+   its entry and of that library: a reinstall that changes any kit file changes every kit tool's digest,
+   and the old Console locks refuse the changed tools until you lock them again. The Worker runs a kit
+   tool only with the verified bytes and refuses any file outside that list.
    Turn the Agent's Worker off and on afterwards. Installation is local; it does not pair,
    start a Worker, bind a Source, or contact a service.
 3. Run it again after changing `settings.json` limits or `webSearch.keyEnv`. Export the search
@@ -46,10 +50,23 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    The program adds the check criterion rule and acceptance bridge, and no business Actions.
    The older `pack/program.json` and `pack/sources.json` stay byte-identical (that program defines two
    namespaces and does not compile). Install v2 on a new Board: same-name packages cannot be installed
-   together or hot-upgraded.
+   together or hot-upgraded. Program v2 reads the tool versions without a project; its signed leaves
+   name a check and a digest that any project's pass can meet (see "Completing a goal").
+
+   The official engineering capability (PSC 0.2.24, the default Agent's first-party Release) is
+   `pack/program-v3.json` (`engineering_work`, third edition) with `pack/sources-v4.json`
+   (`engineering_work_sources` version 4: one Source template `project`, explicit empty access modes and
+   the `toolAdoption` contract of the fifteen tools it adopts, each with the digest the Worker advertises
+   for the installed kit and `directUse: true`). `pack/official-recipe.json` holds both with the
+   capability header in the format the Gateway's `EngineeringRelease` reads; copy it to rulith-java
+   `gateway/src/main/resources/official/engineering/recipe.json` and raise `capability.version` whenever it
+   changes. `node pack/build-pack.mjs` writes all five generated files; any change to a kit file changes the
+   digests in the recipe.
 5. Console: bind Source `lab` to the project root and the Worker Connection, pin the desired
    kit tools (allow direct use) and lock. Non-strict exploration mode lets the model supply
-   write and run inputs; each such call is marked as not grounded.
+   write and run inputs; each such call is marked as not grounded. For program v3 (a `project`
+   Source) pin only the fifteen tools its `toolAdoption` lists: once a project tool has used a root,
+   the older versions that write, run, test or measure are refused there (`project tools required`).
 
 ## Settings (`<kit home>/settings.json`)
 
@@ -118,8 +135,24 @@ can. In particular:
   are trusted), rewrite the state file, or edit `settings.json`. A settings change is a tree step,
   but a script can rewrite all three consistently.
 - A pass is therefore only as trustworthy as the project scripts the check runs, and the scripts
-  they in turn run. The signed `eng.check_spec` pins the check's own files, not everything they
-  import or start.
+  they in turn run. The signed `eng.check_spec` pins the check's own files (and, when the command
+  starts a program inside the project, that program), not everything they import or start: project
+  files not listed in `files`, programs outside the project, and the environment (variables, PATH,
+  installed toolchains) are not frozen.
+- Cloning a kit home (copying `kit-id`, the state files and the root records to another machine or
+  directory) clones its project identities: passes made under the copy count for the original's
+  signed leaves. Give every Worker its own kit home.
+- Never delete a project's state file (`tree-<key>.json`) together with its root record
+  (`root-<key>.json`), nor the whole kit home: either one alone is recovered from the other, but both
+  together lose the generation history, and a pass made before that is never withdrawn by later
+  receipts. Sign such leaves again.
+- Moving or renaming a project directory (other than a change of case) makes it a new root with a new
+  identity and a new counter; the old identity's passes are never withdrawn. Sign the leaves again
+  after a move.
+- Nested roots are detected within one kit home only. Two kit homes (two Workers, two devices) bound
+  to overlapping directories do not see each other's records.
+- On Windows the identity spelling of a root is lower case. Two directories that differ only in case
+  (possible only where per-directory case sensitivity is turned on) are one project to the kit.
 - A command's own writes under an owner exclusion or the root `.git` are not seen by the tree digest.
   In particular a script can write `.git/config` (`core.fsmonitor`, aliases), and a later
   `git status` or `git <alias>` in a check then runs code the digest never sees.
@@ -141,6 +174,36 @@ are preserved. New contracts:
 | `eng.read@2` | `path`, optional byte `offset` | Same bounded read result as `eng.read@1`, plus `eng.file_read{path,digest,bytes}`. This digest describes the full file; the inline text may be a window. `eng.read@1` still returns no facts. |
 | `web.fetch@1` | `url` | GET of HTTP(S) without credentials/cookies; HTML becomes readable text. `web.page{url,final_url,status,digest,fetched_at}`; the digest covers the complete fetched response bytes. |
 | `web.search@1` | `query` | Bounded provider result text and `web.search{query,provider,digest,fetched_at}`. The digest covers the complete scrubbed result text. Missing key refuses with `web search key unavailable`. |
+| `eng.write_file@2`, `eng.patch_file@2`, `eng.apply_patch@2`, `eng.run@2`, `eng.job_start@2`, `eng.job_poll@2`, `eng.job_stop@2` | as version 1 | The version-1 behaviour and result, and every row also carries `project`: `eng.tree_step{project,from_gen,to_gen}`. Patch preflight budgets the project too. |
+| `eng.acceptance@2` | none | As `eng.acceptance@1`, with the check key, the Source name and the project root first: `eng.check_spec{key,source_name,project_root,check,spec_digest,command,cwd,shell,files}`; the receipt budget is measured with them. |
+| `eng.test@3` | `check` | As `eng.test@2`: `eng.check_result{key,project,check,spec_digest,gen,tree_digest,exit_code}` and `eng.tree_step{project,from_gen,to_gen}`; it refuses a spec whose `eng.acceptance@2` row would not fit (`acceptance spec too large`). |
+
+The project versions are what program v3 reads; the versions without a project keep their receipts
+byte for byte for program v2.
+
+A project root has an **identity spelling**: its real path, on Windows the file system's own spelling
+(short names expanded) in lower case, so `d:\work\p`, `D:\Work\p` and the same directory after a
+case-only rename are one root. The generation counter (`tree-<key>.json`), job file, tree cache and the
+**root record** (`root-<key>.json`) are keyed by it; a counter or running job an earlier version kept
+under the caller's spelling is continued and still found. Every root used is recorded in the kit home,
+and a root inside or around another recorded root is refused (`project root overlaps another
+project`): generations are counted per root, so a write through one would not withdraw the other's
+passes. To use a directory inside or around a former project, remove that project's `root-*.json`.
+
+A **project** identity is fixed the first time a project tool uses a root: `sha256(<kit id> "\n"
+<identity spelling>)` in lowercase hex, where the kit id is a random identity in `<kit home>/kit-id`
+(written whole to a temporary file and renamed; rewritten when missing or damaged). From then on the
+identity is kept with the counter (`project` in the state file, and in the root record) and read, never
+recomputed: removing or replacing `kit-id` changes no existing project, and the same path on two
+devices, or one directory under two kit homes, are different projects. If the state file is lost, the
+root record's identity and last generation are used: the counter resumes at that generation and the
+next receipt steps out of it, so a pass made there is withdrawn. Once a root has an identity, the
+older tool versions that write, run, test or measure are refused there (`project tools required`):
+their steps carry no project. The **check key** is `<project>:<check>:<spec_digest>`; no part contains
+a colon, so the key splits into exactly its three parts. `eng.check_spec` also shows `source_name` (the
+governed Source name the Worker hands the adapter as `RULITH_SOURCE_NAME`) and `project_root` (the root's
+display spelling: separators as `/`, every character outside 0x20–0x7E and every backslash as
+`\uXXXX`), so the person who signs reads which project a key names; neither takes part in the binding.
 
 Patch receipts report `eng.file_state` for each file (the same arguments as `eng.write_file`)
 and `eng.tree_step`. Deletion uses the SHA-256 of empty bytes and zero bytes as its absent
@@ -264,18 +327,30 @@ spec's source under `.deep-rulith/measure/` is part of the project tree. The own
 ## Completing a goal
 
 Certification means an acceptance contract was fulfilled: a root goal, criterion leaves and a signer.
-After discovering check receipts, declare child goals with `desired` atoms
-`eng.check_passed(check, spec_digest)` under the root using `declare_goal`. The person signs the
-leaves in Console (`SignAcceptance`); the Kernel plants `acceptance(node, test)` with `test` equal
-to the value of the atom's first declared argument, `check`. The package bridge connects that check
-name to `acceptance_met(node)`. The leaf's own `goal_met` also requires the exact desired atom,
-so its signed digest must hold. A bridge match for a different digest cannot fulfill that leaf.
-The Board's contract machinery completes the root when all signed leaves fulfill.
+After discovering check receipts, declare child goals under the root using `declare_goal`, each with
+the `desired` atom `eng.check_passed(key)` (program v3; copy `key` from the project's `eng.check_spec`
+receipt) or `eng.check_passed(check, spec_digest)` (program v2). The person signs the leaves in Console
+(`SignAcceptance`); the Kernel plants `acceptance(node, test)` with `test` equal to the value of the
+atom's first declared argument, and the leaf is done when the package bridge derives
+`acceptance_met(node)` from it. The Board's contract machinery completes the root when all signed
+leaves fulfill.
 
-Console renders the `eng.check_spec` fact whose `check` and `spec_digest` match a proposed leaf
-next to that leaf, so the person reads the command, working directory, shell flag and every
-frozen file digest the leaf's digest denotes before signing. Without such a
-fact there is nothing to read; `eng.test@2` refuses a spec that `eng.acceptance@1` cannot report.
+Program v3 (the official capability) binds everything the person signed into that one value. The rule
+`ENG_CHECK_PASSED` derives `eng.check_passed(key)` from a passing `eng.check_result{key, project, gen,
+exit_code: 0}` unless an `eng.tree_step{project, from_gen: gen}` of the same project exists, and the
+bridge `ENG_CHECK_ACCEPTANCE` joins `acceptance(node, key)` with `eng.check_passed(key)`. A spec
+loosened after signing has another digest, hence another key, so its pass cannot fulfil the signed
+leaf; a write in another project neither withdraws nor fulfils this project's checks.
+
+Program v2 has neither binding: its bridge joins on the check name alone, so a pass of the same check
+name with any spec digest, in any project, fulfils a v2 leaf, and generation numbers of different
+projects withdraw each other's passes. It stays only for the Agents that installed it.
+
+Before signing, the person must see what the key freezes: the `eng.check_spec` receipt with that `key`
+shows the Source and project root, the command, working directory, shell flag and every frozen file
+digest. `eng.test@3` refuses a
+spec that `eng.acceptance@2` cannot report in full (and `eng.test@2` one that `eng.acceptance@1`
+cannot).
 
 `eng.check_passed`, `eng.check_result`, `eng.check_spec` and `eng.tree_step` are package pins
 (committed derivation). Model assertions and model rule heads using them are refused with
@@ -284,13 +359,12 @@ write a completion rule. Console signing and certification require the D-1016a K
 
 Limits of the vocabulary, stated rather than enforced here:
 
-- The authoring format's definitions carry only `id`, `as` and `args`; it has no `key` notion. A leaf
-  whose desired atom omits `spec_digest` would match any digest. Console and the Kernel's signing
-  guard must require both arguments of `eng.check_passed` on a signed leaf.
-- The receipt facts carry no Source column. A run adapter is not told its Source name (the Worker
-  passes only `RULITH_SOURCE_ACCESS` and `RULITH_SOURCE_TYPE`), so `"$source"` cannot be mapped.
-  Each receipt is still bound to its invocation's Source by the Kernel's accreditation. Generations
-  are per project: bind one `lab` project per Board when checks are used as criteria.
+- The binding receipt facts carry no Source column: the project in v3 receipts is the kit's own
+  identity of the root, not the Source. Each receipt is still bound to its invocation's Source by the
+  Kernel's accreditation; `eng.check_spec` shows the Source name for reading only.
+- Generations are counted per project root, and nested roots under one kit home are refused. A change
+  made outside the kit (an editor, another kit home on the same directory) is seen by the next
+  receipt, not at once.
 - The check observes what its process reports. Code under test runs inside the test process and can
   sabotage it (for example `process.exit(0)` before an assertion, or a wrapper that swaps code and
   restores it). The contract covers what the check observes, not an adversarial project; the person
@@ -359,6 +433,20 @@ with `acceptance shell refused`. With `shell: true` the command is one string th
 exactly as written, and `eng.check_spec` shows exactly that string. Without `shell: true` the
 command is an argv array and never goes through a shell.
 
+The spec freezes command words, so the programs they start are checked before the run, and a program
+found inside the project must be listed in `files` (`acceptance spec invalid: command program must be
+listed in files`). Without `shell` the first word is resolved exactly as the run resolves it: a word
+with a path against `cwd`, a bare name on PATH (a relative entry against `cwd`); on Windows, as libuv
+does, the name itself only when it has an extension, then `.com` and `.exe` (never `.cmd` or `.bat`);
+elsewhere the first executable file, as execvp finds it. With `shell: true` the shell finds programs
+itself and one line can start several, so every word of the line (a quoted stretch is one word; the
+line is split at whitespace and `& | ; < > ( )`) is checked against every file it could start, on
+Windows with each PATHEXT extension: any word with a path that names a project file (a program or an
+argument), and any bare word found on a PATH entry inside the project, must be listed. Names that only variables or substitutions produce are not seen (with a shell the classifier is
+advisory). On Windows every
+command, check, job and measurement runs with `NoDefaultCurrentDirectoryInExePath=1` (set for the adapter
+and handed to the child), so a `node.exe` in the working directory never stands in for the one on PATH.
+
 The **spec digest** hashes canonical JSON bytes of the spec `{command, cwd, files, shell}` with its
 default written out (`shell: false` when omitted): recursively sort every object's keys by UTF-16
 code unit order, retain array order, encode keys and primitive values with `JSON.stringify`, and
@@ -396,9 +484,10 @@ reported, but cannot derive the criterion. After execution the adapter rechecks 
 spec digest, so a command cannot rewrite its own frozen tests/spec and produce a passing fact. A
 changed valid spec uses `acceptance spec changed`.
 
-The rule `ENG_CHECK_PASSED` derives `eng.check_passed(check, spec_digest)` from a successful
-`eng.check_result` at generation `g` unless an `eng.tree_step(from_gen:g, to_gen:n)` exists. The NAF
-variable `n` is intentionally free. Later writes retract the criterion via closure. The frozen
+In program v2 the rule `ENG_CHECK_PASSED` derives `eng.check_passed(check, spec_digest)` from a successful
+`eng.check_result` at generation `g` unless an `eng.tree_step(from_gen:g, to_gen:n)` exists; program v3
+derives `eng.check_passed(key)` and reads only tree steps of the result's project (see "Completing a
+goal"). The NAF variable `n` is intentionally free. Later writes retract the criterion via closure. The frozen
 acceptance digest lives on the Board in the signed leaf's desired atom: the kit does not copy specs
 into its home, and the Source lock does not freeze the acceptance contract. `eng.test@1` still reads
 only `<kit home>/specs/test.json` and returns its original four-argument `eng.test_result`, which

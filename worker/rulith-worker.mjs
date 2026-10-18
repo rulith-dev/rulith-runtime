@@ -81,11 +81,22 @@
  * PATH / HOME / TEMP / SystemRoot basics plus exactly the listed names. Neither is a
  * sandbox: an Adapter runs with the Worker user's rights.
  *
+ * `implementation` (SYS-TOOL-01, ACC-TOOL-09) lists the other `.mjs` files a `run` entry may
+ * load, relative to the Worker root like `entry`: `"implementation": ["adapters/acme/lib.mjs"]`.
+ * A run Tool's pin covers the bytes of its entry and of every listed file, so changing any of
+ * them changes the advertised digest and the old Connection lock no longer runs it. The Adapter
+ * starts under implementation-boundary.mjs, which loads only those files at their declared paths,
+ * only with the verified bytes; refuses CommonJS, native addons, package-name and `#` imports, the
+ * compile cache and module hooks of its own; and starts every Worker thread and Node child it makes
+ * under the same boundary (other programs, such as the project commands a kit runs, start as usual).
+ * The Adapter receives no NODE_* name but NODE_EXTRA_CA_CERTS and NODE_USE_ENV_PROXY, and no
+ * OPENSSL_* name. A built-in's pin covers the Runtime release that implements it.
+ *
  * 动作工具改变世界(回执 effect_confirmed);放电工具兑现主张(证据带档回板,缺省 attested)。
  * 主张载荷随工单来(claim.predicate/args),http 放电工具把它作为请求体 POST 给后端。
  *
  * 围栏(机械硬界,声明即边界):
- *   run  只执行表里写死的 cmd/args——不接受任何来自工单的插值(注入面=零);
+ *   run  只用 node 执行表里写死的入口,且只装载 pin 核验过的实现字节——不接受任何来自工单的插值(注入面=零);
  *   http 只打来源地址同源的相对路径(存量本机表则只打 allowHosts);
  *   workspace 只读写 Source access 根目录内的有界文本/JSON 文件,不执行 shell、不删除;
  *   db-query 只跑单条 SELECT；db-exec-fenced 先做单语句与破坏性分类;
@@ -97,13 +108,13 @@
  *   → ReportWork(回执,与领取配对,板侧防重放) → 立即回到 Poll。
  */
 import { runArtifactOutput } from './run-artifacts.mjs'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, realpathSync, statSync } from 'node:fs'
 import { lstat, mkdir, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { invokeMcp, closeMcpClients, McpExecutionUnknownError } from './mcp-client.mjs'
 import { inputAdoptionForTools, toolContractFingerprint, validateDbInputContract, validateHttpInputContract } from './action-input-db.mjs'
@@ -119,6 +130,9 @@ import {
 } from './material-transport.mjs'
 import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, localAuthoringIngestCue, LOCAL_AUTHORING_DRAFT_SHAPE, LOCAL_AUTHORING_MODERN_CUE, LOCAL_AUTHORING_REFERENCE_CUE } from './local-authoring.mjs'
 import { authoringGuidanceText } from './authoring-diagnostics.mjs'
+import {
+  IMPLEMENTATION_HOOKS_ENV, IMPLEMENTATION_PIN_FORMAT, boundaryArgv, boundaryEnv, implementationPinKey, isLoaderEnvName, sha256Hex,
+} from './implementation-hooks.mjs'
 // The off-machine permission reading travels with the Worker surface it has always been part
 // of, so the committed cross-repository permission rows keep one importable answer to compare
 // against. Its consumer moved — from an upload that no longer exists to the disclosure decision
@@ -1098,12 +1112,12 @@ export function toolKind(definition) {
 /**
  * The advertised descriptor of one installed Tool. Built-in or declared, the shape is the
  * same. For a manifest entry every field is a function of the written definition the digest
- * pins, so its descriptor cannot move without its pin moving. A built-in's pin covers only
- * its adapter, Source types and entry; the rest is this release's fixed contract table, so a
- * Runtime release can change a built-in's descriptor while its pin stays — 0.16.2 added
- * `content` to write_text and write_json. The Gateway compares the whole locked descriptor,
- * so such a change is refused as worker_tool_manifest_drift until the operator locks the Tool
- * again in Console: fail closed, never a silent widening.
+ * pins, so its descriptor cannot move without its pin moving; a `run` entry's pin also covers
+ * its implementation bytes (runImplementation). A built-in's pin covers its adapter, Source
+ * types, entry and the Runtime release (builtinPin); the rest is this release's fixed contract
+ * table. The Gateway compares the whole locked descriptor, so any change is refused as
+ * worker_tool_manifest_drift until the operator locks the Tool again in Console: fail closed,
+ * never a silent widening.
  */
 export function workerToolDescriptor(id, definition) {
   const contract = builtinContract(definition)
@@ -1153,20 +1167,34 @@ export function builtinWorkspaceTools(mode = 'read') {
   const catalog = mode === 'read-write' ? { ...WORKSPACE_READ_TOOLS, ...WORKSPACE_WRITE_TOOLS } : WORKSPACE_READ_TOOLS
   const tools = {}
   for (const [id, entry] of Object.entries(catalog)) {
-    // The digest covers the definition — adapter, Source types, entry — and nothing else,
-    // exactly as before this Worker learned to state kind/params/content/returns. Those are
-    // read from this release's table for `entry`, so no built-in digest moves; but a release
-    // that changes the table changes the advertised descriptor, which the Connection lock
-    // compares whole (see workerToolDescriptor). A manifest entry is the other case: there an
-    // operator writes them, so they are part of the definition and do enter its digest.
+    // The digest covers the definition — adapter, Source types, entry — and the Runtime release
+    // that implements it (see builtinPin). kind/params/content/returns are read from this
+    // release's table for `entry`; a release that changes the table changes the advertised
+    // descriptor, which the Connection lock compares whole (see workerToolDescriptor). A manifest
+    // entry is the other case: there an operator writes them, so they enter its digest.
     const definition = { adapter: 'workspace', sourceTypes: ['file'], entry }
-    tools[id] = { ...definition, ...WORKSPACE_TOOL_CONTRACTS[entry], digest: toolDigest(definition) }
+    tools[id] = { ...definition, ...WORKSPACE_TOOL_CONTRACTS[entry], digest: toolDigest(builtinPin(definition)) }
   }
   return tools
 }
+/**
+ * 内置 Tool 的 pin 绑定 Runtime 制品（ACC-TOOL-09；Worker 细则 §1“内置 Tool 绑定所加载的 Worker Runtime 制品”）。
+ *
+ * 内置 Tool 的实现字节就是这个 Runtime 包本身（本文件和它装载的模块），所以它的实现身份是这个发布：
+ * npm 上一个版本号对应的包字节不可改写，artifact-manifest.json 逐文件记着每个发布文件的 sha256。
+ * 把版本号放进 pin，Runtime 一换版，旧 pin 就拒绝新实现，直到操作员重新锁定——和自定义实现文件变化同一律。
+ * 这里不对自己的文件求摘要：被改过的 Runtime 也能改掉求摘要的代码，自证不增加任何保证；
+ * 同一版本号下被本机改过的 Runtime 属于机器本身的完整性，实现 pin 本来就不认证它（SYS-TOOL-01）。
+ * 只覆盖随 Runtime 出货、按 id 内置的 Tool；Tool Manifest 里声明的 http／db／mcp 等条目没有本地实现文件，
+ * 它们的 digest 不变。
+ */
+const RUNTIME_ARTIFACT = `rulith@${RULITH_RUNTIME_VERSION}`
+function builtinPin(definition) {
+  return { ...definition, runtime: RUNTIME_ARTIFACT }
+}
 export function builtinSourceTools() {
   return Object.fromEntries(Object.entries(SOURCE_READ_TOOLS).map(([id, definition]) =>
-    [id, { ...definition, ...SOURCE_TOOL_CONTRACTS[definition.entry], digest: toolDigest(definition) }]))
+    [id, { ...definition, ...SOURCE_TOOL_CONTRACTS[definition.entry], digest: toolDigest(builtinPin(definition)) }]))
 }
 /**
  * The material read Tool, advertised only when this profile actually has a material area.
@@ -1179,14 +1207,14 @@ export function builtinSourceTools() {
 export function builtinMaterialTools(root = MATERIALS_ROOT) {
   if (String(root ?? '').trim() === '') return {}
   return Object.fromEntries(Object.entries(MATERIAL_READ_TOOLS).map(([id, definition]) =>
-    [id, { ...definition, ...MATERIAL_TOOL_CONTRACTS[definition.entry], digest: toolDigest(definition) }]))
+    [id, { ...definition, ...MATERIAL_TOOL_CONTRACTS[definition.entry], digest: toolDigest(builtinPin(definition)) }]))
 }
 export function builtinLocalAuthoringTools(root = MATERIALS_ROOT) {
   if (String(root ?? '').trim() === '') return {}
   return Object.fromEntries(Object.entries(LOCAL_AUTHORING_TOOLS).map(([id, definition]) => {
     const pinned = { adapter: definition.adapter, sourceTypes: definition.sourceTypes, entry: definition.entry,
       implementationVersion: definition.implementationVersion, release: definition.release }
-    return [id, { ...definition, digest: toolDigest(pinned) }]
+    return [id, { ...definition, digest: toolDigest(builtinPin(pinned)) }]
   }))
 }
 /** Local 管理页与 Worker 启动共用一份组成规则，避免页面漏列内置工具或接受启动必拒的配置。 */
@@ -1275,6 +1303,13 @@ if (IS_MAIN) {
   // 读成功**之后**才点名(DPC-6): 它炸了不叫"读不了"。放在 try 外面,是为了让它自己的错
   // 以自己的形状出现——**同一个 catch 不许同时服务两种成因**(与 unknown_board 那条同律)。
   checkImpls(TOOLS)
+  // 实现字节 pin（SYS-TOOL-01）：run Tool 的 digest 覆盖它此刻的实现字节。读不全的不广告——
+  // 它的锁说能做、每次派工都只能拒绝，比不在名单上更糟；其他 Tool 不受影响。单独成段，不放进上面
+  // “读工具表”的 try：这里的失败是实现文件的事，不是工具表的事。
+  TOOLS = withImplementationPins(TOOLS, WORKER_ROOT, (id, error) => {
+    console.error(`· Worker Tool ${id} is not advertised: its implementation cannot be pinned (${String(error?.message ?? error)}).`
+      + ' A run Tool runs only the bytes its pin covers; fix the files or its "implementation" list and restart this Worker.')
+  })
   // An empty manifest is honest: this Worker cannot claim action work.
 }
 
@@ -1798,7 +1833,7 @@ const ADAPTER_ENV_DENY_PATTERNS = [
  *
  * Every ambient `RULITH_*` name is stripped — on the deny path and against an `env.pass`
  * allow-list alike — and `handRun` then supplies only the context the work item decides:
- * `RULITH_INVOCATION_ID`, `RULITH_EXECUTION_KEY`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`.
+ * `RULITH_INVOCATION_ID`, `RULITH_EXECUTION_KEY`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`, `RULITH_SOURCE_NAME`.
  *
  * This started as a list of three names, which was one name per known problem and no rule at
  * all. Two kinds of leak survived it. A **retired** one: Case identity left this hop
@@ -1825,6 +1860,8 @@ const ADAPTER_CONTEXT = Object.freeze({
   executionKey: 'RULITH_EXECUTION_KEY',
   sourceAccess: 'RULITH_SOURCE_ACCESS',
   sourceType: 'RULITH_SOURCE_TYPE',
+  // The governed Source name this invocation selected, for display: an Adapter may show which Source it served.
+  sourceName: 'RULITH_SOURCE_NAME',
 })
 const ADAPTER_SUPPLIED_CONTEXT = Object.freeze(Object.values(ADAPTER_CONTEXT))
 /**
@@ -1889,9 +1926,29 @@ export function runAdapterTimeoutMs(env = process.env) {
   return seconds * 1000
 }
 
+/**
+ * The Runtime's own preload that holds a run Tool to its verified bytes (implementation-boundary.mjs).
+ * A file URL: `--import` reads a Windows drive path as a URL scheme.
+ */
+const IMPLEMENTATION_BOUNDARY = new URL('./implementation-boundary.mjs', import.meta.url).href
+
 function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
   return new Promise((finish, reject) => {
-    const argv = [...(t.args ?? []), ...(t.passArgs === true ? [JSON.stringify(args ?? {})] : [])]
+    // 只执行已核验的同一份实现字节（SYS-TOOL-01）。没有核验结果的 run Tool 不启动——包括任何
+    // 想把 run 当成通用程序启动器的写法：启动什么由核验过的入口决定，不由命令行决定。
+    const implementation = t.implementation
+    if (implementation === undefined || typeof t.entry !== 'string' || implementation.entry !== t.entry) {
+      return reject(new Error('This run Tool carries no verified implementation, so it does not start: a run Tool executes'
+        + ' only the implementation bytes its pin covers. Nothing ran.'))
+    }
+    // 领取前核验过一次；这里在启动前再核一次，领取之后才被换掉的文件在进程启动前就被拒绝。
+    const drift = implementationDrift(implementation)
+    if (drift !== undefined) {
+      return reject(new Error(`The run Tool's implementation no longer matches its pin: ${drift}. The Adapter was not started; nothing ran.`))
+    }
+    // --preserve-symlinks(-main): modules load at their declared paths, which is what the pin names.
+    const argv = [...boundaryArgv(IMPLEMENTATION_BOUNDARY), implementation.entry,
+      ...(t.passArgs === true ? [JSON.stringify(args ?? {})] : [])]
     // The invocation comes from the trusted work item, never from model arguments. It is
     // the execution's own identity: which Cases that execution ends up advancing is the
     // shared graph's answer, computed from real causal reach, and was never something an
@@ -1911,16 +1968,30 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       && typeof context.invocationId === 'string' && context.invocationId !== ''
       ? `rulith-execution/1:${createHash('sha256').update(JSON.stringify([context.boardId, context.invocationId])).digest('hex')}`
       : undefined
-    const env = {
+    // boundaryEnv withholds every name that can load or select code — NODE_OPTIONS (preloads ahead of
+    // the boundary), NODE_COMPILE_CACHE (a code cache trusted by a 32-bit checksum), every other NODE_*
+    // but two data-only names, OPENSSL_* — sets NODE_DISABLE_COMPILE_CACHE, and hands over the verified
+    // files and their digests for the loader hooks in the Adapter process.
+    const env = boundaryEnv({
       ...adapterEnv(process.env, t.envPass),
       ...(context.invocationId ? { [ADAPTER_CONTEXT.invocationId]: String(context.invocationId) } : {}),
       ...(executionKey ? { [ADAPTER_CONTEXT.executionKey]: executionKey } : {}),
       ...(access ? { [ADAPTER_CONTEXT.sourceAccess]: access } : {}),
       ...(source.sourceType ? { [ADAPTER_CONTEXT.sourceType]: String(source.sourceType) } : {}),
-    }
+      ...(access && typeof t.source === 'string' && t.source !== '' ? { [ADAPTER_CONTEXT.sourceName]: t.source } : {}),
+    }, JSON.stringify({ format: IMPLEMENTATION_PIN_FORMAT,
+      files: Object.fromEntries(implementation.paths.map(({ path, sha256 }) => [implementationPinKey(path), sha256])) }),
+    process.env[IMPLEMENTATION_HOOKS_ENV])
     const maxBuffer = Number.isSafeInteger(context.resultBytes) && context.resultBytes > 0 ? context.resultBytes : 1_048_576
-    execFile(t.cmd, argv, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout) => {
+    execFile(process.execPath, argv, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout, stderr) => {
       if (err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return reject(new ResultDeliveryError('adapter_output_exceeds_object_budget'))
+      // A refusal by the implementation boundary is said in its own words, not inside a stack trace —
+      // and honestly: the process had started, so code of this Tool that ran before the refused module
+      // may already have had effects. Only a refusal before the start (above) says nothing ran.
+      const boundary = /implementation_boundary: .*/.exec(String(stderr ?? ''))
+      if (err && boundary) {
+        return reject(new Error(`${boundary[0]} The run stopped there; anything this Tool did before that point may already have taken effect.`))
+      }
       if (err) return reject(new Error(String(err.message)))
       // Capture stays bounded; Artifact routing sees the complete result, never a silent prefix.
       runArtifactOutput(String(stdout) || '(no output)', {
@@ -3029,7 +3100,8 @@ function protectedWorkerExecutables(tools = TOOLS) {
     fileURLToPath(new URL('./mcp-client.mjs', import.meta.url)),
     ...Object.values(tools)
       .filter((tool) => tool?.adapter === 'run' && typeof tool.entry === 'string')
-      .map((tool) => resolve(WORKER_ROOT, tool.entry)),
+      .flatMap((tool) => [tool.entry, ...(Array.isArray(tool.implementation) ? tool.implementation : [])])
+      .map((file) => resolve(WORKER_ROOT, file)),
   ]
 }
 
@@ -3868,12 +3940,18 @@ function toolForHandle(tools, kind, value, sourceType) {
 }
 
 function handledLocalTool(id, definition, source, payload, kind = 'read') {
+  // A handled route carries no Connection pin of its own; a run route runs only the bytes
+  // this Worker advertised for the Tool, checked now, before the claim.
+  const implementation = definition.adapter === 'run'
+    ? verifiedRunImplementation(id, definition, definition.digest ?? toolDigest(definition)) : undefined
   const params = Object.fromEntries(Object.keys(payload ?? {}).map((name) => [name, 'json']))
-  return adapterToolFromSpec(JSON.stringify({
+  const compiled = adapterToolFromSpec(JSON.stringify({
     name: id, kind, impl: definition.adapter, source,
     exec: definition.entry, params, ...(definition.fence ? { fence: definition.fence } : {}),
     ...(Array.isArray(definition.env?.pass) ? { env: { pass: definition.env.pass } } : {}),
   }), JSON.stringify(payload ?? {}))
+  if (implementation !== undefined) compiled.implementation = implementation
+  return compiled
 }
 
 async function runHandledTool(id, definition, source, payload, invocationId, kind = 'read') {
@@ -4913,7 +4991,7 @@ export function refuseReservedParameter(params, label = 'Tool') {
  * - 每个槽编译为数据库驱动的 `$1…$n` 参数，值永不拼进 SQL 文本;
  * - 填完的 SQL 照走 db-exec-fenced 的分类门/db-query 的 SELECT-only 守卫——牙齿不因参数化让位。
  */
-function adapterToolFromSpec(specJson, argsJson) {
+function adapterToolFromSpec(specJson, argsJson, root = WORKER_ROOT) {
   const spec = JSON.parse(specJson)
   if (typeof spec.impl !== 'string') throw new Error('toolSpec is missing impl')
   if (spec.impl === 'local-authoring') {
@@ -4983,8 +5061,8 @@ function adapterToolFromSpec(specJson, argsJson) {
     if (isAbsolute(spec.exec) || /^[A-Za-z]:[\\/]/.test(spec.exec) || spec.exec.startsWith('\\\\') || spec.exec.startsWith('//')) {
       throw new Error('run exec must be a relative adapter path under the Worker root')
     }
-    const adapter = resolve(WORKER_ROOT, spec.exec)
-    const inside = relative(WORKER_ROOT, adapter)
+    const adapter = resolve(root, spec.exec)
+    const inside = relative(root, adapter)
     if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
       throw new Error('run exec must stay inside the Worker root')
     }
@@ -4996,7 +5074,9 @@ function adapterToolFromSpec(specJson, argsJson) {
     // is not consulted for it.
     return {
       impl: 'run', ...(typeof spec.source === 'string' ? { source: spec.source } : {}),
-      cmd: process.execPath, args: [adapter], passArgs: true,
+      // The entry only: what starts is decided by handRun from the verified implementation
+      // (runImplementation), never by a command line carried here.
+      entry: adapter, passArgs: true,
       ...(spec.artifactOutput === true ? { artifactOutput: true } : {}),
       ...(Array.isArray(spec.env?.pass) ? { envPass: spec.env.pass } : {}),
       ...(Array.isArray(spec.returns) ? { returns: spec.returns } : {}),
@@ -5134,8 +5214,115 @@ function assertContentNames(content, params, label) {
   return content
 }
 
-export function toolDigest(definition) {
-  return createHash('sha256').update(JSON.stringify(canonical(definition))).digest('hex')
+/**
+ * The Tool pin: SHA-256 of the canonical definition, and — for a Tool that runs local
+ * implementation files — of the bytes of every one of those files (runImplementation).
+ * A Tool without local implementation files keeps the definition-only digest it always had.
+ */
+export function toolDigest(definition, implementation) {
+  const pinned = implementation === undefined ? definition : { definition, implementation }
+  return createHash('sha256').update(JSON.stringify(canonical(pinned))).digest('hex')
+}
+
+/**
+ * 一个 run Tool 此刻在磁盘上的实现字节（SYS-TOOL-01、ACC-TOOL-09；PSC 0.2.24 在官方编程能力上落实）。
+ *
+ * 实现集合是显式的：入口 `entry` 加上 `implementation` 列出的文件，都相对 Worker 根目录，都必须是
+ * `.mjs`、解析后（含链接）仍在根目录内、是普通文件。每个文件读一次、算 SHA-256，按根目录内的相对路径
+ * 记进 `files`，与定义一起进 Tool digest——改任何一个字节，digest 就变，旧 pin 就不再匹配。
+ *
+ * 缺文件、越出根目录、不是 `.mjs` 都在这里抛出：实现边界不成立时可见拒绝，不退回只校验配置。
+ * `paths` 是声明路径（不解析链接）与摘要，交给子进程的装载钩子逐个比对（implementation-hooks.mjs）。
+ */
+export function runImplementation(definition, root = WORKER_ROOT) {
+  const { digest: _advertised, implementationFiles: _pinned, ...declared } = definition ?? {}
+  if (declared.adapter !== 'run') throw new Error('only a run Tool executes local implementation files')
+  const base = resolve(root)
+  let realBase
+  try { realBase = realpathSync(base) } catch { throw new Error(`the Worker root ${base} does not exist`) }
+  const files = {}, paths = []
+  for (const name of [declared.entry, ...(Array.isArray(declared.implementation) ? declared.implementation : [])]) {
+    if (typeof name !== 'string' || !name.endsWith('.mjs')) {
+      throw new Error(`${JSON.stringify(name)} is not an ES module file (.mjs). A run Tool's implementation is held only for .mjs files,`
+        + ' whose format no package.json can change.')
+    }
+    const path = resolve(base, name)
+    if (!pathInside(base, path) || path === base) throw new Error(`${name} is outside the Worker root`)
+    let real
+    try { real = realpathSync(path) } catch (error) {
+      throw new Error(`${name} is missing from the Worker root (${error?.code ?? 'unreadable'}); the declared implementation is incomplete`)
+    }
+    if (!pathInside(realBase, real)) throw new Error(`${name} resolves outside the Worker root`)
+    if (!statSync(real).isFile()) throw new Error(`${name} is not a regular file`)
+    const key = relative(base, path).split(sep).join('/')
+    if (Object.hasOwn(files, key)) throw new Error(`${name} is named twice in the implementation`)
+    const sha256 = sha256Hex(readFileSync(real))
+    files[key] = sha256
+    // The loader is held to the declared path (the Adapter starts with --preserve-symlinks), so a link
+    // swapped in after this check is read at that path and refused, never followed to another file.
+    paths.push({ name: key, path, sha256 })
+  }
+  return { entry: resolve(base, declared.entry), files, paths, digest: toolDigest(declared, files) }
+}
+
+/**
+ * Pin every run Tool to its implementation bytes as they are now, at Worker start.
+ *
+ * The advertisement is frozen for this process (see the Poll loop), so this is the identity the
+ * Connection lock is compared with. A Tool whose implementation cannot be read is not advertised:
+ * `refused(id, error)` says so, and the other Tools are unaffected. A Tool that is advertised and
+ * later changes on disk is refused at dispatch (toolFromSpec) until the Worker restarts and the
+ * operator pins the new digest.
+ */
+export function withImplementationPins(tools, root = WORKER_ROOT, refused = (id, error) => { throw error }) {
+  const out = {}
+  for (const [id, definition] of Object.entries(tools ?? {})) {
+    if (definition?.adapter !== 'run') { out[id] = definition; continue }
+    try {
+      const { digest, files } = runImplementation(definition, root)
+      out[id] = { ...definition, digest, implementationFiles: files }
+    } catch (error) {
+      refused(id, error)
+    }
+  }
+  return out
+}
+
+/** What differs between the files pinned at start and the files now, in words. */
+function implementationChange(pinned = {}, current = {}) {
+  const names = [...new Set([...Object.keys(pinned), ...Object.keys(current)])].sort()
+  const changed = names.filter((name) => pinned[name] !== current[name])
+  return changed.length > 0 ? changed.join(', ') : 'its declaration'
+}
+
+/**
+ * Check, immediately before a run Tool starts, that every verified file still has the verified
+ * bytes. A file changed between the pre-claim check and now is refused here, before the process
+ * starts; one changed after this is refused by the loader before it runs (implementation-hooks).
+ */
+function implementationDrift(implementation) {
+  for (const { name, path, sha256 } of implementation.paths) {
+    let now
+    try { now = sha256Hex(readFileSync(path)) } catch (error) {
+      return `${name} is missing (${error?.code ?? 'unreadable'}); the verified implementation is incomplete`
+    }
+    if (now !== sha256) return `${name} changed after it was verified`
+  }
+  return undefined
+}
+
+/** Verify a run Tool's implementation against the pin it is about to run under, or say why not. */
+function verifiedRunImplementation(ref, definition, pin, root = WORKER_ROOT) {
+  let current
+  try { current = runImplementation(definition, root) } catch (error) {
+    throw new Error(`Worker Tool ${ref} cannot run: ${String(error?.message ?? error)}. Nothing ran.`)
+  }
+  if (current.digest !== pin) {
+    throw new Error(`Worker Tool ${ref} implementation is not the one pinned (${implementationChange(definition.implementationFiles, current.files)}`
+      + ' differs). The old pin does not run a changed implementation: restart this Worker so it advertises the new digest,'
+      + ' and lock the Tool again in Console. Nothing ran.')
+  }
+  return current
 }
 
 /** Validate and normalize the local Worker Tool Manifest. */
@@ -5177,10 +5364,27 @@ export function workerToolsOf(raw) {
         + ' The material area is reached through the built-in rulith.materials.read@1 and a governed file Source;'
         + ' a declared copy could map raw bytes onto Board predicates, which is the one thing a material read must never do.')
     }
-    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'artifactOutput', 'sourceTypes', 'entry', 'fence', 'handles', 'kind', 'params', 'content', 'returns', 'tier'].includes(key))
+    const unknown = Object.keys(value).filter((key) => !['adapter', 'env', 'artifactOutput', 'sourceTypes', 'entry', 'implementation', 'fence', 'handles', 'kind', 'params', 'content', 'returns', 'tier'].includes(key))
     if (unknown.length > 0) throw new Error(`Worker Tool ${id} has unknown field(s): ${unknown.join(', ')}`)
     if (Object.hasOwn(value, 'artifactOutput') && (adapter !== 'run' || typeof value.artifactOutput !== 'boolean')) {
       throw new Error(`Worker Tool ${id}.artifactOutput must be a boolean on a run Adapter`)
+    }
+    // SYS-TOOL-01: the explicit implementation set of a run Tool — the files besides `entry` that
+    // it may load, relative to the Worker root like `entry`. Their bytes enter the Tool pin
+    // (runImplementation) and nothing outside the set loads (implementation-hooks.mjs).
+    if (value.implementation !== undefined) {
+      if (adapter !== 'run') {
+        throw new Error(`Worker Tool ${id}.implementation applies only to a run Adapter; a ${adapter} Adapter runs no local implementation files`)
+      }
+      if (!Array.isArray(value.implementation) || value.implementation.some((name) => typeof name !== 'string' || !name.endsWith('.mjs')
+          || isAbsolute(name) || /^[A-Za-z]:/.test(name) || name.split(/[\\/]/).includes('..'))) {
+        throw new Error(`Worker Tool ${id}.implementation must list the .mjs files its entry may load, relative to the Worker root`
+          + ' like the entry, for example ["adapters/acme/lib.mjs"]. The entry itself is always part of it.')
+      }
+      const named = value.implementation.map((name) => name.replace(/\\/g, '/'))
+      if (new Set(named).size !== named.length || named.includes(String(value.entry).replace(/\\/g, '/'))) {
+        throw new Error(`Worker Tool ${id}.implementation names a file twice, or names its entry, which is always part of it`)
+      }
     }
     // A declared Tool states the same three things a built-in states, and they are
     // checked here rather than at dispatch: the advertisement goes out at the first
@@ -5249,6 +5453,11 @@ export function workerToolsOf(raw) {
       if (!Array.isArray(value.env.pass) || value.env.pass.some((name) => typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))) {
         throw new Error(`Worker Tool ${id}.env.pass must be an array of environment variable names, for example ["ACME_REGION"].`
           + ' An empty array passes only the PATH / HOME / TEMP / SystemRoot basics.')
+      }
+      const loaders = value.env.pass.filter((name) => isLoaderEnvName(name))
+      if (loaders.length > 0) {
+        throw new Error(`Worker Tool ${id}.env.pass names ${loaders.join(', ')}, which can load or select code outside the pinned implementation;`
+          + ' a run Adapter never receives NODE_* names other than NODE_EXTRA_CA_CERTS and NODE_USE_ENV_PROXY, nor OPENSSL_* names.')
       }
     }
     if (value.handles !== undefined) {
@@ -5325,7 +5534,7 @@ export function assertAdvertisable(advertised) {
  * versioned Tool reference plus its board-owned invocation contract. Any
  * adapter/entry supplied by the board is rejected instead of executed.
  */
-function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources = SOURCE_CONTEXT, sourceRecordId = '') {
+function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources = SOURCE_CONTEXT, sourceRecordId = '', root = WORKER_ROOT) {
   const spec = JSON.parse(specJson)
   if (spec.impl !== 'worker-tool') throw new Error('work item must reference a Worker Tool; adapter implementation is not accepted from the board')
   const ref = spec.exec
@@ -5359,6 +5568,10 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
   refuseSqlParameter(def.adapter, spec.params)
   refuseReservedParameter(spec.params, `Worker Tool ${ref}`)
   validateInvocationArgs(spec.params, args)
+  // A run Tool executes local files, and the pin covers their bytes. They are read and checked
+  // here, before the claim, so a changed, missing or replaced file is refused while nothing has
+  // been recorded and nothing has run; handRun checks again immediately before the start.
+  const implementation = def.adapter === 'run' ? verifiedRunImplementation(ref, def, digest, root) : undefined
   const local = {
     name: ref, kind: spec.kind, impl: def.adapter, ...(source === undefined ? {} : { source }),
     exec: def.entry, params: spec.params ?? {}, returns: spec.returns ?? [],
@@ -5371,7 +5584,8 @@ function toolFromSpec(specJson, argsJson, tools = TOOLS, expectedDigest, sources
   const inputRolesV2 = hasV2 && (def.adapter === 'http' || Array.isArray(spec.sourceTypes) && spec.sourceTypes.includes('http'))
     ? validateHttpInputContract(spec, { source, ...args }, def, descriptor)
     : validateDbInputContract(spec, args, def, descriptor)
-  const compiled = adapterToolFromSpec(JSON.stringify(local), JSON.stringify(args))
+  const compiled = adapterToolFromSpec(JSON.stringify(local), JSON.stringify(args), root)
+  if (implementation !== undefined) compiled.implementation = implementation
   if (inputRolesV2) {
     compiled.inputRolesV2 = true
     compiled.toolContractId = ref

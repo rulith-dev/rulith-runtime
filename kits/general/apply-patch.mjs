@@ -70,7 +70,8 @@ function targetPath(ctx, name) {
   return target;
 }
 
-export function applyPatch(ctx, patch) {
+// With a project (eng.apply_patch@2) every row and its tree step carry it: the budget below is measured with it.
+export function applyPatch(ctx, patch, project) {
   const lines = textLimit(patch).replaceAll('\r\n', '\n').split('\n');
   if (lines.at(-1) === '') lines.pop();
   if (lines.shift() !== '*** Begin Patch' || lines.pop() !== '*** End Patch') refuse('patch format refused');
@@ -101,11 +102,12 @@ export function applyPatch(ctx, patch) {
   }
   // Keep every file row and its facts within the ordinary inline receipt budget.
   if (!changes.length || changes.length > 4) refuse('patch file count refused');
-  const preview = changes.map(c => ({ path: c.name, prev_digest: sha(c.original), digest: sha(c.output ?? ''),
+  const projected = project === undefined ? {} : { project };
+  const preview = changes.map(c => ({ ...projected, path: c.name, prev_digest: sha(c.original), digest: sha(c.output ?? ''),
     readback_digest: sha(c.output ?? ''), bytes: c.output?.length ?? 0, from_gen: Number.MAX_SAFE_INTEGER, to_gen: Number.MAX_SAFE_INTEGER }));
   const reportRows = preview.flatMap(row => [row, row]); // invalidation replay and this mutation
-  const facts = reportRows.flatMap(({ from_gen, to_gen, ...args }) => [
-    { predicate: 'eng.file_state', args }, { predicate: 'eng.tree_step', args: { from_gen, to_gen } },
+  const facts = reportRows.flatMap(({ project: _project, from_gen, to_gen, ...args }) => [
+    { predicate: 'eng.file_state', args }, { predicate: 'eng.tree_step', args: { ...projected, from_gen, to_gen } },
   ]);
   if (Buffer.byteLength(JSON.stringify({ result: JSON.stringify({ rows: reportRows }), facts })) > 7400) refuse('patch file count refused');
   for (const change of changes) {

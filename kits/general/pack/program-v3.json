@@ -1,0 +1,188 @@
+{
+  "id": "engineering_work",
+  "title": "General Worker tools",
+  "summary": "Result vocabulary of the general Worker tools (files, commands, tests, acceptance checks) and the criterion eng.check_passed for signed acceptance leaves.",
+  "vocabulary": {
+    "defines": [
+      {
+        "id": "eng.check_passed",
+        "as": "eng_check_passed",
+        "args": [
+          "key"
+        ]
+      },
+      {
+        "id": "eng.check_result",
+        "as": "eng_check_result",
+        "args": [
+          "key",
+          "project",
+          "check",
+          "spec_digest",
+          "gen",
+          "tree_digest",
+          "exit_code"
+        ]
+      },
+      {
+        "id": "eng.check_spec",
+        "as": "eng_check_spec",
+        "args": [
+          "key",
+          "source_name",
+          "project_root",
+          "check",
+          "spec_digest",
+          "command",
+          "cwd",
+          "shell",
+          "files"
+        ]
+      },
+      {
+        "id": "eng.command_result",
+        "as": "eng_command_result",
+        "args": [
+          "run_id",
+          "command_digest",
+          "exit_code",
+          "timed_out",
+          "duration_ms",
+          "stdout_digest",
+          "stderr_digest",
+          "stdout_bytes",
+          "stderr_bytes",
+          "tree_before",
+          "tree_after",
+          "changed_files"
+        ]
+      },
+      {
+        "id": "eng.file_read",
+        "as": "eng_file_read",
+        "args": [
+          "path",
+          "digest",
+          "bytes"
+        ]
+      },
+      {
+        "id": "eng.file_state",
+        "as": "eng_file_state",
+        "args": [
+          "path",
+          "prev_digest",
+          "digest",
+          "readback_digest",
+          "bytes"
+        ]
+      },
+      {
+        "id": "eng.job_state",
+        "as": "eng_job_state",
+        "args": [
+          "job_id",
+          "status",
+          "exit_code",
+          "command_digest",
+          "tree_before"
+        ]
+      },
+      {
+        "id": "eng.tree",
+        "as": "eng_tree",
+        "args": [
+          "gen",
+          "tree_digest"
+        ]
+      },
+      {
+        "id": "eng.tree_step",
+        "as": "eng_tree_step",
+        "args": [
+          "project",
+          "from_gen",
+          "to_gen"
+        ]
+      }
+    ],
+    "imports": [
+      {
+        "id": "acceptance"
+      },
+      {
+        "id": "acceptance_met"
+      }
+    ]
+  },
+  "rules": [
+    {
+      "id": "ENG_CHECK_PASSED",
+      "label": "A passing check remains current until a tree step of its project leaves its generation.",
+      "when": [
+        {
+          "predicate": "eng_check_result",
+          "args": {
+            "key": "?k",
+            "project": "?p",
+            "gen": "?g",
+            "exit_code": 0
+          }
+        },
+        {
+          "predicate": "eng_tree_step",
+          "args": {
+            "project": "?p",
+            "from_gen": "?g",
+            "to_gen": "?n"
+          },
+          "naf": true
+        }
+      ],
+      "then": [
+        {
+          "predicate": "eng_check_passed",
+          "args": {
+            "key": "?k"
+          }
+        }
+      ]
+    }
+  ],
+  "acceptance": [
+    {
+      "id": "ENG_CHECK_ACCEPTANCE",
+      "label": "The signed leaf names the check key: its project, check and spec digest.",
+      "when": [
+        {
+          "predicate": "acceptance",
+          "args": {
+            "node": "?n",
+            "test": "?k"
+          }
+        },
+        {
+          "predicate": "eng_check_passed",
+          "args": {
+            "key": "?k"
+          }
+        }
+      ],
+      "then": [
+        {
+          "predicate": "acceptance_met",
+          "args": {
+            "node": "?n"
+          }
+        }
+      ]
+    }
+  ],
+  "pins": [
+    "eng_check_passed",
+    "eng_check_result",
+    "eng_check_spec",
+    "eng_tree_step"
+  ],
+  "actions": []
+}

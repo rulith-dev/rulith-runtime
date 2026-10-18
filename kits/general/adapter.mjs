@@ -7,10 +7,18 @@ import { applyPatch } from './apply-patch.mjs';
 import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
-import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, FIELD_ERRORS, isFieldError } from './acceptance-specs.mjs';
-import { settings, context, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
+import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, checkKey, FIELD_ERRORS, isFieldError } from './acceptance-specs.mjs';
+import { settings, context, keptProject, projectIdentity, keepRoot, programCandidates, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
+// 项目版工具（官方编程能力，编程包第三版）：行为与括号里的原工具相同，只是回执带上项目——每行带 project（所以
+// eng.tree_step 带它），检查结果与规格还带验收键 key。代数仍是这一个项目根的同一份；原版本的回执一字不改。
+// The project tools (official engineering capability, program v3) behave exactly as the tool named beside them; their
+// receipts also carry the project: every row has `project` (so eng.tree_step does), and check results and specs the
+// check key `key`. The generation counter is the root's one counter; the original versions' receipts are unchanged.
+const PROJECT_TOOLS = { write_file_v2: 'write_file', patch_file_v2: 'patch_file', apply_patch_v2: 'apply_patch', run_v2: 'run',
+  job_start_v2: 'job_start', job_poll_v2: 'job_poll', job_stop_v2: 'job_stop', test_v3: 'test_v2', acceptance_v2: 'acceptance' };
+const baseTool = name => Object.hasOwn(PROJECT_TOOLS, name) ? PROJECT_TOOLS[name] : name;
 // A receipt carries every row twice (the result text and its facts) inside the Worker's inline budget (8 KiB on
 // rulith.ai). Listing and search keep at most ROW_BYTES of rows, whole rows at a time, and say when they stopped short.
 function fitRows(tool, rows, per) {
@@ -34,14 +42,41 @@ function fit(bytes, budget) {
   return bytes.subarray(0, end);
 }
 
-export async function perform(tool, args = {}, env = process.env, dependencies = {}) {
+export async function perform(name, args = {}, env = process.env, dependencies = {}) {
   const ctx = context(env);
+  const tool = baseTool(name);
+  const projectTool = tool !== name;
+  // The project as an eng.check_spec row names it: identity, Source name, root (see checkSpecRow).
+  const named = id => ({ id, source: env.RULITH_SOURCE_NAME ?? '', root: ctx.canonical });
   // Web receipts use lab's accreditation but neither observe nor mutate its files.
   if (tool === 'web_fetch') return fetchPage(ctx, args, dependencies);
   if (tool === 'web_search') return searchWeb(ctx, args, env, dependencies);
-  if (tool === 'acceptance') return acceptanceRows(ctx, args);
+  if (tool === 'acceptance') {
+    if (!projectTool) return acceptanceRows(ctx, args);
+    if (Object.keys(args).length) refuse('acceptance takes no arguments');
+    // A project's first identity is fixed under its root's lock (one value however many first calls race).
+    const id = keptProject(ctx) ?? await locked(ctx, async () => {
+      const id = projectIdentity(ctx);
+      keepRoot(ctx, { project: id });
+      return id;
+    });
+    return acceptanceRows(ctx, args, named(id));
+  }
   return locked(ctx, async () => {
-    let job = readJson(ctx.jobFile, {});
+    // 升级窗口：原写法下还有一个在跑的任务时，照样认它（写与运行照旧被拒，轮询与停止找得到它）。
+    // Upgrade window: a job still running under the caller's former spelling is found there (writes and runs stay
+    // refused, poll and stop reach it).
+    const jobFile = !fs.existsSync(ctx.jobFile) && ctx.spelledJobFile && fs.existsSync(ctx.spelledJobFile) ? ctx.spelledJobFile : ctx.jobFile;
+    let job = readJson(jobFile, {});
+    const prior = readJson(ctx.stateFile, null) ?? (ctx.spelledStateFile ? readJson(ctx.spelledStateFile, null) : null);
+    const kept = keptProject(ctx, prior);
+    const project = projectTool ? kept ?? projectIdentity(ctx, prior) : undefined;
+    // 一个根一旦有了项目身份（项目版工具用过），旧版本的写、运行、测试与测量就拒绝：它们的树步不带项目，撤回不了
+    // 第三版的通过。读工具照旧（它们不记树步，见下）。
+    // Once a root has a project identity (a project tool used it), the older versions that write, run, test or measure
+    // are refused: their tree steps carry no project and could not withdraw a program v3 pass. Reads are unaffected
+    // (they report no tree step; see below).
+    if (!projectTool && kept && !READ_TOOLS.includes(tool)) refuse('project tools required');
     // While a job runs it owns the tree's changes: other writes and runs wait, but reads go ahead. Such a read leaves
     // the recorded tree state alone; the job's poll accounts for what changed.
     const live = ['starting', 'running', 'stopping'].includes(job.status);
@@ -52,17 +87,30 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
       if (Object.keys(args).length !== 1 || !Object.hasOwn(args, 'check')) refuse('acceptance check invalid');
       acceptance = acceptanceSpec(ctx, args.check);
       // A spec the person cannot read in full on the Board (eng.check_spec) can never pass.
-      checkSpecRow(args.check, acceptance);
+      checkSpecRow(args.check, acceptance, project === undefined ? undefined : named(project));
       verifyAcceptanceFiles(ctx, acceptance.spec);
       acceptance.command = acceptanceCommand(ctx, acceptance.spec);
     }
     const before = observing && tool !== 'search' ? null : tree(ctx);
-    const state = readJson(ctx.stateFile, { gen: 0, digest: before?.digest ?? '' });
+    // 状态文件丢了而根登记还记得上一个代数 H：从 H（与原写法遗留状态里更大的那个代数）接着数，摘要未知，所以这次
+    // 一定记一步并像"通过之后的第一步"一样重放，那时的通过因此被撤回，而不是从更小的代数（0，或升级前的遗留文件）
+    // 重数让它一直有效。只有从未有过身份写法状态的根（根登记里没有代数）才从原写法的状态接着数：那是升级迁移。
+    // A lost state file whose root record still knows the last generation H resumes at the higher of H and any state
+    // left under the caller's former spelling, with an unknown digest: this call records a step and replays it like the
+    // first step after a pass, so a pass made there is withdrawn instead of outliving a smaller counter (0, or a
+    // pre-upgrade leftover). Only a root that never had state under its identity spelling (no generation in its record)
+    // continues the former spelling's state as it is: that is the upgrade migration.
+    const record = readJson(ctx.rootFile, {});
+    const current = readJson(ctx.stateFile, null);
+    const leftover = current || !ctx.spelledStateFile ? null : readJson(ctx.spelledStateFile, null);
+    const resumed = Math.max(record.gen ?? -1, Number.isSafeInteger(leftover?.gen) ? leftover.gen : -1);
+    const state = current ?? (Number.isSafeInteger(record.gen) ? { gen: resumed, digest: '', test_gen: resumed }
+      : leftover ?? { gen: 0, digest: before?.digest ?? '' });
     let rows = []; let text = {}; let more = false; let unreadable = 0;
     const file = () => fenced(ctx.root, args.path);
     switch (tool) {
       case 'glob': { const out = globFiles(ctx, args); rows = out.rows; more = out.truncated; break; }
-      case 'apply_patch': rows = applyPatch(ctx, args.patch); break;
+      case 'apply_patch': rows = applyPatch(ctx, args.patch, project); break;
       case 'read_image': { const out = readImage(ctx, args); text = { 'rulith.artifacts': out['rulith.artifacts'] }; break; }
       case 'list': {
         const target = file();
@@ -157,31 +205,31 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
       case 'job_start': {
         const command = classify(ctx, args.command, args.cwd);
         job = { id: randomUUID(), status: 'starting', root: ctx.root, home: ctx.home, command: command.command, line: command.line, shell: command.shell, cwd: command.cwd, before: before.digest, pid: 0, supervisor_pid: 0, exit_code: -1 };
-        save(ctx.jobFile, job);
+        save(jobFile, job);
         // 任务文件经 ENG_ 变量交给监督进程而不是命令行：任务命令是监督进程的子进程，读父进程的命令行就会找到 kit home；
         // 监督进程运行命令时 childEnv() 去掉所有 ENG_ 变量。这不是保密（见 README），只是不把位置递到脚本手里。
         // The job file reaches the supervisor through ENG_ variables, not argv: the job's command is the supervisor's child
         // and could read its parent's command line to find the kit home. execute() strips every ENG_ variable again for
         // the command itself. Not secrecy (see README), just not handing the location to the script.
-        const child = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.mjs', import.meta.url))], { env: { ...childEnv(), ENG_JOB_FILE: ctx.jobFile, ENG_JOB_ID: job.id }, detached: true, windowsHide: true, stdio: 'ignore' });
+        const child = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.mjs', import.meta.url))], { env: { ...childEnv(), ENG_JOB_FILE: jobFile, ENG_JOB_ID: job.id }, detached: true, windowsHide: true, stdio: 'ignore' });
         await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
         child.unref();
         const limit = Date.now() + 5000;
-        do { await sleep(25); job = readJson(ctx.jobFile); } while (job.status === 'starting' && Date.now() < limit);
+        do { await sleep(25); job = readJson(jobFile); } while (job.status === 'starting' && Date.now() < limit);
         if (job.status === 'starting') refuse('job unavailable');
         rows = [jobRow(job)]; break;
       }
       case 'job_poll':
       case 'job_stop': {
         if (!job.id || args.job_id !== job.id) refuse('job refused');
-        if (tool === 'job_stop' && ['starting','running','stopping'].includes(job.status)) fs.writeFileSync(`${ctx.jobFile}.stop`, job.id, { mode: 0o600 });
+        if (tool === 'job_stop' && ['starting','running','stopping'].includes(job.status)) fs.writeFileSync(`${jobFile}.stop`, job.id, { mode: 0o600 });
         const limits = settings(ctx.home);
         // Stopping has its own grace period; shorter poll settings must not refuse it.
         const budget = (tool === 'job_stop' ? limits.runSeconds : limits.pollSeconds) * 1000;
         const wait = tool === 'job_stop' ? Math.min(5000, budget) : (args.wait_s ?? 0) * 1000;
         if (!Number.isInteger(wait) || wait < 0 || wait > budget) refuse('wait refused');
         const until = Date.now() + wait;
-        while (['starting','running','stopping'].includes(job.status) && Date.now() < until) { await sleep(Math.min(100, Math.max(1,until-Date.now()))); job = readJson(ctx.jobFile); }
+        while (['starting','running','stopping'].includes(job.status) && Date.now() < until) { await sleep(Math.min(100, Math.max(1,until-Date.now()))); job = readJson(jobFile); }
         if (tool === 'job_stop' && ['starting','running','stopping'].includes(job.status)) refuse('job stop unconfirmed');
         rows = [jobRow(job)];
         if (job.result) text = resultText(job.result);
@@ -197,7 +245,8 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
           verifyAcceptanceFiles(ctx, pinned.spec);
           if (acceptanceSpec(ctx, args.check).digest !== pinned.digest) refuse('acceptance spec changed');
         }
-        rows = [{ ...(tool === 'test_v2' ? { check: args.check } : {}), spec_digest: pinned.digest, gen: state.gen, tree_digest: '', exit_code: result.exit_code }];
+        rows = [{ ...(project === undefined ? {} : { key: checkKey(project, args.check, pinned.digest) }),
+          ...(tool === 'test_v2' ? { check: args.check } : {}), spec_digest: pinned.digest, gen: state.gen, tree_digest: '', exit_code: result.exit_code }];
         text = resultText(result); break;
       }
       case 'measure_pinned': {
@@ -313,9 +362,17 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     let invalidation = state.invalidation;
     if (mutated && (state.test_gen === state.gen || testGen === state.gen)) invalidation = step;
     const edges = invalidation && invalidation.from_gen !== step.from_gen ? [invalidation,step] : [step];
-    save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
+    // The identity stays with the counter whichever version saves it (a read on a project root keeps it).
+    const saved = { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}),
+      ...(project ?? kept ? { project: project ?? kept } : {}) };
+    save(ctx.stateFile, saved);
+    // Migrated: the former spelling's state is retired. Best effort: should it stay, the root record's generation
+    // still outranks it (above), so a leftover can never be taken for the current counter.
+    if (ctx.spelledStateFile) try { fs.unlinkSync(ctx.spelledStateFile); } catch {}
+    keepRoot(ctx, saved);
     const reportEdges = edges;
-    const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => reportEdges.map(edge => ({ ...row, ...edge }))), reportEdges.length);
+    const projected = project === undefined ? {} : { project };
+    const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => reportEdges.map(edge => ({ ...projected, ...row, ...edge }))), reportEdges.length);
     return { rows: out.rows, ...text, ...(more || out.cut ? { truncated: true } : {}) };
   });
 }
@@ -350,6 +407,21 @@ function measureSpecs(ctx) {
 function acceptanceCommand(ctx, spec) {
   if (spec.shell && !settings(ctx.home).shell) refuse('acceptance shell refused');
   const command = classify(ctx, spec.command, spec.cwd);
+  // 规格冻结的是命令字：命令字找到的程序若在项目里，它的字节必须在 files 里（进摘要），否则改了它检查照样"通过"。
+  // 不经 shell 只看第一个词，按运行时的找法（lib.mjs programCandidates）；经 shell 则行里每个词（引号内算一个词，
+  // 按空白与 & | ; < > ( ) 切开）所有可能启动的文件都查。PATH 指进项目的也算。
+  // A spec freezes command words: a program they find inside the project must be listed in files (its bytes in the
+  // digest), or rewriting it would leave the check passing. Without a shell the first word is resolved as the run
+  // resolves it (lib.mjs programCandidates); with a shell every word of the line (a quoted stretch is one word; split on
+  // whitespace and & | ; < > ( )) is checked against every file it could start. A PATH entry into the project counts too.
+  const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  const words = spec.shell ? (spec.command.match(/"[^"]*"|[^\s&|;<>()"]+/g) ?? []).map(word => word.replace(/^"|"$/g, '')).filter(Boolean)
+    : [command.command[0]];
+  for (const word of words) for (const program of programCandidates(word, command.cwd, { shell: spec.shell === true })) {
+    if (!inside(ctx.root, program)) continue;
+    const name = path.relative(ctx.root, program).split(path.sep).join('/');
+    if (!Object.keys(spec.files).some(file => same(file, name))) refuse('acceptance spec invalid: command program must be listed in files');
+  }
   return spec.shell ? { command: command.command, cwd: command.cwd, shell: true, line: spec.command }
     : { command: command.command, cwd: command.cwd, shell: false };
 }
@@ -381,14 +453,16 @@ function commandRow(r, command, before) {
   return { run_id: randomUUID(), command_digest: sha(JSON.stringify(command)), exit_code: r.exit_code, timed_out: r.timed_out, duration_ms: r.duration_ms, stdout_digest: r.stdout.digest, stderr_digest: r.stderr.digest, stdout_bytes: r.stdout.bytes, stderr_bytes: r.stderr.bytes, tree_before: before, tree_after: '', changed_files: '' };
 }
 function jobRow(j) { return { job_id: j.id, status: j.status, exit_code: j.exit_code, command_digest: sha(JSON.stringify(j.command)), tree_before: j.before }; }
-export async function main(tool) {
+export async function main(name) {
+  // A project tool refuses exactly as the tool it extends: the verdict vocabulary is the base tool's.
+  const tool = baseTool(name);
   try {
     const args = JSON.parse(process.argv[2] ?? '{}');
     if (!args || Array.isArray(args) || typeof args !== 'object') refuse('arguments refused');
-    process.stdout.write(JSON.stringify(await perform(tool, args)));
+    process.stdout.write(JSON.stringify(await perform(name, args)));
   } catch (error) {
     // Never echo paths, arbitrary exception messages, commands, or spec contents.
-    const messages = [...(['glob','apply_patch','read_image','read_v2','web_fetch','web_search'].includes(tool) ? ['settings refused','glob refused','glob limit refused','glob walk limit exceeded','glob complexity refused','patch format refused','patch hunk refused','patch path repeated','delete refused','patch file refused','patch file count refused','image refused','image size exceeded','web URL refused','web address refused','web size exceeded','web redirects exceeded','web timeout','web encoding refused','web media type refused','web metadata too large','web request failed','web search key unavailable','web search failed'] : []),'path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll, stop and reads accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted','parent directory missing'];
+    const messages = [...(['glob','apply_patch','read_image','read_v2','web_fetch','web_search'].includes(tool) ? ['settings refused','glob refused','glob limit refused','glob walk limit exceeded','glob complexity refused','patch format refused','patch hunk refused','patch path repeated','delete refused','patch file refused','patch file count refused','image refused','image size exceeded','web URL refused','web address refused','web size exceeded','web redirects exceeded','web timeout','web encoding refused','web media type refused','web metadata too large','web request failed','web search key unavailable','web search failed'] : []),'path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll, stop and reads accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted','parent directory missing','project root overlaps another project','project tools required'];
     // A spec refusal names its field in fixed words (no path, no value); a file-system error says only what kind it was.
     const fileErrors = { ENOENT: 'path not found', EISDIR: 'path is a directory', ENOTDIR: 'path not found', EACCES: 'path not readable', EPERM: 'path not readable', EBUSY: 'path not readable' };
     const acceptanceError = ['test_v2', 'acceptance'].includes(tool) &&
