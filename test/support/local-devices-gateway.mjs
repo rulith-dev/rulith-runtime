@@ -76,10 +76,13 @@ export function createDevicesGateway({
   const conversationRow = (key) => ({ boardId: 'board-' + sha256(String(key)).slice(0, 12), createdAt: '2026-10-17T00:00:00Z', lastActivityAt: null,
     postCallReview: conversationReview.get(key) ?? true, explorationModes: { 'conn-1': conversationModes.get(key) ?? 'strict' } })
   /**
-   * Opened projects by Agent, Connection and folder (PSC 0.2.24). Each holds its opening's request ids and how many more
-   * reads it stays in progress, reporting configuration -> program -> mode as the real Gateway does.
+   * Opened projects by Agent, Connection and folder (PSC 0.2.24), as the real Gateway keeps them: an opening is recorded
+   * only when its configuration step commits. Until then an open answers 202 at stage `configuration` and records nothing
+   * (a state read says `not_open`); once recorded it walks `program` -> `mode` -> ready on each read or retry. State reads
+   * always answer 200; only `open` answers 202 (in progress) or 409 (this opening reached a terminal state).
    */
   const projects = new Map()
+  let projectConfigurationWaits = 0
   let projectSteps = 0
   let projectTerminal
   const projectTools = [{ id: 'eng.read', digest: 'sha256:' + 'a'.repeat(64), directUse: true },
@@ -144,7 +147,10 @@ export function createDevicesGateway({
     capability: { releaseDigest: 'sha256:' + 'e'.repeat(64), id: 'engineering_work', version: '1.0.0' },
     tools: projectTools.map((tool) => ({ ...tool })), mode: { requested: 'non_strict' },
   })
-  /** An opened project's state: in progress (202, `retry`) for its remaining steps, a terminal state (409), or ready. */
+  /**
+   * A recorded opening's state with the status `open` gives it: in progress (202, `retry`) for its remaining steps, a
+   * terminal state (409, `confirm_again`), or ready (200). A state read answers the same body with 200.
+   */
   const projectAdvance = (context, opened) => {
     const out = { ...projectBase(context, 'pending'), openRequestId: opened.openRequestId,
       project: { source: 'project', openRequestId: opened.openRequestId, originalRequestId: opened.originalRequestId } }
@@ -154,10 +160,9 @@ export function createDevicesGateway({
         teaching: 'Confirm the folder again from this computer to start a new opening.' })
     }
     if (opened.steps > 0) {
-      const stage = ['mode', 'program', 'configuration'][Math.min(opened.steps, 3) - 1]
+      const stage = opened.steps > 1 ? 'program' : 'mode'
       opened.steps -= 1
-      return new Answer(202, { ...out, stage, recovery: 'retry',
-        waitingFor: stage === 'configuration' ? 'agent_call_pending' : 'kernel_confirmation' })
+      return new Answer(202, { ...out, stage, recovery: 'retry', waitingFor: 'kernel_confirmation' })
     }
     return { ...out, state: 'ready', mode: { requested: 'non_strict', state: 'complete', current: 'non_strict' } }
   }
@@ -300,7 +305,9 @@ export function createDevicesGateway({
     'POST /local-devices/projects/state': (body, { bearer }) => {
       const context = projectContext(body, ['expectedAccountId', 'agentId', 'connectionId', 'directory', 'platform'], bearer)
       const opened = projects.get(context.key)
-      return opened === undefined ? projectBase(context, 'not_open') : projectAdvance(context, opened)
+      if (opened === undefined) return projectBase(context, 'not_open')
+      const answered = projectAdvance(context, opened)
+      return answered instanceof Answer ? answered.value : answered
     },
     'POST /local-devices/projects/open': (body, { bearer }) => {
       const context = projectContext(body, ['requestId', 'expectedAccountId', 'agentId', 'connectionId', 'directory', 'platform',
@@ -316,6 +323,12 @@ export function createDevicesGateway({
       if (body.authorizationVersion !== context.authorizationVersion) {
         refuse(409, 'What this computer showed for confirmation no longer matches what opening the project would grant.'
           + ' Show the confirmation again. Nothing was changed.', 'authorization_changed')
+      }
+      // The configuration step waits for a gap between calls: nothing is recorded, the same request continues later.
+      if (projectConfigurationWaits > 0) {
+        projectConfigurationWaits -= 1
+        return new Answer(202, { ...projectBase(context, 'pending'), stage: 'configuration', waitingFor: 'agent_call_pending',
+          recovery: 'retry', changed: false, requestId: body.requestId })
       }
       const next = { openRequestId: 'open.' + sha256(body.requestId).slice(0, 16), originalRequestId: body.requestId, steps: projectSteps }
       projects.set(context.key, next)
@@ -617,8 +630,11 @@ export function createDevicesGateway({
     enableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = true },
     setReconnectable(agentId, rows) { enabled.get(agentId).reconnectable = rows },
     setHealth(reply) { healthReply = reply },
-    /** The next opening stays in progress for this many reads (configuration, program, mode, in that order). */
-    projectInProgress(steps) { projectSteps = steps },
+    /**
+     * The next opening: its first `configurationWaits` opens wait at the configuration step (nothing recorded), then it
+     * stays in progress for `steps` more reads or retries (program, then mode).
+     */
+    projectInProgress(steps, configurationWaits = 0) { projectSteps = steps; projectConfigurationWaits = configurationWaits },
     /** The next read of an opened project finds that opening at this terminal state (for example `mode_changed`). */
     projectTerminalNext(state) { projectTerminal = state },
     projects,

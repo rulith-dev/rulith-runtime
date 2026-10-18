@@ -99,10 +99,10 @@
       "sha256": "d4af81e6663d5b19c32da69c5550ac52afdad021c3ef774a5f27d7f83f4f8236"
     },
     "local/device-client.mjs": {
-      "sha256": "df04f4c623723236262ead1622c9a234bb77b1ddd334c8293d8d32dfd284b9fb"
+      "sha256": "a84fd755aee987eb449730dcc498b1227f2bd3b27ed4fcef227bc99ed7dd4378"
     },
     "local/instance-manager.mjs": {
-      "sha256": "1355ca7113824629394f227c414cdf2029eff1e4bed7d984014f38e90d534d86"
+      "sha256": "50d58922083357b93f9e6ce4db8827e3778f3a4c65fd13a8a05bc548a4d1b06e"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"

@@ -1675,24 +1675,28 @@ test('the signed-in client opens a folder as a project through the device grant:
     assert.equal(shown.body.mode.requested, 'non_strict')
     assert.match(shown.body.authorizationVersion, /^sha256:[0-9a-f]{64}$/)
 
-    // In progress: the open answers 202 with recovery "retry"; reading the state walks the stages to ready.
-    gateway.projectInProgress(3)
+    // In progress: the open answers 202 with recovery "retry". While its first step waits nothing is recorded (a state
+    // read still says not_open) and the same request continues it; then reading the state walks the stages to ready.
+    gateway.projectInProgress(2, 1)
     const opening = await post('/manager/projects/open', { ...target, requestId: 'open-1', authorizationVersion: shown.body.authorizationVersion })
     assert.equal(opening.status, 200, JSON.stringify(opening.body))
     assert.deepEqual([opening.body.state, opening.body.stage, opening.body.recovery], ['pending', 'configuration', 'retry'])
     assert.equal(opening.body.requestId, 'open-1')
+    assert.equal((await post('/manager/projects/state', target)).body.state, 'not_open', 'the first step recorded nothing')
+    const resent = await post('/manager/projects/open', { ...target, requestId: 'open-1', authorizationVersion: shown.body.authorizationVersion })
+    assert.deepEqual([resent.body.state, resent.body.stage], ['pending', 'program'])
     const stages = []
-    for (let read = 0; read < 3; read++) {
+    for (let read = 0; read < 2; read++) {
       const step = await post('/manager/projects/state', target)
       assert.equal(step.status, 200, JSON.stringify(step.body))
       stages.push(step.body.state === 'ready' ? 'ready' : step.body.stage)
     }
-    assert.deepEqual(stages, ['program', 'mode', 'ready'])
+    assert.deepEqual(stages, ['mode', 'ready'])
     const again = await post('/manager/projects/open', { ...target, requestId: 'open-1', authorizationVersion: shown.body.authorizationVersion })
     assert.deepEqual([again.body.state, again.body.alreadyOpen, again.body.changed], ['ready', true, false])
 
-    // A terminal state of this opening (409 at the Gateway) is the full state, not a refusal; retrying the same request
-    // does not relax anything, and only a new confirmation (a new request id) starts a new opening.
+    // A terminal state of this opening is the full state, not a refusal: a state read answers it with 200, the open with
+    // 409; retrying the same request does not relax anything, and only a new confirmation (a new request id) opens again.
     gateway.projectInProgress(0)
     gateway.projectTerminalNext('mode_changed')
     const changed = await post('/manager/projects/state', target)
@@ -1715,12 +1719,14 @@ test('the signed-in client opens a folder as a project through the device grant:
     assert.equal(foreign.body.errorCode, 'connection_not_of_this_device')
     assert.equal(manager.device.status().state, 'linked')
 
-    // Refused before anything is sent: a field the client may not say, an Agent outside the grant, another account.
+    // Refused before anything is sent: a field the client may not say, an Agent outside the grant, another account. The
+    // last two carry the Gateway's own codes, so the client explains them instead of retrying.
     const sent = gateway.requests.filter(row => row.path.startsWith('/local-devices/projects/')).length
-    for (const body of [{ ...target, tools: ['eng.run'] }, { ...target, mode: 'non_strict' },
-      { ...target, agentId: 'agent-zeta' }, { ...target, expectedAccountId: 'acct-other' }]) {
+    for (const [body, code] of [[{ ...target, tools: ['eng.run'] }, undefined], [{ ...target, mode: 'non_strict' }, undefined],
+      [{ ...target, agentId: 'agent-zeta' }, 'not_authorized'], [{ ...target, expectedAccountId: 'acct-other' }, 'account_changed']]) {
       const refused = await post('/manager/projects/state', body)
       assert.equal(refused.status, 400, JSON.stringify(body))
+      assert.equal(refused.body.errorCode, code, JSON.stringify(body))
     }
     const projectRequests = gateway.requests.filter(row => row.path.startsWith('/local-devices/projects/'))
     assert.equal(projectRequests.length, sent)

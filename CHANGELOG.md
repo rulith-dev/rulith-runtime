@@ -12,7 +12,10 @@ All notable changes to the local runtime are documented here.
   the device grant to the Gateway's `/local-devices/projects/*`; the account must be the signed-in one and the
   Agent inside the grant before anything is sent. In progress answers `recovery: "retry"`; a terminal state
   of the opening (the Gateway's 409 with the full state, `recovery: "confirm_again"` or `"console"`) is
-  returned as that state rather than thrown; refusals keep their `errorCode`.
+  returned as that state rather than thrown; refusals keep their `errorCode`. Refusals made locally carry the
+  Gateway's codes too (`not_signed_in`, `account_changed`, `not_authorized`), and the manager's closed admission
+  during a sign-out or shutdown carries `manager_signing_out` / `manager_closing`, so a client explains them instead
+  of retrying.
 
 ## 0.17.2 - 2026-10-17
 

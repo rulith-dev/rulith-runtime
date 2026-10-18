@@ -261,11 +261,16 @@ export function createDeviceClient({ root } = {}) {
    * this grant's account, and the Agent one of its Agents, before anything leaves this computer.
    */
   const projectCall = (path, body) => {
-    const current = linked()
+    // Refused here by the Gateway's own codes, so the client explains instead of retrying; nothing is sent.
+    let current
+    try { current = linked() } catch (error) { throw Object.assign(error, { errorCode: 'not_signed_in' }) }
     if (text(body.expectedAccountId) !== text(current.account?.id)) {
-      throw new Error('The account shown on this computer is no longer the signed-in account. Nothing was changed.')
+      throw Object.assign(new Error('The account shown on this computer is no longer the signed-in account. Nothing was changed.'),
+        { errorCode: 'account_changed' })
     }
-    if (!current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
+    if (!current.agents?.some(row => row.id === text(body.agentId))) {
+      throw Object.assign(new Error('The selected Agent is no longer enabled for this signed-in account.'), { errorCode: 'not_authorized' })
+    }
     return call(current.origin, path, { bearer: current.token, body, terminalState: true }).catch(operationRefusal)
   }
   const linked = () => {
