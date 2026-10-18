@@ -2,7 +2,7 @@
 
 All notable changes to the local runtime are documented here.
 
-## Unreleased
+## 0.18.0 - 2026-10-19
 
 - Upgrade, read first: every run Tool digest and every built-in Tool digest changes. Re-pin and re-lock
   them in Console after upgrading; until then the old locks refuse the changed Tools. Reinstall the

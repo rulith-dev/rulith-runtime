@@ -155,7 +155,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '3b53a055e8b1986da2bd479100ff2f6af00c40dd'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.17.2"
+const RULITH_RUNTIME_VERSION = "0.18.0"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
