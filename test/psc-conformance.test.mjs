@@ -11,7 +11,7 @@ test('RT-PSC-MAP-1 Runtime evidence inventory contains real targets and explicit
   const map=JSON.parse(readFileSync(resolve(root,'conformance/psc.json'),'utf8'))
   assert.equal(map.schema,'rulith-psc-conformance-map/v1')
   assert.equal(map.repository,'runtime')
-  assert.equal(map.contractVersion,'0.2.23')
+  assert.equal(map.contractVersion,'0.2.24')
   assert.match(map.contractReviewedCommit,/^[a-f0-9]{40}$/)
   assert.ok(Object.keys(map.acceptance).length>0)
   const used=new Set()
