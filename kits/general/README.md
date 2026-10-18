@@ -27,6 +27,10 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    `pollMaxWaitSeconds` and `webTimeoutSeconds`, plus 60, capped at 604,800 seconds).
    The adapter directory remains
    `adapters/engineering-work/` so the original engineering tool entries stay compatible.
+   Each kit tool declares the kit library it may load (`implementation`), and its pin covers the bytes of
+   its entry and of that library: a reinstall that changes any kit file changes every kit tool's digest,
+   and the old Console locks refuse the changed tools until you lock them again. The Worker runs a kit
+   tool only with the verified bytes and refuses any file outside that list.
    Turn the Agent's Worker off and on afterwards. Installation is local; it does not pair,
    start a Worker, bind a Source, or contact a service.
 3. Run it again after changing `settings.json` limits or `webSearch.keyEnv`. Export the search

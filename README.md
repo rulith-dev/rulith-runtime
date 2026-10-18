@@ -881,6 +881,18 @@ Source root they are handed and nothing else: they have no path override and no 
 directory, so an Adapter granted no Source, or one of the wrong type, refuses instead of
 reading a file of its own choosing.
 
+**Implementation pin.** A `run` Tool's digest covers its implementation bytes: the entry and
+every other `.mjs` file it may load, listed in `implementation` with paths relative to the
+Worker root like `entry` (`"implementation": ["adapters/acme/lib.mjs"]`). Changing any byte of
+them changes the advertised digest, and a Connection lock on the old digest no longer runs the
+Tool until it is locked again. The Worker checks the files before it claims work and again just
+before it starts the Adapter, and the Adapter starts under a loader that compiles only those
+files and only the verified bytes; any other local file, a CommonJS `require` or a native addon
+is refused, and `NODE_OPTIONS` is never passed to it. Built-in Tools are pinned to the Runtime
+release that implements them, so a Runtime upgrade asks for their locks again. The pin
+identifies local implementation code; it does not attest to the machine, a remote service or
+the truth of a result.
+
 ## Managed local profiles
 
 Run `rulith start` and open its printed loopback URL. Sign in, select an Agent, and

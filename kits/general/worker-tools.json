@@ -12,6 +12,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/list.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -30,6 +41,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/read.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -48,6 +70,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/search.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -71,6 +104,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/tree_state.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -108,6 +152,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/write_file.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -150,6 +205,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/patch_file.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -198,6 +264,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/run.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -234,6 +311,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/job_start.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -270,6 +358,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/job_poll.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -305,6 +404,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/job_stop.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -337,6 +447,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/test.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -376,6 +497,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/measure_pinned.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -394,6 +526,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/glob.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -429,6 +572,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/apply_patch.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -449,6 +603,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/read_image.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -477,6 +642,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/read_v2.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -505,6 +681,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/web_fetch.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -532,6 +719,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/web_search.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -567,6 +765,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/test_v2.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"
@@ -594,6 +803,17 @@
         "file"
       ],
       "entry": "adapters/engineering-work/acceptance.mjs",
+      "implementation": [
+        "adapters/engineering-work/adapter.mjs",
+        "adapters/engineering-work/acceptance-specs.mjs",
+        "adapters/engineering-work/apply-patch.mjs",
+        "adapters/engineering-work/general-settings.mjs",
+        "adapters/engineering-work/glob-files.mjs",
+        "adapters/engineering-work/image.mjs",
+        "adapters/engineering-work/lib.mjs",
+        "adapters/engineering-work/supervisor.mjs",
+        "adapters/engineering-work/web.mjs"
+      ],
       "env": {
         "pass": [
           "ENG_KIT_HOME"

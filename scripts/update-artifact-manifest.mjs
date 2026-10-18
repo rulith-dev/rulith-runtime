@@ -36,6 +36,9 @@ const files = [
   'worker/material-transport.mjs',
   'worker/local-authoring.mjs',
   'worker/authoring-diagnostics.mjs',
+  // The run Tool implementation boundary (SYS-TOOL-01): the preload and its loader hooks.
+  'worker/implementation-boundary.mjs',
+  'worker/implementation-hooks.mjs',
   'local/authoring-checker.mjs',
   'local/authoring-checker.json',
   'local/process-tree.mjs',

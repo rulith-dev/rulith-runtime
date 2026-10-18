@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { DONE, HOLD, actionRow, driveWorker, toolDigest } from './support/worker-harness.mjs'
+import { DONE, HOLD, actionRow, driveWorker, runPin } from './support/worker-harness.mjs'
 
 const SERIAL = {
   'serial-adapter.mjs':
@@ -31,7 +31,7 @@ const serialRow = (board, work, tag) => actionRow({
   work,
   tool: 'acme.serial',
   toolContractId: 'acme.serial@1',
-  toolDigest: toolDigest({ adapter: 'run', sourceTypes: ['file'], entry: 'serial-adapter.mjs' }),
+  toolDigest: runPin({ adapter: 'run', sourceTypes: ['file'], entry: 'serial-adapter.mjs' }, SERIAL),
   toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.serial@1', kind: 'act', params: { tag: 'string' }, sourceTypes: ['file'] }),
   args: JSON.stringify({ source: 'orders', tag }),
 })

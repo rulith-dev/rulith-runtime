@@ -7,14 +7,14 @@
  * from outside the Worker: the endpoint's request log and a file the Adapter appends
  * to. A Worker cannot fake an appended line, and it cannot un-write one.
  */
-import { createHmac } from 'node:crypto'
+import { createHash, createHmac } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
-import { canonicalJson, executionDigest, toolDigest } from '../../worker/rulith-worker.mjs'
+import { canonicalJson, executionDigest, runImplementation, toolDigest } from '../../worker/rulith-worker.mjs'
 
 export const ROOT = resolve(import.meta.dirname, '..', '..')
 const contractBundle = JSON.parse(readFileSync(join(ROOT, 'protocol/worker-contract.json'), 'utf8'))
@@ -222,6 +222,43 @@ export const TOOLS = {
 }
 
 /**
+ * A run Tool compiled the way the Worker compiles one, for arms that call `execute` directly:
+ * `files` (first = entry, the rest its implementation) are written to a fresh Worker root and
+ * verified there, so the Tool carries the implementation it is allowed to start (handRun).
+ */
+export function pinnedRunTool(t, files, compiled = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-run-'))
+  t?.after?.(() => rmSync(root, { recursive: true, force: true }))
+  const [entry, ...implementation] = Object.keys(files)
+  for (const [name, source] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, name)), { recursive: true })
+    writeFileSync(join(root, name), source, 'utf8')
+  }
+  const verified = runImplementation({ adapter: 'run', sourceTypes: [], entry, implementation }, root)
+  return { impl: 'run', entry: verified.entry, passArgs: true, implementation: verified, ...compiled }
+}
+
+/**
+ * The pin the Worker advertises for a run Tool whose files hold these sources.
+ *
+ * A run Tool's digest covers its implementation bytes (SYS-TOOL-01): the definition plus the
+ * SHA-256 of its entry and of every file it lists in `implementation`, keyed by the path relative
+ * to the Worker root — the formula `runImplementation` applies to the files on disk. A Gateway pins
+ * what the Worker advertised; a row that pinned only the definition is a pin the Worker refuses.
+ */
+export function runPin(definition, sources = ADAPTERS) {
+  const files = {}
+  for (const name of [definition.entry, ...(definition.implementation ?? [])]) {
+    if (typeof sources[name] !== 'string') throw new Error(`runPin: no source for ${name}`)
+    files[name] = createHash('sha256').update(Buffer.from(sources[name], 'utf8')).digest('hex')
+  }
+  return toolDigest(definition, files)
+}
+
+/** The pin of each default Tool over the default adapters' bytes. */
+const DEFAULT_PINS = Object.fromEntries(Object.entries(TOOLS.tools).map(([id, definition]) => [id, runPin(definition)]))
+
+/**
  * Ask the endpoint to sign a conforming v2 grant for whichever instance polled.
  *
  * A row cannot carry a real grant as a literal: the grant names the Worker instance and the
@@ -249,7 +286,7 @@ export function actionRow(overrides = {}) {
     toolContractId: 'acme.ship@1',
     sourceRecordId: 'orders',
     connectionId: CONNECTION,
-    toolDigest: toolDigest({ adapter: 'run', sourceTypes: ['file'], entry: 'ship-adapter.mjs' }),
+    toolDigest: runPin(TOOLS.tools['acme.ship@1']),
     executionGrant: SIGNED,
     args: '{"source":"orders"}',
     target: '',
@@ -259,13 +296,17 @@ export function actionRow(overrides = {}) {
   }
 }
 
-/** The slow-adapter row the lease-window arms drive, in the same shape. */
-export function slowActionRow(overrides = {}) {
+/** The slow-adapter row the lease-window arms drive, in the same shape.
+ *  Each arm writes its own slow adapter, so it states that adapter's source and the row is
+ *  pinned to exactly those bytes (`runPin`). */
+export const SLOW_TOOL_DEFINITION = Object.freeze({ adapter: 'run', sourceTypes: ['file'], entry: 'slow-adapter.mjs' })
+export function slowActionRow(overrides = {}, slowAdapterSource) {
+  if (typeof slowAdapterSource !== 'string') throw new Error('slowActionRow needs the slow adapter source it pins')
   return actionRow({
     work: 'inv_slow',
     tool: 'acme.slow',
     toolContractId: 'acme.slow@1',
-    toolDigest: toolDigest({ adapter: 'run', sourceTypes: ['file'], entry: 'slow-adapter.mjs' }),
+    toolDigest: runPin(SLOW_TOOL_DEFINITION, { 'slow-adapter.mjs': slowAdapterSource }),
     toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.slow@1', kind: 'act', params: {}, sourceTypes: ['file'] }),
     ...overrides,
   })
@@ -278,7 +319,7 @@ export function sourceFreeActionRow(overrides = {}) {
     tool: 'acme.compute',
     toolContractId: 'acme.compute@1',
     sourceRecordId: '',
-    toolDigest: toolDigest({ adapter: 'run', sourceTypes: [], entry: 'compute-adapter.mjs' }),
+    toolDigest: runPin(TOOLS.tools['acme.compute@1']),
     args: '{}',
     toolSpec: JSON.stringify({ impl: 'worker-tool', exec: 'acme.compute@1', kind: 'read', params: {}, sourceTypes: [] }),
     ...overrides,
@@ -442,6 +483,22 @@ export async function driveWorker({
     }))
     return { ...out, body: { ...out.body, payload: { ...out.body.payload, work: signed } } }
   }
+  /**
+   * Pin a default row to what this Worker advertised, as a Gateway locks it.
+   *
+   * The default row factories pin the default adapters' bytes (`runPin`). A scenario that writes
+   * other bytes under the same adapter name and keeps the default row gets the pin its Worker
+   * advertised for that Tool — the pin an operator would have locked. Any other pin a row states is
+   * left exactly as stated, so an arm about a wrong pin still sends the wrong pin.
+   */
+  const withPins = (out, operation) => {
+    const rows = out?.body?.payload?.work
+    if (out === HOLD || out === RESET || !Array.isArray(rows) || operation.kind !== 'Poll') return out
+    const advertised = new Map((operation.tools ?? []).map((tool) => [tool.id, tool.digest]))
+    const pinned = rows.map((row) => (row.toolDigest !== DEFAULT_PINS[row.toolContractId] || !advertised.has(row.toolContractId)
+      ? row : { ...row, toolDigest: advertised.get(row.toolContractId) }))
+    return { ...out, body: { ...out.body, payload: { ...out.body.payload, work: pinned } } }
+  }
   const server = createServer((request, response) => {
     if ((request.method ?? 'GET') === 'GET') {
       const out = sourceReply?.(request, sourceRows) ?? { status: 200, body: { sources: sourceRows } }
@@ -492,7 +549,7 @@ export async function driveWorker({
       // pass on a hop that stated two different identities.
       const entry = { raw, operation, headers: { ...request.headers } }
       seen.push(entry)
-      const out = withGrants(withLease(leased(operation, seen), operation), operation)
+      const out = withGrants(withPins(withLease(leased(operation, seen), operation), operation), operation)
       if (out === HOLD) return void held.push(response)
       entry.reply = out
       if (out === RESET) {

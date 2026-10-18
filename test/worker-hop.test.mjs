@@ -197,23 +197,21 @@ test('RT-WK-LEASE-5 a renewal that is refused mid-execution stops the Worker tak
   // The long task. The hand cannot be un-run, so what stops is everything after it: no
   // further claim, and the loss is said out loud rather than absorbed.
   let polls = 0
+  const slowAdapter = "import { appendFileSync } from 'node:fs'\n"
+    + "appendFileSync(process.env.P2_EFFECT_LOG, 'slow\\n')\n"
+    + "await new Promise((done) => setTimeout(done, Number(process.env.P2_SLOW_MS ?? 1200)))\n"
+    + "process.stdout.write(JSON.stringify({ rows: [] }))\n"
   const run = await driveWorker({
     env: { P2_SLOW_MS: '1200' },
     reply: (operation) => {
-      if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [slowActionRow()] } } } : HOLD
+      if (operation.kind === 'Poll') return ++polls === 1 ? { body: { accepted: true, payload: { work: [slowActionRow({}, slowAdapter)] } } } : HOLD
       if (operation.kind === 'RenewLease') return { body: { accepted: false, errorCode: 'lease_expired', teaching: 'This lease is no longer active.' } }
       if (operation.kind === 'ClaimWork') return { body: { accepted: true, revision: 'b12' } }
       return { body: { accepted: true, revision: 'b13' } }
     },
     // The lease's own heartbeat is short, so a renewal is due while the adapter is running.
     lease: (operation) => activeLease({ workerId: operation.workerId, windowMs: 4000, heartbeatAfterMs: 200 }),
-    extraAdapters: {
-      'slow-adapter.mjs':
-        "import { appendFileSync } from 'node:fs'\n"
-        + "appendFileSync(process.env.P2_EFFECT_LOG, 'slow\\n')\n"
-        + "await new Promise((done) => setTimeout(done, Number(process.env.P2_SLOW_MS ?? 1200)))\n"
-        + "process.stdout.write(JSON.stringify({ rows: [] }))\n",
-    },
+    extraAdapters: { 'slow-adapter.mjs': slowAdapter },
     extraTools: { 'acme.slow@1': { adapter: 'run', sourceTypes: ['file'], entry: 'slow-adapter.mjs' } },
     done: (seen, output) => /lease .*was lost while it was executing|stops taking work/.test(output),
     timeoutMs: 20_000,

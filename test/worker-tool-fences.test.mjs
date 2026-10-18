@@ -11,8 +11,9 @@
  * that had already been handed everything it needed.
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { afterEach } from 'node:test'
@@ -22,7 +23,7 @@ afterEach(closeMcpClients)
 
 import {
   adapterEnv, adapterToolFromSpec, databaseDriver, execute, invocationArgs,
-  refuseReservedParameter, refuseSqlParameter, toolFromSpec, workerToolsOf,
+  refuseReservedParameter, refuseSqlParameter, toolFromSpec, withImplementationPins, workerToolsOf,
 } from '../worker/rulith-worker.mjs'
 
 // ── A. SQL text comes from the Tool, never from an argument ──────────────────
@@ -500,18 +501,23 @@ test('a run Tool that declares env.pass receives the basics plus those names and
   assert.deepEqual(Object.keys(adapterEnv({ PATH: '/usr/bin', ACME_REGION: 'eu-west-1' }, [])), ['PATH'])
 })
 
-test('a declared env.pass reaches the compiled run Tool from the local manifest only', () => {
-  const tools = workerToolsOf({
+test('a declared env.pass reaches the compiled run Tool from the local manifest only', (t) => {
+  // Installed in a Worker root and pinned to its bytes, as the Worker does at start.
+  const root = mkdtempSync(join(tmpdir(), 'rulith-env-pass-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'adapters'))
+  for (const name of ['report.mjs', 'plain.mjs']) writeFileSync(join(root, 'adapters', name), 'process.stdout.write("{}")\n')
+  const tools = withImplementationPins(workerToolsOf({
     format: 'rulith-worker-tools/1',
     tools: {
       'acme.report@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/report.mjs', env: { pass: ['ACME_REGION'] } },
       'acme.plain@1': { adapter: 'run', sourceTypes: ['file'], entry: 'adapters/plain.mjs' },
     },
-  })
+  }), root)
   const sources = { docs: { type: 'file', access: '.' } }
   const compiled = (ref) => toolFromSpec(JSON.stringify({
     name: ref, kind: 'act', impl: 'worker-tool', sourceTypes: ['file'], exec: ref, params: {},
-  }), JSON.stringify({ source: 'docs' }), tools, undefined, sources, 'docs')
+  }), JSON.stringify({ source: 'docs' }), tools, undefined, sources, 'docs', root)
 
   assert.deepEqual(compiled('acme.report@1').envPass, ['ACME_REGION'])
   assert.equal('envPass' in compiled('acme.plain@1'), false,
@@ -525,7 +531,7 @@ test('a declared env.pass reaches the compiled run Tool from the local manifest 
   const smuggled = toolFromSpec(JSON.stringify({
     name: 'acme.plain@1', kind: 'act', impl: 'worker-tool', sourceTypes: ['file'], exec: 'acme.plain@1',
     params: {}, env: { pass: ['RULITH_CONNECTION_KEY'] },
-  }), JSON.stringify({ source: 'docs' }), tools, undefined, sources, 'docs')
+  }), JSON.stringify({ source: 'docs' }), tools, undefined, sources, 'docs', root)
   assert.equal('envPass' in smuggled, false, 'a work item supplied its own Adapter environment allow-list')
 })
 
