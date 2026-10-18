@@ -69,7 +69,7 @@
       "sha256": "ad65e350929e3bdf0e9261581a88a9c4b668295c08fbb95cde5593cea1ea89c9"
     },
     "worker/implementation-boundary.mjs": {
-      "sha256": "558f42db6754a294f956489ba817783077f6a3e891d9d6d36a27c5d497ee6fae"
+      "sha256": "d34f2438a56f873e882041a965d2e26213d5c6963ea0e0c4ffd7e557837b7390"
     },
     "worker/implementation-hooks.mjs": {
       "sha256": "9edb848c2fb701ce9e1fe11c8c97fec2df67f4a3ef7e63b68075a618d278421e"

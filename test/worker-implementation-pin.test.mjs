@@ -417,6 +417,101 @@ test('Node child processes start under the same boundary; other programs, such a
   assert.equal(marked(marks), 'helper\n', 'a child process ran code outside the pinned implementation')
 })
 
+/** Lines every child-starting entry below shares: where it is, how a start ends, and how a result is kept. */
+const ENTRY_PRELUDE = [
+  "import { dirname } from 'node:path'",
+  "import { fileURLToPath } from 'node:url'",
+  "const here = (name) => new URL('./' + name, import.meta.url)",
+  'const file = (name) => fileURLToPath(here(name))',
+  "const root = dirname(file('entry.mjs'))",
+  'const quote = (text) => String.fromCharCode(34) + text + String.fromCharCode(34)',
+  "const settle = (child) => new Promise((done) => { let err = ''; child.stderr?.on('data', (d) => { err += d });"
+    + " child.once('error', (e) => done('error: ' + e.message));"
+    + " child.once('exit', (code) => setTimeout(() => done('exit ' + code + ' ' + (/implementation_boundary: .*/.exec(err)?.[0] ?? '')), 50)) })",
+  'const results = {}',
+  "const attempt = async (name, start) => { try { results[name] = await start() } catch (e) { results[name] = 'thrown: ' + e.message } }",
+]
+
+test('a pinned file replaced after verification never runs outside the boundary: not by a Node by name, not by a command naming it', async (t) => {
+  const dir = workerRoot(t, { 'project.mjs': "process.stdout.write('project')\n" })
+  const marks = path.join(dir, 'marks')
+  const win = process.platform === 'win32'
+  const root = workerRoot(t, {
+    'entry.mjs': [
+      "import { exec, execFileSync, spawn, spawnSync } from 'node:child_process'",
+      "import { writeFileSync } from 'node:fs'",
+      ...ENTRY_PRELUDE,
+      // The declared helper is replaced after the Worker verified it: whatever runs it now runs bytes nobody checked.
+      `writeFileSync(here('helper.mjs'), ${JSON.stringify(mark(marks, 'replaced helper'))})`,
+      "await attempt('nodeByName', () => settle(spawn('node', [file('helper.mjs')])))",
+      "await attempt('nodeByNameInItsDirectory', () => settle(spawn('node', ['helper.mjs'], { cwd: root })))",
+      "await attempt('nodeByNameSync', () => { try { execFileSync('node', [file('helper.mjs')], { stdio: 'pipe' }); return 'ran' }"
+        + " catch (e) { return 'failed ' + (/implementation_boundary: .*/.exec(String(e.stderr))?.[0] ?? e.message) } })",
+      "await attempt('shellNamingIt', () => settle(exec('node ' + quote(file('helper.mjs')))))",
+      "await attempt('shellNamingItRelative', () => 'status ' + spawnSync('node helper.mjs', { shell: true, cwd: root }).status)",
+      `await attempt('otherProgramNamingIt', () => settle(spawn(${win ? "'cmd.exe', ['/d', '/c', 'type', file('helper.mjs')]" : "'sh', ['-c', 'cat ' + quote(file('helper.mjs'))]"})))`,
+      "await attempt('thisNodeWithoutExtension', () => settle(spawn(process.execPath.replace(/\\.exe$/i, ''), [file('helper.mjs')])))",
+      `await attempt('thisNodeWithoutExtensionSource', () => settle(spawn(process.execPath.replace(/\\.exe$/i, ''), ['-e', ${JSON.stringify(`require('node:fs').appendFileSync(${JSON.stringify(marks)}, 'source text\\n')`)}])))`,
+      // A Node running the project's own script is a project command, and starts as usual.
+      `await attempt('projectScript', () => String(spawnSync('node', [${JSON.stringify(path.join(dir, 'project.mjs'))}]).stdout))`,
+      'process.stdout.write(JSON.stringify(results))',
+    ].join('\n'),
+    'helper.mjs': 'export const helper = true\n',
+  })
+  const { out, error } = await runTool(root, 'entry.mjs', ['helper.mjs'])
+  assert.equal(error, undefined, error)
+  const results = JSON.parse(out)
+  const notVerified = /implementation_boundary: .*helper\.mjs is not the verified implementation/
+  assert.match(results.nodeByName, /^exit 1 /)
+  assert.match(results.nodeByName, notVerified)
+  assert.match(results.nodeByNameInItsDirectory, notVerified)
+  assert.match(results.nodeByNameSync, /^failed /)
+  assert.match(results.nodeByNameSync, notVerified)
+  assert.match(results.shellNamingIt, /^thrown: implementation_boundary: a command that names a file of this Tool's pinned implementation/)
+  assert.match(results.shellNamingItRelative, /^thrown: implementation_boundary: a command that names a file/)
+  assert.match(results.otherProgramNamingIt, /^thrown: implementation_boundary: a command that names a file/)
+  assert.match(results.thisNodeWithoutExtension, notVerified)
+  assert.match(results.thisNodeWithoutExtensionSource, /^thrown: implementation_boundary: A Node child process passes the Node option -e/)
+  assert.equal(results.projectScript, 'project', 'a Node running a project script was held as if it were the pinned implementation')
+  assert.equal(marked(marks), '', 'a replaced pinned file or source text ran outside the boundary')
+})
+
+test('pinned code cannot reach the original Worker class, the process bindings or process.execve around the boundary', async (t) => {
+  const dir = workerRoot(t, {})
+  const marks = path.join(dir, 'marks')
+  const evaluated = `require('node:fs').appendFileSync(${JSON.stringify(marks)}, 'evaluated thread\\n')`
+  const root = workerRoot(t, {
+    'entry.mjs': [
+      "import { Worker } from 'node:worker_threads'",
+      ...ENTRY_PRELUDE,
+      `const code = ${JSON.stringify(evaluated)}`,
+      "const settleThread = (worker) => new Promise((done) => { worker.once('error', (e) => done('error: ' + e.message)); worker.once('exit', (c) => done('exit ' + c)) })",
+      "await attempt('prototypeOfWorker', () => { const W = Object.getPrototypeOf(Worker); return settleThread(new W(code, { eval: true })) })",
+      "await attempt('constructorOnPrototype', () => settleThread(new Worker.prototype.constructor(code, { eval: true })))",
+      "await attempt('constructorOfInstance', async () => { const w = new Worker(here('benign.mjs')); const ended = await settleThread(w);"
+        + " let next; try { next = await settleThread(new w.constructor(code, { eval: true })) } catch (e) { next = 'thrown: ' + e.message }"
+        + " return ended + ' ' + (w instanceof Worker) + ' ' + next })",
+      "await attempt('subclass', () => { class Mine extends Worker {} return settleThread(new Mine(code, { eval: true })) })",
+      "await attempt('spawnSyncBinding', () => typeof process.binding('spawn_sync').spawn)",
+      "await attempt('processWrapBinding', () => typeof process.binding('process_wrap').Process)",
+      "await attempt('execve', () => { process.execve(process.execPath, [process.execPath, file('benign.mjs')]); return 'replaced' })",
+      'process.stdout.write(JSON.stringify(results))',
+    ].join('\n'),
+    'benign.mjs': 'export {}\n',
+  })
+  const { out, error } = await runTool(root, 'entry.mjs', ['benign.mjs'])
+  assert.equal(error, undefined, error)
+  const results = JSON.parse(out)
+  assert.match(results.prototypeOfWorker, /^thrown: .*not a constructor/, 'the original Worker class was reachable as the prototype')
+  assert.match(results.constructorOnPrototype, /^thrown: implementation_boundary: a Worker thread started from source text/)
+  assert.match(results.constructorOfInstance, /^exit 0 true thrown: implementation_boundary: a Worker thread started from source text/)
+  assert.match(results.subclass, /^thrown: implementation_boundary: a Worker thread started from source text/)
+  assert.match(results.spawnSyncBinding, /^thrown: implementation_boundary: process\.binding\('spawn_sync'\)/)
+  assert.match(results.processWrapBinding, /^thrown: implementation_boundary: process\.binding\('process_wrap'\)/)
+  assert.match(results.execve, /^thrown: implementation_boundary: process\.execve/)
+  assert.equal(marked(marks), '', 'source text ran in a thread outside the boundary')
+})
+
 test('a Tool cannot add module hooks or reach CommonJS through Module#load and #_compile, in either hooks variant', async (t) => {
   const dir = workerRoot(t, {})
   const marks = path.join(dir, 'marks')

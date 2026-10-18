@@ -890,9 +890,11 @@ before it starts the Adapter, and the Adapter starts under a loader that compile
 files, at their declared paths (links are not followed), and only the verified bytes. Any other
 local file, an import through a package name or a `#` map, a CommonJS `require` or a native addon
 is refused; the compile cache stays off; a Tool cannot add module hooks of its own. A Worker
-thread or a Node child process the Tool starts (fork, or spawn of `process.execPath`) starts under
-the same boundary, and one from source text or with options that load code is refused; other
-programs, such as the project commands a kit runs, start as usual. The Adapter receives no
+thread or a Node child process the Tool starts (fork, spawn of `process.execPath` with or without
+its `.exe`, or `node` by name on a pinned file) starts under the same boundary, and one from source
+text or with options that load code is refused, as is any other command that names a pinned file,
+`process.binding('spawn_sync')`/`('process_wrap')` and `process.execve`. Other programs, such as
+the project commands a kit runs (including `node` on the project's own scripts), start as usual. The Adapter receives no
 `NODE_*` variable but `NODE_EXTRA_CA_CERTS` and `NODE_USE_ENV_PROXY`, no `OPENSSL_*` variable,
 and `env.pass` cannot name them. If a refusal comes after the Adapter started, the receipt says
 what was refused and that what ran before it may already have taken effect. Built-in Tools are pinned to the Runtime

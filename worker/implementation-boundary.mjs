@@ -12,10 +12,12 @@
  *      （Worker 也从不把 NODE_COMPILE_CACHE 交给 Tool，并设 NODE_DISABLE_COMPILE_CACHE）。
  *   3. 注册装载钩子（implementation-hooks.mjs），然后让 Tool 再也注册不了自己的钩子：
  *      后注册的钩子先运行，会排在边界前面。
- *   4. 线程和子 Node 进程带着同一道边界启动：Worker 线程与 fork／spawn／exec* 一个
- *      process.execPath，都被加上边界选项与这份名单；从源码文本起的线程、共享环境的线程、
- *      会装载代码的 Node 选项、没有脚本文件的 Node 进程，以及经 shell 或其他程序启动
- *      这个 Node 的命令，都在启动前拒绝。别的程序（kit 运行的项目命令，如 npm test、python）照常启动：
+ *   4. 线程和子 Node 进程带着同一道边界启动：Worker 线程、fork，以及 spawn／exec* 这个 Node
+ *      （process.execPath，带不带 .exe），或按名字（node／node.exe）启动、却点名了 pin 里某个文件的 Node，
+ *      都被加上边界选项与这份名单；从源码文本起的线程、共享环境的线程、会装载代码的 Node 选项、
+ *      没有脚本文件的 Node 进程，以及经 shell 或其他程序启动这个 Node、或点名 pin 里文件的命令，
+ *      都在启动前拒绝；它们底下的 process.binding('spawn_sync'／'process_wrap') 与 process.execve 也拒绝。
+ *      别的程序（kit 运行的项目命令，如 npm test、python、node 跑项目自己的脚本）照常启动：
  *      运行项目命令是产品用途本身，由所有者“打开项目”的确认授权。
  *
  * NODE_OPTIONS 里的 --require/--import 会先于本文件执行，所以 Worker 从不把 NODE_OPTIONS 交给
@@ -25,9 +27,11 @@ import module from 'node:module'
 import childProcess from 'node:child_process'
 import workerThreads from 'node:worker_threads'
 import { realpathSync } from 'node:fs'
+import { basename, resolve as resolvePath } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   IMPLEMENTATION_HOOKS_ENV, IMPLEMENTATION_PIN_ENV, ImplementationBoundaryError, boundaryArgv, boundaryEnv,
-  boundedNodeArgs, implementationHooks, isLoaderEnvName, readImplementationPin,
+  boundedNodeArgs, implementationHooks, implementationPinKey, isLoaderEnvName, readImplementationPin,
 } from './implementation-hooks.mjs'
 
 const text = process.env[IMPLEMENTATION_PIN_ENV]
@@ -72,29 +76,72 @@ module.registerHooks = noHooks
 
 // ── 3. Threads and Node children start under the same boundary ──────────────
 const comparable = (value) => (process.platform === 'win32' ? String(value).toLowerCase().replaceAll('/', '\\') : String(value))
-const nodePaths = [...new Set([process.execPath, (() => { try { return realpathSync(process.execPath) } catch { return process.execPath } })()]
-  .map(comparable))]
-/** The file is this Node. Started by name through PATH (`node`, `npm`) it is a project command, not this executable. */
-const isThisNode = (file) => typeof file === 'string' && nodePaths.includes(comparable(file))
-const mentionsThisNode = (values) => values.some((value) => typeof value === 'string'
-  && nodePaths.some((path) => comparable(value).includes(path)))
-const throughAnotherProgram = () => refuse('a command that starts this Node through a shell or another program would run code'
-  + ' outside this Tool\'s pinned implementation, so it was not started. Start it with fork, or spawn process.execPath with a script file.')
-
-const BaseWorker = workerThreads.Worker
-class Worker extends BaseWorker {
-  constructor(filename, options = {}) {
-    if (options?.eval) refuse('a Worker thread started from source text runs code that is not a pinned file, so it was not started.')
-    if (options?.env === workerThreads.SHARE_ENV) {
-      refuse('a Worker thread sharing this process\'s environment could be handed another implementation list, so it was not started.')
+const fullNodePaths = [...new Set([process.execPath, (() => { try { return realpathSync(process.execPath) } catch { return process.execPath } })()])]
+/** This Node by path: its executable (and real path), with or without the `.exe` a Windows start may leave out. */
+const nodePaths = new Set(fullNodePaths.flatMap((path) => [path, path.replace(/\.exe$/i, '')]).map(comparable))
+const isThisNode = (file) => typeof file === 'string' && nodePaths.has(comparable(file))
+/** A Node by name: `node` through PATH, or another Node binary. It may run a project script; see namesPinnedFile. */
+const NODE_NAMES = new Set(['node', 'node.exe', 'nodejs'])
+const isNodeByName = (file) => typeof file === 'string'
+  && NODE_NAMES.has(process.platform === 'win32' ? basename(file).toLowerCase() : basename(file))
+/** The words of an argument or a command line, quotes removed: enough to see which files a command names. */
+const words = (value) => (String(value).match(/"[^"]*"|'[^']*'|[^\s"']+/g) ?? []).map((word) => word.replace(/^["']|["']$/g, ''))
+const pinnedPaths = Object.keys(files)
+/**
+ * Whether a start names a file of this pinned implementation: an absolute pinned path anywhere in an
+ * argument or command line, or a word (also the value of a `--option=value`, or a file: URL) that resolves
+ * against the start's working directory to a pinned path. Such a start would run pinned code outside the
+ * boundary, under bytes nobody checked; a Node gets the boundary, any other program is refused.
+ */
+function namesPinnedFile(values, cwd) {
+  const base = cwd instanceof URL ? fileURLToPath(cwd) : typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd()
+  for (const value of values) {
+    if (typeof value !== 'string' || value === '') continue
+    const text = comparable(value)
+    if (pinnedPaths.some((path) => text.includes(path))) return true
+    for (const word of words(value)) {
+      for (const candidate of new Set([word, word.replace(/^-{1,2}[^=\s]+=/, '')])) {
+        try {
+          const file = /^file:/i.test(candidate) ? fileURLToPath(candidate) : candidate
+          if (files[implementationPinKey(resolvePath(base, file))] !== undefined) return true
+        } catch { /* not a path */ }
+      }
     }
-    super(filename, {
-      ...options,
-      execArgv: boundedNodeArgs(options?.execArgv ?? [], BOUNDARY, { script: false, label: 'A Worker thread' }),
-      env: boundaryEnv(options?.env ?? process.env, text, hooksVariant),
-    })
+  }
+  return false
+}
+const mentionsThisNode = (values) => values.some((value) => typeof value === 'string'
+  && (fullNodePaths.some((path) => comparable(value).includes(comparable(path))) || words(value).some((word) => isThisNode(word))))
+/** A Node gets the boundary when it is this Node, or a Node by name started on a pinned file. */
+const heldNode = (file, args, cwd) => isThisNode(file) || (isNodeByName(file) && namesPinnedFile(args, cwd))
+/** Any other start may not reach this Node or a pinned file around the boundary. */
+function refuseUnheld(values, cwd) {
+  if (mentionsThisNode(values)) {
+    refuse('a command that starts this Node through a shell or another program would run code outside this Tool\'s pinned'
+      + ' implementation, so it was not started. Start it with fork, or spawn process.execPath with a script file.')
+  }
+  if (namesPinnedFile(values, cwd)) {
+    refuse('a command that names a file of this Tool\'s pinned implementation would run it outside the implementation boundary,'
+      + ' so it was not started. Start it with fork, or spawn process.execPath with the script file.')
   }
 }
+
+// The original class is never reachable from the replacement: not as its prototype, not as a constructor.
+const BaseWorker = workerThreads.Worker
+function Worker(filename, options = {}) {
+  if (new.target === undefined) throw new TypeError('Class constructor Worker cannot be invoked without \'new\'')
+  if (options?.eval) refuse('a Worker thread started from source text runs code that is not a pinned file, so it was not started.')
+  if (options?.env === workerThreads.SHARE_ENV) {
+    refuse('a Worker thread sharing this process\'s environment could be handed another implementation list, so it was not started.')
+  }
+  return Reflect.construct(BaseWorker, [filename, {
+    ...options,
+    execArgv: boundedNodeArgs(options?.execArgv ?? [], BOUNDARY, { script: false, label: 'A Worker thread' }),
+    env: boundaryEnv(options?.env ?? process.env, text, hooksVariant),
+  }], new.target)
+}
+Worker.prototype = BaseWorker.prototype
+Object.defineProperty(BaseWorker.prototype, 'constructor', { value: Worker, writable: true, configurable: true })
 workerThreads.Worker = Worker
 
 /**
@@ -115,17 +162,17 @@ function boundedPairs(pairs) {
 }
 
 // Every asynchronous start (spawn, fork, exec, execFile) reaches ChildProcess#spawn with the final file,
-// argv (argv0 first) and environment pairs: one place to hold them all.
+// argv (argv0 first), working directory and environment pairs: one place to hold them all.
 const { ChildProcess } = childProcess
 const spawnChild = ChildProcess.prototype.spawn
 ChildProcess.prototype.spawn = function spawnWithinImplementationBoundary(options) {
   if (options && typeof options === 'object') {
     const [argv0, ...args] = Array.isArray(options.args) ? options.args : []
-    if (isThisNode(options.file)) {
+    if (heldNode(options.file, args, options.cwd)) {
       options.args = [argv0 ?? options.file, ...boundedNodeArgs(args, BOUNDARY, { script: true, label: 'A Node child process' })]
       options.envPairs = boundedPairs(options.envPairs)
-    } else if (mentionsThisNode(args)) {
-      throughAnotherProgram()
+    } else {
+      refuseUnheld(args, options.cwd)
     }
   }
   return spawnChild.call(this, options)
@@ -145,24 +192,41 @@ for (const name of ['spawnSync', 'execFileSync']) {
     const list = Array.isArray(args) ? args : []
     const settings = Array.isArray(args) ? options : args
     if (settings?.shell) {
-      if (mentionsThisNode([file, ...list])) throughAnotherProgram()
+      refuseUnheld([file, ...list], settings.cwd)
       return start.apply(this, arguments)
     }
-    if (isThisNode(file)) {
+    if (heldNode(file, list, settings?.cwd)) {
       return start.call(this, file, boundedNodeArgs(list, BOUNDARY, { script: true, label: 'A Node child process' }),
         { ...settings, env: boundaryEnv(settings?.env ?? process.env, text, hooksVariant) })
     }
-    if (mentionsThisNode(list)) throughAnotherProgram()
+    refuseUnheld(list, settings?.cwd)
     return start.apply(this, arguments)
   }
 }
 const execSync = childProcess.execSync
-childProcess.execSync = function execSyncWithinImplementationBoundary(command) {
-  if (mentionsThisNode([command])) throughAnotherProgram()
+childProcess.execSync = function execSyncWithinImplementationBoundary(command, options) {
+  refuseUnheld([command], options?.cwd)
   return execSync.apply(this, arguments)
 }
 // `import { spawn } from 'node:child_process'` and friends read the replaced functions.
 module.syncBuiltinESMExports()
+
+// Below child_process: the bindings it is built on, and replacing this process outright.
+const binding = process.binding
+const STARTING_BINDINGS = new Set(['spawn_sync', 'process_wrap'])
+const refuseBinding = (name) => refuse(`process.binding('${String(name)}') would start a process outside the implementation boundary, so it was not given.`)
+process.binding = function bindingWithinImplementationBoundary(name) {
+  if (STARTING_BINDINGS.has(String(name))) refuseBinding(name)
+  return binding.apply(this, arguments)
+}
+if (typeof process._linkedBinding === 'function') {
+  const linkedBinding = process._linkedBinding
+  process._linkedBinding = function linkedBindingWithinImplementationBoundary(name) {
+    if (STARTING_BINDINGS.has(String(name))) refuseBinding(name)
+    return linkedBinding.apply(this, arguments)
+  }
+}
+process.execve = () => refuse('process.execve would replace this process outside the implementation boundary, so it was not run.')
 
 /** Which hooks hold this process: read by tests that run the boundary in both variants. */
 Object.defineProperty(globalThis, Symbol.for('rulith.implementationBoundary'), {
