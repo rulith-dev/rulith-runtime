@@ -85,9 +85,12 @@
  * load, relative to the Worker root like `entry`: `"implementation": ["adapters/acme/lib.mjs"]`.
  * A run Tool's pin covers the bytes of its entry and of every listed file, so changing any of
  * them changes the advertised digest and the old Connection lock no longer runs it. The Adapter
- * starts under implementation-boundary.mjs, which loads only those files, only with the verified
- * bytes, and refuses CommonJS require and native addons. A built-in's pin covers the Runtime
- * release that implements it.
+ * starts under implementation-boundary.mjs, which loads only those files at their declared paths,
+ * only with the verified bytes; refuses CommonJS, native addons, package-name and `#` imports, the
+ * compile cache and module hooks of its own; and starts every Worker thread and Node child it makes
+ * under the same boundary (other programs, such as the project commands a kit runs, start as usual).
+ * The Adapter receives no NODE_* name but NODE_EXTRA_CA_CERTS and NODE_USE_ENV_PROXY, and no
+ * OPENSSL_* name. A built-in's pin covers the Runtime release that implements it.
  *
  * 动作工具改变世界(回执 effect_confirmed);放电工具兑现主张(证据带档回板,缺省 attested)。
  * 主张载荷随工单来(claim.predicate/args),http 放电工具把它作为请求体 POST 给后端。
@@ -127,7 +130,9 @@ import {
 } from './material-transport.mjs'
 import { builtinLocalAuthoringTools as localAuthoringDefinitions, executeLocalAuthoring, localAuthoringIngestCue, LOCAL_AUTHORING_DRAFT_SHAPE, LOCAL_AUTHORING_MODERN_CUE, LOCAL_AUTHORING_REFERENCE_CUE } from './local-authoring.mjs'
 import { authoringGuidanceText } from './authoring-diagnostics.mjs'
-import { IMPLEMENTATION_PIN_ENV, IMPLEMENTATION_PIN_FORMAT, implementationPinKey, sha256Hex } from './implementation-hooks.mjs'
+import {
+  IMPLEMENTATION_HOOKS_ENV, IMPLEMENTATION_PIN_FORMAT, boundaryArgv, boundaryEnv, implementationPinKey, isLoaderEnvName, sha256Hex,
+} from './implementation-hooks.mjs'
 // The off-machine permission reading travels with the Worker surface it has always been part
 // of, so the committed cross-repository permission rows keep one importable answer to compare
 // against. Its consumer moved — from an upload that no longer exists to the disclosure decision
@@ -1939,7 +1944,8 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
     if (drift !== undefined) {
       return reject(new Error(`The run Tool's implementation no longer matches its pin: ${drift}. The Adapter was not started; nothing ran.`))
     }
-    const argv = ['--import', IMPLEMENTATION_BOUNDARY, implementation.entry,
+    // --preserve-symlinks(-main): modules load at their declared paths, which is what the pin names.
+    const argv = [...boundaryArgv(IMPLEMENTATION_BOUNDARY), implementation.entry,
       ...(t.passArgs === true ? [JSON.stringify(args ?? {})] : [])]
     // The invocation comes from the trusted work item, never from model arguments. It is
     // the execution's own identity: which Cases that execution ends up advancing is the
@@ -1960,25 +1966,29 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       && typeof context.invocationId === 'string' && context.invocationId !== ''
       ? `rulith-execution/1:${createHash('sha256').update(JSON.stringify([context.boardId, context.invocationId])).digest('hex')}`
       : undefined
-    const env = {
+    // boundaryEnv withholds every name that can load or select code — NODE_OPTIONS (preloads ahead of
+    // the boundary), NODE_COMPILE_CACHE (a code cache trusted by a 32-bit checksum), every other NODE_*
+    // but two data-only names, OPENSSL_* — sets NODE_DISABLE_COMPILE_CACHE, and hands over the verified
+    // files and their digests for the loader hooks in the Adapter process.
+    const env = boundaryEnv({
       ...adapterEnv(process.env, t.envPass),
       ...(context.invocationId ? { [ADAPTER_CONTEXT.invocationId]: String(context.invocationId) } : {}),
       ...(executionKey ? { [ADAPTER_CONTEXT.executionKey]: executionKey } : {}),
       ...(access ? { [ADAPTER_CONTEXT.sourceAccess]: access } : {}),
       ...(source.sourceType ? { [ADAPTER_CONTEXT.sourceType]: String(source.sourceType) } : {}),
-      // The verified files and their digests, for the loader hooks in the Adapter process.
-      [IMPLEMENTATION_PIN_ENV]: JSON.stringify({ format: IMPLEMENTATION_PIN_FORMAT,
-        files: Object.fromEntries(implementation.paths.map(({ path, sha256 }) => [implementationPinKey(path), sha256])) }),
-    }
-    // NODE_OPTIONS can preload code (--require, --import) ahead of the boundary, so a run Tool never
-    // receives it, inherited or passed. A Tool needing Node flags is outside what this Worker runs.
-    for (const name of Object.keys(env)) if (name.toUpperCase() === 'NODE_OPTIONS') delete env[name]
+    }, JSON.stringify({ format: IMPLEMENTATION_PIN_FORMAT,
+      files: Object.fromEntries(implementation.paths.map(({ path, sha256 }) => [implementationPinKey(path), sha256])) }),
+    process.env[IMPLEMENTATION_HOOKS_ENV])
     const maxBuffer = Number.isSafeInteger(context.resultBytes) && context.resultBytes > 0 ? context.resultBytes : 1_048_576
     execFile(process.execPath, argv, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout, stderr) => {
       if (err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return reject(new ResultDeliveryError('adapter_output_exceeds_object_budget'))
-      // A refusal by the implementation boundary is said in its own words, not inside a stack trace.
+      // A refusal by the implementation boundary is said in its own words, not inside a stack trace —
+      // and honestly: the process had started, so code of this Tool that ran before the refused module
+      // may already have had effects. Only a refusal before the start (above) says nothing ran.
       const boundary = /implementation_boundary: .*/.exec(String(stderr ?? ''))
-      if (err && boundary) return reject(new Error(boundary[0]))
+      if (err && boundary) {
+        return reject(new Error(`${boundary[0]} The run stopped there; anything this Tool did before that point may already have taken effect.`))
+      }
       if (err) return reject(new Error(String(err.message)))
       // Capture stays bounded; Artifact routing sees the complete result, never a silent prefix.
       runArtifactOutput(String(stdout) || '(no output)', {
@@ -5219,7 +5229,7 @@ export function toolDigest(definition, implementation) {
  * 记进 `files`，与定义一起进 Tool digest——改任何一个字节，digest 就变，旧 pin 就不再匹配。
  *
  * 缺文件、越出根目录、不是 `.mjs` 都在这里抛出：实现边界不成立时可见拒绝，不退回只校验配置。
- * `paths` 是真实路径与摘要，交给子进程的装载钩子逐个比对（implementation-hooks.mjs）。
+ * `paths` 是声明路径（不解析链接）与摘要，交给子进程的装载钩子逐个比对（implementation-hooks.mjs）。
  */
 export function runImplementation(definition, root = WORKER_ROOT) {
   const { digest: _advertised, implementationFiles: _pinned, ...declared } = definition ?? {}
@@ -5245,7 +5255,9 @@ export function runImplementation(definition, root = WORKER_ROOT) {
     if (Object.hasOwn(files, key)) throw new Error(`${name} is named twice in the implementation`)
     const sha256 = sha256Hex(readFileSync(real))
     files[key] = sha256
-    paths.push({ name: key, path: real, sha256 })
+    // The loader is held to the declared path (the Adapter starts with --preserve-symlinks), so a link
+    // swapped in after this check is read at that path and refused, never followed to another file.
+    paths.push({ name: key, path, sha256 })
   }
   return { entry: resolve(base, declared.entry), files, paths, digest: toolDigest(declared, files) }
 }
@@ -5439,9 +5451,10 @@ export function workerToolsOf(raw) {
         throw new Error(`Worker Tool ${id}.env.pass must be an array of environment variable names, for example ["ACME_REGION"].`
           + ' An empty array passes only the PATH / HOME / TEMP / SystemRoot basics.')
       }
-      if (value.env.pass.some((name) => name.toUpperCase() === 'NODE_OPTIONS')) {
-        throw new Error(`Worker Tool ${id}.env.pass names NODE_OPTIONS, which can preload code ahead of the pinned implementation;`
-          + ' a run Adapter never receives it.')
+      const loaders = value.env.pass.filter((name) => isLoaderEnvName(name))
+      if (loaders.length > 0) {
+        throw new Error(`Worker Tool ${id}.env.pass names ${loaders.join(', ')}, which can load or select code outside the pinned implementation;`
+          + ' a run Adapter never receives NODE_* names other than NODE_EXTRA_CA_CERTS and NODE_USE_ENV_PROXY, nor OPENSSL_* names.')
       }
     }
     if (value.handles !== undefined) {

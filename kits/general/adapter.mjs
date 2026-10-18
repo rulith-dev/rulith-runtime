@@ -163,12 +163,7 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
         // The job file reaches the supervisor through ENG_ variables, not argv: the job's command is the supervisor's child
         // and could read its parent's command line to find the kit home. execute() strips every ENG_ variable again for
         // the command itself. Not secrecy (see README), just not handing the location to the script.
-        // 监督进程也是这份被 pin 的实现里的文件：Worker 的实现边界下（SYS-TOOL-01），它以同一道边界启动，只装载核验过的字节。
-        // The supervisor is a file of this pinned implementation too: under the Worker's implementation boundary it
-        // starts under the same boundary and loads only the verified bytes. The command it runs gets neither.
-        const pin = process.env.RULITH_IMPLEMENTATION_PIN;
-        const boundary = pin ? { argv: process.execArgv, env: { RULITH_IMPLEMENTATION_PIN: pin } } : { argv: [], env: {} };
-        const child = spawn(process.execPath, [...boundary.argv, fileURLToPath(new URL('./supervisor.mjs', import.meta.url))], { env: { ...childEnv(), ...boundary.env, ENG_JOB_FILE: ctx.jobFile, ENG_JOB_ID: job.id }, detached: true, windowsHide: true, stdio: 'ignore' });
+        const child = spawn(process.execPath, [fileURLToPath(new URL('./supervisor.mjs', import.meta.url))], { env: { ...childEnv(), ENG_JOB_FILE: ctx.jobFile, ENG_JOB_ID: job.id }, detached: true, windowsHide: true, stdio: 'ignore' });
         await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
         child.unref();
         const limit = Date.now() + 5000;

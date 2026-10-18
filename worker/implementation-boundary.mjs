@@ -1,36 +1,170 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * `node --import <this file> <entry> <args>`：Worker 启动 run Tool 时，子进程里第一段执行的代码。
+ * `node --preserve-symlinks --preserve-symlinks-main --import <this file> <entry> <args>`：
+ * Worker 启动 run Tool 时，子进程里第一段执行的代码（SYS-TOOL-01“Worker 只执行已核验的同一份实现字节”）。
  *
- * 它在 Tool 的任何代码之前做三件事（SYS-TOOL-01“Worker 只执行已核验的同一份实现字节”）：
+ * 它在 Tool 的任何代码之前做四件事：
  *
- *   1. 读 Worker 交来的 pin 名单（真实路径 → SHA-256）。没有名单就拒绝启动：没有名单的进程
+ *   1. 读 Worker 交来的 pin 名单（声明路径 → SHA-256）。没有名单就拒绝启动：没有名单的进程
  *      不知道哪份字节是被 pin 的，只能什么都不装。
- *   2. 拒绝 CommonJS 的 require（含 createRequire）与原生扩展：这两条装载路不经过 ES 模块钩子，
- *      在 Node 20/22 早期版本上也约束不住，所以统一可见拒绝（`node:` 内置模块照常可用）。
- *   3. 注册装载钩子（implementation-hooks.mjs）：每个模块装载前核验，执行被核验的那一份字节。
+ *   2. 关掉 ES 模块钩子管不到的装载路：CommonJS（require、createRequire、Module#load、Module#_compile）、
+ *      原生扩展与编译缓存——缓存条目只靠 32 位校验和对上源码，换一份字节同样能通过
+ *      （Worker 也从不把 NODE_COMPILE_CACHE 交给 Tool，并设 NODE_DISABLE_COMPILE_CACHE）。
+ *   3. 注册装载钩子（implementation-hooks.mjs），然后让 Tool 再也注册不了自己的钩子：
+ *      后注册的钩子先运行，会排在边界前面。
+ *   4. 线程和子 Node 进程带着同一道边界启动：Worker 线程与 fork／spawn／exec* 一个
+ *      process.execPath，都被加上边界选项与这份名单；从源码文本起的线程、共享环境的线程、
+ *      会装载代码的 Node 选项、没有脚本文件的 Node 进程，以及经 shell 或其他程序启动
+ *      这个 Node 的命令，都在启动前拒绝。别的程序（kit 运行的项目命令，如 npm test、python）照常启动：
+ *      运行项目命令是产品用途本身，由所有者“打开项目”的确认授权。
  *
  * NODE_OPTIONS 里的 --require/--import 会先于本文件执行，所以 Worker 从不把 NODE_OPTIONS 交给
  * run Tool。本文件属于 Runtime 自己的发布字节，和 Worker 本身同一个信任基础。
  */
 import module from 'node:module'
+import childProcess from 'node:child_process'
+import workerThreads from 'node:worker_threads'
+import { realpathSync } from 'node:fs'
 import {
-  IMPLEMENTATION_PIN_ENV, ImplementationBoundaryError, implementationHooks, readImplementationPin,
+  IMPLEMENTATION_HOOKS_ENV, IMPLEMENTATION_PIN_ENV, ImplementationBoundaryError, boundaryArgv, boundaryEnv,
+  boundedNodeArgs, implementationHooks, isLoaderEnvName, readImplementationPin,
 } from './implementation-hooks.mjs'
 
 const text = process.env[IMPLEMENTATION_PIN_ENV]
 const files = readImplementationPin(text)
+const hooksVariant = process.env[IMPLEMENTATION_HOOKS_ENV] === 'register' ? 'register' : undefined
+const BOUNDARY = Object.freeze(boundaryArgv(import.meta.url))
+const refuse = (message) => { throw new ImplementationBoundaryError(message) }
 
+// ── 1. CommonJS, native addons and the compile cache ─────────────────────────
 const loadCommonJs = module._load
 module._load = function loadWithinImplementationBoundary(request, ...rest) {
   if (typeof request === 'string' && module.isBuiltin(request)) return loadCommonJs.call(this, request, ...rest)
-  throw new ImplementationBoundaryError(`require(${JSON.stringify(String(request))}) would load CommonJS code, which is outside`
-    + ' this Tool\'s pinned implementation. Only the declared .mjs files load, through import.')
+  return refuse(`require(${JSON.stringify(String(request))}) would load CommonJS code, which is outside this Tool's pinned`
+    + ' implementation, so it was not loaded. Only the declared .mjs files load, through import.')
 }
-process.dlopen = () => {
-  throw new ImplementationBoundaryError('a native addon is outside this Tool\'s pinned implementation and does not load.')
+module.prototype.load = function loadNothing(filename) {
+  refuse(`${String(filename)} would load as CommonJS, which is outside this Tool's pinned implementation, so it was not loaded.`)
+}
+module.prototype._compile = function compileNothing(_content, filename) {
+  refuse(`${String(filename)} would compile as CommonJS, which is outside this Tool's pinned implementation, so it was not run.`)
+}
+process.dlopen = () => refuse('a native addon is outside this Tool\'s pinned implementation, so it was not loaded.')
+// A process started with a compile cache already on (NODE_COMPILE_CACHE) is not started by this
+// Runtime: the Worker and the boundary never pass it. It is refused rather than trusted.
+if (typeof module.getCompileCacheDir === 'function' && module.getCompileCacheDir()) {
+  refuse('this process was started with a compile cache, whose entries are not the verified bytes; no local code may load.')
+}
+if (typeof module.enableCompileCache === 'function') {
+  const disabled = module.constants?.compileCacheStatus?.DISABLED
+  module.enableCompileCache = () => ({ status: disabled,
+    message: 'implementation_boundary: the compile cache stays off for a pinned run Tool; a cached entry is not its verified bytes.' })
 }
 
-if (typeof module.registerHooks === 'function') module.registerHooks(implementationHooks(files))
+// ── 2. The loader hooks, and nobody else's ───────────────────────────────────
+const useRegisterHooks = typeof module.registerHooks === 'function' && hooksVariant !== 'register'
+if (useRegisterHooks) module.registerHooks(implementationHooks(files))
 else if (typeof module.register === 'function') module.register('./implementation-hooks.mjs', import.meta.url, { data: text })
-else throw new ImplementationBoundaryError(`Node ${process.version} has no module hooks, so the pinned implementation cannot be held.`)
+else refuse(`Node ${process.version} has no module hooks, so the pinned implementation cannot be held.`)
+const noHooks = () => refuse('a Tool cannot install module hooks: they would run ahead of the implementation boundary.')
+module.register = noHooks
+module.registerHooks = noHooks
+
+// ── 3. Threads and Node children start under the same boundary ──────────────
+const comparable = (value) => (process.platform === 'win32' ? String(value).toLowerCase().replaceAll('/', '\\') : String(value))
+const nodePaths = [...new Set([process.execPath, (() => { try { return realpathSync(process.execPath) } catch { return process.execPath } })()]
+  .map(comparable))]
+/** The file is this Node. Started by name through PATH (`node`, `npm`) it is a project command, not this executable. */
+const isThisNode = (file) => typeof file === 'string' && nodePaths.includes(comparable(file))
+const mentionsThisNode = (values) => values.some((value) => typeof value === 'string'
+  && nodePaths.some((path) => comparable(value).includes(path)))
+const throughAnotherProgram = () => refuse('a command that starts this Node through a shell or another program would run code'
+  + ' outside this Tool\'s pinned implementation, so it was not started. Start it with fork, or spawn process.execPath with a script file.')
+
+const BaseWorker = workerThreads.Worker
+class Worker extends BaseWorker {
+  constructor(filename, options = {}) {
+    if (options?.eval) refuse('a Worker thread started from source text runs code that is not a pinned file, so it was not started.')
+    if (options?.env === workerThreads.SHARE_ENV) {
+      refuse('a Worker thread sharing this process\'s environment could be handed another implementation list, so it was not started.')
+    }
+    super(filename, {
+      ...options,
+      execArgv: boundedNodeArgs(options?.execArgv ?? [], BOUNDARY, { script: false, label: 'A Worker thread' }),
+      env: boundaryEnv(options?.env ?? process.env, text, hooksVariant),
+    })
+  }
+}
+workerThreads.Worker = Worker
+
+/**
+ * `KEY=value` pairs of a Node child: the same rule as boundaryEnv, on the form spawn hands to libuv.
+ * fork and cluster set their own IPC names here (the channel, its serialization, a cluster member's id);
+ * they carry no code, and without them a forked child would lose its channel or a cluster member would
+ * take itself for the primary and fork again.
+ */
+const IPC_NAMES = Object.freeze(['NODE_CHANNEL_FD', 'NODE_CHANNEL_SERIALIZATION_MODE', 'NODE_UNIQUE_ID'])
+function boundedPairs(pairs) {
+  const kept = (Array.isArray(pairs) ? pairs : []).filter((pair) => {
+    const name = String(pair).slice(0, Math.max(String(pair).indexOf('=', 1), 0)).toUpperCase()
+    if (IPC_NAMES.includes(name)) return true
+    return !(isLoaderEnvName(name) || name === IMPLEMENTATION_PIN_ENV || name === IMPLEMENTATION_HOOKS_ENV)
+  })
+  return [...kept, `${IMPLEMENTATION_PIN_ENV}=${text}`, 'NODE_DISABLE_COMPILE_CACHE=1',
+    ...(hooksVariant ? [`${IMPLEMENTATION_HOOKS_ENV}=${hooksVariant}`] : [])]
+}
+
+// Every asynchronous start (spawn, fork, exec, execFile) reaches ChildProcess#spawn with the final file,
+// argv (argv0 first) and environment pairs: one place to hold them all.
+const { ChildProcess } = childProcess
+const spawnChild = ChildProcess.prototype.spawn
+ChildProcess.prototype.spawn = function spawnWithinImplementationBoundary(options) {
+  if (options && typeof options === 'object') {
+    const [argv0, ...args] = Array.isArray(options.args) ? options.args : []
+    if (isThisNode(options.file)) {
+      options.args = [argv0 ?? options.file, ...boundedNodeArgs(args, BOUNDARY, { script: true, label: 'A Node child process' })]
+      options.envPairs = boundedPairs(options.envPairs)
+    } else if (mentionsThisNode(args)) {
+      throughAnotherProgram()
+    }
+  }
+  return spawnChild.call(this, options)
+}
+const fork = childProcess.fork
+childProcess.fork = function forkWithinImplementationBoundary(modulePath, args, options) {
+  const settings = Array.isArray(args) ? options : args
+  if (settings?.execPath !== undefined && !isThisNode(settings.execPath)) {
+    refuse('fork with another Node executable would run outside this Tool\'s pinned implementation, so it was not started.')
+  }
+  return fork.apply(this, arguments)
+}
+// The synchronous starts reach libuv without ChildProcess, so each is held at its own entry.
+for (const name of ['spawnSync', 'execFileSync']) {
+  const start = childProcess[name]
+  childProcess[name] = function startWithinImplementationBoundary(file, args, options) {
+    const list = Array.isArray(args) ? args : []
+    const settings = Array.isArray(args) ? options : args
+    if (settings?.shell) {
+      if (mentionsThisNode([file, ...list])) throughAnotherProgram()
+      return start.apply(this, arguments)
+    }
+    if (isThisNode(file)) {
+      return start.call(this, file, boundedNodeArgs(list, BOUNDARY, { script: true, label: 'A Node child process' }),
+        { ...settings, env: boundaryEnv(settings?.env ?? process.env, text, hooksVariant) })
+    }
+    if (mentionsThisNode(list)) throughAnotherProgram()
+    return start.apply(this, arguments)
+  }
+}
+const execSync = childProcess.execSync
+childProcess.execSync = function execSyncWithinImplementationBoundary(command) {
+  if (mentionsThisNode([command])) throughAnotherProgram()
+  return execSync.apply(this, arguments)
+}
+// `import { spawn } from 'node:child_process'` and friends read the replaced functions.
+module.syncBuiltinESMExports()
+
+/** Which hooks hold this process: read by tests that run the boundary in both variants. */
+Object.defineProperty(globalThis, Symbol.for('rulith.implementationBoundary'), {
+  value: Object.freeze({ hooks: useRegisterHooks ? 'registerHooks' : 'register' }),
+})

@@ -6,25 +6,33 @@
  * 每一条都从外面看结果：pin 是否随字节移动、拒绝时被 pin 的 Tool 的代码是否一行都没跑
  * （Adapter 自己写的标记文件不存在），以及真实 Worker 进程在领取之前是否就拒绝了。
  *
- *   · 字节变化 → 新 digest；没有本地实现文件的 Tool 的 digest 不变；内置 Tool 绑定 Runtime 发布。
- *   · 缺文件、未声明的依赖（静态、动态、CommonJS）在执行前或在该依赖执行前可见拒绝。
- *   · 核验之后才换的字节：启动前被拒（Worker 再核一次），启动之后被拒（装载钩子核验并执行同一份字节）。
- *   · kit 的 eng.* 工具经真实 Worker 端到端；kit 的监督进程在同一道边界下启动。
+ *   · 字节变化 → 新 digest（与独立算出的期望值比对）；没有本地实现文件的 Tool 的 digest 不变；
+ *     内置 Tool 绑定 Runtime 发布。
+ *   · 缺文件、未声明的依赖（静态、动态、CommonJS、经 package.json 的包名与 `#` 映射）在执行前或在该依赖执行前可见拒绝。
+ *   · 核验之后才换的字节或链接：启动前被拒（Worker 再核一次），启动之后被拒（装载钩子按声明路径核验并执行同一份字节）。
+ *   · 编译缓存、线程与子 Node 进程、Tool 自己注册的钩子都绕不过边界；别的程序（项目命令）照常启动。
+ *   · kit 的 eng.* 工具经真实安装器与真实 Worker 端到端；kit 的监督进程在同一道边界下启动。
+ *   · 整套在 module.register 钩子（Node 20.6–22.14 那条路）下再跑一遍。
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import module from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import zlib from 'node:zlib'
 
+import { installGeneral, parseKitInstall } from '../kits/general/installer.mjs'
 import {
   builtinLocalAuthoringTools, builtinMaterialTools, builtinSourceTools, builtinWorkspaceTools, execute,
   runImplementation, toolDigest, withImplementationPins, workerToolDescriptor, workerToolsOf,
 } from '../worker/rulith-worker.mjs'
-import { IMPLEMENTATION_PIN_ENV, IMPLEMENTATION_PIN_FORMAT, implementationPinKey } from '../worker/implementation-hooks.mjs'
+import {
+  IMPLEMENTATION_HOOKS_ENV, IMPLEMENTATION_PIN_ENV, IMPLEMENTATION_PIN_FORMAT, boundaryArgv, boundaryEnv, implementationPinKey,
+} from '../worker/implementation-hooks.mjs'
 import { DONE, HOLD, actionRow, artifactWorkFields, driveWorker, runPin } from './support/worker-harness.mjs'
 
 const repo = fileURLToPath(new URL('../', import.meta.url))
@@ -38,6 +46,8 @@ const KIT_SOURCES = Object.fromEntries(fs.readdirSync(KIT_DIR)
   .filter((name) => name.endsWith('.mjs') && !['install.mjs', 'installer.mjs'].includes(name))
   .map((name) => [KIT_PREFIX + name, fs.readFileSync(path.join(KIT_DIR, name), 'utf8')]))
 const manifestOf = (tools) => ({ format: 'rulith-worker-tools/1', tools })
+/** The hooks this run holds a Tool with: the module.register variant when asked for, or when Node has no other. */
+const HOOKS = process.env[IMPLEMENTATION_HOOKS_ENV] === 'register' || typeof module.registerHooks !== 'function' ? 'register' : 'registerHooks'
 
 function workerRoot(t, files) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rulith-pin-'))
@@ -51,45 +61,76 @@ function workerRoot(t, files) {
 /** A marker an Adapter writes when — and only when — its code actually runs. */
 const mark = (file, text) => `import { appendFileSync } from 'node:fs'\nappendFileSync(${JSON.stringify(file)}, ${JSON.stringify(text + '\n')})\n`
 const marked = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '')
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
 /** A run Tool compiled the way the Worker compiles one and verified now (toolFromSpec does the same). */
 function compiledRun(root, definition) {
   const implementation = runImplementation(definition, root)
   return { impl: 'run', entry: implementation.entry, passArgs: true, implementation, returns: [] }
 }
-/** Start an entry under the boundary directly, with a pin list the caller chose. */
-function underBoundary(entry, files, env = {}) {
-  const { NODE_OPTIONS: _unused, ...inherited } = process.env
-  return new Promise((done) => execFile(process.execPath, ['--import', BOUNDARY, entry, '{}'], {
-    env: { ...inherited, ...env, ...(files === undefined ? {} : {
-      [IMPLEMENTATION_PIN_ENV]: JSON.stringify({ format: IMPLEMENTATION_PIN_FORMAT, files }),
-    }) },
-  }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout: String(stdout), stderr: String(stderr) })))
+/** Run one entry the way the Worker runs a pinned Tool, and give back its stdout or its refusal. */
+async function runTool(root, entry, implementation = []) {
+  try {
+    return { out: await execute('probe', {}, { probe: compiledRun(root, { adapter: 'run', sourceTypes: [], entry, implementation }) }, {}) }
+  } catch (error) {
+    return { error: String(error?.message ?? error) }
+  }
 }
-const pinFiles = (implementation) => Object.fromEntries(implementation.paths.map(({ path: file, sha256 }) => [implementationPinKey(file), sha256]))
+const pinText = (files) => JSON.stringify({ format: IMPLEMENTATION_PIN_FORMAT, files })
+/**
+ * Start an entry under the boundary exactly as the Worker starts one — its Node options and its
+ * environment — with a pin list the caller chose. `adjust` edits the environment last, for the arms
+ * about a process the Worker would never start.
+ */
+function underBoundary(entry, files, { adjust = (env) => env, argv = ['{}'] } = {}) {
+  const base = { ...process.env }
+  const env = files === undefined
+    ? Object.fromEntries(Object.entries(base).filter(([name]) => name.toUpperCase() !== IMPLEMENTATION_PIN_ENV))
+    : boundaryEnv(base, pinText(files), process.env[IMPLEMENTATION_HOOKS_ENV])
+  return new Promise((done) => execFile(process.execPath, [...boundaryArgv(BOUNDARY), entry, ...argv], { env: adjust(env) },
+    (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout: String(stdout), stderr: String(stderr) })))
+}
+const pinFiles = (implementation) => Object.fromEntries(implementation.paths.map(({ path: file, sha256: digest }) => [implementationPinKey(file), digest]))
+
+/** The Tool pin, computed here without the Worker's code: canonical JSON (sorted keys) of definition and file digests. */
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]))
+  return value
+}
+const independentPin = (definition, files) => sha256(JSON.stringify(canonical({ definition, implementation: files })))
 
 test('a run Tool pin covers its entry and every declared implementation file: one byte moves it', (t) => {
+  // An expected value written out by hand: the definition and the entry's SHA-256 in canonical JSON.
+  const golden = workerRoot(t, { 'a.mjs': 'export default 1\n' })
+  assert.equal(sha256('export default 1\n'), '7f91f377ddf291164013ac18d6e2098b2a9f02bacc02cfb6fc191cc205474858')
+  assert.equal(sha256('{"definition":{"adapter":"run","entry":"a.mjs","sourceTypes":[]},"implementation":'
+    + '{"a.mjs":"7f91f377ddf291164013ac18d6e2098b2a9f02bacc02cfb6fc191cc205474858"}}'),
+  'da63c880b3b7c776445f7de5c5217c855589789448ecefa516f3eda43e46c0ba')
+  assert.equal(runImplementation({ adapter: 'run', sourceTypes: [], entry: 'a.mjs' }, golden).digest,
+    'da63c880b3b7c776445f7de5c5217c855589789448ecefa516f3eda43e46c0ba')
+
   const root = workerRoot(t, {
     'adapters/calc/entry.mjs': "import { value } from './lib.mjs'\nprocess.stdout.write(String(value))\n",
     'adapters/calc/lib.mjs': 'export const value = 1\n',
   })
   const definition = { adapter: 'run', sourceTypes: [], entry: 'adapters/calc/entry.mjs', implementation: ['adapters/calc/lib.mjs'] }
+  const bytes = () => ({
+    'adapters/calc/entry.mjs': sha256(fs.readFileSync(path.join(root, 'adapters/calc/entry.mjs'))),
+    'adapters/calc/lib.mjs': sha256(fs.readFileSync(path.join(root, 'adapters/calc/lib.mjs'))),
+  })
   const first = runImplementation(definition, root)
+  assert.equal(first.digest, independentPin(definition, bytes()))
   assert.notEqual(first.digest, toolDigest(definition), 'the pin is still the configuration digest alone')
-  assert.equal(runImplementation(definition, root).digest, first.digest, 'the same bytes gave two pins')
   fs.writeFileSync(path.join(root, 'adapters/calc/lib.mjs'), 'export const value = 2\n')
   const libChanged = runImplementation(definition, root).digest
   assert.notEqual(libChanged, first.digest, 'a changed declared file did not move the pin')
+  assert.equal(libChanged, independentPin(definition, bytes()))
   fs.writeFileSync(path.join(root, 'adapters/calc/entry.mjs'), "import { value } from './lib.mjs'\nprocess.stdout.write(String(value + 0))\n")
   assert.notEqual(runImplementation(definition, root).digest, libChanged, 'a changed entry did not move the pin')
-  // The advertised digest is that pin, and anyone holding the same bytes computes the same one.
+  // The advertised digest is that pin.
   const tools = withImplementationPins(workerToolsOf(manifestOf({ 'acme.calc@1': definition })), root)
-  const advertised = workerToolDescriptor('acme.calc@1', tools['acme.calc@1']).digest
-  assert.equal(advertised, runImplementation(definition, root).digest)
-  assert.equal(advertised, runPin(definition, {
-    'adapters/calc/entry.mjs': fs.readFileSync(path.join(root, 'adapters/calc/entry.mjs'), 'utf8'),
-    'adapters/calc/lib.mjs': fs.readFileSync(path.join(root, 'adapters/calc/lib.mjs'), 'utf8'),
-  }))
+  assert.equal(workerToolDescriptor('acme.calc@1', tools['acme.calc@1']).digest, independentPin(definition, bytes()))
 })
 
 test('Tools with no local implementation files keep their digest; built-ins are pinned to the Runtime release', () => {
@@ -101,19 +142,19 @@ test('Tools with no local implementation files keep their digest; built-ins are 
   }
   // No root is read for them: there is nothing local to pin.
   const tools = withImplementationPins(workerToolsOf(manifestOf(declared)), path.join(os.tmpdir(), 'no-such-worker-root'))
-  for (const [id, definition] of Object.entries(declared)) assert.equal(tools[id].digest, toolDigest(definition), `${id} moved`)
+  for (const [id, definition] of Object.entries(declared)) assert.equal(tools[id].digest, sha256(JSON.stringify(canonical(definition))), `${id} moved`)
   const release = `rulith@${PACKAGE.version}`
   const builtins = { ...builtinWorkspaceTools('read-write'), ...builtinSourceTools(), ...builtinMaterialTools('materials') }
   assert.ok(Object.keys(builtins).length >= 10)
   for (const [id, tool] of Object.entries(builtins)) {
     const definition = { adapter: tool.adapter, sourceTypes: tool.sourceTypes, entry: tool.entry }
-    assert.equal(tool.digest, toolDigest({ ...definition, runtime: release }), `${id} is not pinned to ${release}`)
-    assert.notEqual(tool.digest, toolDigest(definition), `${id} still has a pin no Runtime release moves`)
+    assert.equal(tool.digest, sha256(JSON.stringify(canonical({ ...definition, runtime: release }))), `${id} is not pinned to ${release}`)
+    assert.notEqual(tool.digest, sha256(JSON.stringify(canonical(definition))), `${id} still has a pin no Runtime release moves`)
   }
   for (const [id, tool] of Object.entries(builtinLocalAuthoringTools('materials'))) {
     const definition = { adapter: tool.adapter, sourceTypes: tool.sourceTypes, entry: tool.entry,
       implementationVersion: tool.implementationVersion, release: tool.release }
-    assert.equal(tool.digest, toolDigest({ ...definition, runtime: release }), id)
+    assert.equal(tool.digest, sha256(JSON.stringify(canonical({ ...definition, runtime: release }))), id)
   }
 })
 
@@ -148,13 +189,35 @@ test('an undeclared dependency does not load: static ones before any code runs, 
     'undeclared.mjs': mark(dependencyRan, 'undeclared'),
     'helper.cjs': `require('node:fs').appendFileSync(${JSON.stringify(dependencyRan)}, 'commonjs\\n')\n`,
   })
-  const run = (entry) => execute('probe', {}, { probe: compiledRun(root, { adapter: 'run', sourceTypes: [], entry }) }, {})
-  await assert.rejects(run('static.mjs'), /implementation_boundary: .*undeclared\.mjs is not declared in this Tool's implementation/)
+  const statically = await runTool(root, 'static.mjs')
+  assert.match(statically.error, /implementation_boundary: .*undeclared\.mjs is not declared in this Tool's implementation, so it was not loaded/)
   assert.equal(marked(entryRan), '', 'the entry ran although its static dependency was undeclared')
-  await assert.rejects(run('dynamic.mjs'), /implementation_boundary: .*undeclared\.mjs is not declared/)
+  // A refusal after the process started says what was refused and, honestly, that what ran before it may
+  // have had effects — never that the whole call had none.
+  const dynamically = await runTool(root, 'dynamic.mjs')
+  assert.match(dynamically.error, /implementation_boundary: .*undeclared\.mjs is not declared/)
+  assert.match(dynamically.error, /anything this Tool did before that point may already have taken effect/)
+  assert.doesNotMatch(dynamically.error, /nothing ran|nothing from it ran|no effect/i)
   assert.equal(marked(entryRan), 'dynamic entry\n', 'what ran before the undeclared import is a real effect and stays')
-  await assert.rejects(run('commonjs.mjs'), /implementation_boundary: .*helper\.cjs/)
+  assert.match((await runTool(root, 'commonjs.mjs')).error, /implementation_boundary: .*helper\.cjs/)
   assert.equal(marked(dependencyRan), '', 'an undeclared dependency ran')
+})
+
+test('imports that resolve through a package.json are refused: that file is not part of the pin', async (t) => {
+  const root = workerRoot(t, {
+    'package.json': JSON.stringify({ imports: { '#op': './safe.mjs' }, exports: { '.': './safe.mjs' }, name: 'self' }),
+    'safe.mjs': "export const op = () => process.stdout.write('safe')\n",
+    'mapped.mjs': "import { op } from '#op'\nop()\n",
+    'package.mjs': "import { op } from 'self'\nop()\n",
+    'builtin.mjs': "import { sep } from 'path'\nimport { readFileSync } from 'node:fs'\nprocess.stdout.write(typeof sep + typeof readFileSync)\n",
+    'inline.mjs': "await import('data:text/javascript,process.stdout.write(1)')\n",
+  })
+  assert.match((await runTool(root, 'mapped.mjs', ['safe.mjs'])).error,
+    /implementation_boundary: import "#op" goes through a package\.json "imports" map/)
+  assert.match((await runTool(root, 'package.mjs', ['safe.mjs'])).error, /implementation_boundary: import "self" names a package/)
+  assert.equal((await runTool(root, 'builtin.mjs')).out, 'stringfunction')
+  // Source text in a URL is not a file of the implementation either.
+  assert.match((await runTool(root, 'inline.mjs')).error, /implementation_boundary: data:text\/javascript,.* is not a file of the pinned implementation/)
 })
 
 test('bytes changed after verification never run: refused before the start, and at load after it', async (t) => {
@@ -172,7 +235,7 @@ test('bytes changed after verification never run: refused before the start, and 
   const verified = compiledRun(root, definition)
   fs.writeFileSync(path.join(root, 'lib.mjs'), 'export const value = 666\n')
   await assert.rejects(execute('probe', {}, { probe: verified }, {}),
-    /no longer matches its pin: lib\.mjs changed after it was verified\. The Adapter was not started/)
+    /no longer matches its pin: lib\.mjs changed after it was verified\. The Adapter was not started; nothing ran/)
   // Removed after verification: the same.
   fs.rmSync(path.join(root, 'lib.mjs'))
   await assert.rejects(execute('probe', {}, { probe: verified }, {}), /lib\.mjs is missing/)
@@ -195,10 +258,192 @@ test('bytes changed after verification never run: refused before the start, and 
       + "await import('./late.mjs')\n",
     'late.mjs': 'export const late = true\n',
   })
-  await assert.rejects(execute('probe', {}, { probe: compiledRun(own, { adapter: 'run', sourceTypes: [], entry: 'entry.mjs', implementation: ['late.mjs'] }) }, {}),
-    /implementation_boundary: .*late\.mjs is not the verified implementation/)
+  const replaced = await runTool(own, 'entry.mjs', ['late.mjs'])
+  assert.match(replaced.error, /implementation_boundary: .*late\.mjs is not the verified implementation/)
   assert.equal(marked(entryRan), 'before\n')
   assert.equal(marked(lateRan), '', 'a dependency replaced after verification ran under the old digest')
+})
+
+test('a link swapped in after the checks is read at the declared path and refused, never followed to another pinned file', async (t) => {
+  const root = workerRoot(t, {
+    'entry.mjs': "import { op } from './safe/op.mjs'\nop()\n",
+    'safe/op.mjs': "export const op = () => process.stdout.write('safe')\n",
+    'danger/op.mjs': "export const op = () => process.stdout.write('DANGER')\n",
+  })
+  const definition = { adapter: 'run', sourceTypes: [], entry: 'entry.mjs', implementation: ['safe/op.mjs', 'danger/op.mjs'] }
+  assert.equal(await execute('probe', {}, { probe: compiledRun(root, definition) }, {}), 'safe')
+  const pin = pinFiles(runImplementation(definition, root))
+  fs.renameSync(path.join(root, 'safe'), path.join(root, 'safe-before'))
+  try {
+    fs.symlinkSync(path.join(root, 'danger'), path.join(root, 'safe'), 'junction')
+  } catch (error) {
+    return t.skip(`this account cannot create a directory link here (${error.code})`)
+  }
+  const swapped = await underBoundary(path.join(root, 'entry.mjs'), pin)
+  assert.doesNotMatch(swapped.stdout, /DANGER/, 'a link swapped in after the checks ran another pinned file')
+  assert.notEqual(swapped.code, 0)
+  assert.match(swapped.stderr, /implementation_boundary: .*safe[\\/]op\.mjs is not the verified implementation/)
+})
+
+test('a planted compile-cache entry never runs under the pin: not inherited, not enabled by the Tool, not at start', async (t) => {
+  if (typeof module.enableCompileCache !== 'function' || typeof zlib.crc32 !== 'function') return t.skip('this Node has no compile cache')
+  // Same length, so the planted entry can claim the pinned source's size and 32-bit checksum.
+  const P = 'process.stdout.write("lib-good")\n', M = 'process.stdout.write("PWNED!!!")\n'
+  const root = workerRoot(t, { 'entry.mjs': "import './lib.mjs'\n", 'lib.mjs': M })
+  const cache = path.join(root, 'cache')
+  fs.writeFileSync(path.join(root, 'enabling.mjs'), "import module from 'node:module'\ndelete process.env.NODE_DISABLE_COMPILE_CACHE\n"
+    + `module.enableCompileCache(${JSON.stringify(cache)})\nawait import('./lib.mjs')\n`)
+  const { NODE_DISABLE_COMPILE_CACHE: _disabled, NODE_OPTIONS: _options, ...plain } = process.env
+  const unbounded = () => execFileSync(process.execPath, [path.join(root, 'entry.mjs')], { env: { ...plain, NODE_COMPILE_CACHE: cache }, encoding: 'utf8' })
+  // Without the boundary Node fills the cache while lib.mjs holds M; then lib.mjs gets P and the entry is
+  // rewritten to claim P's checksum. A plain Node now runs M's code for P's bytes: the attack is real here.
+  unbounded()
+  fs.writeFileSync(path.join(root, 'lib.mjs'), P)
+  let planted = 0
+  for (const name of fs.readdirSync(cache, { recursive: true })) {
+    const file = path.join(cache, String(name))
+    if (!fs.statSync(file).isFile()) continue
+    const bytes = fs.readFileSync(file)
+    for (let at = 0; at + 4 <= Math.min(64, bytes.length); at += 4) {
+      if (bytes.readUInt32LE(at) === zlib.crc32(Buffer.from(M))) { bytes.writeUInt32LE(zlib.crc32(Buffer.from(P)), at); fs.writeFileSync(file, bytes); planted++ }
+    }
+  }
+  if (planted === 0 || unbounded() !== 'PWNED!!!') return t.skip('a planted entry is not accepted by this Node')
+
+  // 1. The Worker's environment carries NODE_COMPILE_CACHE and the Tool declares no env.pass.
+  const before = process.env.NODE_COMPILE_CACHE
+  process.env.NODE_COMPILE_CACHE = cache
+  try {
+    assert.equal((await runTool(root, 'entry.mjs', ['lib.mjs'])).out, 'lib-good', 'a planted compile-cache entry ran under the pin')
+  } finally {
+    if (before === undefined) delete process.env.NODE_COMPILE_CACHE
+    else process.env.NODE_COMPILE_CACHE = before
+  }
+  // 2. The pinned code turns the cache on itself, after removing the switch that keeps it off.
+  assert.equal((await runTool(root, 'enabling.mjs', ['lib.mjs'])).out, 'lib-good', 'a Tool enabled the compile cache under the boundary')
+  // 3. A process started with the cache on is not one this Runtime starts; it is refused, not trusted.
+  const started = await underBoundary(path.join(root, 'entry.mjs'), pinFiles(runImplementation(
+    { adapter: 'run', sourceTypes: [], entry: 'entry.mjs', implementation: ['lib.mjs'] }, root)),
+  { adjust: ({ NODE_DISABLE_COMPILE_CACHE: _off, ...env }) => ({ ...env, NODE_COMPILE_CACHE: cache }) })
+  assert.doesNotMatch(started.stdout, /PWNED/)
+  assert.match(started.stderr, /implementation_boundary: this process was started with a compile cache/)
+  // 4. Nor can a Tool ask for these names through env.pass.
+  for (const name of ['NODE_COMPILE_CACHE', 'NODE_ICU_DATA', 'node_path', 'OPENSSL_CONF']) {
+    assert.throws(() => workerToolsOf(manifestOf({ 'acme.calc@1': { adapter: 'run', sourceTypes: [], entry: 'entry.mjs', env: { pass: [name] } } })),
+      new RegExp(`env\\.pass names ${name}`), name)
+  }
+  assert.doesNotThrow(() => workerToolsOf(manifestOf({ 'acme.calc@1': { adapter: 'run', sourceTypes: [], entry: 'entry.mjs', env: { pass: ['NODE_EXTRA_CA_CERTS'] } } })))
+})
+
+test('Worker threads start under the same boundary; source-text and shared-environment threads are refused', async (t) => {
+  const dir = workerRoot(t, {})
+  const marks = path.join(dir, 'marks')
+  const root = workerRoot(t, {
+    'entry.mjs': [
+      "import { Worker, SHARE_ENV } from 'node:worker_threads'",
+      "import { writeFileSync } from 'node:fs'",
+      "const here = (name) => new URL('./' + name, import.meta.url)",
+      "const settle = (worker) => new Promise((done) => { worker.once('error', (e) => done('error: ' + e.message)); worker.once('exit', (code) => done('exit ' + code)) })",
+      'const results = {}',
+      "const attempt = async (name, start) => { try { results[name] = await start() } catch (e) { results[name] = 'thrown: ' + e.message } }",
+      "await attempt('emptyExecArgv', () => settle(new Worker(here('undeclared.mjs'), { execArgv: [] })))",
+      "await attempt('sourceText', () => settle(new Worker('process.exit(0)', { eval: true })))",
+      "await attempt('sharedEnv', () => settle(new Worker(here('helper.mjs'), { env: SHARE_ENV })))",
+      "await attempt('loaderOption', () => settle(new Worker(here('helper.mjs'), { execArgv: ['--import', here('undeclared.mjs').href] })))",
+      "await attempt('declared', () => settle(new Worker(here('helper.mjs'), { execArgv: ['--no-warnings'] })))",
+      `writeFileSync(here('changed.mjs'), ${JSON.stringify(mark(marks, 'changed'))})`,
+      "await attempt('changedAfterVerification', () => settle(new Worker(here('changed.mjs'), { execArgv: [] })))",
+      'process.stdout.write(JSON.stringify(results))',
+    ].join('\n'),
+    'helper.mjs': mark(marks, 'helper'),
+    'changed.mjs': 'export {}\n',
+    'undeclared.mjs': mark(marks, 'undeclared'),
+  })
+  const { out, error } = await runTool(root, 'entry.mjs', ['helper.mjs', 'changed.mjs'])
+  assert.equal(error, undefined, error)
+  const results = JSON.parse(out)
+  assert.match(results.emptyExecArgv, /^error: implementation_boundary: .*undeclared\.mjs is not declared/)
+  assert.match(results.sourceText, /^thrown: implementation_boundary: a Worker thread started from source text/)
+  assert.match(results.sharedEnv, /^thrown: implementation_boundary: a Worker thread sharing/)
+  assert.match(results.loaderOption, /^thrown: implementation_boundary: A Worker thread passes the Node option --import/)
+  assert.equal(results.declared, 'exit 0')
+  assert.match(results.changedAfterVerification, /^error: implementation_boundary: .*changed\.mjs is not the verified implementation/)
+  assert.equal(marked(marks), 'helper\n', 'a thread ran code outside the pinned implementation')
+})
+
+test('Node child processes start under the same boundary; other programs, such as project commands, start as usual', async (t) => {
+  const dir = workerRoot(t, {})
+  const marks = path.join(dir, 'marks')
+  const projectCommand = process.platform === 'win32'
+    ? "spawnSync('cmd.exe', ['/d', '/c', 'echo project-command'])" : "spawnSync('sh', ['-c', 'echo project-command'])"
+  const root = workerRoot(t, {
+    'entry.mjs': [
+      "import { execFile, execSync, fork, spawn, spawnSync } from 'node:child_process'",
+      "import { fileURLToPath } from 'node:url'",
+      "const here = (name) => new URL('./' + name, import.meta.url)",
+      'const file = (name) => fileURLToPath(here(name))',
+      'const NODE = process.execPath',
+      'const quote = (text) => String.fromCharCode(34) + text + String.fromCharCode(34)',
+      "const settle = (child) => new Promise((done) => { let err = ''; child.stderr?.on('data', (d) => { err += d });"
+        + " child.once('error', (e) => done('error: ' + e.message));"
+        + " child.once('close', (code) => done('exit ' + code + ' ' + (/implementation_boundary: .*/.exec(err)?.[0] ?? ''))) })",
+      'const results = {}',
+      "const attempt = async (name, start) => { try { results[name] = await start() } catch (e) { results[name] = 'thrown: ' + e.message } }",
+      "await attempt('forkEmptyExecArgv', () => settle(fork(here('undeclared.mjs'), [], { execArgv: [], silent: true })))",
+      "await attempt('forkDeclared', () => settle(fork(here('helper.mjs'), [], { silent: true })))",
+      "await attempt('forkAnotherNode', () => settle(fork(here('helper.mjs'), [], { execPath: file('elsewhere/node'), silent: true })))",
+      "await attempt('spawnSourceText', () => settle(spawn(NODE, ['-e', 'process.exit(0)'])))",
+      "await attempt('spawnSyncLoader', () => 'status ' + spawnSync(NODE, ['--require', file('helper.cjs'), file('helper.mjs')]).status)",
+      "await attempt('execFileUndeclared', () => settle(execFile(NODE, [file('undeclared.mjs')])))",
+      "await attempt('throughShell', () => { execSync(quote(NODE) + ' ' + quote(file('undeclared.mjs'))); return 'ran' })",
+      `await attempt('projectCommand', () => String(${projectCommand}.stdout).trim())`,
+      'process.stdout.write(JSON.stringify(results))',
+    ].join('\n'),
+    'helper.mjs': mark(marks, 'helper'),
+    'helper.cjs': `require('node:fs').appendFileSync(${JSON.stringify(marks)}, 'preloaded\\n')\n`,
+    'undeclared.mjs': mark(marks, 'undeclared'),
+  })
+  const { out, error } = await runTool(root, 'entry.mjs', ['helper.mjs'])
+  assert.equal(error, undefined, error)
+  const results = JSON.parse(out)
+  assert.match(results.forkEmptyExecArgv, /^exit 1 implementation_boundary: .*undeclared\.mjs is not declared/)
+  assert.match(results.forkDeclared, /^exit 0/)
+  assert.match(results.forkAnotherNode, /^thrown: implementation_boundary: fork with another Node executable/)
+  assert.match(results.spawnSourceText, /^thrown: implementation_boundary: A Node child process passes the Node option -e/)
+  assert.match(results.spawnSyncLoader, /^thrown: implementation_boundary: A Node child process passes the Node option --require/)
+  assert.match(results.execFileUndeclared, /^exit 1 implementation_boundary: .*undeclared\.mjs is not declared/)
+  assert.match(results.throughShell, /^thrown: implementation_boundary: a command that starts this Node through a shell/)
+  assert.equal(results.projectCommand, 'project-command', 'a program other than this Node was refused')
+  assert.equal(marked(marks), 'helper\n', 'a child process ran code outside the pinned implementation')
+})
+
+test('a Tool cannot add module hooks or reach CommonJS through Module#load and #_compile, in either hooks variant', async (t) => {
+  const dir = workerRoot(t, {})
+  const marks = path.join(dir, 'marks')
+  const root = workerRoot(t, {
+    'entry.mjs': [
+      "import module from 'node:module'",
+      "import { fileURLToPath } from 'node:url'",
+      'const results = {}',
+      'for (const [name, run] of [',
+      "  ['registerHooks', () => module.registerHooks({})],",
+      "  ['register', () => module.register('data:text/javascript,export%20{}')],",
+      "  ['moduleLoad', () => new module.Module('x').load(fileURLToPath(new URL('./x.js', import.meta.url)))],",
+      `  ['moduleCompile', () => new module.Module('y')._compile(${JSON.stringify(`require('node:fs').appendFileSync(${JSON.stringify(marks)}, 'compiled\\n')`)}, 'y.js')],`,
+      ']) { try { run(); results[name] = \'ran\' } catch (e) { results[name] = e.message } }',
+      "results.hooks = globalThis[Symbol.for('rulith.implementationBoundary')]?.hooks",
+      'process.stdout.write(JSON.stringify(results))',
+    ].join('\n'),
+    'x.js': `require('node:fs').appendFileSync(${JSON.stringify(marks)}, 'loaded\\n')\n`,
+  })
+  const { out, error } = await runTool(root, 'entry.mjs')
+  assert.equal(error, undefined, error)
+  const results = JSON.parse(out)
+  for (const name of ['registerHooks', 'register']) assert.match(results[name], /^implementation_boundary: a Tool cannot install module hooks/, name)
+  assert.match(results.moduleLoad, /^implementation_boundary: .*x\.js would load as CommonJS/)
+  assert.match(results.moduleCompile, /^implementation_boundary: .*would compile as CommonJS/)
+  assert.equal(results.hooks, HOOKS, 'the boundary held this Tool with other hooks than this run asked for')
+  assert.equal(marked(marks), '', 'CommonJS code ran under the boundary')
 })
 
 test('the boundary refuses a process started without a pin list, and a run Tool never receives NODE_OPTIONS', async (t) => {
@@ -213,7 +458,7 @@ test('the boundary refuses a process started without a pin list, and a run Tool 
   const before = process.env.NODE_OPTIONS
   process.env.NODE_OPTIONS = `--import=${pathToFileURL(path.join(root, 'preload.mjs')).href}`
   try {
-    assert.equal(await execute('probe', {}, { probe: compiledRun(root, { adapter: 'run', sourceTypes: [], entry: 'entry.mjs' }) }, {}), 'ok')
+    assert.equal((await runTool(root, 'entry.mjs')).out, 'ok')
   } finally {
     if (before === undefined) delete process.env.NODE_OPTIONS
     else process.env.NODE_OPTIONS = before
@@ -223,21 +468,41 @@ test('the boundary refuses a process started without a pin list, and a run Tool 
     /NODE_OPTIONS/)
 })
 
-test('every kit Tool declares the kit library it may load, and the installer ships exactly those files', () => {
-  const library = Object.keys(KIT_SOURCES).filter((name) => !Object.values(KIT.tools).some((tool) => tool.entry === name))
+/** Install the general kit with the real installer into a fresh Agent, as `rulith kit install general` does. */
+function installedKit(t) {
+  const dir = workerRoot(t, {})
+  const manager = path.join(dir, 'manager'), agent = path.join(dir, 'agent'), worker = path.join(dir, 'worker'), home = path.join(dir, 'kit-home')
+  for (const directory of [manager, agent, worker, path.join(home, 'specs')]) fs.mkdirSync(directory, { recursive: true })
+  const toolsFile = path.join(worker, 'worker-tools.json')
+  fs.writeFileSync(path.join(manager, 'registry.json'), JSON.stringify({ instances: [{ mode: 'local_agent', agentName: 'Fixture', directory: agent }] }))
+  fs.writeFileSync(path.join(agent, 'local.json'), JSON.stringify({ worker: { env: { RULITH_WORKER_ROOT: worker, RULITH_TOOLS_FILE: toolsFile } } }))
+  assert.match(installGeneral(parseKitInstall(['--agent', 'Fixture', '--kit-home', home, '--manager-home', manager])), /Installed 20/)
+  return { worker, tools: JSON.parse(fs.readFileSync(toolsFile, 'utf8')).tools }
+}
+
+test('the real installer lays down exactly the declared kit files, and every installed kit Tool pins cleanly', (t) => {
+  const { worker, tools } = installedKit(t)
+  const installedDir = path.join(worker, KIT_PREFIX)
+  const installed = fs.readdirSync(installedDir).map((name) => KIT_PREFIX + name).sort()
+  const declared = [...new Set(Object.values(tools).flatMap((tool) => [tool.entry, ...tool.implementation]))].sort()
+  assert.deepEqual(installed, declared, 'the installer and the declarations disagree about what the kit is')
+  const source = (name) => fs.readFileSync(path.join(worker, name), 'utf8')
   // What an entry can load: its static import closure inside the kit, plus the supervisor it starts.
   const closure = (name, seen = new Set()) => {
     if (seen.has(name)) return seen
     seen.add(name)
-    for (const [, relative] of KIT_SOURCES[name].matchAll(/from '\.\/([^']+\.mjs)'/g)) closure(KIT_PREFIX + relative, seen)
+    for (const [, relative] of source(name).matchAll(/from '\.\/([^']+\.mjs)'/g)) closure(KIT_PREFIX + relative, seen)
     return seen
   }
-  for (const [id, tool] of Object.entries(KIT.tools)) {
-    assert.ok(tool.entry.startsWith(KIT_PREFIX), id)
-    assert.deepEqual([...tool.implementation].sort(), [...library].sort(), `${id} does not declare the kit library`)
+  const refused = []
+  const pinned = withImplementationPins(workerToolsOf(manifestOf(tools)), worker, (id, error) => refused.push(`${id}: ${error.message}`))
+  assert.deepEqual(refused, [])
+  for (const [id, tool] of Object.entries(tools)) {
     for (const name of [...closure(tool.entry), KIT_PREFIX + 'supervisor.mjs']) {
       assert.ok(name === tool.entry || tool.implementation.includes(name), `${id} can load ${name}, which it does not declare`)
     }
+    const files = Object.fromEntries([tool.entry, ...tool.implementation].map((name) => [name, sha256(fs.readFileSync(path.join(worker, name)))]))
+    assert.equal(pinned[id].digest, independentPin(tool, files), `${id}: the installed pin is not a function of the installed files`)
   }
 })
 
@@ -278,8 +543,8 @@ test('kit tools run end to end through the real Worker under the pin of their im
   })
   assert.equal(run.timedOut, false, run.output)
   const advertised = run.of('Poll')[0].operation.tools.find((tool) => tool.id === id)
-  assert.equal(advertised.digest, runPin(KIT.tools[id], KIT_SOURCES), 'the Worker advertised a pin other than its implementation bytes')
-  assert.notEqual(advertised.digest, toolDigest(KIT.tools[id]))
+  const files = Object.fromEntries([KIT.tools[id].entry, ...KIT.tools[id].implementation].map((name) => [name, sha256(KIT_SOURCES[name])]))
+  assert.equal(advertised.digest, independentPin(KIT.tools[id], files), 'the Worker advertised a pin other than its implementation bytes')
   assert.equal(run.of('ClaimWork').length, 1, run.output)
   const [report] = run.of('ReportWork')
   assert.equal(report?.operation.ok, true, run.output)
@@ -317,18 +582,19 @@ test('the kit starts its job supervisor under the same boundary: a supervisor re
   const root = workerRoot(t, KIT_SOURCES)
   fs.writeFileSync(path.join(project, 'job.mjs'), "import fs from 'node:fs'; fs.writeFileSync('job-output', 'done')\n")
   const env = { ENG_KIT_HOME: home, RULITH_SOURCE_TYPE: 'file', RULITH_SOURCE_ACCESS: project }
-  const start = async () => {
+  const start = () => {
     const pin = pinFiles(runImplementation(KIT.tools['eng.job_start@1'], root))
-    return { pin, start: () => new Promise((done) => execFile(process.execPath,
-      ['--import', BOUNDARY, path.join(root, KIT_PREFIX + 'job_start.mjs'), JSON.stringify({ command: ['node', 'job.mjs'], cwd: '.' })],
-      { env: { ...process.env, ...env, [IMPLEMENTATION_PIN_ENV]: JSON.stringify({ format: IMPLEMENTATION_PIN_FORMAT, files: pin }) } },
+    // Started as the Worker starts it; job_start then starts the supervisor with a plain spawn of this Node.
+    return () => new Promise((done) => execFile(process.execPath,
+      [...boundaryArgv(BOUNDARY), path.join(root, KIT_PREFIX + 'job_start.mjs'), JSON.stringify({ command: ['node', 'job.mjs'], cwd: '.' })],
+      { env: boundaryEnv({ ...process.env, ...env }, pinText(pin), process.env[IMPLEMENTATION_HOOKS_ENV]) },
       // A kit refusal writes `{rows: [], verdict}` and exits 2; either way the receipt is stdout.
-      (error, stdout, stderr) => done(stdout ? JSON.parse(stdout) : { verdict: String(stderr || error?.message) }))) }
+      (error, stdout, stderr) => done(stdout ? JSON.parse(stdout) : { verdict: String(stderr || error?.message) })))
   }
   // Replaced after the Worker verified the implementation, before the adapter starts the supervisor.
-  const replaced = await start()
+  const replaced = start()
   fs.appendFileSync(path.join(root, KIT_PREFIX + 'supervisor.mjs'), '\n// replaced\n')
-  const refused = await replaced.start()
+  const refused = await replaced()
   assert.equal(refused.verdict, 'job unavailable', JSON.stringify(refused))
   assert.equal(fs.existsSync(path.join(project, 'job-output')), false, 'a replaced supervisor ran the job')
 
@@ -337,7 +603,7 @@ test('the kit starts its job supervisor under the same boundary: a supervisor re
   const freshHome = path.join(path.dirname(home), 'kit-home-2')
   fs.mkdirSync(path.join(freshHome, 'specs'), { recursive: true })
   env.ENG_KIT_HOME = freshHome
-  const started = await (await start()).start()
+  const started = await start()()
   assert.ok(Array.isArray(started.rows) && started.rows[0]?.job_id, JSON.stringify(started))
   for (let i = 0; i < 800 && !fs.existsSync(path.join(project, 'job-output')); i++) await new Promise((done) => setTimeout(done, 25))
   assert.equal(fs.readFileSync(path.join(project, 'job-output'), 'utf8'), 'done')
@@ -350,12 +616,15 @@ test('the kit starts its job supervisor under the same boundary: a supervisor re
   }
 })
 
-test('the kit digests a Runtime release ships are a function of the release files alone', () => {
-  // What an operator (or the Gateway) pins for the official tools can be computed from the published
-  // kit files: the definition plus each declared file's SHA-256, keyed by its installed path.
-  for (const [id, tool] of Object.entries(KIT.tools)) {
-    const files = Object.fromEntries([tool.entry, ...tool.implementation]
-      .map((name) => [name, createHash('sha256').update(KIT_SOURCES[name]).digest('hex')]))
-    assert.equal(runPin(tool, KIT_SOURCES), toolDigest(tool, files), id)
-  }
+test('the whole suite holds under the module.register hooks too (the Node 20.6–22.14 path)', {
+  skip: process.env[IMPLEMENTATION_HOOKS_ENV] === 'register' ? 'this is that run' : false,
+}, async () => {
+  // Every arm above runs again with the boundary on module.register; the hooks arm checks it really was.
+  const { NODE_TEST_CONTEXT: _context, ...env } = process.env
+  const run = await new Promise((done) => execFile(process.execPath, ['--test', '--test-reporter=tap', fileURLToPath(import.meta.url)],
+    { env: { ...env, [IMPLEMENTATION_HOOKS_ENV]: 'register' }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 600_000 },
+    (error, stdout) => done(String(stdout))))
+  const count = (name) => Number(new RegExp(`^# ${name} (\\d+)$`, 'm').exec(run)?.[1])
+  assert.equal(count('fail'), 0, run.slice(-6000))
+  assert.ok(count('pass') >= 14, `only ${count('pass')} arms passed under module.register:\n${run.slice(-3000)}`)
 })

@@ -887,8 +887,15 @@ Worker root like `entry` (`"implementation": ["adapters/acme/lib.mjs"]`). Changi
 them changes the advertised digest, and a Connection lock on the old digest no longer runs the
 Tool until it is locked again. The Worker checks the files before it claims work and again just
 before it starts the Adapter, and the Adapter starts under a loader that compiles only those
-files and only the verified bytes; any other local file, a CommonJS `require` or a native addon
-is refused, and `NODE_OPTIONS` is never passed to it. Built-in Tools are pinned to the Runtime
+files, at their declared paths (links are not followed), and only the verified bytes. Any other
+local file, an import through a package name or a `#` map, a CommonJS `require` or a native addon
+is refused; the compile cache stays off; a Tool cannot add module hooks of its own. A Worker
+thread or a Node child process the Tool starts (fork, or spawn of `process.execPath`) starts under
+the same boundary, and one from source text or with options that load code is refused; other
+programs, such as the project commands a kit runs, start as usual. The Adapter receives no
+`NODE_*` variable but `NODE_EXTRA_CA_CERTS` and `NODE_USE_ENV_PROXY`, no `OPENSSL_*` variable,
+and `env.pass` cannot name them. If a refusal comes after the Adapter started, the receipt says
+what was refused and that what ran before it may already have taken effect. Built-in Tools are pinned to the Runtime
 release that implements them, so a Runtime upgrade asks for their locks again. The pin
 identifies local implementation code; it does not attest to the machine, a remote service or
 the truth of a result.

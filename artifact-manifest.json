@@ -45,7 +45,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "7df97224dfb2e0102b3731d70198f2fa031fd7e8dd944da4f3b04a7e6a72da51"
+      "sha256": "eb39c669878ca740053a61ee0c321eb4cc0fe888c140da7957693580131ddafd"
     },
     "worker/run-artifacts.mjs": {
       "sha256": "911d3e49c10e9b02f389f9c21cf43542dc6cc9261708c80f9ac683e2f97411e4"
@@ -69,10 +69,10 @@
       "sha256": "ad65e350929e3bdf0e9261581a88a9c4b668295c08fbb95cde5593cea1ea89c9"
     },
     "worker/implementation-boundary.mjs": {
-      "sha256": "3fbfc14c63dfd7aa5dcba95e838e4648b18dbd54fa523495b6307e94b9a14388"
+      "sha256": "558f42db6754a294f956489ba817783077f6a3e891d9d6d36a27c5d497ee6fae"
     },
     "worker/implementation-hooks.mjs": {
-      "sha256": "72616be9513fa10d3ebb4c290bdd6769a0c9a27f096cd19e16d5b15b3e187a83"
+      "sha256": "9edb848c2fb701ce9e1fe11c8c97fec2df67f4a3ef7e63b68075a618d278421e"
     },
     "local/authoring-checker.mjs": {
       "sha256": "9b7fea8944a706e86a5f3741ea5b22dac6899422d9631e366afceee47aee2348"
@@ -201,7 +201,7 @@
       "sha256": "da2e2fd90a9184d5fc63898deec39ca81d62e69c04b11366d408bc3b7754a51e"
     },
     "kits/general/adapter.mjs": {
-      "sha256": "cf09c881b7ae2110b5037cf694bf5a627f730f2067c041b23fd38d3b8ee010b1"
+      "sha256": "595c1c247163eb8d4b166ca1db843cc1a4c387d1e646a32f5171fd29596781e5"
     },
     "kits/general/apply-patch.mjs": {
       "sha256": "a49d90c039ac56d3673573a1aac0fa27b6798a966d733146f6ef97d0a4c54786"
@@ -210,7 +210,7 @@
       "sha256": "d3ca1befd29f511292757c1268889cfd5329306ad4810852f947b3f3f27a1982"
     },
     "kits/general/general-settings.mjs": {
-      "sha256": "480adcbcf168d752529ad1ba1f63d6f819b9f2cac79f94e785ad3168dab73fe1"
+      "sha256": "e9f895630a1e0df4a4629b9a4f6828f43ecaab6696f33e535d4e94c6d1962134"
     },
     "kits/general/glob-files.mjs": {
       "sha256": "770badfb88913ca38c46747b438a254b0e810d6ea0097ec30acb841dd21a9861"
