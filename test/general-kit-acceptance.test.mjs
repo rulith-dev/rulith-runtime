@@ -601,11 +601,13 @@ test('acceptance lists valid and invalid specs without reading dependencies, tre
   save(`${f.ctx.stateFile}.lock`, { pid: process.pid, startedAt: new Date().toISOString() });
   save(f.ctx.jobFile, { status: 'running' });
   const readdir = fs.readdirSync, read = fs.readFileSync;
+  // Besides the acceptance directory, only the kit home's project root records are read (the nesting check).
+  const record = target => path.dirname(String(target)) === f.home && /^root-[a-f0-9]{64}\.json$/.test(path.basename(String(target)));
   t.mock.method(fs, 'readdirSync', (target, ...args) => {
-    assert.equal(target, path.join(f.root, '.rulith/acceptance')); return readdir(target, ...args);
+    assert.ok(target === path.join(f.root, '.rulith/acceptance') || target === f.home, String(target)); return readdir(target, ...args);
   });
   t.mock.method(fs, 'readFileSync', (target, ...args) => {
-    assert.ok(String(target).startsWith(path.join(f.root, '.rulith/acceptance') + path.sep)); return read(target, ...args);
+    assert.ok(String(target).startsWith(path.join(f.root, '.rulith/acceptance') + path.sep) || record(target), String(target)); return read(target, ...args);
   });
   const out = await f.call('acceptance');
   assert.deepEqual(out.errors, [{ error: 'acceptance spec invalid' }, { error: 'acceptance spec invalid: not JSON', check: 'bad' }]);
@@ -613,7 +615,7 @@ test('acceptance lists valid and invalid specs without reading dependencies, tre
     ['a', acceptanceSpec(f.ctx, 'a').digest, 2], ['unit', acceptanceSpec(f.ctx, 'unit').digest, 1]]);
   assert.equal(resultFactsFromRows(tools['eng.acceptance@1'], out.rows).length, 2);
   assert.equal(fs.existsSync(f.ctx.stateFile), false);
-  assert.equal(fs.existsSync(path.join(f.home, 'tree-cache.json')), false);
+  assert.equal(fs.existsSync(f.ctx.cacheFile), false);
   await assert.rejects(f.call('acceptance', { check: 'unit' }), { message: 'acceptance takes no arguments' });
 });
 

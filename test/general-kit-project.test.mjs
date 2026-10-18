@@ -6,10 +6,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { perform } from '../kits/general/adapter.mjs';
-import { context, projectId, kitId, sha, save, tree } from '../kits/general/lib.mjs';
-import { acceptanceSpec, checkKey } from '../kits/general/acceptance-specs.mjs';
+import { context, keptProject, projectIdentity, kitId, sha, save, tree, resolveProgram } from '../kits/general/lib.mjs';
+import { acceptanceSpec, checkKey, displayRoot } from '../kits/general/acceptance-specs.mjs';
 import { buildOfficial, buildPackages, ADOPTED, PROJECT_TOOLS, implementationDigest } from '../kits/general/pack/build-pack.mjs';
 import { installGeneral, parseKitInstall } from '../kits/general/installer.mjs';
 import { resultFactsFromRows, withImplementationPins, workerToolsOf } from '../worker/rulith-worker.mjs';
@@ -23,7 +24,7 @@ const committed = name => JSON.parse(fs.readFileSync(path.join(packDir, name), '
 const program = committed('program-v3.json');
 const ENTRY = { acceptance_v2: 'eng.acceptance@2', test_v3: 'eng.test@3', write_file_v2: 'eng.write_file@2', patch_file_v2: 'eng.patch_file@2',
   apply_patch_v2: 'eng.apply_patch@2', run_v2: 'eng.run@2', job_start_v2: 'eng.job_start@2', job_poll_v2: 'eng.job_poll@2', job_stop_v2: 'eng.job_stop@2',
-  test_v2: 'eng.test@2', write_file: 'eng.write_file@1' };
+  test_v2: 'eng.test@2', write_file: 'eng.write_file@1', list: 'eng.list@1' };
 
 function scratchDir(t, prefix) {
   const scratch = path.join(repo, '.scratch'); fs.mkdirSync(scratch, { recursive: true });
@@ -33,12 +34,12 @@ function scratchDir(t, prefix) {
 }
 const passingSpec = { command: [process.execPath, 'test.mjs'], cwd: '.', files: { 'test.mjs': sha('process.exitCode = 0;\n') } };
 // One project under a kit home: a passing check `unit`. Several projects may share one kit home.
-function project(t, { dir = scratchDir(t, 'project-'), home = path.join(dir, 'home'), name = 'project' } = {}) {
+function project(t, { dir = scratchDir(t, 'project-'), home = path.join(dir, 'home'), name = 'project', source = `src-${name}` } = {}) {
   const root = path.join(dir, name);
   fs.mkdirSync(path.join(root, '.rulith/acceptance'), { recursive: true });
   fs.mkdirSync(path.join(home, 'specs'), { recursive: true });
   fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({ allowedPaths: [path.dirname(process.execPath)] }));
-  const env = { ...process.env, RULITH_SOURCE_TYPE: 'file', RULITH_SOURCE_ACCESS: root, ENG_KIT_HOME: home };
+  const env = { ...process.env, RULITH_SOURCE_TYPE: 'file', RULITH_SOURCE_ACCESS: root, RULITH_SOURCE_NAME: source, ENG_KIT_HOME: home };
   const write = (file, text) => { fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true }); fs.writeFileSync(path.join(root, file), text); };
   write('test.mjs', 'process.exitCode = 0;\n');
   const put = (spec = passingSpec, check = 'unit') => write(`.rulith/acceptance/${check}.json`, JSON.stringify(spec));
@@ -79,16 +80,23 @@ function evaluate(facts, acceptance = []) {
 }
 
 test('project receipts: eng.acceptance@2 and eng.test@3 carry the check key; every project tool reports its project', async t => {
-  const p = project(t);
-  const id = projectId(p.ctx), digest = acceptanceSpec(p.ctx, 'unit').digest;
+  const p = project(t, { source: 'project-alpha' });
+  const digest = acceptanceSpec(p.ctx, 'unit').digest;
+  assert.equal(keptProject(p.ctx), undefined, 'a project identity before any project tool ran');
+  const listed = await p.call('acceptance_v2');
+  // The first project tool fixes the identity (kit-id and the identity spelling of the root) and records it.
+  const id = keptProject(p.ctx);
   assert.match(id, /^[0-9a-f]{64}$/);
-  assert.equal(id, sha(`${kitId(p.home)}\n${p.ctx.canonical}`));
+  assert.equal(id, sha(`${kitId(p.home)}\n${p.ctx.folded}`));
   const key = `${id}:unit:${digest}`;
   assert.equal(checkKey(id, 'unit', digest), key);
-  const listed = await p.call('acceptance_v2');
   assert.deepEqual(listed.facts.map(f => [f.predicate, Object.keys(f.args)]),
-    [['eng.check_spec', ['key', 'check', 'spec_digest', 'command', 'cwd', 'shell', 'files']]]);
+    [['eng.check_spec', ['key', 'source_name', 'project_root', 'check', 'spec_digest', 'command', 'cwd', 'shell', 'files']]]);
   assert.equal(listed.facts[0].args.key, key);
+  // The signer reads which project the key names: the Source and the root, not only a digest.
+  assert.equal(listed.facts[0].args.source_name, 'project-alpha');
+  assert.equal(listed.facts[0].args.project_root, displayRoot(p.ctx.canonical));
+  assert.ok(listed.facts[0].args.project_root.endsWith('/project'));
   const ran = await p.call('test_v3', { check: 'unit' });
   assert.deepEqual(ran.facts, [
     { predicate: 'eng.check_result', args: { key, project: id, check: 'unit', spec_digest: digest, gen: 0, tree_digest: ran.out.rows[0].tree_digest, exit_code: 0 } },
@@ -109,10 +117,12 @@ test('project receipts: eng.acceptance@2 and eng.test@3 carry the check key; eve
     [{ project: id, from_gen: 0, to_gen: 1 }, { project: id, from_gen: -1, to_gen: -1 }]);
   // Every row of a project receipt names the project, so every eng.tree_step fact does.
   for (const receipt of [ran, wrote, patched, patch, run]) assert.ok(receipt.out.rows.every(row => row.project === id));
-  // The versions without a project keep their receipts exactly.
-  const legacy = await p.call('test_v2', { check: 'unit' });
+  // The versions without a project keep their receipts exactly (on a root no project tool has used).
+  const plain = project(t, { name: 'plain' });
+  const legacy = await plain.call('test_v2', { check: 'unit' });
   assert.ok(legacy.out.rows.every(row => Object.keys(row).sort().join() === 'check,exit_code,from_gen,gen,spec_digest,to_gen,tree_digest'));
   assert.deepEqual([...new Set(legacy.facts.map(f => Object.keys(f.args).join()))], ['check,spec_digest,gen,tree_digest,exit_code', 'from_gen,to_gen']);
+  assert.equal(keptProject(plain.ctx), undefined);
   // Jobs: the job tools of a project share its job file and report its steps.
   const job = await p.call('job_start_v2', { command: node, cwd: '.' });
   assert.equal(job.out.rows[0].project, id);
@@ -148,10 +158,11 @@ test('two projects under one kit home keep separate generations and keys; only a
   const p1 = project(t, { dir, name: 'one' }), p2 = project(t, { dir, name: 'two' });
   assert.equal(p1.home, p2.home);
   assert.notEqual(p1.ctx.stateFile, p2.ctx.stateFile);
-  const [id1, id2] = [projectId(p1.ctx), projectId(p2.ctx)];
-  assert.notEqual(id1, id2);
+  assert.notEqual(p1.ctx.cacheFile, p2.ctx.cacheFile);
   // The same spec bytes in both projects: one spec digest, two keys.
   const [k1, k2] = [(await p1.call('acceptance_v2')).facts[0].args.key, (await p2.call('acceptance_v2')).facts[0].args.key];
+  const [id1, id2] = [keptProject(p1.ctx), keptProject(p2.ctx)];
+  assert.notEqual(id1, id2);
   assert.equal(k1.split(':')[2], k2.split(':')[2]);
   assert.notEqual(k1, k2);
   const leaves = [{ predicate: 'acceptance', args: { node: 'L1', test: k1 } }, { predicate: 'acceptance', args: { node: 'L2', test: k2 } }];
@@ -174,47 +185,213 @@ test('two projects under one kit home keep separate generations and keys; only a
   assert.deepEqual([...evaluate([...facts, ...w1.facts], leaves).met], []);
 });
 
-test('a project is the kit home identity with the canonical root: two kit homes differ; kit-id is made once, a damaged one refused', async t => {
+test('two kit homes give one directory two identities; kit-id is written whole by rename, and a damaged or lost one is rewritten', async t => {
   const dir = scratchDir(t, 'homes-');
   const a = project(t, { dir, home: path.join(dir, 'home-a') });
   const b = project(t, { dir, home: path.join(dir, 'home-b') });
   assert.equal(a.root, b.root);
   assert.equal(fs.existsSync(path.join(a.home, 'kit-id')), false, 'context alone made a kit identity');
-  const first = projectId(a.ctx);
-  assert.match(fs.readFileSync(path.join(a.home, 'kit-id'), 'utf8'), /^[0-9a-f-]{36}$/);
-  assert.equal(projectId(a.ctx), first);
-  assert.notEqual(projectId(b.ctx), first, 'one directory under two kit homes (or the same path on two devices) is one project');
-  // A concurrent first call that links its identity first wins: this one reads it, keeps nothing of its own.
+  await a.call('acceptance_v2'); await b.call('acceptance_v2');
+  assert.notEqual(keptProject(b.ctx), keptProject(a.ctx), 'one directory under two kit homes (or the same path on two devices) is one project');
+  // kit-id never appears partly written: it is written to a temporary file and renamed, never written in place.
   const c = path.join(dir, 'home-c'); fs.mkdirSync(c);
-  const winner = '00000000-0000-4000-8000-000000000000', link = fs.linkSync;
-  fs.linkSync = (from, to) => { fs.writeFileSync(to, winner, { flag: 'wx' }); return link(from, to); };
-  try { assert.equal(kitId(c), winner); } finally { fs.linkSync = link; }
-  assert.equal(kitId(c), winner);
-  assert.deepEqual(fs.readdirSync(c), ['kit-id'], 'a temporary identity file was left behind');
+  const target = path.join(c, 'kit-id'), write = fs.writeFileSync, rename = fs.renameSync, link = fs.linkSync;
+  const direct = [];
+  fs.writeFileSync = (file, ...rest) => { if (path.resolve(String(file)) === target) direct.push(file); return write(file, ...rest); };
+  fs.linkSync = () => { throw Object.assign(new Error('no hard links here'), { code: 'EPERM' }); };
+  let crashed = false;
+  fs.renameSync = (from, to) => { if (!crashed && path.resolve(String(to)) === target) { crashed = true; throw Object.assign(new Error('fixture crash'), { code: 'EIO' }); } return rename(from, to); };
+  try {
+    assert.throws(() => kitId(c), /fixture crash/);
+    assert.deepEqual(fs.readdirSync(c), [], 'a crash left a partial identity or its temporary file');
+    // The next use is not wedged: it writes a whole identity.
+    const id = kitId(c);
+    assert.match(id, /^[0-9a-f-]{36}$/);
+    assert.equal(kitId(c), id);
+  } finally { fs.writeFileSync = write; fs.renameSync = rename; fs.linkSync = link; }
+  assert.deepEqual(direct, [], 'kit-id was written in place');
+  assert.deepEqual(fs.readdirSync(c), ['kit-id']);
+  // A damaged kit-id is rewritten when a new project needs it; the identity already fixed for a project does not change.
+  const fixed = keptProject(a.ctx);
   fs.writeFileSync(path.join(a.home, 'kit-id'), 'not an identity');
-  await assert.rejects(a.call('acceptance_v2'), /pin directory refused/);
+  await a.call('acceptance_v2');
+  assert.equal(keptProject(a.ctx), fixed);
+  const later = project(t, { dir, home: a.home, name: 'later' });
+  await later.call('acceptance_v2');
+  assert.match(fs.readFileSync(path.join(a.home, 'kit-id'), 'utf8'), /^[0-9a-f-]{36}$/);
+  assert.equal(keptProject(later.ctx), sha(`${kitId(a.home)}\n${later.ctx.folded}`));
   // Tools without a project never need the identity.
-  fs.rmSync(path.join(b.home, 'kit-id'));
-  await perform('write_file', { path: 'z.txt', text: 'z', expect_digest: '' }, b.env);
-  assert.equal(fs.existsSync(path.join(b.home, 'kit-id')), false);
+  const plain = project(t, { name: 'plain' });
+  fs.rmSync(path.join(plain.home, 'kit-id'), { force: true });
+  await perform('write_file', { path: 'z.txt', text: 'z', expect_digest: '' }, plain.env);
+  assert.equal(fs.existsSync(path.join(plain.home, 'kit-id')), false);
 });
 
-test('Windows: two spellings of one directory are one project and one counter; a counter kept under the old spelling continues',
-  { skip: process.platform !== 'win32' && 'the root spelling is canonicalized on Windows only' }, async t => {
-    const p = project(t);
-    const spelled = p.root.toUpperCase();
-    assert.notEqual(spelled, p.root);
-    const other = context({ ...p.env, RULITH_SOURCE_ACCESS: spelled });
-    assert.equal(other.root, spelled, 'fs.realpathSync canonicalizes now: this test no longer shows anything');
-    assert.equal(other.stateFile, p.ctx.stateFile);
-    assert.equal(projectId(other), projectId(p.ctx));
-    assert.equal(other.spelledStateFile, path.join(p.home, `tree-${sha(spelled)}.json`));
-    // Upgrade: the counter kept under the spelling the Source used before is continued, not restarted at 0.
-    save(other.spelledStateFile, { gen: 7, digest: tree(other).digest });
-    const step = await perform('write_file_v2', { path: 'n.txt', text: 'n', expect_digest: '' }, { ...p.env, RULITH_SOURCE_ACCESS: spelled });
-    assert.deepEqual([step.rows[0].from_gen, step.rows[0].to_gen], [7, 8]);
-    assert.equal(JSON.parse(fs.readFileSync(p.ctx.stateFile, 'utf8')).gen, 8);
+test('an identity change never leaves a pass current: removing kit-id or the state file still withdraws it on the next step', async t => {
+  const p = project(t);
+  const key = (await p.call('acceptance_v2')).facts[0].args.key, id = keptProject(p.ctx);
+  const leaf = [{ predicate: 'acceptance', args: { node: 'leaf', test: key } }];
+  const pass = await p.call('test_v3', { check: 'unit' });
+  let facts = [...pass.facts];
+  assert.deepEqual([...evaluate(facts, leaf).met], ['leaf']);
+  // kit-id removed (or replaced): the identity stays with the counter, so the next write still names it.
+  fs.rmSync(path.join(p.home, 'kit-id'));
+  assert.equal((await p.call('acceptance_v2')).facts[0].args.key, key, 'removing kit-id gave the project a new key');
+  const w1 = await p.call('write_file_v2', { path: 'a.txt', text: 'a', expect_digest: '' });
+  assert.deepEqual(w1.facts.find(f => f.predicate === 'eng.tree_step').args, { project: id, from_gen: 0, to_gen: 1 });
+  facts = [...facts, ...w1.facts];
+  assert.deepEqual([...evaluate(facts, leaf).met], [], 'the pass outlived a write after kit-id was removed');
+  // A new pass, then the state file is lost (and kit-id too): the root record keeps the identity and the last
+  // generation, and the next receipt steps out of that generation instead of restarting at 0.
+  const again = await p.call('test_v3', { check: 'unit' });
+  assert.equal(again.facts[0].args.gen, 1);
+  facts = [...facts, ...again.facts];
+  assert.deepEqual([...evaluate(facts, leaf).met], ['leaf']);
+  fs.rmSync(p.ctx.stateFile); fs.rmSync(path.join(p.home, 'kit-id'), { force: true });
+  const w2 = await p.call('write_file_v2', { path: 'b.txt', text: 'b', expect_digest: '' });
+  assert.deepEqual(w2.facts.filter(f => f.predicate === 'eng.tree_step').map(f => f.args), [{ project: id, from_gen: 1, to_gen: 2 }]);
+  facts = [...facts, ...w2.facts];
+  assert.deepEqual([...evaluate(facts, leaf).met], [], 'the pass outlived a lost state file');
+  assert.equal(keptProject(p.ctx), id);
+  // Even a read first after the loss records the step, and the next receipt replays it.
+  const third = await p.call('test_v3', { check: 'unit' });
+  fs.rmSync(p.ctx.stateFile);
+  await p.call('list', { path: '.' });
+  const w3 = await p.call('write_file_v2', { path: 'c.txt', text: 'c', expect_digest: '' });
+  assert.ok(w3.facts.some(f => f.predicate === 'eng.tree_step' && f.args.project === id && f.args.from_gen === third.facts[0].args.gen));
+});
+
+test('Windows: a case-only rename and other spellings of one directory are one project with one counter',
+  { skip: process.platform !== 'win32' && 'paths ignore case on Windows only' }, async t => {
+    const dir = scratchDir(t, 'case-');
+    const p = project(t, { dir, name: 'CaseRoot' });
+    const key = (await p.call('acceptance_v2')).facts[0].args.key, id = keptProject(p.ctx);
+    const pass = await p.call('test_v3', { check: 'unit' });
+    // Renamed on disk to another case: the native spelling changes, the identity spelling does not.
+    const renamed = path.join(dir, 'caseroot');
+    fs.renameSync(p.root, renamed);
+    const env = { ...p.env, RULITH_SOURCE_ACCESS: renamed };
+    const ctx = context(env);
+    assert.notEqual(ctx.canonical, p.ctx.canonical);
+    assert.equal(ctx.stateFile, p.ctx.stateFile);
+    assert.equal(keptProject(ctx), id);
+    assert.equal(resultFactsFromRows(tools['eng.acceptance@2'], (await perform('acceptance_v2', {}, env)).rows)[0].args.key, key);
+    const write = await perform('write_file_v2', { path: 'n.txt', text: 'n', expect_digest: '' }, env);
+    const facts = [...pass.facts, ...resultFactsFromRows(tools['eng.write_file@2'], write.rows)];
+    assert.deepEqual([...evaluate(facts, [{ predicate: 'acceptance', args: { node: 'leaf', test: key } }]).met], [], 'the pass outlived the rename');
+    // Another spelling of the same directory (upper case, as a caller may pass it) is the same project too.
+    const upper = context({ ...env, RULITH_SOURCE_ACCESS: renamed.toUpperCase() });
+    assert.equal(upper.stateFile, ctx.stateFile);
+    assert.equal(projectIdentity(upper), id);
   });
+
+test('Windows: a counter and a running job kept under the caller\'s former spelling are continued and still found',
+  { skip: process.platform !== 'win32' && 'the root spelling differs from its identity spelling on Windows only' }, async t => {
+    const p = project(t);
+    assert.ok(p.ctx.spelledStateFile && p.ctx.spelledJobFile, 'the fixture root is already in its identity spelling');
+    // Upgrade: the counter kept under the spelling the Source used before is continued, not restarted at 0.
+    save(p.ctx.spelledStateFile, { gen: 7, digest: tree(p.ctx).digest });
+    const step = await p.call('write_file_v2', { path: 'n.txt', text: 'n', expect_digest: '' });
+    assert.deepEqual([step.out.rows[0].from_gen, step.out.rows[0].to_gen], [7, 8]);
+    assert.equal(JSON.parse(fs.readFileSync(p.ctx.stateFile, 'utf8')).gen, 8);
+    // A job still running under the former spelling keeps writes and runs out, and poll reaches it.
+    const job = { id: '11111111-1111-4111-8111-111111111111', status: 'running', command: ['x'], before: '', exit_code: -1 };
+    save(p.ctx.spelledJobFile, job);
+    await assert.rejects(p.call('write_file_v2', { path: 'm.txt', text: 'm', expect_digest: '' }), /job live/);
+    const polled = await p.call('job_poll_v2', { job_id: job.id, wait_s: 0 });
+    assert.equal(polled.out.rows[0].status, 'running');
+  });
+
+test('nested project roots under one kit home are refused, either way round; a refused root leaves no record behind', async t => {
+  const dir = scratchDir(t, 'nested-');
+  const outer = project(t, { dir, name: 'wrap/outer' });
+  await outer.call('acceptance_v2');
+  const innerRoot = path.join(outer.root, 'pkg'); fs.mkdirSync(innerRoot);
+  const inner = { ...outer.env, RULITH_SOURCE_ACCESS: innerRoot };
+  const records = () => fs.readdirSync(outer.home).filter(name => name.startsWith('root-')).sort();
+  const before = records();
+  assert.throws(() => context(inner), /project root overlaps another project/);
+  await assert.rejects(perform('write_file_v2', { path: 'x.txt', text: 'x', expect_digest: '' }, inner), /project root overlaps another project/);
+  // Older tool versions are refused there too, and the refusal is the adapter's visible verdict.
+  const cli = spawnSync(process.execPath, [path.join(kitDir, 'write_file.mjs'), JSON.stringify({ path: 'x.txt', text: 'x', expect_digest: '' })],
+    { env: inner, encoding: 'utf8', windowsHide: true });
+  assert.equal(JSON.parse(cli.stdout).verdict, 'project root overlaps another project');
+  assert.deepEqual(records(), before, 'a refused root left its record');
+  assert.equal(fs.existsSync(path.join(innerRoot, 'x.txt')), false);
+  // The outer project still works; a root around a recorded one is refused as well.
+  await outer.call('write_file_v2', { path: 'y.txt', text: 'y', expect_digest: '' });
+  const wrapper = { ...outer.env, RULITH_SOURCE_ACCESS: path.join(dir, 'wrap') };
+  assert.throws(() => context(wrapper), /project root overlaps another project/);
+  // A sibling is no overlap; once the owner removes the outer record, the inner directory may become a project.
+  project(t, { dir, name: 'wrap-sibling' });
+  fs.rmSync(outer.ctx.rootFile);
+  assert.equal(context(inner).root, fs.realpathSync(innerRoot));
+});
+
+test('once a root has a project identity, older versions that write, run or test are refused; reads still work', async t => {
+  const p = project(t);
+  const key = (await p.call('acceptance_v2')).facts[0].args.key;
+  const pass = await p.call('test_v3', { check: 'unit' });
+  for (const [entry, args] of [['write_file', { path: 'a.txt', text: 'a', expect_digest: '' }], ['test_v2', { check: 'unit' }],
+    ['run', { command: `"${process.execPath}" test.mjs`, cwd: '.' }], ['apply_patch', { patch: '*** Begin Patch\n*** Add File: b.txt\n+b\n*** End Patch' }]])
+    await assert.rejects(perform(entry, args, p.env), /project tools required/, entry);
+  assert.equal(fs.existsSync(path.join(p.root, 'a.txt')), false);
+  assert.equal(fs.existsSync(path.join(p.root, 'b.txt')), false);
+  assert.equal((await p.call('list', { path: '.' })).out.rows.some(row => row.path === 'test.mjs'), true);
+  // The pass therefore still describes the tree it was made on.
+  assert.deepEqual([...evaluate(pass.facts, [{ predicate: 'acceptance', args: { node: 'leaf', test: key } }]).met], ['leaf']);
+  assert.equal(tree(p.ctx).digest, pass.out.rows[0].tree_digest);
+});
+
+test('a spec command that finds a program inside the project needs that program in files', async t => {
+  const p = project(t);
+  const exe = process.platform === 'win32' ? '.exe' : '';
+  p.write(`bin/probe${exe}`, 'not a program\n');
+  const digest = sha('not a program\n');
+  // Named with a path: resolved against the spec cwd.
+  p.put({ command: [`bin/probe${exe}`, 'test.mjs'], cwd: '.', files: passingSpec.files });
+  await assert.rejects(p.call('test_v3', { check: 'unit' }), { message: 'acceptance spec invalid: command program must be listed in files' });
+  p.put({ command: [`bin/probe${exe}`, 'test.mjs'], cwd: '.', files: { ...passingSpec.files, [`bin/probe${exe}`]: digest } });
+  await assert.rejects(p.call('test_v3', { check: 'unit' }), error => error.message !== 'acceptance spec invalid: command program must be listed in files');
+  // A bare name found on a PATH entry inside the project counts the same.
+  const env = { ...p.env, PATH: `${path.join(p.root, 'bin')}${path.delimiter}${process.env.PATH ?? process.env.Path ?? ''}` };
+  delete env.Path;
+  p.put({ command: ['probe', 'test.mjs'], cwd: '.', files: passingSpec.files });
+  const saved = process.env.PATH;
+  process.env.PATH = env.PATH;
+  try {
+    assert.equal(resolveProgram('probe', p.root), fs.realpathSync(path.join(p.root, `bin/probe${exe}`)));
+    await assert.rejects(perform('test_v3', { check: 'unit' }, env), { message: 'acceptance spec invalid: command program must be listed in files' });
+  } finally { process.env.PATH = saved; }
+  // A program outside the project (node itself) needs nothing more.
+  p.put();
+  assert.equal((await p.call('test_v3', { check: 'unit' })).out.rows[0].exit_code, 0);
+});
+
+test('Windows: a program in the check\'s working directory never stands in for one on PATH',
+  { skip: process.platform !== 'win32' && 'only Windows looks up programs in the current directory' }, async t => {
+    const p = project(t);
+    // node.exe in the project root is another program (hostname.exe), whose run would not exit 0.
+    fs.copyFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'hostname.exe'), path.join(p.root, 'node.exe'));
+    p.put({ command: ['node', 'test.mjs'], cwd: '.', files: passingSpec.files });
+    // The adapter as the Worker starts it, from an environment that does not already switch the lookup off.
+    const env = Object.fromEntries(Object.entries(p.env).filter(([name]) => name.toLowerCase() !== 'nodefaultcurrentdirectoryinexepath'));
+    const run = spawnSync(process.execPath, [path.join(kitDir, 'test_v3.mjs'), JSON.stringify({ check: 'unit' })], { env, encoding: 'utf8', windowsHide: true });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.equal(JSON.parse(run.stdout).rows[0].exit_code, 0, 'the project node.exe ran in place of node');
+  });
+
+test('each project root keeps its own tree cache, so alternating projects do not evict each other', async t => {
+  const dir = scratchDir(t, 'cache-');
+  const p1 = project(t, { dir, name: 'one' }), p2 = project(t, { dir, name: 'two' });
+  p1.write('only-one.txt', '1'); p2.write('only-two.txt', '2');
+  tree(p1.ctx); tree(p2.ctx);
+  assert.notEqual(p1.ctx.cacheFile, p2.ctx.cacheFile);
+  const cached = file => Object.keys(JSON.parse(fs.readFileSync(file, 'utf8')));
+  assert.ok(cached(p1.ctx.cacheFile).includes('only-one.txt'), 'walking another project evicted this one');
+  assert.ok(cached(p2.ctx.cacheFile).includes('only-two.txt'));
+  assert.equal(cached(p1.ctx.cacheFile).includes('only-two.txt'), false);
+});
 
 test('a spec whose eng.check_spec row no longer fits the receipt once it carries the key is refused by eng.test@3 too', async t => {
   const p = project(t);
@@ -230,20 +407,23 @@ test('a spec whose eng.check_spec row no longer fits the receipt once it carries
 });
 
 test('a project patch counts its project in the inline receipt budget and is refused before writing when it would not fit', async t => {
-  const p = project(t);
-  const id = projectId(p.ctx);
+  const dir = scratchDir(t, 'budget-');
+  // The version without a project runs on a root no project tool has used; the project version on a project root.
+  const p = project(t, { dir, name: 'proj' }), bare = project(t, { dir, name: 'bare' });
+  await p.call('acceptance_v2');
+  const id = keptProject(p.ctx);
   let attempts = 0;
   // Four files, an invalidation replay and the mutation: two edges per file, as the preflight budgets.
-  const attempt = async (entry, length) => {
+  const attempt = async (entry, length, f = entry === 'apply_patch' ? bare : p) => {
     const names = Array.from({ length: 4 }, (_, i) => `${String(attempts).padStart(3, '0')}${i}-${'x'.repeat(length)}`);
     attempts++;
-    for (const name of names) p.write(name, 'a\n');
-    save(p.ctx.stateFile, { gen: 1, digest: tree(p.ctx).digest, test_gen: 0, invalidation: { from_gen: 0, to_gen: 1 } });
+    for (const name of names) f.write(name, 'a\n');
+    save(f.ctx.stateFile, { gen: 1, digest: tree(f.ctx).digest, test_gen: 0, invalidation: { from_gen: 0, to_gen: 1 } });
     const patch = `*** Begin Patch\n${names.map(name => `*** Update File: ${name}\n@@\n-a\n+b`).join('\n')}\n*** End Patch`;
-    try { return await perform(entry, { patch }, p.env); }
+    try { return await perform(entry, { patch }, f.env); }
     catch (error) {
       assert.match(error.message, /patch file count refused/);
-      for (const name of names) { assert.equal(fs.readFileSync(path.join(p.root, name), 'utf8'), 'a\n'); fs.rmSync(path.join(p.root, name)); }
+      for (const name of names) { assert.equal(fs.readFileSync(path.join(f.root, name), 'utf8'), 'a\n'); fs.rmSync(path.join(f.root, name)); }
       return null;
     }
   };

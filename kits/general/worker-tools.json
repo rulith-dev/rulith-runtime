@@ -1234,6 +1234,8 @@
           "predicate": "eng.check_spec",
           "args": {
             "key": "$key",
+            "source_name": "$source_name",
+            "project_root": "$project_root",
             "check": "$check",
             "spec_digest": "$spec_digest",
             "command": "$command",

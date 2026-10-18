@@ -393,14 +393,14 @@ test('the context names an Adapter is handed are addressed as names, not as list
   const code = source.replace(/\/\*[\s\S]*?\*\//gu, ' ').replace(/(^|[^:])\/\/[^\n]*/gu, '$1')
   assert.doesNotMatch(code, /ADAPTER_SUPPLIED_CONTEXT\s*\[\s*\d/u,
     'a supplied context name is still addressed by list position')
-  for (const [role, name] of [['invocationId', 'RULITH_INVOCATION_ID'], ['sourceAccess', 'RULITH_SOURCE_ACCESS'], ['sourceType', 'RULITH_SOURCE_TYPE']]) {
+  for (const [role, name] of [['invocationId', 'RULITH_INVOCATION_ID'], ['sourceAccess', 'RULITH_SOURCE_ACCESS'], ['sourceType', 'RULITH_SOURCE_TYPE'], ['sourceName', 'RULITH_SOURCE_NAME']]) {
     assert.match(source, new RegExp(`ADAPTER_CONTEXT\\.${role}\\b`, 'u'), `handRun no longer writes ${name} by its role name`)
   }
   // The derived list and the environment writer describe the same supplied context.
   const declared = source.match(/ADAPTER_CONTEXT\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/u)
   assert.ok(declared, 'the supplied-context map is no longer declared where its readers look for it')
   assert.deepEqual([...declared[1].matchAll(/'(RULITH_[A-Z0-9_]+)'/gu)].map((m) => m[1]),
-    ['RULITH_INVOCATION_ID', 'RULITH_EXECUTION_KEY', 'RULITH_SOURCE_ACCESS', 'RULITH_SOURCE_TYPE'])
+    ['RULITH_INVOCATION_ID', 'RULITH_EXECUTION_KEY', 'RULITH_SOURCE_ACCESS', 'RULITH_SOURCE_TYPE', 'RULITH_SOURCE_NAME'])
 })
 
 test('the credential fence matches the name however Windows spells it', () => {

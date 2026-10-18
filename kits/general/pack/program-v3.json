@@ -29,6 +29,8 @@
         "as": "eng_check_spec",
         "args": [
           "key",
+          "source_name",
+          "project_root",
           "check",
           "spec_digest",
           "command",

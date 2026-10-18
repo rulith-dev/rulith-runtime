@@ -1833,7 +1833,7 @@ const ADAPTER_ENV_DENY_PATTERNS = [
  *
  * Every ambient `RULITH_*` name is stripped — on the deny path and against an `env.pass`
  * allow-list alike — and `handRun` then supplies only the context the work item decides:
- * `RULITH_INVOCATION_ID`, `RULITH_EXECUTION_KEY`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`.
+ * `RULITH_INVOCATION_ID`, `RULITH_EXECUTION_KEY`, `RULITH_SOURCE_ACCESS`, `RULITH_SOURCE_TYPE`, `RULITH_SOURCE_NAME`.
  *
  * This started as a list of three names, which was one name per known problem and no rule at
  * all. Two kinds of leak survived it. A **retired** one: Case identity left this hop
@@ -1860,6 +1860,8 @@ const ADAPTER_CONTEXT = Object.freeze({
   executionKey: 'RULITH_EXECUTION_KEY',
   sourceAccess: 'RULITH_SOURCE_ACCESS',
   sourceType: 'RULITH_SOURCE_TYPE',
+  // The governed Source name this invocation selected, for display: an Adapter may show which Source it served.
+  sourceName: 'RULITH_SOURCE_NAME',
 })
 const ADAPTER_SUPPLIED_CONTEXT = Object.freeze(Object.values(ADAPTER_CONTEXT))
 /**
@@ -1976,6 +1978,7 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       ...(executionKey ? { [ADAPTER_CONTEXT.executionKey]: executionKey } : {}),
       ...(access ? { [ADAPTER_CONTEXT.sourceAccess]: access } : {}),
       ...(source.sourceType ? { [ADAPTER_CONTEXT.sourceType]: String(source.sourceType) } : {}),
+      ...(access && typeof t.source === 'string' && t.source !== '' ? { [ADAPTER_CONTEXT.sourceName]: t.source } : {}),
     }, JSON.stringify({ format: IMPLEMENTATION_PIN_FORMAT,
       files: Object.fromEntries(implementation.paths.map(({ path, sha256 }) => [implementationPinKey(path), sha256])) }),
     process.env[IMPLEMENTATION_HOOKS_ENV])

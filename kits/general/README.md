@@ -64,7 +64,9 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
    digests in the recipe.
 5. Console: bind Source `lab` to the project root and the Worker Connection, pin the desired
    kit tools (allow direct use) and lock. Non-strict exploration mode lets the model supply
-   write and run inputs; each such call is marked as not grounded.
+   write and run inputs; each such call is marked as not grounded. For program v3 (a `project`
+   Source) pin only the fifteen tools its `toolAdoption` lists: once a project tool has used a root,
+   the older versions that write, run, test or measure are refused there (`project tools required`).
 
 ## Settings (`<kit home>/settings.json`)
 
@@ -133,8 +135,18 @@ can. In particular:
   are trusted), rewrite the state file, or edit `settings.json`. A settings change is a tree step,
   but a script can rewrite all three consistently.
 - A pass is therefore only as trustworthy as the project scripts the check runs, and the scripts
-  they in turn run. The signed `eng.check_spec` pins the check's own files, not everything they
-  import or start.
+  they in turn run. The signed `eng.check_spec` pins the check's own files (and, when the command
+  starts a program inside the project, that program), not everything they import or start: project
+  files not listed in `files`, programs outside the project, and the environment (variables, PATH,
+  installed toolchains) are not frozen.
+- Cloning a kit home (copying `kit-id`, the state files and the root records to another machine or
+  directory) clones its project identities: passes made under the copy count for the original's
+  signed leaves. Give every Worker its own kit home.
+- Removing both a project's state file and its root record (`root-<key>.json`), or the whole kit home,
+  loses its generation history: a pass made before that is never withdrawn by later receipts. Sign
+  such leaves again.
+- On Windows the identity spelling of a root is lower case. Two directories that differ only in case
+  (possible only where per-directory case sensitivity is turned on) are one project to the kit.
 - A command's own writes under an owner exclusion or the root `.git` are not seen by the tree digest.
   In particular a script can write `.git/config` (`core.fsmonitor`, aliases), and a later
   `git status` or `git <alias>` in a check then runs code the digest never sees.
@@ -157,20 +169,35 @@ are preserved. New contracts:
 | `web.fetch@1` | `url` | GET of HTTP(S) without credentials/cookies; HTML becomes readable text. `web.page{url,final_url,status,digest,fetched_at}`; the digest covers the complete fetched response bytes. |
 | `web.search@1` | `query` | Bounded provider result text and `web.search{query,provider,digest,fetched_at}`. The digest covers the complete scrubbed result text. Missing key refuses with `web search key unavailable`. |
 | `eng.write_file@2`, `eng.patch_file@2`, `eng.apply_patch@2`, `eng.run@2`, `eng.job_start@2`, `eng.job_poll@2`, `eng.job_stop@2` | as version 1 | The version-1 behaviour and result, and every row also carries `project`: `eng.tree_step{project,from_gen,to_gen}`. Patch preflight budgets the project too. |
-| `eng.acceptance@2` | none | As `eng.acceptance@1`, with the check key first: `eng.check_spec{key,check,spec_digest,command,cwd,shell,files}`; the receipt budget is measured with the key. |
+| `eng.acceptance@2` | none | As `eng.acceptance@1`, with the check key, the Source name and the project root first: `eng.check_spec{key,source_name,project_root,check,spec_digest,command,cwd,shell,files}`; the receipt budget is measured with them. |
 | `eng.test@3` | `check` | As `eng.test@2`: `eng.check_result{key,project,check,spec_digest,gen,tree_digest,exit_code}` and `eng.tree_step{project,from_gen,to_gen}`; it refuses a spec whose `eng.acceptance@2` row would not fit (`acceptance spec too large`). |
 
 The project versions are what program v3 reads; the versions without a project keep their receipts
-byte for byte for program v2. A **project** is `sha256(<kit id> "\n" <canonical root>)` in lowercase hex.
-The kit id is a random identity in `<kit home>/kit-id`, created atomically by the first project tool
-that needs it and never changed: the same path on two devices, or one directory under two kit homes,
-are different projects (their generations are counted in different kit homes). Removing `kit-id` gives
-every project a new identity, and leaves signed before that must be signed again. The canonical root is
-the file system's own spelling of the project root on Windows (case, short names), so `d:\work\p` and
-`D:\Work\p` are one project with one generation counter; elsewhere it is the real path. The generation
-counter file is keyed by the canonical root for every tool; a counter an earlier version kept under
-another spelling of the same root is continued, not restarted. The **check key** is
-`<project>:<check>:<spec_digest>`; no part contains a colon, so the key splits into exactly its three parts.
+byte for byte for program v2.
+
+A project root has an **identity spelling**: its real path, on Windows the file system's own spelling
+(short names expanded) in lower case, so `d:\work\p`, `D:\Work\p` and the same directory after a
+case-only rename are one root. The generation counter (`tree-<key>.json`), job file, tree cache and the
+**root record** (`root-<key>.json`) are keyed by it; a counter or running job an earlier version kept
+under the caller's spelling is continued and still found. Every root used is recorded in the kit home,
+and a root inside or around another recorded root is refused (`project root overlaps another
+project`): generations are counted per root, so a write through one would not withdraw the other's
+passes. To use a directory inside or around a former project, remove that project's `root-*.json`.
+
+A **project** identity is fixed the first time a project tool uses a root: `sha256(<kit id> "\n"
+<identity spelling>)` in lowercase hex, where the kit id is a random identity in `<kit home>/kit-id`
+(written whole to a temporary file and renamed; rewritten when missing or damaged). From then on the
+identity is kept with the counter (`project` in the state file, and in the root record) and read, never
+recomputed: removing or replacing `kit-id` changes no existing project, and the same path on two
+devices, or one directory under two kit homes, are different projects. If the state file is lost, the
+root record's identity and last generation are used: the counter resumes at that generation and the
+next receipt steps out of it, so a pass made there is withdrawn. Once a root has an identity, the
+older tool versions that write, run, test or measure are refused there (`project tools required`):
+their steps carry no project. The **check key** is `<project>:<check>:<spec_digest>`; no part contains
+a colon, so the key splits into exactly its three parts. `eng.check_spec` also shows `source_name` (the
+governed Source name the Worker hands the adapter as `RULITH_SOURCE_NAME`) and `project_root` (the root's
+display spelling: separators as `/`, every character outside 0x20–0x7E and every backslash as
+`\uXXXX`), so the person who signs reads which project a key names; neither takes part in the binding.
 
 Patch receipts report `eng.file_state` for each file (the same arguments as `eng.write_file`)
 and `eng.tree_step`. Deletion uses the SHA-256 of empty bytes and zero bytes as its absent
@@ -314,7 +341,8 @@ name with any spec digest, in any project, fulfils a v2 leaf, and generation num
 projects withdraw each other's passes. It stays only for the Agents that installed it.
 
 Before signing, the person must see what the key freezes: the `eng.check_spec` receipt with that `key`
-shows the command, working directory, shell flag and every frozen file digest. `eng.test@3` refuses a
+shows the Source and project root, the command, working directory, shell flag and every frozen file
+digest. `eng.test@3` refuses a
 spec that `eng.acceptance@2` cannot report in full (and `eng.test@2` one that `eng.acceptance@1`
 cannot).
 
@@ -325,13 +353,12 @@ write a completion rule. Console signing and certification require the D-1016a K
 
 Limits of the vocabulary, stated rather than enforced here:
 
-- The receipt facts carry no Source column. A run adapter is not told its Source name (the Worker
-  passes only `RULITH_SOURCE_ACCESS` and `RULITH_SOURCE_TYPE`), so `"$source"` cannot be mapped.
-  Each receipt is still bound to its invocation's Source by the Kernel's accreditation; the project in
-  v3 receipts is the kit's own identity of the root, not the Source.
-- Generations are counted per project root. Two project Sources whose roots overlap (one directory
-  inside the other) keep separate counters: a change made through one is seen by the other's next
-  receipt, not at once, like a change made outside the kit.
+- The binding receipt facts carry no Source column: the project in v3 receipts is the kit's own
+  identity of the root, not the Source. Each receipt is still bound to its invocation's Source by the
+  Kernel's accreditation; `eng.check_spec` shows the Source name for reading only.
+- Generations are counted per project root, and nested roots under one kit home are refused. A change
+  made outside the kit (an editor, another kit home on the same directory) is seen by the next
+  receipt, not at once.
 - The check observes what its process reports. Code under test runs inside the test process and can
   sabotage it (for example `process.exit(0)` before an assertion, or a wrapper that swaps code and
   restores it). The contract covers what the check observes, not an adversarial project; the person
@@ -399,6 +426,13 @@ the system shell only when the owner's `settings.json` enables `shell`; otherwis
 with `acceptance shell refused`. With `shell: true` the command is one string that the shell receives
 exactly as written, and `eng.check_spec` shows exactly that string. Without `shell: true` the
 command is an argv array and never goes through a shell.
+
+The spec freezes command words, so the program they start is checked before the run: the first word
+is resolved as the run resolves it (a word with a path against `cwd`; a bare name on PATH, with PATHEXT
+on Windows, a relative PATH entry against `cwd`), and a program found inside the project must be listed
+in `files` (`acceptance spec invalid: command program must be listed in files`). On Windows every
+command, check, job and measurement runs with `NoDefaultCurrentDirectoryInExePath=1` (set for the adapter
+and handed to the child), so a `node.exe` in the working directory never stands in for the one on PATH.
 
 The **spec digest** hashes canonical JSON bytes of the spec `{command, cwd, files, shell}` with its
 default written out (`shell: false` when omitted): recursively sort every object's keys by UTF-16

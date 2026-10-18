@@ -642,7 +642,7 @@ test('failed kit save removes its temporary file immediately', t => {
   const f = fixture(t);
   t.mock.method(fs, 'renameSync', () => { throw Object.assign(new Error('fixture rename refused'), { code: 'EACCES' }); });
   assert.throws(() => save(f.ctx.stateFile, { value: 1 }), /fixture rename refused/);
-  assert.deepEqual(fs.readdirSync(f.home), ['specs']);
+  assert.deepEqual(fs.readdirSync(f.home).filter(name => !/^root-[a-f0-9]{64}\.json$/.test(name)), ['specs']);
 });
 
 test('HTML fetch reaches body text after 100 KiB of head and still hashes every byte', async t => {

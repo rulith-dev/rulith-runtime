@@ -39,3 +39,22 @@ test('a database run Adapter receives only its selected local DSN, never a files
   const free = await execute('pure-job', {}, { 'pure-job':sourceFree }, sources)
   assert.deepEqual(JSON.parse(free), {}, 'a Source-free Adapter receives no borrowed DSN or Source type')
 })
+
+test('a run Adapter is told the governed name of the Source it serves, never an ambient one', async (t) => {
+  const old = process.env.RULITH_SOURCE_NAME
+  process.env.RULITH_SOURCE_NAME = 'forged-ambient-source'
+  const sources = { 'project-a': { type:'file', access:process.cwd() }, 'project-b': { type:'file', access:process.cwd() } }
+  const tool = pinnedRunTool(t, {
+    'probe.mjs': 'process.stdout.write(JSON.stringify({name:process.env.RULITH_SOURCE_NAME ?? null}))',
+  }, { source:'project-a', envPass:['RULITH_SOURCE_NAME'] })
+  try {
+    assert.deepEqual(JSON.parse(await execute('probe', {}, { probe:tool }, sources)), { name:'project-a' })
+    assert.deepEqual(JSON.parse(await execute('probe', {}, { probe:{ ...tool, source:'project-b' } }, sources)), { name:'project-b' })
+    const { source:_removed, ...sourceFree } = tool
+    assert.deepEqual(JSON.parse(await execute('probe', {}, { probe:sourceFree }, sources)), { name:null },
+      'a Source-free Adapter is given no Source name, not the ambient one')
+  } finally {
+    if (old === undefined) delete process.env.RULITH_SOURCE_NAME
+    else process.env.RULITH_SOURCE_NAME = old
+  }
+})
