@@ -15,7 +15,8 @@
  *   4. 线程和子 Node 进程带着同一道边界启动：Worker 线程、fork，以及 spawn／exec* 这个 Node
  *      （process.execPath，带不带 .exe），或按名字（node／node.exe）启动、却点名了 pin 里某个文件的 Node，
  *      都被加上边界选项与这份名单；从源码文本起的线程、共享环境的线程、会装载代码的 Node 选项、
- *      没有脚本文件的 Node 进程，以及经 shell 或其他程序启动这个 Node、或点名 pin 里文件的命令，
+ *      没有脚本文件的 Node 进程，以及经 shell 或其他程序启动这个 Node、或（以参数、命令行或环境变量值，
+ *      按任何别名）点名 pin 里文件或实现目录里其他文件的命令，
  *      都在启动前拒绝；它们底下的 process.binding('spawn_sync'／'process_wrap') 与 process.execve 也拒绝。
  *      别的程序（kit 运行的项目命令，如 npm test、python、node 跑项目自己的脚本）照常启动：
  *      运行项目命令是产品用途本身，由所有者“打开项目”的确认授权。
@@ -26,8 +27,8 @@
 import module from 'node:module'
 import childProcess from 'node:child_process'
 import workerThreads from 'node:worker_threads'
-import { realpathSync } from 'node:fs'
-import { basename, resolve as resolvePath } from 'node:path'
+import { realpathSync, statSync } from 'node:fs'
+import { basename, delimiter, dirname, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   IMPLEMENTATION_HOOKS_ENV, IMPLEMENTATION_PIN_ENV, ImplementationBoundaryError, boundaryArgv, boundaryEnv,
@@ -76,53 +77,97 @@ module.registerHooks = noHooks
 
 // ── 3. Threads and Node children start under the same boundary ──────────────
 const comparable = (value) => (process.platform === 'win32' ? String(value).toLowerCase().replaceAll('/', '\\') : String(value))
-const fullNodePaths = [...new Set([process.execPath, (() => { try { return realpathSync(process.execPath) } catch { return process.execPath } })()])]
+/** The long, real name of an existing path (8.3 aliases, `\\?\` prefixes and links resolved), or undefined. */
+const nativeReal = (path) => { try { return realpathSync.native(path) } catch { return undefined } }
+const fullNodePaths = [...new Set([process.execPath, nativeReal(process.execPath) ?? process.execPath])]
 /** This Node by path: its executable (and real path), with or without the `.exe` a Windows start may leave out. */
 const nodePaths = new Set(fullNodePaths.flatMap((path) => [path, path.replace(/\.exe$/i, '')]).map(comparable))
-const isThisNode = (file) => typeof file === 'string' && nodePaths.has(comparable(file))
-/** A Node by name: `node` through PATH, or another Node binary. It may run a project script; see namesPinnedFile. */
+const nodeReal = implementationPinKey(nativeReal(process.execPath) ?? process.execPath)
+const isThisNode = (file) => typeof file === 'string' && (nodePaths.has(comparable(file))
+  || (/[\\/]/.test(file) && implementationPinKey(nativeReal(file) ?? file) === nodeReal))
+/** A Node by name: `node` through PATH, or another Node binary. It may run a project script; see namedImplementation. */
 const NODE_NAMES = new Set(['node', 'node.exe', 'nodejs'])
 const isNodeByName = (file) => typeof file === 'string'
   && NODE_NAMES.has(process.platform === 'win32' ? basename(file).toLowerCase() : basename(file))
 /** The words of an argument or a command line, quotes removed: enough to see which files a command names. */
 const words = (value) => (String(value).match(/"[^"]*"|'[^']*'|[^\s"']+/g) ?? []).map((word) => word.replace(/^["']|["']$/g, ''))
-const pinnedPaths = Object.keys(files)
+
 /**
- * Whether a start names a file of this pinned implementation: an absolute pinned path anywhere in an
- * argument or command line, or a word (also the value of a `--option=value`, or a file: URL) that resolves
- * against the start's working directory to a pinned path. Such a start would run pinned code outside the
- * boundary, under bytes nobody checked; a Node gets the boundary, any other program is refused.
+ * The implementation area: the pinned files and every directory (with its subdirectories) that holds one,
+ * by the declared name and by the long, real name. A project Source lies outside it.
  */
-function namesPinnedFile(values, cwd) {
+const pinnedPaths = Object.keys(files)
+const pinnedReal = new Set(pinnedPaths.map((path) => implementationPinKey(nativeReal(path) ?? path)))
+const areaDirs = [...new Set(pinnedPaths.flatMap((path) => [dirname(path), nativeReal(dirname(path)) ?? dirname(path)])
+  .map((dir) => implementationPinKey(dir)))]
+const insideArea = (key) => areaDirs.some((dir) => key.startsWith(dir.endsWith(sep) ? dir : dir + sep))
+/** What an existing path is to this implementation: 'pinned', another file of the area ('area'), or undefined. */
+function implementationFile(path) {
+  const real = nativeReal(path)
+  if (real === undefined) return undefined
+  const key = implementationPinKey(real)
+  if (pinnedReal.has(key)) return 'pinned'
+  if (!insideArea(key)) return undefined
+  try { return statSync(real).isFile() ? 'area' : undefined } catch { return undefined }
+}
+const decoded = (text) => { try { return decodeURIComponent(text) } catch { return text } }
+/** A path written out from an area directory onwards, up to the next quote, space or separator. */
+const PATH_RUN = /^[^\s"'`()<>|;,]*/
+/**
+ * Which implementation file, if any, a start names: 'pinned' before 'area'. A name is a word of an
+ * argument, a command line or an environment value (also the value of a `--option=value`, a file: URL,
+ * and — in the environment — each entry of a path list), resolved against the start's working directory;
+ * or an absolute path of the area written anywhere in the text (inside source text, a URL or an option).
+ * Every name is compared by its long, real name, so aliases of the same file are the same file.
+ */
+function namedImplementation(values, cwd, { environment = false } = {}) {
   const base = cwd instanceof URL ? fileURLToPath(cwd) : typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd()
+  let found
+  const note = (kind) => { if (kind === 'pinned' || (kind === 'area' && found === undefined)) found = kind }
   for (const value of values) {
     if (typeof value !== 'string' || value === '') continue
-    const text = comparable(value)
-    if (pinnedPaths.some((path) => text.includes(path))) return true
-    for (const word of words(value)) {
-      for (const candidate of new Set([word, word.replace(/^-{1,2}[^=\s]+=/, '')])) {
-        try {
-          const file = /^file:/i.test(candidate) ? fileURLToPath(candidate) : candidate
-          if (files[implementationPinKey(resolvePath(base, file))] !== undefined) return true
-        } catch { /* not a path */ }
+    const pieces = environment ? [value, ...value.split(delimiter)] : [value]
+    const candidates = new Set(pieces.flatMap((piece) => [piece, ...words(piece)])
+      .flatMap((word) => [word, word.replace(/^-{1,2}[^=\s]+=/, '')]))
+    for (const candidate of candidates) {
+      try { note(implementationFile(resolvePath(base, /^file:/i.test(candidate) ? fileURLToPath(candidate) : candidate))) } catch { /* not a path */ }
+      if (found === 'pinned') return found
+    }
+    for (const text of new Set([comparable(value), comparable(decoded(value))])) {
+      for (const dir of areaDirs) {
+        for (let at = text.indexOf(dir); at !== -1; at = text.indexOf(dir, at + 1)) note(implementationFile(PATH_RUN.exec(text.slice(at))[0]))
       }
     }
+    if (found === 'pinned') return found
   }
-  return false
+  return found
 }
 const mentionsThisNode = (values) => values.some((value) => typeof value === 'string'
   && (fullNodePaths.some((path) => comparable(value).includes(comparable(path))) || words(value).some((word) => isThisNode(word))))
-/** A Node gets the boundary when it is this Node, or a Node by name started on a pinned file. */
-const heldNode = (file, args, cwd) => isThisNode(file) || (isNodeByName(file) && namesPinnedFile(args, cwd))
-/** Any other start may not reach this Node or a pinned file around the boundary. */
-function refuseUnheld(values, cwd) {
+/** A Node gets the boundary when it is this Node, or a Node by name started on an implementation file. */
+const heldNode = (file, args, cwd) => isThisNode(file) || (isNodeByName(file) && namedImplementation(args, cwd) !== undefined)
+/** The values of an environment a start passes, but this boundary's own two. */
+const environmentValues = (env) => Object.entries(env ?? {})
+  .filter(([name]) => ![IMPLEMENTATION_PIN_ENV, IMPLEMENTATION_HOOKS_ENV].includes(name.toUpperCase()))
+  .map(([, value]) => String(value ?? ''))
+/** Any other start may not reach this Node or an implementation file around the boundary, by argument or by environment. */
+function refuseUnheld(values, cwd, environment) {
   if (mentionsThisNode(values)) {
     refuse('a command that starts this Node through a shell or another program would run code outside this Tool\'s pinned'
       + ' implementation, so it was not started. Start it with fork, or spawn process.execPath with a script file.')
   }
-  if (namesPinnedFile(values, cwd)) {
+  const named = namedImplementation(values, cwd)
+  if (named === 'pinned') {
     refuse('a command that names a file of this Tool\'s pinned implementation would run it outside the implementation boundary,'
       + ' so it was not started. Start it with fork, or spawn process.execPath with the script file.')
+  }
+  if (named === 'area') {
+    refuse('a command that names a file in this Tool\'s implementation directories that is not declared would run it outside the'
+      + ' implementation boundary, so it was not started. Declare it in the Tool\'s "implementation" list, or keep it out of those directories.')
+  }
+  if (environment !== undefined && namedImplementation(environment, cwd, { environment: true }) !== undefined) {
+    refuse('the environment of a command names a file of this Tool\'s implementation (for example NODE_OPTIONS=--import=…),'
+      + ' which would run it outside the implementation boundary, so it was not started.')
   }
 }
 
@@ -172,7 +217,11 @@ ChildProcess.prototype.spawn = function spawnWithinImplementationBoundary(option
       options.args = [argv0 ?? options.file, ...boundedNodeArgs(args, BOUNDARY, { script: true, label: 'A Node child process' })]
       options.envPairs = boundedPairs(options.envPairs)
     } else {
-      refuseUnheld(args, options.cwd)
+      const pairs = Array.isArray(options.envPairs) ? options.envPairs.map(String) : []
+      refuseUnheld(args, options.cwd, environmentValues(Object.fromEntries(pairs.map((pair) => {
+        const at = pair.indexOf('=', 1)
+        return at === -1 ? [pair, ''] : [pair.slice(0, at), pair.slice(at + 1)]
+      }))))
     }
   }
   return spawnChild.call(this, options)
@@ -192,20 +241,20 @@ for (const name of ['spawnSync', 'execFileSync']) {
     const list = Array.isArray(args) ? args : []
     const settings = Array.isArray(args) ? options : args
     if (settings?.shell) {
-      refuseUnheld([file, ...list], settings.cwd)
+      refuseUnheld([file, ...list], settings.cwd, environmentValues(settings.env ?? process.env))
       return start.apply(this, arguments)
     }
     if (heldNode(file, list, settings?.cwd)) {
       return start.call(this, file, boundedNodeArgs(list, BOUNDARY, { script: true, label: 'A Node child process' }),
         { ...settings, env: boundaryEnv(settings?.env ?? process.env, text, hooksVariant) })
     }
-    refuseUnheld(list, settings?.cwd)
+    refuseUnheld(list, settings?.cwd, environmentValues(settings?.env ?? process.env))
     return start.apply(this, arguments)
   }
 }
 const execSync = childProcess.execSync
 childProcess.execSync = function execSyncWithinImplementationBoundary(command, options) {
-  refuseUnheld([command], options?.cwd)
+  refuseUnheld([command], options?.cwd, environmentValues(options?.env ?? process.env))
   return execSync.apply(this, arguments)
 }
 // `import { spawn } from 'node:child_process'` and friends read the replaced functions.

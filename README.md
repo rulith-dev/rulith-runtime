@@ -892,8 +892,10 @@ local file, an import through a package name or a `#` map, a CommonJS `require` 
 is refused; the compile cache stays off; a Tool cannot add module hooks of its own. A Worker
 thread or a Node child process the Tool starts (fork, spawn of `process.execPath` with or without
 its `.exe`, or `node` by name on a pinned file) starts under the same boundary, and one from source
-text or with options that load code is refused, as is any other command that names a pinned file,
-`process.binding('spawn_sync')`/`('process_wrap')` and `process.execve`. Other programs, such as
+text or with options that load code is refused, as is any other command that names a pinned file or
+another file in the directories that hold the pinned files (by argument, command line or
+environment value, under any alias of its name), `process.binding('spawn_sync')`/`('process_wrap')`
+and `process.execve`. Keep project Sources outside those directories. Other programs, such as
 the project commands a kit runs (including `node` on the project's own scripts), start as usual. The Adapter receives no
 `NODE_*` variable but `NODE_EXTRA_CA_CERTS` and `NODE_USE_ENV_PROXY`, no `OPENSSL_*` variable,
 and `env.pass` cannot name them. If a refusal comes after the Adapter started, the receipt says

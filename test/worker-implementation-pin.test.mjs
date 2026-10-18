@@ -476,6 +476,108 @@ test('a pinned file replaced after verification never runs outside the boundary:
   assert.equal(marked(marks), '', 'a replaced pinned file or source text ran outside the boundary')
 })
 
+/** A program other than Node that only reads or prints its argument, per platform. */
+const otherProgram = (argument) => (process.platform === 'win32'
+  ? `spawnSync('cmd.exe', ['/d', '/c', 'type', ${argument}])` : `spawnSync('sh', ['-c', 'cat ' + quote(${argument})])`)
+const ranStatus = "(r) => 'status ' + r.status + ' ' + (/implementation_boundary: .*/.exec(String(r.stderr))?.[0] ?? String(r.stdout).trim())"
+
+test('an undeclared file in the implementation directories never runs as a child, while project scripts outside them do', async (t) => {
+  const project = workerRoot(t, { 'project.mjs': "process.stdout.write('project')\n" })
+  const dir = workerRoot(t, {})
+  const marks = path.join(dir, 'marks')
+  const root = workerRoot(t, {
+    'adapters/tool/entry.mjs': [
+      "import { spawnSync, execSync } from 'node:child_process'",
+      ...ENTRY_PRELUDE,
+      `const ran = ${ranStatus}`,
+      "await attempt('nodeOnUndeclared', () => ran(spawnSync('node', [file('undeclared.mjs')])))",
+      "await attempt('nodeOnUndeclaredInItsDirectory', () => ran(spawnSync('node', ['undeclared.mjs'], { cwd: root })))",
+      "await attempt('nodeOnUndeclaredDeeper', () => ran(spawnSync('node', [file('vendor/deeper.mjs')])))",
+      `await attempt('otherProgramOnUndeclared', () => ran(${otherProgram("file('undeclared.mjs')")}))`,
+      "await attempt('shellOnUndeclared', () => execSync('node ' + quote(file('undeclared.mjs'))).toString())",
+      // Naming a path in the directories that does not exist names no code: an output file, say.
+      `await attempt('notYetWritten', () => ran(${process.platform === 'win32'
+        ? "spawnSync('cmd.exe', ['/d', '/c', 'echo', file('not-yet-written.txt')])" : "spawnSync('sh', ['-c', 'echo ' + quote(file('not-yet-written.txt'))])"}))`,
+      `await attempt('projectScript', () => ran(spawnSync('node', [${JSON.stringify(path.join(project, 'project.mjs'))}])))`,
+      'process.stdout.write(JSON.stringify(results))',
+    ].join('\n'),
+    'adapters/tool/helper.mjs': 'export const helper = true\n',
+    'adapters/tool/undeclared.mjs': mark(marks, 'undeclared'),
+    'adapters/tool/vendor/deeper.mjs': mark(marks, 'deeper'),
+  })
+  const { out, error } = await runTool(root, 'adapters/tool/entry.mjs', ['adapters/tool/helper.mjs'])
+  assert.equal(error, undefined, error)
+  const results = JSON.parse(out)
+  // A Node by name on such a file starts under the boundary, which refuses it just as an import of it is refused.
+  for (const name of ['nodeOnUndeclared', 'nodeOnUndeclaredInItsDirectory']) {
+    assert.match(results[name], /^status 1 implementation_boundary: .*undeclared\.mjs is not declared in this Tool's implementation/, name)
+  }
+  assert.match(results.nodeOnUndeclaredDeeper, /^status 1 implementation_boundary: .*deeper\.mjs is not declared/)
+  const areaRefusal = /^thrown: implementation_boundary: a command that names a file in this Tool's implementation directories that is not declared/
+  assert.match(results.otherProgramOnUndeclared, areaRefusal)
+  assert.match(results.shellOnUndeclared, areaRefusal)
+  assert.match(results.notYetWritten, /^status 0 .*not-yet-written\.txt/)
+  assert.equal(results.projectScript, 'status 0 project', 'a project script outside the implementation directories was held')
+  assert.equal(marked(marks), '', 'an undeclared implementation file ran as a child')
+})
+
+test('a child\'s environment cannot name an implementation file for its program to load, and aliases name the same file', async (t) => {
+  const project = workerRoot(t, { 'project.mjs': "process.stdout.write('project')\n" })
+  const dir = workerRoot(t, {})
+  const marks = path.join(dir, 'marks')
+  const root = workerRoot(t, { 'adapters/tool/helper.mjs': 'export const helper = true\n', 'adapters/tool/undeclared.cjs': '\n' })
+  const helper = path.join(root, 'adapters/tool/helper.mjs')
+  // Other names of the declared helper: its long real name (the temporary directory may be an 8.3 alias), its
+  // 8.3 short name, and the \\?\ long-path form on Windows; a link elsewhere.
+  const aliases = new Set([fs.realpathSync.native(helper)])
+  if (process.platform === 'win32') {
+    aliases.add(execFileSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${helper}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true }).trim())
+    aliases.add(String.fromCharCode(92, 92, 63, 92) + fs.realpathSync.native(helper))
+  }
+  try {
+    fs.symlinkSync(helper, path.join(dir, 'link.mjs'), 'file')
+    aliases.add(path.join(dir, 'link.mjs'))
+  } catch { /* this account cannot create file links */ }
+  aliases.delete(helper)
+  fs.writeFileSync(path.join(root, 'adapters/tool/entry.mjs'), [
+    "import { exec, spawnSync } from 'node:child_process'",
+    "import { writeFileSync } from 'node:fs'",
+    "import { pathToFileURL } from 'node:url'",
+    ...ENTRY_PRELUDE,
+    `const ran = ${ranStatus}`,
+    `const project = ${JSON.stringify(path.join(project, 'project.mjs'))}`,
+    `const aliases = ${JSON.stringify([...aliases])}`,
+    `writeFileSync(here('helper.mjs'), ${JSON.stringify(mark(marks, 'replaced helper'))})`,
+    "await attempt('nodeOptionsImport', () => ran(spawnSync('node', [project], { env: { ...process.env, NODE_OPTIONS: '--import=' + pathToFileURL(file('helper.mjs')).href } })))",
+    "await attempt('nodeOptionsRequire', () => ran(spawnSync('node', [project], { env: { ...process.env, NODE_OPTIONS: '--require ' + quote(file('undeclared.cjs')) } })))",
+    `await attempt('otherProgramEnvironment', () => ran(${process.platform === 'win32'
+      ? "spawnSync('cmd.exe', ['/d', '/c', 'echo', 'ok'], { env: { ...process.env, BASH_ENV: file('helper.mjs') } })"
+      : "spawnSync('sh', ['-c', 'echo ok'], { env: { ...process.env, BASH_ENV: file('helper.mjs') } })"}))`,
+    "await attempt('execEnvironmentUrl', () => new Promise((done) => { try { exec('echo ok', { env: { ...process.env, LOADER: pathToFileURL(file('helper.mjs')).href } }, (e, o) => done('ran ' + String(o).trim())) }"
+      + " catch (e) { done('thrown: ' + e.message) } }))",
+    "await attempt('projectInEnvironment', () => ran(spawnSync('node', [project], { env: { ...process.env, PROJECT_FILE: project } })))",
+    "for (const [at, alias] of aliases.entries()) {",
+    "  await attempt('nodeOnAlias' + at, () => ran(spawnSync('node', [alias])))",
+    `  await attempt('otherProgramOnAlias' + at, () => ran(${otherProgram('alias')}))`,
+    '}',
+    'process.stdout.write(JSON.stringify(results))',
+  ].join('\n'))
+  const { out, error } = await runTool(root, 'adapters/tool/entry.mjs', ['adapters/tool/helper.mjs'])
+  assert.equal(error, undefined, error)
+  const results = JSON.parse(out)
+  const environmentRefusal = /^thrown: implementation_boundary: the environment of a command names a file of this Tool's implementation/
+  for (const name of ['nodeOptionsImport', 'nodeOptionsRequire', 'otherProgramEnvironment', 'execEnvironmentUrl']) {
+    assert.match(results[name], environmentRefusal, name)
+  }
+  assert.equal(results.projectInEnvironment, 'status 0 project', 'an environment naming a project file was refused')
+  assert.ok(aliases.size >= 1)
+  for (const [at, alias] of [...aliases].entries()) {
+    assert.match(results[`nodeOnAlias${at}`], /^status 1 implementation_boundary: /, `${alias} ran outside the boundary`)
+    assert.match(results[`otherProgramOnAlias${at}`], /^thrown: implementation_boundary: a command that names a file of this Tool's pinned implementation/, alias)
+  }
+  assert.equal(marked(marks), '', 'a replaced pinned file ran through a child\'s environment or an alias')
+})
+
 test('pinned code cannot reach the original Worker class, the process bindings or process.execve around the boundary', async (t) => {
   const dir = workerRoot(t, {})
   const marks = path.join(dir, 'marks')
