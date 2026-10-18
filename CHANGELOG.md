@@ -33,6 +33,18 @@ All notable changes to the local runtime are documented here.
   commands run with `NoDefaultCurrentDirectoryInExePath=1`. Generation state is keyed by the root's
   identity spelling (lower case on Windows), with a per-root tree cache; state kept under an earlier
   spelling is migrated.
+- Local manager: `/manager/projects/state` and `/manager/projects/open` let the signed-in owner's client
+  (Deep Rulith) open a folder of this computer as a project (PSC 0.2.24 SYS-LOCAL-01, D-1018b batch 3).
+  `state` returns what opening would grant, for the confirmation, and its `authorizationVersion`; `open`
+  sends the version the owner confirmed with a request id. The manager forwards only `requestId`,
+  `expectedAccountId`, `agentId`, `connectionId`, `directory`, `platform` and `authorizationVersion` over
+  the device grant to the Gateway's `/local-devices/projects/*`; the account must be the signed-in one and the
+  Agent inside the grant before anything is sent. In progress answers `recovery: "retry"`; a terminal state
+  of the opening (the Gateway's 409 with the full state, `recovery: "confirm_again"` or `"console"`) is
+  returned as that state rather than thrown; refusals keep their `errorCode`. Refusals made locally carry the
+  Gateway's codes too (`not_signed_in`, `account_changed`, `not_authorized`), and the manager's closed admission
+  during a sign-out or shutdown carries `manager_signing_out` / `manager_closing`, so a client explains them instead
+  of retrying.
 
 ## 0.17.2 - 2026-10-17
 

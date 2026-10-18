@@ -417,6 +417,8 @@ test('nothing new is admitted while signing out, and the workbench is usable aga
       const refused = await Promise.resolve().then(attempt).then(() => undefined, (error) => error)
       assert.ok(refused instanceof Error, `${what} was admitted during a sign-out`)
       if (what !== 'device sign-in') assert.match(refused.message, /signing out of its account/, what)
+      // Admission refuses by code as well, so a client can explain it instead of retrying.
+      if (what === 'create') assert.equal(refused.errorCode, 'manager_signing_out')
     }
 
     assert.equal((await out).state, 'signed_out')

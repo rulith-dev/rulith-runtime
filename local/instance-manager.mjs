@@ -172,7 +172,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     ? 'This Rulith workbench is shutting down. Start it again to use this installation.'
     : 'This workbench is signing out of its account. Nothing new starts or is configured until that finishes; stopping still works.')
   const admit = async (action) => {
-    if (phase !== 'ready') throw new Error(phaseTeaching())
+    // A refusal by name and by code, so a client can say so instead of retrying (Deep Rulith's open-project flow).
+    if (phase !== 'ready') throw Object.assign(new Error(phaseTeaching()), { errorCode: phase === 'closing' ? 'manager_closing' : 'manager_signing_out' })
     if (admittedCount === 0) idle = new Promise((done) => { idleSettle = done })
     admittedCount += 1
     try { return await action() } finally {

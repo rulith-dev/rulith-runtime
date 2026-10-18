@@ -321,6 +321,13 @@ export function createManagerServer({
     '/manager/conversations/review': (body) => instances.admit(() => device.conversationReview(onlyFields(body, ['agentId', 'conversationKey', 'enabled']))),
     '/manager/conversations/end-preview': (body) => instances.admit(() => device.conversationEndPreview(onlyFields(body, ['agentId', 'conversationKey']))),
     '/manager/conversations/end': (body) => instances.admit(() => device.conversationEnd(onlyFields(body, ['agentId', 'conversationKey', 'requestId']))),
+    // PSC 0.2.24 (D-1018b batch 3): the owner opens a folder of this computer as a project from their own client. The
+    // confirmation's content comes from `state`; `open` carries the version of it the owner confirmed. The manager only
+    // forwards these exact fields; a capability, tool, digest or mode never passes (the Gateway refuses them anyway).
+    '/manager/projects/state': (body) => instances.admit(() => device.projectState(
+      onlyFields(body, ['expectedAccountId', 'agentId', 'connectionId', 'directory', 'platform']))),
+    '/manager/projects/open': (body) => instances.admit(() => device.projectOpen(
+      onlyFields(body, ['requestId', 'expectedAccountId', 'agentId', 'connectionId', 'directory', 'platform', 'authorizationVersion']))),
     '/manager/instances/open': (body) => {
       const fields = onlyFields(body, ['instanceId', 'page'])
       return instances.open(String(fields.instanceId ?? ''), String(fields.page ?? '/'))
