@@ -673,7 +673,7 @@ function installedKit(t) {
   const toolsFile = path.join(worker, 'worker-tools.json')
   fs.writeFileSync(path.join(manager, 'registry.json'), JSON.stringify({ instances: [{ mode: 'local_agent', agentName: 'Fixture', directory: agent }] }))
   fs.writeFileSync(path.join(agent, 'local.json'), JSON.stringify({ worker: { env: { RULITH_WORKER_ROOT: worker, RULITH_TOOLS_FILE: toolsFile } } }))
-  assert.match(installGeneral(parseKitInstall(['--agent', 'Fixture', '--kit-home', home, '--manager-home', manager])), /Installed 20/)
+  assert.match(installGeneral(parseKitInstall(['--agent', 'Fixture', '--kit-home', home, '--manager-home', manager])), /Installed 29/)
   return { worker, tools: JSON.parse(fs.readFileSync(toolsFile, 'utf8')).tools }
 }
 

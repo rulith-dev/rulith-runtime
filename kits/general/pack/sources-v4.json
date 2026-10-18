@@ -1,0 +1,103 @@
+{
+  "format": "rulith-sources/1",
+  "meta": {
+    "name": "engineering_work_sources",
+    "version": 4
+  },
+  "sources": [
+    {
+      "name": "project",
+      "type": "file",
+      "words": [
+        "eng.check_result",
+        "eng.check_spec",
+        "eng.command_result",
+        "eng.file_read",
+        "eng.file_state",
+        "eng.job_state",
+        "eng.tree",
+        "eng.tree_step"
+      ],
+      "tier": "attested",
+      "territoryHint": "The local engineering workspace a person bound for this Agent",
+      "accessModes": [],
+      "toolAdoption": [
+        {
+          "id": "eng.acceptance@2",
+          "digest": "6e504ce623927dd7f05441a563b094586f5d437f3f745a149a4e10da287b8ea5",
+          "directUse": true
+        },
+        {
+          "id": "eng.apply_patch@2",
+          "digest": "8a93c316b53e0d6562a5b5d3954444c35f3562f25111ed0f4e9ece09a2f491ab",
+          "directUse": true
+        },
+        {
+          "id": "eng.glob@1",
+          "digest": "4f1a93eb636a70b993a001a75bf08466d2fcbb545b6e2d36cecb8ab6da1a687f",
+          "directUse": true
+        },
+        {
+          "id": "eng.job_poll@2",
+          "digest": "3e1af6f8dd3e71b7877cd965e7365ccfc8afeed89e7772b11b5d62853035974f",
+          "directUse": true
+        },
+        {
+          "id": "eng.job_start@2",
+          "digest": "6467e2cccdb640a57ae9becadd0de2270ec338feb6c01a24b4cac2bead936b01",
+          "directUse": true
+        },
+        {
+          "id": "eng.job_stop@2",
+          "digest": "585ec317491630e379c014ec53ad4ec237a010fbcc6f13c87542698ba112cef7",
+          "directUse": true
+        },
+        {
+          "id": "eng.list@1",
+          "digest": "96e4e6c1241787a13139f1d56556868ec28885d302bb8ed69efb3db09d11cd4f",
+          "directUse": true
+        },
+        {
+          "id": "eng.patch_file@2",
+          "digest": "a26ec2dcaa7690af7ab99b5d4fc8d26601aac51e8d362d497ac77d0173def889",
+          "directUse": true
+        },
+        {
+          "id": "eng.read@2",
+          "digest": "e58f239c300acbc3b9730547dea40c2201a6581b0118334c522dd7f9074f5117",
+          "directUse": true
+        },
+        {
+          "id": "eng.read_image@1",
+          "digest": "b7cd877d25c1e0c32832f699807f7fc2f13324edef65bb34ade5c705e85dbb59",
+          "directUse": true
+        },
+        {
+          "id": "eng.run@2",
+          "digest": "feea9f518984158416d7ac88491532076166f0c74aaad107c8dabf70f7033954",
+          "directUse": true
+        },
+        {
+          "id": "eng.search@1",
+          "digest": "0c741c453b222d62085615ba984c91336d5b209ec708d80f9e2eec84f02acf94",
+          "directUse": true
+        },
+        {
+          "id": "eng.test@3",
+          "digest": "f413f34014327fe9c98a0bb15ee2f4c2de01c0d998f2cd684f3b278cdb776c9d",
+          "directUse": true
+        },
+        {
+          "id": "eng.tree_state@1",
+          "digest": "a0c9f33bcd421e22090482bcc18f06bf82523a667d76c4154e1ec77c2e7999e6",
+          "directUse": true
+        },
+        {
+          "id": "eng.write_file@2",
+          "digest": "c373107c677731b6f20c759760671781f0c33133763e7f7a4b6bf44083719ecf",
+          "directUse": true
+        }
+      ]
+    }
+  ]
+}

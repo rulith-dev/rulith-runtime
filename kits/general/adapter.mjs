@@ -7,10 +7,18 @@ import { applyPatch } from './apply-patch.mjs';
 import { globFiles } from './glob-files.mjs';
 import { readImage } from './image.mjs';
 import { fetchPage, searchWeb } from './web.mjs';
-import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, FIELD_ERRORS, isFieldError } from './acceptance-specs.mjs';
-import { settings, context, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
+import { acceptanceSpec, acceptanceRows, verifyAcceptanceFiles, checkSpecRow, checkKey, FIELD_ERRORS, isFieldError } from './acceptance-specs.mjs';
+import { settings, context, projectId, inside, fenced, tree, excluded, filesUnder, changed, sha, fileDigest, clip, textLimit, classify, execute, childEnv, refuseRootGit, underExclusion, locked, readJson, save, pin, refuse, sleep, resultText } from './lib.mjs';
 const ROW_BYTES = 1800;
 const READ_TOOLS = ['list', 'read', 'read_v2', 'search', 'tree_state', 'glob', 'read_image', 'web_fetch', 'web_search'];
+// 项目版工具（官方编程能力，编程包第三版）：行为与括号里的原工具相同，只是回执带上项目——每行带 project（所以
+// eng.tree_step 带它），检查结果与规格还带验收键 key。代数仍是这一个项目根的同一份；原版本的回执一字不改。
+// The project tools (official engineering capability, program v3) behave exactly as the tool named beside them; their
+// receipts also carry the project: every row has `project` (so eng.tree_step does), and check results and specs the
+// check key `key`. The generation counter is the root's one counter; the original versions' receipts are unchanged.
+const PROJECT_TOOLS = { write_file_v2: 'write_file', patch_file_v2: 'patch_file', apply_patch_v2: 'apply_patch', run_v2: 'run',
+  job_start_v2: 'job_start', job_poll_v2: 'job_poll', job_stop_v2: 'job_stop', test_v3: 'test_v2', acceptance_v2: 'acceptance' };
+const baseTool = name => Object.hasOwn(PROJECT_TOOLS, name) ? PROJECT_TOOLS[name] : name;
 // A receipt carries every row twice (the result text and its facts) inside the Worker's inline budget (8 KiB on
 // rulith.ai). Listing and search keep at most ROW_BYTES of rows, whole rows at a time, and say when they stopped short.
 function fitRows(tool, rows, per) {
@@ -34,12 +42,14 @@ function fit(bytes, budget) {
   return bytes.subarray(0, end);
 }
 
-export async function perform(tool, args = {}, env = process.env, dependencies = {}) {
+export async function perform(name, args = {}, env = process.env, dependencies = {}) {
   const ctx = context(env);
+  const tool = baseTool(name);
+  const project = tool === name ? undefined : projectId(ctx);
   // Web receipts use lab's accreditation but neither observe nor mutate its files.
   if (tool === 'web_fetch') return fetchPage(ctx, args, dependencies);
   if (tool === 'web_search') return searchWeb(ctx, args, env, dependencies);
-  if (tool === 'acceptance') return acceptanceRows(ctx, args);
+  if (tool === 'acceptance') return acceptanceRows(ctx, args, project);
   return locked(ctx, async () => {
     let job = readJson(ctx.jobFile, {});
     // While a job runs it owns the tree's changes: other writes and runs wait, but reads go ahead. Such a read leaves
@@ -52,17 +62,18 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
       if (Object.keys(args).length !== 1 || !Object.hasOwn(args, 'check')) refuse('acceptance check invalid');
       acceptance = acceptanceSpec(ctx, args.check);
       // A spec the person cannot read in full on the Board (eng.check_spec) can never pass.
-      checkSpecRow(args.check, acceptance);
+      checkSpecRow(args.check, acceptance, project);
       verifyAcceptanceFiles(ctx, acceptance.spec);
       acceptance.command = acceptanceCommand(ctx, acceptance.spec);
     }
     const before = observing && tool !== 'search' ? null : tree(ctx);
-    const state = readJson(ctx.stateFile, { gen: 0, digest: before?.digest ?? '' });
+    const state = readJson(ctx.stateFile, null) ?? (ctx.spelledStateFile && readJson(ctx.spelledStateFile, null))
+      ?? { gen: 0, digest: before?.digest ?? '' };
     let rows = []; let text = {}; let more = false; let unreadable = 0;
     const file = () => fenced(ctx.root, args.path);
     switch (tool) {
       case 'glob': { const out = globFiles(ctx, args); rows = out.rows; more = out.truncated; break; }
-      case 'apply_patch': rows = applyPatch(ctx, args.patch); break;
+      case 'apply_patch': rows = applyPatch(ctx, args.patch, project); break;
       case 'read_image': { const out = readImage(ctx, args); text = { 'rulith.artifacts': out['rulith.artifacts'] }; break; }
       case 'list': {
         const target = file();
@@ -197,7 +208,8 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
           verifyAcceptanceFiles(ctx, pinned.spec);
           if (acceptanceSpec(ctx, args.check).digest !== pinned.digest) refuse('acceptance spec changed');
         }
-        rows = [{ ...(tool === 'test_v2' ? { check: args.check } : {}), spec_digest: pinned.digest, gen: state.gen, tree_digest: '', exit_code: result.exit_code }];
+        rows = [{ ...(project === undefined ? {} : { key: checkKey(project, args.check, pinned.digest) }),
+          ...(tool === 'test_v2' ? { check: args.check } : {}), spec_digest: pinned.digest, gen: state.gen, tree_digest: '', exit_code: result.exit_code }];
         text = resultText(result); break;
       }
       case 'measure_pinned': {
@@ -315,7 +327,8 @@ export async function perform(tool, args = {}, env = process.env, dependencies =
     const edges = invalidation && invalidation.from_gen !== step.from_gen ? [invalidation,step] : [step];
     save(ctx.stateFile, { gen, digest: after.digest, ...(testGen === undefined ? {} : { test_gen: testGen }), ...(invalidation ? { invalidation } : {}) });
     const reportEdges = edges;
-    const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => reportEdges.map(edge => ({ ...row, ...edge }))), reportEdges.length);
+    const projected = project === undefined ? {} : { project };
+    const out = read ? fitRows(tool, rows, 1) : fitRows(tool, rows.flatMap(row => reportEdges.map(edge => ({ ...projected, ...row, ...edge }))), reportEdges.length);
     return { rows: out.rows, ...text, ...(more || out.cut ? { truncated: true } : {}) };
   });
 }
@@ -381,11 +394,13 @@ function commandRow(r, command, before) {
   return { run_id: randomUUID(), command_digest: sha(JSON.stringify(command)), exit_code: r.exit_code, timed_out: r.timed_out, duration_ms: r.duration_ms, stdout_digest: r.stdout.digest, stderr_digest: r.stderr.digest, stdout_bytes: r.stdout.bytes, stderr_bytes: r.stderr.bytes, tree_before: before, tree_after: '', changed_files: '' };
 }
 function jobRow(j) { return { job_id: j.id, status: j.status, exit_code: j.exit_code, command_digest: sha(JSON.stringify(j.command)), tree_before: j.before }; }
-export async function main(tool) {
+export async function main(name) {
+  // A project tool refuses exactly as the tool it extends: the verdict vocabulary is the base tool's.
+  const tool = baseTool(name);
   try {
     const args = JSON.parse(process.argv[2] ?? '{}');
     if (!args || Array.isArray(args) || typeof args !== 'object') refuse('arguments refused');
-    process.stdout.write(JSON.stringify(await perform(tool, args)));
+    process.stdout.write(JSON.stringify(await perform(name, args)));
   } catch (error) {
     // Never echo paths, arbitrary exception messages, commands, or spec contents.
     const messages = [...(['glob','apply_patch','read_image','read_v2','web_fetch','web_search'].includes(tool) ? ['settings refused','glob refused','glob limit refused','glob walk limit exceeded','glob complexity refused','patch format refused','patch hunk refused','patch path repeated','delete refused','patch file refused','patch file count refused','image refused','image size exceeded','web URL refused','web address refused','web size exceeded','web redirects exceeded','web timeout','web encoding refused','web media type refused','web metadata too large','web request failed','web search key unavailable','web search failed'] : []),'path refused','file Source required','pin directory required','pin directory refused','spec refused','query refused','offset refused','command refused','adapter busy','job live: only poll, stop and reads accepted','text exceeds 16 KiB','file digest changed','patch must match once','read-back failed','job unavailable','job refused','wait refused','job stop unconfirmed','test takes no arguments','measuring binary digest changed','measurement inputs changed','measurement failed','tool refused','arguments refused','generation exhausted','parent directory missing'];

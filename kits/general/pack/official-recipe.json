@@ -1,0 +1,306 @@
+{
+  "provenance": {
+    "builtBy": "rulith-runtime kits/general/pack/build-pack.mjs",
+    "inputs": [
+      "kits/general/worker-tools.json (the adopted tool definitions; the project Source words are their returns)",
+      "kits/general/*.mjs (each adopted tool pins the bytes of its entry and implementation files)"
+    ],
+    "digest": "toolAdoption[].digest = the Worker pin of the kit installed under adapters/engineering-work/: toolDigest(definition, {file: sha256 of its bytes}) as runImplementation computes it at Worker start",
+    "refresh": "Any change to a kit file or adopted definition changes the digests: run build-pack.mjs, copy this file to rulith-java gateway/src/main/resources/official/engineering/recipe.json and raise capability.version"
+  },
+  "capability": {
+    "id": "engineering_work",
+    "version": "1.0.0",
+    "title": "General Worker tools",
+    "summary": "Result vocabulary of the general Worker tools (files, commands, tests, acceptance checks) and the criterion eng.check_passed for signed acceptance leaves."
+  },
+  "program": {
+    "id": "engineering_work",
+    "title": "General Worker tools",
+    "summary": "Result vocabulary of the general Worker tools (files, commands, tests, acceptance checks) and the criterion eng.check_passed for signed acceptance leaves.",
+    "vocabulary": {
+      "defines": [
+        {
+          "id": "eng.check_passed",
+          "as": "eng_check_passed",
+          "args": [
+            "key"
+          ]
+        },
+        {
+          "id": "eng.check_result",
+          "as": "eng_check_result",
+          "args": [
+            "key",
+            "project",
+            "check",
+            "spec_digest",
+            "gen",
+            "tree_digest",
+            "exit_code"
+          ]
+        },
+        {
+          "id": "eng.check_spec",
+          "as": "eng_check_spec",
+          "args": [
+            "key",
+            "check",
+            "spec_digest",
+            "command",
+            "cwd",
+            "shell",
+            "files"
+          ]
+        },
+        {
+          "id": "eng.command_result",
+          "as": "eng_command_result",
+          "args": [
+            "run_id",
+            "command_digest",
+            "exit_code",
+            "timed_out",
+            "duration_ms",
+            "stdout_digest",
+            "stderr_digest",
+            "stdout_bytes",
+            "stderr_bytes",
+            "tree_before",
+            "tree_after",
+            "changed_files"
+          ]
+        },
+        {
+          "id": "eng.file_read",
+          "as": "eng_file_read",
+          "args": [
+            "path",
+            "digest",
+            "bytes"
+          ]
+        },
+        {
+          "id": "eng.file_state",
+          "as": "eng_file_state",
+          "args": [
+            "path",
+            "prev_digest",
+            "digest",
+            "readback_digest",
+            "bytes"
+          ]
+        },
+        {
+          "id": "eng.job_state",
+          "as": "eng_job_state",
+          "args": [
+            "job_id",
+            "status",
+            "exit_code",
+            "command_digest",
+            "tree_before"
+          ]
+        },
+        {
+          "id": "eng.tree",
+          "as": "eng_tree",
+          "args": [
+            "gen",
+            "tree_digest"
+          ]
+        },
+        {
+          "id": "eng.tree_step",
+          "as": "eng_tree_step",
+          "args": [
+            "project",
+            "from_gen",
+            "to_gen"
+          ]
+        }
+      ],
+      "imports": [
+        {
+          "id": "acceptance"
+        },
+        {
+          "id": "acceptance_met"
+        }
+      ]
+    },
+    "rules": [
+      {
+        "id": "ENG_CHECK_PASSED",
+        "label": "A passing check remains current until a tree step of its project leaves its generation.",
+        "when": [
+          {
+            "predicate": "eng_check_result",
+            "args": {
+              "key": "?k",
+              "project": "?p",
+              "gen": "?g",
+              "exit_code": 0
+            }
+          },
+          {
+            "predicate": "eng_tree_step",
+            "args": {
+              "project": "?p",
+              "from_gen": "?g",
+              "to_gen": "?n"
+            },
+            "naf": true
+          }
+        ],
+        "then": [
+          {
+            "predicate": "eng_check_passed",
+            "args": {
+              "key": "?k"
+            }
+          }
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "ENG_CHECK_ACCEPTANCE",
+        "label": "The signed leaf names the check key: its project, check and spec digest.",
+        "when": [
+          {
+            "predicate": "acceptance",
+            "args": {
+              "node": "?n",
+              "test": "?k"
+            }
+          },
+          {
+            "predicate": "eng_check_passed",
+            "args": {
+              "key": "?k"
+            }
+          }
+        ],
+        "then": [
+          {
+            "predicate": "acceptance_met",
+            "args": {
+              "node": "?n"
+            }
+          }
+        ]
+      }
+    ],
+    "pins": [
+      "eng_check_passed",
+      "eng_check_result",
+      "eng_check_spec",
+      "eng_tree_step"
+    ],
+    "actions": []
+  },
+  "sources": {
+    "format": "rulith-sources/1",
+    "meta": {
+      "name": "engineering_work_sources",
+      "version": 4
+    },
+    "sources": [
+      {
+        "name": "project",
+        "type": "file",
+        "words": [
+          "eng.check_result",
+          "eng.check_spec",
+          "eng.command_result",
+          "eng.file_read",
+          "eng.file_state",
+          "eng.job_state",
+          "eng.tree",
+          "eng.tree_step"
+        ],
+        "tier": "attested",
+        "territoryHint": "The local engineering workspace a person bound for this Agent",
+        "accessModes": [],
+        "toolAdoption": [
+          {
+            "id": "eng.acceptance@2",
+            "digest": "6e504ce623927dd7f05441a563b094586f5d437f3f745a149a4e10da287b8ea5",
+            "directUse": true
+          },
+          {
+            "id": "eng.apply_patch@2",
+            "digest": "8a93c316b53e0d6562a5b5d3954444c35f3562f25111ed0f4e9ece09a2f491ab",
+            "directUse": true
+          },
+          {
+            "id": "eng.glob@1",
+            "digest": "4f1a93eb636a70b993a001a75bf08466d2fcbb545b6e2d36cecb8ab6da1a687f",
+            "directUse": true
+          },
+          {
+            "id": "eng.job_poll@2",
+            "digest": "3e1af6f8dd3e71b7877cd965e7365ccfc8afeed89e7772b11b5d62853035974f",
+            "directUse": true
+          },
+          {
+            "id": "eng.job_start@2",
+            "digest": "6467e2cccdb640a57ae9becadd0de2270ec338feb6c01a24b4cac2bead936b01",
+            "directUse": true
+          },
+          {
+            "id": "eng.job_stop@2",
+            "digest": "585ec317491630e379c014ec53ad4ec237a010fbcc6f13c87542698ba112cef7",
+            "directUse": true
+          },
+          {
+            "id": "eng.list@1",
+            "digest": "96e4e6c1241787a13139f1d56556868ec28885d302bb8ed69efb3db09d11cd4f",
+            "directUse": true
+          },
+          {
+            "id": "eng.patch_file@2",
+            "digest": "a26ec2dcaa7690af7ab99b5d4fc8d26601aac51e8d362d497ac77d0173def889",
+            "directUse": true
+          },
+          {
+            "id": "eng.read@2",
+            "digest": "e58f239c300acbc3b9730547dea40c2201a6581b0118334c522dd7f9074f5117",
+            "directUse": true
+          },
+          {
+            "id": "eng.read_image@1",
+            "digest": "b7cd877d25c1e0c32832f699807f7fc2f13324edef65bb34ade5c705e85dbb59",
+            "directUse": true
+          },
+          {
+            "id": "eng.run@2",
+            "digest": "feea9f518984158416d7ac88491532076166f0c74aaad107c8dabf70f7033954",
+            "directUse": true
+          },
+          {
+            "id": "eng.search@1",
+            "digest": "0c741c453b222d62085615ba984c91336d5b209ec708d80f9e2eec84f02acf94",
+            "directUse": true
+          },
+          {
+            "id": "eng.test@3",
+            "digest": "f413f34014327fe9c98a0bb15ee2f4c2de01c0d998f2cd684f3b278cdb776c9d",
+            "directUse": true
+          },
+          {
+            "id": "eng.tree_state@1",
+            "digest": "a0c9f33bcd421e22090482bcc18f06bf82523a667d76c4154e1ec77c2e7999e6",
+            "directUse": true
+          },
+          {
+            "id": "eng.write_file@2",
+            "digest": "c373107c677731b6f20c759760671781f0c33133763e7f7a4b6bf44083719ecf",
+            "directUse": true
+          }
+        ]
+      }
+    ]
+  }
+}

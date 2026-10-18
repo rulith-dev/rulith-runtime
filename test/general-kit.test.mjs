@@ -11,6 +11,7 @@ import { globMatcher, globFiles } from '../kits/general/glob-files.mjs';
 import { applyPatch } from '../kits/general/apply-patch.mjs';
 import { readImage } from '../kits/general/image.mjs';
 import { parseKitInstall, installGeneral } from '../kits/general/installer.mjs';
+import { PROJECT_TOOLS } from '../kits/general/pack/build-pack.mjs';
 import { parseLocalCli } from '../local/rulith-local.mjs';
 import { adapterEnv, workerToolsOf, toolFromSpec, resultFactsFromRows, prepareActionReport, runAdapterTimeoutMs, withImplementationPins } from '../worker/rulith-worker.mjs';
 import { runArtifactOutput } from '../worker/run-artifacts.mjs';
@@ -257,10 +258,10 @@ test('CLI is explicit; installer merges tools and passes only the named search e
   assert.throws(() => parseKitInstall(['--agent', 'Fixture']), /required/);
   assert.throws(() => parseKitInstall([...args, '--agent', 'Duplicate']), /Expected/);
   fs.unlinkSync(path.join(f.home, 'specs/test.json')); // Project acceptance needs no owner-pinned legacy test.
-  assert.match(installGeneral(parseKitInstall(args)), /Installed 20/);
+  assert.match(installGeneral(parseKitInstall(args)), /Installed 29/);
   installGeneral(parseKitInstall(args));
   const installed = JSON.parse(fs.readFileSync(tools));
-  assert.equal(Object.keys(installed.tools).length, 21);
+  assert.equal(Object.keys(installed.tools).length, 30);
   assert.deepEqual(installed.tools['eng.test@2'], manifest.tools['eng.test@2']);
   assert.deepEqual(installed.tools['eng.acceptance@1'], manifest.tools['eng.acceptance@1']);
   assert.deepEqual(installed.tools['web.search@1'].env.pass, ['ENG_KIT_HOME', 'FIXTURE_SEARCH_KEY']);
@@ -283,13 +284,13 @@ test('CLI is explicit; installer merges tools and passes only the named search e
 });
 
 test('kit Capability accredits every return predicate with the same arguments', () => {
-  assert.equal(Object.keys(workerToolsOf(manifest)).length, 20);
+  assert.equal(Object.keys(workerToolsOf(manifest)).length, 29);
   const program = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/program.json', import.meta.url)));
   const sources = JSON.parse(fs.readFileSync(new URL('../kits/general/pack/sources.json', import.meta.url)));
   assert.equal(sources.meta.version, 2);
   assert.equal(fs.existsSync(new URL('../kits/general/tool-descriptions.json', import.meta.url)), false);
   const definitions = new Map(program.vocabulary.defines.map(d => [d.id, d.args]));
-  for (const [id, tool] of Object.entries(manifest.tools)) if (!['eng.test@2', 'eng.acceptance@1'].includes(id))
+  for (const [id, tool] of Object.entries(manifest.tools)) if (!['eng.test@2', 'eng.acceptance@1', ...PROJECT_TOOLS].includes(id))
     for (const row of tool.returns) assert.deepEqual(definitions.get(row.predicate), Object.keys(row.args));
   assert.deepEqual(sources.sources[0].words, [...definitions.keys()]); assert.equal(sources.sources[0].name, 'lab');
   assert.deepEqual(program.actions, []);

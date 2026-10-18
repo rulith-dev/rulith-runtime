@@ -70,8 +70,55 @@ export function context(env = process.env) {
   // The owner creates this directory, never the model.
   const home = fs.realpathSync(env.ENG_KIT_HOME);
   if (inside(root, home) || inside(home, root)) refuse('pin directory refused');
-  return { root, home, stateFile: path.join(home, `tree-${sha(root)}.json`), jobFile: path.join(home, `job-${sha(root)}.json`) };
+  // 代数状态按项目根的规范写法记：Windows 上 fs.realpathSync 保留调用者的大小写与短名（d:\work 与 D:\Work 是同一个目录），
+  // 规范写法取文件系统自己的拼写，所以同一目录只有一份代数。拿不到规范写法（个别虚拟卷）时退回原写法。
+  // 升级时：规范写法的状态文件还不存在、原写法的存在，就从原写法的状态接着数（spelledStateFile），代数不归零。
+  // Generation state is keyed by the root's canonical spelling: on Windows fs.realpathSync keeps the caller's case and
+  // short names (d:\work and D:\Work are one directory), the native realpath gives the file system's own spelling, so a
+  // directory has one generation counter. Where no canonical spelling is available (some virtual volumes) the given one
+  // stands. On upgrade, a counter kept under another spelling is continued (spelledStateFile), never restarted.
+  const canonical = canonicalRoot(root);
+  const key = sha(canonical), spelled = sha(root);
+  return { root, home, canonical, stateFile: path.join(home, `tree-${key}.json`), jobFile: path.join(home, `job-${key}.json`),
+    ...(spelled === key ? {} : { spelledStateFile: path.join(home, `tree-${spelled}.json`) }) };
 }
+function canonicalRoot(root) {
+  if (process.platform !== 'win32') return root;
+  try { return fs.realpathSync.native(root); } catch { return root; }
+}
+// 本 kit home 的随机身份（<kit home>/kit-id，第一次需要时原子地建一次，之后不变）。项目身份是它与项目根规范写法的摘要：
+// 代数计数在 kit home 里，所以两台设备上同一路径的项目、或两个 kit home 绑同一目录，都是不同的项目，各自的代数不会互相
+// 撤回或满足。删掉 kit-id 就换了全部项目身份：已签的叶只能由旧身份的回执兑现，须重新签。
+// This kit home's random identity (<kit home>/kit-id, created atomically the first time it is needed, never changed).
+// A project is the digest of it and the root's canonical spelling: generations are counted in the kit home, so the same
+// path on two devices, or one directory under two kit homes, are different projects whose generations never withdraw
+// or satisfy each other. Removing kit-id changes every project identity: leaves signed before then must be signed again.
+const KIT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export function kitId(home) {
+  const file = path.join(home, 'kit-id');
+  const read = () => {
+    const value = fs.readFileSync(file, 'utf8');
+    if (!KIT_ID.test(value)) refuse('pin directory refused');
+    return value;
+  };
+  try { return read(); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const tmp = `${file}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, randomUUID(), { mode: 0o600, flag: 'wx' });
+    // link is atomic and exclusive: two first calls agree on one identity, and no reader sees a partial file.
+    try { fs.linkSync(tmp, file); }
+    catch (error) {
+      if (error.code === 'EEXIST') return read();
+      if (!['ENOTSUP', 'ENOSYS', 'EISDIR', 'EPERM', 'EXDEV'].includes(error.code)) throw error;
+      try { fs.writeFileSync(file, fs.readFileSync(tmp), { mode: 0o600, flag: 'wx' }); }
+      catch (failure) { if (failure.code !== 'EEXIST') throw failure; }
+    }
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  return read();
+}
+export const projectId = ctx => sha(`${kitId(ctx.home)}\n${ctx.canonical}`);
 export function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT' && fallback !== undefined) return fallback; throw e; }
 }
