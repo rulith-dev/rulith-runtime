@@ -578,6 +578,57 @@ test('a child\'s environment cannot name an implementation file for its program 
   assert.equal(marked(marks), '', 'a replaced pinned file ran through a child\'s environment or an alias')
 })
 
+test('every shell form is held with and without a space in the path; a project command with one still runs', async (t) => {
+  // os.tmpdir() may be an 8.3 alias without spaces; these directories carry one in their own name.
+  const spaced = (files) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rulith pin '))
+    t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }))
+    for (const [name, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true })
+      fs.writeFileSync(path.join(root, name), text)
+    }
+    return root
+  }
+  const project = spaced({ 'my project/project.mjs': "process.stdout.write('project')\n" })
+  const projectFile = path.join(project, 'my project', 'project.mjs')
+  const dir = workerRoot(t, {})
+  const marks = path.join(dir, 'marks')
+  const entry = [
+    "import { exec, execSync, spawn, spawnSync } from 'node:child_process'",
+    "import { writeFileSync } from 'node:fs'",
+    ...ENTRY_PRELUDE,
+    "const started = (child) => new Promise((done) => { let out = ''; child.stdout?.on('data', (d) => { out += d }); child.once('error', (e) => done('error: ' + e.message)); child.once('exit', (code) => done('exit ' + code + ' ' + out.trim())) })",
+    `const project = ${JSON.stringify(projectFile)}`,
+    `writeFileSync(here('helper.mjs'), ${JSON.stringify(mark(marks, 'replaced helper'))})`,
+    "for (const [name, target] of [['pinned', file('helper.mjs')], ['undeclared', file('undeclared.mjs')]]) {",
+    "  await attempt(name + ':exec', () => started(exec('node ' + quote(target))))",
+    "  await attempt(name + ':execSync', () => String(execSync('node ' + quote(target))))",
+    "  await attempt(name + ':spawnShell', () => started(spawn('node', [quote(target)], { shell: true })))",
+    "  await attempt(name + ':spawnSyncShell', () => 'status ' + spawnSync('node', [quote(target)], { shell: true }).status)",
+    '}',
+    "await attempt('project:exec', () => started(exec('node ' + quote(project))))",
+    "await attempt('project:execSync', () => String(execSync('node ' + quote(project))))",
+    "await attempt('project:spawnShell', () => started(spawn('node', [quote(project)], { shell: true })))",
+    "await attempt('project:spawn', () => started(spawn('node', [project])))",
+    'process.stdout.write(JSON.stringify(results))',
+  ].join('\n')
+  for (const [label, root] of [['without a space', workerRoot(t, {})], ['with a space', spaced({})]]) {
+    for (const [name, text] of Object.entries({ 'entry.mjs': entry, 'helper.mjs': 'export const helper = true\n', 'undeclared.mjs': mark(marks, 'undeclared') })) {
+      fs.writeFileSync(path.join(root, name), text)
+    }
+    const { out, error } = await runTool(root, 'entry.mjs', ['helper.mjs'])
+    assert.equal(error, undefined, `${label}: ${error}`)
+    const results = JSON.parse(out)
+    for (const form of ['exec', 'execSync', 'spawnShell', 'spawnSyncShell']) {
+      assert.match(results[`pinned:${form}`], /^thrown: implementation_boundary: a command that names a file of this Tool's pinned implementation/, `${label} ${form}`)
+      assert.match(results[`undeclared:${form}`], /^thrown: implementation_boundary: a command that names a file in this Tool's implementation directories/, `${label} ${form}`)
+    }
+    for (const form of ['exec', 'spawnShell', 'spawn']) assert.equal(results[`project:${form}`], 'exit 0 project', `${label} project ${form}`)
+    assert.equal(results['project:execSync'], 'project', `${label} project execSync`)
+    assert.equal(marked(marks), '', `${label}: a pinned or undeclared implementation file ran through a shell`)
+  }
+})
+
 test('pinned code cannot reach the original Worker class, the process bindings or process.execve around the boundary', async (t) => {
   const dir = workerRoot(t, {})
   const marks = path.join(dir, 'marks')

@@ -111,13 +111,33 @@ function implementationFile(path) {
   try { return statSync(real).isFile() ? 'area' : undefined } catch { return undefined }
 }
 const decoded = (text) => { try { return decodeURIComponent(text) } catch { return text } }
-/** A path written out from an area directory onwards, up to the next quote, space or separator. */
-const PATH_RUN = /^[^\s"'`()<>|;,]*/
+/** The pinned files as text, declared and real, in the form `comparable` gives a command line. */
+const pinnedNames = [...new Set(pinnedPaths.flatMap((path) => [path, nativeReal(path) ?? path]).map(comparable))]
 /**
- * Which implementation file, if any, a start names: 'pinned' before 'area'. A name is a word of an
- * argument, a command line or an environment value (also the value of a `--option=value`, a file: URL,
+ * A command line as cmd.exe receives it from a shell start: Node wraps it in one more pair of quotes
+ * (`/d /s /c "node "C:\a b\x.mjs""`). Without that pair its own quoting, and so a path with a space, reads again.
+ */
+const unwrapped = (value) => (value.length > 1 && value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value)
+/**
+ * The implementation file written out from `at` onwards, if there is one. A path may hold spaces, so the
+ * text runs to the next quote or separator, and the longest stretch of it ending before a space (or at
+ * its end) that is an existing file is the one named.
+ */
+function pathAt(text, at) {
+  const run = /^[^"'`()<>|;,\r\n]*/.exec(text.slice(at))[0]
+  const ends = [run.length, ...[...run.matchAll(/\s/g)].map((space) => space.index).reverse()]
+  for (const end of ends) {
+    const kind = implementationFile(run.slice(0, end).trimEnd())
+    if (kind !== undefined) return kind
+  }
+  return undefined
+}
+/**
+ * Which implementation file, if any, a start names: 'pinned' before 'area'. A name is a pinned path written
+ * anywhere in an argument, a command line or an environment value (declared or real, any case on Windows);
+ * a word of one (also unwrapped from cmd.exe's extra quotes, the value of a `--option=value`, a file: URL,
  * and — in the environment — each entry of a path list), resolved against the start's working directory;
- * or an absolute path of the area written anywhere in the text (inside source text, a URL or an option).
+ * or a path of the area written anywhere in the text, spaces included.
  * Every name is compared by its long, real name, so aliases of the same file are the same file.
  */
 function namedImplementation(values, cwd, { environment = false } = {}) {
@@ -126,16 +146,19 @@ function namedImplementation(values, cwd, { environment = false } = {}) {
   const note = (kind) => { if (kind === 'pinned' || (kind === 'area' && found === undefined)) found = kind }
   for (const value of values) {
     if (typeof value !== 'string' || value === '') continue
-    const pieces = environment ? [value, ...value.split(delimiter)] : [value]
+    const texts = new Set([comparable(value), comparable(decoded(value))])
+    for (const text of texts) if (pinnedNames.some((name) => text.includes(name))) return 'pinned'
+    const lines = [...new Set([value, unwrapped(value)])]
+    const pieces = environment ? lines.flatMap((line) => [line, ...line.split(delimiter)]) : lines
     const candidates = new Set(pieces.flatMap((piece) => [piece, ...words(piece)])
       .flatMap((word) => [word, word.replace(/^-{1,2}[^=\s]+=/, '')]))
     for (const candidate of candidates) {
       try { note(implementationFile(resolvePath(base, /^file:/i.test(candidate) ? fileURLToPath(candidate) : candidate))) } catch { /* not a path */ }
       if (found === 'pinned') return found
     }
-    for (const text of new Set([comparable(value), comparable(decoded(value))])) {
+    for (const text of texts) {
       for (const dir of areaDirs) {
-        for (let at = text.indexOf(dir); at !== -1; at = text.indexOf(dir, at + 1)) note(implementationFile(PATH_RUN.exec(text.slice(at))[0]))
+        for (let at = text.indexOf(dir); at !== -1; at = text.indexOf(dir, at + 1)) note(pathAt(text, at))
       }
     }
     if (found === 'pinned') return found
@@ -143,7 +166,8 @@ function namedImplementation(values, cwd, { environment = false } = {}) {
   return found
 }
 const mentionsThisNode = (values) => values.some((value) => typeof value === 'string'
-  && (fullNodePaths.some((path) => comparable(value).includes(comparable(path))) || words(value).some((word) => isThisNode(word))))
+  && (fullNodePaths.some((path) => comparable(value).includes(comparable(path)))
+    || [value, unwrapped(value)].some((line) => words(line).some((word) => isThisNode(word)))))
 /** A Node gets the boundary when it is this Node, or a Node by name started on an implementation file. */
 const heldNode = (file, args, cwd) => isThisNode(file) || (isNodeByName(file) && namedImplementation(args, cwd) !== undefined)
 /** The values of an environment a start passes, but this boundary's own two. */
