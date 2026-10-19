@@ -173,6 +173,8 @@ test('two projects under one kit home keep separate generations and keys; only a
   assert.deepEqual([...evaluate(facts, leaves).met].sort(), ['L1', 'L2']);
   // P1's check result does not fulfil P2's leaf: with P2's pass absent only L1 holds.
   assert.deepEqual([...evaluate(r1.facts, leaves).met], ['L1']);
+  // And the other way round: P2's check result does not fulfil P1's leaf.
+  assert.deepEqual([...evaluate(r2.facts, leaves).met], ['L2']);
   // A write in P2 steps P2 from 0 and withdraws P2's pass only.
   const w2 = await p2.call('write_file_v2', { path: 'x.txt', text: 'x', expect_digest: '' });
   assert.deepEqual(w2.facts.find(f => f.predicate === 'eng.tree_step').args, { project: id2, from_gen: 0, to_gen: 1 });
@@ -183,6 +185,8 @@ test('two projects under one kit home keep separate generations and keys; only a
   const w1 = await p1.call('write_file_v2', { path: 'y.txt', text: 'y', expect_digest: '' });
   assert.deepEqual(w1.facts.find(f => f.predicate === 'eng.tree_step').args, { project: id1, from_gen: 0, to_gen: 1 });
   assert.deepEqual([...evaluate([...facts, ...w1.facts], leaves).met], []);
+  // The other way round: with P1's step alone, only P1's pass is withdrawn and P2's leaf still holds.
+  assert.deepEqual([...evaluate([...r1.facts, ...r2.facts, ...w1.facts], leaves).met], ['L2']);
 });
 
 test('two kit homes give one directory two identities; kit-id is written whole by rename, and a damaged or lost one is rewritten', async t => {

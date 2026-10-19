@@ -41,6 +41,23 @@
     "ACC-CONV-03": {
       "state": "mapped",
       "targets": [{"file": "test/worker-serial-execution.test.mjs", "locator": "RT-WK-SERIAL-1"}]
+    },
+    "ACC-PROJ-02": {
+      "state": "mapped",
+      "targets": [
+        {"file": "test/general-kit-project.test.mjs", "locator": "project receipts: eng.acceptance@2 and eng.test@3 carry the check key; every project tool reports its project"}
+      ]
+    },
+    "ACC-PROJ-05": {
+      "state": "mapped",
+      "targets": [
+        {"file": "test/general-kit-project.test.mjs", "locator": "project receipts: eng.acceptance@2 and eng.test@3 carry the check key; every project tool reports its project"},
+        {"file": "test/general-kit-project.test.mjs", "locator": "the key binds the spec: a looser spec written after signing has another key and cannot fulfil the signed leaf"},
+        {"file": "test/general-kit-project.test.mjs", "locator": "two projects under one kit home keep separate generations and keys; only a step of the same project withdraws a pass"},
+        {"file": "test/general-kit-project.test.mjs", "locator": "an identity change never leaves a pass current: removing kit-id or the state file still withdraws it on the next step"},
+        {"file": "test/general-kit-project.test.mjs", "locator": "nested project roots under one kit home are refused, either way round; a refused root leaves no record behind"},
+        {"file": "test/general-kit-project.test.mjs", "locator": "once a root has a project identity, older versions that write, run or test are refused; reads still work"}
+      ]
     }
   }
 }
