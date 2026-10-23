@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
-// A checkout is useful until the Runtime release containing kits/general is published.
+// The app ships inside the Runtime repository (D-1019c): its Runtime is this repository, unless RULITH_RUNTIME_DIR names another.
 export function runtimeDirectory(env = process.env) {
-  return path.resolve(env.RULITH_RUNTIME_DIR || path.dirname(createRequire(import.meta.url).resolve('rulith/package.json')));
+  return path.resolve(env.RULITH_RUNTIME_DIR || fileURLToPath(new URL('../..', import.meta.url)));
 }
 export const generalKit = (env = process.env) => path.join(runtimeDirectory(env), 'kits', 'general');
 // Whether the Runtime under use ships the general kit (published rulith 0.16.3 does not).

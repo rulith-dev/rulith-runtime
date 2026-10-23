@@ -60,6 +60,8 @@
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "verify:manifest": "node scripts/update-artifact-manifest.mjs --check",
     "test": "node --test --test-concurrency=3 test/*.test.mjs",
+    "test:app": "node --test --test-concurrency=4 app/test/harness/kit.test.mjs app/test/harness/board-transcript.test.mjs app/test/harness/context-relief.test.mjs app/test/harness/board-channel.test.mjs app/test/harness/conversation-boards.test.mjs app/test/harness/subagent-integration.test.mjs app/test/harness/write-note.test.mjs app/test/harness/outgoing-trim.test.mjs app/test/harness/project-source.test.mjs app/test/harness/open-project.test.mjs app/test/harness/v4-surface.test.mjs app/test/harness/shadow-reviewer.test.mjs app/test/harness/launcher.test.mjs app/test/harness/web-tools.test.mjs app/test/harness/general-kit.test.mjs app/test/harness/app-home.test.mjs",
+    "app": "node app/harness/web/start-deep-rulith.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
     "release:verify": "npm run verify:manifest && npm run check && npm test",
     "release:verify-published": "node scripts/verify-published.mjs",
@@ -71,6 +73,7 @@
     "pg": "^8.23.0"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh": "0.2.1-alpha.1",
     "ajv": "8.20.0"
   },
   "dependencies": {

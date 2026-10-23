@@ -979,6 +979,13 @@ The model never supplies the trusted input values or the calculated output value
 
 See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.
 
+## Local app (`app/`)
+
+`app/` holds the Rulith local app (formerly Deep Rulith, merged here on 2026-10-23, D-1019c): a conversation
+app built on DeepSeek Harness that uses this repository's Runtime as its only tools. It is not part of the published
+package yet; run it from a checkout with `npm install` and `npm run app`, and test it with `npm run test:app`. See
+[app/README.md](app/README.md).
+
 ## Project status
 
 The runtime is beta software. Protocol compatibility is versioned, but command-line

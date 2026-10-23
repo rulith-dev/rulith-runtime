@@ -15,17 +15,20 @@ Agent's Board and a goal completes only when the Board certifies it from evidenc
 It is also a worked example of a third-party agent harness using Rulith.
 
 > Alpha. Not affiliated with DeepSeek. See [NOTICE](NOTICE).
+>
+> Since 2026-10-23 (D-1019c) the app lives in the Rulith Runtime repository under `app/` and uses that repository's own
+> Runtime (`local/`, `worker/`, `kits/general/`); the former `rulith-dev/deep-rulith` repository is retired. Until the app
+> ships in the `rulith` npm package, run it from a checkout of this repository.
 
-## What is in this repository
+## What is in `app/`
 
 | Path | What it is |
 | --- | --- |
 | `harness/web/` | The dsh web profile overlay (`rulith-web.cordis.yml`), the host plugin that runs the Rulith Runtime manager beside dsh (`rulith-runtime.mjs`), the tool gate, the browser plugin (`rulith-dsh-ui`) and the launcher. |
 | `harness/` | The MCP bridge (`rulith-mcp.mjs`), the gate and persona text shared with the web profile, and an experimental headless role. |
-| `research-ledger/` | A general Capability for keeping an investigation (hypotheses, data, decisions) on the Board. |
 | `test/` | Node tests. |
 
-Deep Rulith uses the general Worker kit shipped by the Rulith Runtime in `kits/general/`. The former local `engineering-work/` kit is retired. Until a Runtime release includes the general kit and acceptance contracts, use the local Runtime checkout below.
+Deep Rulith uses the general Worker kit in this repository's `kits/general/`. The former local `engineering-work/` kit is retired.
 
 ## What leaves your computer
 
@@ -44,11 +47,11 @@ Deep Rulith uses the general Worker kit shipped by the Rulith Runtime in `kits/g
 Requires Node.js 22.19 or later (tested with 24).
 
 ```bash
-npm install --global deep-rulith
-deep-rulith
+npm install        # at the repository root; also installs dsh
+npm run app
 ```
 
-Deep Rulith opens in your browser (`deep-rulith --no-open` only prints the address). Stop it with Ctrl+C in
+Deep Rulith opens in your browser (`npm run app -- --no-open` only prints the address). Stop it with Ctrl+C in
 its terminal. The folder you start it in is the default workspace of new conversations; that is not a grant of access.
 
 Everything it keeps on this computer is in one folder, `~/.rulith/app` (set `RULITH_APP_HOME` to use another; one Deep
@@ -78,15 +81,12 @@ Then, in Deep Rulith:
    folder (a share, or a folder on a mapped network drive) cannot be opened: commands cannot use it as their working
    directory.
 
-   This needs a Gateway with the open-project routes (`/local-devices/projects/*`) and a Runtime whose manager forwards
-   them (`/manager/projects/*`, the release after `rulith` 0.17.2). With an older Runtime the sidebar says the Runtime
-   is too old. Until that Runtime is published, a development checkout can use a local one:
-   `npm install --no-save <path-to-rulith-runtime-checkout>`; once it is published, raise the `rulith` dependency in
-   `package.json` to that version.
+   This needs a Gateway with the open-project routes (`/local-devices/projects/*`); the manager in this repository forwards
+   them (`/manager/projects/*`).
 
 ### Developers: a settings file
 
-From a checkout (`npm install`, which also installs dsh), `node harness/web/start-deep-rulith.mjs <settings.json> [dsh web flags]`
+From a checkout (`npm install` at the repository root, which also installs dsh), `node app/harness/web/start-deep-rulith.mjs <settings.json> [dsh web flags]`
 (or `Deep-Rulith.cmd` with `deep-rulith.json` beside it, ignored by git) starts the same launcher with the settings in the
 file instead of the derived ones: see [`deep-rulith.example.json`](deep-rulith.example.json); all paths are absolute and
 the file is used as it is. A missing dsh profile is created on the first start (`--init` after the file creates it and
@@ -108,7 +108,7 @@ stay). Change limits in the kit home's `settings.json` instead.
 
 | Launcher environment | Default | Purpose |
 | --- | --- | --- |
-| `RULITH_RUNTIME_DIR` | Installed `rulith` package | Local Runtime checkout used for `kit install general` instead of the installed `rulith` (0.17.0 and later ship `kits/general`); normally unset. This selects the kit installer; the manager still uses the configured `runtimeEntry`. |
+| `RULITH_RUNTIME_DIR` | This repository | Another Runtime checkout used for `kit install general`; normally unset. This selects the kit installer; the manager still uses the configured `runtimeEntry`. |
 
 | Launcher setting | Default | Purpose |
 | --- | --- | --- |
@@ -119,10 +119,10 @@ stay). Change limits in the kit home's `settings.json` instead.
 ## Tests
 
 ```bash
-RULITH_RUNTIME_DIR=<rulith-runtime checkout> npm test
+npm run test:app   # at the repository root
 ```
 
-Without `RULITH_RUNTIME_DIR` the tests use the installed `rulith` package. Set `DSH_BASE_FILE` to the installed `@deepseek-ai/dsh-base/cordis.patch.yml` (or `DSH_REFERENCE_DIR` to its source checkout) to run the tool-disable check as well, and `DSH_MODULES_DIR` to the installed dsh's `node_modules` to run the installed-dsh contract checks (sub-agent tools, and the outgoing trim on dsh's real agent loop and request path); after `npm install` these are `node_modules/@deepseek-ai/dsh-base/cordis.patch.yml` and `node_modules`. The launcher refreshes its shipped browser plugin on every start; upgrading does not require recreating your profile.
+The tests use this repository's Runtime unless `RULITH_RUNTIME_DIR` names another. Set `DSH_BASE_FILE` to the installed `@deepseek-ai/dsh-base/cordis.patch.yml` (or `DSH_REFERENCE_DIR` to its source checkout) to run the tool-disable check as well, and `DSH_MODULES_DIR` to the installed dsh's `node_modules` to run the installed-dsh contract checks (sub-agent tools, and the outgoing trim on dsh's real agent loop and request path); after `npm install` these are the root `node_modules/@deepseek-ai/dsh-base/cordis.patch.yml` and `node_modules`. The launcher refreshes its shipped browser plugin on every start; upgrading does not require recreating your profile.
 
 ## License
 

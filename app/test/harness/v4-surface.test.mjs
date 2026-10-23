@@ -71,15 +71,3 @@ test('goal guidance declares an outcome without a generic test-to-completion rul
   assert.match(ADDENDUM, /A check whose files you change needs a new spec and a new signature/);
 });
 
-test('the research ledger stays installed but the generic addendum names none of its words', () => {
-  assert.doesNotMatch(ADDENDUM, /research\.ledger/);
-  assert.doesNotMatch(WEB_ADDENDUM, /research\.ledger/);
-  const program = JSON.parse(read('research-ledger/program.json'));
-  const signature = new Map(program.vocabulary.defines.map((word) => [word.id, word.args.join(', ')]));
-  for (const word of program.vocabulary.defines) assert.ok(!word.args.includes('case_id'), word.id);
-  assert.equal(signature.get('research.ledger.cites'), 'goal, from_goal');
-  const inventory = read('harness/model-visible.md');
-  for (const word of program.vocabulary.defines) assert.ok(inventory.includes(`${word.id}(${word.args.join(',')})`), word.id);
-  const labels = read('research-ledger/method.txt');
-  for (const rule of program.rules) assert.ok(labels.includes(rule.label), rule.label);
-});

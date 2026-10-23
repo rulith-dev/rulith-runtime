@@ -27,3 +27,16 @@ jobs:
       - run: npm run manifest
       - name: Verify the published artifact manifest
         run: git diff --exit-code artifact-manifest.json
+  app:
+    # The local app (app/, D-1019c) needs Node.js 22.19 or later (DeepSeek Harness).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:app
+        env:
+          DSH_MODULES_DIR: ${{ github.workspace }}/node_modules

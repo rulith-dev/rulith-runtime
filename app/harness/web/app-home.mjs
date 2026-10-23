@@ -7,7 +7,7 @@
 //
 // 中文说明：零配置时只有一个目录（app home，默认 ~/.rulith/app，可用 RULITH_APP_HOME 改）。里面是管理器目录 manager、
 // 管理器密钥 manager.key（第一次运行时随机生成，此后原样复用，从不打印）、dsh 的目录 dsh（profile 由启动器自动创建）、
-// 通用工具包目录 kit。路径全部由它推出；dsh 与 Runtime 从本包的依赖里找，不用配置。
+// 通用工具包目录 kit。路径全部由它推出；dsh 从依赖里找，Runtime 就是本仓库自己的 local/（D-1019c 合仓），不用配置。
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { acquireWorkbenchLease } from 'rulith/local/manager-registry.mjs';
+import { acquireWorkbenchLease } from '../../../local/manager-registry.mjs';
 
 export const APP_HOME_ENV = 'RULITH_APP_HOME';
 // The ports the owner's settings have always used; another free one is taken only when one of these is busy.
@@ -75,7 +75,7 @@ export async function appSettings(home, { ports = freePorts } = {}) {
   return {
     dshBin: dependencyBin('@deepseek-ai/dsh', 'dsh'), dshHome: at('dsh'),
     managerHome: at('manager'), managerPort, keyFile,
-    runtimeEntry: dependencyBin('rulith', 'rulith'), persona: fileURLToPath(new URL('../runtime-persona.txt', import.meta.url)),
+    runtimeEntry: fileURLToPath(new URL('../../../local/rulith-local.mjs', import.meta.url)), persona: fileURLToPath(new URL('../runtime-persona.txt', import.meta.url)),
     webPort, kitHome: at('kit'),
   };
 }

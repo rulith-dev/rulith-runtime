@@ -12,3 +12,8 @@ output.json
 *.log
 .env
 .env.*
+
+# Local app (app/, D-1019c): launcher settings and their hand-made backups carry credentials.
+app/deep-rulith.json
+app/deep-rulith-p*.json
+app/deep-rulith*.json.*

@@ -13,6 +13,7 @@ import { refreshGeneralKits } from '../../harness/kit-install.mjs';
 // a settings file the settings are the file's, as before.
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
+const root = fileURLToPath(new URL('../../../', import.meta.url));
 const web = path.join(repo, 'harness', 'web');
 const temp = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deep-rulith-app-home-'));
@@ -40,9 +41,9 @@ test('an empty app home gets its directories, a manager key and settings derived
   assert.equal(s.kitHome, path.join(home, 'kit'));
   assert.equal(s.keyFile, path.join(home, 'manager.key'));
   assert.deepEqual([s.managerPort, s.webPort], [17790, 13080]);
-  // dsh and the Runtime come from this package's own dependencies; the persona ships beside the launcher.
-  assert.equal(s.dshBin, path.join(repo, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
-  assert.equal(s.runtimeEntry, path.join(repo, 'node_modules', 'rulith', 'local', 'rulith-local.mjs'));
+  // dsh comes from the repository's dependencies, the Runtime is the repository itself (D-1019c); the persona ships beside the launcher.
+  assert.equal(s.dshBin, path.join(root, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+  assert.equal(s.runtimeEntry, path.join(root, 'local', 'rulith-local.mjs'));
   assert.equal(s.persona, path.join(repo, 'harness', 'runtime-persona.txt'));
   for (const file of [s.dshBin, s.runtimeEntry, s.persona]) assert.ok(fs.existsSync(file), file);
   // No cwd: the command's own folder is the default workspace, as with `dsh web`.

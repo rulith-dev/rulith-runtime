@@ -381,7 +381,7 @@ test('shipped general manifest exempts declared reads and reviews writes, comman
     assert.equal(isWrite('Execute', { action: 'worker_action' }, [current], kinds), kind !== 'read', id);
   }
   assert.equal(kinds['eng.read@1'], 'read'); assert.equal(kinds['eng.run@1'], 'run');
-  assert.deepEqual(readToolKinds(new URL('../../package.json', import.meta.url)), {});
+  assert.deepEqual(readToolKinds(new URL('../../../package.json', import.meta.url)), {});
   assert.deepEqual(readToolKinds(undefined), {});
 });
 
