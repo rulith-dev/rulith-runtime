@@ -1,0 +1,26 @@
+{
+  "name": "deep-rulith",
+  "version": "0.1.0-alpha.0",
+  "description": "Deep Rulith: DeepSeek Harness with Rulith as its only tools",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "deep-rulith": "harness/web/start-deep-rulith.mjs"
+  },
+  "files": [
+    "harness/",
+    "NOTICE",
+    "!**/deep-rulith*.json",
+    "!**/deep-rulith*.json.*"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=4 test/harness/kit.test.mjs test/harness/board-transcript.test.mjs test/harness/context-relief.test.mjs test/harness/board-channel.test.mjs test/harness/conversation-boards.test.mjs test/harness/subagent-integration.test.mjs test/harness/write-note.test.mjs test/harness/outgoing-trim.test.mjs test/harness/project-source.test.mjs test/harness/open-project.test.mjs test/harness/v4-surface.test.mjs test/harness/shadow-reviewer.test.mjs test/harness/launcher.test.mjs test/harness/web-tools.test.mjs test/harness/general-kit.test.mjs test/harness/app-home.test.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-alpha.1",
+    "rulith": "^0.18.0"
+  }
+}

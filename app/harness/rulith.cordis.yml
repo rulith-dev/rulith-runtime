@@ -1,0 +1,159 @@
+# dsh 5badb15, base + headless. Every disabled id is statically checked.
+- id: tool-plugin-manager
+  disabled: true
+- id: plugin-manager
+  disabled: true
+- id: hmr
+  disabled: true
+- id: config-editor
+  disabled: true
+- id: settings
+  disabled: true
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: jobs
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: fs-observation-policy
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: agent-instructions
+  disabled: true
+- id: skill
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: skill-badge
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: subagent
+  disabled: true
+- id: subagent-spawn-in-process
+  disabled: true
+- id: subagent-fork-in-process
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: ptc-runtime
+  disabled: true
+- id: workflow-ptc
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: spill-local
+  disabled: true
+- id: spill-policy
+  disabled: true
+- id: tool-result-pruner
+  disabled: true
+- id: compaction-basic
+  disabled: true
+- id: command-compact
+  disabled: true
+- id: image-offload
+  disabled: true
+- id: repeat-tool-reminder
+  disabled: true
+# D-1015c: dsh's read-only web tools stay native (web, web-search-deepseek, web-fetch-http and tool-web are on in base).
+# web_search only with a DeepSeek key in RULITH_DSH_WEB_SEARCH_KEY (rulith-dsh-role.mjs); see harness/web-tools.mjs.
+- id: web-search-deepseek
+  config:
+    apiKeyEnv: RULITH_DSH_WEB_SEARCH_KEY
+    # Pinned to DeepSeek (dsh's default), so the key never follows a DEEPSEEK_SEARCH_BASE_URL from a .env file.
+    baseURL: https://api.deepseek.com/anthropic/v1
+- id: tool-web
+  config:
+    search: !!js '!!process.env.RULITH_DSH_WEB_SEARCH_KEY'
+    fetch: true
+    searchTimeoutMs: 60000
+- id: mcp-resources
+  disabled: true
+- id: llm-deepseek
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+- id: deepseek-account
+  disabled: true
+- id: deepseek-llm-api-extensions
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+- id: otel
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- id: session-title-llm
+  disabled: true
+- id: system-prompt
+  config:
+    includeRuntimeContext: false
+    includeHarnessIdentity: false
+    personaPrefix: ''
+    personaSuffix: ''
+- id: tools
+  config:
+    mode: native
+- id: agent-loop
+  config:
+    agents: []
+    maxParallelToolCalls: 1
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+- id: agent-default-model
+  config:
+    provider: rulith-model
+    model: !!js process.env.RULITH_DSH_MODEL
+- id: llm-pi-ai
+  config:
+    providers:
+      rulith-model:
+        api: openai-completions
+        apiKeyEnv: RULITH_MODEL_KEY
+        baseURL: !!js process.env.RULITH_DSH_MODEL_BASE
+        compat:
+          thinkingFormat: deepseek
+        models:
+          - id: !!js process.env.RULITH_DSH_MODEL
+            contextWindow: 1000000
+- insert:
+    - id: rulith-mcp
+      name: ./rulith-mcp.mjs
+    - id: rulith-gate
+      name: ./rulith-gate.mjs
+- id: headless-runner
+  inject: [headlessStartup, rulithGate]
+  config:
+    task: !!js ctx.headlessStartup.task
+    sessionId: !!js ctx.headlessStartup.sessionId
+    json: !!js ctx.headlessStartup.json

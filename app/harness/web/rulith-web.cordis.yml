@@ -1,0 +1,231 @@
+# Deep Rulith: the Rulith edition of DeepSeek Harness (dsh 0.2.1-alpha.1 web profile, base + web-app). dsh's own agent and UI stay;
+# its local tools (except the read-only web tools, D-1015c), dsh-authored model text (except the repeat-tool reminder and the web tools' own text), DeepSeek account, feedback, telemetry and session uploads are off. The model is the one
+# set in Rulith (any OpenAI-compatible endpoint, through the generic adapter: no DeepSeek-specific headers or identity).
+# Rulith's three tools (rulith/v4), the approved persona and the Deep Rulith account entry and panel are added; dsh's web_search and web_fetch stay native.
+# Paths come from the launcher's environment (start-deep-rulith.mjs); nothing secret is written here.
+- id: tool-plugin-manager
+  disabled: true
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: fs-observation-policy
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: agent-instructions
+  disabled: true
+- id: skill
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: skill-badge
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: subagent
+  disabled: false
+  config:
+    maxDepth: 1
+    maxActiveSubagents: 4
+- id: subagent-spawn-in-process
+  disabled: false
+- id: subagent-fork-in-process
+  disabled: false
+- id: tool-subagent-control
+  disabled: false
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: false
+  config:
+    provider: spawn
+    toolName: subagent
+    maxDepth: 1
+    enableRunInBackground: true
+    backgroundMode: continuable
+    # Children: Rulith's three and the registered web tools (web_search only with a search key, as tool-web below).
+    toolFilter:
+      allow: !!js "process.env.RULITH_DSH_WEB_SEARCH_KEY ? ['Get', 'Set', 'Execute', 'web_search', 'web_fetch'] : ['Get', 'Set', 'Execute', 'web_fetch']"
+- id: tool-subagent-fork
+  disabled: false
+  config:
+    provider: fork
+    toolName: subagent_fork
+    maxDepth: 1
+    enableRunInBackground: true
+    backgroundMode: continuable
+    # Children: Rulith's three and the registered web tools (web_search only with a search key, as tool-web below).
+    toolFilter:
+      allow: !!js "process.env.RULITH_DSH_WEB_SEARCH_KEY ? ['Get', 'Set', 'Execute', 'web_search', 'web_fetch'] : ['Get', 'Set', 'Execute', 'web_fetch']"
+- id: ptc-runtime
+  disabled: true
+- id: workflow-ptc
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: spill-local
+  disabled: true
+- id: spill-policy
+  disabled: true
+# dsh 的结果裁剪器保持关闭：Rulith 结果由板视图转录（board-transcript.mjs）安排，裁剪器会把它们截成读不懂的片段。
+- id: tool-result-pruner
+  disabled: true
+# 自动压缩见下面 preset-rulith 的 plugins：dsh 网页版把压缩放在每个 Agent 预设里（主机层的 compaction-basic 与
+# command-compact 由 dsh-web-app 关掉），所以要挂在我们的预设里才生效。
+- id: image-offload
+  disabled: true
+# dsh's repeat-tool reminder stays on (thresholds 3, 5, 8; arguments compared key-sorted, as received): when the
+# arguments that reach Rulith are the same call after call, the model is told so, which is how it learns that its own
+# corrections are not arriving (2026-10-08: a parser added naf to every rule head ten times in a row).
+# D-1015c（所有者 2026-10-15）：只读、无副作用的网络工具不经 Rulith，原生提供：dsh 的 web_search 与 web_fetch（tool-web，
+# 以及它需要的 web、web-search-deepseek、web-fetch-http，后三者 base 本就开着）。dsh 网页版把 tool-web 关在主机层（交给预设），
+# 这里重新打开。其余本地工具（read、write、edit、glob、grep、shell、作业）仍关；工具白名单见 rulith-web-gate.mjs。
+# web_search 走 DeepSeek 的搜索接口，密钥只经环境变量 RULITH_DSH_WEB_SEARCH_KEY 传入：启动器只在 Rulith 的模型是 DeepSeek
+# API 时设置它（web-tools.mjs webSearchKey），没有时不注册 web_search，启动照常。web_fetch 的地址检查见 web-tools.mjs。
+- id: web-search-deepseek
+  config:
+    apiKeyEnv: RULITH_DSH_WEB_SEARCH_KEY
+    # Pinned to DeepSeek (dsh's default), so the key never follows a DEEPSEEK_SEARCH_BASE_URL from a .env file.
+    baseURL: https://api.deepseek.com/anthropic/v1
+- id: tool-web
+  disabled: false
+  config:
+    search: !!js '!!process.env.RULITH_DSH_WEB_SEARCH_KEY'
+    fetch: true
+    searchTimeoutMs: 60000
+- id: mcp-resources
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+- id: otel
+  disabled: true
+- id: session-telemetry-otel
+  disabled: true
+- id: desktop-product-telemetry
+  disabled: true
+- id: product-analytics
+  disabled: true
+- id: preset-ptc
+  disabled: true
+- id: preset-cordis
+  disabled: true
+- id: llm-deepseek
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+- id: deepseek-account
+  disabled: true
+- id: deepseek-llm-api-extensions
+  disabled: true
+- id: message-feedback
+  disabled: true
+- id: ui-message-feedback
+  disabled: true
+- id: command-feedback
+  disabled: true
+- id: ui-settings-account
+  disabled: true
+- id: account-controller
+  disabled: true
+- id: ui-brand-official
+  disabled: true
+# The right column is Rulith's execution view. dsh's own file browser and terminal act on dsh's workspace folder
+# directly, outside Rulith, so they are not offered.
+- id: ui-sidebar-files
+  disabled: true
+- id: ui-sidebar-terminal
+  disabled: true
+- id: terminal-controller
+  disabled: true
+- id: preset-standard
+  disabled: true
+- id: preset-minimal
+  disabled: true
+- id: agent-preset-registry
+  config:
+    default: rulith
+- id: system-prompt
+  config:
+    includeRuntimeContext: false
+    includeHarnessIdentity: false
+    personaPrefix: ''
+    personaSuffix: ''
+- id: tools
+  config:
+    mode: native
+- id: agent-loop
+  config:
+    agents: []
+    maxParallelToolCalls: 1
+# The model is not set here. The launcher keeps the route rulith-model (from Rulith's model settings) and, until the person
+# picks another, the default model in the profile's own cordis.patch.yml: a patch replaces an entry's whole config and
+# overlays come last, so setting llm-pi-ai here would erase providers added on dsh's Models page, and a `!!js` value here
+# made every Models-page write fail validation.
+- insert:
+    - id: rulith-runtime
+      name: ./rulith-runtime.mjs
+      config:
+        managerHome: !!js process.env.RULITH_DSH_MANAGER_HOME
+        managerPort: !!js process.env.RULITH_DSH_MANAGER_PORT
+        keyFile: !!js process.env.RULITH_DSH_KEY_FILE
+        runtimeEntry: !!js process.env.RULITH_DSH_RUNTIME_ENTRY
+        agentName: !!js process.env.RULITH_DSH_AGENT
+        consoleUrl: !!js process.env.RULITH_DSH_CONSOLE_URL
+        mcpUrl: !!js process.env.RULITH_DSH_MCP_URL
+        shadow: !!js JSON.parse(process.env.RULITH_DSH_SHADOW || '{}')
+        # 减负比例与 dsh 的压缩配置（见 context-relief.mjs）：由此算出每条模型路线实际的减负线；不经启动器时用默认值。
+        # 表达式里有 `: `，不加引号 YAML 会把它读成映射。
+        reliefRatio: !!js 'process.env.RULITH_DSH_RELIEF_RATIO ? Number(process.env.RULITH_DSH_RELIEF_RATIO) : undefined'
+        compaction: !!js JSON.parse(process.env.RULITH_DSH_COMPACTION || '{}')
+    - id: rulith-web-gate
+      name: ./rulith-web-gate.mjs
+      config:
+        persona: !!js process.env.RULITH_DSH_PERSONA
+    - id: rulith-dsh-ui
+      name: rulith-dsh-ui
+    # The only agent preset. dsh's stock presets carry their own shell, file, web and subagent tools at the agent layer,
+    # which a global tool restriction does not reach, so they stay off. Its one agent-layer group is dsh's compaction
+    # (所有者 2026-10-09：长会话需要它)：上下文到压缩线时把较早的一段对话压成摘要，最近约 16% 原样保留；上下文溢出时先压缩
+    # 再重试；也可手动 /compact。摘要只是对话的回顾，不是证据：Board 上记下的才算，最新一份 Rulith 结果照样给出整个视图。
+    # dsh 的结果裁剪器不挂：Rulith 结果由板视图转录安排。
+    # 压缩线（2026-10-14）= compactionRatio × 窗口（默认 0.8，deep-rulith.json 可改），在减负线（reliefRatio，默认 0.7）之上：
+    # 启动器把 thresholdRatio、headroomTokens（16384，使“窗口 − 输出上限 − headroom”不再先起作用）与摘要的输出上限
+    # 以 RULITH_DSH_COMPACTION 传进来（见 context-relief.mjs）；不经启动器时为 dsh 的默认值。
+    - id: preset-rulith
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: rulith
+        order: 0
+        plugins:
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+                config: !!js JSON.parse(process.env.RULITH_DSH_COMPACTION || '{}')
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'

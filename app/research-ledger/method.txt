@@ -1,0 +1,15 @@
+Research ledger
+
+An investigation keeps its analysis and its verification on the Board, so that a later goal can read what was tried and what it showed.
+
+Each idea to test is a hypothesis with its goal. The numbers an argument rests on are data, each naming where it came from and its goal. A hypothesis is decided by a rule that derives it supported or refuted from the receipts and data that settle it; a direction given up is dropped with a reason.
+
+A hypothesis dropped with a reason is dropped.
+A hypothesis stays open until it is supported, refuted or dropped.
+A hypothesis a rule derives as supported is shown as supported.
+A hypothesis a rule derives as refuted is shown as refuted.
+A dropped hypothesis is shown as dropped.
+A goal with an open hypothesis still has an open question.
+Each datum recorded for a goal is shown with that goal.
+
+Data of a cited goal is shown with the citing goal. A later goal cites an earlier one instead of recording its numbers again; the cited data keeps its own source, and the citation stays in the evidence of every row it brings in.

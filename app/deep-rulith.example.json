@@ -1,0 +1,16 @@
+{
+  "dshBin": "/path/to/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js",
+  "dshHome": "/path/to/deep-rulith-run/dsh-home",
+  "cwd": "/path/to/deep-rulith-run/cwd",
+  "managerHome": "/path/to/deep-rulith-run/manager-home",
+  "managerPort": 7790,
+  "keyFile": "/path/to/deep-rulith-run/workbench-key.txt",
+  "runtimeEntry": "/path/to/deep-rulith/node_modules/rulith/local/rulith-local.mjs",
+  "persona": "/path/to/deep-rulith/harness/runtime-persona.txt",
+  "webPort": 3080,
+  "shadow": { "enabled": false },
+  "reviewerThinking": true,
+  "localContextWindow": 262144,
+  "reliefRatio": 0.7,
+  "compactionRatio": 0.8
+}

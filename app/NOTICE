@@ -1,0 +1,9 @@
+Deep Rulith
+Copyright 2026 Shanghai Rulith Technology Co., Ltd.
+
+Deep Rulith is an overlay and a set of plugins for DeepSeek Harness (dsh,
+https://github.com/deepseek-ai/deepseek-harness, MIT License). It does not
+include or modify dsh's code; npm installs dsh as a dependency.
+
+This project is not affiliated with, endorsed by or sponsored by DeepSeek.
+"DeepSeek" is used only to name the software this project works with.
