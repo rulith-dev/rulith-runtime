@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { RulithMcp, TOOLS, NAMESPACE, surfaceAccepted } from '../../harness/rulith-mcp.mjs';
 import { createHash } from 'node:crypto';
 import { ADDENDUM } from '../../harness/rulith-gate.mjs';
-import { ADDENDUM as WEB_ADDENDUM, CHILD_ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
+import { ADDENDUM as WEB_ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
 
 const read = (file) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
 
@@ -47,16 +47,14 @@ test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_i
 test('the addendum names the native web tools; both variants share the approved acceptance-contract tail', () => {
   const web = 'Web results leave nothing on the Board: when one is evidence for a result, record it on the Board with its URL as the source.';
   const headless = `Your tools are Rulith's three and the read-only tools web_search and web_fetch. ${web}`;
-  const main = `Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch. ${web}`;
   assert.ok(ADDENDUM.startsWith(`${headless} Writing, running commands and measuring are Actions`));
-  assert.equal(WEB_ADDENDUM, main + ADDENDUM.slice(headless.length));
-  assert.equal(CHILD_ADDENDUM, ADDENDUM, 'web children use the headless addendum');
+  assert.equal(WEB_ADDENDUM, ADDENDUM, 'web has no delegation addendum');
   assert.equal(createHash('sha256').update(ADDENDUM.slice(headless.length)).digest('hex'),
     'b6d5a863a4d99139e1140968ca38fbde72059d416a6802e7addc19d783c3116b');
   const inventory = read('harness/model-visible.md');
   assert.ok(inventory.includes(ADDENDUM));
   assert.ok(inventory.includes(WEB_ADDENDUM));
-  assert.ok(inventory.includes("Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch."));
+  assert.ok(!inventory.includes("Your tools are Rulith's three, delegation tools"));
 });
 
 test('goal guidance declares an outcome without a generic test-to-completion rule', () => {

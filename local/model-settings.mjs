@@ -73,6 +73,33 @@ export function modelSignature({ url = '', name = '', key = '', thinking = 'stan
   return createHash('sha256').update(`${clean(url)}\u0000${clean(name)}\u0000${clean(key)}\u0000${['enabled', 'disabled'].includes(thinking) ? thinking : 'standard'}\u0000${outputBudget}`).digest('hex')
 }
 
+/**
+ * Where a saved model endpoint is reached, by wire protocol. A URL ending in `/messages` is an Anthropic Messages
+ * endpoint; one ending in `/chat/completions` is that OpenAI-compatible endpoint; any other URL (a server root or a
+ * `/v1` base) is an OpenAI-compatible base to which `/chat/completions` is added — the way the local app has always
+ * read it. `base` is what an SDK that appends its own path is given.
+ * 中文说明：模型地址按协议解读，宿主（dsh）与 Worker 的审查员路线用同一条规则。
+ */
+export function modelEndpoint(raw) {
+  const url = clean(raw).replace(/\/+$/, '')
+  if (!url) return undefined
+  if (/\/messages$/.test(url)) return { api: 'anthropic-messages', url, base: url.replace(/(\/v1)?\/messages$/, '') }
+  if (/\/chat\/completions$/.test(url)) return { api: 'openai-completions', url, base: url.replace(/\/chat\/completions$/, '') }
+  return { api: 'openai-completions', url: `${url}/chat/completions`, base: url }
+}
+
+/**
+ * The Worker's reviewer route (D-1013f) derived from one Agent's own model. The reviewer speaks OpenAI-compatible
+ * Chat Completions only, so a Messages endpoint, or no model, leaves the route empty: the Worker then does not review.
+ * The key travels only into that Agent's own Worker environment.
+ */
+export function reviewerRoute({ url, name, key } = {}) {
+  const endpoint = modelEndpoint(url)
+  const usable = endpoint?.api === 'openai-completions' && clean(name) !== ''
+  return { RULITH_REVIEWER_URL: usable ? endpoint.url : '', RULITH_REVIEWER_MODEL: usable ? clean(name) : '',
+    RULITH_REVIEWER_KEY: usable ? text(key) : '' }
+}
+
 function load(file) {
   if (!existsSync(file)) return { version: 1, defaults: [] }
   const value = JSON.parse(readFileSync(file, 'utf8'))

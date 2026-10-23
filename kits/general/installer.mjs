@@ -31,15 +31,42 @@ function plainPath(value) {
 }
 const read = file => JSON.parse(fs.readFileSync(plainPath(file), 'utf8'));
 
+export function generalKitCurrent(directory) {
+  try {
+    const env = read(path.join(directory, 'local.json')).worker?.env ?? {};
+    if (!env.ENG_KIT_HOME || env.RULITH_WORKSPACE_TOOLS !== 'read'
+      || env.RULITH_WORKER_RUN_TIMEOUT_SECONDS !== String(workerRunTimeoutSeconds(env.ENG_KIT_HOME))) return false;
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const ours = read(path.join(here, 'worker-tools.json'));
+    const general = generalSettings(env.ENG_KIT_HOME);
+    if (general.webSearch) ours.tools['web.search@1'].env.pass.push(general.webSearch.keyEnv);
+    const manifest = read(env.RULITH_TOOLS_FILE);
+    if (!Object.entries(ours.tools).every(([id, definition]) => JSON.stringify(manifest.tools?.[id]) === JSON.stringify(definition))) return false;
+    if (Object.keys(manifest.tools).some(id => id.startsWith('eng.') && !ours.tools[id])) return false;
+    const target = path.join(env.RULITH_WORKER_ROOT, 'adapters', 'engineering-work');
+    return fs.readdirSync(here).filter(n => n.endsWith('.mjs') && !['install.mjs', 'installer.mjs'].includes(n))
+      .every(name => fs.readFileSync(plainPath(path.join(target, name))).equals(fs.readFileSync(plainPath(path.join(here, name)))));
+  } catch { return false; }
+}
+
+export const generalToolIds = () => Object.keys(read(path.join(path.dirname(fileURLToPath(import.meta.url)), 'worker-tools.json')).tools);
+
 export function installGeneral(options) {
-  const kitHome = plainPath(options['kit-home']);
-  fs.mkdirSync(plainPath(path.join(kitHome, 'specs')), { recursive: true });
-  const general = generalSettings(kitHome);
-  const runTimeout = workerRunTimeoutSeconds(kitHome);
   const registry = read(path.join(plainPath(options['manager-home']), 'registry.json'));
   const rows = (registry.instances ?? []).filter(row => row.mode === 'local_agent' && !row.signedOutAt && row.agentName === options.agent);
   if (rows.length !== 1) throw new Error(`Expected one paired Agent; found ${rows.length}`);
-  const localFile = plainPath(path.join(rows[0].directory, 'local.json'));
+  const result = installGeneralForInstance({ directory: rows[0].directory, kitHome: options['kit-home'] });
+  return `Installed ${result.toolIds.length} general tools for this Agent. Reload its Worker to advertise them; installation grants no permissions.`;
+}
+
+// The manager calls this only after its instance's Worker has drained and exited.
+// The CLI and running-manager setup share exactly the same installer.
+export function installGeneralForInstance({ directory, kitHome: requestedHome }) {
+  const kitHome = plainPath(requestedHome);
+  fs.mkdirSync(plainPath(path.join(kitHome, 'specs')), { recursive: true });
+  const general = generalSettings(kitHome);
+  const runTimeout = workerRunTimeoutSeconds(kitHome);
+  const localFile = plainPath(path.join(directory, 'local.json'));
   const local = read(localFile);
   const env = local.worker?.env ?? {};
   if (!env.RULITH_WORKER_ROOT || !env.RULITH_TOOLS_FILE) throw new Error('Pair the Agent and enable its Worker once first');
@@ -59,5 +86,5 @@ export function installGeneral(options) {
   save(toolsFile, manifest);
   local.worker.env = { ...env, ENG_KIT_HOME: kitHome, RULITH_WORKSPACE_TOOLS: 'read', RULITH_WORKER_RUN_TIMEOUT_SECONDS: String(runTimeout) };
   save(localFile, local);
-  return `Installed ${Object.keys(ours.tools).length} general tools for this Agent. Restart its Worker, install the kit Capability, and bind Source "lab" to the project.`;
+  return { toolIds: Object.keys(ours.tools), kitHome };
 }

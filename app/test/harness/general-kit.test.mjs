@@ -4,14 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { generalKit, runtimeDirectory, kitReady, KIT_SKIP } from '../../harness/runtime-kit.mjs';
-import net from 'node:net';
-import { installerRefusal, managerListening, refreshGeneralKits } from '../../harness/kit-install.mjs';
+import { refreshGeneralKits } from '../../harness/kit-install.mjs';
 
 const kit = generalKit();
 // The published rulith package has no kits/general yet: its tests skip instead of failing to import.
 const needsKit = { skip: !kitReady() && KIT_SKIP };
 const load = name => import(pathToFileURL(path.join(kit, name)));
-const [{ perform }, { sha }, { installGeneral, parseKitInstall }] = kitReady()
+const [{ perform }, { sha }, { generalKitCurrent, installGeneralForInstance }] = kitReady()
   ? await Promise.all(['adapter.mjs', 'lib.mjs', 'installer.mjs'].map(load)) : [{}, {}, {}];
 const scratch = new URL('../../.scratch/', import.meta.url);
 fs.mkdirSync(scratch, { recursive: true });
@@ -107,28 +106,27 @@ test('shipped general read/patch tools share tree state and list existing measur
   assert.equal((await f.call('read_v2', { path: 'added.txt' })).rows[0].digest, sha('hello\n'));
 });
 
-test('start dispatches kit-install arguments to the shipped installer and preserves pinned specs/settings', needsKit, async t => {
+// The one installer the Runtime manager runs for "set up this Agent on this computer" (PSC 0.2.27 ③), after the Agent's
+// Worker drained: it replaces the kit's manifest entries and adapter bytes, keeps the owner's own tools, pinned specs and
+// settings, and says afterwards whether the installed kit is the shipped one.
+test('the shipped installer replaces the kit for one instance, keeps the owner\'s files, and reports whether it is current', needsKit, async t => {
   const f = fixture(t);
-  const manager = path.join(f.dir, 'manager'), instance = path.join(f.dir, 'instance');
+  const instance = path.join(f.dir, 'instance');
   const worker = path.join(f.dir, 'worker'), toolsFile = path.join(worker, 'tools.json');
-  fs.mkdirSync(manager); fs.mkdirSync(instance); fs.mkdirSync(path.join(worker, 'adapters', 'engineering-work'), { recursive: true });
+  fs.mkdirSync(instance); fs.mkdirSync(path.join(worker, 'adapters', 'engineering-work'), { recursive: true });
   fs.writeFileSync(path.join(worker, 'adapters', 'engineering-work', 'adapter.mjs'), 'retired adapter');
   json(toolsFile, { format: 'rulith-worker-tools/1', tools: { 'owner.tool@1': { kind: 'read' }, 'eng.obsolete@1': {} } });
   const settings = '{"runDeadlineSeconds":600,"pollMaxWaitSeconds":600,"treeExclude":["out"],"webSearch":{"provider":"deepseek","keyEnv":"SEARCH_TEST_KEY"}}';
   fs.writeFileSync(path.join(f.home, 'settings.json'), settings);
   const pinned = '{"command":["node","check.mjs"]}'; fs.writeFileSync(path.join(f.home, 'specs', 'test.json'), pinned);
-  json(path.join(manager, 'registry.json'), { instances: [{ mode: 'local_agent', directory: instance, agentName: 'fixture' }] });
   // Synthetic installer fixture: contains no credentials and never starts a Worker or manager.
   const local = path.join(instance, 'local.json');
-  json(local, { worker: { env: { ENG_KIT_HOME: f.home, RULITH_WORKER_ROOT: worker, RULITH_TOOLS_FILE: toolsFile } } });
-  // Exercise the same dispatch/installer as the Runtime CLI without launching any service/process.
-  const run = (_node, argv) => {
-    assert.deepEqual(argv.slice(1, 4), ['kit', 'install', 'general']);
-    installGeneral(parseKitInstall(argv.slice(4)));
-    return { status: 0 };
-  };
-  assert.equal(refreshGeneralKits(manager, { run }), 1);
-  assert.equal(refreshGeneralKits(manager, { run }), 1, 'every start refreshes the shipped files');
+  json(local, { worker: { env: { RULITH_WORKER_ROOT: worker, RULITH_TOOLS_FILE: toolsFile } } });
+  assert.equal(generalKitCurrent(instance), false, 'nothing installed yet');
+  const first = installGeneralForInstance({ directory: instance, kitHome: f.home });
+  assert.ok(first.toolIds.includes('eng.read@2'));
+  assert.equal(generalKitCurrent(instance), true);
+  installGeneralForInstance({ directory: instance, kitHome: f.home });
   const installed = JSON.parse(fs.readFileSync(toolsFile));
   for (const id of ['eng.test@1', 'eng.test@2', 'eng.acceptance@1', 'eng.glob@1', 'eng.apply_patch@1', 'eng.read_image@1', 'eng.read@2', 'web.fetch@1', 'web.search@1'])
     assert.ok(installed.tools[id], id);
@@ -140,58 +138,50 @@ test('start dispatches kit-install arguments to the shipped installer and preser
   const env = JSON.parse(fs.readFileSync(local)).worker.env;
   assert.equal(env.ENG_KIT_HOME, f.home); assert.equal(env.RULITH_WORKSPACE_TOOLS, 'read');
   assert.equal(env.RULITH_WORKER_RUN_TIMEOUT_SECONDS, '660');
+  // Changed adapter bytes, or a changed manifest entry, make it not current again: the next setup reinstalls.
+  fs.writeFileSync(path.join(worker, 'adapters', 'engineering-work', 'adapter.mjs'), 'edited');
+  assert.equal(generalKitCurrent(instance), false);
+  installGeneralForInstance({ directory: instance, kitHome: f.home });
+  installed.tools['eng.read@2'] = { ...installed.tools['eng.read@2'], title: 'changed' };
+  json(toolsFile, installed);
+  assert.equal(generalKitCurrent(instance), false);
 });
 
-test('kit refresh isolates agents, skips unprepared/signed-out entries, and stops on install failure', () => {
-  const rows = ['one', 'two', 'unprepared', 'out'].map(agentName => ({ agentName, directory: `/${agentName}`, mode: 'local_agent', ...(agentName === 'out' ? { signedOutAt: 'then' } : {}) }));
-  const reads = [], calls = [];
-  const readJson = file => {
-    reads.push(file);
-    if (file.endsWith('registry.json')) return { instances: rows };
-    if (file.includes('unprepared')) return {};
-    const name = file.includes('one') ? 'one' : 'two';
-    return { worker: { env: { ENG_KIT_HOME: `/${name}-pins`, RULITH_WORKER_ROOT: `/${name}-worker`, RULITH_TOOLS_FILE: `/${name}-tools` } } };
-  };
+// The app's start refreshes kits through the manager's setup operation, in repair mode, for the Agents set up here whose
+// Worker is on and that already have the kit (only the launcher's own Agent when its settings name one); a failure is
+// printed and does not stop the rest. It never makes a first install (PSC 0.2.27 ③): that is an explicit setup or opening
+// a folder.
+test('the start refresh asks the manager to repair each Agent set up here with its Worker on and its kit installed, and only those', async () => {
+  const instance = (agentId, agentName, extra = {}) => ({ id: `i-${agentId}`, agentId, agentName, mode: 'local_agent', paired: true,
+    signedOutAt: '', workerSetting: { enabled: true }, generalKit: true, ...extra });
+  const state = { device: { state: 'linked', agents: ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id })) },
+    instances: [instance('a', 'one'), instance('b', 'two'), instance('c', 'off', { workerSetting: { enabled: false } }),
+      instance('d', 'unpaired', { paired: false }), instance('e', 'out', { signedOutAt: 'then' }), instance('x', 'removed'),
+      instance('f', 'never-had-kit', { generalKit: false })] };
+  const manager = async (route) => { assert.equal(route, '/manager/state'); return state; };
+  const calls = [], lines = [];
+  const setup = { ready: async (body) => { calls.push(body); if (body.agentId === 'a') throw new Error('The Worker is still finishing calls in progress.'); return {}; } };
+  assert.equal(await refreshGeneralKits(manager, setup, { log: (line) => lines.push(line) }), 2);
+  assert.deepEqual(calls, [{ agentId: 'a', mode: 'repair' }, { agentId: 'b', mode: 'repair' }], 'an Agent that never had the kit gets none at start');
+  assert.deepEqual(lines, ['[rulith setup] The general kit of one could not be refreshed: The Worker is still finishing calls in progress.']);
+  calls.length = 0;
+  assert.equal(await refreshGeneralKits(manager, setup, { agentName: 'two', log: () => {} }), 1);
+  assert.deepEqual(calls, [{ agentId: 'b', mode: 'repair' }]);
+  // The launcher's own Agent, named in its settings, is repaired kit or not: naming it is the launcher's explicit choice.
+  calls.length = 0;
+  assert.equal(await refreshGeneralKits(manager, setup, { agentName: 'never-had-kit', log: () => {} }), 1);
+  assert.deepEqual(calls, [{ agentId: 'f', mode: 'repair' }]);
+  // A manager without the field (older Runtime) is read as "no kit": nothing is installed at start.
+  calls.length = 0;
+  const older = { ...state, instances: state.instances.map(({ generalKit, ...rest }) => rest) };
+  assert.equal(await refreshGeneralKits(async () => older, setup, { log: () => {} }), 0);
+  assert.equal(await refreshGeneralKits(async () => ({ device: { state: 'none' } }), setup), 0, 'signed out: nothing to refresh');
+  await assert.rejects(refreshGeneralKits(async () => { throw new Error('manager not up yet'); }, setup), /not up yet/,
+    'an unreachable manager is the caller\'s to retry');
+});
+
+test('the Runtime directory the kit comes from can be named with RULITH_RUNTIME_DIR', () => {
   const env = { RULITH_RUNTIME_DIR: 'D:/local runtime' };
   assert.equal(runtimeDirectory(env), path.resolve(env.RULITH_RUNTIME_DIR));
-  assert.equal(refreshGeneralKits('/manager', { env, readJson, run: (...args) => { calls.push(args); return { status: 0 }; } }), 2);
-  assert.deepEqual(calls.map(c => c[1]), ['one', 'two'].map(name => [path.join(runtimeDirectory(env), 'local', 'rulith-local.mjs'),
-    'kit', 'install', 'general', '--agent', name, '--kit-home', `/${name}-pins`, '--manager-home', '/manager']));
-  assert.ok(!reads.some(file => file.includes('/out/')));
-  // A launcher that names its Agent refreshes only that Agent.
-  calls.length = 0;
-  assert.equal(refreshGeneralKits('/manager', { agent: 'two', env, readJson, run: (...args) => { calls.push(args); return { status: 0 }; } }), 1);
-  assert.deepEqual(calls.map(c => c[1][5]), ['two']);
-  assert.equal(refreshGeneralKits('/manager', { agent: 'absent', env, readJson, run: () => assert.fail('no row') }), 0);
-  // A refusal names the Agent; only the installer's fixed words are shown, never other child output.
-  assert.throws(() => refreshGeneralKits('/manager', { env, readJson, run: () => ({ status: 1, stderr: 'D:/private/local.json: private material' }) }),
-    /^Error: Deep Rulith: general kit installation failed for Agent "one"\.$/);
-  assert.throws(() => refreshGeneralKits('/manager', { env, readJson, run: () => ({ status: 1, stderr: 'warning\nsettings refused\n' }) }),
-    /^Error: Deep Rulith: general kit installation failed for Agent "one": settings refused\.$/);
-  assert.throws(() => refreshGeneralKits('/manager', { env, readJson, run: () => ({ status: 2, missingKit: true }) }),
-    /^Error: Deep Rulith: general kit installation failed; use a Runtime with kits\/general \(RULITH_RUNTIME_DIR\)\.$/);
-  for (const words of ['Expected one paired Agent; found 0', 'Pair the Agent and enable its Worker once first', 'Invalid Worker tool manifest',
-    'Installation path contains a link', 'Worker paths must be absolute', '--agent and --kit-home are required'])
-    assert.equal(installerRefusal(`${words}\r\n`), words);
-  for (const other of ['', 'Unexpected token } in JSON at position 3', "ENOENT: no such file or directory, open 'D:/x/registry.json'", 'settings refused: D:/x'])
-    assert.equal(installerRefusal(other), '');
-});
-
-test('a manager already listening on the port is detected so the launcher skips the refresh', async t => {
-  const server = net.createServer(socket => socket.destroy());
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  assert.equal(await managerListening(port), true);
-  await new Promise(resolve => server.close(resolve));
-  assert.equal(await managerListening(port), false);
-});
-
-test('an old Runtime without the general kit is refused before its CLI can run', t => {
-  const f = fixture(t);
-  fs.mkdirSync(path.join(f.dir, 'local'));
-  fs.writeFileSync(path.join(f.dir, 'local', 'rulith-local.mjs'), 'throw new Error("CLI must never run")');
-  const readJson = file => file.endsWith('registry.json')
-    ? { instances: [{ mode: 'local_agent', agentName: 'fixture', directory: f.dir }] }
-    : { worker: { env: { ENG_KIT_HOME: f.home, RULITH_WORKER_ROOT: f.dir, RULITH_TOOLS_FILE: 'unused' } } };
-  assert.throws(() => refreshGeneralKits(f.dir, { env: { RULITH_RUNTIME_DIR: f.dir }, readJson }), /general kit installation failed/);
+  assert.equal(generalKit(env), path.join(path.resolve(env.RULITH_RUNTIME_DIR), 'kits', 'general'));
 });

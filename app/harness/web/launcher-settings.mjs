@@ -31,6 +31,20 @@ export function contextLines(settings = {}) {
 }
 
 /**
+ * deep-rulith.json 的 localContextWindow：本机模型（地址是 127.0.0.1、localhost 或 ::1）的上下文窗口，正整数；不设为
+ * undefined。设了却不成立时启动器拒绝启动。它交给宿主（RULITH_DSH_LOCAL_CONTEXT_WINDOW），作为本机模型那条实时路线的
+ * 窗口——减负与压缩都按它算（model-runtime.mjs liveRoute）；以前的启动器把它写给本机地址的提供商，这里保持同样的效果。
+ */
+export function localContextWindow(settings = {}) {
+  const value = settings.localContextWindow;
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Deep Rulith: localContextWindow in the settings must be a positive whole number (got ${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
+/**
  * 交给 dsh 的环境变量：rulith-web.cordis.yml 读它们设定 rulith-runtime 的减负比例，以及 dsh compaction-basic 的压缩配置
  * （thresholdRatio、headroomTokens、摘要的输出上限；rulith-runtime 也读同一份，好算出实际的压缩线）。
  */

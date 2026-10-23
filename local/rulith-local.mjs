@@ -8,7 +8,7 @@
 import http from 'node:http'
 import { conversationFile, openConversations } from '../agent/conversation-store.mjs'
 import { createConversationReader } from '../agent/conversation-reader.mjs'
-import { DEFAULT_MODEL_URL } from './model-settings.mjs'
+import { DEFAULT_MODEL_URL, reviewerRoute } from './model-settings.mjs'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -299,6 +299,14 @@ export function createLocalHost({
   const reloads = { agent: null, worker: null }
   const reloadAgain = { agent: false, worker: false }
   let agentStarting, workerRetryTimer, workerFailures = 0, workerFailure = '', workerRestartStopped = false
+  /**
+   * The explicit setup (its request id) that last started again a Worker which had stopped itself. One setup does that at
+   * most once, whichever of its steps (kit replacement, reload) gets there first: a Worker that stops itself again is
+   * reported as stopped, not started over. 中文说明：一次"在本机设置"至多重新启动一次自行停下的 Worker。
+   */
+  let stoppedRestartedBy = ''
+  /** Whether setup `by` (a request id; anything else is no setup) may start again a Worker that stopped itself. */
+  const mayRestartStopped = (by) => typeof by === 'string' && by !== '' && by !== stoppedRestartedBy
   const workerEnabled = () => selectedRoles.includes('worker') && config.worker?.enabled === true
   const workerSetup = () => {
     const env = effectiveChildEnv(baseEnv(), config.worker?.env ?? {})
@@ -654,14 +662,31 @@ export function createLocalHost({
     announceChildren()
     return null
   }
+  /**
+   * Set while local setup replaces this Agent's general kit files (`replaceWorkerTools`). No Worker starts meanwhile —
+   * not a crash restart, not a reload, not a page — so no call can run on half-replaced adapter bytes.
+   */
+  let workerToolsUpdating = false
   const startWorker = () => {
     if (closing) return closingRefusal
+    if (workerToolsUpdating) return 'This Agent\'s general kit is being replaced; its Worker starts again when that finishes.'
     if (running('worker')) return 'Worker is already running.'
     const path = config.paths?.worker ? resolve(configDir, config.paths.worker) : resolve(HERE, '../worker/rulith-worker.mjs')
     if (!existsSync(path)) return `Worker runtime not found at ${path}. Set paths.worker in the Rulith configuration.`
     let roleEnv
     try { roleEnv = mcpServices.workerEnvironment(effectiveChildEnv(baseEnv(), config.worker?.env ?? {}), dirname(path)) }
     catch (error) { return error.message }
+    // A local Agent's Worker is the platform reviewer's model route (D-1013f): when this profile names no reviewer route
+    // of its own, it is the Agent's own model — the account default or this Agent's override, resolved at this start —
+    // so a saved model change reaches the reviewer at the Worker's next reload, and another account's key never does.
+    // It reviews only if Console designates this Connection as a reviewer; carrying the route grants nothing.
+    // 中文说明：本机 Agent 的 Worker 就是平台审查员的模型路线。实例自己没写审查员路线时，用这个 Agent 此刻的模型（账户默认值
+    // 或它的明确覆盖），模型保存后 Worker 下次重新载入即跟上；只有 Console 指定这条连接为审查员时才会用到。
+    if (selectedRoles.includes('agent') && String(config.worker?.env?.RULITH_REVIEWER_URL ?? '').trim() === '') {
+      const modelEnv = agentEnvironment()
+      roleEnv = { ...roleEnv, ...reviewerRoute({ url: modelEnv.RULITH_MODEL_URL, name: modelEnv.RULITH_MODEL, key: modelEnv.RULITH_MODEL_KEY }),
+        ...(String(config.worker?.env?.RULITH_REVIEWER_MAX_TOKENS ?? '').trim() === '' ? { RULITH_REVIEWER_MAX_TOKENS: '16000' } : {}) }
+    }
     if (toolLibrary !== undefined) {
       // Where an environment's keys live is for composition to say and for nothing else to: a value
       // from this profile's own configuration is dropped, so that no setting can point a Worker at a
@@ -680,11 +705,15 @@ export function createLocalHost({
     // sha256 fingerprints, which it compares and never inverts. The same values the Worker
     // Tools page composed its list from — one function, so the two cannot disagree.
     const materialEnv = materialChildEnv()
+    // Which tools this Worker is started with: the manifest it is about to read, read here once. Local setup waits for
+    // these ids before it reports the general kit advertised; an unreadable manifest is the Worker's own startup error.
+    let loadedToolIds = []
+    try { loadedToolIds = Object.keys(JSON.parse(readFileSync(roleEnv.RULITH_TOOLS_FILE, 'utf8')).tools ?? {}) } catch { /* the Worker reports it */ }
     const child = spawn(process.execPath, [path], {
       env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc', ...materialEnv },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
-    components.worker = { ...components.worker, child, stamp: processStamp(child.pid, { script: path }), roleEnv,
+    components.worker = { ...components.worker, child, stamp: processStamp(child.pid, { script: path }), roleEnv, loadedToolIds,
       readyAt: undefined, onReady: undefined, managedStop: false, availability: 'offline' }
     noteChildStarted(child.pid)
     wireChild('worker', child)
@@ -886,7 +915,7 @@ export function createLocalHost({
   }
   // Reuse the role owner and its drain protocol; no second process manager or polling loop.
   const ensureWorker = async () => {
-    if (closing || setup.busy || mcpServices.busy || !workerEnabled() || running('worker') || reloads.worker || workerRetryTimer
+    if (closing || workerToolsUpdating || setup.busy || mcpServices.busy || !workerEnabled() || running('worker') || reloads.worker || workerRetryTimer
       || workerRestartStopped || workerFailures > workerRestartDelays.length) return
     if (!workerSetup()) { workerFailure = 'Set up this Agent\'s Worker Connection before using local tools.'; return }
     const refused = await permitted({ kind: 'start', role: 'worker' })
@@ -1470,6 +1499,105 @@ export function createLocalHost({
       ready: Object.fromEntries(['agent', 'worker'].map(role => [role,
           running(role) && components[role].readyAt !== undefined && !stopRequested.has(components[role].child)])) }),
     reloadWorker: () => requestReload('worker'),
+    /**
+     * Replace this Agent's general kit files with its Worker drained (PSC 0.2.27 ③; manager-owned local setup).
+     *
+     * Starts are held closed first, then a running Worker is asked to stop the managed way: it finishes the calls it
+     * claimed and its held Poll, and those calls settle as usual. Only once its exit is observed are the files replaced,
+     * by `replace` (the one installer, `kits/general/installer.mjs`), and this host's configuration re-read from disk.
+     * A Worker still finishing work after the drain bound is never forced: nothing is replaced, it resumes on the tools
+     * it has, and the caller is told to retry. Either way starts reopen at the end and an enabled Worker is resumed.
+     * 中文说明：先关住启动，再让 Worker 排空（进行中的调用照常结算）；确认它已退出后才替换文件。到时限仍在收尾就不替换、
+     * 不强杀，让它带着原工具继续，并请调用方重试。无论成败，最后都重新放开启动，并让已开启的 Worker 继续运行。
+     *
+     * A Worker that stopped itself (its Connection credential refused, or its Connection taken over by a newer Worker
+     * process) stays stopped unless `restartStopped` names the explicit setup (its request id) asking, and that setup has
+     * not started it again already (`stoppedRestartedBy`): never the app's start or opening a folder (`repair`), and at
+     * most once per setup. 中文说明：自行停下的 Worker 只有明确的"在本机设置"才重新启动，每次设置至多一次。
+     */
+    replaceWorkerTools: async (replace, { restartStopped = false } = {}) => {
+      const teach = (text) => Object.assign(new Error(text), { setupTeaching: true })
+      if (closing) throw teach(closingRefusal)
+      if (workerToolsUpdating) throw teach('This Agent\'s general kit is already being replaced.')
+      workerToolsUpdating = true
+      try {
+        if (running('worker')) {
+          await controlRole('worker', 'stop', undefined, { stopWaitMs: sampleStopWaitMs })
+          if (running('worker')) {
+            workerToolsUpdating = false
+            requestReload('worker', 'The Worker resumes with its current tools after its running calls finish; the general kit was not replaced.')
+            throw teach('The Worker is still finishing calls in progress, so the general kit was not replaced.'
+              + ' Those calls settle as usual; retry the same setup after they finish.')
+          }
+        }
+        if (closing) throw teach(closingRefusal)
+        const result = await replace()
+        config = normalizeLocalConfig(JSON.parse(readFileSync(configFile, 'utf8')))
+        components.worker.roleEnv = undefined
+        return result
+      } finally {
+        if (workerToolsUpdating) {
+          workerToolsUpdating = false
+          const restart = workerRestartStopped && mayRestartStopped(restartStopped)
+          if (restart) stoppedRestartedBy = restartStopped
+          if (!workerRestartStopped || restart) { workerFailures = 0; workerFailure = ''; workerRestartStopped = false }
+          // A Worker that stopped itself and may not be restarted here stays stopped: `ensureWorker` returns at once.
+          void ensureWorker().catch(error => { workerFailure = error.message; emit('local', 'error', { role: 'worker', note: workerFailure }) })
+        }
+      }
+    },
+    /**
+     * Wait until this Agent's running Worker was started with every one of `toolIds` and is online under its lease —
+     * the poll that brings it online advertises its manifest. A Worker started before those tools were in its manifest
+     * is reloaded after its running calls drain; an enabled Worker that is not running is started — except one that
+     * stopped itself (credential refused, Connection taken over), which only `restartStopped` (an explicit setup's
+     * request id) starts again, once per setup — also counting a start by its kit replacement; otherwise this says why
+     * it is stopped and starts nothing.
+     */
+    confirmWorkerTools: async (toolIds, { timeoutMs = 35_000, restartStopped = false } = {}) => {
+      const teach = (text, errorCode) => Object.assign(new Error(text), { setupTeaching: true, ...(errorCode ? { errorCode } : {}) })
+      const refused = () => teach('Rulith refused this Worker\'s Connection credential, so the Worker stopped. Nothing was restarted.'
+        + ' To reconnect this computer, set this Agent up on this computer again and confirm reconnecting it.', 'connection_rejected')
+      if (!workerEnabled()) throw teach('This computer\'s Worker is off for this Agent; turn it on and retry the same setup.')
+      const deadline = Date.now() + timeoutMs
+      const loaded = () => toolIds.every(id => components.worker.loadedToolIds?.includes(id))
+      for (;;) {
+        if (closing) throw teach(closingRefusal)
+        if (workerToolsUpdating) throw teach('This Agent\'s general kit is being replaced; retry the same setup when that finishes.')
+        if (running('worker') && !reloads.worker && !stopRequested.has(components.worker.child)) {
+          if (!loaded()) requestReload('worker', 'The Worker reloads after its running calls finish, to advertise the general kit.')
+          else if (components.worker.readyAt !== undefined && components.worker.availability === 'online') return { toolIds: [...toolIds] }
+        } else if (!running('worker') && !reloads.worker && !workerRetryTimer) {
+          // Stopped by itself: not started here unless allowed, and then once per setup — a Worker that stops itself again
+          // is said to have done so, not started over and over.
+          if (workerRestartStopped && !mayRestartStopped(restartStopped)) {
+            throw components.worker.availability === 'needs setup' ? refused()
+              : teach('This computer\'s Worker stopped because a newer Worker process took over its Connection. Nothing was'
+                + ' restarted. To use this computer\'s Worker again, set this Agent up on this computer again.', 'worker_taken_over')
+          }
+          if (workerRestartStopped) stoppedRestartedBy = restartStopped
+          workerFailures = 0; workerFailure = ''; workerRestartStopped = false
+          await ensureWorker()
+          if (!running('worker') && workerFailure) throw teach(`The Worker did not start: ${workerFailure}`)
+        }
+        if (components.worker.availability === 'needs setup') throw refused()
+        if (Date.now() >= deadline)
+          throw teach('The Worker has not reported its tools to Rulith yet. It keeps trying; retry the same setup in a moment.')
+        await new Promise(done => setTimeout(done, 50))
+      }
+    },
+    /**
+     * Ask Rulith whether this profile's Worker Connection credential still works (`GET /local-setup/context` with it).
+     * `rejected` only when the service answers 401 or 403; a transport failure is `unknown`, and nothing changes for it.
+     */
+    connectionCheck: async () => {
+      try {
+        const context = await setup.context()
+        return { state: 'valid', agentId: String(context.agentId ?? ''), connectionId: String(context.connectionId ?? '') }
+      } catch (error) {
+        return { state: [401, 403].includes(error?.status) ? 'rejected' : 'unknown' }
+      }
+    },
     toolsDigest: () => (toolLibrary?.active() === true ? libraryDigest() : undefined),
     resumeWorker: () => ensureWorker().catch(error => { workerFailure = error.message; emit('local', 'error', { role: 'worker', note: workerFailure }) }),
     events: () => events.map((event) => ({ ...event })),

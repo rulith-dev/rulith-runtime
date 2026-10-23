@@ -26,7 +26,8 @@ test('conversation keys survive restart; delegated children share the parent, us
   assert.equal(conversationKey(fork), 'dsh:fork');
   assert.equal(conversationKey(agent('fork-child', { parentSession: 'fork', origin: 'subagent', delegationDepth: 1 })), 'dsh:fork');
   assert.equal(depthOf(fork), 0);
-  assert.deepEqual(toolsOf(fork), [...TOOLS, ...DELEGATION_TOOLS]);
+  assert.deepEqual(toolsOf(fork), [...TOOLS]);
+  for (const name of DELEGATION_TOOLS) assert.ok(!toolsOf(main).includes(name));
   for (const invalid of [undefined, 42]) {
     assert.throws(() => conversationKey(agent(invalid)), /session id refused/);
   }

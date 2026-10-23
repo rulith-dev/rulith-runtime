@@ -44,7 +44,7 @@ test('the allow-list adds only the web tools dsh registered', () => {
   }
 });
 
-test('web main and children see exactly their names; write, edit and shell tools never', () => {
+test('web agents see only Rulith and registered web tools; child execution is refused', () => {
   const handlers = new Map();
   installGate({ on: (event, fn) => handlers.set(event, fn), systemPrompt: { section() {} } }, 'approved persona');
   const agent = (header, registered) => {
@@ -55,13 +55,14 @@ test('web main and children see exactly their names; write, edit and shell tools
   };
   const everything = ['web_search', 'web_fetch', 'read', 'read_image', 'write', 'edit', 'glob', 'grep', 'bash', 'pwsh', 'job_output'];
   const main = agent({}, everything); handlers.get('agent/created')({ agent: main });
-  assert.deepEqual(main.filters[0].allow, [...TOOLS, ...DELEGATION_TOOLS, 'web_search', 'web_fetch']);
-  const child = agent({ parentSession: 'main', delegationDepth: 1 }, everything); handlers.get('agent/created')({ agent: child });
-  assert.deepEqual(child.filters[0].allow, [...TOOLS, 'web_search', 'web_fetch']);
-  const keyless = agent({ parentSession: 'main', delegationDepth: 1 }, ['web_fetch', 'write']); handlers.get('agent/created')({ agent: keyless });
+  assert.deepEqual(main.filters[0].allow, [...TOOLS, 'web_search', 'web_fetch']);
+  const child = agent({ parentSession: 'main', delegationDepth: 1 }, everything);
+  assert.throws(() => handlers.get('agent/created')({ agent: child }), /sub-agents are disabled/);
+  assert.equal(child.filters.length, 0);
+  const keyless = agent({}, ['web_fetch', 'write']); handlers.get('agent/created')({ agent: keyless });
   assert.deepEqual(keyless.filters[0].allow, [...TOOLS, 'web_fetch']);
-  for (const filter of [main, child, keyless].map((a) => a.filters[0]))
-    for (const name of ['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'bash', 'pwsh']) assert.ok(!filter.allow.includes(name), name);
+  for (const filter of [main, keyless].map((a) => a.filters[0]))
+    for (const name of [...DELEGATION_TOOLS, 'read', 'read_image', 'write', 'edit', 'glob', 'grep', 'bash', 'pwsh']) assert.ok(!filter.allow.includes(name), name);
   assert.equal(typeof handlers.get('tools/execute'), 'function', 'the web gate installs the web_fetch guard');
 });
 
@@ -121,7 +122,8 @@ test('a refused web_fetch never reaches dsh\'s fetch; other tools and allowed UR
 test('model-visible text names the web tools, the guard\'s refusals and dsh\'s descriptions', () => {
   const doc = read('harness/model-visible.md');
   for (const reason of Object.values(FETCH_REFUSALS)) assert.ok(doc.includes(reason), reason);
-  assert.ok(doc.includes("Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch."));
+  assert.ok(doc.includes("Your tools are Rulith's three and the read-only tools web_search and web_fetch."));
+  assert.ok(!doc.includes('"name": "subagent"'));
   assert.ok(doc.includes('"name": "web_search"') && doc.includes('"name": "web_fetch"'));
 });
 
@@ -161,24 +163,37 @@ test('installed dsh: the overlays enable exactly the web tool plugins, and web_s
   assert.deepEqual(tooling(headless), ['@deepseek-ai/dsh-fs-sandbox', '@deepseek-ai/dsh-tool-call-timeout-policy', '@deepseek-ai/dsh-tool-web',
     '@deepseek-ai/dsh-web', '@deepseek-ai/dsh-web-fetch-http', '@deepseek-ai/dsh-web-search-deepseek']);
   const web = await composed('web');
+  const removed = ['ui-sidebar', 'ui-plugin-manager', 'ui-settings-plugin-inventory', 'ui-settings-plugins',
+    'ui-settings-shell', 'ui-settings-agent-loop', 'ui-settings-web-search',
+    'ui-schedule', 'schedule', 'ui-jobs', 'ui-permission', 'ui-agent-preset', 'session-reference', 'ui-reference',
+    'subagent', 'subagent-spawn-in-process', 'subagent-fork-in-process', 'tool-subagent', 'tool-subagent-fork',
+    'tool-subagent-control', 'tool-subagent-list-agents', 'subagent-model-selection-settings', 'ui-subagent', 'ui-settings-subagent',
+    'ui-deliverables', 'workspace-changes', 'ui-sidebar-documentpreview', 'office-to-pdf',
+    // One Rulith settings page and wizard replace dsh's settings shell, its model pages and "预览版说明"; the model is
+    // chosen in Rulith's settings only, so dsh's composer model picker is off (design §3.2).
+    'ui-settings-general', 'ui-settings-models', 'ui-model-selection'];
+  for (const id of removed) assert.equal(web.find((entry) => entry.id === id), undefined, `${id} is absent from the merged profile`);
+  assert.equal(web.some((entry) => /dsh-(?:tool-)?schedule/.test(entry.name)), false, 'no schedule host or tool registrations');
+  // dsh's settings forms, theme and language services stay for the Rulith page; its directory picker serves the folder chooser.
+  for (const id of ['file-reference-local', 'agent-preset-registry', 'preset-rulith', 'ui-settings', 'ui-theme', 'locale', 'directory-picker',
+    'ui-conversation', 'ui-chat'])
+    assert.ok(web.some((entry) => entry.id === id), `${id} remains enabled`);
   assert.deepEqual(tooling(web), ['@deepseek-ai/dsh-fs-sandbox', '@deepseek-ai/dsh-tool-call-timeout-policy', '@deepseek-ai/dsh-tool-cordis/host',
-    '@deepseek-ai/dsh-tool-subagent', '@deepseek-ai/dsh-tool-subagent', '@deepseek-ai/dsh-tool-subagent-control',
-    '@deepseek-ai/dsh-tool-subagent/model-selection-settings', '@deepseek-ai/dsh-tool-web', '@deepseek-ai/dsh-web', '@deepseek-ai/dsh-web-app',
-    '@deepseek-ai/dsh-web-app/startup', '@deepseek-ai/dsh-web-fetch-http', '@deepseek-ai/dsh-web-search-deepseek']);
+    '@deepseek-ai/dsh-tool-web', '@deepseek-ai/dsh-web', '@deepseek-ai/dsh-web-app',
+    '@deepseek-ai/dsh-web-app/startup', '@deepseek-ai/dsh-web-fetch-http']);
   for (const entries of [headless, web]) {
     const row = (id) => entries.find((entry) => entry.id === id);
     for (const id of ['tool-fs', 'tool-fs-search', 'fs-observation-policy', 'tool-bash', 'tool-pwsh', 'tool-jobs', 'llm-deepseek-account', 'deepseek-account'])
       assert.equal(row(id), undefined, `${id} stays off`);
     assert.deepEqual(row('web').config, { searchProvider: 'deepseek-official', fetchProvider: 'http' });
-    assert.deepEqual(row('web-search-deepseek').config, { apiKeyEnv: 'RULITH_DSH_WEB_SEARCH_KEY', baseURL: 'https://api.deepseek.com/anthropic/v1' },
+    // The web app's DeepSeek provider is registered by rulith-runtime with the key of the turn's Rulith model
+    // (model-runtime.mjs, PSC 0.2.27 ④), under the same provider id; dsh's launch-time plugin is off there.
+    if (entries === web) assert.equal(row('web-search-deepseek'), undefined);
+    else assert.deepEqual(row('web-search-deepseek').config, { apiKeyEnv: 'RULITH_DSH_WEB_SEARCH_KEY', baseURL: 'https://api.deepseek.com/anthropic/v1' },
       'no key in any file, only the variable name; the key goes only to DeepSeek');
     for (const [key, search] of [[undefined, false], ['', false], ['test-search-key', true]]) {
       const config = await withSearchKey(key, () => interpolate({}, row('tool-web').config));
       assert.deepEqual(config, { search, fetch: true, searchTimeoutMs: 60000 });
-      if (entries === web) for (const id of ['tool-subagent', 'tool-subagent-fork']) {
-        const filter = await withSearchKey(key, () => interpolate({}, row(id).config).toolFilter);
-        assert.deepEqual(filter, { allow: [...TOOLS, ...(search ? ['web_search'] : []), 'web_fetch'] }, `${id} children`);
-      }
     }
   }
 });
@@ -281,5 +296,5 @@ test('without a search key the addendum offers only web_fetch, and nothing else 
   const plain = forDeployment(ADDENDUM, {});
   assert.match(plain, /^Your tools are Rulith's three and the read-only tool web_fetch\. Web results leave nothing on the Board/);
   assert.equal(plain.slice(plain.indexOf(' Web results')), ADDENDUM.slice(ADDENDUM.indexOf(' Web results')));
-  assert.match(forDeployment(WEB, {}), /^Your tools are Rulith's three, delegation tools, and the read-only tool web_fetch\./);
+  assert.match(forDeployment(WEB, {}), /^Your tools are Rulith's three and the read-only tool web_fetch\./);
 });

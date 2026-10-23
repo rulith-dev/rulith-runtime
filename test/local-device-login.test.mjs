@@ -86,15 +86,38 @@ test('sign-in and refresh retain only bounded, sanitized reconnectable Connectio
   })
 })
 
-test('a reconnect choice must belong to the selected Agent before any approval request', async t => {
+test('the account\'s default Agent is kept only as the service marks it, as a boolean', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-manager-'))
+  const gateway = createDevicesGateway({ agents: [{ id: 'agent-alpha', name: 'Alpha', isDefault: true },
+    { id: 'agent-beta', name: 'Beta', isDefault: 'yes' }, { id: 'agent-gamma', name: 'Gamma', isDefault: false }] })
+  await gateway.listen()
+  const manager = createManagerServer({ root, port: 0, key: KEY, legacyConfigFile: join(root, 'absent.json') })
+  await manager.listen()
+  t.after(async () => { await manager.close(); await gateway.close(); rmSync(root, { recursive: true, force: true }) })
+  const call = async (path, body) => {
+    const response = await fetch(`http://127.0.0.1:${manager.port}${path}`, { method: 'POST',
+      headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    return { status: response.status, body: await response.json().catch(() => ({})) }
+  }
+  await signIn(gateway, call, ['agent-alpha', 'agent-beta', 'agent-gamma'])
+  const rows = manager.device.status().agents.map(({ id, isDefault }) => [id, isDefault])
+  assert.deepEqual(rows, [['agent-alpha', true], ['agent-beta', undefined], ['agent-gamma', false]],
+    'a value that is not a boolean is not guessed into a default')
+  assert.equal(Object.hasOwn(manager.device.status().agents[1], 'isDefault'), false)
+})
+
+test('a remembered Connection reaches Gateway even when absent from stale reconnect choices', async t => {
   await withManager(t, async ({ gateway, call, manager }) => {
     gateway.setReconnectable('agent-alpha', [{ connectionId: 'conn-alpha', name: 'Alpha computer', createdAt: '' }])
     await signIn(gateway, call)
     const before = gateway.requests.length
     for (const [agentId, reconnectConnectionId] of [['agent-alpha', 'conn-missing'], ['agent-beta', 'conn-alpha']]) {
-      assert.throws(() => manager.device.pair({ pairingId: 'pair-test', deviceSecret: 'proof-test', agentId, reconnectConnectionId }), /Refresh Agents/)
+      await assert.rejects(manager.device.pair({ pairingId: 'pair-test', deviceSecret: 'proof-test', agentId, reconnectConnectionId }))
     }
-    assert.equal(gateway.requests.length, before, 'invalid reconnect choices send no HTTP request')
+    const sent = gateway.requests.slice(before).filter(row => row.path === '/local-devices/pair')
+    assert.equal(sent.length, 2, 'Gateway owns device/Agent/Connection eligibility')
+    assert.equal(sent[0].body.reconnectConnectionId, 'conn-missing')
+    assert.equal(sent.some(row => Object.hasOwn(row.body, 'newConnection')), false)
     assert.equal(manager.device.status().state, 'linked')
   })
 })

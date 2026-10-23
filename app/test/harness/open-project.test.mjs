@@ -78,12 +78,16 @@ test('host routes forward exactly the Gateway contract through the manager and r
     const calls = [], ready = [];
     let answer = (route) => (route === '/manager/projects/state' ? { ok: true, ...notOpen(dir) } : { ok: true, ...notOpen(dir, { state: 'ready' }) });
     const manager = async (route, body) => { calls.push([route, body]); return route === '/manager/state' ? managerState : answer(route, body); };
-    const routes = projectRoutes({ manager, platform: process.platform, onReady: (id) => ready.push(id) });
+    // PSC 0.2.27 ③: the host's "set up on this computer" in repair mode runs first, before the Gateway is asked anything.
+    const repairs = [];
+    const routes = projectRoutes({ manager, repair: async (agentId) => { repairs.push([agentId, calls.length]); },
+      platform: process.platform, onReady: (id) => ready.push(id) });
     const shown = await routes.state({ agentId: 'agent-1', directory: dir });
     assert.equal(shown.state, 'not_open');
     assert.equal(shown.accountName, 'Owner', 'the account the authorization belongs to, by the name this computer shows');
     assert.deepEqual(calls[1], ['/manager/projects/state', { expectedAccountId: 'acct-1', agentId: 'agent-1', connectionId: 'conn-1',
       directory: fs.realpathSync.native(dir), platform: projectPlatform() }]);
+    assert.deepEqual(repairs, [['agent-1', 0]], 'repaired before the manager was asked anything');
     assert.deepEqual(ready, []);
     const opened = await routes.open({ agentId: 'agent-1', directory: dir, requestId: 'b3c1d0a2-0000-4000-8000-000000000001',
       authorizationVersion: 'sha256:v1', expectedAccountId: 'acct-1' });
@@ -142,31 +146,43 @@ function loadClient() {
 const client = loadClient();
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-test('the confirmation lists every item PSC 0.2.24 requires, from the Gateway\'s answer, in plain words', () => {
+test('the confirmation lists in view the folder, the Agent on this computer, what may be done, the tools in plain words, the tier, the caution and how to withdraw; only tool ids with versions and the account are under 详细', () => {
   const shown = plain(client.projectConfirmation(notOpen()));
-  const text = [shown.title, ...shown.rows.flat(), shown.footer].join('\n');
+  // Every item SYS-LOCAL-01 (PSC 0.2.24) requires the confirmation to list is in view, in this order, the tools used
+  // included; design §3.2 folds only the ids with their versions and the account.
+  assert.deepEqual(shown.rows.map(([name]) => name), ['文件夹', '智能体', '可以做的事', '所用工具', '档位', '请注意', '怎么收回']);
+  const text = [shown.title, ...shown.rows.flat(), ...shown.details.flat(), shown.footer].join('\n');
   const row = (label) => shown.rows.find(([name]) => name === label)?.[1];
+  const detail = (label) => shown.details.find(([name]) => name === label)?.[1];
   assert.equal(row('文件夹'), 'D:\\Work\\game');
-  assert.equal(row('账户'), 'acct-1', 'without a name the account shows by its id');
-  assert.equal(plain(client.projectConfirmation(notOpen(undefined, { accountName: 'Owner' }))).rows.find(([name]) => name === '账户')[1], 'Owner');
-  assert.equal(row('智能体'), 'Default agent');
-  assert.equal(row('这台电脑'), 'OWNER-PC（本机连接「Workspace」）');
   assert.match(row('可以做的事'), /读文件.*写文件.*运行命令/);
-  for (const tool of TOOLS) assert.ok(row('所用工具').includes(tool.id), tool.id);
-  assert.match(row('所用工具'), /读文件（eng\.read@2）.*运行命令（eng\.run@2）/);
-  assert.match(row('所用工具'), /engineering_work 1\.0\.0/);
+  assert.match(row('请注意'), /不是操作系统级的隔离/);
+  assert.match(row('怎么收回'), /Console 里解除这个项目的锁定/);
+  assert.match(row('怎么收回'), /停用这台电脑的登录/);
+  assert.doesNotMatch(shown.rows.flat().join('\n'), /eng\.|@\d|1\.0\.0/, 'tool ids and versions stay folded');
+  // The tools, in plain words, each once, with the capability they come from (by its name, without its version).
+  const words = row('所用工具').split('。')[0].split('、');
+  assert.deepEqual(words, ['运行验收检查', '按补丁修改文件', '按名称找文件', '查看后台命令', '在后台运行命令', '停止后台命令', '列出文件', '修改文件',
+    '读文件', '读图片', '运行命令', '搜索文件内容', '运行测试', '查看文件夹的改动', '写文件'], 'one entry per tool, in the order the service lists them');
+  assert.match(row('所用工具'), /来自这个智能体已装的官方编程能力「engineering_work」。$/);
+  assert.deepEqual(shown.details.map(([name]) => name), ['账户', '工具与版本']);
+  assert.equal(detail('账户'), 'acct-1', 'without a name the account shows by its id');
+  assert.equal(plain(client.projectConfirmation(notOpen(undefined, { accountName: 'Owner' }))).details.find(([name]) => name === '账户')[1], 'Owner');
+  assert.equal(row('智能体'), 'Default agent · 这台电脑 OWNER-PC（本机连接「Workspace」）');
+  for (const tool of TOOLS) assert.ok(detail('工具与版本').includes(tool.id), tool.id);
+  assert.match(detail('工具与版本'), /engineering_work 1\.0\.0/);
   assert.match(row('档位'), /非严格/);
   assert.match(row('档位'), /命令和参数不再需要事先有依据/);
   assert.match(row('档位'), /只由你签字的验收合同认定/);
-  assert.match(row('请注意'), /不是操作系统级的隔离/);
-  assert.match(row('怎么撤销'), /Console 里解除这个项目的锁定/);
-  assert.match(row('怎么撤销'), /停用这台电脑的登录/);
   assert.match(shown.footer, /已有的会话不受影响/);
   assert.doesNotMatch(text, /Board|Action|程序|program|治理|Release|Source|摘要|digest/i, 'no internal terms');
   // The server's list is the truth: other tools, another folder, another computer show as they are.
-  const other = plain(client.projectConfirmation(notOpen('/home/o/x', { tools: [{ id: 'eng.new_tool@1' }], computer: { label: '' } })));
-  assert.equal(other.rows.find(([name]) => name === '所用工具')[1].split('。')[0], 'eng.new_tool@1');
-  assert.equal(other.rows.find(([name]) => name === '这台电脑')[1], '未命名的电脑（本机连接「Workspace」）');
+  // A tool this page has no words for is still listed, by its name without the version; two versions of one tool are one entry.
+  const other = plain(client.projectConfirmation(notOpen('/home/o/x', { tools: [{ id: 'eng.new_tool@1' }, { id: 'eng.read@1' }, { id: 'eng.read@2' }],
+    computer: { label: '' }, capability: undefined })));
+  assert.equal(other.rows.find(([name]) => name === '所用工具')[1], 'eng.new_tool、读文件。');
+  assert.equal(other.details.find(([name]) => name === '工具与版本')[1], 'eng.new_tool@1、eng.read@1、eng.read@2。');
+  assert.equal(other.rows.find(([name]) => name === '智能体')[1], 'Default agent · 这台电脑 未命名的电脑（本机连接「Workspace」）');
   // Nothing to confirm when the answer is incomplete or the mode cannot be explained.
   for (const broken of [notOpen('', {}), notOpen(undefined, { tools: [] }), notOpen(undefined, { authorizationVersion: '' }),
     notOpen(undefined, { computer: undefined }), notOpen(undefined, { accountId: '' }), notOpen(undefined, { accountId: undefined })])
@@ -335,7 +351,7 @@ test('flow: refusals read in plain Chinese and are not retried', async () => {
     connection_not_of_this_device: /不是这台电脑设置的/, client_authority_refused: /只能由服务端决定/,
     device_revoked: /重新登录/, official_capability_not_installed: /没有装官方编程能力/,
     project_directory_in_use: /另一项授权占用/, project_nested: /重叠/, platform_mismatch: /写法/,
-    worker_tools_unavailable: /本机执行/, not_signed_in: /没有登录 Rulith/, manager_signing_out: /正在退出/, manager_closing: /正在关闭/,
+    worker_tools_unavailable: /这台电脑还没有报告要用的工具/, not_signed_in: /没有登录 Rulith/, manager_signing_out: /正在退出/, manager_closing: /正在关闭/,
   };
   for (const [code, words] of Object.entries(cases)) {
     const s = scripted([{ ok: true, ...notOpen() }, { ok: false, errorCode: code, teaching: 'English teaching' }]);
@@ -349,6 +365,11 @@ test('flow: refusals read in plain Chinese and are not retried', async () => {
   assert.equal((await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: flowUi().ui, newRequestId: ids() })).text,
     '没有打开项目：这台电脑上没有这个文件夹：D:\\x');
   assert.match(client.refusalText({ errorCode: 'bad_command', teaching: 'A whole drive cannot be opened as a project.' }), /^这个文件夹不能作为项目打开：A whole drive/);
+  // The setup before opening stopped where only the owner can decide (SYS-LOCAL-01): the words point to the place that asks.
+  for (const code of ['runtime_credential_exists', 'connection_rejected', 'connection_missing'])
+    assert.match(client.refusalText({ errorCode: code, teaching: 'English reason' }), /「这台电脑」里对它点「在本机设置」，确认.*后再打开文件夹/, code);
+  assert.match(client.refusalText({ errorCode: 'worker_taken_over' }), /接走了.*「在本机设置」/);
+  assert.match(client.refusalText({ errorCode: 'local_setup_connection_in_use', teaching: 'English reason' }), /另一台电脑上的 Worker 使用.*没有新建连接/);
   // The mode cannot be explained: no dialog, nothing opened.
   s = scripted([{ ok: true, ...notOpen(undefined, { mode: { requested: 'unknown_mode' } }) }]);
   const f = flowUi();
@@ -405,6 +426,11 @@ test('the host serves the project routes on its guarded same-origin API, with th
     const route = new URL(url).pathname;
     seen.push([route, init?.headers?.['x-rulith-manager']]);
     if (route === '/manager/state') return new Response(JSON.stringify({ ok: true, ...managerState }));
+    if (route === '/manager/instances/setup-local') {
+      const body = JSON.parse(init.body);
+      assert.deepEqual([body.agentId, body.mode], ['agent-1', 'repair']);
+      return new Response(JSON.stringify({ ok: true, setup: { requestId: body.requestId, agentId: 'agent-1', mode: 'repair', state: 'done', steps: [] } }));
+    }
     if (route === '/manager/projects/state') return new Response(JSON.stringify({ ok: false, errorCode: 'project_nested', teaching: 'nested' }), { status: 400 });
     return new Response(JSON.stringify({ ok: false, teaching: 'unexpected' }), { status: 404 });
   });
@@ -413,6 +439,7 @@ test('the host serves the project routes on its guarded same-origin API, with th
   await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } } },
     { managerHome: 'fixture-manager', runtimeEntry: 'fixture-runtime', keyFile: 'fixture-key.txt', shadow: { enabled: false } });
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
+  seen.length = 0; // the start's kit refresh read the manager state once (kit-install.mjs)
   const post = async (route, body) => {
     const req = new EventEmitter();
     Object.assign(req, { method: 'POST', url: '/rulith/api/' + route, headers: { host: '127.0.0.1:3080', 'x-deep-rulith': '1' } });
@@ -424,7 +451,8 @@ test('the host serves the project routes on its guarded same-origin API, with th
   };
   const refused = await post('projects/state', { agentId: 'agent-1', directory: dir });
   assert.deepEqual(refused, { code: 200, reply: { ok: false, teaching: 'nested', errorCode: 'project_nested' } });
-  assert.deepEqual(seen.map(([route]) => route), ['/manager/state', '/manager/projects/state']);
+  assert.deepEqual(seen.map(([route]) => route), ['/manager/instances/setup-local', '/manager/state', '/manager/projects/state'],
+    'the folder is repaired first (PSC 0.2.27 ③), then the Gateway is asked');
   assert.ok(seen.every(([, key]) => key === 'fixture-manager-key'));
   assert.equal((await post('folder', { source: 'lab', path: dir })).code, 404, 'the Console proposal route is gone');
 });

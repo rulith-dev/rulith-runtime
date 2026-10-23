@@ -11,7 +11,7 @@ test('RT-PSC-MAP-1 Runtime evidence inventory contains real targets and explicit
   const map=JSON.parse(readFileSync(resolve(root,'conformance/psc.json'),'utf8'))
   assert.equal(map.schema,'rulith-psc-conformance-map/v1')
   assert.equal(map.repository,'runtime')
-  assert.equal(map.contractVersion,'0.2.26')
+  assert.equal(map.contractVersion,'0.2.27')
   assert.match(map.contractReviewedCommit,/^[a-f0-9]{40}$/)
   assert.ok(Object.keys(map.acceptance).length>0)
   const used=new Set()
@@ -25,7 +25,8 @@ test('RT-PSC-MAP-1 Runtime evidence inventory contains real targets and explicit
       assert.equal(entry.state,'mapped',`${id}: cannot delegate Runtime responsibility`)
       assert.ok(Array.isArray(entry.targets) && entry.targets.length>0,`${id}: no targets`)
       for(const target of entry.targets) {
-        assert.match(target.file,/^test\/[a-zA-Z0-9_-]+\.test\.mjs$/)
+        // The local app (app/, D-1019c) proves its own share in app/test/harness.
+        assert.match(target.file,/^(?:test|app\/test\/harness)\/[a-zA-Z0-9_-]+\.test\.mjs$/)
         assert.equal(typeof target.locator,'string')
         assert.ok(target.locator.trim())
         assert.ok(readFileSync(resolve(root,target.file),'utf8').includes(target.locator),`${id}: missing ${target.locator}`)

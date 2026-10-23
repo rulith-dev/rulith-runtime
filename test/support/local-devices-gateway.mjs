@@ -98,6 +98,10 @@ export function createDevicesGateway({
   let modelAnswer = model
   let healthReply
   let healthRefusal
+  /** Whether health answers from this fixture's own records (as the Gateway does) rather than 404 or `healthReply`. */
+  let healthComputed = false
+  /** The Gateway before 0.2.27: a named Connection it cannot reconnect is refused rather than replaced by another. */
+  let legacyReconnect = false
 
   const boardFor = (agentId) => {
     if (!boards.has(agentId)) boards.set(agentId, defaultGateway())
@@ -113,7 +117,7 @@ export function createDevicesGateway({
   /** The device bearer returns its account's current enabled Agent directory. */
   const grantedAgents = (_device) => [...enabled.values()]
     .filter((row) => row !== undefined && row.enabled)
-    .map((row) => ({ id: row.id, name: row.name,
+    .map((row) => ({ id: row.id, name: row.name, ...(row.isDefault === undefined ? {} : { isDefault: row.isDefault }),
       ...(row.reconnectable === undefined ? {} : { reconnectable: row.reconnectable }) }))
 
   const projectContext = (body, allowed, bearer) => {
@@ -171,6 +175,21 @@ export function createDevicesGateway({
     'GET /local-devices/health': (_body, { bearer }) => {
       const device = grantUsable(deviceByToken(bearer))
       if (healthRefusal) refuse(401, healthRefusal, 'device_unauthorized')
+      if (healthComputed && healthReply === undefined) {
+        // As the Gateway's health read (LocalDeviceHealthStore): per granted Agent, the state of the newest Agent token this
+        // device was issued (a token replaced by a later pairing anywhere is revoked) and the Connections registered here.
+        return { device: { deviceId: device.id, name: device.name, state: device.state, expiresAt: device.expiresAt }, truncated: false,
+          agents: grantedAgents(device).filter((row) => device.agentIds.includes(row.id)).map((row) => {
+            const newest = (device.issued ?? []).filter((entry) => entry.agentId === row.id).at(-1)
+            const token = newest === undefined ? undefined : [...agentTokens.values()].find((entry) => entry.jti === newest.jti)
+            return { agentId: row.id, name: row.name,
+              key: { state: token === undefined ? 'absent' : token.revoked || token.superseded ? 'revoked' : 'active' },
+              connections: [...connections.values()].filter((entry) => entry.deviceId === device.id && entry.agentId === row.id)
+                .map((entry) => ({ connectionId: entry.id, name: entry.id, state: entry.deleted ? 'deleted' : 'active',
+                  registeredHere: true, workerOnline: entry.workerActive === true })),
+              reconnectable: [], sources: [] }
+          }) }
+      }
       if (healthReply === undefined) refuse(404, 'Health is not offered by this service.')
       return { device: { deviceId: device.id, name: device.name, state: device.state, expiresAt: device.expiresAt },
         agents: [], truncated: false, ...healthReply }
@@ -359,29 +378,53 @@ export function createDevicesGateway({
       if (pairing.state === 'approved') {
         if (pairing.agentId !== agentId) refuse(409, 'This pairing was already approved for a different Agent.', 'pairing_conflict')
         if (pairing.deviceId !== device.id) refuse(409, 'This pairing was already approved for a different device.', 'pairing_conflict')
-        if (body.reconnectConnectionId !== undefined && body.reconnectConnectionId !== pairing.connectionId)
+        if (body.reconnectConnectionId !== undefined && body.reconnectConnectionId !== pairing.requestedReconnect)
           refuse(409, 'This pairing was already approved for a different Connection.', 'pairing_conflict')
         return { pairingId: pairing.id, agentId, connectionId: pairing.connectionId, state: 'approved', alreadyApproved: true }
       }
-      if (body.reconnectConnectionId !== undefined
-        && !(enabled.get(agentId)?.reconnectable ?? []).some(row => row?.connectionId === body.reconnectConnectionId)) {
-        refuse(409, 'That Connection is no longer available to reconnect.', 'connection_unavailable')
+      // PSC 0.2.27 ②, as the Gateway's approval chooses (gateway LocalSetupStore.reusable): the Connection an instance
+      // remembers is reconnected when it is this Agent's, not deleted, not held by another device's still-valid grant and
+      // has no unfinished key operation (or the directory offers it); otherwise this device's own earliest such Connection
+      // of this Agent; otherwise a new one. The chosen Connection in use by a Worker is refused, and nothing is created.
+      // `refuseUnusableReconnect` is the Gateway before 0.2.27 (D-1007b): a named Connection it cannot reconnect is refused
+      // with `local_setup_refused` instead of falling back.
+      // A Connection revoked with an earlier grant of this computer (signing out revokes it) can be reconnected.
+      const usable = (row) => row !== undefined && row.agentId === agentId && !row.deleted && !row.keyOperationPending
+      let reconnect
+      if (body.reconnectConnectionId !== undefined) {
+        const candidate = connections.get(body.reconnectConnectionId)
+        const holder = candidate?.deviceId === undefined ? undefined : devices.get(candidate.deviceId)
+        const heldElsewhere = holder !== undefined && holder.id !== device.id && holder.state !== 'revoked' && Date.parse(holder.expiresAt) > Date.now()
+        const listed = (enabled.get(agentId)?.reconnectable ?? []).some(row => row?.connectionId === body.reconnectConnectionId)
+        const acceptable = listed || (usable(candidate) && !heldElsewhere)
+        if (legacyReconnect && (!acceptable || candidate?.workerActive)) {
+          refuse(409, 'That Connection cannot be reconnected now: it is not this Agent\'s, or a Worker is still active on it',
+            'local_setup_refused')
+        }
+        if (acceptable) reconnect = body.reconnectConnectionId
       }
-      const issued = [...agentTokens.values()].find((row) => row.agentId === agentId && !row.revoked)
+      reconnect ??= [...connections.values()].find((row) => row.deviceId === device.id && usable(row))?.id
+      if (reconnect !== undefined && connections.get(reconnect)?.workerActive) {
+        refuse(409, 'That Connection is in use by a Worker on another computer.', 'local_setup_connection_in_use')
+      }
+      // The Agent's active token (one at a time): replacing it replaces every token of the Agent still in use, as the
+      // Gateway's issuance revokes the active one.
+      const issued = [...agentTokens.values()].find((row) => row.agentId === agentId && !row.revoked && !row.superseded)
       if (issued !== undefined && body.replaceAgentToken !== true) {
         refuse(409, 'This Agent already has a token. Replacing it must be explicit.', 'runtime_credential_exists')
       }
-      if (issued !== undefined) issued.superseded = true
+      if (body.replaceAgentToken === true) for (const row of agentTokens.values()) if (row.agentId === agentId && !row.revoked) row.superseded = true
       // Ordinary issuance, on the ordinary pairing path. The device grant decided *that* this
       // pairing may proceed; it does not carry the credential.
       const token = 'rlt_agt_' + randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '')
       const jti = 'jti-' + randomUUID().slice(0, 8)
       agentTokens.set(token, { jti, agentId, deviceId: device.id, revoked: false })
-      const connectionId = body.reconnectConnectionId ?? 'conn-' + randomUUID().slice(0, 8)
+      const connectionId = reconnect ?? 'conn-' + randomUUID().slice(0, 8)
       const connectionKey = randomUUID().replace(/-/g, '')
       connections.set(connectionId, { ...connections.get(connectionId),
         id: connectionId, key: connectionKey, agentId, deviceId: device.id, revoked: false })
-      Object.assign(pairing, { state: 'approved', agentId, token, connectionId, connectionKey, deviceId: device.id, jti })
+      Object.assign(pairing, { state: 'approved', agentId, token, connectionId, connectionKey, deviceId: device.id, jti,
+        requestedReconnect: body.reconnectConnectionId })
       device.issued = [...(device.issued ?? []), { jti, connectionId, agentId }]
       return { pairingId: pairing.id, agentId, connectionId, state: 'approved' }
     },
@@ -527,6 +570,7 @@ export function createDevicesGateway({
         const connection = [...connections.values()].find((row) => row.id === request.headers['x-rulith-connection'])
         if (connection === undefined || connection.key !== request.headers['x-rulith-connection-key']) return void reply(401, { teaching: 'Unknown connection.' })
         if (connection.revoked) return void reply(401, { teaching: 'This Connection was revoked with its device.' })
+        if (connection.deleted) return void reply(401, { teaching: 'This Connection was deleted.' })
         return void reply(200, { agentId: connection.agentId, connectionId: connection.id, agentName: enabled.get(connection.agentId)?.name ?? '', sources: [] })
       }
       if (url.pathname === '/local-setup/resources' && method === 'POST') {
@@ -547,6 +591,8 @@ export function createDevicesGateway({
         const issued = agentTokens.get(bearer)
         if (issued === undefined) return void reply(401, { teaching: 'Unknown Agent token.' })
         if (issued.revoked) return void reply(401, { teaching: 'This Agent token was revoked with its device.' })
+        // A token replaced by a later pairing (on any computer) is revoked by that issuance, as the Gateway does.
+        if (issued.superseded) return void reply(401, { teaching: 'This Agent token was replaced.' })
         const presented = String(request.headers['mcp-session-id'] ?? '')
         const session = sessions.get(presented) ?? { id: 'mcp-' + randomUUID().slice(0, 8), focus: new Set(), agentId: issued.agentId }
         sessions.set(session.id, session)
@@ -629,7 +675,27 @@ export function createDevicesGateway({
     disableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = false },
     enableAgent(agentId) { const row = enabled.get(agentId); if (row !== undefined) row.enabled = true },
     setReconnectable(agentId, rows) { enabled.get(agentId).reconnectable = rows },
+    /** A Worker on another computer holds a lease on this Connection (or stops holding it). */
+    setWorkerActive(connectionId, agentId, active = true) {
+      connections.set(connectionId, { id: connectionId, agentId, revoked: false, ...connections.get(connectionId), workerActive: active })
+    },
     setHealth(reply) { healthReply = reply },
+    /** Health answers from this fixture's own records, as the Gateway's does (instead of 404). */
+    computeHealth(on = true) { healthComputed = on },
+    /** The Gateway before 0.2.27 (D-1007b): a named Connection it cannot reconnect is refused with `local_setup_refused`. */
+    refuseUnusableReconnect(on = true) { legacyReconnect = on },
+    /** Console deletes this Connection (it stays as a tombstone in the Agent's configuration). */
+    deleteConnection(connectionId) { connections.get(connectionId).deleted = true },
+    /** This Connection has an unfinished key operation (a rotation, revocation or deletion that has not settled). */
+    keyOperationPending(connectionId, pending = true) { connections.get(connectionId).keyOperationPending = pending },
+    /**
+     * Another computer pairs this Agent with the token replaced: every earlier token of the Agent is replaced (revoked by
+     * that issuance), and the other computer holds the new one.
+     */
+    replaceTokenElsewhere(agentId, deviceId = 'device-elsewhere') {
+      for (const row of agentTokens.values()) if (row.agentId === agentId) row.superseded = true
+      agentTokens.set('rlt_agt_elsewhere_' + randomUUID().replace(/-/g, ''), { jti: 'jti-' + randomUUID().slice(0, 8), agentId, deviceId, revoked: false })
+    },
     /**
      * The next opening: its first `configurationWaits` opens wait at the configuration step (nothing recorded), then it
      * stays in progress for `steps` more reads or retries (program, then mode).

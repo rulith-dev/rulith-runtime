@@ -84,7 +84,7 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "888a778d6d105215eb61c1b66452ba3d7e2f7d6b82f77f32cc31b49ede7781d3"
+      "sha256": "008c6bc76d395c8e78f8ea16fdf8d4927d7b0b3a70d6c8007c98ccc3dea5cfe3"
     },
     "local/material-service.mjs": {
       "sha256": "d0c809c405dd903cff1c1e156b69657a1742ab470671446d6c00c7466201aec6"
@@ -102,19 +102,19 @@
       "sha256": "31eeeb3f1254712d8f4e8fc746be9eb10425f61728c0e5091e8bb0a590850218"
     },
     "local/model-settings.mjs": {
-      "sha256": "d4af81e6663d5b19c32da69c5550ac52afdad021c3ef774a5f27d7f83f4f8236"
+      "sha256": "b1f50863802c9735a61ece6a7913693423cc3b864673bb5a5364e4ea6e38f12f"
     },
     "local/device-client.mjs": {
-      "sha256": "a84fd755aee987eb449730dcc498b1227f2bd3b27ed4fcef227bc99ed7dd4378"
+      "sha256": "f31810cb22024ff129e152f6b82b8024a1cdc440e18f15742cd2550a26ff21f8"
     },
     "local/instance-manager.mjs": {
-      "sha256": "50d58922083357b93f9e6ce4db8827e3778f3a4c65fd13a8a05bc548a4d1b06e"
+      "sha256": "fa1bac1dcc1680c768201e41f1b7f31707431b63385a53735633a33cebb1efbd"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"
     },
     "local/manager-server.mjs": {
-      "sha256": "16e3b8b2ba4e1cb18b0f4727cf8254fce8b1bc3c3e41cceed45599ba830b3e93"
+      "sha256": "3a44672c7b8bbbe058d497c08ec962152d99691ec392b499e578a1f6b4032c72"
     },
     "local/manager-ui.mjs": {
       "sha256": "28048b40e63117d3a6206ad3a83a692add2a703dfe0cb39776690ef0173eb4eb"
@@ -123,7 +123,7 @@
       "sha256": "a5e9860bd554218b478d436fe29727b2f6a9b81969123294e440dec5eb3dcba2"
     },
     "docs/local-manager.md": {
-      "sha256": "3e788d6859b6bd20c80ca2b4a24b2b44f5d557951b8523f66afad9862694469e"
+      "sha256": "ccd781f170e99af76d5fe2281dde8ca1a25b0ea5819d0be019b46a021d02606f"
     },
     "docs/local-materials.md": {
       "sha256": "04c363af1a9c62644f0949a6d22d686235fb369f3e45a6ff051485f262291fdb"
@@ -133,6 +133,9 @@
     },
     "local/setup-service.mjs": {
       "sha256": "14e3eaf78351c25a496f1965694074f124df590c94ae91e829cc777c7e1019ba"
+    },
+    "local/setup-local.mjs": {
+      "sha256": "f44f35b4278657fea813641cc64b03750391e2e8ea3f49b2df414287a2812f5a"
     },
     "local/setup-ui.mjs": {
       "sha256": "99339aa837b6e643579d0000d1be2c1cfaf0cfbd428d49dc5ad912328e31a488"
@@ -159,7 +162,7 @@
       "sha256": "d34185a3b5fd296e2c82c5c2e06809d8e3fec116bf4e6a990d80dd71c6c8d15f"
     },
     "docs/local-setup.md": {
-      "sha256": "fe88afbd85cebcab844144edcc1c4120024d17f3d5146c7e38f2fd280c4d955c"
+      "sha256": "5261f07b97e978a8e6205b6716a7fd4fd519155b672a194e14e192588f070848"
     },
     "config/rulith-sources.example.json": {
       "sha256": "38dd6cb5e0e28e7e5a3b167f59ba5bb2c9263b20123eda28150071c1934f112f"
@@ -231,7 +234,7 @@
       "sha256": "9a40935ceb511799d5f1aa34e9d2502410a77f3ddc70e5cace2b59cf3cf58c16"
     },
     "kits/general/installer.mjs": {
-      "sha256": "1e88d9859cee211dcbb65c2682ab6e34d818c59d4d65a204d34f26b864bcd926"
+      "sha256": "ca5a2da7d73ed32a4119321aab963a9e9501be4dcf67e2ce1c12765928b87c0b"
     },
     "kits/general/job_poll.mjs": {
       "sha256": "6c3b65c8dae24c612fa02b3f59cb5dc9b32115eba60a47bc9e0d510c13e1d5df"

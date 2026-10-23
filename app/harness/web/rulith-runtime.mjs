@@ -20,6 +20,11 @@ import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
 import { handOf, conversationKey, depthOf } from '../subagents.mjs';
 import { ConversationBoards } from './conversation-boards.mjs';
 import { conversationBoards } from './launcher-settings.mjs';
+import { setupRoutes } from './local-setup.mjs';
+import { contextWindowSetting, conversationModel, effectiveModel, installLiveModels, installLiveSearch, modelRoutes, signedInAccount }
+  from './model-runtime.mjs';
+import { folderPicker } from './folder-picker.mjs';
+import { refreshGeneralKits } from '../kit-install.mjs';
 export { awaitOutcome } from '../board-channel.mjs';
 
 export const name = 'rulith-runtime';
@@ -48,8 +53,11 @@ export function cachedBoard(current, status, session) {
  * the manager's own state (the manager answers every operation with its full state appended). */
 export function conversationView(reply) {
   const out = {};
+  // PSC 0.2.27 ①: one tier per conversation (`explorationMode`, the strictest, and `explorationModesMixed`); ⑤: whether a
+  // deletion is finished (`settled`, `deletion`, `refusedGoals`, `goalsUnread`).
   for (const field of ['found', 'conversation', 'connections', 'reviewer', 'state', 'result', 'teaching', 'requestId', 'boardId',
-    'postCallReview', 'explorationModes', 'openGoals', 'pendingCall', 'ended', 'endedAt', 'closedGoals', 'unconfirmedGoals'])
+    'postCallReview', 'explorationMode', 'explorationModesMixed', 'explorationModes', 'openGoals', 'pendingCall', 'ended', 'endedAt',
+    'closedGoals', 'unconfirmedGoals', 'goalsUnread', 'settled', 'refusedGoals', 'deletion'])
     if (reply?.[field] !== undefined) out[field] = reply[field];
   return out;
 }
@@ -117,6 +125,28 @@ export async function apply(ctx, config = {}) {
   installBoardTranscript(ctx, { reliefRatio: config.reliefRatio, compaction: config.compaction });
   // 发给模型的那一份在发出前减负（会话不改）：之前轮次的思考不发，减负边界之前的调用长参数缩短（见 outgoing-trim.mjs）。
   installOutgoingTrim(ctx);
+  // PSC 0.2.27 ④: every turn uses the model saved in Rulith for the conversation's Agent under the account signed in now
+  // (model-runtime.mjs), installed before anything below can wait, so no conversation starts without it. `modelHome` is a
+  // developer setting that reads the account defaults of another manager home; `localContextWindow` (launcher settings)
+  // is the context window of a model on this computer.
+  const modelHome = config.modelHome || process.env.RULITH_DSH_MODEL_HOME || '';
+  const readModel = (agentId) => {
+    const account = signedInAccount(home);
+    return { account, model: effectiveModel({ home, modelHome }, account, agentId) };
+  };
+  // A conversation's turns use its own Agent's model: the Agent recorded for it, whether or not that Agent is attached at
+  // this moment; else the Agent its Rulith calls would go to. When that Agent is not set up here under the account signed
+  // in now (after switching account, say), the turn is refused rather than sent to that account's default model
+  // (model-runtime.mjs conversationModel). 中文说明：会话按自己的 Agent 选模型，不因 Agent 暂时没接上就改用默认模型。
+  const conversationAgent = (sessionId, cwd) => (typeof sessionId === 'string' ? assignments.get(sessionId) : undefined)
+    || resolveHolder(sessionId, cwd)?.agentId;
+  const live = installLiveModels(ctx, {
+    routeFor: (agent) => conversationModel({ home, modelHome }, conversationAgent(topSession(agent), agent?.session?.header?.cwd)),
+    localContextWindow: contextWindowSetting(config.localContextWindow ?? process.env.RULITH_DSH_LOCAL_CONTEXT_WINDOW),
+  });
+  void installLiveSearch(ctx, live).catch(() => {
+    console.error('[rulith model] web_search could not be tied to the Rulith model; it stays unavailable.');
+  });
 
   // 1. The Runtime manager: start it unless one already serves this port; stop only the one started here.
   let child = null;
@@ -144,6 +174,10 @@ export async function apply(ctx, config = {}) {
     }
     return reply;
   };
+  // PSC 0.2.27 ② ③: "set up this Agent on this computer" is the manager's one operation (local-setup.mjs). A new Agent's
+  // general kit home is the app home's kit (the launcher passes it); an Agent that has one keeps it.
+  const setup = setupRoutes({ manager, kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME || '' });
+  const models = modelRoutes({ manager, read: readModel, defaultsElsewhere: Boolean(modelHome) });
 
   // 2. Every paired Agent is attached at once (owner 2026-10-17: the sidebar is Agent -> directory -> conversation). The
   //    three tools are registered once; each call goes to the Agent its conversation belongs to. A conversation belongs to
@@ -260,10 +294,26 @@ export async function apply(ctx, config = {}) {
     sessions.delete(session.id);
     for (const holder of attached.values()) holder.boards.disposeSession(session);
   });
+  // The app's start refreshes the general kit of every Agent that already has one here (or the Agent the launcher
+  // settings name) with its Worker on, through the same manager operation as "set up on this computer" (repair mode),
+  // also when another launcher already runs the manager; it never makes a first install. Tried again on the next tick
+  // until the manager answers.
+  let kitRefresh = 'pending';
+  const refreshKits = () => {
+    if (kitRefresh !== 'pending') return;
+    kitRefresh = 'running';
+    refreshGeneralKits(manager, setup, { agentName: config.agentName }).then(() => { kitRefresh = 'done'; }, () => { kitRefresh = 'pending'; });
+  };
   let busy = false;
   const tick = async () => {
     if (busy) return; busy = true;
+    refreshKits();
     try {
+      // Model routes of an account no longer signed in here leave memory, keys included (model-runtime.mjs); an unreadable
+      // device record counts as signed out.
+      let account = null;
+      try { account = signedInAccount(home); } catch { account = null; }
+      live.forgetOtherAccounts(account);
       const paired = pairedAgents(home);
       const wanted = new Map(paired.map((a) => [a.agentId, a]));
       for (const holder of [...attached.values()])
@@ -286,28 +336,26 @@ export async function apply(ctx, config = {}) {
 
   // 3. The browser half's API: same origin only (the custom header cannot be sent cross-origin without a preflight,
   //    which this route never grants). Answers carry no token, key or secret.
+  // The account entry and the settings page (design §3.2 账户面板, 设置): the signed-in account, this computer's name and,
+  // per Agent of the account, whether it is set up here and its Worker's state. Agents are chosen in the sidebar and
+  // Connections are reused automatically (PSC 0.2.27 ②), so no selection, Connection or tool count is shown. `isDefault`
+  // is the account's own default Agent, passed on only when the service says so.
   const summary = (state) => {
-    const chosen = chosenName();
     const instances = (state.instances ?? []).filter((row) => row.mode === 'local_agent' && !row.signedOutAt);
     return {
       signedIn: state.device?.state === 'linked',
       deviceState: state.device?.state ?? 'unknown',
       account: state.device?.account?.name ?? '',
       origin: state.device?.origin || consoleUrl,
+      computer: os.hostname(),
       teaching: state.device?.teaching ?? '',
       agents: (state.device?.agents ?? []).map((agent) => {
         const instance = instances.find((row) => row.agentId === agent.id);
-        // Worker Connections of this Agent that can be reconnected (Runtime 0.12.5 and later): only names and ids.
-        const reconnectable = (Array.isArray(agent.reconnectable) ? agent.reconnectable : [])
-          .map((row) => ({ connectionId: String(row.connectionId), name: String(row.displayName || row.name), createdAt: String(row.createdAt ?? '') }));
-        return { id: agent.id, name: agent.name, instanceId: instance?.id ?? '', paired: !!instance?.paired, reconnectable,
+        return { id: agent.id, name: agent.name, ...(typeof agent.isDefault === 'boolean' ? { isDefault: agent.isDefault } : {}),
+          paired: !!instance?.paired,
           worker: instance?.workerSetting ? { enabled: !!instance.workerSetting.enabled, state: instance.workerSetting.state ?? '',
             failure: instance.workerSetting.failure ?? '' } : null };
       }),
-      selected: defaultHolder()?.agentName ?? chosen ?? '',
-      tools: status,
-      model: state.modelDefaults ? { name: state.modelDefaults.name ?? '', url: state.modelDefaults.url ?? '',
-        configured: !!state.modelDefaults.configured } : null,
     };
   };
   const send = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
@@ -315,31 +363,6 @@ export async function apply(ctx, config = {}) {
     let text = ''; req.on('data', (chunk) => { text += chunk; if (text.length > 65536) req.destroy(); });
     req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } }); req.on('error', reject);
   });
-  // reconnectConnectionId: an existing Worker Connection of this Agent the person chose to reconnect (PSC SYS-CONN-01,
-  // D-1007b); absent means a new Connection.
-  const setUp = async (agentId, reconnectConnectionId) => {
-    let state = await manager('/manager/state');
-    let instance = (state.instances ?? []).find((row) => row.agentId === agentId && row.mode === 'local_agent' && !row.signedOutAt);
-    if (!instance) {
-      const agent = (state.device?.agents ?? []).find((row) => row.id === agentId);
-      if (!agent) throw new Error('This Agent is not in the signed-in account');
-      const created = await manager('/manager/instances/create', { name: agent.name, mode: 'local_agent',
-        setupTarget: { origin: state.device.origin, accountId: state.device.account.id, agentId } });
-      instance = created.instance ?? (created.instances ?? []).find((row) => row.agentId === agentId) ?? created;
-    }
-    if (!instance.paired) {
-      await manager('/manager/instances/pair', { instanceId: instance.id, agentId,
-        ...(reconnectConnectionId ? { reconnectConnectionId } : {}) });
-      // Pairing often completes inside the pair call; poll only while it is still in progress.
-      for (let i = 0; i < 20; i++) {
-        state = await manager('/manager/state');
-        if ((state.instances ?? []).some((row) => row.id === instance.id && row.paired)) break;
-        try { await manager('/manager/instances/pair/poll', { instanceId: instance.id }); } catch { /* re-read the state above */ }
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-    }
-    return instance.id;
-  };
   // The selected Agent's local Worker as its own Trace shows it: availability, lease and its latest steps. Read from the
   // instance's event stream through the manager (the address carries the instance key and stays in this process);
   // what reaches the page is shortened text, without keys or result bodies.
@@ -449,7 +472,16 @@ export async function apply(ctx, config = {}) {
   // PSC 0.2.24 (D-1018b batch 3): the owner opens a folder of this computer as a project here, confirming once what it
   // grants; no Console step. The page drives the flow (confirmation, progress, asking again); these routes only read and
   // open through the manager's device grant. Once a project is ready its folder appears under the Agent at once.
-  const projects = projectRoutes({ manager, onReady: (instanceId) => sourcesCache.delete(instanceId) });
+  // Before a folder is opened, the same "set up on this computer" runs in repair mode (PSC 0.2.27 ③): whatever is missing
+  // (the kit, the Worker, an unfinished pairing) is fixed first, and an existing pairing is left as it is. Once per Agent
+  // per half minute, so the page's progress reads do not repeat it.
+  const repaired = new Map();
+  const repair = async (agentId) => {
+    if (Date.now() - (repaired.get(agentId) ?? 0) < 30_000) return;
+    await setup.ready({ agentId, mode: 'repair' });
+    repaired.set(agentId, Date.now());
+  };
+  const projects = projectRoutes({ manager, repair, onReady: (instanceId) => sourcesCache.delete(instanceId) });
   // The Agent and the conversation key a session's settings belong to. Only observed mappings: a session that never used
   // Rulith has no Board yet, and asking must not open a connection (same rule as the Board panel).
   const pendingControls = new Map();
@@ -504,7 +536,9 @@ export async function apply(ctx, config = {}) {
           directories.push({ path: own, label: '工作台', source: null });
         }
       }
-      agents.push({ agentId: agent.id, name: agent.name, attached: !!holder, paired: !!instance?.paired,
+      // `isDefault`: the account's default Agent, as the service marks it; absent when it does not say (no badge then).
+      agents.push({ agentId: agent.id, name: agent.name, ...(typeof agent.isDefault === 'boolean' ? { isDefault: agent.isDefault } : {}),
+        attached: !!holder, paired: !!instance?.paired,
         worker: instance?.workerSetting ? { enabled: !!instance.workerSetting.enabled, state: instance.workerSetting.state ?? '' } : null,
         liveConversations: holder?.boards.size ?? 0, directories });
     }
@@ -516,7 +550,32 @@ export async function apply(ctx, config = {}) {
     dirOwners = owners;
     return { defaultAgentId: defaultHolder()?.agentId ?? null, agents, assignments: Object.fromEntries(assignments) };
   };
+  // The OS folder chooser for 「打开文件夹…」 (folder-picker.mjs): dsh's directory-picker service, when it is composed.
+  const folders = folderPicker({ service: () => ctx.get?.('directoryPicker') });
   const routes = {
+    // PSC 0.2.27 ② ③: start (or continue, with the same requestId) setting one Agent up on this computer; answers at once
+    // with the step list. Every 「在本机设置」 click is `setup` mode (it checks this computer's Connection and may start a
+    // Worker that stopped itself); `mode: "repair"` leaves a working pairing as it is and is what opening a folder and the
+    // app's start run. `replaceAgentToken: true` is the owner's confirmation, after the page showed what replacing this
+    // Agent's token does (SYS-LOCAL-01). The GET reads it: { requestId, agentId, mode, state, connectionId,
+    // connectionDisposition, steps }; once it is done the Agent is attached at once, so the sidebar can start conversations.
+    'POST /rulith/api/setup': (body) => setup.start({ agentId: body.agentId, ...(body.mode === 'repair' ? { mode: 'repair' } : {}),
+      ...(body.requestId ? { requestId: body.requestId } : {}), ...(body.replaceAgentToken === true ? { replaceAgentToken: true } : {}) }),
+    'GET /rulith/api/setup': async (query) => {
+      const view = await setup.status(query);
+      if (view.state === 'done') await tick();
+      return view;
+    },
+    // PSC 0.2.27 ④: the model in force (no key), and saving it for the signed-in account; used from the next turn. The
+    // composer asks for its conversation's (`session`): that conversation's Agent's model.
+    'GET /rulith/api/model': (query) => models.get(query.agentId || !query.session ? query
+      : { agentId: conversationAgent(query.session, sessions.get(query.session)?.session?.header?.cwd) }),
+    'POST /rulith/api/model': (body) => models.save(body),
+    // Design §3.2 打开文件夹: the operating system's folder chooser, opened in this process and closed again when the page
+    // goes away. GET: { available }. POST: { state: chosen | cancelled | unavailable, path?, teaching? }; the chosen folder
+    // is then opened through the project routes below like a typed one.
+    'GET /rulith/api/pick-folder': () => folders.available(),
+    'POST /rulith/api/pick-folder': (_body, request) => folders.pick(request),
     'POST /rulith/api/projects/state': (body) => projects.state(body),
     'POST /rulith/api/projects/open': (body) => projects.open(body),
     'GET /rulith/api/health': (query) => health(query),
@@ -528,30 +587,8 @@ export async function apply(ctx, config = {}) {
       return { url: reply.device?.consoleUrl ?? '' };
     },
     'POST /rulith/api/signin/poll': async () => { await manager('/manager/device/poll', {}); return summary(await manager('/manager/state')); },
-    'POST /rulith/api/signout': async () => { await manager('/manager/device/signout', {}); for (const holder of [...attached.values()]) drop(holder); return summary(await manager('/manager/state')); },
-    'POST /rulith/api/select': async (body) => {
-      const state = await manager('/manager/state');
-      const agent = (state.device?.agents ?? []).find((row) => row.id === String(body.agentId ?? ''));
-      if (!agent) throw new Error('Choose an Agent of the signed-in account');
-      // Reconnecting keeps the Agent's Actions and Source bindings on the Connection they belong to; a new Connection
-      // leaves them behind. So reconnecting is the default when the Agent offers exactly one Connection (owner, 10-11);
-      // a new Connection still needs newConnection:true, and several offered Connections still need a choice (D-1007b).
-      const offered = (Array.isArray(agent.reconnectable) ? agent.reconnectable : []).map((row) => String(row.connectionId));
-      const instance = (state.instances ?? []).find((row) => row.agentId === agent.id && row.mode === 'local_agent' && !row.signedOutAt);
-      const reconnect = typeof body.reconnectConnectionId === 'string' ? body.reconnectConnectionId
-        : !instance?.paired && offered.length === 1 && body.newConnection !== true ? offered[0] : '';
-      if (!instance?.paired && offered.length && !reconnect && body.newConnection !== true)
-        throw new Error('Choose whether to reconnect one of this Agent\'s existing connections or to create a new one');
-      if (reconnect && !offered.includes(reconnect)) throw new Error('That connection cannot be reconnected now; refresh and choose again');
-      await setUp(agent.id, reconnect);
-      fs.writeFileSync(selectionFile, JSON.stringify({ agentName: agent.name }));
-      await tick();
-      return summary(await manager('/manager/state'));
-    },
-    'POST /rulith/api/worker': async (body) => {
-      await manager('/manager/instances/worker-setting', { instanceId: String(body.instanceId ?? ''), enabled: body.enabled === true });
-      return summary(await manager('/manager/state'));
-    },
+    'POST /rulith/api/signout': async () => { await manager('/manager/device/signout', {}); for (const holder of [...attached.values()]) drop(holder);
+      live.forgetOtherAccounts(null); return summary(await manager('/manager/state')); },
     'GET /rulith/api/board': (query) => cachedBoard(query.session === undefined ? defaultHolder() : resolveHolder(query.session,
       sessions.get(query.session)?.session?.header?.cwd), status, query.session),
     // The sidebar: every Agent of the signed-in account, its directories on this computer and which conversation is whose.
@@ -583,16 +620,17 @@ export async function apply(ctx, config = {}) {
       return conversationView(await manager('/manager/conversations/state', { agentId, conversationKey: key }));
     },
     'POST /rulith/api/conversation/exploration-mode': async (body) => {
-      // A control's request id is its identity: a reply lost in transit leaves the control pending on the Gateway, and only
-      // the same id resumes it (a new one is refused as control_pending). Keep the id of an unconfirmed switch and resend it
-      // for the same conversation, Connection and mode until the Gateway answers complete.
+      // PSC 0.2.27 ①: one tier per conversation. The Gateway writes it to every Connection of the conversation's Board, so
+      // the request names no Connection. A control's request id is its identity: a reply lost in transit leaves the control
+      // pending on the Gateway, and only the same id resumes it (a new one is refused as control_pending). Keep the id of an
+      // unconfirmed switch and resend it for the same conversation and mode until the Gateway answers complete.
       const target = { ...conversationTarget(body.session), session: body.session };
-      const connectionId = String(body.connectionId ?? ''), mode = String(body.mode ?? '');
-      const pendingKey = `${target.conversationKey}|${connectionId}|${mode}`;
+      const mode = String(body.mode ?? '');
+      const pendingKey = `${target.conversationKey}|${mode}`;
       const requestId = pendingControls.get(pendingKey) ?? randomUUID();
       pendingControls.set(pendingKey, requestId);
       const view = await withBoard(target, async () => conversationView(await manager('/manager/conversations/exploration-mode',
-        { agentId: target.agentId, conversationKey: target.conversationKey, connectionId, mode, requestId })));
+        { agentId: target.agentId, conversationKey: target.conversationKey, mode, requestId })));
       if (view.state === 'complete') pendingControls.delete(pendingKey);
       return view;
     },
@@ -627,9 +665,14 @@ export async function apply(ctx, config = {}) {
       if (req.headers['x-deep-rulith'] !== '1' || !loopbackHost) return send(res, 403, { ok: false, teaching: 'Same-origin Deep Rulith requests only.' });
       const route = routes[`${req.method} ${(req.url ?? '').split('?')[0]}`];
       if (!route) return send(res, 404, { ok: false, teaching: 'No such Deep Rulith route.' });
-      try { send(res, 200, { ok: true, ...(await route(req.method === 'POST' ? await readBody(req)
-        : { workspace: new URL(req.url, 'http://127.0.0.1').searchParams.get('workspace'),
-          session: new URL(req.url, 'http://127.0.0.1').searchParams.get('session') ?? undefined })) }); }
+      const query = () => {
+        const params = new URL(req.url, 'http://127.0.0.1').searchParams;
+        return { ...Object.fromEntries(params), workspace: params.get('workspace'), session: params.get('session') ?? undefined };
+      };
+      // Aborted when the page goes away before the answer (the folder chooser closes then).
+      const gone = new AbortController();
+      res.on?.('close', () => { if (!res.writableEnded) gone.abort(); });
+      try { send(res, 200, { ok: true, ...(await route(req.method === 'POST' ? await readBody(req) : query(), { signal: gone.signal })) }); }
       catch (error) { send(res, 200, { ok: false, teaching: String(error?.message ?? error).slice(0, 400),
         ...(typeof error?.errorCode === 'string' ? { errorCode: error.errorCode } : {}) }); }
     },

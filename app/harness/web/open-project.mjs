@@ -98,9 +98,13 @@ const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 
 /**
  * The two routes. `manager(route, body)` is the host's manager call; `onReady(instanceId)` lets the host drop what it
- * cached about the Agent's Sources, so the new project folder shows in the sidebar at once.
+ * cached about the Agent's Sources, so the new project folder shows in the sidebar at once. `repair(agentId)` is the
+ * host's "set up on this computer" in repair mode (PSC 0.2.27 ③): it runs before the Gateway is asked anything, so a
+ * missing or outdated general kit, a Worker that is off or an unfinished pairing is fixed first instead of being
+ * reported as tools the Agent has not reported. A failed repair is the refusal, with its step's reason and code.
  */
-export function projectRoutes({ manager: call, platform = process.platform, files = LOCAL_FILES, onReady = () => {} }) {
+export function projectRoutes({ manager: call, platform = process.platform, files = LOCAL_FILES, onReady = () => {},
+  repair = async () => {} }) {
   // A manager without these routes (Runtime 0.17.2 and earlier) answers 404 without a code: say what to do about it.
   const manager = (route, body) => call(route, body).catch((error) => {
     if (error?.status === 404 && !error.errorCode && route.startsWith('/manager/projects/'))
@@ -109,8 +113,10 @@ export function projectRoutes({ manager: call, platform = process.platform, file
   });
   const request = async (body) => {
     const agentId = String(body?.agentId ?? '');
+    const directory = localFolder(body?.directory, platform, files);
+    await repair(agentId);
     const target = projectTarget(await manager('/manager/state'), agentId);
-    return { target, directory: localFolder(body?.directory, platform, files) };
+    return { target, directory };
   };
   // The account the authorization belongs to, by the name this computer shows for it, only when the Gateway answered for
   // that same account.
@@ -129,10 +135,10 @@ export function projectRoutes({ manager: call, platform = process.platform, file
     // The request id comes from the page: a reply lost on the way back is retried with the same id, which continues the
     // same opening on the Gateway instead of starting another. The account is the one the confirmation was shown for.
     open: async (body) => {
-      const { target, directory } = await request(body);
       const requestId = String(body?.requestId ?? ''), authorizationVersion = String(body?.authorizationVersion ?? '');
       if (!REQUEST_ID.test(requestId)) throw refused('open_request_invalid', '这次打开缺少有效的请求号，请重新确认。');
       if (!authorizationVersion) throw refused('open_request_invalid', '这次打开缺少确认过的内容版本，请重新确认。');
+      const { target, directory } = await request(body);
       return answer(target, await manager('/manager/projects/open', { requestId,
         expectedAccountId: String(body?.expectedAccountId ?? ''), agentId: target.agentId, connectionId: target.connectionId,
         directory, platform: projectPlatform(platform), authorizationVersion }));

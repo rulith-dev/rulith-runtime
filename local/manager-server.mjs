@@ -259,6 +259,12 @@ export function createManagerServer({
     '/manager/device/forget': (body) => { onlyFields(body, []); return instances.forgetDevice() },
     '/manager/model/default': (body) => instances.setDefaultModel(onlyFields(body, ['expectedOrigin', 'expectedAccountId', 'url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'])),
     '/manager/instances/create': (body) => instances.create(onlyFields(body, ['name', 'mode', 'setupTarget'])),
+    // PSC 0.2.27 ② ③: set one Agent of the signed-in account up on this computer — instance, pairing with automatic
+    // Connection reuse, the general kit, the Worker, its reload. `{requestId, agentId, mode: 'setup'|'repair', kitHome?,
+    // replaceAgentToken?}` starts it, or continues the same request from its first unfinished step; it answers at once
+    // with `setup` (the step list), and `GET /manager/instances/setup-local?requestId=` reads it. `replaceAgentToken: true`
+    // is the person's confirmation of replacing this Agent's token (SYS-LOCAL-01). See setup-local.mjs.
+    '/manager/instances/setup-local': (body) => ({ setup: instances.setupLocal(onlyFields(body, ['requestId', 'agentId', 'mode', 'kitHome', 'replaceAgentToken'])) }),
     '/manager/instances/pair': (body) => {
       const fields = onlyFields(body, ['instanceId', 'agentId', 'replaceAgentToken', 'reconnectConnectionId'])
       return instances.pair(String(fields.instanceId ?? ''), { agentId: fields.agentId,
@@ -355,6 +361,7 @@ export function createManagerServer({
   }
   /** What this environment's tools page reads. Authenticated like everything else, and it changes nothing. */
   const reads = {
+    '/manager/instances/setup-local': query => ({ setup: instances.setupLocalStatus(query.get('requestId')) }),
     '/manager/health': async () => {
       let gateway, gatewayState = 'unavailable'
       if (device.status().state === 'linked') {

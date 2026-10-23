@@ -59,6 +59,7 @@ const files = [
   'docs/local-materials.md',
   'local/markdown.mjs',
   'local/setup-service.mjs',
+  'local/setup-local.mjs',
   'local/setup-ui.mjs',
   'local/mcp-services.mjs',
   'local/mcp-registry.mjs',

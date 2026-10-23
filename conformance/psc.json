@@ -1,8 +1,8 @@
 {
   "schema": "rulith-psc-conformance-map/v1",
   "repository": "runtime",
-  "contractVersion": "0.2.26",
-  "contractReviewedCommit": "dee6a499887efbedafa9e0890e115f8f4ee303aa",
+  "contractVersion": "0.2.27",
+  "contractReviewedCommit": "1ba1d4b22d20be5d71d9dc79d495f3806b99c5d3",
   "blockers": {
     "contract_changed": "The PSC row changed after this Runtime mapping was made against 0.2.4; its tests must be re-checked against the current clauses before the item can be mapped again (D-1018a reconciliation, 2026-10-18).",
     "evidence_review": "Clause-wide Runtime evidence has not been independently reviewed; existing green tests alone do not establish complete coverage.",
@@ -57,6 +57,37 @@
         {"file": "test/general-kit-project.test.mjs", "locator": "an identity change never leaves a pass current: removing kit-id or the state file still withdraws it on the next step"},
         {"file": "test/general-kit-project.test.mjs", "locator": "nested project roots under one kit home are refused, either way round; a refused root leaves no record behind"},
         {"file": "test/general-kit-project.test.mjs", "locator": "once a root has a project identity, older versions that write, run or test are refused; reads still work"}
+      ]
+    },
+    "ACC-CONV-09": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/settings.test.mjs", "locator": "one tier per conversation: the strictest the Gateway reports, never a wider one"},
+        {"file": "app/test/harness/settings.test.mjs", "locator": "the composer has exactly two chips, 档位 and 模型; narrowing applies at once, widening shows the approved confirmation first"}
+      ]
+    },
+    "ACC-LOCAL-09": {
+      "state": "mapped",
+      "targets": [
+        {"file": "test/local-manager.test.mjs", "locator": "setup-local sets a fresh Agent up in one operation: instance, Connection, kit, Worker, reload, ready"},
+        {"file": "test/local-manager.test.mjs", "locator": "setup-local after signing out and in again reconnects the Connection this computer had, in the same instance"},
+        {"file": "test/local-manager.test.mjs", "locator": "setup-local stops at a refused pairing with the Gateway"},
+        {"file": "test/local-manager.test.mjs", "locator": "setup-local kit refresh drains a busy Worker before replacing adapter bytes, then reloads it"},
+        {"file": "test/local-manager.test.mjs", "locator": "setup-local asks before replacing an Agent token another computer holds; confirmed, this computer gets its own Connection"},
+        {"file": "app/test/harness/onboarding.test.mjs", "locator": "setup asks before replacing an Agent token another computer holds, and only the confirmation replaces it"},
+        {"file": "test/local-manager.test.mjs", "locator": "setup-local on a computer whose Agent token was replaced elsewhere asks first, then re-pairs this computer"},
+        {"file": "test/local-manager.test.mjs", "locator": "a declined token replacement leaves nothing reserved"},
+        {"file": "test/local-manager.test.mjs", "locator": "setup-local re-pairing a Connection in use elsewhere is refused and withdrawn"}
+      ]
+    },
+    "ACC-LOCAL-10": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/local-setup.test.mjs", "locator": "every turn uses the model saved for its Agent; a running turn keeps its model and key"},
+        {"file": "app/test/harness/local-setup.test.mjs", "locator": "installed dsh: a turn finishes on the model it started with, and the next turn uses the newly saved one"},
+        {"file": "app/test/harness/local-setup.test.mjs", "locator": "the model in force is the signed-in account"},
+        {"file": "app/test/harness/local-setup.test.mjs", "locator": "installed dsh: after a model change or an account switch, step compaction measures and summarizes on the new turn"},
+        {"file": "app/test/harness/local-setup.test.mjs", "locator": "the host routes a conversation by the Agent recorded for it, attached or not, and refuses it under another account"}
       ]
     }
   }

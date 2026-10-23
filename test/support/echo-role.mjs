@@ -12,7 +12,7 @@
  * `RULITH_TEST_*` variables come from the instance configuration, so they survive the
  * manager's environment isolation exactly as any other configured value does.
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 
 const agentRole = process.argv.includes('--serve')
 const observed = Object.fromEntries(Object.entries(process.env)
@@ -54,6 +54,16 @@ const composed = {
 
 if (process.env.RULITH_TEST_EXIT === '1') {
   console.error('echo-role: refusing to start, as this scenario asked')
+  process.exit(3)
+}
+
+/**
+ * `RULITH_TEST_EXIT_ONCE` names a file. The first start (the file is absent) writes it and refuses as above; later starts
+ * run normally: a Worker whose credential was refused once and that works when it is started again.
+ */
+if (process.env.RULITH_TEST_EXIT_ONCE && !existsSync(process.env.RULITH_TEST_EXIT_ONCE)) {
+  writeFileSync(process.env.RULITH_TEST_EXIT_ONCE, 'refused once')
+  console.error('echo-role: refusing to start once, as this scenario asked')
   process.exit(3)
 }
 

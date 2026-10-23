@@ -72,6 +72,31 @@ Execution credentials are sent to their configured Gateway for authentication;
 model credentials are sent to the configured model service. Model defaults are local settings,
 scoped to the signed-in account and Console origin in this environment. They are not uploaded to Console.
 
+## Set an Agent up on this computer in one step
+
+The local app's 「在本机设置」 uses one manager operation, `POST /manager/instances/setup-local`
+(`{requestId, agentId, mode: "setup" | "repair", kitHome?, replaceAgentToken?}`; read with `GET /manager/instances/setup-local?requestId=`).
+It answers at once with the step list and runs, in order: **instance** (this Agent's instance, created when it has none),
+**pair** (a working Connection is kept without rotating it; otherwise the Connection this instance remembers, also after a
+sign-out, is offered for reconnection and the Gateway decides; it creates a Connection only when this device has none),
+**kit** (the general kit is installed or refreshed; a running Worker drains first and is never forced), **worker** (local
+tools on), **reload** (the Worker runs with the kit's tools and reports them) and **ready** (the Connection id and whether it
+was reused or created). A failure stops at its step with a reason, and the same request id continues from there; two
+requests for one Agent run one after the other. `repair` mode — used before a project is opened and when the app starts —
+never changes an existing pairing and never starts a Worker that stopped itself (its Connection credential refused, or its
+Connection taken over by another Worker process); only `setup` mode, an explicit click, does, and at most once per setup.
+In `setup` mode a working Connection is kept only while this computer's Agent token is current too, as the device's Health
+read reports it (no token travels). Replacing the Agent's token is never automatic: when another computer or client holds
+it, or replaced this computer's token since, **pair** fails with `runtime_credential_exists`; when Rulith refuses an
+attached instance's Connection credential, or it is missing, **pair** fails with `connection_rejected` or
+`connection_missing`, because reconnecting this computer is a new pairing of the same Connection (its new key delivered
+here; Source bindings and Tool lock unchanged), which replaces the token too. The same request, or a new one, with
+`replaceAgentToken: true` — the person's confirmation that clients still using the old token stop working — continues. A
+pairing the account service refused before approving it is withdrawn there at once, so nothing waits on the person: a
+Connection in use by a Worker elsewhere is refused (`local_setup_connection_in_use`) and nothing is created; a remembered
+Connection an older service refuses to reconnect (`local_setup_refused`) is forgotten and the pairing goes on without it.
+Nothing here grants a tool or Source permission.
+
 ## Health and recovery
 
 Open **Health** at the lower left to check this computer's sign-in, Agent keys, Worker
@@ -107,7 +132,7 @@ once. New local Agent profiles follow this default. For one Agent, open its gear
 choose **Model settings** to switch between the default and a separate configuration.
 Profiles created before this feature and imported installations keep their existing settings.
 
-Changing the default or an Agent’s override restarts the affected Agent automatically between turns. Accepted turns finish on the previous model; new messages wait for the restart. The page says when model settings are missing and takes **Set model** directly to the editor.
+Changing the default or an Agent’s override restarts the affected Agent automatically between turns. Accepted turns finish on the previous model; new messages wait for the restart. The local app uses a saved model from its next turn without any restart. A local Agent's Worker takes the same model as its reviewer route at its next reload (only used if Console designates that Connection as a reviewer), unless the profile's own Worker settings name a reviewer route. The page says when model settings are missing and takes **Set model** directly to the editor.
 If the model endpoint changes while a Worker remains running, that Worker still reads
 attachments for the previous endpoint until its current executions drain. The Worker
 reloads automatically; adding a file during the drain explains the pending reload.

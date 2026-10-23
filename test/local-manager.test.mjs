@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { createLocalSetup } from '../local/setup-local.mjs'
 /**
  * Several Local instances on one computer, and the separations that make them several.
  *
@@ -1578,6 +1579,8 @@ test('the manager answers exactly its documented control-plane operations', asyn
       '/manager/device/start', '/manager/health', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll',
+      // PSC 0.2.27 ② ③: one operation sets an Agent up on this computer (the POST) and its progress is read (the GET).
+      '/manager/instances/setup-local', '/manager/instances/setup-local',
       '/manager/instances/tools', '/manager/instances/worker-setting', '/manager/model/default',
       '/manager/projects/open', '/manager/projects/state',
       '/manager/tools/mcp-apply', '/manager/tools/mcp-detail', '/manager/tools/mcp-downloads', '/manager/tools/mcp-install',
@@ -2117,4 +2120,489 @@ test('checker installation has no account governance effect and retired preparat
     assert.equal(downloads, 1)
     assert.equal(gateway.requests.some(r => /authoring\/(status|prepare)/.test(r.path)), false)
   }, { installChecker: async () => { downloads++ } })
+})
+
+// ── Set up this Agent on this computer (PSC 0.2.27 ② ③; ACC-LOCAL-09) ───────────────────────────────────────────
+
+/** New instances made by setup run the reporting stand-in as their Worker; nothing else about them changes. */
+const echoWorkers = (manager) => {
+  const original = manager.instances.create
+  manager.instances.create = async (input) => {
+    const created = await original(input)
+    const config = loadInstanceConfig(created.directory)
+    config.paths = { ...config.paths, worker: ECHO }
+    saveInstanceConfig(created.directory, config)
+    return created
+  }
+}
+const SETUP_ORDER = ['instance', 'pair', 'kit', 'worker', 'reload', 'ready']
+const pairRequests = (gateway) => gateway.requests.filter((row) => row.path === '/local-devices/pair')
+const setUp = async (manager, body) => { manager.instances.setupLocal(body); return manager.instances.waitSetupLocal(body.requestId) }
+
+test('setup-local sets a fresh Agent up in one operation: instance, Connection, kit, Worker, reload, ready', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    const body = { requestId: 'setup-fresh-0001', agentId: 'agent-alpha' }
+    const started = manager.instances.setupLocal(body)
+    assert.deepEqual(started.steps.map((step) => step.name), SETUP_ORDER, 'the step list is there from the first answer')
+    const done = await manager.instances.waitSetupLocal(body.requestId)
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.deepEqual(done.steps.map((step) => [step.name, step.state]), SETUP_ORDER.map((name) => [name, 'done']))
+    assert.equal(done.connectionDisposition, 'created')
+    const [row] = manager.instances.overview()
+    assert.equal(row.agentId, 'agent-alpha')
+    assert.equal(row.connectionId, done.connectionId)
+    assert.equal(row.workerSetting.enabled, true)
+    // The Worker was started once, already with the kit: no drain of a Worker started without it.
+    const live = manager.instances.hosts.get(row.id).host
+    assert.equal(live.events().filter((event) => event.src === 'worker' && event.type === 'spawn').length, 1)
+    const installed = loadInstanceConfig(row.directory)
+    assert.equal(installed.worker.env.ENG_KIT_HOME, join(row.directory, 'general-kit'))
+    assert.ok(Object.keys(JSON.parse(readFileSync(installed.worker.env.RULITH_TOOLS_FILE, 'utf8')).tools).some((id) => id.startsWith('eng.')))
+    // One pairing, and no "new Connection" field anywhere: there is no choice to make.
+    assert.equal(pairRequests(gateway).length, 1)
+    assert.equal(Object.hasOwn(pairRequests(gateway)[0].body, 'newConnection'), false)
+    // The same request again is the same finished operation; another request for this Agent converges on its instance
+    // and its working Connection, which is kept without a pairing or a rotation.
+    assert.equal(manager.instances.setupLocal(body).state, 'done')
+    const again = await setUp(manager, { requestId: 'setup-again-0001', agentId: 'agent-alpha' })
+    assert.equal(again.state, 'done', JSON.stringify(again))
+    assert.equal(again.connectionDisposition, 'reused')
+    assert.equal(again.connectionId, done.connectionId)
+    assert.match(again.steps[1].reason, /not rotated/)
+    assert.match(again.steps[2].reason, /current/)
+    assert.equal(pairRequests(gateway).length, 1)
+    assert.equal(manager.registry.read().instances.length, 1)
+    // Nothing the operation reports or stores carries a credential.
+    const printed = JSON.stringify([done, again]) + readFileSync(join(manager.registry.root, 'setup-local-requests.json'), 'utf8')
+    for (const secret of [installed.worker.env.RULITH_CONNECTION_KEY, installed.agent.env.RULITH_TOKEN]) {
+      assert.ok(secret, 'the instance holds both credentials')
+      assert.equal(printed.includes(secret), false)
+    }
+    // The route answers at once with the same view, and the read route finds it.
+    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/setup-local?requestId=${body.requestId}`,
+      { headers: { 'x-rulith-manager': KEY } })
+    assert.equal((await response.json()).setup.state, 'done')
+  })
+})
+
+test('setup-local after signing out and in again reconnects the Connection this computer had, in the same instance', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    const first = await setUp(manager, { requestId: 'setup-before-0001', agentId: 'agent-alpha' })
+    assert.equal(first.state, 'done', JSON.stringify(first))
+    await manager.instances.stop(first.instanceId)
+    assert.equal((await manager.instances.signOut()).state, 'signed_out')
+    // The secret went with the sign-out; the id of the Connection is remembered.
+    const [signedOut] = manager.registry.read().instances
+    assert.equal(loadInstanceConfig(signedOut.directory).worker.env.RULITH_CONNECTION_KEY, '')
+    assert.equal(signedOut.previousConnection.connectionId, first.connectionId)
+    const started = await manager.device.start({ consoleUrl: gateway.origin, name: 'Test computer' })
+    gateway.approve(started.code, AGENTS)
+    await manager.device.poll()
+    // No reconnect choice is listed or made: the remembered id is offered, and the Gateway reconnects it because no other
+    // device's valid grant holds it (the old grant was revoked by the sign-out).
+    const before = pairRequests(gateway).length
+    const second = await setUp(manager, { requestId: 'setup-after-0001', agentId: 'agent-alpha' })
+    assert.equal(second.state, 'done', JSON.stringify(second))
+    assert.equal(second.instanceId, first.instanceId, 'the same instance, with its conversations, is set up again')
+    assert.equal(second.connectionId, first.connectionId, 'the original Connection, not a new one')
+    assert.equal(second.connectionDisposition, 'reused')
+    const sent = pairRequests(gateway).slice(before)
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0].body.reconnectConnectionId, first.connectionId)
+    assert.equal(Object.hasOwn(sent[0].body, 'newConnection'), false)
+    assert.equal(manager.registry.read().instances.length, 1)
+    assert.equal(manager.registry.read().instances[0].previousConnection, undefined)
+  })
+})
+
+test('setup-local stops at a refused pairing with the Gateway\'s reason, and the same request continues from there', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    // The Connection this instance remembers is in use by a Worker on another computer: refused, nothing created.
+    const created = await manager.instances.create({ name: 'Remembers', mode: 'local_agent' })
+    await manager.registry.patchInstance(created.id, () => ({ previousConnection: { origin: gateway.origin,
+      accountId: manager.device.status().account.id, agentId: 'agent-alpha', connectionId: 'conn-elsewhere' } }))
+    gateway.setWorkerActive('conn-elsewhere', 'agent-alpha')
+    const body = { requestId: 'setup-refused-0001', agentId: 'agent-alpha' }
+    const failed = await setUp(manager, body)
+    assert.equal(failed.state, 'failed')
+    assert.equal(failed.instanceId, created.id)
+    assert.deepEqual(failed.steps.map((step) => step.state), ['done', 'failed', 'pending', 'pending', 'pending', 'pending'])
+    assert.match(failed.steps[1].reason, /in use by a Worker on another computer/)
+    assert.equal(failed.steps[1].errorCode, 'local_setup_connection_in_use')
+    assert.equal(pairRequests(gateway).at(-1).body.reconnectConnectionId, 'conn-elsewhere')
+    assert.equal(manager.registry.instance(created.id).connectionId ?? '', '', 'no Connection was created instead')
+    assert.equal(manager.registry.instance(created.id).pairing, undefined, 'the refused attempt is withdrawn, not left reserved')
+    assert.equal(gateway.pairings.get(pairRequests(gateway).at(-1).body.pairingId).state, 'cancelled')
+    // That Worker stops: the same request continues at the pairing step and reconnects the same Connection.
+    gateway.setWorkerActive('conn-elsewhere', 'agent-alpha', false)
+    const done = await setUp(manager, body)
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.equal(done.connectionId, 'conn-elsewhere')
+    assert.equal(done.connectionDisposition, 'reused')
+    assert.equal(manager.registry.read().instances.length, 1)
+  })
+})
+
+test('setup-local kit refresh drains a busy Worker before replacing adapter bytes, then reloads it', async t => {
+  await withManager(t, async ({ manager }) => {
+    echoWorkers(manager)
+    const first = await setUp(manager, { requestId: 'setup-busy-first', agentId: 'agent-alpha' })
+    assert.equal(first.state, 'done', JSON.stringify(first))
+    await manager.instances.stop(first.instanceId)
+    const directory = manager.registry.instance(first.instanceId).directory
+    const config = loadInstanceConfig(directory)
+    // The stand-in keeps working for half a second after it is asked to stop, as a Worker finishing a call does.
+    config.worker.env.RULITH_TEST_STOP_DELAY_MS = '500'
+    saveInstanceConfig(directory, config)
+    await manager.instances.setWorkerEnabled(first.instanceId, true)
+    await waitUntil(() => manager.instances.hosts.get(first.instanceId).host.status().ready.worker)
+    const adapter = join(config.worker.env.RULITH_WORKER_ROOT, 'adapters', 'engineering-work', 'adapter.mjs')
+    writeFileSync(adapter, '// old bytes still used by a call\n')
+    manager.instances.setupLocal({ requestId: 'setup-busy-refresh', agentId: 'agent-alpha', mode: 'repair' })
+    await waitUntil(() => manager.instances.setupLocalStatus('setup-busy-refresh').steps[2].state === 'running'
+      && manager.instances.hosts.get(first.instanceId).host.events().some((event) => event.src === 'worker' && /finishing work/.test(event.line ?? '')))
+    assert.match(readFileSync(adapter, 'utf8'), /old bytes/, 'nothing is replaced while the Worker is still finishing its call')
+    const done = await manager.instances.waitSetupLocal('setup-busy-refresh')
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.doesNotMatch(readFileSync(adapter, 'utf8'), /old bytes/)
+    const host = manager.instances.hosts.get(first.instanceId).host
+    assert.equal(host.status().ready.worker, true, 'the Worker runs again, on the new files')
+  })
+})
+
+test('setup progress persists failures, continues unfinished steps only, and keeps provider text out', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'rulith-setup-progress-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const called = [], scope = () => ({ origin: 'https://console.example', accountId: 'account-one' })
+  let fail = 'kit'
+  const actions = Object.fromEntries(SETUP_ORDER.map((name) => [name, async () => {
+    called.push(name)
+    if (name === fail) throw new Error('provider reflected TOP-SECRET')
+    return name === 'instance' ? { instanceId: 'instance-one' } : name === 'pair'
+      ? { connectionId: 'connection-one', connectionDisposition: 'reused', reason: 'Reconnected.' } : {}
+  }]))
+  const options = { root, scope, actions, admit: (action) => action() }
+  let setup = createLocalSetup(options)
+  const body = { requestId: 'setup-progress-one', agentId: 'agent-one' }
+  setup.start(body); setup.start(body)
+  let result = await setup.wait(body.requestId)
+  assert.equal(result.state, 'failed')
+  assert.deepEqual(called, ['instance', 'pair', 'kit'], 'a duplicate start is the same run')
+  assert.deepEqual(result.steps.map((step) => step.state), ['done', 'done', 'failed', 'pending', 'pending', 'pending'])
+  assert.equal(result.steps[1].reason, 'Reconnected.')
+  assert.match(result.steps[2].reason, /retry the same setup/)
+  assert.equal(JSON.stringify(result).includes('TOP-SECRET'), false)
+  assert.equal(readFileSync(join(root, 'setup-local-requests.json'), 'utf8').includes('TOP-SECRET'), false)
+  // A teaching an action marks as one is the reason, word for word.
+  fail = 'kit'
+  actions.kit = async () => { called.push('kit'); throw Object.assign(new Error('The Worker is still finishing calls in progress.'), { setupTeaching: true, errorCode: 'worker_busy' }) }
+  result = await (setup.start(body), setup.wait(body.requestId))
+  assert.equal(result.steps[2].reason, 'The Worker is still finishing calls in progress.')
+  assert.equal(result.steps[2].errorCode, 'worker_busy')
+  // A new process continues from the first unfinished step.
+  fail = ''
+  actions.kit = async () => { called.push('kit'); return {} }
+  setup = createLocalSetup(options)
+  setup.start(body)
+  result = await setup.wait(body.requestId)
+  assert.equal(result.state, 'done')
+  assert.deepEqual(called, ['instance', 'pair', 'kit', 'kit', 'kit', 'worker', 'reload', 'ready'])
+  assert.equal(result.connectionDisposition, 'reused')
+  setup.start(body)
+  assert.equal(called.length, 8, 'a finished request is not run again')
+  assert.throws(() => setup.start({ ...body, agentId: 'agent-two' }), /another Agent/)
+  assert.throws(() => setup.start({ ...body, requestId: 'short' }), /request id/)
+  const otherAccount = createLocalSetup({ ...options, scope: () => ({ ...scope(), accountId: 'account-two' }) })
+  assert.throws(() => otherAccount.status(body.requestId), /signed-in account/)
+  // A step that was running when the process ended reads as interrupted, and is retried by the same request.
+  const stored = JSON.parse(readFileSync(join(root, 'setup-local-requests.json'), 'utf8'))
+  stored.push({ ...stored[0], requestId: 'setup-progress-two', state: 'running',
+    steps: SETUP_ORDER.map((name, index) => ({ name, state: index < 3 ? 'done' : index === 3 ? 'running' : 'pending', reason: '' })) })
+  writeFileSync(join(root, 'setup-local-requests.json'), JSON.stringify(stored))
+  setup = createLocalSetup(options)
+  const interrupted = setup.status('setup-progress-two')
+  assert.equal(interrupted.state, 'failed')
+  assert.match(interrupted.steps[3].reason, /manager stopped during this step/)
+})
+
+test('setup-local re-pairs an attached Agent whose Connection credential Rulith refuses only on the confirmation, reconnecting the same Connection', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    const first = await setUp(manager, { requestId: 'setup-refused-key-1', agentId: 'agent-alpha' })
+    assert.equal(first.state, 'done', JSON.stringify(first))
+    const directory = manager.registry.instance(first.instanceId).directory
+    const before = loadInstanceConfig(directory)
+    gateway.replaceConnectionKey(first.connectionId, 'rotated-in-console')
+    const pairs = pairRequests(gateway).length
+    const refused = await setUp(manager, { requestId: 'setup-refused-key-2', agentId: 'agent-alpha' })
+    assert.equal(refused.state, 'failed')
+    assert.equal(refused.steps[1].errorCode, 'connection_rejected')
+    assert.match(refused.steps[1].reason, /Nothing was changed/)
+    // The words name what the app offers (setting up again with a confirmation), not controls that no longer exist.
+    assert.match(refused.steps[1].reason, /set it up again and confirm replacing this Agent's token/)
+    assert.doesNotMatch(refused.steps[1].reason, /Replace the Connection key|from Rulith's settings/)
+    assert.equal(pairRequests(gateway).length, pairs, 'no pairing, no rotation, no new Connection')
+    const after = loadInstanceConfig(directory)
+    assert.equal(after.agent.env.RULITH_TOKEN, before.agent.env.RULITH_TOKEN, 'the Agent token is kept')
+    assert.equal(after.worker.env.RULITH_CONNECTION_KEY, before.worker.env.RULITH_CONNECTION_KEY)
+    // Repair (opening a folder, the app's start) does not ask Rulith about pairing at all.
+    const repair = await setUp(manager, { requestId: 'setup-refused-key-3', agentId: 'agent-alpha', mode: 'repair' })
+    assert.equal(repair.steps[1].state, 'done')
+    assert.equal(pairRequests(gateway).length, pairs)
+    // Confirmed (PSC 0.2.27 ②: reconnecting is rotating and delivering to this computer): the same Connection gets a new
+    // key here, and the Agent token, which a new pairing replaces, is replaced — what the person confirmed.
+    const tokenBefore = gateway.agentTokens.get(before.agent.env.RULITH_TOKEN)
+    const reconnected = await setUp(manager, { requestId: 'setup-refused-key-4', agentId: 'agent-alpha', replaceAgentToken: true })
+    assert.equal(reconnected.state, 'done', JSON.stringify(reconnected))
+    assert.equal(reconnected.replaceAgentToken, true)
+    assert.equal(reconnected.instanceId, first.instanceId)
+    assert.equal(reconnected.connectionId, first.connectionId, 'the same Connection, not a new one')
+    assert.equal(reconnected.connectionDisposition, 'reused')
+    const sent = pairRequests(gateway).at(-1).body
+    assert.deepEqual([sent.reconnectConnectionId, sent.replaceAgentToken], [first.connectionId, true])
+    const renewed = loadInstanceConfig(directory)
+    assert.ok(renewed.worker.env.RULITH_CONNECTION_KEY)
+    assert.notEqual(renewed.worker.env.RULITH_CONNECTION_KEY, before.worker.env.RULITH_CONNECTION_KEY)
+    assert.notEqual(renewed.agent.env.RULITH_TOKEN, before.agent.env.RULITH_TOKEN)
+    assert.equal(tokenBefore.superseded, true)
+    assert.equal(manager.registry.read().instances.length, 1)
+    assert.equal(manager.instances.hosts.get(first.instanceId).host.status().ready.worker, true, 'the Worker runs on the new key')
+  })
+})
+
+test('setup-local asks before replacing an Agent token another computer holds; confirmed, this computer gets its own Connection', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    // Computer F uses agent-alpha: it holds the Agent's token, and its Worker holds its own Connection.
+    const elsewhere = { jti: 'jti-computer-f', agentId: 'agent-alpha', deviceId: 'device-f', revoked: false }
+    gateway.agentTokens.set('rlt_agt_computer_f', elsewhere)
+    gateway.setWorkerActive('conn-computer-f', 'agent-alpha')
+    const body = { requestId: 'setup-token-0001', agentId: 'agent-alpha' }
+    const refused = await setUp(manager, body)
+    assert.equal(refused.state, 'failed')
+    assert.deepEqual(refused.steps.map((step) => step.state), ['done', 'failed', 'pending', 'pending', 'pending', 'pending'])
+    assert.equal(refused.steps[1].errorCode, 'runtime_credential_exists', 'a step failure the app can ask about')
+    assert.equal(elsewhere.superseded, undefined, 'nothing is replaced without the confirmation')
+    // The same request again, still without the confirmation: refused the same way, and still nothing replaced.
+    const again = await setUp(manager, body)
+    assert.equal(again.steps[1].errorCode, 'runtime_credential_exists')
+    assert.equal(elsewhere.superseded, undefined)
+    const original = [...gateway.pairings.keys()][0]
+    // Confirmed, through the manager route the app uses: the same request continues from its pairing step. The earlier
+    // reservation (no replacement) is cancelled at the account service first, so it does not block the replacement.
+    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/instances/setup-local`, { method: 'POST',
+      headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify({ ...body, replaceAgentToken: true }) })
+    assert.equal(response.status, 200)
+    const done = await manager.instances.waitSetupLocal(body.requestId)
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.equal(done.replaceAgentToken, true)
+    assert.equal(done.instanceId, refused.instanceId)
+    assert.equal(gateway.pairings.get(original).state, 'cancelled')
+    assert.equal(pairRequests(gateway).at(-1).body.replaceAgentToken, true)
+    assert.equal(elsewhere.superseded, true, 'F\'s token is replaced: its client stops working')
+    // This computer's own Connection: F's is not taken.
+    assert.equal(done.connectionDisposition, 'created')
+    assert.notEqual(done.connectionId, 'conn-computer-f')
+    assert.equal(Object.hasOwn(pairRequests(gateway).at(-1).body, 'reconnectConnectionId'), false)
+    assert.equal(manager.registry.read().instances.length, 1)
+    assert.equal(manager.instances.overview()[0].generalKit, true, 'the kit is installed: the app start may refresh it')
+  })
+})
+
+test('setup-local on a computer whose Agent token was replaced elsewhere asks first, then re-pairs this computer\'s own Connection', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    gateway.computeHealth()
+    const first = await setUp(manager, { requestId: 'setup-replaced-0001', agentId: 'agent-alpha' })
+    assert.equal(first.state, 'done', JSON.stringify(first))
+    // Nothing replaced anywhere: an explicit setup keeps this computer's Connection and token as they are.
+    const kept = await setUp(manager, { requestId: 'setup-replaced-0002', agentId: 'agent-alpha' })
+    assert.equal(kept.state, 'done', JSON.stringify(kept))
+    assert.match(kept.steps[1].reason, /Kept this computer's working Connection/)
+    const directory = manager.registry.instance(first.instanceId).directory
+    const before = loadInstanceConfig(directory)
+    const attaches = (token) => fetch(`${gateway.origin}/mcp`, { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) }).then((response) => response.status === 200)
+    assert.equal(await attaches(before.agent.env.RULITH_TOKEN), true)
+    // Computer G sets this Agent up with its token replaced. Here the Connection still works; the Agent token does not.
+    gateway.replaceTokenElsewhere('agent-alpha', 'device-g')
+    assert.equal(await attaches(before.agent.env.RULITH_TOKEN), false, 'the Agent cannot attach on this computer any more')
+    const pairs = pairRequests(gateway).length
+    const asked = await setUp(manager, { requestId: 'setup-replaced-0003', agentId: 'agent-alpha' })
+    assert.equal(asked.state, 'failed', 'not reported as done while the Agent cannot attach here')
+    assert.equal(asked.steps[1].errorCode, 'runtime_credential_exists', 'the app asks with the replacement confirmation')
+    assert.match(asked.steps[1].reason, /Agent token no longer works.*Nothing was changed/)
+    assert.equal(pairRequests(gateway).length, pairs, 'nothing paired without the confirmation')
+    const unchanged = loadInstanceConfig(directory)
+    assert.equal(unchanged.agent.env.RULITH_TOKEN, before.agent.env.RULITH_TOKEN)
+    assert.equal(unchanged.worker.env.RULITH_CONNECTION_KEY, before.worker.env.RULITH_CONNECTION_KEY)
+    // Confirmed: this computer's own Connection is re-paired (a new key here) with the token replaced; G's client stops.
+    const g = [...gateway.agentTokens.values()].find((row) => row.deviceId === 'device-g')
+    const done = await setUp(manager, { requestId: 'setup-replaced-0004', agentId: 'agent-alpha', replaceAgentToken: true })
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.equal(done.instanceId, first.instanceId)
+    assert.equal(done.connectionId, first.connectionId, 'this computer\'s own Connection, not a new one')
+    assert.equal(done.connectionDisposition, 'reused')
+    const sent = pairRequests(gateway).at(-1).body
+    assert.deepEqual([sent.reconnectConnectionId, sent.replaceAgentToken], [first.connectionId, true])
+    assert.equal(g.superseded, true, 'the token G held is replaced')
+    const renewed = loadInstanceConfig(directory)
+    assert.equal(await attaches(renewed.agent.env.RULITH_TOKEN), true, 'the Agent attaches on this computer again')
+    assert.notEqual(renewed.worker.env.RULITH_CONNECTION_KEY, before.worker.env.RULITH_CONNECTION_KEY)
+    assert.equal(manager.registry.read().instances.length, 1)
+    assert.equal(manager.instances.hosts.get(first.instanceId).host.status().ready.worker, true)
+  })
+})
+
+test('a declined token replacement leaves nothing reserved: confirming later, after the Gateway forgot that pairing, starts afresh', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    gateway.agentTokens.set('rlt_agt_computer_f', { jti: 'jti-computer-f', agentId: 'agent-alpha', deviceId: 'device-f', revoked: false })
+    const refused = await setUp(manager, { requestId: 'setup-declined-0001', agentId: 'agent-alpha' })
+    assert.equal(refused.steps[1].errorCode, 'runtime_credential_exists')
+    assert.match(refused.steps[1].reason, /Nothing was replaced, and this attempt was withdrawn/)
+    assert.equal(manager.registry.instance(refused.instanceId).pairing, undefined, 'the refused pairing is not kept reserved')
+    const original = pairRequests(gateway).at(-1).body.pairingId
+    assert.equal(gateway.pairings.get(original).state, 'cancelled', 'withdrawn at the account service at once')
+    // 「不替换」: nothing more happens. Long after, the account service no longer keeps that pairing's receipt.
+    gateway.pairings.clear()
+    const done = await setUp(manager, { requestId: 'setup-declined-0002', agentId: 'agent-alpha', replaceAgentToken: true })
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.equal(done.instanceId, refused.instanceId)
+    assert.notEqual(pairRequests(gateway).at(-1).body.pairingId, original, 'a fresh pairing')
+    assert.equal(manager.registry.read().instances.length, 1)
+  })
+})
+
+test('setup-local re-pairing a Connection in use elsewhere is refused and withdrawn; once Console deleted it, a new Connection is made', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    const first = await setUp(manager, { requestId: 'setup-gone-0001', agentId: 'agent-alpha' })
+    assert.equal(first.state, 'done', JSON.stringify(first))
+    const id = first.instanceId
+    // This computer's credential was rotated in Console, and a Worker elsewhere now runs on that Connection.
+    gateway.replaceConnectionKey(first.connectionId, 'handed-elsewhere')
+    gateway.setWorkerActive(first.connectionId, 'agent-alpha')
+    const body = { requestId: 'setup-gone-0002', agentId: 'agent-alpha', replaceAgentToken: true }
+    const refused = await setUp(manager, body)
+    assert.equal(refused.state, 'failed')
+    assert.equal(refused.steps[1].errorCode, 'local_setup_connection_in_use')
+    assert.match(refused.steps[1].reason, /in use by a Worker on another computer.*Nothing was created, and this attempt was withdrawn/)
+    assert.equal(manager.registry.instance(id).pairing, undefined, 'nothing is left reserved')
+    assert.equal(gateway.pairings.get(pairRequests(gateway).at(-1).body.pairingId).state, 'cancelled')
+    assert.equal(pairRequests(gateway).at(-1).body.reconnectConnectionId, first.connectionId)
+    assert.equal(manager.registry.instance(id).connectionId, first.connectionId, 'no Connection was created instead')
+    // The same request again while that Worker still runs: refused the same way, not stuck behind an earlier reservation.
+    const again = await setUp(manager, body)
+    assert.equal(again.steps[1].errorCode, 'local_setup_connection_in_use')
+    assert.equal(manager.registry.instance(id).pairing, undefined)
+    // Console deletes that Connection (its Worker goes with it). The same request goes on: the deleted Connection is
+    // offered but not reconnected, and the Gateway, finding no other of this device, makes a new one.
+    gateway.setWorkerActive(first.connectionId, 'agent-alpha', false)
+    gateway.deleteConnection(first.connectionId)
+    const done = await setUp(manager, body)
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.equal(done.instanceId, id)
+    assert.equal(done.connectionDisposition, 'created')
+    assert.notEqual(done.connectionId, first.connectionId)
+    assert.equal(pairRequests(gateway).at(-1).body.reconnectConnectionId, first.connectionId)
+    assert.equal(manager.registry.instance(id).connectionId, done.connectionId, 'the instance records the Connection it now uses')
+    assert.equal(manager.registry.read().instances.length, 1)
+    assert.equal(manager.instances.hosts.get(id).host.status().ready.worker, true)
+  })
+})
+
+test('setup-local: a Gateway that refuses the remembered Connection (before 0.2.27) has the attempt withdrawn and the Connection forgotten', async t => {
+  await withManager(t, async ({ manager, gateway }) => {
+    echoWorkers(manager)
+    gateway.refuseUnusableReconnect()
+    // Signed out and in again, remembering a Connection that has an unfinished key operation (a rotation in Console).
+    const created = await manager.instances.create({ name: 'Remembers', mode: 'local_agent' })
+    gateway.setWorkerActive('conn-pending', 'agent-alpha', false)
+    gateway.keyOperationPending('conn-pending')
+    await manager.registry.patchInstance(created.id, () => ({ previousConnection: { origin: gateway.origin,
+      accountId: manager.device.status().account.id, agentId: 'agent-alpha', connectionId: 'conn-pending' } }))
+    const done = await setUp(manager, { requestId: 'setup-legacy-0001', agentId: 'agent-alpha' })
+    assert.equal(done.state, 'done', JSON.stringify(done))
+    assert.equal(done.instanceId, created.id)
+    assert.equal(done.connectionDisposition, 'created')
+    assert.notEqual(done.connectionId, 'conn-pending')
+    const [refused, fresh] = pairRequests(gateway).slice(-2).map((row) => row.body)
+    assert.equal(refused.reconnectConnectionId, 'conn-pending')
+    assert.equal(gateway.pairings.get(refused.pairingId).state, 'cancelled', 'the refused attempt is withdrawn')
+    assert.equal(Object.hasOwn(fresh, 'reconnectConnectionId'), false, 'paired again without it')
+    assert.equal(manager.registry.instance(created.id).previousConnection, undefined, 'forgotten')
+    assert.equal(manager.registry.read().instances.length, 1)
+  })
+})
+
+test('an explicit setup starts a Worker that stopped itself again at most once, counting the start after its kit replacement', async t => {
+  await withManager(t, async ({ manager }) => {
+    echoWorkers(manager)
+    const first = await setUp(manager, { requestId: 'setup-once-0001', agentId: 'agent-alpha' })
+    assert.equal(first.state, 'done', JSON.stringify(first))
+    const id = first.instanceId
+    await manager.instances.stop(id)
+    const directory = manager.registry.instance(id).directory
+    const config = loadInstanceConfig(directory)
+    // Every start of the stand-in exits 3, as a Worker whose Connection credential Rulith refuses; the kit is out of date.
+    config.worker.env.RULITH_TEST_EXIT = '1'
+    delete config.worker.env.RULITH_WORKER_RUN_TIMEOUT_SECONDS
+    saveInstanceConfig(directory, config)
+    await manager.instances.setWorkerEnabled(id, true)
+    const host = () => manager.instances.hosts.get(id).host
+    await waitUntil(() => host().status().workerSetting.state === 'needs setup')
+    const spawns = () => host().events().filter((event) => event.src === 'worker' && event.type === 'spawn').length
+    const before = spawns()
+    const explicit = await setUp(manager, { requestId: 'setup-once-0002', agentId: 'agent-alpha' })
+    assert.equal(explicit.state, 'failed', JSON.stringify(explicit))
+    assert.equal(explicit.steps[2].state, 'done', 'the kit was replaced, and the Worker started again after it')
+    assert.equal(explicit.steps[4].errorCode, 'connection_rejected')
+    await new Promise((done) => setTimeout(done, 300))
+    assert.equal(spawns(), before + 1, 'started again once in this setup, not again by its reload step')
+  })
+})
+
+test('repair never restarts a Worker that stopped itself; only an explicit setup does, after Rulith confirms its Connection', async t => {
+  await withManager(t, async ({ manager }) => {
+    echoWorkers(manager)
+    const first = await setUp(manager, { requestId: 'setup-stopped-0001', agentId: 'agent-alpha' })
+    assert.equal(first.state, 'done', JSON.stringify(first))
+    const id = first.instanceId
+    await manager.instances.stop(id)
+    const directory = manager.registry.instance(id).directory
+    const config = loadInstanceConfig(directory)
+    // The stand-in exits 3 at its next start, as a Worker whose Connection credential Rulith refused, and so stops by
+    // itself; started again later, it runs.
+    config.worker.env.RULITH_TEST_EXIT_ONCE = join(directory, 'refused-once.txt')
+    // The kit is out of date, so the repair also replaces it (with the Worker stopped).
+    delete config.worker.env.RULITH_WORKER_RUN_TIMEOUT_SECONDS
+    saveInstanceConfig(directory, config)
+    await manager.instances.setWorkerEnabled(id, true)
+    const host = () => manager.instances.hosts.get(id).host
+    await waitUntil(() => host().status().workerSetting.state === 'needs setup')
+    const spawns = () => host().events().filter((event) => event.src === 'worker' && event.type === 'spawn').length
+    const before = spawns()
+    // Opening a folder / the app's start (repair): the kit is refreshed, the Worker is not started again.
+    const repaired = await setUp(manager, { requestId: 'setup-stopped-0002', agentId: 'agent-alpha', mode: 'repair' })
+    assert.equal(repaired.state, 'failed', JSON.stringify(repaired))
+    assert.equal(repaired.steps[2].state, 'done', 'the kit was replaced')
+    assert.equal(repaired.steps[4].errorCode, 'connection_rejected')
+    assert.match(repaired.steps[4].reason, /Nothing was restarted/)
+    await new Promise((done) => setTimeout(done, 300))
+    assert.equal(spawns(), before, 'no restart')
+    // Again: still not started.
+    const again = await setUp(manager, { requestId: 'setup-stopped-0003', agentId: 'agent-alpha', mode: 'repair' })
+    assert.equal(again.steps[4].errorCode, 'connection_rejected')
+    assert.equal(spawns(), before)
+    // An explicit setup asks Rulith whether the Connection works (it does), then starts the Worker again.
+    const explicit = await setUp(manager, { requestId: 'setup-stopped-0004', agentId: 'agent-alpha' })
+    assert.equal(explicit.state, 'done', JSON.stringify(explicit))
+    assert.equal(spawns(), before + 1)
+    assert.equal(host().status().ready.worker, true)
+  })
 })

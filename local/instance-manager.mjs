@@ -31,6 +31,8 @@ import { newInstanceId, writeJsonAtomic } from './manager-registry.mjs'
 import { instanceRecordedAt, processRecordRunning, processStamp } from './process-identity.mjs'
 import { checkedModelInput, createModelSettings, maxOutputTokens, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
 import { createToolLibrary } from './tool-library.mjs'
+import { createLocalSetup } from './setup-local.mjs'
+import { generalKitCurrent, generalToolIds, installGeneralForInstance } from '../kits/general/installer.mjs'
 
 export const INSTANCE_MODES = Object.freeze(['local_agent', 'existing_client'])
 /** Credentials a sign-out must remove from an instance; everything else is the operator's. */
@@ -417,11 +419,19 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     if (reservation.clientMode !== undefined && clientMode !== reservation.clientMode) {
       throw new Error(`This pairing was started as ${clientMode}, and the manager reserved ${reservation.clientMode} for this instance.`)
     }
+    // The Connections this Agent already had, as far as this computer knows: the one this instance remembers and the
+    // ones the directory lists. The approval names the Connection it delivers; one of those is a reuse, anything else
+    // is a Connection the Gateway created (PSC 0.2.27 ②). Only ids are compared; nothing here is a credential.
+    const known = new Set([text(reservation.reconnectConnectionId),
+      ...((grant.agents ?? []).find((row) => row.id === reservation.agentId)?.reconnectable ?? []).map((row) => text(row.connectionId))]
+      .filter(Boolean))
     const approved = await device.pair({ pairingId, deviceSecret, agentId: reservation.agentId,
       replaceAgentToken: reservation.replaceAgentToken === true, reconnectConnectionId: reservation.reconnectConnectionId })
     const agentId = text(approved?.agentId).trim() || reservation.agentId
     if (agentId !== reservation.agentId) throw new Error('The account service approved a different Agent than this instance reserved.')
-    await registry.patchInstance(id, (row) => ({ pairing: { ...row.pairing, lastError: undefined, pairingId, approvedAt: new Date().toISOString() } }))
+    const delivered = text(approved?.connectionId)
+    await registry.patchInstance(id, (row) => ({ pairing: { ...row.pairing, lastError: undefined, pairingId, approvedAt: new Date().toISOString(),
+      ...(delivered ? { connectionDisposition: known.has(delivered) ? 'reused' : 'created' } : {}) } }))
     await device.recordPairing(id, { pairingId, agentId, origin: base, accountId: text(grant.account?.id) })
     return { agentId }
   }
@@ -704,6 +714,21 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     return cleared
   }
 
+  /**
+   * The Connection an instance had, by id only, kept across a sign-out (PSC 0.2.27 ②): after the next sign-in, setting the
+   * same Agent up on this computer offers it to the Gateway to reconnect instead of creating another. The secret is gone
+   * with the sign-out; the id is not a credential.
+   * 中文说明：退出登录时只记下连接 id（不是密钥），下次登录后为同一 Agent 设置时把它交给 Gateway 尝试接上。
+   */
+  const connectionMemory = (row) => (text(row.origin) && text(row.accountId) && text(row.agentId) && text(row.connectionId)
+    ? { origin: row.origin, accountId: row.accountId, agentId: row.agentId, connectionId: row.connectionId }
+    : row.previousConnection)
+  const rememberedConnection = (row, { origin, accountId, agentId }) => {
+    const previous = row.previousConnection
+    return previous && previous.origin === origin && previous.accountId === accountId && previous.agentId === agentId
+      ? text(previous.connectionId) : ''
+  }
+
   /** Is this the same attachment request, in every part that decides what gets issued? */
   const sameTarget = (existing, target) => ['agentId', 'origin', 'accountId', 'clientMode'].every((field) => existing[field] === target[field])
     && existing.replaceAgentToken === target.replaceAgentToken
@@ -824,6 +849,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }))
       return {
         id: row.id, name: row.name, mode: row.mode, directory: row.directory,
+        // Whether this instance has a general kit home (it had the kit installed once): the app's start refreshes only
+        // those (PSC 0.2.27 ③); a first install is an explicit setup or opening a folder.
+        generalKit: text(worker.ENG_KIT_HOME) !== '',
         createdAt: row.createdAt ?? '', importedFrom: row.importedFrom ?? '',
         origin: row.origin ?? '', accountId: row.accountId ?? '', agentId: row.agentId ?? '',
         agentName: row.agentName ?? '', connectionId: row.connectionId ?? '', paired: Boolean(row.agentId || row.connectionId),
@@ -1169,6 +1197,11 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const accountId = text(grant.account?.id)
       const row = record(id)
       const config = loadInstanceConfig(resolve(row.directory))
+      // PSC 0.2.27 ②: an instance that remembers this Agent's Connection from before a sign-out offers it again, so a new
+      // sign-in reconnects it rather than making another. Only when the caller named none and the instance holds no
+      // credential; the Gateway decides whether it can be reconnected (device-client.mjs `pair`).
+      if (!text(reconnectConnectionId) && !text(config.worker?.env?.RULITH_CONNECTION_KEY) && !text(config.agent?.env?.RULITH_TOKEN))
+        reconnectConnectionId = rememberedConnection(row, { origin: grant.origin, accountId, agentId: chosen })
       const repair = row.agentId === chosen && row.origin === grant.origin && row.accountId === accountId
         && (replaceAgentToken === true || Boolean(text(reconnectConnectionId)))
       if ((text(config.worker?.env?.RULITH_CONNECTION_KEY) || text(config.agent?.env?.RULITH_TOKEN)) && !repair) {
@@ -1247,8 +1280,10 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         // So a failed attempt keeps its reservation and its proof. Giving it up is an explicit
         // act that asks the authority (`cancelPairing`), and retrying is the same request.
         await rememberPairingError(id, error).catch(() => undefined)
+        // `refusal` is the refusal alone, for a caller that withdraws the reservation itself (local setup).
         throw Object.assign(new Error(String(error?.message ?? error)
-          + ` The attachment of ${known.name} to ${row.name} is still reserved: retry it, or cancel it, from the manager.`), { errorCode: error?.errorCode })
+          + ` The attachment of ${known.name} to ${row.name} is still reserved: retry it, or cancel it, from the manager.`),
+        { errorCode: error?.errorCode, refusal: String(error?.message ?? error) })
       }
     })),
 
@@ -1285,9 +1320,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         await registry.patchInstance(id, (entry) => ({
           pairing: { ...entry.pairing, approvedAt: entry.pairing?.approvedAt ?? new Date().toISOString() } }))
         throw new Error(`The account service has already approved ${reservation.agentName || reservation.agentId} for ${row.name},`
-          + ' so a credential for it exists and nothing was cancelled. Use "Check attachment" to finish collecting it —'
-          + ' while its claim code remains valid. Otherwise, or if this attachment is unwanted, revoke this'
-          + ' device in Console, then sign out here before connecting again.')
+          + ' so a credential for it exists and nothing was cancelled. Set this Agent up on this computer again to finish'
+          + ' collecting it (in the manager: "Check attachment") — while its claim code remains valid. Otherwise, or if this'
+          + ' attachment is unwanted, revoke this device in Console, then sign out here before connecting again.')
       }
       if (['local_setup_unknown', 'local_setup_expired'].includes(answer.body.errorCode)) {
         throw new Error('The original pairing receipt is no longer available. This does not prove that no credential was issued.'
@@ -1382,10 +1417,19 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       await registry.patchInstance(id, (entry) => {
         delete entry.pairing
+        delete entry.previousConnection
         return { origin: reservation.origin, accountId: reservation.accountId, agentId: delivered,
-          agentName: reservation.agentName, connectionId: text(saved.connectionId), signedOutAt: '' }
+          agentName: reservation.agentName, connectionId: text(saved.connectionId), signedOutAt: '',
+          connectionDisposition: reservation.connectionDisposition
+            ?? (text(saved.connectionId) && text(saved.connectionId) === text(reservation.reconnectConnectionId) ? 'reused' : 'created') }
       })
       // 配对前的 host 没有已认证账号归属；重新打开后才可加载这个 Agent 的历史。
+      // When this instance's Worker setting is on (reconnecting an instance set up before), the delivered credentials
+      // complete its setup and the pre-pairing host starts the Worker at once; it is stopped the managed way (anything it
+      // claimed settles) before that host closes, and starts again on the reopened one.
+      // 中文说明：Worker 开着的实例重新配对时，凭据一送到旧 host 就会启动 Worker；关闭旧 host 前先按排空方式停下它。
+      const live = hosts.get(id)
+      for (const role of runningRoles(id)) await live.host.stopRole(role)
       await closeHostLocked(id)
       return { instanceId: id, state: text(polled.body.state) || 'delivered', agentId: delivered, agentName: reservation.agentName }
     },
@@ -1546,6 +1590,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const cleared = clearIssuedCredentials(state.instances)
       await registry.update((current) => {
         for (const row of current.instances) {
+          const previous = connectionMemory(row)
+          if (previous) row.previousConnection = previous
           row.origin = ''
           row.accountId = ''
           row.agentId = ''
@@ -1637,7 +1683,11 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       }
       const cleared = clearIssuedCredentials(registry.read().instances)
       await registry.update((current) => {
-        for (const row of current.instances) { Object.assign(row, { origin: '', accountId: '', agentId: '', agentName: '', connectionId: '', signedOutAt: new Date().toISOString() }); delete row.pairing }
+        for (const row of current.instances) {
+          const previous = connectionMemory(row)
+          if (previous) row.previousConnection = previous
+          Object.assign(row, { origin: '', accountId: '', agentId: '', agentName: '', connectionId: '', signedOutAt: new Date().toISOString() }); delete row.pairing
+        }
         current.device = { state: 'none' }
         return current
       })
@@ -1691,5 +1741,246 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       return { unobserved, failures }
     },
   }
+  /**
+   * "Set up this Agent on this computer" (PSC 0.2.27 ② ③; SYS-LOCAL-01): the steps of the one manager-owned
+   * operation. Progress, retry and serialization are `setup-local.mjs`; each step here is idempotent and changes only
+   * what is missing. In `repair` mode — what opening a folder and the app's start run — an instance that is already
+   * paired keeps its pairing untouched, and a Worker that stopped itself (its Connection credential refused, or its
+   * Connection taken over by another Worker process) is not started again: only an explicit setup (`setup` mode) may.
+   *
+   * Replacing this Agent's token is never decided here. Pairing refuses with `runtime_credential_exists` while another
+   * computer or client holds it; an attached instance whose Connection credential Rulith refuses (or that lost it) can
+   * only be reconnected by a new pairing, which replaces the token too. Both are reported as the pairing step's failure,
+   * and only a request carrying the person's confirmation (`replaceAgentToken`) replaces it.
+   *
+   * 中文说明：每一步只补缺的部分，可重复执行。repair 模式（打开文件夹前、应用启动时）对已配对的实例不动配对，也不重新
+   * 启动自行停下的 Worker（凭据被拒或连接被别的 Worker 接走）；只有明确的"在本机设置"可以。替换 Agent token 只在请求
+   * 带着人的确认时进行：另一台电脑持有 token 时配对以 runtime_credential_exists 失败；连接凭据被拒或丢失时重新接上要重新
+   * 配对，同样会替换 token。两种情况都作为"连接"这一步的失败报告，由人确认后再做。
+   */
+  const teach = (message, errorCode) => Object.assign(new Error(message), { setupTeaching: true, ...(errorCode ? { errorCode } : {}) })
+  const setupScope = (agentId) => {
+    const grant = device.status()
+    if (grant.state !== 'linked') throw teach('Sign in to a Rulith account on this computer first.', 'not_signed_in')
+    if (agentId !== undefined && !grant.agents?.some((agent) => agent.id === agentId)) {
+      throw teach('That Agent is not one of the signed-in account\'s enabled Agents. Refresh Agents if Console changed it.', 'agent_not_in_account')
+    }
+    return currentScope(grant)
+  }
+  const sameAccount = (row, op) => text(row.origin) === op.origin && text(row.accountId) === op.accountId
+  /** The general kit's own fixed refusals (kits/general); any other installer error is said without its details. */
+  const KIT_REFUSALS = [/^Installation path contains a link$/, /^Pair the Agent and enable its Worker once first$/,
+    /^Worker paths must be absolute$/, /^Invalid Worker tool manifest$/, /^settings refused$/]
+  const kitTeaching = (error) => {
+    const message = text(error?.message)
+    return KIT_REFUSALS.some((words) => words.test(message))
+      ? `The general kit could not be installed: ${message}.`
+      : 'The general kit could not be installed in this Agent\'s folder. Retry the same setup.'
+  }
+  const setup = createLocalSetup({ root: registry.root, admit, scope: setupScope, actions: {
+    instance: async (op) => {
+      const rows = registry.read().instances.filter((row) => row.mode === 'local_agent')
+      // This Agent's instance: attached now, or reserved for it, or signed out remembering its Connection. One
+      // Agent runs in one instance, so a second is never made beside them.
+      const found = rows.find((row) => !row.signedOutAt && row.agentId === op.agentId && sameAccount(row, op))
+        ?? rows.find((row) => row.pairing?.agentId === op.agentId && row.pairing.origin === op.origin && row.pairing.accountId === op.accountId)
+        ?? rows.find((row) => !text(row.agentId) && row.pairing === undefined
+          && rememberedConnection(row, { origin: op.origin, accountId: op.accountId, agentId: op.agentId }) !== '')
+      if (found !== undefined) return { instanceId: found.id, reason: `Using this Agent's instance ${found.name} on this computer.` }
+      const agent = device.status().agents.find((row) => row.id === op.agentId)
+      // `create` reuses an unfinished first setup for this same target, so a lost answer does not make a second one.
+      const created = await manager.create({ name: text(agent?.name).trim().slice(0, 80) || op.agentId, mode: 'local_agent',
+        setupTarget: { origin: op.origin, accountId: op.accountId, agentId: op.agentId } })
+      return { instanceId: created.id, reason: `Created the instance ${created.name} for this Agent on this computer.` }
+    },
+    pair: async (op) => {
+      const id = op.instanceId
+      const replace = op.replaceAgentToken === true
+      const delivered = () => {
+        const row = record(id)
+        return row.pairing === undefined && row.agentId === op.agentId && sameAccount(row, op) && text(row.connectionId) ? row : undefined
+      }
+      const outcome = (row, kept) => ({ connectionId: row.connectionId,
+        connectionDisposition: kept || row.connectionDisposition === 'reused' ? 'reused' : 'created',
+        reason: kept ? `Kept this computer's working Connection ${row.connectionId} as it is; its secret was not rotated.`
+          : row.connectionDisposition === 'reused'
+            ? `Reconnected this Agent's existing Connection ${row.connectionId}; its Source bindings and tool lock are unchanged.`
+            : `Created the Connection ${row.connectionId} for this computer.` })
+      /**
+       * One pairing attempt, withdrawn at the authority at once when the Gateway definitely refused it before approving it.
+       * Such a reservation is not kept for the person to decide on later: the Gateway keeps an unapproved pairing's receipt
+       * only for a while, and a confirmation that came after it would find nothing to cancel (`local_setup_unknown`) and
+       * could not go on. Then, by the refusal:
+       *   · `runtime_credential_exists` — the Agent's token is in use elsewhere: reported, and the person is asked;
+       *   · `local_setup_connection_in_use` — the Connection is in use by a Worker elsewhere: refused as it is, nothing
+       *     created (PSC 0.2.27 ②), and setting the Agent up again once that Worker stopped starts afresh;
+       *   · `local_setup_refused` for the Connection this computer remembers (a Gateway before 0.2.27 refuses one it cannot
+       *     reconnect — deleted in Console, an unfinished key operation — rather than choosing another): it is forgotten,
+       *     and the same pairing is reserved again without it, so the Gateway uses this device's own Connection or creates
+       *     one. An approved reservation is never withdrawn here: its credential exists and is collected.
+       * 中文说明：Gateway 在批准前明确拒绝的配对立即在权威处撤回，不留给人以后再决定（Gateway 只保留未批准配对的回执一段
+       * 时间，过后再确认会卡在 local_setup_unknown）。被拒的若是本机记着的连接（旧版 Gateway 以 local_setup_refused 拒绝
+       * 已删除或有未完成密钥变更的连接），就忘掉它、不带它再配对一次，由 Gateway 接上这台设备自己的连接或新建（"都没有才
+       * 新建"）；正被别处 Worker 使用的连接如实拒绝、不新建。已批准的配对从不在这里撤回：凭据已存在，照常领取。
+       */
+      const DEFINITE = new Set(['runtime_credential_exists', 'local_setup_connection_in_use', 'local_setup_refused'])
+      const withdrawn = async (attempt) => {
+        try { return await attempt() } catch (error) {
+          const reservation = record(id).pairing
+          if (!DEFINITE.has(error?.errorCode) || reservation === undefined || reservation.approvedAt !== undefined) throw error
+          // Not confirmed cancelled: the reservation stays as it was, and the next setup continues or cancels it.
+          try { await manager.cancelPairing(id) } catch { throw error }
+          const said = (text(error.refusal) || text(error.message)).trim()
+          const remembered = text(reservation.reconnectConnectionId)
+          if (error.errorCode === 'local_setup_refused' && remembered) {
+            await registry.patchInstance(id, (entry) => {
+              if (text(entry.previousConnection?.connectionId) === remembered) delete entry.previousConnection
+              return {}
+            })
+            return withdrawn(() => manager.pair(id, { agentId: op.agentId,
+              ...(reservation.replaceAgentToken === true ? { replaceAgentToken: true } : {}) }))
+          }
+          throw teach(said + (error.errorCode === 'runtime_credential_exists'
+            ? ' Nothing was replaced, and this attempt was withdrawn. To set this Agent up on this computer, set it up again'
+              + ' and confirm replacing this Agent\'s token; the computer or client using the current token then stops working.'
+            : error.errorCode === 'local_setup_connection_in_use'
+              ? ' Nothing was created, and this attempt was withdrawn. Set this Agent up on this computer again once that'
+                + ' Worker has stopped or its lease has lapsed.'
+              : ' This attempt was withdrawn; nothing was changed.'), error.errorCode)
+        }
+      }
+      /**
+       * Whether this computer's Agent token is still the Agent's current one, from this device's health read: the Gateway's
+       * record of the Agent tokens it issued to this device, by state (no token travels). `superseded` when the newest one
+       * was replaced since — another computer or client set the Agent up with the token replaced — or revoked or expired;
+       * `unknown` when the read failed; `current` otherwise, including a service without the read (nothing can be told).
+       */
+      const agentTokenState = async () => {
+        let health
+        try { health = await device.health() } catch { return 'unknown' }
+        const row = (Array.isArray(health?.agents) ? health.agents : []).find((agent) => agent?.agentId === op.agentId)
+        return ['replaced', 'revoked', 'expired'].includes(row?.key?.state) ? 'superseded' : 'current'
+      }
+      const paired = delivered()
+      if (paired !== undefined) {
+        const keyHeld = text(loadInstanceConfig(resolve(paired.directory)).worker?.env?.RULITH_CONNECTION_KEY) !== ''
+        // Repair keeps a held pairing without asking Rulith; a confirmed replacement asks first, and keeps it if it works.
+        if (keyHeld && op.mode === 'repair' && !replace) return outcome(paired, true)
+        let tokenSuperseded = false
+        if (keyHeld) {
+          const check = await lifecycle(id, async () => (await ensureHostLocked(id)).host.connectionCheck())
+          if (check.state === 'valid') {
+            if (check.agentId !== op.agentId || check.connectionId !== paired.connectionId) {
+              throw teach('Rulith answered for a different Agent or Connection than this computer recorded. Nothing was changed.')
+            }
+            // A working Connection is not the whole of it: this Agent is attached here with this computer's Agent token,
+            // and setting the Agent up elsewhere with its token replaced made that token stop working (SYS-LOCAL-01).
+            // 中文说明：连接凭据有效还不够；别处替换了 Agent token 后这台电脑的 token 已失效，智能体在这里接不上。
+            const token = await agentTokenState()
+            if (token === 'unknown') {
+              throw teach('Rulith could not be asked whether this computer\'s Agent token is still current. Nothing was changed; retry the same setup.')
+            }
+            if (token === 'current') return outcome(paired, true)
+            tokenSuperseded = true
+          } else if (check.state !== 'rejected') {
+            throw teach('Rulith could not be asked whether this computer\'s Connection still works. Nothing was changed; retry the same setup.')
+          }
+        }
+        // An attached instance whose Connection credential Rulith refuses (rotated or revoked in Console), or that lost
+        // it, or whose Agent token was replaced elsewhere, is reconnected only by a new pairing of this same Connection: the
+        // Gateway rotates its secret and delivers it here (PSC 0.2.27 ②; identity, Source bindings and Tool lock
+        // unchanged). A new pairing also issues a new Agent token, which replaces the Agent's token everywhere, so it must
+        // be confirmed explicitly (SYS-LOCAL-01): without the confirmation nothing is changed and the person is asked for it.
+        if (!replace && tokenSuperseded) {
+          throw teach('This computer\'s Agent token no longer works: this Agent was set up on another computer or client since,'
+            + ' with its token replaced. Nothing was changed. To use this Agent on this computer again, set it up again and'
+            + ' confirm replacing this Agent\'s token: this computer keeps its own Connection (it gets a new key here), and the'
+            + ' computer or client using the current token stops working.', 'runtime_credential_exists')
+        }
+        if (!replace) {
+          throw teach((keyHeld
+            ? 'Rulith refused this computer\'s Connection credential, for example after it was rotated or revoked in Console.'
+            : 'This Agent is attached here but its Connection credential is missing.')
+            + ' Nothing was changed. To reconnect this computer, set it up again and confirm replacing this Agent\'s token:'
+            + ' this Connection then gets a new key on this computer (its Source bindings and tool lock stay), and any client'
+            + ' still using the old Agent token stops working.', keyHeld ? 'connection_rejected' : 'connection_missing')
+        }
+        // Confirmed: re-pair this instance with its own Connection and a replaced token. `pair` stops this Agent's
+        // processes here and clears their old credentials first (`__preparePairRepair`).
+        await withdrawn(() => manager.pair(id, { agentId: op.agentId, replaceAgentToken: true, reconnectConnectionId: paired.connectionId }))
+      } else if (record(id).pairing !== undefined) {
+        const reservation = record(id).pairing
+        if (replace && reservation.replaceAgentToken !== true && reservation.approvedAt === undefined) {
+          // An earlier reservation that did not replace the token, still kept because its cancellation was not confirmed
+          // then (a refused one is withdrawn at once, above). It is released only by a confirmed cancellation at the
+          // authority — an approval that happened meanwhile makes `cancelPairing` refuse, and its credential is collected
+          // next time — and then the confirmed replacement is reserved, with the same remembered Connection, if any.
+          await manager.cancelPairing(id)
+          await withdrawn(() => manager.pair(id, { agentId: op.agentId, replaceAgentToken: true,
+            ...(text(reservation.reconnectConnectionId) ? { reconnectConnectionId: reservation.reconnectConnectionId } : {}) }))
+        } else {
+          await withdrawn(() => manager.pairPoll(id))
+        }
+      } else {
+        // No choice is asked for and `newConnection` does not exist: `pair` offers the Connection this instance
+        // remembers, and without one the Gateway uses this device's own Connection or creates one. The token is
+        // replaced only on the person's confirmation.
+        await withdrawn(() => manager.pair(id, { agentId: op.agentId, ...(replace ? { replaceAgentToken: true } : {}) }))
+      }
+      for (let attempt = 0; delivered() === undefined && record(id).pairing !== undefined && attempt < 30; attempt++) {
+        await new Promise((done) => setTimeout(done, 500))
+        await withdrawn(() => manager.pairPoll(id))
+      }
+      const row = delivered()
+      if (row === undefined) {
+        throw teach('Rulith has not delivered this computer\'s Connection credential yet. Retry the same setup to collect it.')
+      }
+      return outcome(row, false)
+    },
+    kit: (op) => lifecycle(op.instanceId, async () => {
+      const refusal = grantRefusal(op.instanceId, { requirePaired: true })
+      if (refusal !== null) throw teach(refusal)
+      const directory = resolve(record(op.instanceId).directory)
+      if (generalKitCurrent(directory)) return { reason: 'The general kit for this Agent is current; nothing was replaced.' }
+      const env = loadInstanceConfig(directory).worker?.env ?? {}
+      const kitHome = text(env.ENG_KIT_HOME) || text(op.kitHome) || join(directory, 'general-kit')
+      const { host } = await ensureHostLocked(op.instanceId)
+      try {
+        await host.replaceWorkerTools(() => installGeneralForInstance({ directory, kitHome }), { restartStopped: op.mode === 'setup' ? op.requestId : false })
+      } catch (error) {
+        throw error?.setupTeaching === true ? error : teach(kitTeaching(error))
+      }
+      return { reason: 'Installed the general kit for this Agent; a running Worker drained first. Installing grants no permission.' }
+    }),
+    worker: async (op) => {
+      if (loadInstanceConfig(resolve(record(op.instanceId).directory)).worker?.enabled === true) {
+        return { reason: 'This computer\'s Worker was already on for this Agent.' }
+      }
+      await manager.setWorkerEnabled(op.instanceId, true)
+      return { reason: 'Turned on this computer\'s Worker for this Agent. Tool and Source permissions stay with opening a project or Console.' }
+    },
+    reload: (op) => lifecycle(op.instanceId, async () => {
+      const refusal = grantRefusal(op.instanceId, { requirePaired: true })
+      if (refusal !== null) throw teach(refusal)
+      const { host } = await ensureHostLocked(op.instanceId)
+      await host.confirmWorkerTools(generalToolIds(), { restartStopped: op.mode === 'setup' ? op.requestId : false })
+      return { reason: 'The Worker runs with the general kit and reports its tools to Rulith.' }
+    }),
+    ready: async (op) => {
+      const row = record(op.instanceId)
+      return { connectionId: text(row.connectionId), reason: `This Agent is set up on this computer, on Connection ${text(row.connectionId)}.` }
+    },
+  } })
+  /** Start or continue one setup (manager route `POST /manager/instances/setup-local`). */
+  manager.setupLocal = ({ requestId, agentId, mode, kitHome, replaceAgentToken } = {}) => {
+    const home = text(kitHome).trim()
+    if (home !== '' && (!isAbsolute(home) || pathInside(registry.root, home) || pathInside(home, registry.root))) {
+      // The kit's tools read and write their home; it may not reach this manager's credentials.
+      throw new Error('Choose a general kit home outside the Rulith manager directory, as an absolute path.')
+    }
+    return setup.start({ requestId, agentId, mode, kitHome: home === '' ? '' : resolve(home), replaceAgentToken: replaceAgentToken === true })
+  }
+  manager.setupLocalStatus = (requestId) => setup.status(text(requestId))
+  manager.waitSetupLocal = (requestId) => setup.wait(text(requestId))
   return manager
 }

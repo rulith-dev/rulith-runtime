@@ -7,7 +7,6 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { APP_HOME_ENV, PREFERRED_PORTS, appHome, appSettings, freePorts, holdAppHome, launcherSettings } from '../../harness/web/app-home.mjs';
-import { refreshGeneralKits } from '../../harness/kit-install.mjs';
 
 // Batch 1 of the public entry (D-1018b): with no settings file every launcher setting is derived from one app home; with
 // a settings file the settings are the file's, as before.
@@ -141,22 +140,17 @@ test('one launcher per app home: a second one is refused while the first holds i
   assert.equal(fs.existsSync(path.join(home, 'launcher.lock')), false);
 });
 
-test('the kit refresh installs the app home kit for a paired Agent whose Worker has none yet, and only with it', () => {
-  const rows = ['fresh', 'kept', 'noworker'].map((agentName) => ({ agentName, directory: `/${agentName}`, mode: 'local_agent' }));
-  const readJson = (file) => {
-    if (file.endsWith('registry.json')) return { instances: rows };
-    if (file.includes('noworker')) return { agent: {} };
-    const worker = { RULITH_WORKER_ROOT: '/worker', RULITH_TOOLS_FILE: '/tools.json' };
-    return { worker: { env: file.includes('kept') ? { ...worker, ENG_KIT_HOME: '/own-kit' } : worker } };
-  };
-  const calls = [];
-  const run = (_node, argv) => { calls.push([argv[5], argv[7]]); return { status: 0 }; };
-  assert.equal(refreshGeneralKits('/manager', { kitHome: '/app/kit', readJson, run }), 2);
-  assert.deepEqual(calls, [['fresh', '/app/kit'], ['kept', '/own-kit']]);
-  // A settings file without kitHome: as before, only Agents that already have a kit home.
-  calls.length = 0;
-  assert.equal(refreshGeneralKits('/manager', { readJson, run }), 1);
-  assert.deepEqual(calls, [['kept', '/own-kit']]);
+// The app home's kit reaches a new Agent through the manager's setup operation (web/local-setup.mjs): the launcher passes
+// it as RULITH_DSH_KIT_HOME and the host sends it with every setup; the manager uses it only for an Agent with no kit home.
+test('the app home kit is what the host offers the manager for a new Agent\'s general kit', async () => {
+  const { setupRoutes } = await import('../../harness/web/local-setup.mjs');
+  const sent = [];
+  const manager = async (route, body) => { sent.push([route, body]); return { setup: { requestId: body.requestId, state: 'pending', steps: [] } }; };
+  await setupRoutes({ manager, kitHome: '/app/kit' }).start({ agentId: 'agent-1', requestId: 'setup-kit-home-1' });
+  assert.deepEqual(sent, [['/manager/instances/setup-local', { requestId: 'setup-kit-home-1', agentId: 'agent-1', mode: 'setup', kitHome: '/app/kit' }]]);
+  sent.length = 0;
+  await setupRoutes({ manager }).start({ agentId: 'agent-1', requestId: 'setup-kit-home-2' });
+  assert.equal(Object.hasOwn(sent[0][1], 'kitHome'), false, 'a settings file without kitHome sends none');
 });
 
 // The launcher with a stand-in for dsh that records each invocation: a start without a profile first does what --init

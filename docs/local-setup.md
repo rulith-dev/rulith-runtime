@@ -16,6 +16,26 @@ HTTPS deployments and loopback development origins are supported. The wizard doe
 
 Existing credentials are preserved. Replacing an Agent's client token requires an explicit choice in the authorized pairing flow and invalidates all copies of the previous token. Configuration changes reload the affected role automatically after its accepted work finishes. Pairing expires after ten minutes; lost responses resume the same request. Only device proof can retrieve credentials, and proof/private keys are removed after local persistence is acknowledged.
 
+**One step from the local app (PSC 0.2.27).** The app's 「在本机设置」 calls one manager operation,
+`POST /manager/instances/setup-local` with `{requestId, agentId, mode, replaceAgentToken?}` (progress: `GET /manager/instances/setup-local?requestId=`).
+It finds or creates the Agent's instance; keeps a working Connection as it is, or pairs this computer with no choice to
+make — the Connection this instance remembers (also across a sign-out) is sent as `reconnectConnectionId`, and without one
+the Gateway reconnects this device's own Connection or creates one; installs or refreshes the first-party general kit after
+the Worker drains; turns the Worker on; and waits until the Worker reports the kit's tools. Each step reports pending,
+running, done or failed with a reason; a failure stops there and the same `requestId` continues from that step. The Agent
+token is replaced only on the person's confirmation (`replaceAgentToken: true`, after the app said that clients still using
+the old token stop working): when another computer holds it, or replaced this computer's token since
+(`runtime_credential_exists`), and when reconnecting this computer because Rulith refuses its Connection credential
+(`connection_rejected`; a new pairing of the same Connection, which replaces the token too). Without it the step says so
+and nothing changes. A pairing the account service refused is withdrawn there at once; a Connection in use by a Worker
+elsewhere is refused (`local_setup_connection_in_use`) and nothing is created. Opening a project, and the app's start for
+Agents that already have the kit, run the same operation in `repair` mode, which never changes an existing pairing, never
+starts a Worker that stopped itself and never makes a first kit install. None of this grants a tool or Source permission.
+
+Model settings saved for an account, or for one Agent, are used by the local app from the next turn, without a restart;
+a turn already running finishes on the previous model. A local Agent's Worker uses the same model as its reviewer route,
+from its next reload, unless its own settings name a reviewer route.
+
 For the installed Verified Calculation capability, **Prepare calculation sample** writes the sample into a new empty directory, in the layout of `examples/verified-calculation/setup.mjs` (the Source's data in its `runtime` folder, the Release's default Source location), and points this Agent's Worker at it. It never overwrites existing files. The same click stops the Worker if it is running (a running Worker first finishes work it has claimed), sends its Source folder, `runtime`, for authorization when it is the only selected resource, enables local tools and reloads the Worker so Console can check its three calculation Tools. A running Agent keeps running. Other native tool/vault formats remain available under Agent tools and deployment configuration.
 
 ## Reading the conversation

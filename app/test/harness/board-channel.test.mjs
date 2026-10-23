@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { RulithMcp, TOOLS } from '../../harness/rulith-mcp.mjs';
 import { BoardChannel, blockedResult, isWrite, readToolKinds } from '../../harness/board-channel.mjs';
 import { ShadowReviewer, decodeBoardResult, deliveryNote } from '../../harness/web/shadow-reviewer.mjs';
-import { installGate, ADDENDUM, CHILD_ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
+import { installGate, ADDENDUM } from '../../harness/web/rulith-web-gate.mjs';
 import { forDeployment } from '../../harness/web-tools.mjs';
 import { handOf, DELEGATION_TOOLS } from '../../harness/subagents.mjs';
 import { WEB_TOOLS } from '../../harness/web-tools.mjs';
@@ -441,31 +441,20 @@ function gateFixture() {
   return { children, agent, create: (agent, source = 'fresh') => handlers.get('agent/created')({ agent, source }), globalSections };
 }
 
-test('main delegates; spawn/fork/resumed children get exactly three tools and the web tools, and no further delegation', () => {
+test('the web gate offers only Rulith and web tools and refuses new or resumed child execution', () => {
   const f = gateFixture(); const main = f.agent('main'); f.create(main);
-  assert.deepEqual(main.filters[0].allow, [...TOOLS, ...DELEGATION_TOOLS, ...WEB_TOOLS]); assert.equal(handOf(main), 'main');
+  assert.deepEqual(main.filters[0].allow, [...TOOLS, ...WEB_TOOLS]); assert.equal(handOf(main), 'main');
+  for (const name of DELEGATION_TOOLS) assert.ok(!main.filters[0].allow.includes(name));
   assert.equal(f.globalSections[0].text, 'approved persona\n\n' + forDeployment(ADDENDUM));
-  for (const [source, header] of [['fresh', { parentSession: 'main', delegationDepth: 1 }],
-    ['fork', { parentSession: 'main', delegationDepth: 1, isSeeded: true }], ['resume', { parentSession: 'main', delegationDepth: 1 }]]) {
-    const child = f.agent(source, header, { subagentDepth: 0 }); f.create(child, source);
-    assert.deepEqual(child.filters[0].allow, [...TOOLS, ...WEB_TOOLS]); assert.equal(handOf(child), source);
-    assert.equal(child.sections[0].text, 'approved persona\n\n' + forDeployment(CHILD_ADDENDUM)); assert.equal(child.sections[0].complete, true);
+  for (const header of [{ parentSession: 'main', delegationDepth: 1 }, { origin: 'subagent' }, { delegationDepth: 2 }]) {
+    const child = f.agent('child', header);
+    assert.throws(() => f.create(child), /sub-agents are disabled/);
+    assert.equal(child.filters.length, 0);
   }
-  assert.throws(() => f.create(f.agent('grandchild', { delegationDepth: 2 }, { subagentDepth: 0 })), /depth 1/);
-});
-
-test('cap four across one-shot, continuable, fork and cold resume; teardown and rollback return capacity', () => {
-  const f = gateFixture(); const live = [];
-  for (const mode of ['one-shot', 'continuable', 'fork', 'resume']) {
-    const child = f.agent(mode, { delegationDepth: 1, parentSession: 'main' }); f.create(child, mode); live.push(child);
-  }
-  assert.equal(f.children.size, 4);
-  const fifth = f.agent('fifth', { delegationDepth: 1 }); assert.throws(() => f.create(fifth), /at most 4/); assert.equal(fifth.filters.length, 0);
-  live[0].dispose(); f.create(fifth); assert.equal(f.children.size, 4);
-  live[1].dispose();
-  const broken = f.agent('rollback', { delegationDepth: 1 }); broken.ctx.systemPrompt.section = () => { throw new Error('later setup failed'); };
-  assert.throws(() => f.create(broken), /later setup failed/); broken.dispose();
-  assert.equal(f.children.size, 3); f.create(f.agent('replacement', { delegationDepth: 1 })); assert.equal(f.children.size, 4);
+  assert.throws(() => f.create(f.agent('cold', {}, { subagentDepth: 1 }), 'resume'), /sub-agents are disabled/);
+  // A user fork has seed lineage, but is still a top-level conversation.
+  const fork = f.agent('user-fork', { parentSession: 'main' }); f.create(fork);
+  assert.deepEqual(fork.filters[0].allow, [...TOOLS, ...WEB_TOOLS]);
 });
 
 test('all hands use one MCP initialization, with no seat declaration or shadow connection', async () => {

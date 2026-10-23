@@ -5,6 +5,59 @@
 # Paths come from the launcher's environment (start-deep-rulith.mjs); nothing secret is written here.
 - id: tool-plugin-manager
   disabled: true
+# App-owned navigation and file-only @ picker replace dsh's combined surfaces.
+- id: ui-sidebar
+  disabled: true
+- id: ui-plugin-manager
+  disabled: true
+- id: ui-settings-plugin-inventory
+  disabled: true
+- id: ui-settings-plugins
+  disabled: true
+# One Rulith settings page (design §3.2 设置, 首次打开): the app's own settings entry and first-run wizard replace dsh's
+# settings shell (its General, Models and plugin pages and its "预览版说明" onboarding). dsh's theme and language services
+# stay; the Rulith page sets them. The model is chosen in Rulith's model settings only, so dsh's composer model picker and
+# /model command (whose change adds a notice to every step) are off.
+- id: ui-settings-general
+  disabled: true
+- id: ui-settings-models
+  disabled: true
+- id: ui-model-selection
+  disabled: true
+- id: ui-settings-shell
+  disabled: true
+- id: ui-settings-agent-loop
+  disabled: true
+- id: ui-settings-web-search
+  disabled: true
+- id: ui-schedule
+  disabled: true
+- id: schedule
+  disabled: true
+- id: ui-jobs
+  disabled: true
+- id: ui-permission
+  disabled: true
+- id: ui-agent-preset
+  disabled: true
+- id: session-reference
+  disabled: true
+- id: ui-reference
+  disabled: true
+- id: ui-subagent
+  disabled: true
+- id: ui-settings-subagent
+  disabled: true
+- id: subagent-model-selection-settings
+  disabled: true
+- id: ui-deliverables
+  disabled: true
+- id: workspace-changes
+  disabled: true
+- id: ui-sidebar-documentpreview
+  disabled: true
+- id: office-to-pdf
+  disabled: true
 - id: tool-bash
   disabled: true
 - id: tool-pwsh
@@ -42,40 +95,19 @@
 - id: plan-mode
   disabled: true
 - id: subagent
-  disabled: false
-  config:
-    maxDepth: 1
-    maxActiveSubagents: 4
+  disabled: true
 - id: subagent-spawn-in-process
-  disabled: false
+  disabled: true
 - id: subagent-fork-in-process
-  disabled: false
+  disabled: true
 - id: tool-subagent-control
-  disabled: false
+  disabled: true
 - id: tool-subagent-list-agents
   disabled: true
 - id: tool-subagent
-  disabled: false
-  config:
-    provider: spawn
-    toolName: subagent
-    maxDepth: 1
-    enableRunInBackground: true
-    backgroundMode: continuable
-    # Children: Rulith's three and the registered web tools (web_search only with a search key, as tool-web below).
-    toolFilter:
-      allow: !!js "process.env.RULITH_DSH_WEB_SEARCH_KEY ? ['Get', 'Set', 'Execute', 'web_search', 'web_fetch'] : ['Get', 'Set', 'Execute', 'web_fetch']"
+  disabled: true
 - id: tool-subagent-fork
-  disabled: false
-  config:
-    provider: fork
-    toolName: subagent_fork
-    maxDepth: 1
-    enableRunInBackground: true
-    backgroundMode: continuable
-    # Children: Rulith's three and the registered web tools (web_search only with a search key, as tool-web below).
-    toolFilter:
-      allow: !!js "process.env.RULITH_DSH_WEB_SEARCH_KEY ? ['Get', 'Set', 'Execute', 'web_search', 'web_fetch'] : ['Get', 'Set', 'Execute', 'web_fetch']"
+  disabled: true
 - id: ptc-runtime
   disabled: true
 - id: workflow-ptc
@@ -99,13 +131,14 @@
 # D-1015c（所有者 2026-10-15）：只读、无副作用的网络工具不经 Rulith，原生提供：dsh 的 web_search 与 web_fetch（tool-web，
 # 以及它需要的 web、web-search-deepseek、web-fetch-http，后三者 base 本就开着）。dsh 网页版把 tool-web 关在主机层（交给预设），
 # 这里重新打开。其余本地工具（read、write、edit、glob、grep、shell、作业）仍关；工具白名单见 rulith-web-gate.mjs。
-# web_search 走 DeepSeek 的搜索接口，密钥只经环境变量 RULITH_DSH_WEB_SEARCH_KEY 传入：启动器只在 Rulith 的模型是 DeepSeek
-# API 时设置它（web-tools.mjs webSearchKey），没有时不注册 web_search，启动照常。web_fetch 的地址检查见 web-tools.mjs。
+# web_search 走 DeepSeek 的搜索接口：启动器只在当前登录账户的 Rulith 模型是 DeepSeek API 时设置开关
+# RULITH_DSH_WEB_SEARCH_KEY（web-tools.mjs webSearchKey），没有时不注册 web_search，启动照常；密钥不经环境变量，每次搜索时
+# 从这一轮的模型取。web_fetch 的地址检查见 web-tools.mjs。
+# PSC 0.2.27 ④: the DeepSeek search provider is registered by rulith-runtime (model-runtime.mjs installLiveSearch) with its
+# key taken per search from the conversation's live Rulith model, so a model change or an account switch never leaves an
+# old key in use; dsh's own provider plugin, which reads one key at launch, stays off. Endpoint pinned to DeepSeek as before.
 - id: web-search-deepseek
-  config:
-    apiKeyEnv: RULITH_DSH_WEB_SEARCH_KEY
-    # Pinned to DeepSeek (dsh's default), so the key never follows a DEEPSEEK_SEARCH_BASE_URL from a .env file.
-    baseURL: https://api.deepseek.com/anthropic/v1
+  disabled: true
 - id: tool-web
   disabled: false
   config:

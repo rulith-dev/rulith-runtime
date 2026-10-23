@@ -266,7 +266,7 @@ test('the Console goal link comes only from a configured http(s) consoleUrl and 
     assert.equal(consoleGoalsUrl(url, agent), '');
 });
 
-test('the composer tool row carries this conversation\'s exploration mode and review controls, read for that session only', async () => {
+test('the composer tool row carries this conversation\'s one tier, its model and the review switch, read for that session only', async () => {
   let plugin, controls, injectControls;
   const requests = [], effects = [];
   // Hook state by call order, as React keeps it: a setter's value is what the next render reads.
@@ -280,10 +280,11 @@ test('the composer tool row carries this conversation\'s exploration mode and re
   };
   const reply = { ok: true, found: true, reviewer: 'conn-1', connections: [{ connectionId: 'conn-1', name: 'Workspace' }],
     conversation: { boardId: 'b', postCallReview: true, explorationModes: { 'conn-1': 'strict' } } };
+  const model = { ok: true, model: { source: 'default', modelId: 'deepseek-flash', name: 'deepseek-flash', configured: true, keyConfigured: true } };
   vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
     window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } } }, setTimeout() {},
     setInterval() { return 1; }, clearInterval() {},
-    fetch: async (url) => { requests.push(url); return { json: async () => reply }; },
+    fetch: async (url) => { requests.push(url); return { json: async () => (url.includes('/model?') ? model : reply) }; },
   });
   plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: { subscribe() { return () => {}; }, getSnapshot: () => undefined } },
     slots: { inject(_name, fn) { if (fn.constructor.name !== 'GeneratorFunction') fn(); },
@@ -294,23 +295,24 @@ test('the composer tool row carries this conversation\'s exploration mode and re
   cursor = 0; assert.equal(controls({ sessionId: 'session-9' }), null);
   for (const fn of effects.splice(0)) await fn();
   await new Promise((resolve) => setImmediate(resolve)); // the poll's fetch settles and its setter runs
-  assert.deepEqual(requests, ['/rulith/api/conversation?session=session-9']);
+  assert.deepEqual(requests, ['/rulith/api/conversation?session=session-9', '/rulith/api/model?session=session-9']);
   // With the reply in state, the row shows the mode chip and the review chip for this conversation.
   const flatten = (node, out = []) => { if (!node || typeof node !== 'object') return out; out.push(node); for (const child of node.children || []) flatten(child, out); return out; };
   cursor = 0; const rendered = flatten(controls({ sessionId: 'session-9' }));
   const text = (node) => flatten(node).filter((n) => typeof n === 'string').join('');
   const strings = rendered.flatMap((n) => n.children || []).filter((c) => typeof c === 'string');
-  assert.ok(strings.some((t) => t.includes('探索：严格')), 'the exploration chip names this conversation\'s current tier');
+  assert.ok(strings.some((t) => t.includes('档位：严格')), 'the tier chip names this conversation\'s current tier');
+  assert.ok(strings.some((t) => t.includes('模型：deepseek-flash')), 'the model chip names the model in force');
   assert.ok(strings.some((t) => t.includes('审查：开')), 'the review chip shows this conversation\'s switch');
   assert.ok(rendered.some((n) => n.props && n.props['data-rulith-composer'] === 'session-9'));
   void text;
-  // A conversation without a Board yet still shows both chips, reading "默认": a choice will open the Board first.
+  // A conversation without a Board yet still shows the tier and review chips, reading "默认": a choice will open the Board first.
   reply.found = false; delete reply.conversation;
   cells.length = 0; cursor = 0; assert.equal(controls({ sessionId: 'session-new' }), null);
   for (const fn of effects.splice(0)) await fn();
   await new Promise((resolve) => setImmediate(resolve));
   cursor = 0; const freshStrings = flatten(controls({ sessionId: 'session-new' })).flatMap((n) => n.children || []).filter((c) => typeof c === 'string');
-  assert.ok(freshStrings.some((t) => t.includes('探索：默认')), 'no Board yet: the exploration chip reads 默认');
+  assert.ok(freshStrings.some((t) => t.includes('档位：默认')), 'no Board yet: the tier chip reads 默认');
   assert.ok(freshStrings.some((t) => t.includes('审查：默认')), 'no Board yet: the review chip reads 默认');
 });
 
@@ -350,14 +352,14 @@ test('the sidebar groups conversations Agent -> directory -> conversation, activ
     s3: row('s3', 'D:\\Work\\game', now - 1000, { running: false }),     // alpha
     s4: row('s4', 'D:\\Work\\game', now - 2000, { running: true }),      // assigned to beta although it runs in alpha's dir
     s5: row('s5', 'D:\\Work\\game', now, { blank: true }),               // blank and not current: hidden
-    s6: row('s6', 'D:\\Work\\game', now, { origin: 'subagent' }),       // a hand: hidden
+    s6: row('s6', 'D:\\Work\\game', now, { origin: 'subagent', parentId: 's3' }), // historical child: readable
     s7: row('s7', 'D:\\Work\\game', now),                                 // archived: hidden
   } };
   const plain = (value) => JSON.parse(JSON.stringify(value)); // values made in the plugin's realm
   const view = plugin.buildTree({ tree, list, workspaces: { archivedSessionIds: ['s7'], pinnedSessionIds: [] }, current: 's3', filter: '', collapsed: {} });
   assert.deepEqual(plain(view.agents.map((e) => e.agent.name)), ['beta', 'alpha', 'gamma'], 'running first, then recent; not set up last');
   const alpha = view.agents.find((e) => e.agent.agentId === 'a');
-  assert.deepEqual(plain(alpha.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['game', ['s3', 's1']]]);
+  assert.deepEqual(plain(alpha.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['game', ['s6', 's3', 's1']]]);
   assert.deepEqual(plain(view.others.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['elsewhere', ['s2']]]);
   assert.equal(view.others.open, false, 'conversations no Agent owns wait folded');
   assert.equal(alpha.open, true, 'the Agent holding the current conversation is open');
@@ -368,4 +370,112 @@ test('the sidebar groups conversations Agent -> directory -> conversation, activ
   assert.equal(stored.agents.find((e) => e.agent.agentId === 'a').open, false, 'the person\'s fold is remembered');
   const filtered = plugin.buildTree({ tree, list, workspaces: {}, current: null, filter: 'ts4', collapsed: {} });
   assert.deepEqual(plain(filtered.agents.map((e) => [e.agent.name, e.count])), [['beta', 1]]);
+});
+
+// Exercise the shipped plain browser script with hook state and captured slot registrations.
+function leftoversBrowser(reply = () => ({})) {
+  let plugin, cursor = 0;
+  const cells = [], effects = [], registrations = new Map(), requests = [];
+  const React = {
+    createElement: (tag, props, ...children) => ({ tag, props: props || {}, children: children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false) }),
+    useState: (initial) => { const i = cursor++; if (!(i in cells)) cells[i] = typeof initial === 'function' ? initial() : initial;
+      return [cells[i], (next) => { cells[i] = typeof next === 'function' ? next(cells[i]) : next; }]; },
+    useRef: (value) => ({ current: value }), useCallback: (fn) => fn, useEffect: (fn) => effects.push(fn),
+    useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
+  };
+  vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
+    window: { __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } }, localStorage: { getItem: () => null, setItem() {} } },
+    setTimeout() {}, setInterval: () => 1, clearInterval() {},
+    fetch: async (url, options) => { const request = { url, body: options.body && JSON.parse(options.body) }; requests.push(request);
+      return { json: async () => reply(request) }; },
+  });
+  const slots = { inject(_name, fn) { fn(); }, register(options, component) { registrations.set(options.name, { options, component }); } };
+  let toggles = 0;
+  const ctx = { slots, effect() {}, inject(deps, fn) { if (deps.length === 1 && deps[0] === 'layout') fn(ctx); },
+    layout: { toggleSidebar() { toggles++; } }, sidebarRight: { mounted: { subscribe() {}, getSnapshot: () => undefined } } };
+  plugin.apply(ctx);
+  const nodes = (node, out = []) => { if (node && typeof node === 'object') { out.push(node); for (const child of node.children || []) nodes(child, out); } return out; };
+  return { plugin, cells, effects, registrations, requests, nodes, toggles: () => toggles,
+    render(component, props) { cursor = 0; return component(props); } };
+}
+
+test('the registered sidebar brand is plain content; collapse and settings slots remain usable', () => {
+  const f = leftoversBrowser();
+  const { options, component } = f.registrations.get('sidebar');
+  assert.deepEqual(Object.keys(options.children).sort(), ['sidebar.footer.action', 'sidebar.settings', 'sidebar.workspaces']);
+  for (const collapsed of [false, true]) {
+    const slots = [];
+    const rendered = f.render(component, { collapsed, ...options.inject(), renderSlot: (name, props) => { slots.push([name, props]); return null; } });
+    const brand = f.nodes(rendered).find((node) => 'data-rulith-brand' in node.props);
+    assert.equal(brand.tag, 'span'); assert.equal(brand.props.onClick, undefined); assert.equal(brand.props.tabIndex, undefined);
+    assert.equal(f.nodes(rendered).filter((node) => node.tag === 'button').length, 1, 'only the collapse control is a button');
+    f.nodes(rendered).find((node) => node.tag === 'button').props.onClick();
+    assert.ok(slots.some(([name]) => name === 'sidebar.settings'));
+    assert.equal(slots.find(([name]) => name === 'sidebar.workspaces')[1].wide, !collapsed);
+  }
+  assert.equal(f.toggles(), 2); assert.deepEqual(f.requests, [], 'brand and collapse never create a session');
+  const childComposer = f.registrations.get('conversation.composer');
+  assert.equal(childComposer.options.select({ session: { origin: 'user' } }), null);
+  assert.ok(childComposer.options.select({ session: { origin: 'subagent' } }));
+  assert.ok(childComposer.options.select({ session: { subagent: { address: { mode: 'continuable' } } } }));
+  assert.equal(f.nodes(childComposer.component({})).some((node) => node.tag === 'button' || node.tag === 'textarea'), false);
+});
+
+test('conversation rows have only deletion; archive occurs only after confirmation and complete deletion', async () => {
+  for (const partial of [true, false]) {
+    const f = leftoversBrowser(({ url }) => url.endsWith('end-preview') ? { ok: true, found: true, openGoals: [] }
+      : url.endsWith('/end') ? { ok: true, unconfirmedGoals: partial ? ['g'] : [] } : {});
+    const tree = { ok: true, defaultAgentId: 'a', assignments: {}, agents: [{ agentId: 'a', name: 'alpha', attached: true,
+      directories: [{ path: '/project', label: 'project' }] }] };
+    const row = { id: 's', cwd: '/project', title: 'work', updatedAt: Date.now(), running: false, blank: false };
+    const store = (value) => ({ getSnapshot: () => value, subscribe() {} });
+    const archived = [], opened = [];
+    const component = f.plugin.makeRulithTree({ sessions: { list: store({ ids: ['s'], byId: { s: row } }) }, workspaces: { list: store({}) },
+      ui: { selection: store({ sessionId: 's' }), openSession: (id) => opened.push(id), archiveSession: (id) => archived.push(id) } });
+    f.cells[0] = tree;
+    const render = () => f.render(component, { wide: true });
+    let rendered = render();
+    const session = f.nodes(rendered).find((node) => node.props['data-rulith-session'] === 's');
+    const buttons = f.nodes(session).filter((node) => node.tag === 'button');
+    assert.equal(buttons.length, 1); assert.equal(buttons[0].children.join(''), '删除');
+    session.props.onClick(); assert.deepEqual(opened, ['s']);
+    await buttons[0].props.onClick({ stopPropagation() {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(archived, []); assert.equal(f.requests.length, 1);
+    rendered = render();
+    const dialog = f.nodes(rendered).find((node) => node.props.role === 'dialog'); assert.ok(dialog);
+    f.nodes(dialog).find((node) => node.tag === 'button' && node.children.join('') === '取消').props.onClick();
+    assert.deepEqual(archived, []); assert.equal(f.requests.length, 1, 'cancel does not delete or archive');
+    rendered = render();
+    await f.nodes(rendered).find((node) => node.props['data-rulith-delete'] === 's').props.onClick({ stopPropagation() {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    rendered = render();
+    const confirm = f.nodes(rendered).find((node) => node.tag === 'button' && node.children.join('') === '删除' && !node.props['data-rulith-delete']);
+    assert.ok(confirm); await confirm.props.onClick();
+    assert.deepEqual(archived, partial ? [] : ['s']);
+    assert.equal(f.requests.filter((request) => request.url.endsWith('/end')).length, 1);
+  }
+});
+
+test('file-only @ source keeps files, quoted paths, directory drilling and breadcrumbs without querying sessions', async () => {
+  const f = leftoversBrowser(), calls = [];
+  const signal = new AbortController().signal;
+  const source = f.plugin.makeFileReferenceSource({
+    sessions: { binding: () => ({}), using: async (_id, _options, fn) => fn({ binding: { session: { getSnapshot: () => ({ openState: 'open' }) } } }) },
+    remote: { fileReferences: { list: async (...args) => { calls.push(args); return { ok: true, value: [
+      { path: 'src/main.js', kind: 'file' }, { path: 'my folder', kind: 'directory' }, { path: 'bad"name', kind: 'file' } ] }; } },
+      get sessionReferenceResolver() { assert.fail('session references must never be requested'); } },
+  });
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  const candidates = await source.candidates({ sessionId: 's' }, { query: '', signal });
+  assert.equal(candidates.length, 2); assert.equal(calls[0][0], 's');
+  assert.equal(source.onPick({ candidate: candidates[0] }).insert.ref, '@src/main.js');
+  assert.deepEqual(plain(source.onPick({ candidate: candidates[1], action: 'drill' })), { text: '@"my folder/', continue: true });
+  assert.equal(source.onPick({ candidate: { value: JSON.stringify({ kind: 'session', mention: '@session' }) } }), undefined);
+  const quoted = await source.candidates({ sessionId: 's' }, { query: 'src/', quoted: true, signal });
+  assert.equal(source.onPick({ candidate: quoted[0] }).insert.ref, '@"src/main.js"');
+  const crumbs = source.header({}, { query: 'a/b/', quoted: true, drilled: true });
+  assert.deepEqual(plain(crumbs.map((crumb) => source.onPick({ candidate: crumb, action: 'drill' }).text)), ['@"', '@"a/', '@"a/b/']);
+  assert.equal(await source.codec.serialize('@src/main.js'), '@src/main.js');
+  assert.equal(source.openReference({}, { ref: '@src/main.js', appearance: 'file' }), false, 'no document preview is opened');
 });

@@ -33,7 +33,7 @@ Unreadable Sources (including a missing selected Agent) or an unavailable conver
 instead of claiming the workspace is unapproved, and log a visible `[rulith project]` diagnostic. Approved Source reads
 are cached for 60 seconds per local instance; failures do not reuse an expired or another instance's list.
 
-Headless has no delegation or shadow; its persona and gate addendum remain exactly as on main.
+Neither web nor headless has delegation. Headless has no shadow; its persona and gate addendum remain exactly as on main.
 
 ## Pre-execution Board review (web, D-1013a)
 
@@ -80,155 +80,12 @@ A note is appended once to the proposing hand's own result, and only a note writ
 Allow, block and failed review never write suggestions. Malformed, unanchored, failed or timed-out reviews allow
 and visibly log the failure. The shadow does not change the hand's arguments or certify completion.
 
-## Delegation (web, D-1013a)
+## Delegation disabled (2026-10-23)
 
-The web main agent has Get, Set, Execute, subagent, subagent_fork, send_message and interrupt_agent, and the native web tools
-(below). Children have exactly Get, Set, Execute and the native web tools.
-Both use the same approved persona. The web main addendum differs from the headless one only in its first sentence (D-1015c wording):
-
-```text
-Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch.
-```
-
-Children use the headless addendum below, whose first sentence is exactly:
-
-```text
-Your tools are Rulith's three and the read-only tools web_search and web_fetch.
-```
-
-When no search key reached dsh (`RULITH_DSH_WEB_SEARCH_KEY` unset), web_search is not registered and every variant of the
-first sentence names only web_fetch: `the read-only tools web_search and web_fetch` becomes `the read-only tool web_fetch`
-(`forDeployment` in `harness/web-tools.mjs`); nothing else changes.
-
-The two delegation tools use dsh's installed schemas and descriptions. Spawn starts fresh; fork seeds completed
-parent turns only. Both inherit the parent route, restrict child tools, and cap depth at 1. The main agent can send_message or interrupt_agent; children cannot. Background runs use dsh's
-continuable driver (the default); run_in_background:false uses its one-shot driver. Stock list/model-selection,
-shell, file, plugin-manager and preset tools stay disabled. Runtime-context sections, including dsh's child
-permission-scope and delegation reminder, are suppressed by includeRuntimeContext:false; the approved complete
-persona suppresses other system sections. The model-supplied task and child closing text are data.
-Admission errors are exactly:
-
-```text
-Rulith delegation is limited to depth 1.
-Rulith allows at most 4 active children.
-```
-
-The exact installed dsh delegation tool descriptions and parameter text (no model selection fields):
-
-```json
-[
-  {
-    "name": "subagent",
-    "description": "Delegate a self-contained task to a subagent (a separate agent that works in its own context) to offload focused, independent work — research, a scoped implementation, an analysis — so it does not consume this conversation's context. The subagent returns its result, not its intermediate steps. It runs in the background by default and returns a subagent id you can continue with `send_message`; you are notified when the run settles.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "description": {
-          "type": "string",
-          "description": "A short (3-5 word) description of the delegated task, for display."
-        },
-        "prompt": {
-          "type": "string",
-          "description": "The complete, self-contained task for the subagent. It does not share this conversation's context, so include everything it needs."
-        },
-        "run_in_background": {
-          "type": "boolean",
-          "description": "Defaults to true. Set false only when your next action depends on the result."
-        }
-      },
-      "required": [
-        "description",
-        "prompt"
-      ]
-    }
-  },
-  {
-    "name": "subagent_fork",
-    "description": "Delegate a task to a subagent that inherits this conversation: a child agent seeded with all completed turns so far (it does not see the current in-flight turn). Use this when the subtask builds on this conversation's context — a follow-up analysis, a review, a continuation — without consuming this conversation's context for the work itself. You receive its result, not its intermediate steps. It runs in the background by default and returns a subagent id you can continue with `send_message`; you are notified when the run settles.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "description": {
-          "type": "string",
-          "description": "A short (3-5 word) description of the delegated task, for display."
-        },
-        "prompt": {
-          "type": "string",
-          "description": "The task for the subagent. It already sees this conversation's completed turns, so build on them freely and state only what is new."
-        },
-        "run_in_background": {
-          "type": "boolean",
-          "description": "Defaults to true. Set false only when your next action depends on the result."
-        }
-      },
-      "required": [
-        "description",
-        "prompt"
-      ]
-    }
-  },
-  {
-    "name": "send_message",
-    "description": "Send a message to an agent. A working agent receives it at its next step; an idle agent starts a new turn with it. Returns delivery confirmation, not the agent's answer.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "agent_id": {
-          "type": "string",
-          "description": "The agent id of your direct continuable child, or your direct parent when you are a resident continuable child."
-        },
-        "message": {
-          "type": "string",
-          "description": "The message to deliver to the agent."
-        }
-      },
-      "required": [
-        "agent_id",
-        "message"
-      ]
-    }
-  },
-  {
-    "name": "interrupt_agent",
-    "description": "Ask a subagent to stop its current work. This call returns without waiting for it to stop. You can continue a direct child's conversation later with send_message. Subagents it started will keep running.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "agent_id": {
-          "type": "string",
-          "description": "The id of an agent created under you: your direct child or a deeper descendant."
-        }
-      },
-      "required": [
-        "agent_id"
-      ]
-    }
-  }
-]
-```
-
-dsh background settlement messages use these exact templates, followed by the child closing text:
-
-```text
-Background subagent <id> finished and will do no further work unless you send it more.
-Background subagent <id> was stopped before it finished.
-Background subagent <id> ran out of room before it finished.
-Background subagent <id> declined the task.
-Background subagent <id> failed before it finished.
-Background subagent <id> ended abnormally (<reason>) before it finished.
-It left no closing message.
-Its closing message:
-started subagent <id>
-message delivered to agent <id>
-interrupt requested for agent <id>
-subagent run was cancelled
-subagent run failed
-subagent run hit its token limit before finishing
-subagent declined the task
-subagent run ended abnormally (<reason>)
-Diagnostic: <diagnostic>
-Partial output before the run ended:
-```
+Web and headless offer only Get, Set, Execute and the registered read-only web tools below.
+Sub-agent providers, spawn/fork/control tools and their settings are disabled. The app gate also
+refuses child Agent creation and cold resume. Historical child sessions remain readable as transcripts;
+their recorded parent identity is retained. There is no child execution or delegation addendum.
 
 The three MCP schemas pass through unchanged; so does every authority result's content, except how it is laid out (below). Tool names (`rulith/v4`) are `Get`, `Set`, `Execute`. Get reads an Artifact with only `artifact: {ref, offset?}`. Worker Action descriptions supplied by Runtime are `[worker tool] <id>`. Actual paths, hashes, commands, file snippets and process output are data, not fixed kit wording. A read's `head` holds as much file text as fits the receipt (about 5 KB of code) and `tail` at most 1 KiB; for runs, `head` and `tail` each contain at most 1 KiB of output; stdout numbers never map to facts.
 
@@ -236,8 +93,7 @@ Before each model request, both the web host and the headless gate project histo
 
 ## Native web tools (D-1015c, 2026-10-15)
 
-Owner decision: read-only, side-effect-free tools may stay native instead of going through Rulith. Every hand (headless,
-web main, web children) is offered dsh's `web_search` and `web_fetch` (`@deepseek-ai/dsh-tool-web`, over dsh's `web`,
+Owner decision: read-only, side-effect-free tools may stay native instead of going through Rulith. Each top-level agent (headless or web) is offered dsh's `web_search` and `web_fetch` (`@deepseek-ai/dsh-tool-web`, over dsh's `web`,
 `web-search-deepseek` and `web-fetch-http`), restricted per agent beside Rulith's three; no other dsh tool (read,
 read_image, write, edit, glob, grep, shell, jobs) is offered. `web_search` is registered only when a DeepSeek key reached
 dsh (`RULITH_DSH_WEB_SEARCH_KEY`, set by the launcher or the headless role only when Rulith's model route is
@@ -373,23 +229,12 @@ Never assert acceptance_met, test_result or certification. Acceptance is the Boa
 When you declare a capability's goal, the Board plants the steps its capability prepared. Work toward unmet goals by calling ready Actions with the IDs the view returned; do not rebuild prepared steps with Set. A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason.
 ```
 
-Headless addendum (also used by web children):
+Shared headless and web addendum:
 
 ```text
 Your tools are Rulith's three and the read-only tools web_search and web_fetch. Web results leave nothing on the Board: when one is evidence for a result, record it on the Board with its URL as the source. Writing, running commands and measuring are Actions on the execution environment; use the paths and Source names the Board View gives. A receipt records only what it says. Printed numbers are claims until a pinned measurement records them; never present fitted or interpolated numbers as measured, and say what is unverified. A test, fake, stub or simulator you write yourself proves only what holds under your own assumptions. Record each assumption it makes about the real environment (an API, a platform behaviour, a data format) with its source, or as an open gap when nothing on the Board supports it, and call those results unverified. Before your final reply, record in one Set each result you will claim and the receipt or fact that shows it; claim nothing in the reply that is not recorded there, and list what is still unverified. Think on the Board, not only in your head. Before choosing a step, Get the facts and gaps of the goal you work on, and record what you expect and why. After the step, record what the receipt showed and whether the expectation held. Verify with eng.test (one named check) or a pinned measurement so its receipt lands on the Board; eng.run output is only a claim. Early, propose the acceptance: for each criterion write a check spec .rulith/acceptance/<check>.json (command, cwd, files with their sha256) with the test files it runs, call eng.acceptance so the Board records each check with its key, and declare one child goal per check under your goal with desired eng.check_passed(key), copying key from that check's eng.check_spec receipt (where the receipt has no key, desired eng.check_passed(check, spec_digest)). Then tell the person once that the criteria await their signature in Console and keep working: the Board certifies the goal when every signed check passes on the current tree, so do not write a rule for the goal's outcome. A check whose files you change needs a new spec and a new signature. Nobody answers questions quickly: do not end the turn to ask for approval or a choice. Decide within these rules, record the decision and its reason on the Board, and continue. End the turn only when the goal is met, a call waits for a person's decision, or nothing more can be done without one. Before new work, Get for what earlier goals recorded. State the user's request as a goal whose desired names its outcome, for example {"op":"declare_goal","label":"<the request>","desired":[{"predicate":"work.verified","args":{"name":"<short name>"}}]}. Its outcome is established only by the user's actual acceptance criteria for the exact target, version and measurement spec, signed by them; a generic passing build or test does not. For project files use the eng.* Actions: eng.search covers the whole tree, eng.read pages a long file (offset, next_offset, complete), eng.write_file with expect_digest "" creates a new file, and eng.run takes command as one string (not a list) and returns only the first and last KiB of its output, so send long output to a file and page it with eng.read. Reads work while a job runs. eng.tree_state lists the pinned measurement specs (measure_specs); a measurement criterion is a pinned measurement whose receipt the Board records. To pin your own, write a spec to .deep-rulith/measure/<name>.json with command (a list), cwd, binary with binary_digest, candidate_binary, workload and config with their digests, parser, unit and repeats, then run eng.measure_pinned with spec_id self-<name>. Its first run freezes it (a refused spec is not frozen), so use a new name for a new spec, compare only measurements of one spec_id, and say a self- spec is your own.
 ```
 
-Web main addendum (the same tail, with delegation in the opening sentence):
-
-```text
-Your tools are Rulith's three, delegation tools, and the read-only tools web_search and web_fetch. Web results leave nothing on the Board: when one is evidence for a result, record it on the Board with its URL as the source. Writing, running commands and measuring are Actions on the execution environment; use the paths and Source names the Board View gives. A receipt records only what it says. Printed numbers are claims until a pinned measurement records them; never present fitted or interpolated numbers as measured, and say what is unverified. A test, fake, stub or simulator you write yourself proves only what holds under your own assumptions. Record each assumption it makes about the real environment (an API, a platform behaviour, a data format) with its source, or as an open gap when nothing on the Board supports it, and call those results unverified. Before your final reply, record in one Set each result you will claim and the receipt or fact that shows it; claim nothing in the reply that is not recorded there, and list what is still unverified. Think on the Board, not only in your head. Before choosing a step, Get the facts and gaps of the goal you work on, and record what you expect and why. After the step, record what the receipt showed and whether the expectation held. Verify with eng.test (one named check) or a pinned measurement so its receipt lands on the Board; eng.run output is only a claim. Early, propose the acceptance: for each criterion write a check spec .rulith/acceptance/<check>.json (command, cwd, files with their sha256) with the test files it runs, call eng.acceptance so the Board records each check with its key, and declare one child goal per check under your goal with desired eng.check_passed(key), copying key from that check's eng.check_spec receipt (where the receipt has no key, desired eng.check_passed(check, spec_digest)). Then tell the person once that the criteria await their signature in Console and keep working: the Board certifies the goal when every signed check passes on the current tree, so do not write a rule for the goal's outcome. A check whose files you change needs a new spec and a new signature. Nobody answers questions quickly: do not end the turn to ask for approval or a choice. Decide within these rules, record the decision and its reason on the Board, and continue. End the turn only when the goal is met, a call waits for a person's decision, or nothing more can be done without one. Before new work, Get for what earlier goals recorded. State the user's request as a goal whose desired names its outcome, for example {"op":"declare_goal","label":"<the request>","desired":[{"predicate":"work.verified","args":{"name":"<short name>"}}]}. Its outcome is established only by the user's actual acceptance criteria for the exact target, version and measurement spec, signed by them; a generic passing build or test does not. For project files use the eng.* Actions: eng.search covers the whole tree, eng.read pages a long file (offset, next_offset, complete), eng.write_file with expect_digest "" creates a new file, and eng.run takes command as one string (not a list) and returns only the first and last KiB of its output, so send long output to a file and page it with eng.read. Reads work while a job runs. eng.tree_state lists the pinned measurement specs (measure_specs); a measurement criterion is a pinned measurement whose receipt the Board records. To pin your own, write a spec to .deep-rulith/measure/<name>.json with command (a list), cwd, binary with binary_digest, candidate_binary, workload and config with their digests, parser, unit and repeats, then run eng.measure_pinned with spec_id self-<name>. Its first run freezes it (a refused spec is not frozen), so use a new name for a new spec, compare only measurements of one spec_id, and say a self- spec is your own.
-```
-
-2026-10-19 (Runtime 0.18.0, official engineering program v3): in both addenda the acceptance sentence changed from
-"call eng.acceptance so the Board records each check with its spec_digest, and declare one child goal per check under
-your goal with desired eng.check_passed(check, spec_digest) from those receipts." to the sentence shown above. Program v3
-binds the project, check and spec digest into one key, so the leaf names that key; the parenthesis keeps Agents that
-still run the v2 package (whose receipts carry no key) working. Nothing else in either addendum changed.
 
 ## Worker Actions
 

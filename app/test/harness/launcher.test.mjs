@@ -97,16 +97,22 @@ test('installed dsh: the overlay evaluates the relief ratio and the compaction c
   }
 });
 
-// The launcher itself, with a stand-in for dsh that records the environment it was started with.
-function launch(settings, modelDefaults, extraEnv = {}) {
+// The launcher itself, with a stand-in for dsh that records the environment it was started with. `prepare(dir, s)` may
+// write more files before the start and returns settings to add.
+function launch(settings, modelDefaults, extraEnv = {}, prepare = () => ({})) {
   const dir = temp();
   const out = path.join(dir, 'dsh-env.json');
   const fakeDsh = path.join(dir, 'fake-dsh.mjs');
-  fs.writeFileSync(fakeDsh, `import fs from 'node:fs';\nconst pick = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('RULITH_DSH_')));\nfs.writeFileSync(process.env.FAKE_DSH_OUT, JSON.stringify({ argv: process.argv.slice(2), env: pick }));\n`);
+  fs.writeFileSync(fakeDsh, `import fs from 'node:fs';\nconst pick = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('RULITH_DSH_') || k === 'RULITH_MODEL_KEY'));\nfs.writeFileSync(process.env.FAKE_DSH_OUT, JSON.stringify({ argv: process.argv.slice(2), env: pick }));\n`);
   const s = { dshBin: fakeDsh, dshHome: path.join(dir, 'dsh-home'), cwd: dir, managerHome: path.join(dir, 'manager-home'),
     keyFile: path.join(dir, 'key.txt'), runtimeEntry: path.join(dir, 'runtime.mjs'), persona: path.join(dir, 'persona.txt'), ...settings };
   fs.mkdirSync(s.managerHome, { recursive: true });
-  if (modelDefaults) fs.writeFileSync(path.join(s.managerHome, 'model-defaults.json'), JSON.stringify({ defaults: modelDefaults }));
+  fs.writeFileSync(path.join(s.managerHome, 'device.json'), JSON.stringify({ format: 'rulith-local-device/1', state: 'linked',
+    origin: 'https://console.example', account: { id: 'launcher-account' } }));
+  // Rows name their account; a row without one belongs to the account signed in here.
+  if (modelDefaults) fs.writeFileSync(path.join(s.managerHome, 'model-defaults.json'), JSON.stringify({ defaults:
+    modelDefaults.map(row => ({ origin: 'https://console.example', accountId: 'launcher-account', ...row })) }));
+  Object.assign(s, prepare(dir, s));
   const file = path.join(dir, 'deep-rulith.json');
   fs.writeFileSync(file, JSON.stringify(s));
   const env = { ...process.env, ...extraEnv, FAKE_DSH_OUT: out };
@@ -214,6 +220,77 @@ test('the launcher passes the context lines to dsh, and refuses to start when re
   assert.equal(refused.started, null, 'dsh is not started');
 });
 
+// The owner's launcher keeps working (P1 review of batch 2): localContextWindow reaches the live route of a model on this
+// computer, a modelHome's defaults are those of the account signed in to that home, and each attached Agent's model is
+// printed at the start (never a key).
+test('the launcher hands localContextWindow to the host, and refuses an invalid one', async () => {
+  const { localContextWindow } = await import('../../harness/web/launcher-settings.mjs');
+  assert.equal(localContextWindow({}), undefined);
+  assert.equal(localContextWindow({ localContextWindow: 262144 }), 262144);
+  for (const bad of [0, -1, 1.5, '262144', null]) assert.throws(() => localContextWindow({ localContextWindow: bad }), /positive whole number/);
+  const ok = launch({ localContextWindow: 262144 });
+  assert.equal(ok.run.status, 0, ok.run.stderr);
+  assert.equal(ok.started.env.RULITH_DSH_LOCAL_CONTEXT_WINDOW, '262144');
+  assert.equal(Object.hasOwn(launch({}).started.env, 'RULITH_DSH_LOCAL_CONTEXT_WINDOW'), false);
+  const refused = launch({ localContextWindow: 'big' });
+  assert.notEqual(refused.run.status, 0);
+  assert.match(refused.run.stderr, /localContextWindow in the settings must be a positive whole number/);
+  assert.equal(refused.started, null, 'dsh is not started');
+});
+
+test('a modelHome\'s default is the one saved for the account signed in to that home; the launcher home\'s account does not pick it', () => {
+  const otherHome = (dir, signedIn = true) => {
+    const home = path.join(dir, 'model-home');
+    fs.mkdirSync(home, { recursive: true });
+    if (signedIn) fs.writeFileSync(path.join(home, 'device.json'), JSON.stringify({ format: 'rulith-local-device/1', state: 'linked',
+      origin: 'https://console.dev.example', account: { id: 'dev-account' } }));
+    fs.writeFileSync(path.join(home, 'model-defaults.json'), JSON.stringify({ defaults: [
+      { origin: 'https://console.example', accountId: 'launcher-account', url: 'https://wrong.example/v1', name: 'wrong-row', key: 'wrong' },
+      { origin: 'https://console.dev.example', accountId: 'dev-account', url: 'http://127.0.0.1:8080/v1', name: 'qwen-dev', key: '' }] }));
+    return { modelHome: home };
+  };
+  const ok = launch({}, undefined, {}, (dir) => otherHome(dir));
+  assert.equal(ok.run.status, 0, ok.run.stderr);
+  assert.equal(ok.started.env.RULITH_DSH_MODEL, 'qwen-dev');
+  assert.match(ok.started.env.RULITH_DSH_MODEL_HOME, /model-home$/);
+  // Nobody signed in to that home: none of its rows counts.
+  const none = launch({}, undefined, {}, (dir) => otherHome(dir, false));
+  assert.equal(none.run.status, 0, none.run.stderr);
+  assert.equal(none.started.env.RULITH_DSH_MODEL, 'unset');
+});
+
+test('at the start the launcher prints each attached Agent\'s model: where it comes from, its id and endpoint, never a key', () => {
+  const KEY = 'sk-launcher-never-printed-42';
+  const TOKEN = 'rlt_agt_never_printed_0123456789';
+  const prepare = (_dir, s) => {
+    const instance = (id, env) => {
+      const directory = path.join(s.managerHome, 'instances', id);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, 'local.json'), JSON.stringify({ agent: { env } }));
+      return directory;
+    };
+    fs.writeFileSync(path.join(s.managerHome, 'registry.json'), JSON.stringify({ instances: [
+      { id: 'own', mode: 'local_agent', agentId: 'agent-own', agentName: 'Own model', origin: 'https://console.example', accountId: 'launcher-account',
+        directory: instance('own', { RULITH_TOKEN: TOKEN, RULITH_MODEL_URL: 'https://api.deepseek.com', RULITH_MODEL: 'deepseek-reasoner', RULITH_MODEL_KEY: KEY }) },
+      { id: 'default', mode: 'local_agent', agentId: 'agent-default', agentName: 'Follows default', origin: 'https://console.example', accountId: 'launcher-account',
+        modelSource: 'default', directory: instance('default', { RULITH_TOKEN: TOKEN }) },
+      // Not attached here: no token, signed out, or another account's.
+      { id: 'unpaired', mode: 'local_agent', agentId: 'agent-unpaired', agentName: 'Unpaired', origin: 'https://console.example', accountId: 'launcher-account',
+        directory: instance('unpaired', {}) },
+      { id: 'out', mode: 'local_agent', agentId: 'agent-out', agentName: 'Signed out', origin: 'https://console.example', accountId: 'launcher-account',
+        signedOutAt: '2026-10-20', directory: instance('out', { RULITH_TOKEN: TOKEN }) },
+      { id: 'other', mode: 'local_agent', agentId: 'agent-other', agentName: 'Other account', origin: 'https://console.example', accountId: 'someone-else',
+        directory: instance('other', { RULITH_TOKEN: TOKEN }) }] }));
+    return {};
+  };
+  const ok = launch({}, [{ url: 'http://127.0.0.1:8080/v1', name: 'qwen', key: KEY }], {}, prepare);
+  assert.equal(ok.run.status, 0, ok.run.stderr);
+  const lines = ok.run.stdout.split(/\r?\n/).filter((line) => line.includes(' Agent '));
+  assert.deepEqual(lines, ['Deep Rulith: Agent Own model uses its own model: deepseek-reasoner at https://api.deepseek.com.',
+    'Deep Rulith: Agent Follows default uses the account default model: qwen at http://127.0.0.1:8080/v1.']);
+  for (const secret of [KEY, TOKEN]) assert.equal((ok.run.stdout + ok.run.stderr).includes(secret), false);
+});
+
 test("the platform reviewer's route in each enabled Worker's worker.env drops the old 300 s timeout", () => {
   const home = temp();
   const instance = (name, local) => {
@@ -257,34 +334,48 @@ test('reviewerRoutes send instances of matching Agents to another reviewer route
   assert.equal(read('inst-b').RULITH_REVIEWER_MODEL, 'qwen');
 });
 
-// D-1015c: dsh's web_search searches through DeepSeek. The launcher passes the model's key for it only when Rulith's model
-// is DeepSeek's own API; otherwise web_search is not registered (the overlay reads the variable) and dsh starts as usual.
-test('the launcher passes a web search key only for a DeepSeek model, never prints it, and starts without one', () => {
+// D-1015c: dsh's web_search searches through DeepSeek. It is offered only when the signed-in account's Rulith model is
+// DeepSeek's own API; otherwise web_search is not registered (the overlay reads the variable) and dsh starts as usual.
+// Since PSC 0.2.27 ④ the variable is only a flag and no model key reaches dsh's environment at all: the host half reads
+// the key per turn and per search (web/model-runtime.mjs).
+test('the launcher offers web search only for a DeepSeek model, passes no key at all, and starts without one', () => {
   const key = 'test-deepseek-key-0123456789';
   const deepseek = launch({}, [{ name: 'deepseek-chat', url: 'https://api.deepseek.com/v1', key }]);
   assert.equal(deepseek.run.status, 0, deepseek.run.stderr);
-  assert.equal(deepseek.started.env.RULITH_DSH_WEB_SEARCH_KEY, key);
+  assert.equal(deepseek.started.env.RULITH_DSH_WEB_SEARCH_KEY, '1');
+  assert.equal(deepseek.started.env.RULITH_MODEL_KEY, '', 'no launch-time model key reaches dsh');
+  assert.equal(deepseek.started.env.RULITH_DSH_MODEL, 'deepseek-chat');
+  assert.ok(!JSON.stringify(deepseek.started).includes(key), 'the key is in no variable dsh receives');
   assert.ok(!deepseek.run.stdout.includes(key) && !deepseek.run.stderr.includes(key), 'the key is not printed');
+  // Account isolation: another account's row is never used, even when it comes first in the file.
+  const other = launch({}, [{ name: 'deepseek-chat', url: 'https://api.deepseek.com/v1', key, accountId: 'another-account' },
+    { name: 'qwen', url: 'http://127.0.0.1:8080/v1', key: '' }]);
+  assert.equal(other.run.status, 0, other.run.stderr);
+  assert.equal(other.started.env.RULITH_DSH_MODEL, 'qwen');
+  assert.equal(Object.hasOwn(other.started.env, 'RULITH_DSH_WEB_SEARCH_KEY'), false);
   for (const [label, defaults] of [['local engine', [{ name: 'qwen', url: 'http://127.0.0.1:8080/v1', key }]],
     ['another provider', [{ name: 'gpt', url: 'https://api.openai.com/v1', key }]], ['no model', undefined]]) {
     const started = launch({}, defaults);
     assert.equal(started.run.status, 0, `${label}: ${started.run.stderr}`);
     assert.equal(Object.hasOwn(started.started.env, 'RULITH_DSH_WEB_SEARCH_KEY'), false, `${label}: web_search is not offered`);
   }
-  // The overlays name only the variable; no key is written into either file.
+  // No key is written into either overlay. The headless role's names only the variable; the web overlay turns dsh's
+  // launch-time provider off, because rulith-runtime registers one that reads the key per search.
   for (const file of ['rulith-web.cordis.yml', '../rulith.cordis.yml']) {
     const overlay = fs.readFileSync(path.join(web, file), 'utf8');
-    assert.match(overlay, /- id: web-search-deepseek\n {2}config:\n {4}apiKeyEnv: RULITH_DSH_WEB_SEARCH_KEY\n(?: {4}#.*\n)? {4}baseURL: https:\/\/api\.deepseek\.com\/anthropic\/v1\n/);
+    if (file === 'rulith-web.cordis.yml') assert.match(overlay, /- id: web-search-deepseek\n {2}disabled: true\n/);
+    else assert.match(overlay, /- id: web-search-deepseek\n {2}config:\n {4}apiKeyEnv: RULITH_DSH_WEB_SEARCH_KEY\n(?: {4}#.*\n)? {4}baseURL: https:\/\/api\.deepseek\.com\/anthropic\/v1\n/);
     assert.match(overlay, /\n {4}search: !!js '!!process\.env\.RULITH_DSH_WEB_SEARCH_KEY'\n {4}fetch: true\n/);
-    assert.doesNotMatch(overlay, /- id: (web|web-fetch-http|web-search-deepseek|tool-web)\n {2}disabled: true/);
+    assert.doesNotMatch(overlay, /- id: (web|web-fetch-http|tool-web)\n {2}disabled: true/);
     for (const id of ['tool-fs', 'tool-fs-search', 'fs-observation-policy', 'tool-bash', 'tool-pwsh', 'tool-jobs'])
       assert.match(overlay, new RegExp(`- id: ${id}\n {2}disabled: true\n`), id);
   }
 });
 
-// D-1016a fix 1: a launcher refreshes the general kit only for its own Agent, and not at all while another launcher's
-// manager serves the port. A stand-in Runtime records each installer call; nothing real is installed or started.
-test('the launcher refreshes only its own Agent and skips the refresh while a manager already listens', async () => {
+// PSC 0.2.27 ③: the launcher installs nothing itself. The general kit is refreshed by the host half through the manager's
+// setup operation (kit-install.mjs), whether this launcher's start brings the manager up or another launcher's manager
+// already serves the port; nothing is skipped. A stand-in Runtime records any installer call; none may happen.
+test('the launcher runs no kit installer of its own, with or without a manager already listening', async () => {
   const net = await import('node:net');
   const dir = temp();
   try {
@@ -316,11 +407,11 @@ test('the launcher refreshes only its own Agent and skips the refresh while a ma
     });
     const busy = await start();
     assert.equal(busy.error, null, busy.stderr);
-    assert.match(busy.stderr, /another launcher\); general kit refresh skipped/);
+    assert.doesNotMatch(busy.stderr, /general kit refresh skipped/);
     assert.equal(fs.existsSync(calls), false);
     await new Promise((resolve) => server.close(resolve));
     const free = await start();
     assert.equal(free.error, null, free.stderr);
-    assert.equal(fs.readFileSync(calls, 'utf8'), 'mine\n');
+    assert.equal(fs.existsSync(calls), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -40,7 +40,9 @@ const reconnectable = (rows) => (Array.isArray(rows) ? rows : [])
   .slice(0, 16)
   .map((row) => ({ connectionId: row.connectionId, name: row.name,
     ...(text(row.displayName).trim() ? { displayName: row.displayName } : {}), createdAt: row.createdAt }))
+// `isDefault` marks the account's own default Agent (the app's 默认 badge); kept only when the service says it, as a boolean.
 const agentView = (row) => ({ id: String(row.id), name: String(row.name ?? row.id),
+  ...(typeof row.isDefault === 'boolean' ? { isDefault: row.isDefault } : {}),
   reconnectable: reconnectable(row.reconnectable) })
 
 /**
@@ -512,10 +514,10 @@ export function createDeviceClient({ root } = {}) {
         throw new Error('That Agent is not enabled in this account. Refresh Agents after enabling it in Console.')
       }
       const reconnect = text(reconnectConnectionId)
-      if (reconnect && !reconnectable(current.agents.find((row) => row.id === agentId)?.reconnectable)
-        .some((row) => row.connectionId === reconnect)) {
-        throw new Error('That Connection is no longer available to reconnect. Refresh Agents and choose a Connection again.')
-      }
+      // PSC 0.2.27 ②: the Connection an instance remembers is only a candidate, and it need not be among the
+      // directory's reconnect choices. The Gateway decides in its approval: it reconnects it when it is still this
+      // Agent's and not held by another device, falls back to this device's own Connection, and creates one only when
+      // there is none; a Connection a Worker elsewhere is using is refused. This client checks nothing about it.
       // An operation route: a refusal here is usually about the Agent or the pairing, and
       // only the account service naming a device-level code — or the device route itself
       // refusing — may conclude that this computer is signed out.

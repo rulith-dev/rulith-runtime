@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 // Deep Rulith launcher, and the installed command. Takes its settings from this computer's settings file (paths only) or,
-// with none, derives them from the app home (app-home.mjs); takes the model from Rulith's own model settings (the manager
-// home), and starts dsh's web profile "rulith" with the Deep Rulith overlay. The model key travels only in the child's
-// environment; it is never printed or written anywhere.
+// with none, derives them from the app home (app-home.mjs), and starts dsh's web profile "rulith" with the Deep Rulith
+// overlay. Which model a conversation uses is decided at every turn by the host half from Rulith's own model settings for
+// the account signed in then (web/model-runtime.mjs, PSC 0.2.27 ④); the launcher only names the signed-in account's
+// default model as the profile's default route, without its key, and never prints or writes a key.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { conversationBoards, contextEnv, contextLines, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
+import { conversationBoards, contextEnv, contextLines, localContextWindow, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
 import { holdAppHome, launcherSettings } from './app-home.mjs';
-import { managerListening, refreshGeneralKits } from '../kit-install.mjs';
 import { webSearchKey } from '../web-tools.mjs';
+import { attachedAgents, effectiveModel, modelLine, signedInAccount } from './model-runtime.mjs';
 
 // `args` are the launcher's own arguments: `--init` first, or dsh web flags (--no-open, --port ...).
 const { settings: s, args, home } = await launcherSettings();
@@ -19,10 +20,17 @@ if (home) {
   await holdAppHome(home).catch((error) => { console.error(error.message); process.exit(1); });
   console.log(`Deep Rulith keeps its files in ${home}.`);
 }
-// The model settings live in a Rulith manager home: this one's, or another the settings name (modelHome).
-const modelFile = path.join(s.modelHome ?? s.managerHome, 'model-defaults.json');
-const defaults = fs.existsSync(modelFile) ? JSON.parse(fs.readFileSync(modelFile, 'utf8')).defaults ?? [] : [];
-const model = defaults.find((row) => row.key && row.url && row.name) ?? null;
+// The model settings live in a Rulith manager home: this one's, or another the settings name (modelHome, developers). Only
+// the row of the account signed in counts (account isolation, SYS-LOCAL-01), never the first row of the file; a
+// modelHome's rows are matched against the account signed in to that home, the account they were saved for, while this
+// computer's own sign-in is still required (model-runtime.mjs effectiveModel).
+const account = signedInAccount(s.managerHome);
+const modelHome = s.modelHome ? path.resolve(s.modelHome) : '';
+const defaultOf = (home) => {
+  const found = effectiveModel({ home: s.managerHome, modelHome: home }, account);
+  return found.url && found.name ? found : null;
+};
+const model = defaultOf(modelHome);
 // An independent modelHome uses the same Rulith model-defaults format as the main route. Otherwise shadow follows
 // the actual dsh request route, including a provider selected on the Models page; no separate key is needed.
 // D-1013c: the Board review now runs on the platform (a reviewer Connection designated in Console), so the host-side
@@ -31,9 +39,7 @@ const shadow = s.shadow ?? {};
 const hostShadow = shadow.enabled === true;
 let shadowModel = null;
 if (hostShadow && shadow.modelHome) {
-  const file = path.join(shadow.modelHome, 'model-defaults.json');
-  const rows = JSON.parse(fs.readFileSync(file, 'utf8')).defaults ?? [];
-  shadowModel = rows.find((row) => row.key && row.url && row.name) ?? null;
+  shadowModel = defaultOf(path.resolve(shadow.modelHome));
   if (!shadowModel) throw new Error('Deep Rulith: no model is configured in shadow.modelHome');
 }
 const base = model ? model.url.replace(/\/+$/, '') : '';
@@ -48,6 +54,8 @@ const lines = contextLines(s);
 // The reviewer's request extra (reviewerThinking or reviewerRequestExtra; see launcher-settings.mjs). An invalid value, or a
 // key the Worker controls, refuses to start, like the ratios above.
 const reviewerExtra = reviewerRequestExtra(s);
+// The context window of a model on this computer (a loopback endpoint), when the settings name one; invalid refuses to start.
+const localWindow = localContextWindow(s);
 const env = {
   ...process.env,
   DSH_HOME: s.dshHome, DSH_TELEMETRY_MODE: 'DISABLED', DSH_TELEMETRY_DISABLED: '1',
@@ -55,10 +63,18 @@ const env = {
   RULITH_DSH_RUNTIME_ENTRY: s.runtimeEntry, RULITH_DSH_PERSONA: s.persona,
   ...(s.consoleUrl ? { RULITH_DSH_CONSOLE_URL: s.consoleUrl } : {}), ...(s.mcpUrl ? { RULITH_DSH_MCP_URL: s.mcpUrl } : {}), ...(s.agentName ? { RULITH_DSH_AGENT: s.agentName } : {}),
   RULITH_DSH_MODEL: model?.name ?? 'unset', RULITH_DSH_MODEL_BASE: base || 'http://127.0.0.1:9/unset',
-  RULITH_MODEL_KEY: model?.key ?? '',
-  // D-1015c: dsh's web_search searches through DeepSeek with this key; set only when Rulith's model is DeepSeek's own API
-  // (web-tools.mjs). Without it the overlay leaves web_search unregistered and dsh starts as usual.
-  RULITH_DSH_WEB_SEARCH_KEY: webSearchKey(model),
+  // The profile's route rulith-model is only the default a new conversation starts from: every turn is routed to the live
+  // Rulith model (web/model-runtime.mjs), whose key stays in memory. This variable is therefore empty, so nothing can
+  // reach a model with a key captured at launch, for example after the account was switched.
+  RULITH_MODEL_KEY: '',
+  // D-1015c: dsh's web_search searches through DeepSeek; offered when the signed-in account's model is DeepSeek's own API
+  // (web-tools.mjs). Only a flag: the key is resolved per search from the turn's model (model-runtime.mjs).
+  RULITH_DSH_WEB_SEARCH_KEY: webSearchKey(model) ? '1' : '',
+  // Where a new Agent's general kit home goes (the app home's kit), and another home's model defaults (developers).
+  ...(s.kitHome ? { RULITH_DSH_KIT_HOME: path.resolve(s.kitHome) } : {}),
+  ...(modelHome ? { RULITH_DSH_MODEL_HOME: modelHome } : {}),
+  // The live route of a loopback model takes this window (model-runtime.mjs liveRoute), as the profile's routes did.
+  ...(localWindow ? { RULITH_DSH_LOCAL_CONTEXT_WINDOW: String(localWindow) } : {}),
   RULITH_DSH_SHADOW: JSON.stringify({ enabled: hostShadow,
     provider: shadow.provider ?? (shadowModel ? 'rulith-shadow' : undefined), model: shadow.model ?? shadowModel?.name,
     maxTokens: shadow.maxTokens ?? 8000, timeoutMs: shadow.timeoutMs ?? 120_000 }),
@@ -67,17 +83,22 @@ const env = {
   RULITH_DSH_CONVERSATION_BOARDS: conversationBoards(s) ? '1' : '0',
 };
 if (!env.RULITH_DSH_WEB_SEARCH_KEY) delete env.RULITH_DSH_WEB_SEARCH_KEY;
-if (!model) console.error('Deep Rulith: no model is set in Rulith yet; set it under 更多设置 (Rulith workbench) and restart.');
-// The local Worker is the platform reviewer's model route (D-1013f post-call advice). The managed host gives the Worker
-// only its instance's worker.env, so on every start the route of the model dsh currently uses for the agent
-// (agent-default-model: provider, model) is written there: its base URL, model id and key. The key comes from where dsh
-// itself reads it (the Rulith model settings for rulith-model, the provider's apiKeyEnv in the process environment or in
-// dsh's .credentials.yaml otherwise) and moves file to file, never printed. Designating the Connection as reviewer in
-// Console is what turns the review on; the shadow therefore follows the model the person picked (owner 2026-10-14).
+if (!model) console.error('Deep Rulith: no model is set for the signed-in Rulith account yet; once one is saved, it is used from the next turn.');
+// Which model each Agent attached here uses now (its own model, or the account default), so a wrong selection shows at
+// once: where it comes from, the model id and the endpoint. Never a key, nor whether there is one.
+// 中文说明：启动时逐个打印本机已接上的 Agent 此刻所用的模型（来源、模型 ID、地址），不打印密钥。
+for (const agent of attachedAgents(s.managerHome, account))
+  console.log(modelLine(agent.name, effectiveModel({ home: s.managerHome, modelHome }, account, agent.agentId)));
+// The local Worker is the platform reviewer's model route (D-1013f post-call advice). Since PSC 0.2.27 ④ the Runtime gives
+// each local Agent's Worker that Agent's own model as its reviewer route at every Worker start (local/rulith-local.mjs), so
+// a saved model change reaches it at the Worker's next reload, and one account's key is never copied into another's
+// instances. So the launcher no longer writes a default route: it removes the one earlier launchers wrote into every
+// instance, and writes only what the settings ask for explicitly — reviewerRoutes for Agents of a name prefix (a provider
+// of the dsh profile; its key from where dsh reads it, file to file, never printed) and the reviewer request extra.
+// Designating the Connection as reviewer in Console is what turns the review on.
 function writeReviewerRoute(YAML, doc) {
   const rows = YAML.isSeq(doc.contents) ? doc.contents.items : [];
   const row = (id) => rows.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));
-  const chosen = row('agent-default-model');
   const routeEnv = (providerName, modelId, extra) => {
     const provider = row('llm-pi-ai')?.getIn(['config', 'providers', providerName]);
     const baseURL = YAML.isMap(provider) ? String(provider.get('baseURL') ?? '').replace(/\/+$/, '') : '';
@@ -94,20 +115,9 @@ function writeReviewerRoute(YAML, doc) {
     if (!env) throw new Error(`Deep Rulith: reviewerRoutes provider ${r.provider} has no base URL in the dsh profile`);
     return { agentPrefix: r.agentPrefix, env };
   });
-  const providerName = chosen?.getIn(['config', 'provider']) ?? 'rulith-model';
-  const modelId = chosen?.getIn(['config', 'model']) ?? env.RULITH_DSH_MODEL;
-  const provider = row('llm-pi-ai')?.getIn(['config', 'providers', providerName]);
-  const baseURL = YAML.isMap(provider) ? String(provider.get('baseURL') ?? '').replace(/\/+$/, '') : '';
-  const keyEnv = YAML.isMap(provider) ? provider.get('apiKeyEnv') : undefined;
-  let key = providerName === 'rulith-model' ? model?.key ?? '' : (keyEnv ? process.env[keyEnv] ?? '' : '');
-  if (!key && keyEnv) {
-    const credentials = path.join(s.dshHome, '.credentials.yaml');
-    if (fs.existsSync(credentials)) key = String(YAML.parse(fs.readFileSync(credentials, 'utf8'))?.refs?.[keyEnv] ?? '');
-  }
-  if (!baseURL || !modelId) return;
-  // The reviewer's output cap (16000), timeout (300000 ms, the Gateway's maximum) and request extra (written when the settings
-  // have reviewerThinking or reviewerRequestExtra, removed when they have neither) are explained in launcher-settings.mjs.
-  writeReviewerEnv(s.managerHome, reviewerEnv({ baseURL, modelId, key, extra: reviewerExtra }), overrides);
+  // The default: no route of the launcher's own (the Runtime derives it), only the request extra (launcher-settings.mjs).
+  writeReviewerEnv(s.managerHome, { RULITH_REVIEWER_URL: undefined, RULITH_REVIEWER_MODEL: undefined, RULITH_REVIEWER_KEY: undefined,
+    RULITH_REVIEWER_MAX_TOKENS: undefined, RULITH_REVIEWER_TIMEOUT_MS: undefined, RULITH_REVIEWER_REQUEST_EXTRA: reviewerExtra }, overrides);
 }
 
 const overlay = fileURLToPath(new URL('./rulith-web.cordis.yml', import.meta.url));
@@ -152,9 +162,9 @@ function writeModelRoute() {
     // library default instead of the server's real size. For a local OpenAI-compatible server (llama.cpp) the launcher
     // asks nothing and assumes nothing beyond what the person set: `localContextWindow` in deep-rulith.json
     // fills only entries that have none.
-    if (s.localContextWindow && YAML.isMap(pair.value) && /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(String(pair.value.get('baseURL') ?? '')))
+    if (localWindow && YAML.isMap(pair.value) && /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(String(pair.value.get('baseURL') ?? '')))
       for (const entry of YAML.isSeq(models) ? models.items : [])
-        if (YAML.isMap(entry) && !entry.has('contextWindow')) entry.set('contextWindow', s.localContextWindow);
+        if (YAML.isMap(entry) && !entry.has('contextWindow')) entry.set('contextWindow', localWindow);
   }
   const text = doc.toString();
   fs.writeFileSync(`${profilePatch}.tmp`, text);
@@ -184,13 +194,8 @@ if (!fs.existsSync(path.join(s.dshHome, 'profiles', profile, 'package.json'))) {
   const code = createProfile();
   if (code !== 0) process.exit(code);
 }
-// The kit refresh covers this launcher's own Agent (agentName) when the settings name one, else every paired Agent; an Agent
-// whose Worker has no kit home yet gets `kitHome` when the settings have one (the app home's kit). A manager already
-// listening on the port belongs to another launcher sharing this manager home; its Workers run on the files a refresh
-// rewrites, so the refresh waits for a start that brings the manager up itself.
-if (await managerListening(Number(s.managerPort ?? 7790)))
-  console.error('Deep Rulith: a Rulith manager already runs on this port (another launcher); general kit refresh skipped.');
-else refreshGeneralKits(s.managerHome, { agent: s.agentName, kitHome: s.kitHome });
+// The general kit is refreshed by the host half once it reaches the manager (kit-install.mjs), through the manager's own
+// setup operation, whether this launcher started the manager or another one did.
 syncBrowserPlugin(); writeModelRoute();
 const child = spawn(process.execPath, [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...args],
   { cwd: s.cwd, env, stdio: 'inherit' });
