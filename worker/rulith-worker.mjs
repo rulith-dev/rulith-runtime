@@ -2051,6 +2051,25 @@ function retireLeaseKeeper() {
 const RENEW_FLOOR_MS = 1000
 const RENEW_ATTEMPT_TIMEOUT_MS = 10_000
 /**
+ * 一个 Poll 答复从 Gateway 写下 `serverTime` 到在这里读完，本地估计按这么久算。
+ *
+ * Gateway 在 Poll 一到就授予租约，把 Poll 挂住（生产上 25 s），回答前重读租约，写下那一刻
+ * 剩下的窗口。挂住的那段时间已经从窗口里扣掉了；这里再从发送时刻起算，就把它扣了两次——
+ * 2026-10-23 生产上 Gateway 每 ~37 s 卡 ~13 s，Poll 36 s 才回来，窗口还剩 31 s，Worker 却在
+ * 接手那一刻就判它过期，丢掉租约，下一个 Poll 吃 409，换一代，如此循环。
+ *
+ * 所以 Poll 答复的窗口从「到达前这么久」起算（不早于发送时刻）。这 5 s 是一个估计，不是界：
+ * 带活的答复在 Gateway 写下 `serverTime` 之后，还要向 Kernel 再列一次工、核对并记录动作供工、
+ * 写身份库，才把租约放进答复（WorkerService.poll）；本进程读完答复前的停顿（GC、事件循环忙）
+ * 也一并算成了挂住。实际超出 5 s 多少，本地对这个窗口的估计就长出多少。护住正确性的是两件事：
+ * 一、领取与回报始终由 Gateway 按它自己的租约重新裁决，本地估计长了也领不到、报不进一个已失效的租约；
+ * 二、一个 Poll 答复开出的新租约（一次取得，不是持租时的平常 Poll），只要窗口按这条余量折算过，
+ * 就当场续一次，这一批等那次续租确认后才领取（见 `adoptLease`）。续租答复从发送时刻量，是真界。
+ * 持租时的平常 Poll 不变：下一次续租是上一次续租的答复排定的，Poll 答复不重排它。
+ * 只用 Gateway 自己两个时刻之差，不拿 `serverTime` 和本机时钟比，所以两边时钟的偏差不进来。
+ */
+const POLL_ANSWER_TRANSIT_MS = 5_000
+/**
  * A canonical RFC3339 UTC instant that is also a real one.
  *
  * The pattern in the contract cannot decide the calendar: `2026-02-30T00:00:00Z` has the
@@ -2077,8 +2096,12 @@ function utcInstant(text) {
  * `serverTime`), and the heartbeat must be strictly shorter than that window — a heartbeat
  * that fills it leaves no room to renew, so the first renewal would already be due at
  * expiry.
+ *
+ * The window is measured from `startedAt`, when the request was sent. A Poll answer also
+ * passes `answeredAt`, when it was read: the time the Gateway held the Poll beyond
+ * `POLL_ANSWER_TRANSIT_MS` is credited back, because the window it states already excludes it.
  */
-export function parseLease(value, startedAt = performance.now(), wallStartedAt = Date.now()) {
+export function parseLease(value, startedAt = performance.now(), wallStartedAt = Date.now(), answeredAt = undefined) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
   const allowed = ['workerId', 'workerGeneration', 'expiresAt', 'serverTime', 'heartbeatAfterMs']
   if (Object.keys(value).some((key) => !allowed.includes(key))) return undefined
@@ -2091,16 +2114,19 @@ export function parseLease(value, startedAt = performance.now(), wallStartedAt =
   const heartbeatAfterMs = value.heartbeatAfterMs
   if (!Number.isSafeInteger(heartbeatAfterMs) || heartbeatAfterMs < 1) return undefined
   if (heartbeatAfterMs >= expiresAt - serverTime) return undefined
+  // Both clocks start at the send, which counts travel and Gateway processing against the
+  // window. A Poll's hold beyond the transit margin is credited back, measured once on the
+  // monotonic clock and applied to both, so a suspend or wall-clock jump during the Poll still
+  // counts as elapsed. An answer that took no longer than the margin is measured exactly as before.
+  const credit = answeredAt === undefined ? 0 : Math.max(0, answeredAt - startedAt - POLL_ANSWER_TRANSIT_MS)
   return {
     workerId: value.workerId,
     workerGeneration: generation,
     serverTime: value.serverTime,
     expiresAt: value.expiresAt,
     heartbeatAfterMs,
-    // Both clocks start before sending, conservatively including travel and Gateway
-    // processing time. A delayed answer cannot extend the Gateway's window.
-    heldSince: startedAt,
-    wallClockSince: wallStartedAt,
+    heldSince: startedAt + credit,
+    wallClockSince: wallStartedAt + credit,
   }
 }
 
@@ -2118,9 +2144,9 @@ export function leaseSnapshotRegresses(current, next) {
     && Date.parse(next.expiresAt) <= Date.parse(current.expiresAt))
 }
 
-function adoptLease(value, why, startedAt, wallStartedAt) {
+function adoptLease(value, why, startedAt, wallStartedAt, answeredAt) {
   if (leaseClosing) return undefined
-  const next = parseLease(value, startedAt, wallStartedAt)
+  const next = parseLease(value, startedAt, wallStartedAt, answeredAt)
   if (next === undefined) {
     if (lease !== undefined) {
       console.error(`⚠ ${why}: the answer carried no usable active lease, so this Worker is holding none.`
@@ -2154,7 +2180,10 @@ function adoptLease(value, why, startedAt, wallStartedAt) {
   if (replaced) retireLeaseKeeper()
   lease = next
   lastLeaseSnapshot = next
-  keepLeaseAlive()
+  // 本进程量不准的新租约先问 Gateway 一次再用：窗口按 Poll 的在途余量折算过（那 5 s 只是估计，
+  // 见 POLL_ANSWER_TRANSIT_MS），或到达时已经用尽。只作用于新起的续租者——也就是一次取得；
+  // 持租时的平常 Poll 沿用已在运行的续租者，不受影响。调用方等这次续租落定后才领取。
+  keepLeaseAlive({ renewNow: next.heldSince !== startedAt || !leaseIsLive(next) })
   if (replaced) {
     wev('lease', { state: 'generation-advanced', workerGeneration: next.workerGeneration })
   }
@@ -2182,10 +2211,11 @@ const leaseLiveRemainingMs = (held, now = performance.now(), wallNow = Date.now(
  *
  * The reserve decides when renewal *starts*, never when the Worker gives up. A lease can be
  * adopted with less than the reserve left: the Gateway grants it when a long Poll starts and
- * states the window that remains when the answer is built, while this process measures that
- * window from when the Poll was sent. Such a lease is renewed at once, and the attempt may use
- * whatever time is still live (2026-10-06: the production Gateway holds a Poll for 25 s of a
- * 60 s lease, and 0.12.0 gave every lease acquired that way up before renewing it).
+ * nobody renews it while the Poll is held. Such a lease is renewed at once, and the attempt may
+ * use whatever time is still live (2026-10-06: the production Gateway holds a Poll for 25 s of a
+ * 60 s lease, and 0.12.0 gave every lease acquired that way up before renewing it). An
+ * acquisition whose window was credited for a long Poll, or that arrives with nothing left, does
+ * not wait for this schedule: its first renewal starts on adoption — see `adoptLease`.
  */
 const renewDueInMs = () => {
   if (lease === undefined) return undefined
@@ -2203,14 +2233,24 @@ const renewDueInMs = () => {
  * not re-enter through the renewal door. A definite refusal drops the lease. An unavailable,
  * unreadable or truncated answer is uncertain: retry while the held lease is still live, each
  * attempt bounded by the time it has left, while callers wait on the keeper's in-flight promise.
+ *
+ * One exception: a lease that arrived with its window already spent here (the keeper was
+ * started on it, see `keepLeaseAlive`). Nothing was claimed or reported under it, so asking the
+ * Gateway once whether it still stands strands nothing, and only the Gateway knows — this
+ * process's measure is conservative. That question gets one full attempt and no retry; the
+ * Gateway renews only a lease that is still active. Dropping it instead left the next Poll
+ * restating a generation nobody renewed, so it was refused with 409 and the next acquisition
+ * started the same loop. A lease that was live here and then lapsed is never asked about.
  */
 async function renewLease(keeper) {
   if (keeper.stopped || leaseKeeper !== keeper || lease === undefined || leaseClosing) return undefined
   const held = lease
+  const askOnce = keeper.arrivedSpent && leaseLiveRemainingMs(held) <= 0
+  keeper.arrivedSpent = false
   const current = () => !keeper.stopped && leaseKeeper === keeper && !leaseClosing
     && lease?.workerGeneration === held.workerGeneration
-  const expire = () => {
-    console.error('⚠ Renewing the lease could not be confirmed inside its validity window. This Worker stops taking work; no further claim or receipt will be sent.')
+  const expire = (why = 'Renewing the lease could not be confirmed inside its validity window.') => {
+    console.error(`⚠ ${why} This Worker stops taking work; no further claim or receipt will be sent.`)
     retireLeaseKeeper()
     lease = undefined
     wev('lease', { state: 'renew-expired' })
@@ -2219,7 +2259,7 @@ async function renewLease(keeper) {
   }
   let answer, startedAt, wallStartedAt, backoffMs = 1000
   while (current()) {
-    const remaining = leaseLiveRemainingMs(held)
+    const remaining = askOnce ? RENEW_ATTEMPT_TIMEOUT_MS : leaseLiveRemainingMs(held)
     if (remaining <= 0) return expire()
     try {
       startedAt = performance.now()
@@ -2230,6 +2270,7 @@ async function renewLease(keeper) {
     } catch (e) {
       if (!current()) return undefined
       if (e instanceof CredentialRejectedError) throw e
+      if (askOnce) return expire('The lease arrived with its window already spent, and the one renewal asking whether it still stands got no answer.')
       const waitMs = Math.min(backoffMs, Math.max(0, leaseLiveRemainingMs(held)))
       console.error(`⚠ Renewing the lease got no HTTP answer (${String(e?.message ?? e).slice(0, 160)}).`
         + ` Claims and receipts wait for confirmation; retrying in ${waitMs / 1000}s while the lease remains valid.`)
@@ -2243,7 +2284,7 @@ async function renewLease(keeper) {
   if (keeper.stopped || leaseKeeper !== keeper || leaseClosing
     || lease?.workerGeneration !== held.workerGeneration) return undefined
   if (stopIfTakenOver(answer?.errorCode, answer?.reason)) return undefined
-  if (leaseLiveRemainingMs(held) <= 0) return expire()
+  if (!askOnce && leaseLiveRemainingMs(held) <= 0) return expire()
   const renewed = adoptLease(answer?.lease, 'RenewLease', startedAt, wallStartedAt)
   if (renewed === undefined) {
     reportAvailability('offline')
@@ -2276,14 +2317,16 @@ async function renewLease(keeper) {
  * renewal just lost. The returned function waits for that renewal; only retirement on
  * lease loss, generation change or stop cancels the shared timer.
  */
-function keepLeaseAlive() {
+function keepLeaseAlive({ renewNow = false } = {}) {
   if (lease === undefined) return async () => {}
   if (leaseKeeper?.generation === lease.workerGeneration && !leaseKeeper.stopped) {
     const keeper = leaseKeeper
     return async () => { await keeper.inFlight }
   }
   retireLeaseKeeper()
-  const keeper = { generation: lease.workerGeneration, stopped: false, timer: undefined, inFlight: undefined }
+  // `arrivedSpent`: this keeper starts on a lease whose window was already spent when it arrived.
+  const keeper = { generation: lease.workerGeneration, stopped: false, timer: undefined, inFlight: undefined,
+    arrivedSpent: !leaseIsLive() }
   leaseKeeper = keeper
   const tick = async () => {
     if (keeper.stopped || leaseKeeper !== keeper || lease?.workerGeneration !== keeper.generation) return
@@ -2306,8 +2349,14 @@ function keepLeaseAlive() {
     keeper.timer = setTimeout(tick, renewDueInMs())
     keeper.timer.unref?.()
   }
-  keeper.timer = setTimeout(tick, renewDueInMs() ?? RENEW_FLOOR_MS)
-  keeper.timer.unref?.()
+  if (renewNow) {
+    // Started here rather than on a timer, so `keeper.inFlight` is already set when this
+    // returns and a caller that waits on it cannot slip a claim in ahead of the renewal.
+    void tick()
+  } else {
+    keeper.timer = setTimeout(tick, renewDueInMs() ?? RENEW_FLOOR_MS)
+    keeper.timer.unref?.()
+  }
   return async () => { await keeper.inFlight }
 }
 
@@ -5865,7 +5914,17 @@ if (IS_MAIN) {
       // does nothing: it does not claim, it does not execute, and it does not change what
       // its Tools advertise. A quiet endpoint is not a lease, and neither is the one this
       // process held a moment ago.
-      const held = adoptLease(r?.lease, POLL_KIND, pollStartedAt, pollWallStartedAt)
+      let held = adoptLease(r?.lease, POLL_KIND, pollStartedAt, pollWallStartedAt, offersReceivedAt)
+      // An acquisition this process cannot vouch for by its own measure is being renewed at
+      // once (`adoptLease`). The batch is judged by what that renewal settles, never by the
+      // transit estimate: until it is confirmed nothing is claimed, and if it is refused or
+      // lapses the items stay unclaimed for whichever instance holds the line. A steady-state
+      // Poll starts no renewal; it waits only for one already in flight, as any claim would.
+      if (held !== undefined) {
+        await keepLeaseAlive()()
+        if (!running || leaseClosing) break
+        held = lease
+      }
       if (held === undefined) {
         reportAvailability('offline')
         if (!leaseAnnounced) {

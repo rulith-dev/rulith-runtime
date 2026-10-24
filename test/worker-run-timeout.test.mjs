@@ -145,6 +145,199 @@ test('a lease acquired by a long-held Poll is renewed at once instead of given u
   assert.match(run.output, /receipt committed/)
 })
 
+// 2026-10-23 production: a stalling Gateway answered a Poll 36 s after it was sent, stating 31 s
+// left. Measured from the send, that lease was dead on arrival: the Worker dropped it, its next
+// Poll restated the generation nobody had renewed and got 409, and the cycle repeated every ~37 s.
+// The instants below are one consistent timeline: sent at 18:00:00, `serverTime` stated at
+// 18:00:31, answer read at 18:00:36 — exactly the 5 s transit margin after `serverTime`.
+const PRODUCTION_POLL = Object.freeze({ workerId: 'wkr_long_poll', workerGeneration: 183, heartbeatAfterMs: 10_000,
+  serverTime: '2026-10-23T18:00:31.000Z', expiresAt: '2026-10-23T18:01:02.000Z' })
+
+test('a Poll answer is measured from its arrival less the transit margin, never from before its send', () => {
+  const sentAt = 1_000_000, wallSentAt = Date.parse('2026-10-23T18:00:00.000Z')
+  const arrived = sentAt + 36_000, wallArrived = wallSentAt + 36_000
+  const held = parseLease(PRODUCTION_POLL, sentAt, wallSentAt, arrived)
+  // 31 s were left at 18:00:31 and the answer arrived 5 s later: live until exactly 18:01:02.
+  assert.equal(leaseIsLive(held, arrived, wallArrived), true)
+  assert.equal(leaseIsLive(held, arrived + 25_999, wallArrived + 25_999), true)
+  assert.equal(leaseIsLive(held, arrived + 26_000, wallArrived + 26_000), false)
+  // The margin is an estimate, not a bound. The same answer read 7 s after `serverTime` (the
+  // Gateway still working after stating it, or a stall in this process) is believed live until
+  // 18:01:04, 2 s past the Gateway's expiry — which is why such an acquisition is renewed before
+  // anything is claimed under it, and why the Gateway judges every claim by its own lease.
+  const late = parseLease(PRODUCTION_POLL, sentAt, wallSentAt, arrived + 2_000)
+  assert.equal(leaseIsLive(late, arrived + 2_000 + 25_999, wallArrived + 2_000 + 25_999), true)
+  // The same answer measured from its send (how a renewal is measured) is the defect.
+  assert.equal(leaseIsLive(parseLease(PRODUCTION_POLL, sentAt, wallSentAt), arrived, wallArrived), false)
+  // Only the monotonic hold is credited: wall time that passed beyond it during the Poll (a
+  // suspend) still counts against the window.
+  assert.equal(leaseIsLive(held, arrived, wallArrived + 26_000), false)
+  // An answer that came back within the margin is measured from the send, exactly as before.
+  const quick = parseLease(PRODUCTION_POLL, sentAt, wallSentAt, sentAt + 4_000)
+  assert.equal(quick.heldSince, sentAt)
+  assert.equal(quick.wallClockSince, wallSentAt)
+})
+
+test('a Poll answer whose window elapsed before it arrived is still not live', () => {
+  const sentAt = 1_000_000, wallSentAt = Date.parse('2026-10-23T18:00:00.000Z')
+  // 4 s left when stated at 18:00:31, and the answer spent the 5 s margin reaching here at 18:00:36.
+  const stale = { ...PRODUCTION_POLL, expiresAt: '2026-10-23T18:00:35.000Z', heartbeatAfterMs: 2_000 }
+  assert.equal(leaseIsLive(parseLease(stale, sentAt, wallSentAt, sentAt + 36_000), sentAt + 36_000, wallSentAt + 36_000), false)
+  // A short Poll whose answer took longer than the window it states.
+  const short = { ...PRODUCTION_POLL, serverTime: '2026-10-23T18:00:00.200Z', expiresAt: '2026-10-23T18:00:01.200Z',
+    heartbeatAfterMs: 500 }
+  assert.equal(leaseIsLive(parseLease(short, sentAt, wallSentAt, sentAt + 1_500), sentAt + 1_500, wallSentAt + 1_500), false)
+})
+
+/**
+ * A Gateway that holds the line the way the Java one does: an acquisition lasts `grantMs`; a
+ * renewal lasts `renewMs` and is answered `renewDelayMs` after it arrives, so a request sent
+ * before that answer is visibly early; a Poll that restates a generation no longer active is
+ * refused with 409, and so are RenewLease, ClaimWork and ReportWork under one (WorkerService
+ * `currentLease`); a Poll without a generation after expiry acquires the next one.
+ * `firstPoll(grant)` shapes the acquiring Poll's answer, `offer` what a held Poll hands out.
+ */
+function holdingGateway({ grantMs, renewMs = 6_000, renewDelayMs = 200, firstPoll, offer = () => undefined }) {
+  const line = { generation: 6, expires: 0, refusedPolls: 0, refusedWork: 0, renewals: [] }
+  // The heartbeat is the Gateway's: its policy value, or half of what is left if that is shorter.
+  const leaseFor = (workerId, now = Date.now()) => activeLease({ workerId, workerGeneration: line.generation,
+    heartbeatAfterMs: Math.max(1, Math.min(1_000, Math.floor((line.expires - now) / 2))),
+    serverTime: new Date(now).toISOString(), expiresAt: new Date(line.expires).toISOString() })
+  const fenced = { status: 409, body: { accepted: false, errorCode: 'worker_fenced',
+    teaching: 'This Worker no longer holds the current lease; no work was reassigned' } }
+  const reply = (operation) => {
+    const active = Date.now() < line.expires
+    const holds = active && operation.workerGeneration === line.generation
+    if (operation.kind === 'RenewLease') {
+      line.renewals.push({ generation: operation.workerGeneration, active })
+      if (!holds) return { status: 409, body: { accepted: false, errorCode: 'rejected', reason: 'worker_lease_lost' } }
+      line.expires = Date.now() + renewMs
+      return { delayMs: renewDelayMs, body: { accepted: true, lease: leaseFor(operation.workerId) } }
+    }
+    if (operation.kind === 'ClaimWork' || operation.kind === 'ReportWork') {
+      if (holds) return { body: { accepted: true } }
+      line.refusedWork++
+      return fenced
+    }
+    if (operation.kind !== 'Poll') return { body: { accepted: true } }
+    if (operation.workerGeneration !== undefined && !holds) {
+      line.refusedPolls++
+      return fenced
+    }
+    if (operation.workerGeneration === undefined && !active) {
+      line.generation++
+      const grantedAt = Date.now()
+      line.expires = grantedAt + grantMs
+      return firstPoll({ workerId: operation.workerId, workerGeneration: line.generation, grantedAt, expires: line.expires })
+    }
+    const work = offer(operation)
+    return work === undefined ? HOLD : { delayMs: 25, body: { accepted: true, lease: leaseFor(operation.workerId), payload: { work } } }
+  }
+  return { line, reply }
+}
+
+/** Whether the first claim was sent only after the first renewal had been answered. */
+const claimedAfterRenewal = run => run.of('ClaimWork')[0]?.arrived > run.of('RenewLease')[0]?.answered
+
+test('an acquisition answered later than the transit margin is renewed before anything is claimed, and keeps its lease through a long action', async () => {
+  // The Gateway stated 11 s left as it took the Poll and delivered the answer 8 s later (still
+  // working after stating it: Kernel ListWork, offer records, identity writes). Credited for that,
+  // this Worker believes 6 s are left while the Gateway has 3 s. Scheduled by the heartbeat
+  // (10 s, less the 5 s margin, held back by the reserve), the first renewal would come 3.25 s
+  // after arrival, after the Gateway let the lease go, and the action claimed at once (3.5 s
+  // long) would have lost its lease mid-run with its receipt refused. Renewed on adoption, the
+  // claim waits for the Gateway's confirmation and the keeper carries the lease through.
+  const deliveredAfterMs = 8_000, windowMs = 11_000
+  const longAdapter = "import { appendFileSync } from 'node:fs'\n"
+    + "appendFileSync(process.env.P2_EFFECT_LOG, 'slow\\n')\n"
+    + 'await new Promise(done => setTimeout(done, 3500))\n'
+    + 'process.stdout.write(JSON.stringify({ rows: [] }))\n'
+  const { line, reply } = holdingGateway({
+    grantMs: windowMs,
+    firstPoll: ({ workerId, workerGeneration, grantedAt, expires }) => ({ delayMs: deliveredAfterMs, body: { accepted: true,
+      payload: { work: [slowActionRow({}, longAdapter)] },
+      lease: activeLease({ workerId, workerGeneration, heartbeatAfterMs: 10_000,
+        serverTime: new Date(grantedAt).toISOString(), expiresAt: new Date(expires).toISOString() }) } }),
+  })
+  const run = await driveWorker({
+    timeoutMs: 25_000,
+    extraAdapters: { 'slow-adapter.mjs': longAdapter }, extraTools: slowTools,
+    reply,
+    done: (_seen, output) => DONE.action.test(output) || /could not be confirmed|Stopping this batch|did not renew/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.doesNotMatch(run.output, /could not be confirmed|Stopping this batch|did not renew|lost while/)
+  assert.deepEqual(line.renewals[0], { generation: 7, active: true }, 'the acquisition was not renewed while the Gateway still held it')
+  assert.ok(line.renewals.every(row => row.active && row.generation === 7), JSON.stringify(line.renewals))
+  assert.ok(claimedAfterRenewal(run), 'the action was claimed before the Gateway confirmed the lease')
+  assert.deepEqual(run.of('ClaimWork').map(row => row.operation.workerGeneration), [7])
+  assert.equal(line.refusedWork, 0, 'a claim or receipt reached the Gateway under a lease it no longer held')
+  assert.equal(line.refusedPolls, 0)
+  assert.equal(run.ran('slow'), 1)
+  assert.match(run.output, /receipt committed/)
+})
+
+test('a lease that arrives spent but still stands at the Gateway is renewed at once and then used, not dropped into a 409 loop', async () => {
+  // Every acquisition is answered 4 s after the Poll with 3.5 s left: spent by this Worker's
+  // measure (taken from the send, 4 s being inside the transit margin), though the Gateway holds
+  // it for another 3.5 s. Dropping it meant nobody renewed it, so the next Poll restated an
+  // expired generation and got 409 — on every acquisition. It is asked about at once instead, and
+  // the action in that same answer is claimed once the Gateway has renewed it, not before.
+  const holdMs = 4_000, leftMs = 3_500
+  const { line, reply } = holdingGateway({
+    grantMs: holdMs + leftMs,
+    firstPoll: ({ workerId, workerGeneration, grantedAt, expires }) => ({ delayMs: holdMs, body: { accepted: true,
+      payload: { work: [actionRow()] },
+      lease: activeLease({ workerId, workerGeneration, heartbeatAfterMs: 1_000,
+        serverTime: new Date(grantedAt + holdMs).toISOString(), expiresAt: new Date(expires).toISOString() }) } }),
+  })
+  const run = await driveWorker({
+    timeoutMs: 15_000,
+    reply,
+    done: (_seen, output) => DONE.action.test(output) || line.refusedPolls >= 1
+      || /could not be confirmed|Stopping this batch|did not renew/.test(output),
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.doesNotMatch(run.output, /could not be confirmed|Stopping this batch|did not renew/)
+  assert.equal(line.refusedPolls, 0, 'a Poll restated a generation that had expired unrenewed')
+  assert.deepEqual(line.renewals[0], { generation: 7, active: true }, 'the spent lease was not asked about while it still stood')
+  assert.equal(line.generation, 7, 'the line was re-acquired instead of renewed')
+  assert.ok(claimedAfterRenewal(run), 'the action was claimed before the Gateway confirmed the lease')
+  assert.deepEqual(run.of('ClaimWork').map(row => row.operation.workerGeneration), [7])
+  assert.equal(line.refusedWork, 0)
+  assert.equal(run.ran('ship'), 1)
+})
+
+test('a lease whose window truly elapsed before it arrived is never used, asked about once, and replaced', async () => {
+  // The Gateway stated 1 s when it took the Poll and answered 1.5 s later: the lease had expired
+  // before it arrived. The action in that answer must not be claimed under it; the one renewal
+  // is refused, and the next acquisition (with a usable window) takes the re-offered action.
+  let acquisitions = 0
+  const { line, reply } = holdingGateway({
+    grantMs: 1_000,
+    firstPoll: ({ workerId, workerGeneration, grantedAt, expires }) => (++acquisitions === 1
+      ? { delayMs: 1_500, body: { accepted: true, payload: { work: [actionRow()] }, lease: activeLease({ workerId, workerGeneration,
+        heartbeatAfterMs: 400, serverTime: new Date(grantedAt).toISOString(), expiresAt: new Date(expires).toISOString() }) } }
+      : (line.expires = grantedAt + 60_000, { delayMs: 25, body: { accepted: true, payload: { work: [actionRow()] },
+        lease: activeLease({ workerId, workerGeneration }) } })),
+  })
+  const run = await driveWorker({
+    timeoutMs: 20_000,
+    reply,
+    done: (_seen, output) => DONE.action.test(output) || line.refusedPolls > 0 || line.refusedWork > 0,
+  })
+  assert.equal(run.timedOut, false, run.output)
+  assert.equal(run.of('ClaimWork').filter(row => row.operation.workerGeneration === 7).length, 0,
+    'work was claimed under a lease whose window had elapsed before it arrived')
+  // Only generation 7 is counted: when generation 8 first renews depends on how long the run took.
+  assert.deepEqual(line.renewals.filter(row => row.generation === 7), [{ generation: 7, active: false }],
+    'the spent lease was asked about other than once')
+  assert.equal(line.refusedPolls, 0, 'a Poll restated the expired generation instead of waiting for its renewal to settle')
+  assert.equal(line.refusedWork, 0)
+  assert.deepEqual(run.of('ClaimWork').map(row => row.operation.workerGeneration), [8])
+  assert.equal(run.ran('ship'), 1)
+})
+
 test('workspace list and search stop at a quarter of the inline budget and say they were truncated', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rulith-ws-budget-'))
   for (let i = 0; i < 40; i++) writeFileSync(join(dir, `f${String(i).padStart(2, '0')}.txt`), `needle ${'x'.repeat(250)}\n`)

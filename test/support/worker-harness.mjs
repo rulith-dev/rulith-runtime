@@ -499,6 +499,9 @@ export async function driveWorker({
       ? row : { ...row, toolDigest: advertised.get(row.toolContractId) }))
     return { ...out, body: { ...out.body, payload: { ...out.body.payload, work: pinned } } }
   }
+  // One counter orders every `/work` arrival and answer, so a scenario can state that one request
+  // was sent only after another was answered, without comparing clocks.
+  let sequence = 0
   const server = createServer((request, response) => {
     if ((request.method ?? 'GET') === 'GET') {
       const out = sourceReply?.(request, sourceRows) ?? { status: 200, body: { sources: sourceRows } }
@@ -547,7 +550,7 @@ export async function driveWorker({
       // The headers are kept beside the body because the Gateway authenticates the header
       // pair and Core records the operation pair. An arm that checked only one of them would
       // pass on a hop that stated two different identities.
-      const entry = { raw, operation, headers: { ...request.headers } }
+      const entry = { raw, operation, headers: { ...request.headers }, arrived: ++sequence }
       seen.push(entry)
       const out = withGrants(withPins(withLease(leased(operation, seen), operation), operation), operation)
       if (out === HOLD) return void held.push(response)
@@ -566,6 +569,7 @@ export async function driveWorker({
         return void response.end(out.text)
       }
       const send = () => {
+        entry.answered = ++sequence
         response.writeHead(out.status ?? 200, { 'content-type': 'application/json' })
         response.end(JSON.stringify(out.body))
       }
