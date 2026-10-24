@@ -24,6 +24,7 @@ import { setupRoutes } from './local-setup.mjs';
 import { contextWindowSetting, conversationModel, effectiveModel, installLiveModels, installLiveSearch, modelRoutes, signedInAccount }
   from './model-runtime.mjs';
 import { folderPicker } from './folder-picker.mjs';
+import { installBrand } from './brand.mjs';
 import { refreshGeneralKits } from '../kit-install.mjs';
 export { awaitOutcome } from '../board-channel.mjs';
 
@@ -35,7 +36,7 @@ export const inject = ['tools', 'webServer', 'llm'];
 export function cachedBoard(current, status, session) {
   // Session ids are opaque: unusual strings are routed through conversationKey's digest form.
   if (session !== undefined && typeof session !== 'string')
-    throw new Error('Invalid session id.');
+    throw new Error('会话标识无效。');
   if (!current) return { available: false, tools: status };
   if (current.boards?.enabled) {
     if (session === undefined) return { available: true, agentName: current.agentName, liveConversations: current.boards.size };
@@ -47,6 +48,11 @@ export function cachedBoard(current, status, session) {
   const channel = current.channel ?? current.boards?.holders.get(undefined)?.channel;
   return { available: true, agentName: current.agentName, ...channel?.latestBoard, ...recentOf(channel) };
 }
+
+/** The folder a panel request's conversation runs in: the folder the page names, else the live conversation's own (its
+ * dsh session's working directory), as the board and conversation routes read it. Pure. */
+export const requestFolder = (query = {}, sessions = new Map()) => query.workspace
+  ?? (typeof query.session === 'string' ? sessions.get(query.session)?.session?.header?.cwd : undefined);
 
 const recentOf = (channel) => (channel?.recentOperations?.length ? { recent: channel.recentOperations } : {});
 
@@ -134,6 +140,8 @@ export async function apply(ctx, config = {}) {
   // 模型看到的 Rulith 结果：最新一份整块板（+／- 标出变化），更早的只留变化（D-1008e）；上下文到减负线（reliefRatio ×
   // 窗口）时一批减负（见 board-transcript.mjs）。
   installBoardTranscript(ctx, { reliefRatio: config.reliefRatio, compaction: config.compaction });
+  // The page's title, icon and manifest are Rulith's (design §3.2 页面标题、图标; brand.mjs).
+  installBrand(ctx);
   // 发给模型的那一份在发出前减负（会话不改）：之前轮次的思考不发，减负边界之前的调用长参数缩短（见 outgoing-trim.mjs）。
   installOutgoingTrim(ctx);
   // PSC 0.2.27 ④: every turn uses the model saved in Rulith for the conversation's Agent under the account signed in now
@@ -179,7 +187,7 @@ export async function apply(ctx, config = {}) {
     const reply = await response.json().catch(() => ({}));
     if (!response.ok || reply.ok === false) {
       // The refusal's code travels with it (the project flow tells the owner what happened from it); only a plain code.
-      const error = Object.assign(new Error(reply.teaching || `Rulith answered ${response.status}`), { status: response.status });
+      const error = Object.assign(new Error(reply.teaching || `本机 Rulith 没有完成这个请求（${response.status}）。`), { status: response.status });
       if (typeof reply.errorCode === 'string' && /^[a-z_]{1,64}$/.test(reply.errorCode)) error.errorCode = reply.errorCode;
       throw error;
     }
@@ -390,8 +398,10 @@ export async function apply(ctx, config = {}) {
     sourcesCache.set(instanceId, { at: Date.now(), rows });
     return rows;
   };
-  // The Agent a panel request is about: the conversation's, else the default one.
-  const agentForRequest = (query = {}) => resolveHolder(query.session, query.workspace ?? undefined) ?? null;
+  // The Agent a panel request is about: the conversation's, resolved as the board and conversation routes resolve it (its
+  // recorded Agent, else the Agent whose folder it runs in), else the default one (batch 4 P3: the health and worker reads
+  // of a conversation in another Agent's folder named the default Agent).
+  const agentForRequest = (query = {}) => resolveHolder(query.session, requestFolder(query, sessions)) ?? null;
   installProjectContext(ctx, async (agent) => {
     const holder = agent ? resolveHolder(topSession(agent), agent.session?.header?.cwd) : defaultHolder();
     if (!holder) throw new Error('No attached Agent');
@@ -448,10 +458,10 @@ export async function apply(ctx, config = {}) {
   // Rulith has no Board yet, and asking must not open a connection (same rule as the Board panel).
   const pendingControls = new Map();
   const conversationTarget = (session) => {
-    if (typeof session !== 'string' || !session) throw new Error('Invalid session id.');
+    if (typeof session !== 'string' || !session) throw new Error('会话标识无效。');
     const holder = resolveHolder(session, sessions.get(session)?.session?.header?.cwd);
-    if (!holder) throw new Error('Choose an Agent first');
-    if (!holder.boards.enabled) throw new Error('Conversation Boards are off for this launcher; set the exploration mode and reviewer for the Agent in Console');
+    if (!holder) throw new Error('这个会话的智能体还没有在这台电脑上设置好：先在左侧为它「在本机设置」。');
+    if (!holder.boards.enabled) throw new Error('这个应用设置成所有会话共用一份记录（conversationBoards 关闭），会话的档位和审查只能在 Console 里改。');
     // The key is a function of the top-level session id (subagents.mjs), so a conversation that has not called Rulith yet,
     // or one opened from before this launcher started, is addressed the same way as an observed one.
     const key = holder.boards.sessions.get(session) ?? conversationKey({ session: { id: session } });
@@ -565,14 +575,14 @@ export async function apply(ctx, config = {}) {
     // conversation that already has a Board keeps its Agent.
     'POST /rulith/api/sessions/assign': async (body) => {
       const session = String(body.session ?? ''), agentId = String(body.agentId ?? '');
-      if (!session || !agentId) throw new Error('Name the conversation and the Agent');
+      if (!session || !agentId) throw new Error('请求里缺少会话或智能体。');
       const holder = attached.get(agentId);
-      if (!holder) throw new Error('That Agent is not set up on this computer');
+      if (!holder) throw new Error('这个智能体还没有在这台电脑上设置好。');
       const before = assignments.get(session);
       if (before && before !== agentId) {
         const previous = attached.get(before);
         const hasBoard = previous?.boards.sessions.has(session) && previous.boards.holders.has(previous.boards.sessions.get(session));
-        if (hasBoard) throw new Error('This conversation already works on another Agent\'s Board; start a new conversation instead');
+        if (hasBoard) throw new Error('这个会话已经属于另一个智能体：请开一个新会话。');
         previous?.boards.disposeSession({ id: session });
       }
       assignments.set(session, agentId); await saveAssignments();
@@ -620,7 +630,7 @@ export async function apply(ctx, config = {}) {
       const requestId = typeof body.requestId === 'string' ? body.requestId : '';
       if (!goal || goal.length > 256 || !leaves.length || leaves.length > 64 || new Set(leaves).size !== leaves.length
         || leaves.some((leaf) => typeof leaf !== 'string' || !leaf || leaf.length > 256) || !/^[A-Za-z0-9._:-]{8,128}$/.test(requestId))
-        throw new Error('Name the goal, the leaves you confirmed and the request id of that confirmation.');
+        throw new Error('签字请求不完整：缺少任务、确认过的标准或这次确认的请求号。');
       let reply;
       try {
         reply = await manager('/manager/conversations/sign-acceptance',
@@ -628,14 +638,14 @@ export async function apply(ctx, config = {}) {
       } catch (error) {
         // An answer of the manager (with or without a code) is definite; a connection refused never reached it.
         if (error.errorCode || error.status !== undefined || error.cause?.code === 'ECONNREFUSED') throw error;
-        throw Object.assign(new Error('The signature was sent, but its outcome is not confirmed yet.'), { errorCode: 'signature_unconfirmed' });
+        throw Object.assign(new Error('签字已经发出，结果还没有确认。'), { errorCode: 'signature_unconfirmed' });
       }
       // The answer is Console's control record (as Console checks it): this request id, this Agent and exactly this
       // operation. Any other record does not confirm this signature, so the same request is sent again.
       const operation = reply.operation;
       if (reply.requestId !== requestId || reply.agentId !== target.agentId || !operation || operation.kind !== 'SignAcceptance'
         || operation.goal !== goal || JSON.stringify(operation.leaves) !== JSON.stringify(leaves))
-        throw Object.assign(new Error('The answer does not confirm this signature.'), { errorCode: 'signature_unconfirmed' });
+        throw Object.assign(new Error('收到的回答不能确认这次签字。'), { errorCode: 'signature_unconfirmed' });
       return conversationView(reply);
     },
     // PSC 0.2.21: deleting a conversation. The preview feeds the confirmation dialog; the deletion seals the conversation's
@@ -661,9 +671,9 @@ export async function apply(ctx, config = {}) {
       // A custom header keeps cross-site pages out (they cannot send it without a preflight dsh does not grant); the Host
       // check keeps out a rebinding name that resolves to this computer.
       const loopbackHost = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(req.headers.host ?? '');
-      if (req.headers['x-deep-rulith'] !== '1' || !loopbackHost) return send(res, 403, { ok: false, teaching: 'Same-origin Deep Rulith requests only.' });
+      if (req.headers['x-deep-rulith'] !== '1' || !loopbackHost) return send(res, 403, { ok: false, teaching: '只接受本页发出的 Rulith 请求。' });
       const route = routes[`${req.method} ${(req.url ?? '').split('?')[0]}`];
-      if (!route) return send(res, 404, { ok: false, teaching: 'No such Deep Rulith route.' });
+      if (!route) return send(res, 404, { ok: false, teaching: '没有这个 Rulith 接口。' });
       const query = () => {
         const params = new URL(req.url, 'http://127.0.0.1').searchParams;
         return { ...Object.fromEntries(params), workspace: params.get('workspace'), session: params.get('session') ?? undefined };

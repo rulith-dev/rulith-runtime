@@ -11,6 +11,8 @@ import { EventEmitter } from 'node:events';
 import { loadPage, nodes, text, plain, flush } from './browser-page.mjs';
 import { folderPicker, PICK_UNAVAILABLE } from '../../harness/web/folder-picker.mjs';
 import { conversationView } from '../../harness/web/rulith-runtime.mjs';
+// PSC 0.2.29 (D-1025a) fixes the tier chip's words, the widening confirmations and the switch refusals verbatim.
+import * as PSC from './psc-0.2.29-text.mjs';
 
 const find = (root, test) => nodes(root).find(test);
 const button = (root, words) => find(root, (node) => node.tag === 'button' && text(node).includes(words));
@@ -96,8 +98,8 @@ test('这台电脑: each Agent\'s state here; 「在本机设置」 runs the one
   const steps = page.expand(find(row('a1'), (node) => node.tag === page.plugin.components.SetupSteps));
   const asking = find(steps, (node) => node.props['data-rulith-replace-token'] !== undefined);
   assert.equal(asking.props['data-rulith-replace-token'], 'connection_rejected');
-  assert.match(text(asking), /重新接上这台电脑？.*拒绝了这台电脑的连接凭据.*换一把新密钥.*替换这个智能体的 Agent token.*停止工作/);
-  await button(asking, '替换 Agent token 并重新接上').props.onClick();
+  assert.match(text(asking), /重新接上这台电脑？.*不再接受这台电脑为这个智能体保存的密钥.*换一把新密钥.*替换这个智能体的密钥.*停止工作/);
+  await button(asking, '替换密钥并重新接上').props.onClick();
   await flush();
   assert.deepEqual(plain(page.posted('setup').map((r) => r.body)).at(-1), { agentId: 'a1', replaceAgentToken: true });
   assert.deepEqual(plain(page.plugin.workerWords({ paired: true, worker: { enabled: false, state: 'stopped' } })), { color: '#d29922', text: '这台电脑没有为它开启' });
@@ -131,12 +133,17 @@ test('模型: the form never shows the key back; saving sends the account guard 
   await button(form.render(), '保存').props.onClick();
   assert.equal(saved[1].key, 'sk-test-typed');
   assert.equal(nodes(form.render()).filter((node) => node.tag === 'input')[2].props.value, '');
-  // A refusal is said as the host said it.
-  const refusing = loadPage({ reply: () => ({ ok: false, teaching: 'The signed-in account changed. Open the model settings again before saving.' }) });
+  // A refusal is said as the host said it (in Chinese); an English one follows the page's own sentence, never hidden.
+  const refusing = loadPage({ reply: () => ({ ok: false, teaching: '登录的账户刚才变了：请重新打开模型设置再保存。' }) });
   const other = refusing.mount(refusing.plugin.components.ModelForm, {});
   other.cells[0] = { ok: true, model: { url: 'https://x.example/v1', name: 'm', configured: false, keyConfigured: false, expectedOrigin: 'o', expectedAccountId: 'a' } };
   await button(other.render(), '保存').props.onClick();
-  assert.match(text(other.render()), /The signed-in account changed/);
+  assert.match(text(other.render()), /登录的账户刚才变了/);
+  const english = loadPage({ reply: () => ({ ok: false, teaching: 'Provide a model name and HTTPS endpoint, or a local HTTP endpoint.' }) });
+  const third = english.mount(english.plugin.components.ModelForm, {});
+  third.cells[0] = other.cells[0];
+  await button(third.render(), '保存').props.onClick();
+  assert.match(text(third.render()), /没有保存：Provide a model name and HTTPS endpoint, or a local HTTP endpoint\./);
 });
 
 test('外观与语言 sets dsh\'s own theme and language services; 高级 points to Console for the MCP token and opens the Runtime workbench for diagnosis', async () => {
@@ -168,7 +175,7 @@ test('外观与语言 sets dsh\'s own theme and language services; 高级 points
   assert.equal(find(page.mount(page.plugin.components.AdvancedSection, { state: { ok: true, origin: 'javascript:alert(1)' } }).render(), (node) => node.tag === 'a'), undefined);
 });
 
-test('one tier per conversation: the strictest the Gateway reports, never a wider one, and "各连接不一致" when they differ', () => {
+test('one tier per conversation: the strictest the Gateway reports, never a wider one, and "不一致" when they differ', () => {
   const { plugin } = loadPage();
   const tier = (conversation) => { const shown = plugin.conversationTier(conversation); return { mode: shown.mode ?? null, mixed: shown.mixed }; };
   assert.deepEqual(tier({ explorationMode: 'non_strict', explorationModesMixed: false, explorationModes: { c1: 'non_strict' } }), { mode: 'non_strict', mixed: false });
@@ -203,7 +210,7 @@ test('the composer has exactly two chips, 档位 and 模型; narrowing applies a
   find(shown, (node) => node.props['data-rulith-tier'] === 'derived').children[0].props.onClick();
   shown = m.render();
   const items = nodes(shown).filter((node) => node.props.role === 'menuitemradio');
-  assert.deepEqual(items.map((node) => text(node).split(' · ')[0]), ['○ 严格', '● 推导', '○ 非严格']);
+  assert.deepEqual(items.map((node) => text(node).split(' · ')[0]), ['○ 严格', '● 推导', '○ 宽松']);
   assert.equal(items[1].props.disabled, true, 'the current tier is not offered again');
   items[0].props.onClick();
   await flush();
@@ -213,18 +220,20 @@ test('the composer has exactly two chips, 档位 and 模型; narrowing applies a
   find(m.render(), (node) => node.props['data-rulith-tier'] === 'strict').children[0].props.onClick();
   nodes(m.render()).filter((node) => node.props.role === 'menuitemradio')[2].props.onClick();
   shown = m.render();
-  assert.match(text(find(shown, (node) => node.props.role === 'dialog')), /^Switch to non-strict exploration mode\?Write and run actions of this environment's tools will accept inputs the model supplies/);
+  assert.equal(text(find(shown, (node) => node.props.role === 'dialog')),
+    PSC.WIDEN_TEXT.non_strict.title + PSC.WIDEN_TEXT.non_strict.body + PSC.WIDEN_TEXT.non_strict.accept + PSC.WIDEN_TEXT.non_strict.cancel);
+  assert.doesNotMatch(PSC.WIDEN_TEXT.non_strict.body, /「/, 'no Console-only mark is named');
   assert.equal(page.posted('conversation/exploration-mode').length, 0);
-  button(shown, 'Keep strict').props.onClick();
+  button(shown, PSC.WIDEN_TEXT.non_strict.cancel).props.onClick();
   assert.equal(page.posted('conversation/exploration-mode').length, 0, 'cancelled: nothing changes');
   nodes(m.render()).filter((node) => node.props.role === 'menuitemradio')[1].props.onClick();
-  button(m.render(), 'Switch to derived').props.onClick();
+  button(m.render(), PSC.WIDEN_TEXT.derived.accept).props.onClick();
   await flush();
   assert.deepEqual(plain(page.posted('conversation/exploration-mode').map((r) => r.body)), [{ session: 's1', mode: 'derived' }]);
   // Mixed: the strictest is shown and marked; choosing it again unifies (narrowing for the others, immediate).
   ({ page, m } = composer({ explorationModes: { c1: 'non_strict', c2: 'strict' } }));
   shown = m.render();
-  assert.equal(chips(shown)[0], '档位：严格（各连接不一致）▾');
+  assert.equal(chips(shown)[0], '档位：严格（不一致）▾');
   find(shown, (node) => node.props['data-rulith-tier'] === 'strict').children[0].props.onClick();
   const again = nodes(m.render()).filter((node) => node.props.role === 'menuitemradio')[0];
   assert.equal(again.props.disabled, false);
@@ -233,7 +242,7 @@ test('the composer has exactly two chips, 档位 and 模型; narrowing applies a
   assert.deepEqual(plain(page.posted('conversation/exploration-mode').map((r) => r.body)), [{ session: 's1', mode: 'strict' }]);
   // With a reviewer designated, 审查 appears; the model chip opens the settings page's model section.
   shown = m.render();
-  assert.deepEqual(chips(shown), ['档位：严格（各连接不一致）▾', '模型：deepseek-flash', '审查：关▾']);
+  assert.deepEqual(chips(shown), ['档位：严格（不一致）▾', '模型：deepseek-flash', '审查：关▾']);
   find(shown, (node) => node.props['data-rulith-model'] !== undefined).props.onClick();
   assert.deepEqual(plain(page.plugin.settingsView.getSnapshot()), { open: true, section: 'model' });
   // A conversation without a Board yet: 默认, and widening from it is confirmed too.
@@ -244,6 +253,11 @@ test('the composer has exactly two chips, 档位 and 模型; narrowing applies a
   nodes(m.render()).filter((node) => node.props.role === 'menuitemradio')[2].props.onClick();
   assert.ok(find(m.render(), (node) => node.props.role === 'dialog'));
   assert.equal(page.posted('conversation/exploration-mode').length, 0);
+  // Every word of the chip, its menu and its confirmations is the one PSC 0.2.29 fixes.
+  assert.deepEqual(plain(page.plugin.TIER), PSC.TIER);
+  assert.deepEqual(plain(page.plugin.MODE_WORDS), PSC.MODE_WORDS);
+  assert.deepEqual(plain(page.plugin.MODE_HINTS), PSC.MODE_HINTS);
+  assert.deepEqual(plain(page.plugin.WIDEN_TEXT), PSC.WIDEN_TEXT);
 });
 
 test('the folder chooser: the OS chooser\'s folder is opened, a cancel does nothing, and where none can open the full path is typed', async () => {
@@ -373,9 +387,9 @@ test('deleting: only a finished deletion takes the row away; otherwise its reaso
   assert.deepEqual(outcome({ settled: true, refusedGoals: [] }), { settled: true, reasons: [], refused: 0 });
   assert.deepEqual(outcome({ settled: true, refusedGoals: [{ caseId: 'c1', code: 'refused' }] }), { settled: true, reasons: [], refused: 1 });
   assert.deepEqual(outcome({ settled: false, unconfirmedGoals: ['g1', 'g2'], goalsUnread: true }),
-    { settled: false, reasons: ['2 个目标的结案还没有确认', '读不到它还开着的目标'], refused: 0 });
+    { settled: false, reasons: ['2 个任务的结案还没有确认', '读不到它还开着的任务'], refused: 0 });
   assert.deepEqual(outcome({ deletion: { settled: false, reasons: [{ code: 'closings_unconfirmed', count: 3 }, { code: 'deleted_before_recording' }] } }),
-    { settled: false, reasons: ['3 个目标的结案还没有确认', '它是在开始记录删除结果之前删除的'], refused: 0 });
+    { settled: false, reasons: ['3 个任务的结案还没有确认', '它是在开始记录删除结果之前删除的'], refused: 0 });
   assert.deepEqual(outcome({ deletion: { settled: true, refusedGoals: [{ caseId: 'c' }] } }), { settled: true, reasons: [], refused: 1 });
   // PSC 0.2.28 erratum: every closing answered and the goals read, only the finished record missing (补完删除 records it).
   assert.deepEqual(outcome({ deletion: { settled: false, reasons: [{ code: 'settlement_unrecorded' }] } }),
@@ -405,7 +419,7 @@ test('deleting: only a finished deletion takes the row away; otherwise its reaso
   await flush();
   let shown = tree.render();
   assert.deepEqual(archived, [], 'not finished: the row stays');
-  assert.equal(text(find(shown, (node) => node.props['data-rulith-unsettled'] === 's1')), '没删完：2 个目标的结案还没有确认');
+  assert.equal(text(find(shown, (node) => node.props['data-rulith-unsettled'] === 's1')), '没删完：2 个任务的结案还没有确认');
   assert.equal(find(shown, (node) => node.props['data-rulith-delete'] === 's1'), undefined);
   // 补完删除: the same deletion, without asking again; finished, the row goes, and refused closings are said.
   await find(shown, (node) => node.props['data-rulith-finish-delete'] === 's1').props.onClick({ stopPropagation() {} });
@@ -414,7 +428,7 @@ test('deleting: only a finished deletion takes the row away; otherwise its reaso
   assert.deepEqual(archived, ['s1']);
   assert.equal(page.posted('conversation/end').length, 2);
   assert.equal(page.posted('conversation/end-preview').length, 1, 'finishing asks nothing again');
-  assert.match(text(shown), /已删除。其中 1 个目标没能结案/);
+  assert.match(text(shown), /已删除。其中 1 个任务没能结案/);
 });
 
 test('a deleted conversation\'s composer offers nothing to set', () => {
@@ -425,10 +439,22 @@ test('a deleted conversation\'s composer offers nothing to set', () => {
   void page;
 });
 
-test('a tier switch reports its outcome: pending says why it waits, a refusal says so', async () => {
-  for (const [answer, words] of [[{ ok: true, state: 'pending', teaching: 'The switch is committed between calls.' }, /^已受理，还没有生效：The switch is committed between calls\.$/],
-    [{ ok: true, state: 'complete', result: { accepted: false, errorCode: 'derived_requires_review' } }, /^这次切换没有被接受（derived_requires_review）$/],
-    [{ ok: true, state: 'complete', result: { accepted: true } }, null]]) {
+test('a tier switch reports its outcome: pending says why it waits, a refusal says why and what to do', async () => {
+  // The codes the tier route returns (GatewayConversationController, GatewayControlService, AgentControlStore): a refused
+  // request (ok:false with its code) or a complete control the Kernel refused. A code the page has no words for shows the
+  // generic sentence followed by the service's own text.
+  const turnOnReview = 'Turn post-call review back on for this conversation before switching it to derived mode.';
+  const cases = [[{ ok: true, state: 'pending', teaching: 'The switch is committed between calls.' }, PSC.TIER.betweenCalls],
+    [{ ok: true, state: 'pending' }, PSC.TIER.later],
+    [{ ok: true, state: 'pending', teaching: 'Waiting for the Kernel.' }, PSC.TIER.accepted + '：Waiting for the Kernel.'],
+    [{ ok: false, errorCode: 'review_required_by_derived_mode', teaching: turnOnReview }, '先为这个会话打开事后审查，再切到推导档。'],
+    [{ ok: true, state: 'complete', result: { accepted: false, errorCode: 'review_required_by_derived_mode', teaching: turnOnReview } }, PSC.TIER_REFUSALS.review_required_by_derived_mode],
+    [{ ok: false, errorCode: 'something_new', teaching: 'A new reason.' }, PSC.TIER.notSwitched + '：A new reason.'],
+    [{ ok: false, errorCode: 'something_new' }, PSC.TIER.notSwitched + '：something_new'],
+    [{ ok: true, state: 'complete', result: { accepted: false, errorCode: 'kernel_new', teaching: 'Kernel words.' } }, PSC.TIER.notAccepted + '：Kernel words.'],
+    [{ ok: true, state: 'complete', result: { accepted: true } }, null],
+    ...Object.entries(PSC.TIER_REFUSALS).map(([code, words]) => [{ ok: false, errorCode: code, teaching: 'English teaching' }, words])];
+  for (const [answer, words] of cases) {
     const settings = { ok: true, found: true, reviewer: null, conversation: { explorationMode: 'non_strict', explorationModes: { c1: 'non_strict' } } };
     const page = loadPage({ reply: ({ url }) => (url.includes('exploration-mode') ? answer : url.startsWith('/rulith/api/conversation?') ? settings : { ok: true }) });
     const m = page.mount(page.plugin.components.RulithComposerControls, { sessionId: 's1' });
@@ -437,8 +463,30 @@ test('a tier switch reports its outcome: pending says why it waits, a refusal sa
     nodes(m.render()).filter((node) => node.props.role === 'menuitemradio')[0].props.onClick();
     await flush();
     const note = find(m.render(), (node) => node.props.role === 'alert');
-    if (words) assert.match(text(note), words); else assert.equal(note, undefined);
+    if (words) assert.equal(text(note), words, JSON.stringify(answer)); else assert.equal(note, undefined);
   }
+  assert.deepEqual(plain(loadPage().plugin.TIER_REFUSALS), PSC.TIER_REFUSALS);
+});
+
+test('a review switch refused says why and what to do, with the codes the review route returns', async () => {
+  const cases = [[{ ok: false, errorCode: 'derived_requires_review', teaching: 'Switch this conversation out of derived mode before turning its review off.' },
+    '先把这个会话切出推导档，再关闭事后审查。'],
+  [{ ok: false, errorCode: 'something_new', teaching: 'A new reason.' }, PSC.TIER.notSwitched + '：A new reason.'],
+  [{ ok: true, found: true }, null],
+  ...Object.entries(PSC.REVIEW_REFUSALS).map(([code, words]) => [{ ok: false, errorCode: code, teaching: 'English teaching' }, words])];
+  for (const [answer, words] of cases) {
+    const settings = { ok: true, found: true, reviewer: 'c9', conversation: { explorationMode: 'derived', explorationModes: { c1: 'derived' }, postCallReview: true } };
+    const page = loadPage({ reply: ({ url }) => (url.endsWith('/conversation/review') ? answer : url.startsWith('/rulith/api/conversation?') ? settings : { ok: true }) });
+    const m = page.mount(page.plugin.components.RulithComposerControls, { sessionId: 's1' });
+    m.cells[0] = settings;
+    find(m.render(), (node) => node.props['data-rulith-review'] === 'on').children[0].props.onClick();
+    nodes(m.render()).filter((node) => node.props.role === 'menuitemradio')[1].props.onClick();
+    await flush();
+    assert.deepEqual(plain(page.posted('conversation/review').map((r) => r.body)), [{ session: 's1', enabled: false }]);
+    const note = find(m.render(), (node) => node.props.role === 'alert');
+    if (words) assert.equal(text(note), words, JSON.stringify(answer)); else assert.equal(note, undefined);
+  }
+  assert.deepEqual(plain(loadPage().plugin.REVIEW_REFUSALS), PSC.REVIEW_REFUSALS);
 });
 
 test('the exploration-mode route names no Connection: one request per conversation', () => {

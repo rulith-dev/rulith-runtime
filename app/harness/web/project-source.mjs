@@ -31,7 +31,7 @@ export function resolveProject(workspace, sources, platform = process.platform) 
 export function projectLine(workspace, project) {
   return project
     ? `This conversation's project is Source "${project.name}" (${project.directory}). Use source "${project.name}" for project files unless the user names another approved project.`
-    : `This workspace (${workspace}) is not an approved Rulith project; project file Actions cannot reach it until the owner opens it as a project in Deep Rulith (Agents with the official engineering capability) or adds it in Console (other Agents).`;
+    : `This workspace (${workspace}) is not an approved Rulith project; project file Actions cannot reach it until the owner opens it as a project in the Rulith app (Agents with the official engineering capability) or adds it in Console (other Agents).`;
 }
 
 /** Reuse the Worker's existing read channel; neither credentials nor arbitrary response fields leave this reader. */

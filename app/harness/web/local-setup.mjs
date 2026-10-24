@@ -31,7 +31,7 @@ export const SETUP_WAIT_MS = 180_000;
 export function setupRoutes({ manager, kitHome = '', wait = (ms) => new Promise((done) => setTimeout(done, ms)), waitMs = SETUP_WAIT_MS }) {
   const status = async (query = {}) => {
     const requestId = String(query.requestId ?? '');
-    if (!REQUEST_ID.test(requestId)) throw Object.assign(new Error('Name the setup request to read.'), { errorCode: 'setup_unknown' });
+    if (!REQUEST_ID.test(requestId)) throw Object.assign(new Error('缺少要查看的设置请求。'), { errorCode: 'setup_unknown' });
     return setupView(await manager(`/manager/instances/setup-local?requestId=${encodeURIComponent(requestId)}`));
   };
   // `replaceAgentToken: true` only as the owner's confirmation (SYS-LOCAL-01); it is passed on only when it is exactly true.
@@ -49,11 +49,11 @@ export function setupRoutes({ manager, kitHome = '', wait = (ms) => new Promise(
       if (setup.state === 'done') return setup;
       if (setup.state === 'failed') {
         const step = setup.steps.find((row) => row.state === 'failed');
-        throw Object.assign(new Error(step?.reason || 'Setting this Agent up on this computer did not finish.'),
+        throw Object.assign(new Error(step?.reason || '这个智能体在这台电脑上的设置没有完成。'),
           { errorCode: step?.errorCode ?? 'setup_failed', setup });
       }
       if (Date.now() >= deadline) {
-        throw Object.assign(new Error('Setting this Agent up on this computer is still in progress. Check again shortly.'),
+        throw Object.assign(new Error('这个智能体在这台电脑上的设置还在进行，稍后再试。'),
           { errorCode: 'setup_in_progress', setup });
       }
       await wait(250);

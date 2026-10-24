@@ -62,7 +62,16 @@ window.__ModuleLoader__.load({
       return [path ? data : null, refresh, setData];
     }
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const errorText = (error) => String((error && error.message) || error);
+    // Design §1 and the batch 5 review: a service's own words are shown as they are when they are in Chinese (this app's
+    // host and the open-project routes). A reason the page has no words of its own for is never hidden: the page's sentence
+    // comes first and the service's original text follows it (an English sentence of the local Runtime manager, a raw error).
+    const CJK = /[㐀-鿿]/;
+    function plain(said, fallback) {
+      const text = typeof said === "string" ? said.trim() : "";
+      if (!text || CJK.test(text)) return text || fallback;
+      return fallback ? fallback.replace(/[。.]$/, "") + "：" + text : text;
+    }
+    const errorText = (error) => plain(String((error && error.message) || error), "连接本机 Rulith 时出错");
     const dot = (color) => h("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 4, background: color, flex: "none" } });
     const button = { padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(127,127,127,.4)", background: "transparent", color: "inherit", cursor: "pointer", font: "inherit", fontSize: 12 };
     const primary = { ...button, borderColor: GREEN, color: GREEN };
@@ -127,23 +136,25 @@ window.__ModuleLoader__.load({
       const worker = agent.worker;
       if (worker && worker.state === "online") return { color: GREEN, text: "在线" };
       if (worker && worker.enabled === false) return { color: AMBER, text: "这台电脑没有为它开启" };
-      return { color: AMBER, text: "离线" + (worker && worker.state ? "（" + worker.state + "）" : "") };
+      return { color: AMBER, text: "离线" };
     }
 
     // ---- 「在本机设置」 (PSC 0.2.27 ② ③): one operation, its steps shown as it runs; no restart and no choice.
     // The manager's steps, in the order they run (the kit is installed before the Worker is turned on, so a first setup
     // starts the Worker once), under the words the owner reads.
-    const SETUP_GROUPS = [["连接", ["instance", "pair"]], ["安装编程工具", ["kit"]], ["开启这台电脑", ["worker"]],
+    // Design §2: the Connection, the Worker and the Agent token are 这台电脑 and 智能体的密钥 here; lease, credential and
+    // Connection stay out of these sentences.
+    const SETUP_GROUPS = [["接上 Rulith", ["instance", "pair"]], ["安装编程工具", ["kit"]], ["开启这台电脑", ["worker"]],
       ["重新载入", ["reload"]], ["完成", ["ready"]]];
     const SETUP_REASONS = {
       not_signed_in: "这台电脑没有登录 Rulith：先在设置的「账户」里登录。",
       agent_not_in_account: "这个智能体不在当前登录的账户里，或者在 Console 里不再对这台电脑开放。",
-      runtime_credential_exists: "这个智能体的 Agent token 正在别处使用（另一台电脑或另一个客户端持有它）。没有替换，什么都没有改。",
-      connection_rejected: "Rulith 拒绝了这台电脑的连接凭据（可能在 Console 里轮换或撤销了）。什么都没有改，Worker 也没有重新启动。",
-      connection_missing: "这台电脑记着这个智能体，但它的连接凭据不见了。什么都没有改。",
-      worker_taken_over: "这个智能体的连接被另一个 Worker 进程接走了，这台电脑的 Worker 已停下、没有重新启动。在设置的「这台电脑」里点「在本机设置」，可以让它在这台电脑上重新启动。",
+      runtime_credential_exists: "这个智能体的密钥正在别处使用（另一台电脑或另一个客户端持有它）。没有替换，什么都没有改。",
+      connection_rejected: "Rulith 不再接受这台电脑为这个智能体保存的密钥（可能在 Console 里换过或撤销了）。什么都没有改，这台电脑也没有重新为它开启。",
+      connection_missing: "这台电脑记着这个智能体，但为它保存的密钥不见了。什么都没有改。",
+      worker_taken_over: "这个智能体在这台电脑上的工作被另一个进程接走了，这台电脑已为它停下，没有重新开启。在设置的「这台电脑」里点「在本机设置」，可以让它在这台电脑上重新开启。",
       // PSC 0.2.27 ②: the Connection this computer would reconnect is in use by a Worker elsewhere: refused, nothing created.
-      local_setup_connection_in_use: "这台电脑要接上的这个智能体的连接，正被另一台电脑上的 Worker 使用，所以没有接上，也没有新建连接；这次设置已撤回。等那个 Worker 停下（或它的租约过期）后，再点「在本机设置」。",
+      local_setup_connection_in_use: "这个智能体正在另一台电脑上工作，所以这台电脑没有接上它，也没有另建一份；这次设置已撤回。等那台电脑停下（或它的占用过期）后，再点「在本机设置」。",
       setup_request_conflict: "这次设置和另一次冲突了：再点一次「在本机设置」。",
     };
     /**
@@ -159,18 +170,18 @@ window.__ModuleLoader__.load({
       const steps = run && run.settled && !run.ok && run.view && Array.isArray(run.view.steps) ? run.view.steps : [];
       const failed = steps.find((step) => step.state === "failed");
       const code = failed && failed.errorCode;
-      const consequence = "原来的 Agent token 随即失效：仍在用它的客户端（包括另一台电脑上的）会停止工作，要在那里继续使用，得在那台电脑上重新设置。替换本身不授予任何文件夹或工具的权限。";
+      const consequence = "原来的智能体密钥随即失效：仍在用它的客户端（包括另一台电脑上的）会停止工作，要在那里继续使用，得在那台电脑上重新设置。替换本身不授予任何文件夹或工具的权限。";
       if (code === "runtime_credential_exists") return { code,
-        title: "替换这个智能体的 Agent token？",
-        lines: ["这个智能体已经有一个有效的 Agent token，正在另一台电脑（或另一个客户端）上使用。",
-          "替换后，这台电脑用新的 Agent token 设置好，并有它自己的连接；那台电脑的连接不会被接走。", consequence],
-        accept: "替换 Agent token 并继续设置", cancel: "不替换" };
+        title: "替换这个智能体的密钥？",
+        lines: ["这个智能体已经有一把有效的密钥，正在另一台电脑（或另一个客户端）上使用。",
+          "替换后，这台电脑用新的密钥设置好，有它自己的一份接入；那台电脑的接入不会被接走。", consequence],
+        accept: "替换密钥并继续设置", cancel: "不替换" };
       if (code === "connection_rejected" || code === "connection_missing") return { code,
         title: "重新接上这台电脑？",
         lines: [SETUP_REASONS[code],
-          "重新接上会给这台电脑的这条连接换一把新密钥、送到这里；这条连接本身、它的文件夹授权和工具锁定都不变。",
-          "这需要同时替换这个智能体的 Agent token。" + consequence],
-        accept: "替换 Agent token 并重新接上", cancel: "不重新接上" };
+          "重新接上会给这台电脑换一把新密钥、送到这里；这台电脑已打开的项目和它们的授权都不变。",
+          "这需要同时替换这个智能体的密钥。" + consequence],
+        accept: "替换密钥并重新接上", cancel: "不重新接上" };
       return null;
     }
     /** The step list as the owner reads it: label, state (pending, running, done, failed) and a failed step's reason. Pure. */
@@ -181,7 +192,7 @@ window.__ModuleLoader__.load({
         const failed = rows.find((row) => row.state === "failed");
         const state = failed ? "failed" : rows.some((row) => row.state === "running") ? "running"
           : rows.length === names.length && rows.every((row) => row.state === "done") ? "done" : "pending";
-        return { label, state, reason: failed ? SETUP_REASONS[failed.errorCode] || failed.reason || "这一步没有完成。" : "" };
+        return { label, state, reason: failed ? own(SETUP_REASONS, failed.errorCode) || plain(failed.reason, "") : "" };
       });
     }
     /**
@@ -201,7 +212,7 @@ window.__ModuleLoader__.load({
           await wait(750);
           view = await api("setup?requestId=" + encodeURIComponent(view.requestId));
         }
-        if (!view || !view.ok) return settle({ ok: false, view: null, error: SETUP_REASONS[view && view.errorCode] || (view && view.teaching) || "没有设置成功。" });
+        if (!view || !view.ok) return settle({ ok: false, view: null, error: own(SETUP_REASONS, view && view.errorCode) || plain(view && view.teaching, "没有设置成功。") });
         return settle({ ok: view.state === "done", view, error: "" });
       } catch (error) {
         return settle({ ok: false, view: null, error: "读不到设置的进度：" + errorText(error) + "。设置可能还在进行，稍后再看一次。" });
@@ -230,7 +241,7 @@ window.__ModuleLoader__.load({
             "data-step-state": row.state, style: { color: STEP_MARK[row.state][1] } }, (i ? "→ " : "") + STEP_MARK[row.state][0] + " " + row.label)))
           : none("正在开始设置…"),
         rows.filter((row) => row.state === "failed").map((row) => h("div", { key: "why-" + row.label, role: "alert", style: { color: RED, wordBreak: "break-word" } },
-          "「" + row.label + "」没有完成：" + row.reason)),
+          "「" + row.label + "」没有完成" + (row.reason ? "：" + row.reason : "。"))),
         asking && declined !== requestId ? h("div", { "data-rulith-replace-token": asking.code, style: { margin: "6px 0", padding: "6px 8px",
             border: "1px solid " + AMBER, borderRadius: 6 } },
           h("div", { style: { fontWeight: 600, marginBottom: 4 } }, asking.title),
@@ -251,7 +262,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false);
       const [notice, setNotice] = useState(null);   // { ok, text }
       if (!loaded) return none("正在读取模型设置…");
-      if (!loaded.ok) return alertLine(loaded.teaching || "读不到模型设置。");
+      if (!loaded.ok) return alertLine(plain(loaded.teaching, "读不到模型设置。"));
       const m = loaded.model || {};
       const url = draft ? draft.url : m.url || "";
       const name = draft ? draft.name : m.name || "";
@@ -261,7 +272,7 @@ window.__ModuleLoader__.load({
         try {
           const reply = await api("model", { expectedOrigin: m.expectedOrigin, expectedAccountId: m.expectedAccountId,
             url: url.trim(), name: name.trim(), ...(key.trim() ? { key: key.trim() } : {}) });
-          if (!reply.ok) { setNotice({ ok: false, text: reply.teaching || "没有保存。" }); return; }
+          if (!reply.ok) { setNotice({ ok: false, text: plain(reply.teaching, "没有保存。") }); return; }
           setKey(""); setDraft(null); reload();
           const ready = !!(reply.model && reply.model.configured);
           setNotice({ ok: ready, text: ready ? "已保存，从下一轮起生效。" : "已保存，但还不能用：请填写密钥（本机地址的模型可以不填）。" });
@@ -302,20 +313,26 @@ window.__ModuleLoader__.load({
     const list = (value) => (Array.isArray(value) ? value : []);
     const words = (value) => (typeof value === "string" ? value.trim() : "");
 
-    // The owner-facing texts of signing (the Chinese rendering of Console Text A, PSC 0.2.28), verbatim.
+    // The owner-facing texts of signing: the local client's Chinese rendering of Console Text A, in the vocabulary of design
+    // §2 (任务 for a goal), fixed verbatim by PSC 0.2.29 (D-1025a); docs/model-visible-changes-batch5.md lists them.
     const SIGN = {
       title: "待你签字的验收标准", button: "签下这些标准",
-      body: "你要把这些标准签为这个目标的验收。它们由智能体提出；签下之后，智能体不能再结束或修改它们，只有在当前状态下每一条都成立，这个目标才算完成。这是你以自己账户做出的决定。",
+      body: "你要把这些标准签为这个任务的验收。它们由智能体提出；签下之后，智能体不能再结束或修改它们，只有在当前状态下每一条都成立，这个任务才算完成。这是你以自己账户做出的决定。",
       accept: "签字", cancel: "先不签", signed: "已签字。", pending: "签字结果还没有确认，稍后会自动刷新。",
-      unreadable: "暂时读不到待签字的标准",
+      unreadable: "暂时读不到待签字的标准", signing: "正在签字…", refusedPrefix: "没有签下任何标准：", unavailablePrefix: "这些标准现在不能签：",
+      truncated: "这个任务的标准太多，这里只列出一部分；请在 Console 里签字。", moreInConsole: "还有等签字的任务没有列在这里：请在 Console 里查看。",
+      replaced: "签字后会被替换", notCriterion: "不能作为验收标准", unknownReason: "原因未知，请稍后再试",
+      // An earlier signature of this task is still unconfirmed and froze other criteria than the card shows now: 签下这些标准
+      // resends that earlier request as it was confirmed (its dialog shows those criteria), never the new ones under its id.
+      stale: "上一次签字的结果还没有确认，那次签的是之前的标准。",
     };
     const SIGN_REASONS = {
-      unknown_goal: "找不到这个目标", goal_ended: "这个目标已经结束", goal_paused: "这个目标已暂停",
-      contract_fixed: "这个目标的验收由能力合同规定，不用签字", leaf_not_proposed: "这些标准已经变了，请看最新的再签",
-      criterion_unsupported: "其中有一条不能作为验收标准", goal_pending_obligations: "这个目标还有没办完的事，稍后再签",
+      unknown_goal: "找不到这个任务", goal_ended: "这个任务已经结束", goal_paused: "这个任务已暂停",
+      contract_fixed: "这个任务的验收标准由能力规定，不用签字", leaf_not_proposed: "这些标准已经变了，请看最新的再签",
+      criterion_unsupported: "其中有一条不能作为验收标准", goal_pending_obligations: "这个任务还有没办完的事，稍后再签",
     };
-    const signReason = (code) => own(SIGN_REASONS, code) || "原因未知，请稍后再试";
-    const signRefused = (code) => ({ state: "refused", errorCode: typeof code === "string" ? code : "", text: "没有签下任何标准：" + signReason(code) + "。" });
+    const signReason = (code) => own(SIGN_REASONS, code) || SIGN.unknownReason;
+    const signRefused = (code) => ({ state: "refused", errorCode: typeof code === "string" ? code : "", text: SIGN.refusedPrefix + signReason(code) + "。" });
     /**
      * What one answer of the sign route means. The Gateway answers as Console's control does: `complete` with the Kernel's
      * `result` (`accepted:true` signed; `accepted:false` with its `errorCode` refused, nothing signed), or `pending` (202:
@@ -356,8 +373,42 @@ window.__ModuleLoader__.load({
     // Signatures whose outcome is not confirmed, by conversation and goal: { requestId, toSign, leaves } as the person
     // confirmed them. Confirming the same goal again resends exactly that request (its id and the leaves it froze) until the
     // Kernel answers it or a state read shows it settled; a new id could not be the same decision (Console does the same).
-    const unconfirmedSignatures = new Map();
+    // Batch 5 (batch 4 P3): kept in this tab's session storage too, so after a reload of the page the next confirmation of
+    // the same goal still resends that request; a new tab starts empty. Only goal and leaf ids, labels and the request id
+    // are kept, nothing secret; a state read that settles a signature removes it there as well.
+    // 中文说明：未确认的签字记在本标签页的 sessionStorage 里，刷新页面后再次确认同一任务仍沿用原请求号；读到已结清就删掉。
+    const SIGN_STORE_KEY = "rulith.sign.unconfirmed";
+    const strings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+    const frozenSignature = (value) => !!value && typeof value === "object" && typeof value.goal === "string" && typeof value.requestId === "string"
+      && /^[A-Za-z0-9._:-]{8,128}$/.test(value.requestId) && strings(value.toSign) && Array.isArray(value.leaves);
+    class StoredSignatures extends Map {
+      constructor(storage) {
+        super();
+        this.storage = storage || null;
+        try {
+          const saved = JSON.parse((this.storage && this.storage.getItem(SIGN_STORE_KEY)) || "{}") || {};
+          for (const [key, value] of Object.entries(saved)) if (frozenSignature(value)) super.set(key, value);
+        } catch {}
+      }
+      set(key, value) { super.set(key, value); this.save(); return this; }
+      delete(key) { const had = super.delete(key); if (had) this.save(); return had; }
+      clear() { super.clear(); this.save(); }
+      save() {
+        try {
+          if (!this.storage) return;
+          if (this.size) this.storage.setItem(SIGN_STORE_KEY, JSON.stringify(Object.fromEntries(this)));
+          else this.storage.removeItem(SIGN_STORE_KEY);
+        } catch {}
+      }
+    }
+    const tabStorage = (() => { try { return window.sessionStorage || null; } catch { return null; } })();
+    const unconfirmedSignatures = new StoredSignatures(tabStorage);
     const signatureKey = (sessionId, goal) => sessionId + "\n" + goal;
+    /** Whether this task's unconfirmed signature froze other criteria than the card shows now (it is resent as it was). */
+    function staleSignature(sessionId, entry) {
+      const frozen = unconfirmedSignatures.get(signatureKey(sessionId, entry.goal));
+      return !!frozen && frozen.toSign.join("\n") !== entry.toSign.join("\n");
+    }
     /** Forget the unconfirmed signatures a definite state read shows settled: their leaves signed, or the goal gone. */
     function settleUnconfirmed(sessionId, conversation) {
       const c = conversation && conversation.ok && conversation.found === true ? conversation.conversation : null;
@@ -390,7 +441,7 @@ window.__ModuleLoader__.load({
     // "Execute worker_<connection>_eng_write_file_1 → goal-3" reads as write_file.
     const actionOf = (label) => {
       const m = /^Execute\s+(\S+)/.exec(String(label || ""));
-      return m ? m[1].replace(/^worker_[a-z0-9]+_/, "").replace(/_\d+$/, "").replace(/_[0-9a-f]{12}$/, "").replace(/^eng[._]/, "").replace(/_v\d+$/, "") : "";
+      return m ? m[1].replace(/@\d+$/, "").replace(/^worker_[a-z0-9]+_/, "").replace(/_\d+$/, "").replace(/_[0-9a-f]{12}$/, "").replace(/^eng[._]/, "").replace(/_v\d+$/, "") : "";
     };
     /** The first value under `key` in a result (its JSON text parts read as JSON), a few levels deep. Pure. */
     function fieldOf(value, key, depth = 12) {
@@ -421,33 +472,39 @@ window.__ModuleLoader__.load({
       [/governance_pending|configuration is being applied/i, "智能体的设置正在生效"],
       [/board_draining|Writes are paused/i, "现在暂停写入"],
       [/A rule of the installed program blocks it|did not occur/i, "现在的条件不允许"],
+      [/review_blocked/i, "审查没有通过"],
     ];
     const refusalWords = (op) => {
       const said = [op.reason, op.summary, fieldOf(op.result, "errorCode")].filter((value) => typeof value === "string").join(" ");
       const hit = REFUSAL_WORDS.find(([pattern]) => pattern.test(said));
       return hit ? hit[1] : "";
     };
-    /** One strip entry as one line: { text, detail, tone }. Never a tool id, state code or reason code. Pure. */
+    /**
+     * One strip entry as one line: { text, detail, tone }. Never a tool id, state code or reason code. Pure. A conversation's
+     * tool-call row passes the call's own arguments too (`args`: a file named there when the result does not name one) and,
+     * for Set and Get, the words of what the call asked (`verb`).
+     */
     function operationLine(op) {
       const o = op && typeof op === "object" ? op : {};
       const label = String(o.label || ""), tool = String(o.tool || "");
       let verb, action = "";
       if (tool === "Execute" || /^Execute\s/.test(label)) {
         action = actionOf(label);
-        const file = own(ON_FILE, action) ? fileOf(o.result) : "";
+        const file = own(ON_FILE, action) ? fileOf(o.result) || fileOf(o.args) : "";
         verb = file ? ON_FILE[action] + " " + file : own(TOOL_WORDS, action) || "执行一个操作";
       } else if (tool === "Set" || /^Set\b/.test(label)) {
         const summary = String(o.summary || "");
-        verb = /\bend_goal\b/.test(label) ? "结束任务" : /^declared goal\b/.test(summary) ? "开始任务"
+        verb = typeof o.verb === "string" && o.verb ? o.verb : /\bend_goal\b/.test(label) ? "结束任务" : /^declared goal\b/.test(summary) ? "开始任务"
           : /^completed\b/.test(summary) ? "任务完成（验收通过）" : "记下依据";
-      } else verb = tool === "Get" ? "读取结果" : "执行一个操作";
+      } else verb = typeof o.verb === "string" && o.verb ? o.verb : tool === "Get" ? "读取结果" : "执行一个操作";
       switch (o.state) {
         case "done": {
-          const exit = action === "test" || action === "acceptance" ? fieldOf(o.result, "exit_code") : undefined;
+          const exit = action === "test" || action === "acceptance" || action === "run" ? fieldOf(o.result, "exit_code") : undefined;
+          if (typeof exit === "number" && action === "run") return exit === 0 ? { text: verb, tone: "ok" } : { text: verb + "：出错", tone: "warn" };
           if (typeof exit === "number") return { text: verb + (exit === 0 ? "：通过" : "：没有通过"), tone: exit === 0 ? "ok" : "warn" };
           return { text: verb, tone: "ok" };
         }
-        case "failed": return { text: verb + "：失败", tone: "warn" };
+        case "failed": { const why = refusalWords(o); return { text: verb + "：失败" + (why ? "（" + why + "）" : ""), tone: "warn" }; }
         case "refused": { const why = o.contentWithheld ? "" : refusalWords(o);
           return why ? { text: "被拒绝：" + why, detail: verb, tone: "warn" } : { text: verb + "：被拒绝", tone: "warn" }; }
         case "unknown": return { text: verb + "：结果未知，请在 Console 核对", tone: "error" };
@@ -458,7 +515,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const GOAL_WORDS = { running: "进行中", paused: "已暂停", completed: "已完成", ended: "已结束" };
+    const GOAL_WORDS = { running: "进行中", paused: "已暂停", completed: "已完成（验收通过）", ended: "已结束" };
     /** A task's status in words: an ended task as it ended, else what it waits for, else running or paused. Pure. */
     function taskStatusText(row, awaitsSignature) {
       if (row.status === "completed" || row.status === "ended") return GOAL_WORDS[row.status];
@@ -467,6 +524,7 @@ window.__ModuleLoader__.load({
       return own(GOAL_WORDS, row.status) || "状态未读到";
     }
     const NO_BOARD = "这个会话还没有开始任务。说出你要做的事，开始后这里显示任务、验收标准和最近操作。";
+    const DELETED = "这个会话已删除，不能再继续。它的回执和记录仍保留，可在 Console 的任务记录里查看。";
     /**
      * Whether each criterion holds, as this conversation's results showed it, kept while the panel is mounted (each kind of
      * result shows different parts: a goal read has its signed leaves with `met`, a nodes read every goal node with
@@ -502,11 +560,11 @@ window.__ModuleLoader__.load({
         // replace — only while the goal can take a signature at all (otherwise no leaf is eligible, and the reason is the goal's).
         const leaves = entry.leaves.filter((leaf) => leaf && words(leaf.node)).map((leaf) => ({ node: leaf.node, label: words(leaf.label),
           criterion: criterionText(leaf.criterion), signed: leaf.signed === true, eligible: leaf.eligible === true,
-          note: entry.signable !== true || leaf.eligible === true ? "" : leaf.signed === true ? "签字后会被替换" : "不能作为验收标准" }));
+          note: entry.signable !== true || leaf.eligible === true ? "" : leaf.signed === true ? SIGN.replaced : SIGN.notCriterion }));
         const toSign = entry.signable === true ? leaves.filter((leaf) => leaf.eligible).map((leaf) => leaf.node) : [];
         // A list shortened by the service cannot be signed from here: signing it would replace leaves this page never saw.
-        const refusal = entry.signable !== true ? "这些标准现在不能签：" + signReason(entry.refusal) + "。"
-          : entry.leavesTruncated === true ? "这个目标的标准太多，这里只列出一部分；请在 Console 里签字。" : "";
+        const refusal = entry.signable !== true ? SIGN.unavailablePrefix + signReason(entry.refusal) + "。"
+          : entry.leavesTruncated === true ? SIGN.truncated : "";
         return { goal: entry.goal, label: words(entry.label) && entry.label !== entry.goal ? words(entry.label) : "（没有名字的任务）",
           leaves, toSign: refusal ? [] : toSign, refusal, signable: entry.signable === true,
           awaits: entry.signable === true ? leaves.some((leaf) => leaf.eligible && !leaf.signed) : leaves.some((leaf) => !leaf.signed) };
@@ -518,7 +576,7 @@ window.__ModuleLoader__.load({
      */
     function taskPanelModel({ board, conversation, worker, health, memory = panelMemory() }) {
       if (!board) return { kind: "message", text: "正在读取…" };
-      if (!board.ok) return { kind: "message", text: board.teaching || "读不到 Rulith", tone: "warn" };
+      if (!board.ok) return { kind: "message", text: plain(board.teaching, "读不到 Rulith"), tone: "warn" };
       if (!board.available) return { kind: "message", text: "还没有接入 Rulith：先登录，再在左侧为智能体「在本机设置」。" };
       const view = board.view && typeof board.view === "object" ? board.view : null;
       const conv = conversation && conversation.ok ? conversation : null;
@@ -526,6 +584,9 @@ window.__ModuleLoader__.load({
       // A failed state read (the service unavailable, the manager down, signed out, …) says nothing about the conversation:
       // never "no Board yet" and never "no criteria", only that it cannot be read now. Only found:false means no Board.
       const readFailed = !!(conversation && conversation.ok !== true);
+      // A deleted conversation (PSC 0.2.21) gets no further result: the panel says it is deleted (batch 4 P3) rather than
+      // waiting for "the next result".
+      if (found && conv.conversation.endedAt) return { kind: "message", text: DELETED };
       if (!view && !found && !readFailed) return conv && conv.found === false ? { kind: "message", text: NO_BOARD } : { kind: "message", text: "正在读取…" };
       rememberView(memory, board);
       const link = (value) => (typeof value === "string" && /^https?:\/\//.test(value) ? value : "");
@@ -552,7 +613,7 @@ window.__ModuleLoader__.load({
         const entry = entries.find((e) => e.goal === task.goal);
         const rows = (entry ? entry.leaves : (memory.signed.get(task.goal) || []).map((leaf) => ({ ...leaf, signed: true, eligible: true })))
           .map((leaf) => ({ node: leaf.node, label: leaf.label || "一条验收标准", criterion: leaf.criterion,
-            signed: leaf.signed ? (task.fixed ? "由能力合同规定" : "已签字")
+            signed: leaf.signed ? (task.fixed ? "由能力规定" : "已签字")
               : leaf.note || "未签字",
             holds: memory.holds.has(leaf.node) ? memory.holds.get(leaf.node) : null }));
         if (rows.length) criteria.push({ goal: task.goal, label: task.label, rows });
@@ -588,7 +649,7 @@ window.__ModuleLoader__.load({
         const requestId = asked.requestId || newRequestId();
         const report = (outcome) => setNote({ goal: asked.goal, label: asked.label, ...outcome });
         const remember = () => unconfirmedSignatures.set(key, { goal: asked.goal, label: asked.label, requestId, toSign: asked.toSign, leaves: asked.leaves });
-        setBusy(asked.goal); report({ state: "pending", text: "正在签字…" });
+        setBusy(asked.goal); report({ state: "pending", text: SIGN.signing });
         try {
           const outcome = await signAcceptanceFlow({ api, sessionId: asked.sessionId, goal: asked.goal, leaves: asked.toSign, requestId,
             unconfirmed: !!asked.requestId, report: (o) => { remember(); report(o); } });
@@ -636,6 +697,141 @@ window.__ModuleLoader__.load({
             h("button", { type: "button", style: primary, "data-rulith-sign-confirm": "", onClick: () => asking.answer(true) }, SIGN.accept))));
     }
 
+    // ---- Rulith's tool calls in the conversation (design §3.2 工具调用行, §2 操作): one line in plain words (写入 fizzbuzz.py,
+    // 运行测试：通过, 被拒绝：项目授权已收回) and 「查看依据」 on the right, which opens the call's receipt, what the call asked
+    // and the whole answer. It replaces dsh's generic row (「工具调用 · 查看」, the raw JSON of the call and of the whole view)
+    // for Rulith's three tools; the words come from operationLine, as in the 任务 panel's 最近操作.
+    // 中文说明：会话里 Rulith 三个工具的每次调用只显示一句人话；回执、调用内容与原文收在「查看依据」里，默认不展开。
+    const RULITH_TOOLS = ["Get", "Set", "Execute"];
+    const parseJson = (text) => { try { return JSON.parse(text); } catch { return undefined; } };
+    const blockText = (block) => list(block && block.content)
+      .map((part) => (part && part.type === "text" && typeof part.text === "string" ? part.text : "")).join("");
+    /**
+     * Rulith's answer in a call's result text. The host gives the person the MCP result as its JSON, whose content text is
+     * the answer, and the reviewer's notes on further lines (board-channel.mjs renderChannelResult); a call the bridge
+     * failed carries the result in its error text. Null when no answer can be read. Pure.
+     */
+    function rulithAnswer(text) {
+      const raw = String(text || "");
+      const brace = raw.indexOf("{");
+      for (const candidate of [raw, raw.split("\n")[0], brace > 0 ? raw.slice(brace) : ""]) {
+        const value = candidate ? parseJson(candidate) : undefined;
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        if (Array.isArray(value.content)) {
+          const inner = parseJson(blockText(value));
+          if (inner && typeof inner === "object" && !Array.isArray(inner)) return inner;
+          continue;
+        }
+        if ("accepted" in value || "operations" in value) return value;
+      }
+      return null;
+    }
+    /** The call's arguments, from the block of any stage (preparing has none). Pure. */
+    function callArgs(block) {
+      const raw = !block || typeof block !== "object" ? undefined : "kind" in block ? block.call && block.call.argsRaw : block.argsRaw;
+      const value = typeof raw === "string" ? parseJson(raw) : undefined;
+      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    }
+    /** What a Set asked, in words: ending a task, starting one, proposing criteria, breaking one down, or recording. Pure. */
+    function setWords(args) {
+      const ops = list(args.operations).filter((op) => op && typeof op === "object");
+      if (ops.some((op) => op.op === "end_goal")) return "结束任务";
+      const root = ops.find((op) => op.op === "declare_goal" && !op.parent);
+      if (root) return "开始任务" + (words(root.label) ? "「" + words(root.label) + "」" : "");
+      const children = ops.filter((op) => op.op === "declare_goal");
+      if (children.length) return children.every((op) => list(op.desired).some((atom) => atom && atom.predicate === "eng.check_passed"))
+        ? "提出验收标准" : "细分任务";
+      return "记下依据";
+    }
+    /**
+     * This call's own entry of the operations strip: an Execute's newest entry for its Action, or the outcome the host
+     * delivered for a call it waited on (board-channel.mjs). Set and Get are judged by the answer alone (several Sets share
+     * one label). Pure.
+     */
+    function ownOperation(tool, args, answer) {
+      if (!answer || typeof answer !== "object") return null;
+      if (answer.tool === tool && typeof answer.state === "string")
+        return { state: answer.state, ...(answer.result !== undefined ? { result: answer.result } : {}),
+          ...(typeof answer.summary === "string" ? { summary: answer.summary } : {}), ...(typeof answer.teaching === "string" ? { reason: answer.teaching } : {}),
+          ...(answer.contentWithheld !== undefined ? { contentWithheld: answer.contentWithheld } : {}) };
+      if (tool !== "Execute" || typeof args.action !== "string") return null;
+      const rows = list(answer.operations).filter((entry) => entry && entry.tool === "Execute" && (entry.seat === undefined || entry.seat === "main")
+        && String(entry.label || "").split(/\s+/)[1] === args.action);
+      return rows.length ? { ...rows.reduce((a, b) => (String(b.at || "") > String(a.at || "") ? b : a)) } : null;
+    }
+    /**
+     * One Rulith tool call as the conversation shows it: { text, detail, tone, state, evidence }, where `evidence` (null
+     * while the call runs) is what 「查看依据」 opens: the receipt, the reason of a refusal, what the call asked and the whole
+     * answer. Never a tool id, state code or node id in `text`. Pure.
+     */
+    function toolCallLine({ toolName, phase, block }) {
+      const tool = String(toolName || "");
+      const args = callArgs(block);
+      const verb = tool === "Set" ? setWords(args) : tool === "Get" ? (args.artifact ? "读取结果" : "查看进展") : undefined;
+      const base = { tool, label: tool === "Execute" && typeof args.action === "string" ? "Execute " + args.action : tool, args: args.args, verb };
+      if (phase === "preparing" || !block || typeof block !== "object") return { text: "正在准备一次操作…", tone: "info", state: "preparing", evidence: null };
+      if (!("kind" in block)) return { ...operationLine({ ...base, state: "running" }), state: "running", evidence: null };
+      const raw = blockText(block) || (block.error && typeof block.error.message === "string" ? block.error.message : "");
+      const answer = rulithAnswer(raw);
+      // A refusal answer names no operation of its own (only an outcome the host waited for has tool and state): the
+      // strip's newest entry for the same Action is another call, so its receipt and file are not this call's.
+      const delivered = !!answer && answer.tool === tool && typeof answer.state === "string";
+      const own = answer && answer.accepted === false && !delivered ? null : ownOperation(tool, args, answer);
+      const why = (a) => [a.teaching, a.errorCode].filter((value) => typeof value === "string" && value).join(" ");
+      let op;
+      if (block.error && block.error.code === "interrupted") op = { ...base, state: "stopped" };
+      else if (answer && answer.accepted === false) op = { ...base, ...(own || {}), args: args.args, verb, state: "refused",
+        reason: [own && own.reason, delivered ? "" : why(answer)].filter(Boolean).join(" ") || why(answer) };
+      else if (own) op = { ...base, ...own, args: args.args, verb };
+      else if (answer) op = { ...base, state: "done" };
+      else if (block.isError) op = { ...base, state: /outcome is unknown/i.test(raw) ? "unknown" : "failed", reason: raw };
+      else op = { ...base, state: "done" };
+      const line = op.state === "stopped" ? { text: operationLine({ ...base, state: "done" }).text + "：已停止", tone: "warn" } : operationLine(op);
+      const call = tool === "Execute" ? { action: args.action, ...(args.args !== undefined ? { args: args.args } : {}), ...(args.target !== undefined ? { target: args.target } : {}) } : args;
+      return { text: line.text, detail: line.detail, tone: line.tone, state: op.state, evidence: {
+        reason: op.state === "refused" || op.state === "failed" || op.state === "unknown" ? words(op.reason) : "",
+        receipt: own && own.result !== undefined ? own.result : undefined,
+        summary: own && typeof own.summary === "string" ? own.summary : "",
+        call, raw } };
+    }
+    // JSON text inside a receipt (a result's content text) is shown as the JSON it is, not as one escaped string.
+    const unfolded = (value, depth = 6) => {
+      if (depth < 0) return value;
+      if (typeof value === "string" && value.length < 200000 && /^\s*[{[]/.test(value)) { const inner = parseJson(value); return inner === undefined ? value : unfolded(inner, depth - 1); }
+      if (Array.isArray(value)) return value.map((item) => unfolded(item, depth - 1));
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unfolded(item, depth - 1)]));
+      return value;
+    };
+    const shownJson = (value) => (typeof value === "string" ? value : JSON.stringify(unfolded(value), null, 2));
+    const evidenceText = { margin: "4px 0 0", padding: "6px 8px", maxHeight: 280, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word",
+      fontSize: 11.5, lineHeight: 1.45, borderRadius: 6, background: "var(--dsw-alias-markdown-code-block, rgba(127,127,127,.08))",
+      fontFamily: "var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Consolas, monospace)" };
+    /** The conversation's row of one Rulith tool call (dsh's keyed `tool.call.toolview`, props of dsh-client-ui-tool). */
+    function RulithToolRow(props) {
+      const [localOpen, setLocalOpen] = useState(false);
+      const disclosure = typeof props.useDisclosure === "function" ? props.useDisclosure() : null;
+      const kept = !!(disclosure && typeof disclosure.toggle === "function");
+      const open = kept ? disclosure.expanded === true : localOpen;
+      const toggle = kept ? () => disclosure.toggle() : () => setLocalOpen(!localOpen);
+      const line = toolCallLine(props);
+      const evidence = line.evidence;
+      const part = (title, body) => h("div", { style: { marginTop: 6 } }, h("div", { style: small }, title), body);
+      return h("div", { "data-rulith-call": props.toolName || "", "data-rulith-call-state": line.state, style: { padding: "1px 0", fontSize: 13 } },
+        h("div", { style: { display: "flex", alignItems: "center", gap: 6, minHeight: 24, color: "var(--dsw-alias-label-secondary, inherit)" } },
+          dot(LEVEL[line.tone] || GREY),
+          h("span", { "data-rulith-call-line": "", style: { flex: 1, minWidth: 0, wordBreak: "break-word" } }, line.text,
+            line.detail ? h("span", { style: small }, "（" + line.detail + "）") : null),
+          evidence ? h("button", { type: "button", "data-rulith-call-evidence": "", "aria-expanded": open, style: { ...linkButton, flex: "none" }, onClick: toggle },
+            open ? "收起依据" : "查看依据") : null),
+        open && evidence ? h("div", { "data-rulith-call-detail": "", style: { margin: "2px 0 6px 14px" } },
+          evidence.reason ? part("原因", h("div", { style: { fontSize: 12, wordBreak: "break-word" } }, evidence.reason)) : null,
+          evidence.receipt !== undefined ? part("回执", h("pre", { style: evidenceText }, shownJson(evidence.receipt))) : null,
+          evidence.summary ? part("结果", h("div", { style: { fontSize: 12, wordBreak: "break-word" } }, evidence.summary)) : null,
+          part("这次调用", h("pre", { style: evidenceText }, shownJson(evidence.call))),
+          h("details", { style: { marginTop: 6 } }, h("summary", { style: { ...small, cursor: "pointer" } }, "完整原文"),
+            h("pre", { style: evidenceText }, evidence.raw || "（没有内容）"))) : null);
+    }
+
     function RulithColumn({ mountedSession }) {
       // The sidebar's mounted store identifies the conversation this pane belongs to.
       const sessionId = React.useSyncExternalStore(
@@ -672,10 +868,11 @@ window.__ModuleLoader__.load({
           h("div", { style: { ...section, marginTop: 0 } }, SIGN.title),
           h("div", { style: { fontWeight: 600, marginBottom: 4, wordBreak: "break-word" } }, entry.label),
           entry.leaves.map(leafRow),
+          staleSignature(sessionId, entry) ? h("div", { role: "status", "data-rulith-sign-stale": "", style: { ...small, marginTop: 6, opacity: 1, color: AMBER } }, SIGN.stale) : null,
           entry.refusal ? h("div", { role: "status", "data-rulith-sign-unavailable": "", style: { ...small, marginTop: 6, opacity: 1, color: AMBER } }, entry.refusal)
             : h("div", { style: { marginTop: 8 } }, h("button", { type: "button", style: primary, "data-rulith-sign": entry.goal,
-              disabled: !!signing.busy, onClick: () => signing.ask(entry) }, signing.busy === entry.goal ? "正在签字…" : SIGN.button)))),
-        model.awaitingTruncated ? h("div", { style: { ...small, marginBottom: 10 } }, "还有等签字的任务没有列在这里：请在 Console 里查看。") : null,
+              disabled: !!signing.busy, onClick: () => signing.ask(entry) }, signing.busy === entry.goal ? SIGN.signing : SIGN.button)))),
+        model.awaitingTruncated ? h("div", { style: { ...small, marginBottom: 10 } }, SIGN.moreInConsole) : null,
         model.awaitingUnknown ? h("div", { "data-rulith-awaiting-unknown": "", style: { ...small, marginBottom: 10 } }, SIGN.unreadable) : null,
         note ? h("div", { role: note.state === "refused" ? "alert" : "status", "data-rulith-sign-note": note.state,
           style: { marginBottom: 12, color: noteColor, fontSize: 12, wordBreak: "break-word" } }, note.text) : null,
@@ -717,14 +914,17 @@ window.__ModuleLoader__.load({
     // manager -> device grant -> Gateway (PSC 0.2.16 ③, 0.2.20, 0.2.27 ①).
     // Exploration tiers, narrow to wide (TOOL-08b/08c), and the Console's approved confirmation texts for widening.
     const MODE_ORDER = ["strict", "derived", "non_strict"];
-    const MODE_WORDS = { strict: "严格", derived: "推导", non_strict: "非严格" };
+    // Design §2: the three tiers are 严格／推导／宽松, named only in this menu and in the project confirmation, each with one
+    // plain sentence. The widening confirmations are the Chinese rendering of Console's approved texts (PSC 0.2.5, 0.2.9),
+    // with "the Board" said as "这次会话的依据".
+    const MODE_WORDS = { strict: "严格", derived: "推导", non_strict: "宽松" };
     const MODE_HINTS = { strict: "写入和运行要先有可信的依据", derived: "能从记下的事实推出理由，就可以写入和运行",
       non_strict: "模型给出的命令和参数直接执行；完成仍要你签字验收" };
     const WIDEN_TEXT = {
-      non_strict: { title: "Switch to non-strict exploration mode?", accept: "Switch to non-strict", cancel: "Keep strict",
-        body: "Write and run actions of this environment's tools will accept inputs the model supplies, even when no trusted fact on the Board backs them. Each such call is marked \"Inputs not grounded\". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time." },
-      derived: { title: "Switch to derived exploration mode?", accept: "Switch to derived", cancel: "Keep strict",
-        body: "The model will be able to write and run in this environment's workspace whenever it can derive, from facts and rules it writes on the Board, a warrant for that action and its key inputs. Those facts do not have to be trusted evidence. Calls that need your decision never run without it, and writes stay inside the local workspace." },
+      non_strict: { title: "切换到宽松档？", accept: "切换到宽松", cancel: "先不切换",
+        body: "这个环境的工具在写入和运行时，会接受模型给出的输入，即使这次会话的依据里没有可信的事实支持它们。这样的每一次调用都会在记录里注明：它的输入没有可信的依据。需要你决定的调用不会在你决定之前运行；写入仍只在你授权的位置之内；你没有锁定的工具仍然不能用。你随时可以切换回来。" },
+      derived: { title: "切换到推导档？", accept: "切换到推导", cancel: "先不切换",
+        body: "只要模型能从它记在这次会话依据里的事实和规则，推出这次操作和它关键输入的理由，就可以在这个环境的工作区里写入和运行。那些事实不必是可信的证据。需要你决定的调用不会在你决定之前运行；写入仍只在本机的工作区之内。" },
     };
     /**
      * The one tier a conversation shows (PSC 0.2.27 ①): the strictest of what the Gateway reports — its `explorationMode`,
@@ -739,6 +939,44 @@ window.__ModuleLoader__.load({
       if (!all.length || all.some((mode) => !MODE_ORDER.includes(mode))) return { mode: undefined, mixed };
       return { mode: all.reduce((a, b) => (MODE_ORDER.indexOf(b) < MODE_ORDER.indexOf(a) ? b : a)), mixed };
     }
+    // The tier chip's words (PSC 0.2.29 fixes them verbatim for the local client; Console keeps its English Text 9).
+    const TIER = { label: "档位：", fresh: "默认", unreadable: "读不准", mixed: "（不一致）",
+      menu: "这个会话的档位 · 收窄立即生效，放宽先确认", menuMixed: "这个会话的档位不一致：显示的是其中最严的一档，再选一次即统一",
+      menuFresh: "这个会话还没有用过 Rulith：选一档就生效，默认取智能体的档位；放宽先确认",
+      accepted: "已受理，还没有生效", betweenCalls: "已受理，还没有生效：会在这次调用结束后生效", later: "已受理，还没有生效，稍后再看一次",
+      notSwitched: "没有切换", notAccepted: "这次切换没有被接受" };
+    // Why a tier or review switch was refused: the codes the Gateway's local-device conversation routes, its control store
+    // and the local manager return there (GatewayConversationController, GatewayControlService, AgentControlStore), in plain
+    // words that keep each teaching's meaning and the action to take. A code not listed shows TIER.notSwitched followed by
+    // the service's own text (plain), never nothing.
+    const SWITCH_REFUSALS = {
+      exploration_control_pending: "这个会话的档位还在收窄，什么都没有改；稍后再试。",
+      control_pending: "上一次的设置还没有完成，什么都没有改；稍后再试。",
+      agent_call_pending: "智能体手上还有一次调用没有结束或待核对，结束后才能改；什么都没有改。",
+      observation_in_progress: "还有一次观察没有结果，有了结果再试；什么都没有改。",
+      configuration_unconfirmed: "智能体的设置正在生效，稍后再试；什么都没有改。",
+      conversation_ended: "这个会话已删除，不能再改。",
+      board_unavailable: "读不到这个会话的记录，什么都没有改；稍后再试。",
+      request_conflict: "这次请求和之前的一次冲突了，什么都没有改；请再选一次。",
+      exploration_mode_unconfirmed: "读不到这个会话现在的档位，什么都没有改；稍后再试。",
+      conversations_unavailable: "会话设置的结果没能确认，请再试一次。",
+      device_revoked: "这台电脑的登录已经失效，请在左下角重新登录。",
+      device_unauthenticated: "这台电脑的登录已经失效，请在左下角重新登录。",
+      unauthenticated: "这台电脑的登录已经失效，请在左下角重新登录。",
+      not_authorized: "这台电脑的登录没有被授权使用这个智能体。",
+      agent_not_found: "这个智能体现在不可用。",
+      not_signed_in: "这台电脑没有登录 Rulith：先在左下角登录。",
+      manager_signing_out: "这台电脑正在退出 Rulith 登录，现在不能改。",
+      manager_closing: "本机 Rulith 正在关闭，现在不能改。",
+    };
+    const TIER_REFUSALS = { ...SWITCH_REFUSALS,
+      review_required_by_derived_mode: "先为这个会话打开事后审查，再切到推导档。",
+      derived_mode_unavailable: "推导档需要这个智能体有审查员，并允许模型写规则：先在 Console 里为它指定审查员。" };
+    const REVIEW_REFUSALS = { ...SWITCH_REFUSALS,
+      derived_requires_review: "先把这个会话切出推导档，再关闭事后审查。" };
+    /** A refused switch in words: its code's sentence, else the generic one followed by the service's own text. Pure. */
+    const switchRefusal = (table, answer, generic) => own(table, answer && answer.errorCode)
+      || plain((answer && (answer.teaching || answer.errorCode)) || "", generic);
     function useConversationSettings(sessionId) {
       const [settings, refresh] = usePoll("conversation?session=" + encodeURIComponent(sessionId), 6000);
       const [note, setNote] = useState("");
@@ -748,19 +986,20 @@ window.__ModuleLoader__.load({
         try {
           const reply = await api("conversation/exploration-mode", { session: sessionId, mode });
           // The outcome is `result.accepted`; a pending switch (202) says why it waits.
-          if (!reply.ok) setNote(reply.teaching || "没有切换");
-          else if (reply.state !== "complete") setNote("已受理，还没有生效" + (reply.teaching ? "：" + reply.teaching : ""));
-          else if (reply.result && reply.result.accepted === false)
-            setNote(reply.result.teaching || "这次切换没有被接受" + (reply.result.errorCode ? "（" + reply.result.errorCode + "）" : ""));
-        } catch (error) { setNote(String(error)); }
+          if (!reply.ok) setNote(switchRefusal(TIER_REFUSALS, reply, TIER.notSwitched));
+          else if (reply.state !== "complete") {
+            const why = String(reply.teaching || "");
+            setNote(/between calls/i.test(why) ? TIER.betweenCalls : why ? plain(why, TIER.accepted) : TIER.later);
+          } else if (reply.result && reply.result.accepted === false) setNote(switchRefusal(TIER_REFUSALS, reply.result, TIER.notAccepted));
+        } catch (error) { setNote(errorText(error)); }
         refresh();
       };
       const applyReview = async (enabled) => {
         setNote("");
         try {
           const reply = await api("conversation/review", { session: sessionId, enabled });
-          if (!reply.ok) setNote(reply.teaching || "没有切换");
-        } catch (error) { setNote(String(error)); }
+          if (!reply.ok) setNote(switchRefusal(REVIEW_REFUSALS, reply, TIER.notSwitched));
+        } catch (error) { setNote(errorText(error)); }
         refresh();
       };
       return { settings, refresh, note, setNote, applyMode, applyReview };
@@ -791,7 +1030,7 @@ window.__ModuleLoader__.load({
         if (MODE_ORDER.indexOf(next) > MODE_ORDER.indexOf(fresh ? "strict" : tier.mode)) { setConfirming(next); return; }
         close(); applyMode(next);
       };
-      const tierLabel = "档位：" + (fresh ? "默认" : tier.mode ? MODE_WORDS[tier.mode] + (tier.mixed ? "（各连接不一致）" : "") : "读不准");
+      const tierLabel = TIER.label + (fresh ? TIER.fresh : tier.mode ? MODE_WORDS[tier.mode] + (tier.mixed ? TIER.mixed : "") : TIER.unreadable);
       const tierChip = h("span", { key: "tier", style: { position: "relative", display: "inline-flex" }, "data-rulith-tier": fresh ? "default" : tier.mode || "unknown" },
         h("button", { type: "button", style: chip, "aria-haspopup": "menu", "aria-expanded": open === "tier", title: "这个会话的档位（只改这个会话）",
           onClick: () => { setConfirming(null); setOpen(open === "tier" ? null : "tier"); } }, tierLabel, h("span", { style: { opacity: 0.6 } }, "▾")),
@@ -804,8 +1043,7 @@ window.__ModuleLoader__.load({
                 h("button", { type: "button", style: { ...chip }, onClick: () => { const mode = confirming; close(); applyMode(mode); } }, WIDEN_TEXT[confirming].accept),
                 h("button", { type: "button", style: { ...chip }, onClick: () => setConfirming(null) }, WIDEN_TEXT[confirming].cancel)))
             : h("div", null,
-              h("div", { style: { ...small, padding: "2px 8px 4px" } }, fresh ? "这个会话还没有用过 Rulith：选一档就生效，默认取智能体的档位；放宽先确认"
-                : tier.mixed ? "各连接不一致：显示的是其中最严的一档，再选一次即统一" : "这个会话的档位 · 收窄立即生效，放宽先确认"),
+              h("div", { style: { ...small, padding: "2px 8px 4px" } }, fresh ? TIER.menuFresh : tier.mixed ? TIER.menuMixed : TIER.menu),
               MODE_ORDER.map((mode) => h("button", { key: mode, type: "button", role: "menuitemradio", "aria-checked": mode === tier.mode,
                 style: { ...item, fontWeight: mode === tier.mode ? 600 : 400 }, disabled: (!fresh && !tier.mode) || (mode === tier.mode && !tier.mixed),
                 onClick: () => choose(mode) }, (mode === tier.mode ? "● " : "○ ") + MODE_WORDS[mode], h("span", { style: small }, " · " + MODE_HINTS[mode]))))) : null);
@@ -845,15 +1083,15 @@ window.__ModuleLoader__.load({
     const unique = (values) => values.filter((value, index) => value && values.indexOf(value) === index);
     // What each mode the Gateway may request means for the owner. A mode this page cannot explain is not offered.
     const MODE_MEANING = {
-      non_strict: "这台电脑上之后新开的会话使用「非严格」档：模型给出的命令和参数不再需要事先有依据，就会执行；任务算不算完成，仍然只由你签字的验收合同认定。",
+      non_strict: "这台电脑上之后新开的会话默认用「宽松」档：模型给出的命令和参数不需要事先有依据，就会执行；任务算不算完成，仍然只由你签字的验收标准认定。",
     };
     /**
      * The confirmation for one state reply, or why it cannot be shown. Pure. Everything SYS-LOCAL-01 (PSC 0.2.24) requires
      * the confirmation to list is in view: the folder, the Agent and this computer, what may be done there, the tools it
      * uses (in plain words, with the capability they come from), what the tier means, that "in the folder" is not
-     * operating-system isolation, and how to withdraw it. Only the tool ids with their versions, the capability's version
-     * and the account are under 「详细」 (design §3.2 打开确认框).
-     * 中文说明：规定要列出的各项（含所用工具）都直接显示；「详细」里只有带版本的工具标识、能力版本与账户。
+     * operating-system isolation, and how to withdraw it. The tool ids with their versions, the capability's id and version,
+     * the Connection's name and the account are under 「详细」 (design §3.2 打开确认框, §2: no internal word in view).
+     * 中文说明：规定要列出的各项（含所用工具）都直接显示；带版本的工具标识、能力标识与版本、本机连接名和账户只在「详细」里。
      */
     function projectConfirmation(view) {
       const v = view || {};
@@ -862,24 +1100,25 @@ window.__ModuleLoader__.load({
       if (!v.directory || !v.accountId || !v.agentName || !v.computer || !tools.length || !v.authorizationVersion || !requested)
         return { error: "读到的打开内容不完整，不能请你确认。请稍后再试。" };
       if (!MODE_MEANING[requested])
-        return { error: "这个版本的 Rulith 应用说明不了要设置的档位（" + requested + "），不能请你确认。请先更新 Rulith 应用。" };
+        return { error: "这个版本的 Rulith 应用说明不了要设置的档位，不能请你确认。请先更新 Rulith 应用。" };
       const capability = v.capability && v.capability.id ? v.capability.id : "";
       return {
         title: "把这个文件夹作为项目打开？",
         rows: [
           ["文件夹", v.directory],
-          ["智能体", v.agentName + " · 这台电脑 " + (v.computer.label || "未命名的电脑") + (v.connectionName ? "（本机连接「" + v.connectionName + "」）" : "")],
+          ["智能体", v.agentName + " · 这台电脑 " + (v.computer.label || "未命名的电脑")],
           ["可以做的事", "在这个文件夹里读文件、写文件、运行命令（包括测试和构建）。"],
           ["所用工具", unique(tools.map((tool) => toolWords(tool.id))).join("、")
-            + (capability ? "。来自这个智能体已装的官方编程能力「" + capability + "」。" : "。")],
+            + (capability ? "。来自这个智能体已装的官方编程能力。" : "。")],
           ["档位", MODE_MEANING[requested]],
           ["请注意", "「在这个文件夹里」不是操作系统级的隔离：运行的命令，以及它再启动的其他软件，仍然可能读写这个文件夹以外的文件。只打开你愿意让智能体在里面写文件、运行命令的文件夹。"],
-          ["怎么收回", "以后要收回，在 Console 里解除这个项目的锁定，或者停用这台电脑的登录。"],
+          ["怎么收回", "以后要收回，在 Console 这个智能体页面上这个项目的一行里收回授权，或者停用这台电脑的登录。"],
         ],
         details: [
           ["账户", v.accountName || v.accountId],
           ["工具与版本", tools.map((tool) => String(tool.id || "")).join("、")
             + (capability ? "。官方编程能力 " + capability + (v.capability.version ? " " + v.capability.version : "") : "") + "。"],
+          ...(v.connectionName ? [["本机连接", v.connectionName]] : []),
         ],
         footer: "已有的会话不受影响。打开完成后，会在这个文件夹里开一个新会话。",
         accept: "打开项目", cancel: "取消",
@@ -889,8 +1128,8 @@ window.__ModuleLoader__.load({
     const PROJECT_REFUSALS = {
       not_authorized: "这台电脑的登录没有被授权使用这个智能体。",
       account_changed: "这台电脑现在登录的账户和刚才显示的不一样。请刷新后再打开。",
-      connection_not_of_this_device: "这个智能体的本机连接不是这台电脑设置的。请在左侧对这个智能体重新「在本机设置」。",
-      connection_not_found: "这个智能体在这台电脑上没有可用的本机连接。请在左侧对它「在本机设置」。",
+      connection_not_of_this_device: "这个智能体在这台电脑上的接入不是这台电脑自己设置的。请在左侧对这个智能体重新「在本机设置」。",
+      connection_not_found: "这个智能体还没有在这台电脑上设置好。请在左侧对它「在本机设置」。",
       agent_not_found: "这个智能体现在不可用。",
       client_authority_refused: "请求里带了只能由服务端决定的内容，已被拒绝。什么都没有改。",
       device_revoked: "这台电脑的登录已经失效。请在左下角重新登录。",
@@ -906,7 +1145,7 @@ window.__ModuleLoader__.load({
       worker_tools_mismatch: "这台电脑上的工具和智能体要求的版本不一致。请更新 Rulith 应用后再试。",
       worker_tool_contract_missing: "这台电脑上的工具和智能体要求的版本不一致。请更新 Rulith 应用后再试。",
       worker_tool_not_direct: "这台电脑上的工具和智能体要求的版本不一致。请更新 Rulith 应用后再试。",
-      worker_tool_pin_conflict: "这条本机连接上已经钉着同名工具的另一个版本，需要在 Console 里处理。什么都没有改。",
+      worker_tool_pin_conflict: "这台电脑上已经锁定了同名工具的另一个版本，需要在 Console 里处理。什么都没有改。",
       project_unavailable: "现在确认不了项目的状态。之后可以在左侧再次打开这个文件夹：会从当前进度继续，或重新请你确认。",
       not_signed_in: "这台电脑没有登录 Rulith，或登录已不能使用：先在左下角登录。",
       manager_signing_out: "这台电脑正在退出 Rulith 登录，现在不能打开项目。",
@@ -914,16 +1153,31 @@ window.__ModuleLoader__.load({
       authorization_changed: "要授予的内容在确认之后又变了。请再打开一次，重新确认。",
       // The setup that runs before opening (repair) stopped where only the owner can decide (SYS-LOCAL-01): the confirmation
       // is under 「在本机设置」.
-      runtime_credential_exists: "这个智能体的 Agent token 正在另一台电脑（或另一个客户端）上使用，这台电脑还没有设置好。请在设置的「这台电脑」里对它点「在本机设置」，确认替换后再打开文件夹。什么都没有改。",
-      connection_rejected: "Rulith 拒绝了这台电脑的连接凭据（可能在 Console 里轮换或撤销了），这台电脑的 Worker 已停下。请在设置的「这台电脑」里对它点「在本机设置」，确认重新接上后再打开文件夹。什么都没有改。",
-      connection_missing: "这台电脑上这个智能体的连接凭据不见了。请在设置的「这台电脑」里对它点「在本机设置」，确认重新接上后再打开文件夹。什么都没有改。",
-      worker_taken_over: "这个智能体的连接被另一个 Worker 进程接走了，这台电脑的 Worker 已停下。请在设置的「这台电脑」里对它点「在本机设置」，再打开文件夹。",
-      local_setup_connection_in_use: "这个智能体的连接正被另一台电脑上的 Worker 使用，这台电脑没有接上它，也没有新建连接。等那个 Worker 停下（或它的租约过期）后，在设置的「这台电脑」里对它点「在本机设置」，再打开文件夹。",
+      runtime_credential_exists: "这个智能体的密钥正在另一台电脑（或另一个客户端）上使用，这台电脑还没有设置好。请在设置的「这台电脑」里对它点「在本机设置」，确认替换后再打开文件夹。什么都没有改。",
+      connection_rejected: "Rulith 不再接受这台电脑为这个智能体保存的密钥（可能在 Console 里换过或撤销了），这台电脑已为它停下。请在设置的「这台电脑」里对它点「在本机设置」，确认重新接上后再打开文件夹。什么都没有改。",
+      connection_missing: "这台电脑上为这个智能体保存的密钥不见了。请在设置的「这台电脑」里对它点「在本机设置」，确认重新接上后再打开文件夹。什么都没有改。",
+      worker_taken_over: "这个智能体在这台电脑上的工作被另一个进程接走了，这台电脑已为它停下。请在设置的「这台电脑」里对它点「在本机设置」，再打开文件夹。",
+      local_setup_connection_in_use: "这个智能体正在另一台电脑上工作，这台电脑没有接上它，也没有另建一份。等那台电脑停下（或它的占用过期）后，在设置的「这台电脑」里对它点「在本机设置」，再打开文件夹。",
     };
+    // Why the service refuses a folder (Gateway ProjectDirectory's fixed sentences), in plain words.
+    const FOLDER_WORDS = [
+      [/whole drive or share/i, "整个磁盘或共享不能作为项目打开，请选其中的一个文件夹。"],
+      [/filesystem root/i, "文件系统的根目录不能作为项目打开，请选一个文件夹。"],
+      [/contain a colon/i, "文件夹的名字里不能有冒号。"],
+      [/points back at this computer|administrative share/i, "这个网络路径指回这台电脑或管理共享，请用文件夹的普通路径，例如 D:\\folder。"],
+      [/backslash in this path/i, "这个路径里的反斜杠在 Windows 上会指向另一个文件夹，请选路径里没有反斜杠的文件夹。"],
+      [/starting with \/\//i, "以 // 开头的路径在 Windows 上是网络共享，请写成 \\\\server\\share\\folder。"],
+      [/device path/i, "设备路径不能作为项目打开，请用文件夹的普通路径，例如 D:\\folder。"],
+      [/name a server and a share/i, "网络路径要写出服务器名和共享名。"],
+      [/This computer runs Windows/i, "这台电脑是 Windows，请选 D:\\folder 这样的文件夹。"],
+      [/This computer is not Windows/i, "这台电脑不是 Windows，请选 /home/you/folder 这样的文件夹。"],
+    ];
     function refusalText(reply) {
       const code = reply && reply.errorCode;
       if (code && PROJECT_REFUSALS[code]) return PROJECT_REFUSALS[code];
-      const said = String((reply && reply.teaching) || "").trim();
+      const teaching = String((reply && reply.teaching) || "");
+      const folder = code === "bad_command" ? FOLDER_WORDS.find(([pattern]) => pattern.test(teaching)) : undefined;
+      const said = folder ? folder[1] : plain(teaching, "");
       if (code === "bad_command") return "这个文件夹不能作为项目打开" + (said ? "：" + said : "。");
       return "没有打开项目" + (said ? "：" + said : "。");
     }
@@ -931,7 +1185,7 @@ window.__ModuleLoader__.load({
     const AGAIN_WORDS = {
       mode_changed: "打开之后，这台电脑的档位又被改回去了（可能是在 Console 里改的）。重试不会替你再放宽；要继续，请再确认一次。",
       opened_elsewhere: "这个文件夹的打开不是在这台电脑上确认的。要在这台电脑上使用，请再确认一次。",
-      mode_refused: "把档位设为「非严格」多次没有成功。要继续，请再确认一次。",
+      mode_refused: "把档位设为「宽松」多次没有成功。要继续，请再确认一次。",
       revoked: "这个文件夹的项目授权已经收回。要再次授权，请再确认一次。",
     };
     const againText = (state) => AGAIN_WORDS[state] || "这次打开没有完成。要继续，请再确认一次。";
@@ -942,7 +1196,7 @@ window.__ModuleLoader__.load({
       if (v.state === "mode_refused") return step + "设置档位没有成功，正在重试…";
       if (v.stage === "configuration") return step + "正在记下项目文件夹和要用的工具…";
       if (v.stage === "program") return step + "正在等新的设置生效…";
-      if (v.stage === "mode") return step + "正在把这台电脑上新会话的档位设为「非严格」…";
+      if (v.stage === "mode") return step + "正在把这台电脑上新会话的档位设为「宽松」…";
       return "正在打开项目…";
     }
     // A fresh request id per confirmation, for opening a folder and for signing (the page is served from this computer, a
@@ -1084,7 +1338,7 @@ window.__ModuleLoader__.load({
         try { reply = await api("pick-folder", {}); } catch (error) { reply = { ok: false, teaching: errorText(error) }; }
         setPicking(false);
         if (reply.ok && reply.state === "chosen" && reply.path) choose(reply.path);
-        else if (!reply.ok || reply.state === "unavailable") { setManual(true); setNote(reply.teaching || "打不开选择文件夹的窗口：请手动输入路径。"); }
+        else if (!reply.ok || reply.state === "unavailable") { setManual(true); setNote(plain(reply.teaching, "打不开选择文件夹的窗口：请手动输入路径。")); }
       };
       const submit = () => { if (!disabled && path.trim()) choose(path.trim()); };
       return h("div", { "data-rulith-folder-chooser": "", style: { padding: "2px 6px 2px " + (18 + indent) + "px" } },
@@ -1111,7 +1365,7 @@ window.__ModuleLoader__.load({
         const id = typeof created === "string" ? created : pick(pick(created, "value"), "sessionId");
         const reply = await api("sessions/assign", { session: id, agentId: agent.agentId });
         services.ui.openSession(id);
-        return reply.ok ? "" : reply.teaching || "没有记下这个会话的智能体";
+        return reply.ok ? "" : plain(reply.teaching, "没有记下这个会话的智能体");
       };
     }
 
@@ -1127,7 +1381,7 @@ window.__ModuleLoader__.load({
     const UNSETTLED_KEY = "rulith.tree.unsettled";
     const loadUnsettled = () => { try { return JSON.parse(window.localStorage.getItem(UNSETTLED_KEY) || "{}") || {}; } catch { return {}; } };
     const saveUnsettled = (value) => { try { window.localStorage.setItem(UNSETTLED_KEY, JSON.stringify(value)); } catch {} };
-    const DELETION_WORDS = { closings_unconfirmed: (n) => (n ? n + " 个" : "有的") + "目标的结案还没有确认", goals_unread: () => "读不到它还开着的目标",
+    const DELETION_WORDS = { closings_unconfirmed: (n) => (n ? n + " 个" : "有的") + "任务的结案还没有确认", goals_unread: () => "读不到它还开着的任务",
       deleted_before_recording: () => "它是在开始记录删除结果之前删除的",
       // PSC 0.2.28 erratum: every closing is answered and the goals were read; only the finished record is missing (补完删除 records it).
       settlement_unrecorded: () => "删除已办完，还没记下" };
@@ -1263,7 +1517,7 @@ window.__ModuleLoader__.load({
           const title = s.blank ? "新会话" : (s.title && s.title.trim()) || "未命名会话";
           try {
             const preview = await api("conversation/end-preview", { session: s.id });
-            if (!preview.ok) { setNote(preview.teaching || "读不到这个会话的 Board"); return; }
+            if (!preview.ok) { setNote(plain(preview.teaching, "读不到这个会话的记录")); return; }
             if (preview.pendingCall) { setNote("这个会话还有一次没有结果的调用，先在 Console 处理它。"); return; }
             setDeleting({ id: s.id, title, agentName, found: preview.found !== false, goals: Array.isArray(preview.openGoals) ? preview.openGoals.length : 0 });
           } catch (error) { setNote(errorText(error)); }
@@ -1274,7 +1528,7 @@ window.__ModuleLoader__.load({
           setBusy("delete");
           try {
             const reply = await api("conversation/end", { session: id });
-            if (!reply.ok) { setNote(reply.teaching || "没有删除"); return; }
+            if (!reply.ok) { setNote(plain(reply.teaching, "没有删除")); return; }
             setDeleting(null);
             const outcome = deletionOutcome(reply);
             if (!outcome.settled) {
@@ -1282,7 +1536,7 @@ window.__ModuleLoader__.load({
               setNote("已删除，但还没有办完：" + outcome.reasons.join("；") + "。点这个会话的「补完删除」接着做。"); refreshTree(); return;
             }
             if (unsettled[id]) { const next = { ...unsettled }; delete next[id]; setUnsettled(next); saveUnsettled(next); }
-            if (outcome.refused) setNote("已删除。其中 " + outcome.refused + " 个目标没能结案，留在已结束的会话里，可在 Console 的任务记录里查到。");
+            if (outcome.refused) setNote("已删除。其中 " + outcome.refused + " 个任务没能结案，留在已结束的会话里，可在 Console 的任务记录里查到。");
             await archive(id);
             refreshTree();
           } catch (error) { setNote(errorText(error)); }
@@ -1353,7 +1607,7 @@ window.__ModuleLoader__.load({
             h("div", { style: { display: "flex", alignItems: "center", gap: 4, padding: "2px 6px 2px 18px", fontSize: 12.5, opacity: 0.9 } },
               h("button", { type: "button", style: { ...tiny, padding: 0, width: 14 }, onClick: () => toggle(key, !shut) }, shut ? "▸" : "▾"),
               h("span", { title: d.path, style: { flex: 1, minWidth: 0, wordBreak: "break-word" } },
-                "📁 " + (d.label || baseName(d.path)) + (d.source === null && !d.extra ? "（未绑定目录）" : "")),
+                "📁 " + (d.label || baseName(d.path)) + (d.source === null && !d.extra ? "（还不是项目）" : "")),
               h("span", { style: small }, d.sessions.length || ""),
               entry.agent.attached ? h("button", { type: "button", title: "在这个目录开新会话", disabled: !!busy, style: tiny,
                 onClick: () => newSession(entry.agent, d) }, "+") : null),
@@ -1393,7 +1647,7 @@ window.__ModuleLoader__.load({
           h("input", { value: filter, placeholder: "筛选智能体、目录或会话", onChange: (event) => setFilter(event.target.value),
             style: { margin: "2px 6px 8px", padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(127,127,127,.35)", background: "transparent", color: "inherit", font: "inherit", fontSize: 12 } }),
           !tree ? none("正在读取智能体…")
-            : !ready ? h("div", { style: { ...small, padding: "0 6px 8px" } }, tree.teaching || "读不到智能体：先在左下角的设置里登录 Rulith。") : null,
+            : !ready ? h("div", { style: { ...small, padding: "0 6px 8px" } }, plain(tree.teaching, "读不到智能体：先在左下角的设置里登录 Rulith。")) : null,
           view.agents.map(agentBlock),
           view.others.count ? h("div", { style: { marginTop: 6 }, "data-rulith-unowned": "" },
             h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", fontSize: 13, opacity: 0.8 } },
@@ -1408,11 +1662,11 @@ window.__ModuleLoader__.load({
               deleting.found
                 ? h("div", null,
                     h("div", null, "会话「" + deleting.title + "」" + (deleting.agentName ? "属于智能体 " + deleting.agentName : "") + "。删除后："),
-                    h("div", null, "· 它在 Rulith 上的 Board 封存，这个会话不能再继续；"),
-                    deleting.goals ? h("div", null, "· 还开着的 " + deleting.goals + " 个目标会以“放弃”结案；") : null,
+                    h("div", null, "· 它在 Rulith 上的记录封存，这个会话不能再继续；"),
+                    deleting.goals ? h("div", null, "· 还开着的 " + deleting.goals + " 个任务会以“放弃”结案；") : null,
                     h("div", null, "· 回执、证明、计费和历史记录都保留，可在 Console 查看。"),
                     h("div", { style: { marginTop: 6 } }, "这一步不能撤销。"))
-                : h("div", null, "会话「" + deleting.title + "」还没有用过 Rulith，云上没有它的 Board。删除只会在本机把它移出列表。"),
+                : h("div", null, "会话「" + deleting.title + "」还没有用过 Rulith，云上没有它的记录。删除只会在本机把它移出列表。"),
               h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 } },
                 h("button", { type: "button", style: button, disabled: !!busy, onClick: () => setDeleting(null) }, "取消"),
                 h("button", { type: "button", style: { ...button, borderColor: RED, color: RED }, disabled: !!busy, onClick: confirmDelete },
@@ -1464,7 +1718,7 @@ window.__ModuleLoader__.load({
         if (!working && (!view.show || put === view.account)) return null;
         const signIn = async () => {
           setBusy("signin"); setNotice("");
-          try { const reply = await signInFlow({ api }); if (reply.ok) setState(reply); else setNotice(reply.teaching || "没有登录成功。"); }
+          try { const reply = await signInFlow({ api }); if (reply.ok) setState(reply); else setNotice(plain(reply.teaching, "没有登录成功。")); }
           catch (error) { setNotice(errorText(error)); } finally { setBusy(""); }
         };
         const agents = tree && tree.ok && Array.isArray(tree.agents) ? tree.agents : [];
@@ -1506,7 +1760,7 @@ window.__ModuleLoader__.load({
         let body;
         if (view.current === "signin") body = h("div", null,
           h("div", null, "用你的 Rulith 账户登录这台电脑：会在浏览器里打开 Rulith，批准后回到这里。"),
-          state && state.teaching ? h("div", { style: small }, state.teaching) : null,
+          state && plain(state.teaching, "") ? h("div", { style: small }, plain(state.teaching, "")) : null,
           h("div", { style: { marginTop: 10 } }, h("button", { type: "button", style: primary, disabled: !!busy, onClick: signIn }, busy === "signin" ? "等待浏览器里批准…" : "登录 Rulith")));
         else if (view.current === "model") body = h("div", null,
           h("div", { style: { marginBottom: 4 } }, "选一个模型服务，填上模型 ID 和密钥。"),
@@ -1514,7 +1768,7 @@ window.__ModuleLoader__.load({
         else body = h("div", null,
           h("div", null, "选一个文件夹作为项目：智能体会在里面读写文件、运行命令。打开前会请你确认一次。"),
           !tree ? none("正在读取智能体…")
-            : !tree.ok ? alertLine(tree.teaching || "读不到智能体。")
+            : !tree.ok ? alertLine(plain(tree.teaching, "读不到智能体。"))
             : !agents.length ? alertLine("这个账户在这台电脑上没有可用的智能体：在 Console 里检查这台电脑的登录授权。")
             : named ? h("div", { style: { ...small, marginTop: 6 } }, "智能体：" + named.name + (named.isDefault ? "（默认）" : ""))
             : h("label", { style: { display: "block", marginTop: 6 } }, h("span", { style: small }, "智能体："),
@@ -1547,15 +1801,15 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState("");
       const [notice, setNotice] = useState("");
       if (!state) return none("正在读取…");
-      if (!state.ok) return alertLine(state.teaching || "读不到本机 Rulith。");
+      if (!state.ok) return alertLine(plain(state.teaching, "读不到本机 Rulith。"));
       const run = async (label, action) => {
         setBusy(label); setNotice("");
-        try { const reply = await action(); if (reply && reply.ok === false) setNotice(reply.teaching || "操作没有完成"); else if (reply && reply.ok) setState(reply); }
+        try { const reply = await action(); if (reply && reply.ok === false) setNotice(plain(reply.teaching, "操作没有完成"));  else if (reply && reply.ok) setState(reply); }
         catch (error) { setNotice(errorText(error)); } finally { setBusy(""); }
       };
       return h("div", { "data-rulith-settings-account": "" },
         pair("账户", state.signedIn ? state.account || "（未命名的账户）" : "未登录"),
-        !state.signedIn && state.teaching ? h("div", { style: small }, state.teaching) : null,
+        !state.signedIn && plain(state.teaching, "") ? h("div", { style: small }, plain(state.teaching, "")) : null,
         h("div", { style: { marginTop: 10 } }, state.signedIn
           ? h("button", { type: "button", style: button, disabled: !!busy, onClick: () => run("signout", () => api("signout", {})) }, busy === "signout" ? "正在退出…" : "退出登录")
           : h("button", { type: "button", style: primary, disabled: !!busy, onClick: () => run("signin", () => signInFlow({ api })) }, busy === "signin" ? "等待浏览器里批准…" : "登录 Rulith")),
@@ -1564,7 +1818,7 @@ window.__ModuleLoader__.load({
     function ComputerSection({ state, refresh }) {
       const setup = useSetupRun();
       if (!state) return none("正在读取…");
-      if (!state.ok) return alertLine(state.teaching || "读不到本机 Rulith。");
+      if (!state.ok) return alertLine(plain(state.teaching, "读不到本机 Rulith。"));
       if (!state.signedIn) return none("先在「账户」里登录 Rulith，才能在这台电脑上设置智能体。");
       const agents = Array.isArray(state.agents) ? state.agents : [];
       // Every click is the explicit setup: it checks this computer's Connection, and it may start a Worker that stopped
@@ -1655,13 +1909,79 @@ window.__ModuleLoader__.load({
     // badge. dsh draws its headline, badge and workspace chip itself; the line is the brand-mark slot's occupant, and the
     // rest of dsh's headline row and its workspace row are hidden (folders are chosen in the sidebar).
     const EMPTY_PAGE_CSS = 'span:has(> [data-slot="conversation.hero.brand.mark"]) + span,div:has(> [data-slot="conversation.hero.workspace"]){display:none!important}';
+    // Design §3.2 状态文字 (batch 5): dsh's running line shows DeepSeek's whale before its words (dsh-client-ui-chat
+    // RunningStatus: the status for screen readers, a divider, then the whale and the shimmering text); the whale is hidden
+    // and the words are the app's (TEXT below).
+    const RUNNING_CSS = '[data-chat-running]>span:last-child>span[aria-hidden="true"]:first-child{display:none!important}';
     function installEmptyPageStyle() {
       if (typeof document === "undefined" || !document.head || document.querySelector("style[data-rulith-empty-page]")) return () => {};
       const tag = document.createElement("style");
       tag.setAttribute("data-rulith-empty-page", "");
-      tag.textContent = EMPTY_PAGE_CSS;
+      tag.textContent = EMPTY_PAGE_CSS + RUNNING_CSS;
       document.head.appendChild(tag);
       return () => tag.remove();
+    }
+
+    // ---- The app's name and words in dsh's own surfaces (design §3.2 页面标题、状态文字、首次打开; batch 5).
+    // dsh's layout sets the tab title to "<conversation> — DeepSeek Harness" with the product name built in; the title is
+    // kept as Rulith's whenever it changes (the host serves the page with Rulith's title and icon, see web/brand.mjs).
+    const PRODUCT = "Rulith";
+    const brandedTitle = (title) => String(title || "").replace(/DeepSeek Harness/g, PRODUCT);
+    function installTitle() {
+      if (typeof document === "undefined") return () => {};
+      const keep = () => { const next = brandedTitle(document.title); if (next !== document.title) document.title = next; };
+      keep();
+      if (typeof MutationObserver === "undefined" || !document.head) return () => {};
+      const observer = new MutationObserver(keep);
+      observer.observe(document.head, { childList: true, subtree: true, characterData: true });
+      return () => observer.disconnect();
+    }
+    // dsh's own sentences the app replaces, by dsh namespace and key: the running status (深度求索中 → 正在处理…), the
+    // composer's placeholders (they advertised "/ 调用指令, @ 文件或对话": dsh's commands and cross-conversation @ are not the
+    // app's way, design §3.2 跨会话引用), the empty page's headline and preview badge, and two DeepSeek account messages.
+    // A dsh dictionary cannot be registered twice, so these live in the app's own namespace and the locale service looks
+    // there first for exactly these keys; every other key is dsh's, unchanged.
+    // 中文说明：dsh 的词典不能重复注册，所以改写的这几条放在应用自己的命名空间里，只对这几个键先查这里。
+    const TEXT_NS = "rulith-text";
+    const TEXT = {
+      zh: {
+        "chat:chat.deepDiving": "正在处理…",
+        "chat:chat.deepDivingFor": "正在处理，用时 {duration} ···",
+        "chat:message.failure.accountSignedOut": "任务已因退出登录而停止。",
+        "chat:message.failure.accountSignInRequired": "请先登录，并确认请求地址支持账号认证。",
+        "conversation:placeholder.default": "说出你要做的事",
+        "conversation:placeholder.hero": "",
+        "conversation:placeholder.workspace": "先在左侧开一个新会话",
+        "conversation:hero.headline": "",
+        "conversation:hero.preview": "",
+      },
+      en: {
+        "chat:chat.deepDiving": "Working…",
+        "chat:chat.deepDivingFor": "Working for {duration} ···",
+        "chat:message.failure.accountSignedOut": "Stopped because you signed out.",
+        "chat:message.failure.accountSignInRequired": "Sign in first, and make sure the request address supports account authentication.",
+        "conversation:placeholder.default": "Say what you want done",
+        "conversation:placeholder.hero": "",
+        "conversation:placeholder.workspace": "Start a conversation on the left first",
+        "conversation:hero.headline": "",
+        "conversation:hero.preview": "",
+      },
+    };
+    /** Route the keys of TEXT to the app's namespace in dsh's locale service; returns the undo. */
+    function installTextOverrides(locale) {
+      if (!locale || typeof locale.translate !== "function" || typeof locale.register !== "function" || locale.rulithText) return () => {};
+      const original = locale.translate;
+      const translate = function (ns, key, params) {
+        const ours = ns + ":" + key;
+        return Object.prototype.hasOwnProperty.call(TEXT.zh, ours) ? original.call(this, TEXT_NS, ours, params) : original.call(this, ns, key, params);
+      };
+      locale.translate = translate;
+      locale.rulithText = true;
+      let unregister = () => {};
+      // Registering a dictionary publishes the locale snapshot: what is on screen is drawn again with these words.
+      try { unregister = locale.register(TEXT_NS, TEXT); }
+      catch (error) { locale.translate = original; delete locale.rulithText; console.warn("Rulith: could not register the app's words", error); return () => {}; }
+      return () => { if (locale.translate === translate) locale.translate = original; delete locale.rulithText; unregister(); };
     }
     function makeEmptyLine(selection) {
       return function RulithEmptyLine() {
@@ -1670,8 +1990,10 @@ window.__ModuleLoader__.load({
       };
     }
 
-    const RulithArtwork = () => h("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28,
-      borderRadius: 7, background: "#2ea36b", color: "#fff", fontWeight: 800, fontSize: 16 } }, "R");
+    // Rulith's mark, the same as Console's icon and the app's tab icon (web/brand.mjs).
+    const RulithArtwork = () => h("svg", { viewBox: "0 0 32 32", width: 28, height: 28, "aria-hidden": "true", "data-rulith-mark": "", style: { flex: "none" } },
+      h("rect", { width: 32, height: 32, rx: 7, fill: "#172f2b" }),
+      h("path", { d: "M9 7h8c5 0 7 2 7 6 0 3-1 5-4 6l5 7h-6l-5-7h-1v7H9zm4 4v4h4c2 0 3-1 3-2s-1-2-3-2z", fill: "#d5f0df" }));
 
     // Own the shell, not just the inner brand slots: dsh's shell wraps them in startSession().
     function RulithSidebar({ collapsed, toggleSidebar, renderSlot }) {
@@ -1719,7 +2041,7 @@ window.__ModuleLoader__.load({
         header(_session, { query, quoted, drilled }) {
           if (!drilled || !query.includes("/")) return undefined;
           const parts = query.slice(0, query.lastIndexOf("/")).split("/").filter(Boolean);
-          return [{ label: "工作区", value: fileValue("工作区", quoted ? '@"' : "@", true) },
+          return [{ label: "项目", value: fileValue("项目", quoted ? '@"' : "@", true) },
             ...parts.map((label, i) => ({ label, value: fileValue(label, fileMention(parts.slice(0, i + 1).join("/"), true, quoted), true),
               ...(i === parts.length - 1 ? { current: true } : {}) }))];
         },
@@ -1772,6 +2094,12 @@ window.__ModuleLoader__.load({
         shared[name] = inner[name];
         inner.effect(() => () => { if (shared[name] === inner[name]) shared[name] = undefined; });
       });
+      // The app's words in dsh's surfaces, and Rulith's name in the tab title (batch 5).
+      ctx.inject(["locale"], (inner) => { inner.effect(() => installTextOverrides(inner.locale)); });
+      ctx.effect(() => installTitle());
+      // Rulith's three tools in the conversation: one plain line each, with 「查看依据」 (design §3.2 工具调用行).
+      for (const tool of RULITH_TOOLS)
+        ctx.slots.inject("tool.call.toolview", () => ctx.slots.register({ name: "tool.call.toolview", key: tool }, RulithToolRow));
       // Historical children remain ordinary transcript views, with no way to restart delegation.
       ctx.slots.inject("conversation.composer", () => ctx.slots.register({ name: "conversation.composer", priority: -10,
         select: (owner) => owner.session?.origin === "subagent" || owner.session?.subagent ? {} : null },
@@ -1857,6 +2185,22 @@ window.__ModuleLoader__.load({
       AdvancedSection, SettingsPage, RulithSettings, RulithSettingsEntry, RulithComposerControls, RulithColumn, RulithSessionColumn, SignDialog };
     exports.SETTINGS_SECTIONS = SETTINGS_SECTIONS;
     exports.EMPTY_PAGE_CSS = EMPTY_PAGE_CSS;
+    exports.RUNNING_CSS = RUNNING_CSS;
+    exports.TEXT = TEXT;
+    exports.installTextOverrides = installTextOverrides;
+    exports.brandedTitle = brandedTitle;
+    exports.toolCallLine = toolCallLine;
+    exports.rulithAnswer = rulithAnswer;
+    exports.RulithToolRow = RulithToolRow;
+    exports.RULITH_TOOLS = RULITH_TOOLS;
+    exports.plain = plain;
+    exports.SIGN_REASONS = SIGN_REASONS;
+    exports.TIER = TIER;
+    exports.MODE_WORDS = MODE_WORDS;
+    exports.MODE_HINTS = MODE_HINTS;
+    exports.WIDEN_TEXT = WIDEN_TEXT;
+    exports.TIER_REFUSALS = TIER_REFUSALS;
+    exports.REVIEW_REFUSALS = REVIEW_REFUSALS;
     exports.inject = ["slots", "sidebarRightTabs", "sidebarRight"];
     return module.exports;
   }

@@ -130,7 +130,7 @@ test('the wizard\'s step ③ sets the Agent up with its steps shown, opens the c
   // The tools used are listed in view, in plain words, with the capability; only their ids and versions are under 详细.
   const folded = find(dialog, (node) => node.tag === 'details');
   assert.ok(folded, 'tool versions are folded under 详细');
-  assert.match(text(dialog), /所用工具读文件、运行命令。来自这个智能体已装的官方编程能力「engineering_work」。档位/);
+  assert.match(text(dialog), /所用工具读文件、运行命令。来自这个智能体已装的官方编程能力。档位/);
   assert.match(text(folded), /eng\.read@2、eng\.run@2/);
   assert.doesNotMatch(text(dialog).replace(text(folded), ''), /eng\.|@\d/, 'no id or version outside 详细');
   // The setup ran first, as one operation, and its steps were shown.
@@ -152,18 +152,19 @@ test('setup progress: the steps in the order they run, under the owner\'s words,
   const view = (states, extra = {}) => ({ ok: true, requestId: 'setup-0001', state: 'running',
     steps: ['instance', 'pair', 'kit', 'worker', 'reload', 'ready'].map((name, i) => ({ name, state: states[i], reason: 'r-' + name, ...(extra[name] || {}) })) });
   assert.deepEqual(plain(plugin.setupSteps(view(['done', 'running', 'pending', 'pending', 'pending', 'pending']))).map((row) => [row.label, row.state]),
-    [['连接', 'running'], ['安装编程工具', 'pending'], ['开启这台电脑', 'pending'], ['重新载入', 'pending'], ['完成', 'pending']]);
+    [['接上 Rulith', 'running'], ['安装编程工具', 'pending'], ['开启这台电脑', 'pending'], ['重新载入', 'pending'], ['完成', 'pending']]);
   assert.deepEqual(plain(plugin.setupSteps(view(['done', 'done', 'done', 'done', 'done', 'done']))).map((row) => row.state), ['done', 'done', 'done', 'done', 'done']);
   const failed = plain(plugin.setupSteps(view(['done', 'done', 'done', 'failed', 'pending', 'pending'],
     { worker: { reason: 'The Worker could not start.' } })));
+  // A reason the page has no words for is never hidden: the manager's own reason is shown.
   assert.deepEqual(failed[2], { label: '开启这台电脑', state: 'failed', reason: 'The Worker could not start.' });
-  // A refusal the page knows is said in plain words; others keep the manager's own reason.
+  // A refusal the page knows is said in plain words.
   assert.match(plain(plugin.setupSteps(view(['done', 'failed', 'pending', 'pending', 'pending', 'pending'],
-    { pair: { errorCode: 'connection_rejected' } })))[0].reason, /拒绝了这台电脑的连接凭据/);
+    { pair: { errorCode: 'connection_rejected' } })))[0].reason, /不再接受这台电脑为这个智能体保存的密钥/);
   // PSC 0.2.27 ②: a Connection in use by a Worker elsewhere is refused and nothing is created; the words say what to wait for.
   assert.match(plain(plugin.setupSteps(view(['done', 'failed', 'pending', 'pending', 'pending', 'pending'],
     { pair: { errorCode: 'local_setup_connection_in_use', reason: 'That Connection is in use by a Worker on another computer.' } })))[0].reason,
-  /正被另一台电脑上的 Worker 使用.*没有新建连接.*再点「在本机设置」/);
+  /正在另一台电脑上工作.*没有另建一份.*再点「在本机设置」/);
   // runSetup follows one setup to its end and reports every step list it read.
   const answers = [view(['running', 'pending', 'pending', 'pending', 'pending', 'pending']),
     { ...view(['done', 'done', 'failed', 'pending', 'pending', 'pending'], { kit: { reason: 'The general kit could not be installed.' } }), state: 'failed' }];
@@ -178,7 +179,7 @@ test('setup progress: the steps in the order they run, under the owner\'s words,
   assert.match(text(shown), /「安装编程工具」没有完成：The general kit could not be installed\./);
   assert.doesNotMatch(text(shown), /已在这台电脑上设置好/);
   const ok = mount(plugin.components.SetupSteps, { run: { agentId: 'a1', settled: true, ok: true, view: { ...view(Array(6).fill('done')), state: 'done' } } }).render();
-  assert.match(text(ok), /✓ 连接→ ✓ 安装编程工具→ ✓ 开启这台电脑→ ✓ 重新载入→ ✓ 完成/);
+  assert.match(text(ok), /✓ 接上 Rulith→ ✓ 安装编程工具→ ✓ 开启这台电脑→ ✓ 重新载入→ ✓ 完成/);
   assert.match(text(ok), /不需要重启/);
   // A refused start (signed out) is said in plain words.
   const refused = plain(await plugin.runSetup({ api: async () => ({ ok: false, errorCode: 'not_signed_in', teaching: 'Sign in first.' }), agentId: 'a1', wait: async () => {} }));
@@ -216,7 +217,7 @@ test('the tree: 默认 marks only the account\'s default Agent (never guessed), 
   shown = m.render();
   assert.deepEqual(plain(page.posted('setup').map((r) => r.body)), [{ agentId: 'a3' }]);
   const progress = page.expand(find(find(shown, (node) => node.props['data-rulith-agent'] === 'a3'), (node) => node.tag === plugin.components.SetupSteps));
-  assert.match(text(progress), /「连接」没有完成：That Connection is in use by a Worker on another computer\./);
+  assert.match(text(progress), /「接上 Rulith」没有完成：That Connection is in use by a Worker on another computer\./);
   assert.doesNotMatch(text(shown), /重启|重新接上|新建连接/);
   // Attached Agents end with the folder chooser.
   assert.ok(find(find(shown, (node) => node.props['data-rulith-agent'] === 'a1'), (node) => node.tag === plugin.components.FolderChooser));
@@ -240,11 +241,11 @@ test('setup asks before replacing an Agent token another computer holds, and onl
   assert.equal(asked.code, 'runtime_credential_exists');
   assert.match(asked.lines.join(''), /另一台电脑（或另一个客户端）上使用/);
   assert.match(asked.lines.join(''), /另一台电脑上的）会停止工作/, 'the other computer\'s client stops working');
-  assert.match(asked.lines.join(''), /那台电脑的连接不会被接走/);
+  assert.match(asked.lines.join(''), /那台电脑的接入不会被接走/);
   assert.match(asked.lines.join(''), /不授予任何文件夹或工具的权限/);
   const reconnect = plain(plugin.replaceConfirmation({ settled: true, ok: false, view: failed('connection_missing') }));
   assert.match(reconnect.title, /重新接上这台电脑/);
-  assert.match(reconnect.lines.join(''), /同时替换这个智能体的 Agent token.*停止工作/);
+  assert.match(reconnect.lines.join(''), /同时替换这个智能体的密钥.*停止工作/);
   for (const run of [{ settled: true, ok: false, view: failed('local_setup_connection_in_use') }, { settled: false, ok: false, view: failed('runtime_credential_exists') },
     { settled: true, ok: true, view: done }, null]) assert.equal(plugin.replaceConfirmation(run), null);
   // In the tree: 「在本机设置」 stops at 连接 with the reason and the question; nothing is replaced yet.
@@ -256,9 +257,9 @@ test('setup asks before replacing an Agent token another computer holds, and onl
   await find(m.render(), (node) => node.props['data-rulith-setup-agent'] === 'a3').props.onClick();
   const steps = () => page.expand(find(find(m.render(), (node) => node.props['data-rulith-agent'] === 'a3'), (node) => node.tag === plugin.components.SetupSteps));
   let shown = steps();
-  assert.match(text(shown), /「连接」没有完成：这个智能体的 Agent token 正在别处使用/);
+  assert.match(text(shown), /「接上 Rulith」没有完成：这个智能体的密钥正在别处使用/);
   const asking = find(shown, (node) => node.props['data-rulith-replace-token'] === 'runtime_credential_exists');
-  assert.match(text(asking), /替换这个智能体的 Agent token？/);
+  assert.match(text(asking), /替换这个智能体的密钥？/);
   assert.deepEqual(plain(page.posted('setup').map((r) => r.body)), [{ agentId: 'a3' }]);
   // 「不替换」 puts the question away and sends nothing.
   const declined = page.mount(plugin.components.SetupSteps, find(find(m.render(), (node) => node.props['data-rulith-agent'] === 'a3'),
@@ -268,7 +269,7 @@ test('setup asks before replacing an Agent token another computer holds, and onl
   assert.equal(page.posted('setup').length, 1);
   // Confirmed: the setup runs again with the replacement, and finishes.
   shown = steps();
-  await button(shown, '替换 Agent token 并继续设置').props.onClick();
+  await button(shown, '替换密钥并继续设置').props.onClick();
   await flush();
   assert.deepEqual(plain(page.posted('setup').map((r) => r.body)), [{ agentId: 'a3' }, { agentId: 'a3', replaceAgentToken: true }]);
   m.cells[0] = tree;   // the tree as before (this stand-in answers the tree's refresh with nothing)

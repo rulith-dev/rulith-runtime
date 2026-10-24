@@ -43,14 +43,16 @@ test('model-visible text speaks of goals: no Case, OpenCase, CloseCase or case_i
   assert.match(persona, /A goal the Board certifies ends as completed by itself; end a goal you will not pursue with end_goal and a reason\./);
 });
 
-// D-1016a: the approved acceptance-contract addendum tail is pinned below.
+// D-1016a: the approved acceptance-contract addendum tail is pinned below. Batch 5 (2026-10-25, owner-approved, listed in
+// docs/model-visible-changes-batch5.md): the spec's fields with one example, that writing a file creates no missing parent
+// folder, and no "in Console" for signing.
 test('the addendum names the native web tools; both variants share the approved acceptance-contract tail', () => {
   const web = 'Web results leave nothing on the Board: when one is evidence for a result, record it on the Board with its URL as the source.';
   const headless = `Your tools are Rulith's three and the read-only tools web_search and web_fetch. ${web}`;
   assert.ok(ADDENDUM.startsWith(`${headless} Writing, running commands and measuring are Actions`));
   assert.equal(WEB_ADDENDUM, ADDENDUM, 'web has no delegation addendum');
   assert.equal(createHash('sha256').update(ADDENDUM.slice(headless.length)).digest('hex'),
-    'b6d5a863a4d99139e1140968ca38fbde72059d416a6802e7addc19d783c3116b');
+    '01b8edc3fb96888bf25a063e69c11f9cc946ad87de04408f03dccf07297e182d');
   const inventory = read('harness/model-visible.md');
   assert.ok(inventory.includes(ADDENDUM));
   assert.ok(inventory.includes(WEB_ADDENDUM));
@@ -67,5 +69,21 @@ test('goal guidance declares an outcome without a generic test-to-completion rul
   assert.match(ADDENDUM, /desired eng\.check_passed\(key\), copying key from that check's eng\.check_spec receipt \(where the receipt has no key, desired eng\.check_passed\(check, spec_digest\)\)/);
   assert.match(ADDENDUM, /do not write a rule for the goal's outcome/);
   assert.match(ADDENDUM, /A check whose files you change needs a new spec and a new signature/);
+});
+
+test('batch 5: the acceptance spec is taught by its exact fields and one example that is itself a valid spec', () => {
+  const example = /a spec has exactly command, cwd, files \(each test file's sha256\) and optional shell, such as (\{.*?\}\}); /.exec(ADDENDUM);
+  // The kit creates no missing folder (it refuses with "parent directory missing"); the addendum says so, truthfully.
+  assert.match(ADDENDUM, /\}\}; eng\.write_file does not create missing parent folders, so create them first with eng\.run\. Call eng\.acceptance/);
+  assert.doesNotMatch(ADDENDUM, /creates? (a new file and )?any missing parent folders/);
+  assert.ok(example, 'one spec example');
+  const spec = JSON.parse(example[1]);
+  assert.deepEqual(Object.keys(spec), ['command', 'cwd', 'files']);
+  assert.ok(Array.isArray(spec.command) && spec.command.every((word) => typeof word === 'string'));
+  assert.deepEqual(Object.keys(spec.files), [spec.command[1]], 'the file the command runs is pinned');
+  assert.doesNotMatch(ADDENDUM, /signature in Console/);
+  const persona = read('harness/runtime-persona.txt');
+  assert.match(persona, /Answer greetings and general questions directly\. Reply in the language the user writes in, even when tool results are in English\. /);
+  assert.ok(read('harness/model-visible.md').includes(persona.split(/\r?\n/)[0]));
 });
 

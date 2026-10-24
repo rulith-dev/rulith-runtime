@@ -96,7 +96,7 @@ export function projectRoutes({ manager: call, platform = process.platform, file
   // A manager without these routes (Runtime 0.17.2 and earlier) answers 404 without a code: say what to do about it.
   const manager = (route, body) => call(route, body).catch((error) => {
     if (error?.status === 404 && !error.errorCode && route.startsWith('/manager/projects/'))
-      throw refused('runtime_unsupported', '这台电脑上的 Rulith Runtime 版本太旧，还不能打开项目：请更新 Deep Rulith 后再试。');
+      throw refused('runtime_unsupported', '这台电脑上的 Rulith Runtime 版本太旧，还不能打开项目：请更新 Rulith 应用后再试。');
     throw error;
   });
   const request = async (body) => {

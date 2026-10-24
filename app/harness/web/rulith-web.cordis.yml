@@ -26,6 +26,10 @@
   disabled: true
 - id: ui-settings-shell
   disabled: true
+# Batch 5 (design §3.2 页面标题: no DeepSeek remnant): dsh's session-log upload preference ("帮助改进 DeepSeek 模型与产品")
+# and its toast; the upload itself (session-log-deepseek) is off below.
+- id: ui-settings-session-log
+  disabled: true
 - id: ui-settings-agent-loop
   disabled: true
 - id: ui-settings-web-search

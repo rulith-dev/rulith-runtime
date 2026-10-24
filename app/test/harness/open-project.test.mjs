@@ -151,23 +151,26 @@ test('the confirmation lists in view the folder, the Agent on this computer, wha
   assert.equal(row('文件夹'), 'D:\\Work\\game');
   assert.match(row('可以做的事'), /读文件.*写文件.*运行命令/);
   assert.match(row('请注意'), /不是操作系统级的隔离/);
-  assert.match(row('怎么收回'), /Console 里解除这个项目的锁定/);
+  assert.match(row('怎么收回'), /Console 这个智能体页面上这个项目的一行里收回授权/);
   assert.match(row('怎么收回'), /停用这台电脑的登录/);
   assert.doesNotMatch(shown.rows.flat().join('\n'), /eng\.|@\d|1\.0\.0/, 'tool ids and versions stay folded');
   // The tools, in plain words, each once, with the capability they come from (by its name, without its version).
   const words = row('所用工具').split('。')[0].split('、');
   assert.deepEqual(words, ['运行验收检查', '按补丁修改文件', '按名称找文件', '查看后台命令', '在后台运行命令', '停止后台命令', '列出文件', '修改文件',
     '读文件', '读图片', '运行命令', '搜索文件内容', '运行测试', '查看文件夹的改动', '写文件'], 'one entry per tool, in the order the service lists them');
-  assert.match(row('所用工具'), /来自这个智能体已装的官方编程能力「engineering_work」。$/);
-  assert.deepEqual(shown.details.map(([name]) => name), ['账户', '工具与版本']);
+  assert.match(row('所用工具'), /来自这个智能体已装的官方编程能力。$/);
+  // Batch 5 (design §2): the capability's id and the Connection's name are internal words, so they are under 详细.
+  assert.deepEqual(shown.details.map(([name]) => name), ['账户', '工具与版本', '本机连接']);
+  assert.equal(detail('本机连接'), 'Workspace');
   assert.equal(detail('账户'), 'acct-1', 'without a name the account shows by its id');
   assert.equal(plain(client.projectConfirmation(notOpen(undefined, { accountName: 'Owner' }))).details.find(([name]) => name === '账户')[1], 'Owner');
-  assert.equal(row('智能体'), 'Default agent · 这台电脑 OWNER-PC（本机连接「Workspace」）');
+  assert.equal(row('智能体'), 'Default agent · 这台电脑 OWNER-PC');
   for (const tool of TOOLS) assert.ok(detail('工具与版本').includes(tool.id), tool.id);
   assert.match(detail('工具与版本'), /engineering_work 1\.0\.0/);
-  assert.match(row('档位'), /非严格/);
-  assert.match(row('档位'), /命令和参数不再需要事先有依据/);
-  assert.match(row('档位'), /只由你签字的验收合同认定/);
+  assert.match(row('档位'), /默认用「宽松」档/);
+  assert.match(row('档位'), /命令和参数不需要事先有依据/);
+  assert.match(row('档位'), /只由你签字的验收标准认定/);
+  assert.doesNotMatch(shown.rows.flat().join('\n'), /engineering_work|本机连接|非严格/, 'no internal word in view');
   assert.match(shown.footer, /已有的会话不受影响/);
   assert.doesNotMatch(text, /Board|Action|程序|program|治理|Release|Source|摘要|digest/i, 'no internal terms');
   // The server's list is the truth: other tools, another folder, another computer show as they are.
@@ -176,7 +179,7 @@ test('the confirmation lists in view the folder, the Agent on this computer, wha
     computer: { label: '' }, capability: undefined })));
   assert.equal(other.rows.find(([name]) => name === '所用工具')[1], 'eng.new_tool、读文件。');
   assert.equal(other.details.find(([name]) => name === '工具与版本')[1], 'eng.new_tool@1、eng.read@1、eng.read@2。');
-  assert.equal(other.rows.find(([name]) => name === '智能体')[1], 'Default agent · 这台电脑 未命名的电脑（本机连接「Workspace」）');
+  assert.equal(other.rows.find(([name]) => name === '智能体')[1], 'Default agent · 这台电脑 未命名的电脑');
   // Nothing to confirm when the answer is incomplete or the mode cannot be explained.
   for (const broken of [notOpen('', {}), notOpen(undefined, { tools: [] }), notOpen(undefined, { authorizationVersion: '' }),
     notOpen(undefined, { computer: undefined }), notOpen(undefined, { accountId: '' }), notOpen(undefined, { accountId: undefined })])
@@ -221,7 +224,7 @@ test('flow: confirm, open with a fresh request id and the confirmed version, fol
   assert.deepEqual(sent, [state, ['projects/open', open], state, ['projects/open', open], state, state]);
   assert.ok(f.progress.some((text) => text.includes('第 1 步') && text.includes('调用没有结束')));
   assert.ok(f.progress.some((text) => text.includes('第 2 步')));
-  assert.ok(f.progress.some((text) => text.includes('第 3 步') && text.includes('非严格')));
+  assert.ok(f.progress.some((text) => text.includes('第 3 步') && text.includes('宽松')));
   assert.ok(f.waits.every((ms) => ms > 0 && ms <= 2000), 'short pauses only');
 });
 
@@ -325,7 +328,7 @@ test('flow: at most three confirmations, three failed calls in a row, three chan
   s = scripted([{ ok: true, ...notOpen() }, lost(), lost(), lost(), lost()]);
   f = flowUi();
   result = plain(await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: f.ui, newRequestId: ids() }));
-  assert.deepEqual(result, { outcome: 'refused', text: '没有打开项目：fetch failed' });
+  assert.deepEqual(result, { outcome: 'refused', text: '没有打开项目：fetch failed' }, 'the reason is never hidden');
   assert.deepEqual(routesOf(s), ['state', 'open', 'state', 'state', 'state'], 'three retries, all state reads, then it stops');
   assert.deepEqual(f.waits, [1000, 1000, 1000]);
   const changed = (v) => [{ ok: false, errorCode: 'authorization_changed', teaching: 'changed' }, { ok: true, ...notOpen(undefined, { authorizationVersion: v }) }];
@@ -342,7 +345,7 @@ test('flow: at most three confirmations, three failed calls in a row, three chan
 test('flow: refusals read in plain Chinese and are not retried', async () => {
   const cases = {
     not_authorized: /没有被授权使用这个智能体/, account_changed: /账户和刚才显示的不一样/,
-    connection_not_of_this_device: /不是这台电脑设置的/, client_authority_refused: /只能由服务端决定/,
+    connection_not_of_this_device: /不是这台电脑自己设置的/, client_authority_refused: /只能由服务端决定/,
     device_revoked: /重新登录/, official_capability_not_installed: /没有装官方编程能力/,
     project_directory_in_use: /另一项授权占用/, project_nested: /重叠/, platform_mismatch: /写法/,
     worker_tools_unavailable: /这台电脑还没有报告要用的工具/, not_signed_in: /没有登录 Rulith/, manager_signing_out: /正在退出/, manager_closing: /正在关闭/,
@@ -358,12 +361,12 @@ test('flow: refusals read in plain Chinese and are not retried', async () => {
   let s = scripted([{ ok: false, errorCode: 'folder_invalid', teaching: '这台电脑上没有这个文件夹：D:\\x' }]);
   assert.equal((await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: flowUi().ui, newRequestId: ids() })).text,
     '没有打开项目：这台电脑上没有这个文件夹：D:\\x');
-  assert.match(client.refusalText({ errorCode: 'bad_command', teaching: 'A whole drive cannot be opened as a project.' }), /^这个文件夹不能作为项目打开：A whole drive/);
+  assert.match(client.refusalText({ errorCode: 'bad_command', teaching: 'A whole drive or share cannot be opened as a project; choose a folder in it.' }), /^这个文件夹不能作为项目打开：整个磁盘或共享不能作为项目打开，请选其中的一个文件夹。$/);
   // The setup before opening stopped where only the owner can decide (SYS-LOCAL-01): the words point to the place that asks.
   for (const code of ['runtime_credential_exists', 'connection_rejected', 'connection_missing'])
     assert.match(client.refusalText({ errorCode: code, teaching: 'English reason' }), /「这台电脑」里对它点「在本机设置」，确认.*后再打开文件夹/, code);
   assert.match(client.refusalText({ errorCode: 'worker_taken_over' }), /接走了.*「在本机设置」/);
-  assert.match(client.refusalText({ errorCode: 'local_setup_connection_in_use', teaching: 'English reason' }), /另一台电脑上的 Worker 使用.*没有新建连接/);
+  assert.match(client.refusalText({ errorCode: 'local_setup_connection_in_use', teaching: 'English reason' }), /正在另一台电脑上工作.*没有另建一份/);
   // The mode cannot be explained: no dialog, nothing opened.
   s = scripted([{ ok: true, ...notOpen(undefined, { mode: { requested: 'unknown_mode' } }) }]);
   const f = flowUi();

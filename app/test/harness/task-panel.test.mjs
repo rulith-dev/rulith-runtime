@@ -10,6 +10,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
 import { loadPage, nodes, text, plain, flush } from './browser-page.mjs';
+// PSC 0.2.29 (D-1025a) fixes the local client's signing texts verbatim: every assertion below reads them from one table.
+import * as PSC from './psc-0.2.29-text.mjs';
 import { TOOLS } from '../../harness/rulith-mcp.mjs';
 import { apply, consoleGoalsUrl, consoleRuntimeUrl, conversationView } from '../../harness/web/rulith-runtime.mjs';
 
@@ -52,7 +54,11 @@ test('the 任务 panel before a Board, while reading, unreadable and before setu
   assert.deepEqual(only({ board: null }), ['正在读取…', true]);
   assert.deepEqual(only({ board: { ok: true, available: true, view: null }, conversation: null }), ['正在读取…', true]);
   assert.deepEqual(only({ board: { ok: true, available: false } }), ['还没有接入 Rulith：先登录，再在左侧为智能体「在本机设置」。', true]);
-  assert.deepEqual(only({ board: { ok: false, teaching: 'Choose an Agent first' } }), ['Choose an Agent first', true]);
+  // The host's words, in Chinese, are shown as they are; an English sentence gives way to the panel's own (batch 5).
+  assert.deepEqual(only({ board: { ok: false, teaching: '这个会话的智能体还没有在这台电脑上设置好：先在左侧为它「在本机设置」。' } }),
+    ['这个会话的智能体还没有在这台电脑上设置好：先在左侧为它「在本机设置」。', true]);
+  assert.deepEqual(only({ board: { ok: false, teaching: 'Choose an Agent first' } }), ['读不到 Rulith：Choose an Agent first', true],
+    'a reason the page has no words for is shown after the page\'s own sentence, never hidden');
   // A conversation whose Board exists but whose results this process has not seen yet shows what its state says.
   const m = panel(page, { board: { ok: true, available: true, view: null }, conversation: state([]) });
   assert.match(text(m.render()), /任务这个会话的下一个结果到来后，这里显示它的任务。/);
@@ -76,7 +82,7 @@ test('running: the task in plain words, its criteria and whether each holds, pla
   const shown = m.render();
   assert.equal(find(shown, attr('data-rulith-awaiting-signature')), undefined, 'nothing to sign: no card at the top');
   const tasks = nodes(shown).filter(attr('data-rulith-task')).map(text);
-  assert.deepEqual(tasks, ['写 fizzbuzz.py进行中', '（没有名字的任务）已暂停', '统计单词已完成'], 'open tasks first; never a node id');
+  assert.deepEqual(tasks, ['写 fizzbuzz.py进行中', '（没有名字的任务）已暂停', '统计单词已完成（验收通过）'], 'open tasks first; never a node id');
   const criteria = nodes(shown).filter(attr('data-rulith-criterion')).map(text);
   assert.equal(criteria.length, 2);
   assert.match(criteria[0], /^unittest 在 fizzbuzz\.py 上通过成立 · 已签字eng\.check_passed\(key: game:unit:sha256:abababab…\)$/);
@@ -126,15 +132,15 @@ test('awaiting signature: the criteria card goes to the top, with each leaf, its
 test('signable:false and a shortened list: the reason in Chinese and no button; unknown criteria are never claimed absent', () => {
   const page = loadPage();
   const card = (entry) => find(panel(page, { conversation: state(awaiting(entry)) }).render(), attr('data-rulith-awaiting-signature', 'goal-7'));
-  for (const [refusal, words] of [['goal_paused', '这个目标已暂停'], ['criterion_unsupported', '其中有一条不能作为验收标准'], ['unknown_goal', '找不到这个目标'], ['something_new', '原因未知，请稍后再试']]) {
+  for (const [refusal, words] of [...Object.entries(PSC.SIGN_REASONS), ['something_new', PSC.SIGNING.unknownReason]]) {
     const shown = card({ signable: false, refusal, leaves: LEAVES.map((leaf) => ({ ...leaf, eligible: false })) });
     assert.equal(find(shown, attr('data-rulith-sign')), undefined, refusal);
     assert.equal(find(shown, attr('data-rulith-leaf-ineligible')), undefined, 'the reason is the goal\'s, not each leaf\'s');
-    assert.equal(text(find(shown, attr('data-rulith-sign-unavailable'))), '这些标准现在不能签：' + words + '。');
+    assert.equal(text(find(shown, attr('data-rulith-sign-unavailable'))), PSC.SIGNING.unavailablePrefix + words + '。');
   }
   const truncated = card({ leavesTruncated: true });
   assert.equal(find(truncated, attr('data-rulith-sign')), undefined, 'a shortened list would replace leaves this page never saw');
-  assert.equal(text(find(truncated, attr('data-rulith-sign-unavailable'))), '这个目标的标准太多，这里只列出一部分；请在 Console 里签字。');
+  assert.equal(text(find(truncated, attr('data-rulith-sign-unavailable'))), PSC.SIGNING.truncated);
   // Not one leaf can be signed: nothing waits for the person here, so no card (its row says why).
   assert.equal(card({ leaves: [{ ...LEAVES[0], eligible: false }] }), undefined);
   // awaitingSignature: null — the service cannot tell now.
@@ -295,8 +301,8 @@ test('ACC-LOCAL-11 signing in the client: only the dialog\'s 签字 signs; the s
   const box = find(asked, attr('data-rulith-sign-dialog', 'goal-7'));
   assert.equal(box.props.role, 'dialog');
   assert.match(text(box), /^写 fizzbuzz\.py/);
-  assert.ok(text(box).includes('你要把这些标准签为这个目标的验收。它们由智能体提出；签下之后，智能体不能再结束或修改它们，只有在当前状态下每一条都成立，这个目标才算完成。这是你以自己账户做出的决定。'));
-  assert.deepEqual(nodes(box).filter((node) => node.tag === 'button').map(text), ['先不签', '签字']);
+  assert.ok(text(box).includes(PSC.SIGNING.body));
+  assert.deepEqual(nodes(box).filter((node) => node.tag === 'button').map(text), [PSC.SIGNING.cancel, PSC.SIGNING.accept]);
   assert.equal(nodes(box).filter((node) => node.tag === 'button').some((node) => node.props.autoFocus), false, 'nothing is focused to sign on Enter');
   find(box, attr('data-rulith-sign-cancel')).props.onClick();
   assert.equal(plugin.signView.getSnapshot(), null);
@@ -319,7 +325,7 @@ test('ACC-LOCAL-11 signing in the client: only the dialog\'s 签字 signs; the s
   assert.deepEqual(plain(sent), [0, 1].map(() => ({ session: 's1', goal: 'goal-7', leaves: ['leaf-a', 'leaf-b'], requestId: sent[0].requestId })),
     'every eligible leaf in the proposal\'s order, the signed one included; never an ineligible one');
   const note = find(m.render(), attr('data-rulith-sign-note'));
-  assert.equal(text(note), '已签字。');
+  assert.equal(text(note), PSC.SIGNING.signed);
   assert.equal(note.props['data-rulith-sign-note'], 'signed');
   assert.ok(page.requests.some((request) => request.method === 'GET' && request.url === '/rulith/api/conversation?session=s1'),
     'the conversation is read again afterwards');
@@ -344,22 +350,19 @@ test('ACC-LOCAL-11 sign outcomes: each refusal code in words, pending and lost a
     return { outcome: plain(outcome), sent, waits, reports };
   };
   // The Kernel's refusal is a complete control with accepted:false; nothing was signed.
-  for (const [code, reason] of [['unknown_goal', '找不到这个目标'], ['goal_ended', '这个目标已经结束'], ['goal_paused', '这个目标已暂停'],
-    ['contract_fixed', '这个目标的验收由能力合同规定，不用签字'], ['leaf_not_proposed', '这些标准已经变了，请看最新的再签'],
-    ['criterion_unsupported', '其中有一条不能作为验收标准'], ['goal_pending_obligations', '这个目标还有没办完的事，稍后再签'],
-    ['bad_command', '原因未知，请稍后再试'], ['constructor', '原因未知，请稍后再试']]) {
+  for (const [code, reason] of [...Object.entries(PSC.SIGN_REASONS), ['bad_command', PSC.SIGNING.unknownReason], ['constructor', PSC.SIGNING.unknownReason]]) {
     const { outcome, sent } = await flow([{ ok: true, state: 'complete', result: { accepted: false, errorCode: code, teaching: 'x' } }]);
-    assert.deepEqual(outcome, { state: 'refused', errorCode: code, text: '没有签下任何标准：' + reason + '。', answered: true }, code);
+    assert.deepEqual(outcome, { state: 'refused', errorCode: code, text: PSC.SIGNING.refusedPrefix + reason + '。', answered: true }, code);
     assert.equal(sent.length, 1, 'a refusal is not retried');
   }
   // A refusal of the request itself (4xx with its code) and a complete control without a result are refusals too.
   for (const reply of [{ ok: false, errorCode: 'request_conflict', teaching: 'x' }, { ok: false, errorCode: 'conversation_ended' },
     { ok: false, teaching: 'Invalid session id.' }, { ok: true, state: 'complete' }])
-    assert.equal((await flow([reply])).outcome.text, '没有签下任何标准：原因未知，请稍后再试。');
+    assert.equal((await flow([reply])).outcome.text, PSC.SIGNING.refusedPrefix + PSC.SIGNING.unknownReason + '。');
   // 202, a 503 or a lost answer (signature_unconfirmed) and a network failure: pending, sent again with the same id.
   const retried = await flow([{ ok: true, state: 'pending' }, { ok: false, errorCode: 'signature_unconfirmed' }, new TypeError('Failed to fetch'),
     { ok: true, state: 'complete', result: { accepted: true } }]);
-  assert.deepEqual(retried.outcome, { state: 'signed', text: '已签字。', answered: true });
+  assert.deepEqual(retried.outcome, { state: 'signed', text: PSC.SIGNING.signed, answered: true });
   assert.deepEqual(retried.sent.map((row) => row.body.requestId), ['req-0001', 'req-0001', 'req-0001', 'req-0001']);
   assert.deepEqual(retried.sent.map((row) => row.route), Array(4).fill('conversation/sign-acceptance'));
   assert.deepEqual(retried.reports, ['pending', 'pending', 'pending']);
@@ -378,17 +381,16 @@ test('ACC-LOCAL-11 sign outcomes: each refusal code in words, pending and lost a
   }
   // The Kernel's answer is definite even then.
   assert.deepEqual((await flow([{ ok: true, state: 'pending' }, { ok: true, state: 'complete', result: { accepted: false, errorCode: 'goal_ended' } }])).outcome,
-    { state: 'refused', errorCode: 'goal_ended', text: '没有签下任何标准：这个目标已经结束。', answered: true });
+    { state: 'refused', errorCode: 'goal_ended', text: PSC.SIGNING.refusedPrefix + PSC.SIGN_REASONS.goal_ended + '。', answered: true });
   // Still unconfirmed after the last try: it says so, never that nothing was signed.
   const exhausted = await flow([{ ok: true, state: 'pending' }, { ok: true, state: 'pending' }, new Error('offline')], 3);
   assert.deepEqual(exhausted.outcome, { state: 'pending', text: SIGN.pending });
-  assert.equal(SIGN.pending, '签字结果还没有确认，稍后会自动刷新。');
+  assert.equal(SIGN.pending, PSC.SIGNING.pending);
   assert.equal(exhausted.sent.length, 3);
   assert.deepEqual(plain(plugin.signOutcome(null)), { state: 'pending', text: SIGN.pending });
-  // The texts are the approved ones.
-  assert.deepEqual(plain(SIGN), { title: '待你签字的验收标准', button: '签下这些标准',
-    body: '你要把这些标准签为这个目标的验收。它们由智能体提出；签下之后，智能体不能再结束或修改它们，只有在当前状态下每一条都成立，这个目标才算完成。这是你以自己账户做出的决定。',
-    accept: '签字', cancel: '先不签', signed: '已签字。', pending: '签字结果还没有确认，稍后会自动刷新。', unreadable: '暂时读不到待签字的标准' });
+  // The texts are exactly the ones PSC 0.2.29 fixes, every one of them.
+  assert.deepEqual(plain(SIGN), PSC.SIGNING);
+  assert.deepEqual(plain(plugin.SIGN_REASONS), PSC.SIGN_REASONS);
 });
 
 test('ACC-LOCAL-11 a refused or unconfirmed signature in the panel says so, and the panel signs one goal at a time', async () => {
@@ -400,7 +402,7 @@ test('ACC-LOCAL-11 a refused or unconfirmed signature in the panel says so, and 
   find(page.mount(page.plugin.components.SignDialog).render(), attr('data-rulith-sign-confirm')).props.onClick();
   await until(() => m.cells[NOTE]?.state === 'refused');
   let note = find(m.render(), attr('data-rulith-sign-note'));
-  assert.equal(text(note), '没有签下任何标准：这些标准已经变了，请看最新的再签。');
+  assert.equal(text(note), PSC.SIGNING.refusedPrefix + PSC.SIGN_REASONS.leaf_not_proposed + '。');
   assert.equal(note.props.role, 'alert');
   // Unconfirmed every time: the button waits while it retries, and the note says the outcome is not confirmed.
   m.cells[1] = state(awaiting());
@@ -409,12 +411,12 @@ test('ACC-LOCAL-11 a refused or unconfirmed signature in the panel says so, and 
   await until(() => m.cells[BUSY] === 'goal-7');
   const busy = find(m.render(), attr('data-rulith-sign', 'goal-7'));
   assert.equal(busy.props.disabled, true);
-  assert.equal(text(busy), '正在签字…');
+  assert.equal(text(busy), PSC.SIGNING.signing);
   busy.props.onClick();
   assert.equal(page.plugin.signView.getSnapshot(), null, 'no second confirmation while one is being signed');
   await until(() => m.cells[BUSY] === '' && m.cells[NOTE]?.state === 'pending', 2000);
   note = find(m.render(), attr('data-rulith-sign-note'));
-  assert.equal(text(note), '签字结果还没有确认，稍后会自动刷新。');
+  assert.equal(text(note), PSC.SIGNING.pending);
   const unconfirmedId = signRequests(page)[1].body.requestId;
   assert.equal(new Set(signRequests(page).slice(1).map((request) => request.body.requestId)).size, 1);
   assert.equal(signRequests(page).length, 1 + 5);
@@ -604,7 +606,7 @@ test('ACC-LOCAL-11 host: the sign route forwards exactly the confirmation and co
   for (const wrong of [{ requestId: 'other-request' }, { agentId: 'agent-2' }, { operation: { kind: 'SignAcceptance', goal: 'goal-7', leaves: ['leaf-a'] } },
     { operation: { kind: 'SetExplorationMode', mode: 'strict' } }, { operation: undefined }]) {
     answer = (body) => [200, record(body, wrong)];
-    assert.deepEqual(await f.post(signBody), { ok: false, teaching: 'The answer does not confirm this signature.', errorCode: 'signature_unconfirmed' }, JSON.stringify(wrong));
+    assert.deepEqual(await f.post(signBody), { ok: false, teaching: '收到的回答不能确认这次签字。', errorCode: 'signature_unconfirmed' }, JSON.stringify(wrong));
   }
   // The manager's refusal keeps its code; its "no definite answer" stays unconfirmed.
   answer = () => [400, { ok: false, errorCode: 'request_conflict', teaching: 'This request id was used for another operation.' }];

@@ -35,7 +35,7 @@ test('both model lines and their documentation keep the exact project wording', 
   assert.equal(projectLine('D:/Work/rulith-java', { name: 'rulith-java', directory: 'D:\\Work\\rulith-java' }),
     'This conversation\'s project is Source "rulith-java" (D:\\Work\\rulith-java). Use source "rulith-java" for project files unless the user names another approved project.');
   assert.equal(projectLine('D:/Work/other', null),
-    'This workspace (D:/Work/other) is not an approved Rulith project; project file Actions cannot reach it until the owner opens it as a project in Deep Rulith (Agents with the official engineering capability) or adds it in Console (other Agents).');
+    'This workspace (D:/Work/other) is not an approved Rulith project; project file Actions cannot reach it until the owner opens it as a project in the Rulith app (Agents with the official engineering capability) or adds it in Console (other Agents).');
   const doc = fs.readFileSync(new URL('../../harness/model-visible.md', import.meta.url), 'utf8');
   assert.ok(doc.includes(projectLine('<directory>', { name: '<name>', directory: '<directory>' })));
   assert.ok(doc.includes(projectLine('<directory>', null)));

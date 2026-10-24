@@ -42,7 +42,7 @@ const readJson = (file) => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (error) {
     if (error?.code === 'ENOENT') return null;
-    throw new Error('Rulith\'s model settings could not be read.');
+    throw new Error('读不到 Rulith 的模型设置。');
   }
 };
 const text = (value) => (typeof value === 'string' ? value : '');
@@ -98,9 +98,8 @@ export function conversationModel({ home, modelHome }, agentId) {
     && rows.some((row) => !row.signedOutAt && row.origin === account.origin && row.accountId === account.accountId);
   if (here) return { account, model: effectiveModel({ home, modelHome }, account, agentId) };
   const name = text(rows.find((row) => text(row.agentName))?.agentName) || agentId;
-  return { account, refusal: `This conversation belongs to Agent ${name}, which is not set up on this computer under the Rulith`
-    + ' account signed in now (for example after switching accounts). Nothing was sent: its turns use only its own Agent\'s'
-    + ' model in its own account. Sign in to that account, or set the Agent up on this computer, and send again.' };
+  return { account, refusal: `这个会话属于智能体「${name}」，它没有以现在登录的账户在这台电脑上设置（例如换了账户之后）。`
+    + '什么都没有发出：这个会话只用它自己的智能体在它自己账户里的模型。请登录那个账户，或在这台电脑上设置这个智能体，再发一次。' };
 }
 
 /**
@@ -357,8 +356,7 @@ export function installLiveModels(ctx, { routeFor, createAdapter = createRouteAd
       let current = turns.get(agent);
       if (current?.turn !== payload?.turn) current = await begin(agent, payload?.turn);
       if (current === undefined) {
-        throw new Error('No model is set for this conversation\'s Agent in the signed-in Rulith account.'
-          + ' Set one in Rulith\'s model settings; it is used from the next turn.');
+        throw new Error('现在登录的账户还没有为这个会话的智能体设置模型：在设置的「模型」里设置，从下一轮起生效。');
       }
       if (current.refusal !== undefined) throw new Error(current.refusal);
       // The route has no reasoning levels, as before; an effort carried over from another route is dropped.
@@ -444,24 +442,24 @@ export function modelRoutes({ manager, read, defaultsElsewhere = false }) {
     save: async (body = {}) => {
       const state = await manager('/manager/state');
       const device = state.device ?? {};
-      if (device.state !== 'linked') throw Object.assign(new Error('Sign in to a Rulith account on this computer first.'), { errorCode: 'not_signed_in' });
+      if (device.state !== 'linked') throw Object.assign(new Error('这台电脑还没有登录 Rulith：先在设置的「账户」里登录。'), { errorCode: 'not_signed_in' });
       if (body.expectedOrigin !== device.origin || body.expectedAccountId !== String(device.account?.id ?? '')) {
-        throw Object.assign(new Error('The signed-in account changed. Open the model settings again before saving.'), { errorCode: 'account_changed' });
+        throw Object.assign(new Error('登录的账户刚才变了：请重新打开模型设置再保存。'), { errorCode: 'account_changed' });
       }
       const values = Object.fromEntries(fields.filter((name) => body[name] !== undefined).map((name) => [name, body[name]]));
       const guard = { expectedOrigin: body.expectedOrigin, expectedAccountId: body.expectedAccountId };
       const agentId = body.agentId === undefined ? '' : String(body.agentId);
       if (agentId) {
-        if (!(device.agents ?? []).some((agent) => agent.id === agentId)) throw new Error('Choose an Agent of the signed-in account.');
+        if (!(device.agents ?? []).some((agent) => agent.id === agentId)) throw new Error('请选一个现在登录的账户里的智能体。');
         const instance = (state.instances ?? []).find((row) => row.agentId === agentId && row.mode === 'local_agent' && !row.signedOutAt);
-        if (!instance) throw Object.assign(new Error('Set this Agent up on this computer before giving it its own model.'), { errorCode: 'agent_not_set_up' });
-        if (!['default', 'override'].includes(body.source)) throw new Error('Choose the account default or this Agent\'s own model.');
+        if (!instance) throw Object.assign(new Error('先在这台电脑上设置好这个智能体，再给它单独设模型。'), { errorCode: 'agent_not_set_up' });
+        if (!['default', 'override'].includes(body.source)) throw new Error('请选择用账户的模型，还是这个智能体自己的模型。');
         await manager('/manager/instances/model', body.source === 'override'
           ? { instanceId: instance.id, source: 'custom', ...guard, ...values }
           : { instanceId: instance.id, source: 'default', ...guard });
       } else {
         // A launcher reading another home's defaults (`modelHome`) would not see a default saved here.
-        if (defaultsElsewhere) throw Object.assign(new Error('This app reads the account default model from another Rulith home (modelHome). Change it there.'), { errorCode: 'model_defaults_elsewhere' });
+        if (defaultsElsewhere) throw Object.assign(new Error('这个应用读的是另一个 Rulith 目录里的账户模型设置（modelHome），请到那里修改。'), { errorCode: 'model_defaults_elsewhere' });
         await manager('/manager/model/default', { ...guard, ...values });
       }
       const { account, model } = await read(agentId || undefined);
