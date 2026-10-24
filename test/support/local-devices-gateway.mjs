@@ -73,6 +73,8 @@ export function createDevicesGateway({
   const conversationModes = new Map()
   const conversationReview = new Map()
   const conversationEnded = new Set()
+  /** Signing confirmations by request id (batch 4): the same id again is the same confirmation. */
+  const signatures = new Map()
   const conversationRow = (key) => ({ boardId: 'board-' + sha256(String(key)).slice(0, 12), createdAt: '2026-10-17T00:00:00Z', lastActivityAt: null,
     postCallReview: conversationReview.get(key) ?? true, explorationModes: { 'conn-1': conversationModes.get(key) ?? 'strict' } })
   /**
@@ -318,6 +320,25 @@ export function createDevicesGateway({
       conversationEnded.add(body.conversationKey)
       return { agentId: body.agentId, found: true, boardId: conversationRow(body.conversationKey).boardId, ended: true,
         endedAt: '2026-10-17T00:00:00Z', closedGoals: ['case-1'], unconfirmedGoals: [] }
+    },
+    // Batch 4 (D-1024a): signing one goal's proposed criteria; the answer is Console's control record. `goal-pending`
+    // answers 202 the first time its request id is seen and completes when the same id comes again; the Kernel refuses
+    // `goal-ended` (200, complete, accepted false with its code); `goal-conflict` is a refusal of the request itself.
+    'POST /local-devices/conversations/sign-acceptance': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'conversationKey', 'goal', 'leaves', 'requestId'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'not_authorized')
+      if (body.goal === 'goal-conflict') refuse(409, 'This request id was used for another operation.', 'request_conflict')
+      const record = { controlId: 'control-' + body.requestId, accountId, requestId: body.requestId, agentId: body.agentId,
+        boardId: conversationRow(body.conversationKey).boardId, createdAt: '2026-10-24T00:00:00Z',
+        operation: { kind: 'SignAcceptance', goal: body.goal, leaves: body.leaves } }
+      if (body.goal === 'goal-pending' && !signatures.has(body.requestId)) {
+        signatures.set(body.requestId, 'pending')
+        return new Answer(202, { ...record, state: 'pending', teaching: 'The signature is being recorded; send the same request again.' })
+      }
+      signatures.set(body.requestId, 'complete')
+      return { ...record, state: 'complete', result: body.goal === 'goal-ended'
+        ? { accepted: false, errorCode: 'goal_ended', teaching: 'This goal has ended.' } : { accepted: true } }
     },
     // PSC 0.2.24: opening a project. The client names only the Agent, Connection, folder, platform and (to open) the
     // version of the confirmation the owner saw; the capability, tools, digests and mode are the server's.

@@ -31,6 +31,9 @@ import { writeJsonAtomic } from './manager-registry.mjs'
 
 const DEVICE_FORMAT = 'rulith-local-device/1'
 const MAX_RESPONSE_BYTES = 262_144
+// A conversation's state carries the criteria awaiting signature (batch 4): the Gateway bounds them to 20 goals of 64 leaves
+// each, which can pass the general cap; this cap stays bounded.
+const CONVERSATION_STATE_BYTES = 1_048_576
 const REQUEST_TIMEOUT_MS = 15_000
 const digest = (value) => createHash('sha256').update(value).digest('hex')
 const text = (value) => (typeof value === 'string' ? value : '')
@@ -100,7 +103,7 @@ export class DeviceRecordUnreadableError extends Error {
  * query string, no redirects — a 30x to another origin would re-send a Bearer credential
  * to a host the operator never configured — and a hard cap on how much will be read.
  */
-async function call(origin, path, { body, bearer, method, terminalState = false } = {}) {
+async function call(origin, path, { body, bearer, method, terminalState = false, maxBytes = MAX_RESPONSE_BYTES } = {}) {
   const response = await fetch(setupOrigin(origin) + path, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
     redirect: 'error',
@@ -118,7 +121,7 @@ async function call(origin, path, { body, bearer, method, terminalState = false 
   if (response.body !== null) {
     for await (const chunk of response.body) {
       size += chunk.length
-      if (size > MAX_RESPONSE_BYTES) throw new Error('The account service answered with more data than this step accepts.')
+      if (size > maxBytes) throw new Error('The account service answered with more data than this step accepts.')
       chunks.push(chunk)
     }
   }
@@ -250,10 +253,10 @@ export function createDeviceClient({ root } = {}) {
     }
     throw error
   }
-  const conversationCall = (path, body) => {
+  const conversationCall = (path, body, { maxBytes } = {}) => {
     const current = linked()
     if (!current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
-    return call(current.origin, path, { bearer: current.token, body }).catch(operationRefusal)
+    return call(current.origin, path, { bearer: current.token, body, ...(maxBytes ? { maxBytes } : {}) }).catch(operationRefusal)
   }
   /**
    * Opening a project (PSC 0.2.24 SYS-LOCAL-01): the one device operation that changes tool and Source authorization.
@@ -545,9 +548,22 @@ export function createDeviceClient({ root } = {}) {
      * or post-call review through this device grant. The conversation names itself by its key (the Gateway keeps only its
      * digest); the Agent must be one of this grant's. Nothing else of the manager's state is involved.
      */
-    conversationState: (body = {}) => conversationCall('/local-devices/conversations/state', body),
+    conversationState: (body = {}) => conversationCall('/local-devices/conversations/state', body, { maxBytes: CONVERSATION_STATE_BYTES }),
     conversationExplorationMode: (body = {}) => conversationCall('/local-devices/conversations/exploration-mode', body),
     conversationReview: (body = {}) => conversationCall('/local-devices/conversations/review', body),
+    /**
+     * Batch 4 (design §5 d, D-1024a; PSC 0.2.28): the person signs the criteria the Agent proposed for one goal of the
+     * conversation, from their own client, after confirming them there. The Gateway answers with Console's control record:
+     * 200 `complete` (the Kernel's `result`, `accepted` true or false with its code), 202 `pending` (send the same
+     * request id again), or a 4xx refusal of the request with its code. A request with no definite answer — the network
+     * failed after it may have been sent, or the service answered 5xx — may have signed: it is `signature_unconfirmed`,
+     * never a refusal, so the client says the outcome is not confirmed yet and resends the same request id.
+     */
+    conversationSignAcceptance: (body = {}) => conversationCall('/local-devices/conversations/sign-acceptance', body).catch((error) => {
+      if (error instanceof DeviceRefused && error.status < 500) throw error
+      throw Object.assign(new Error('The account service did not confirm whether these criteria were signed.'),
+        { errorCode: 'signature_unconfirmed' })
+    }),
     // PSC 0.2.21: what deleting a conversation would do, and deleting it (seal its Board, close its open goals as abandoned).
     conversationEndPreview: (body = {}) => conversationCall('/local-devices/conversations/end-preview', body),
     conversationEnd: (body = {}) => conversationCall('/local-devices/conversations/end', body),

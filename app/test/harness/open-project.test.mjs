@@ -9,7 +9,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
-import { localFolder, projectPlatform, projectRoutes, projectTarget, projectView, sourceAttention, PROJECT_SOURCE }
+import { localFolder, projectPlatform, projectRoutes, projectTarget, projectView, PROJECT_SOURCE }
   from '../../harness/web/open-project.mjs';
 
 const TOOLS = ['eng.acceptance@2', 'eng.apply_patch@2', 'eng.glob@1', 'eng.job_poll@2', 'eng.job_start@2', 'eng.job_stop@2',
@@ -121,15 +121,9 @@ test('host routes forward exactly the Gateway contract through the manager and r
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('Source attention: an official project Source is opened from the sidebar, every other Source stays Console\'s', () => {
+test('the official capability names its project Sources project and project-<8 hex>', () => {
   for (const name of ['project', 'project-0a1b2c3d']) assert.ok(PROJECT_SOURCE.test(name));
   for (const name of ['projects', 'project-0A1B2C3D', 'project-0a1b2c3', 'lab', 'my-project']) assert.ok(!PROJECT_SOURCE.test(name));
-  assert.deepEqual(sourceAttention({ name: 'project', state: 'needs_binding' }, 'https://console/x'),
-    { text: '还没有打开项目文件夹：在左侧智能体下点「打开文件夹…」', source: 'project' });
-  assert.equal(sourceAttention({ name: 'project-0a1b2c3d', state: 'needs_relock' }, 'https://console/x').url, undefined);
-  assert.deepEqual(sourceAttention({ name: 'lab', state: 'needs_binding' }, 'https://console/x'),
-    { text: 'Source lab 未就绪（needs_binding）', url: 'https://console/x', source: 'lab' });
-  assert.equal(sourceAttention({ name: 'project', state: 'publication_pending' }, 'u').url, 'u');
 });
 
 // ---- The page half (client.js), loaded as dsh's module loader would.

@@ -1,8 +1,8 @@
 {
   "schema": "rulith-psc-conformance-map/v1",
   "repository": "runtime",
-  "contractVersion": "0.2.27",
-  "contractReviewedCommit": "1ba1d4b22d20be5d71d9dc79d495f3806b99c5d3",
+  "contractVersion": "0.2.28",
+  "contractReviewedCommit": "ab7656f4bba40cf5c715515fc19ff4a5b5638f36",
   "blockers": {
     "contract_changed": "The PSC row changed after this Runtime mapping was made against 0.2.4; its tests must be re-checked against the current clauses before the item can be mapped again (D-1018a reconciliation, 2026-10-18).",
     "evidence_review": "Clause-wide Runtime evidence has not been independently reviewed; existing green tests alone do not establish complete coverage.",
@@ -88,6 +88,23 @@
         {"file": "app/test/harness/local-setup.test.mjs", "locator": "the model in force is the signed-in account"},
         {"file": "app/test/harness/local-setup.test.mjs", "locator": "installed dsh: after a model change or an account switch, step compaction measures and summarizes on the new turn"},
         {"file": "app/test/harness/local-setup.test.mjs", "locator": "the host routes a conversation by the Agent recorded for it, attached or not, and refuses it under another account"}
+      ]
+    },
+    "ACC-LOCAL-11": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "running: the task in plain words, its criteria and whether each holds, plain operations, and this computer online"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "awaiting signature: the criteria card goes to the top"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "a failed state read never claims no Board or nothing to sign"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "an operation that waits for a person: one sentence and 去 Console 处理"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "a call waiting for a person shows after a restart too"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "operation lines are plain one-liners: never a tool id, a state code or a reason code"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 signing in the client: only the dialog"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 sign outcomes: each refusal code in words"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 a refused or unconfirmed signature in the panel says so"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 an unconfirmed signature is kept until a state read shows it settled"},
+        {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 host: the sign route forwards exactly the confirmation"},
+        {"file": "test/local-manager.test.mjs", "locator": "ACC-LOCAL-11 the signed-in client signs one goal"}
       ]
     }
   }

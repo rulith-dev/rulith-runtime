@@ -109,6 +109,17 @@ export class BoardChannel {
     this.queue = Promise.resolve(); this.blocks = new Map(); this.pending = new Map(); this.closed = false;
     this.operation = null; this.operationWaiters = []; this.stop = new AbortController();
     this.latestBoard = null;
+    this.recentOperations = [];
+  }
+  /**
+   * The 任务 panel's 最近操作: every operation this conversation's results showed in their strip, each at its latest state,
+   * newest first, at most 12. The strip itself lists only what still needs attention (agent-interaction-spec §5.2), so an
+   * operation leaves it once its result is confirmed; the panel keeps it here, in this process only.
+   */
+  noteOperations(entries) {
+    const byKey = new Map(this.recentOperations.map((entry) => [keyOf(entry), entry]));
+    for (const entry of entries) if (entry && typeof entry === 'object' && !Array.isArray(entry) && mainEntry(entry)) byKey.set(keyOf(entry), entry);
+    this.recentOperations = [...byKey.values()].sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? ''))).slice(0, 12);
   }
   acquireOperation(signal) {
     if (this.closed) return Promise.reject(new Error('MCP connection closed'));
@@ -139,6 +150,7 @@ export class BoardChannel {
   async request(tool, args) {
     const result = await this.invoke(tool, args);
     const answer = decodeBoardResult(result);
+    if (Array.isArray(answer?.operations)) this.noteOperations(answer.operations);
     if (answer?.view) this.latestBoard = { view: answer.view, operations: answer.operations ?? [], seenAt: new Date().toISOString() };
     for (const entry of answer?.operations ?? []) {
       if (!mainEntry(entry)) continue;

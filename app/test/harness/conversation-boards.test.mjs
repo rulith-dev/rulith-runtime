@@ -486,7 +486,9 @@ test('Board endpoint reads only the requested session cache, including children 
   assert.equal(parent.view.goals.directory[0].label, 'parent');
   assert.deepEqual(parent.operations, [{ label: 'fixture operation', state: 'done' }]);
   assert.ok(Number.isFinite(Date.parse(parent.seenAt)));
-  assert.deepEqual(Object.keys(parent).sort(), ['ok', 'available', 'agentName', 'view', 'operations', 'seenAt'].sort());
+  // `recent`: every operation this conversation's results showed (the 任务 panel's 最近操作), kept by its channel.
+  assert.deepEqual(parent.recent, [{ label: 'fixture operation', state: 'done' }]);
+  assert.deepEqual(Object.keys(parent).sort(), ['ok', 'available', 'agentName', 'view', 'operations', 'seenAt', 'recent'].sort());
   assert.deepEqual(await panel('?session=child'), parent);
   const other = await panel('?session=fork');
   assert.equal(other.view.goals.directory[0].label, 'fork');

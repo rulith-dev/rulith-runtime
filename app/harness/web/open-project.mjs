@@ -13,18 +13,6 @@ const refused = (code, text) => Object.assign(new Error(text), { errorCode: code
 /** The official engineering capability names a project's Source `project`, then `project-<8 hex>` per further folder. */
 export const PROJECT_SOURCE = /^project(-[0-9a-f]{8})?$/;
 
-/**
- * The panel's "needs attention" row for a Source that is not ready. A project Source of the official capability is pointed
- * at a folder, and authorized again after a withdrawal, by opening the folder from the sidebar (PSC 0.2.24); any other
- * Source is still Console's, at `consoleUrl`.
- */
-export function sourceAttention(source, consoleUrl) {
-  if (PROJECT_SOURCE.test(String(source?.name ?? '')) && (source.state === 'needs_binding' || source.state === 'needs_relock'))
-    return { text: source.state === 'needs_binding' ? '还没有打开项目文件夹：在左侧智能体下点「打开文件夹…」'
-      : `项目 ${source.name} 的授权已收回：在左侧智能体下重新打开它的文件夹，即可再次授权`, source: source.name };
-  return { text: `Source ${source?.name} 未就绪（${source?.state}）`, url: consoleUrl, source: source?.name };
-}
-
 /** The platform the Gateway checks a folder against: Windows paths or POSIX paths. */
 export const projectPlatform = (platform = process.platform) => (platform === 'win32' ? 'windows' : 'posix');
 

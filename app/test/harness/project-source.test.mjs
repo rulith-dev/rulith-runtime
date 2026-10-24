@@ -150,78 +150,12 @@ test('Source reader reuses the existing Worker channel and projects only binding
   assert.deepEqual(await readSourceBindings(env, async () => ({ ok: true, json: async () => ({ sources: [] }) })), []);
 });
 
-test('Board panel renders cached goals and acceptance attention with an on-demand workbench link', async () => {
-  let plugin, column, columnProps;
-  const requests = [], opened = [];
-  const win = { location: { replace: url => opened.push(url) }, close() {} };
-  const cwd = work + '/rulith-java';
-  let values, index;
-  const React = { createElement: (tag, props, ...children) => typeof tag === 'function' ? tag(props) : ({ tag, props, children }),
-    useState: (initial) => [index < values.length ? values[index++] : initial, () => {}], useEffect() {}, useCallback: (fn) => fn,
-    useSyncExternalStore: (_subscribe, snapshot) => snapshot() };
-  vm.runInNewContext(fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8'), {
-    window: { open: () => win, __ModuleLoader__: { load: ({ factory }) => { plugin = factory(() => React); } } }, setTimeout() {},
-    fetch: async (url, init) => { requests.push({ url, init }); return { json: async () => ({ ok: true, url: 'http://workbench.fixture/' }) }; },
-  });
-  plugin.apply({ effect() {}, inject() {}, sidebarRight: { mounted: { subscribe() {}, getSnapshot: () => 'java-conversation' } },
-    slots: { inject(_name, fn) { if (fn.constructor.name !== 'GeneratorFunction') fn(); },
-      register(opts, component) { if (opts.name === 'sidebar.right.pane.tab') { column = component; columnProps = opts.inject(); } } } });
-  const seenAt = '2026-10-13T08:09:10.000Z';
-  const boardData = { ok: true, available: true, view: {}, operations: [{ label: 'cached operation', state: 'done' }], seenAt };
-  const render = (workspace, data = boardData, health = null) => {
-    index = 0;
-    values = [{ ok: true, workspace, project: { name: 'rulith-java' } },
-      data, { ok: true, available: true, state: 'online' }, health];
-    return column({ ...columnProps, useSessions: (selector) => selector({ byId: { 'java-conversation': { cwd } } }) });
-  };
-  const workerBlock = render(cwd).children.find((node) => node?.children?.[0]?.children?.[0]?.children?.[0] === '本机执行（Worker）');
-  assert.equal(workerBlock.children[0].children[1].children[0], 'rulith-java');
-  const stale = render(work + '/strixllama').children.find((node) => node?.children?.[0]?.children?.[0]?.children?.[0] === '本机执行（Worker）');
-  assert.equal(stale.children[0].children[1], null);
-  const texts = (node) => typeof node === 'string' ? [node] : (node?.children ?? []).flat(Infinity).flatMap(texts);
-  const received = texts(render(cwd));
-  assert.ok(received.includes('cached operation'));
-  assert.ok(received.includes('最近收到 Board：' + new Date(seenAt).toLocaleString()));
-  assert.deepEqual(texts(render(cwd, { ok: true, available: true })), ['还没有 Board 视图。']);
-  assert.deepEqual(texts(render(cwd, { ok: true, available: true, agentName: 'fixture', liveConversations: 2 })),
-    ['还没有 Board 视图。']);
-  const attention = render(cwd, { ...boardData, view: { goals: { directory: [
-    { goal: 'root', label: '完成请求', status: 'running', awaiting: 'acceptance' },
-    { goal: 'other', label: '等决定的请求', status: 'running', awaiting: 'decision' },
-    { goal: 'unnamed', status: 'running', awaiting: 'acceptance' },
-  ] } } });
-  // Without a consoleUrl the row says it can only open the local workbench.
-  const local = '（未设置 consoleUrl：这里只能打开本机 Rulith）';
-  assert.ok(texts(attention).includes('验收待签字／待确认：完成请求 — 在 Console 的目标页签字或验收' + local));
-  assert.ok(texts(attention).includes('验收待签字／待确认：unnamed — 在 Console 的目标页签字或验收' + local));
-  assert.ok(!texts(attention).some(text => text.startsWith('验收待签字／待确认：等决定')));
-  assert.equal(requests.length, 0, 'rendering acceptance never requests a key or another Board view');
-  const nodes = node => typeof node !== 'object' || node === null ? [] : [node, ...(node.children ?? []).flat(Infinity).flatMap(nodes)];
-  const link = nodes(attention).find(node => node.tag === 'button' && node.children[0] === '打开本机 Rulith');
-  await link.props.onClick();
-  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/rulith/api/workbench');
-  assert.equal(requests[0].init.method, 'POST'); assert.deepEqual(opened, ['http://workbench.fixture/']);
-  assert.equal(win.opener, null);
-  assert.ok(!texts(render(cwd)).some(text => text.startsWith('验收待签字／待确认：')), 'a later view clears stale attention');
-  // With a consoleUrl the row links to the Agent's cases in Console, where the person signs; no workbench button.
-  const goalsUrl = 'https://console.fixture/console/#/cases?agentId=agent-1';
-  const signed = render(cwd, { ...boardData, view: { goals: { directory: [{ goal: 'root', label: '完成请求', awaiting: 'acceptance' }] } } },
-    { ok: true, available: true, items: [], goalsUrl });
-  assert.ok(texts(signed).includes('验收待签字／待确认：完成请求 — 在 Console 的目标页签字或验收'));
-  const anchor = nodes(signed).find(node => node.tag === 'a');
-  assert.equal(anchor.props.href, goalsUrl); assert.equal(anchor.children[0], '在 Console 处理');
-  assert.ok(!nodes(signed).some(node => node.tag === 'button' && node.children[0] === '打开本机 Rulith'));
-  const unsafe = render(cwd, { ...boardData, view: { goals: { directory: [{ goal: 'root', awaiting: 'acceptance' }] } } },
-    { ok: true, available: true, items: [], goalsUrl: 'javascript:alert(1)' });
-  assert.ok(!nodes(unsafe).some(node => node.tag === 'a'), 'only an http(s) Console address becomes a link');
-});
-
 test('Board panel polls the mounted sidebar session immediately and changes its content key on a session switch', async () => {
   let plugin, column, injected, mounted = 'first?&+#%';
   const subscriptions = [], effects = [], requests = [], timers = [], cleared = [];
   const React = {
     createElement: (tag, props, ...children) => ({ tag, props, children }),
-    useState: (initial) => [initial, () => {}], useCallback: (fn) => fn,
+    useState: (initial) => [initial, () => {}], useCallback: (fn) => fn, useRef: (value) => ({ current: value }),
     useEffect: (fn) => effects.push(fn),
     useSyncExternalStore: (subscribe, snapshot) => { subscribe(() => {}); return snapshot(); },
   };
@@ -245,6 +179,8 @@ test('Board panel polls the mounted sidebar session immediately and changes its 
   assert.ok(requests.includes('/rulith/api/board?session=' + encodeURIComponent(mounted)));
   assert.equal(subscriptions.length, 1, 'the panel subscribes to sidebar session changes');
   for (const dispose of cleanups) dispose(); // React unmounts the old keyed content.
+  // The 任务 panel polls four reads of this conversation: its cached results, its state, this computer and its Agent's pending call.
+  assert.deepEqual(requests.map((url) => url.split('?')[0]).sort(), ['/rulith/api/board', '/rulith/api/conversation', '/rulith/api/health', '/rulith/api/worker']);
   assert.equal(cleared.length, 4, 'all old session polling timers are cleaned up');
   mounted = 'second-session';
   subscriptions[0]();

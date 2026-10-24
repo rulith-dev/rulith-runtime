@@ -325,6 +325,9 @@ export function createManagerServer({
     '/manager/conversations/exploration-mode': (body) => instances.admit(() => device.conversationExplorationMode(
       onlyFields(body, ['agentId', 'conversationKey', 'connectionId', 'mode', 'requestId']))),
     '/manager/conversations/review': (body) => instances.admit(() => device.conversationReview(onlyFields(body, ['agentId', 'conversationKey', 'enabled']))),
+    // Batch 4 (D-1024a): signing one goal's proposed criteria from the owner's client, after the person confirmed them there.
+    '/manager/conversations/sign-acceptance': (body) => instances.admit(() => device.conversationSignAcceptance(
+      onlyFields(body, ['agentId', 'conversationKey', 'goal', 'leaves', 'requestId']))),
     '/manager/conversations/end-preview': (body) => instances.admit(() => device.conversationEndPreview(onlyFields(body, ['agentId', 'conversationKey']))),
     '/manager/conversations/end': (body) => instances.admit(() => device.conversationEnd(onlyFields(body, ['agentId', 'conversationKey', 'requestId']))),
     // PSC 0.2.24 (D-1018b batch 3): the owner opens a folder of this computer as a project from their own client. The

@@ -12,8 +12,8 @@ import { randomUUID, createHash } from 'node:crypto';
 import { RulithMcp, TOOLS, surfaceAccepted } from '../rulith-mcp.mjs';
 import { installBoardTranscript } from './board-transcript.mjs';
 import { installOutgoingTrim } from './outgoing-trim.mjs';
-import { installProjectContext, readSourceBindings, resolveProject } from './project-source.mjs';
-import { PROJECT_SOURCE, projectRoutes, sourceAttention } from './open-project.mjs';
+import { installProjectContext, readSourceBindings } from './project-source.mjs';
+import { PROJECT_SOURCE, projectRoutes } from './open-project.mjs';
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
@@ -30,9 +30,8 @@ export { awaitOutcome } from '../board-channel.mjs';
 export const name = 'rulith-runtime';
 export const inject = ['tools', 'webServer', 'llm'];
 
-/** The panel observes results already received on this Agent's channel; it never calls MCP.
- * Goal directory rows (including awaiting:"acceptance") pass through unchanged. The browser
- * builds acceptance attention rows from this session's view, using the on-demand workbench link. */
+/** The panel observes results already received on this Agent's channel; it never calls MCP. The latest view and its
+ * operations strip pass through unchanged, with `recent`: the operations this conversation's results showed (BoardChannel). */
 export function cachedBoard(current, status, session) {
   // Session ids are opaque: unusual strings are routed through conversationKey's digest form.
   if (session !== undefined && typeof session !== 'string')
@@ -43,11 +42,13 @@ export function cachedBoard(current, status, session) {
     // Consult only the observed mapping and existing holders: polling must never open a connection.
     const key = current.boards.sessions.get(session);
     const channel = current.boards.sessions.has(session) ? current.boards.holders.get(key)?.channel : undefined;
-    return { available: true, agentName: current.agentName, ...(channel?.latestBoard ?? { view: null }) };
+    return { available: true, agentName: current.agentName, ...(channel?.latestBoard ?? { view: null }), ...recentOf(channel) };
   }
   const channel = current.channel ?? current.boards?.holders.get(undefined)?.channel;
-  return { available: true, agentName: current.agentName, ...channel?.latestBoard };
+  return { available: true, agentName: current.agentName, ...channel?.latestBoard, ...recentOf(channel) };
 }
+
+const recentOf = (channel) => (channel?.recentOperations?.length ? { recent: channel.recentOperations } : {});
 
 /** What the panel may see of a conversation-settings reply: the conversation's row and the control's outcome, nothing of
  * the manager's own state (the manager answers every operation with its full state appended). */
@@ -67,14 +68,24 @@ const listening = (port) => new Promise((resolve) => {
   socket.on('error', () => resolve(false));
 });
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
-// D-1016a: where the person signs or accepts a goal's criteria: the Agent's cases in Console (a goal's acceptance is on its
-// case page). Only from a consoleUrl the launcher settings name; without one the panel offers the local workbench instead.
+// D-1016a: where the person accepts a goal the app cannot sign for them (a goal waiting for their acceptance in Console):
+// the Agent's cases in Console. From the origin this computer signed in to; anything but http(s) gives no link.
 export function consoleGoalsUrl(consoleUrl, agentId) {
   if (!consoleUrl || !agentId) return '';
   let origin;
   try { origin = new URL(consoleUrl); } catch { return ''; }
   if (origin.protocol !== 'https:' && origin.protocol !== 'http:') return '';
   return `${origin.origin}/console/#/cases?agentId=${encodeURIComponent(agentId)}`;
+}
+
+/** Where a person handles an operation that waits for them: the Agent's Runtime tab in Console (the manager's Health read
+ * links the same page). From the origin this computer signed in to; anything but http(s) gives no link. */
+export function consoleRuntimeUrl(origin, agentId) {
+  if (!origin || !agentId) return '';
+  let url;
+  try { url = new URL(origin); } catch { return ''; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+  return `${url.origin}/console/#/agents/${encodeURIComponent(agentId)}?tab=runtime`;
 }
 
 /** Every Agent paired on this computer with a usable credential: one entry per local Agent instance. */
@@ -363,32 +374,10 @@ export async function apply(ctx, config = {}) {
     let text = ''; req.on('data', (chunk) => { text += chunk; if (text.length > 65536) req.destroy(); });
     req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } }); req.on('error', reject);
   });
-  // The selected Agent's local Worker as its own Trace shows it: availability, lease and its latest steps. Read from the
-  // instance's event stream through the manager (the address carries the instance key and stays in this process);
-  // what reaches the page is shortened text, without keys or result bodies.
+  // Whether this conversation's Agent's Worker on this computer is online, as its own Trace last reported it (the 任务
+  // panel's 这台电脑). Read from the instance's event stream through the manager (the address carries the instance key and
+  // stays in this process); only the state and this computer's name reach the page.
   let traceLink = null;
-  const shortTool = (id) => String(id ?? '').replace(/^worker_[a-z0-9]+_/, '').replace(/_\d+$/, '').replace(/_[0-9a-f]{12}$/, '')
-    .replace(/^eng_/, 'eng.');
-  const traceRow = (event) => {
-    const at = event.at ?? event.t ?? null;
-    const row = (level, text) => ({ at, level, text: String(text).slice(0, 240) });
-    switch (event.type) {
-      case 'lease': return event.state === 'active' ? row('ok', `租约有效（第 ${event.workerGeneration} 代）`)
-        : event.state === 'generation-advanced' ? null : row('warn', `租约：${event.state}${event.errorCode ? `（${event.errorCode}）` : ''}`);
-      case 'availability': return row(event.state === 'online' ? 'ok' : 'warn', event.state === 'online' ? '在线' : `不在线（${event.state}）`);
-      case 'claimed': return row('info', `领取 ${shortTool(event.id)}`);
-      case 'tool-timing': return row(event.outcome === 'returned' ? 'info' : 'warn', `${shortTool(event.tool)} ${event.outcome === 'returned' ? '执行完' : event.outcome}，${((event.durationMs ?? 0) / 1000).toFixed(1)} 秒`);
-      case 'reported': if (event.undeliverable) return row('error', event.landed
-          ? `${shortTool(event.id)} 的结果送不出（${event.undeliverable}），已转给你处理：在上面“需要处理”里打开 Console 对账`
-          : `${shortTool(event.id)} 的结果送不出（${event.undeliverable}），服务没有接住这条报告：在 Console 里处理这次调用`);
-        return event.landed === false
-        ? row('error', `${shortTool(event.id)} 的结果没有送达（${event.reason ?? '未知'}）：这次调用会一直挂起，需要在 Console 里处理`)
-        : row(event.ok === false ? 'warn' : 'ok', `${shortTool(event.id)} ${event.ok === false ? '失败' : '已回报'}`);
-      case 'log': return event.stderr ? row('warn', event.line ?? '') : null;
-      case 'error': return row('warn', event.note ?? '');
-      default: return null;
-    }
-  };
   // Where each Source this Agent may use is bound, as Console locked it: the same read-only list the Worker loads at
   // start (GET <work>/sources with its own Connection credentials). Only names, types and locations reach the page.
   const sourcesCache = new Map();
@@ -408,24 +397,9 @@ export async function apply(ctx, config = {}) {
     if (!holder) throw new Error('No attached Agent');
     return boundSources(holder.instanceId);
   });
-  const project = async ({ workspace, session }) => {
-    try {
-      const holder = agentForRequest({ session, workspace });
-      if (!holder) throw new Error('No attached Agent');
-      const sources = await boundSources(holder.instanceId);
-      return { workspace, project: resolveProject(workspace, sources) };
-    } catch {
-      console.error('[rulith project] Sources cannot be read; panel project unavailable');
-      return { workspace, unavailable: true };
-    }
-  };
   const workerTrace = async (query = {}) => {
     const agent = agentForRequest(query);
-    if (!agent) return { available: false };
-    const sources = await boundSources(agent.instanceId).catch(() => {
-      console.error('[rulith project] Sources cannot be read; Worker bindings unavailable');
-      return [];
-    });
+    if (!agent) return { available: false, computer: os.hostname() };
     if (traceLink?.instanceId !== agent.instanceId)
       traceLink = { instanceId: agent.instanceId, url: new URL((await manager('/manager/instances/open', { instanceId: agent.instanceId, page: '/' })).url) };
     const abort = new AbortController();
@@ -442,32 +416,20 @@ export async function apply(ctx, config = {}) {
     const events = text.split('\n\n').filter((chunk) => chunk.startsWith('data: '))
       .map((chunk) => { try { return JSON.parse(chunk.slice(6)); } catch { return null; } })
       .filter((event) => event?.src === 'worker');
-    const rows = events.map(traceRow).filter(Boolean);
     const lastAvailability = [...events].reverse().find((event) => event.type === 'availability');
-    return { available: true, agentName: agent.agentName, state: lastAvailability?.state ?? 'unknown', sources,
-      stuck: rows.some((row) => row.level === 'error'), events: rows.slice(-30).reverse() };
+    return { available: true, agentName: agent.agentName, state: lastAvailability?.state ?? 'unknown', computer: os.hostname() };
   };
-  // What needs a person for the selected Agent, from the local manager's Health read (Runtime 0.12.6+): one line each, with
-  // the place to fix it. Read on a slow poll; the manager itself reads the service only when asked.
+  // The Agent's call that waits for a person (a decision, or reconciling its result), from the manager's Health read, with
+  // its page in Console: the 任务 panel shows it after a restart too, before the conversation's next result. Only whether
+  // it needs a person and its phase reach the page. Read on a slow poll; the manager reads the service only when asked.
   const health = async (query = {}) => {
     const agent = agentForRequest(query);
     if (!agent) return { available: false };
-    const goalsUrl = consoleGoalsUrl(config.consoleUrl, agent.agentId);
-    let reply;
-    try { reply = await manager('/manager/health'); } catch (error) { return { available: true, unsupported: true, goalsUrl, note: String(error.message ?? error).slice(0, 200) }; }
-    const all = reply.health ?? {};
-    const row = (all.agents ?? []).find((entry) => entry.agentId === agent.agentId);
-    const items = [];
-    if (all.device && all.device.signedIn === false) items.push({ text: '这台电脑没有登录 Rulith：在左下角重新登录', fix: 'signin' });
-    if (row) {
-      if (row.pendingCall?.needsPerson) items.push({ text: `一次调用需要你处理：${row.pendingCall.label || row.pendingCall.tool}`, url: row.console?.runtime });
-      if (row.program?.state === 'rejected') items.push({ text: `程序更新被拒：${row.program.refusal?.message || row.program.refusal?.errorCode || ''}`, url: row.console?.configuration });
-      for (const source of row.sources ?? []) if (source.state !== 'ready') items.push(sourceAttention(source, row.console?.runtime));
-      if (row.key && row.key.state !== 'active') items.push({ text: `本机的 Agent 密钥已失效（${row.key.state}）：打开本机 Rulith 修复`, fix: 'workbench' });
-      const here = (row.connections ?? []).filter((connection) => connection.registeredHere && connection.state === 'active');
-      if (!here.length) items.push({ text: '这台电脑没有接上本机执行的连接：打开本机 Rulith 修复', fix: 'workbench' });
-    }
-    return { available: true, gatewayState: all.gatewayState ?? 'unavailable', items, goalsUrl };
+    const reply = await manager('/manager/health');
+    const row = (reply.health?.agents ?? []).find((entry) => entry.agentId === agent.agentId);
+    const call = row?.pendingCall;
+    return { available: true, consoleUrl: typeof row?.console?.runtime === 'string' ? row.console.runtime : '',
+      pendingCall: call ? { needsPerson: call.needsPerson === true, phase: typeof call.phase === 'string' ? call.phase : '' } : null };
   };
   // PSC 0.2.24 (D-1018b batch 3): the owner opens a folder of this computer as a project here, confirming once what it
   // grants; no Console step. The page drives the flow (confirmation, progress, asking again); these routes only read and
@@ -581,7 +543,6 @@ export async function apply(ctx, config = {}) {
     'GET /rulith/api/health': (query) => health(query),
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
     'GET /rulith/api/worker': (query) => workerTrace(query),
-    'GET /rulith/api/project': project,
     'POST /rulith/api/signin': async () => {
       const reply = await manager('/manager/device/start', { consoleUrl, name: os.hostname() });
       return { url: reply.device?.consoleUrl ?? '' };
@@ -589,8 +550,15 @@ export async function apply(ctx, config = {}) {
     'POST /rulith/api/signin/poll': async () => { await manager('/manager/device/poll', {}); return summary(await manager('/manager/state')); },
     'POST /rulith/api/signout': async () => { await manager('/manager/device/signout', {}); for (const holder of [...attached.values()]) drop(holder);
       live.forgetOtherAccounts(null); return summary(await manager('/manager/state')); },
-    'GET /rulith/api/board': (query) => cachedBoard(query.session === undefined ? defaultHolder() : resolveHolder(query.session,
-      sessions.get(query.session)?.session?.header?.cwd), status, query.session),
+    // The 任务 panel's read: this conversation's cached results (never a Board read), and the two Console pages a person may
+    // need from it (an operation that waits for them; a goal they accept in Console), at the origin this computer signed in to.
+    'GET /rulith/api/board': (query) => {
+      const holder = query.session === undefined ? defaultHolder() : resolveHolder(query.session, sessions.get(query.session)?.session?.header?.cwd);
+      const view = cachedBoard(holder, status, query.session);
+      let origin = '';
+      try { origin = signedInAccount(home)?.origin ?? ''; } catch { origin = ''; }
+      return holder && origin ? { ...view, consoleUrl: consoleRuntimeUrl(origin, holder.agentId), casesUrl: consoleGoalsUrl(origin, holder.agentId) } : view;
+    },
     // The sidebar: every Agent of the signed-in account, its directories on this computer and which conversation is whose.
     'GET /rulith/api/tree': () => sidebarTree(),
     // The sidebar starts a conversation in one Agent's directory and records the Agent before the first message. A
@@ -638,6 +606,37 @@ export async function apply(ctx, config = {}) {
       const target = { ...conversationTarget(body.session), session: body.session };
       return withBoard(target, async () => conversationView(await manager('/manager/conversations/review',
         { agentId: target.agentId, conversationKey: target.conversationKey, enabled: body.enabled === true })));
+    },
+    // Batch 4 (design §5 d, D-1024a; PSC 0.2.28): the person signs the criteria the Agent proposed for one goal of this
+    // conversation as its acceptance, from their own client through this computer's device grant (the same path as the tier
+    // switch). Sent only after the person confirmed in the page's dialog; the page makes one request id per confirmation and
+    // sends the same one again while the answer is pending. A request that got no definite answer — the manager could not be
+    // reached mid-request, or the account service did not answer — is `signature_unconfirmed`: the page says the outcome
+    // is not confirmed yet, never that nothing was signed. 中文说明：只有确认框里的「签字」才会走到这里；没有确定回答的请求如实说“还没有确认”。
+    'POST /rulith/api/conversation/sign-acceptance': async (body) => {
+      const target = conversationTarget(body.session);
+      const goal = typeof body.goal === 'string' ? body.goal : '';
+      const leaves = Array.isArray(body.leaves) ? body.leaves : [];
+      const requestId = typeof body.requestId === 'string' ? body.requestId : '';
+      if (!goal || goal.length > 256 || !leaves.length || leaves.length > 64 || new Set(leaves).size !== leaves.length
+        || leaves.some((leaf) => typeof leaf !== 'string' || !leaf || leaf.length > 256) || !/^[A-Za-z0-9._:-]{8,128}$/.test(requestId))
+        throw new Error('Name the goal, the leaves you confirmed and the request id of that confirmation.');
+      let reply;
+      try {
+        reply = await manager('/manager/conversations/sign-acceptance',
+          { agentId: target.agentId, conversationKey: target.conversationKey, goal, leaves, requestId });
+      } catch (error) {
+        // An answer of the manager (with or without a code) is definite; a connection refused never reached it.
+        if (error.errorCode || error.status !== undefined || error.cause?.code === 'ECONNREFUSED') throw error;
+        throw Object.assign(new Error('The signature was sent, but its outcome is not confirmed yet.'), { errorCode: 'signature_unconfirmed' });
+      }
+      // The answer is Console's control record (as Console checks it): this request id, this Agent and exactly this
+      // operation. Any other record does not confirm this signature, so the same request is sent again.
+      const operation = reply.operation;
+      if (reply.requestId !== requestId || reply.agentId !== target.agentId || !operation || operation.kind !== 'SignAcceptance'
+        || operation.goal !== goal || JSON.stringify(operation.leaves) !== JSON.stringify(leaves))
+        throw Object.assign(new Error('The answer does not confirm this signature.'), { errorCode: 'signature_unconfirmed' });
+      return conversationView(reply);
     },
     // PSC 0.2.21: deleting a conversation. The preview feeds the confirmation dialog; the deletion seals the conversation's
     // Board and closes its open goals as abandoned (records are kept). Its request id is fixed by the conversation, so a

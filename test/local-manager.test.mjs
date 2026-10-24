@@ -1574,7 +1574,8 @@ test('the manager answers exactly its documented control-plane operations', asyn
     assert.deepEqual(routes, [
       '/manager/authoring/install-checker', '/manager/authoring/review', '/manager/authoring/save',
       '/manager/conversations/end', '/manager/conversations/end-preview',
-      '/manager/conversations/exploration-mode', '/manager/conversations/review', '/manager/conversations/state',
+      '/manager/conversations/exploration-mode', '/manager/conversations/review', '/manager/conversations/sign-acceptance',
+      '/manager/conversations/state',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
       '/manager/device/start', '/manager/health', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
@@ -1649,6 +1650,57 @@ test('the signed-in client switches one conversation\'s exploration mode and rev
     assert.equal(ended.body.ended, true)
     assert.deepEqual(ended.body.closedGoals, ['case-1'])
     assert.equal((await post('/manager/conversations/end', { agentId: 'agent-zeta', conversationKey: key, requestId: 'end-2' })).status, 400)
+  })
+})
+
+test('ACC-LOCAL-11 the signed-in client signs one goal\'s proposed criteria through the device grant: exact fields, pending, refusals, unconfirmed', async t => {
+  // Batch 4 (D-1024a): the person confirmed in their own client; the manager forwards exactly the goal, the leaves and the
+  // confirmation's request id over the device bearer, and returns the Gateway's control record. 202 is an answer to show
+  // (send the same id again); a refusal keeps its code; a request with no definite answer (lost after the effect, or a 5xx)
+  // is `signature_unconfirmed`, never a refusal.
+  await withManager(t, async ({ manager, gateway }) => {
+    const path = '/manager/conversations/sign-acceptance'
+    const route = '/local-devices/conversations/sign-acceptance'
+    const post = async (body) => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}${path}`, { method: 'POST',
+        headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: response.status, body: await response.json() }
+    }
+    const sign = (goal, requestId, extra = {}) => post({ agentId: 'agent-alpha', conversationKey: 'dsh:session-1', goal, leaves: ['leaf-1', 'leaf-2'], requestId, ...extra })
+    const sent = () => gateway.requests.filter(row => row.path === route)
+    const signed = await sign('goal-1', 'sign-0001')
+    assert.equal(signed.status, 200, JSON.stringify(signed.body))
+    assert.equal(signed.body.state, 'complete')
+    assert.equal(signed.body.result.accepted, true)
+    assert.deepEqual(signed.body.operation, { kind: 'SignAcceptance', goal: 'goal-1', leaves: ['leaf-1', 'leaf-2'] }, 'the control record as Console gets it')
+    assert.deepEqual(sent().at(-1).body, { agentId: 'agent-alpha', conversationKey: 'dsh:session-1', goal: 'goal-1', leaves: ['leaf-1', 'leaf-2'], requestId: 'sign-0001' })
+    assert.ok(sent().every(row => row.origin === undefined), 'device routes never carry a browser Origin')
+    const pending = await sign('goal-pending', 'sign-0002')
+    assert.equal(pending.status, 200, JSON.stringify(pending.body))
+    assert.equal(pending.body.state, 'pending')
+    assert.equal((await sign('goal-pending', 'sign-0002')).body.state, 'complete', 'the same confirmation, sent again, completes')
+    // The Kernel's refusal is a complete control with accepted false; a refusal of the request itself keeps its code.
+    const ended = await sign('goal-ended', 'sign-0003')
+    assert.equal(ended.status, 200)
+    assert.deepEqual([ended.body.state, ended.body.result.accepted, ended.body.result.errorCode], ['complete', false, 'goal_ended'])
+    const refused = await sign('goal-conflict', 'sign-0008')
+    assert.equal(refused.status, 400)
+    assert.equal(refused.body.errorCode, 'request_conflict')
+    gateway.dropResponseAfterEffect(route)
+    const lost = await sign('goal-1', 'sign-0004')
+    assert.equal(lost.status, 400)
+    assert.equal(lost.body.errorCode, 'signature_unconfirmed', 'an answer lost after the effect may have signed')
+    gateway.failNext(route)
+    assert.equal((await sign('goal-1', 'sign-0005')).body.errorCode, 'signature_unconfirmed', 'a 5xx is no definite answer either')
+    // Outside the grant, or with a field the route does not take: refused before any request leaves this computer.
+    const before = sent().length
+    const extra = await sign('goal-1', 'sign-0006', { mode: 'strict' })
+    assert.equal(extra.status, 400)
+    assert.notEqual(extra.body.errorCode, 'signature_unconfirmed')
+    const outside = await post({ agentId: 'agent-zeta', conversationKey: 'dsh:session-1', goal: 'goal-1', leaves: ['leaf-1'], requestId: 'sign-0007' })
+    assert.equal(outside.status, 400)
+    assert.notEqual(outside.body.errorCode, 'signature_unconfirmed')
+    assert.equal(sent().length, before)
   })
 })
 

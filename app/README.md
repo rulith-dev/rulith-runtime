@@ -3,8 +3,8 @@
 Deep Rulith is built on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)
 and gives it [Rulith](https://rulith.ai) as its tools, beside dsh's read-only web search and fetch. It uses dsh's web UI and agent, with a
 profile overlay that adds a Rulith account entry (bottom left) and keeps the Rulith Runtime's three
-columns (sessions, conversation, and on the right this environment's execution: goals, operations,
-frontier and the local Worker), replaces
+columns (sessions, conversation, and on the right the conversation's 任务 panel: its tasks, their acceptance criteria,
+recent operations and whether this computer is online), replaces
 every other local dsh tool with Rulith's three MCP tools (`rulith/v4`), and turns off dsh features that would act outside
 Rulith or cut its results (subagents, goals, workflows, plan mode, result pruning). Long conversations
 are condensed by dsh's automatic compaction; the summary is a recap, not evidence. Reading, editing,
@@ -107,8 +107,18 @@ state and ⚙ 设置) has 账户, 这台电脑 (each Agent's Worker state, and �
 composer has two chips: 档位, one per conversation (narrowing applies at once, widening asks first), and 模型; 审查
 appears only when the Agent has a reviewer designated.
 
-   This needs a Gateway with the open-project routes (`/local-devices/projects/*`); the manager in this repository forwards
-   them (`/manager/projects/*`).
+The right column is the conversation's 任务 panel (design §3.2 右栏, batch 4): the tasks in plain words with their status,
+each task's acceptance criteria with whether each holds and whether it is signed, recent operations as one line each
+(「写入 fizzbuzz.py」, 「运行测试：通过」, 「被拒绝：项目授权已收回」) and whether this computer is online. Before a
+conversation has started a task it is one sentence. When the Agent has proposed criteria for a goal, their card comes
+first with 「签下这些标准」: after the person confirms 「签字」 in the dialog, the app signs them through this computer's
+device grant (the same leaves Console's Sign these criteria sends: every eligible one, already signed ones included), and a
+signature whose answer did not arrive is sent again with the same request id. An operation that waits for a person is one
+sentence with 「去 Console 处理」. The column opens at a third of the window at most.
+
+   This needs a Gateway with the open-project routes (`/local-devices/projects/*`), and for signing in the app its
+   `/local-devices/conversations/sign-acceptance` route; the manager in this repository forwards them
+   (`/manager/projects/*`, `/manager/conversations/sign-acceptance`).
 
 ### Developers: a settings file
 

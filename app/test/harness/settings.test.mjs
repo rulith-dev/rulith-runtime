@@ -377,6 +377,11 @@ test('deleting: only a finished deletion takes the row away; otherwise its reaso
   assert.deepEqual(outcome({ deletion: { settled: false, reasons: [{ code: 'closings_unconfirmed', count: 3 }, { code: 'deleted_before_recording' }] } }),
     { settled: false, reasons: ['3 个目标的结案还没有确认', '它是在开始记录删除结果之前删除的'], refused: 0 });
   assert.deepEqual(outcome({ deletion: { settled: true, refusedGoals: [{ caseId: 'c' }] } }), { settled: true, reasons: [], refused: 1 });
+  // PSC 0.2.28 erratum: every closing answered and the goals read, only the finished record missing (补完删除 records it).
+  assert.deepEqual(outcome({ deletion: { settled: false, reasons: [{ code: 'settlement_unrecorded' }] } }),
+    { settled: false, reasons: ['删除已办完，还没记下'], refused: 0 });
+  // A code this page has no words for is named as it is, never read from the object's prototype.
+  assert.deepEqual(outcome({ deletion: { settled: false, reasons: [{ code: 'constructor' }] } }).reasons, ['constructor']);
   // An older Gateway without `settled`: finished only when nothing is unconfirmed or unread.
   assert.equal(outcome({ unconfirmedGoals: [] }).settled, true);
   assert.equal(outcome({ goalsUnread: true }).settled, false);
