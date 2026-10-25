@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { acquireWorkbenchLease } from '../../../local/manager-registry.mjs';
-import { ensureHomeLabel } from '../../../local/sandbox-home-label.mjs';
+import { ensureHomeLabel, noteProtection } from '../../../local/sandbox-home-label.mjs';
 
 export const APP_HOME_ENV = 'RULITH_APP_HOME';
 // The ports the owner's settings have always used; another free one is taken only when one of these is busy.
@@ -63,6 +63,7 @@ export async function appSettings(home, { ports = freePorts, label = ensureHomeL
   // 不可读上行标签（会传播到既有子项；之后新写、原子改写的文件与备份都继承）。受限命令要用的东西都在凭据根之外的工作根里，
   // 不在这里。失败如实告警：此时 Worker 在每次启动适配器前的校验会拒绝运行模型命令（fail-closed）。
   const homeLabel = label(home);
+  if (homeLabel && !homeLabel.skipped) noteProtection(at('manager'), 'root', [{ path: home, ok: homeLabel.ok, reason: homeLabel.reason }]);
   if (homeLabel && !homeLabel.ok) console.error(`Rulith: could not read-protect ${home} (${homeLabel.reason});`
     + ' model commands are refused until it is protected.');
   const keyFile = at('manager.key');
@@ -76,7 +77,7 @@ export async function appSettings(home, { ports = freePorts, label = ensureHomeL
     fs.writeFileSync(keyFile, `${randomBytes(32).toString('base64url')}\n`);
   }
   if (!MANAGER_KEY.test(fs.readFileSync(keyFile, 'utf8').trim()))
-    throw new Error(`Deep Rulith: ${keyFile} does not hold a valid manager key; remove the file and start again`);
+    throw new Error(`Rulith: ${keyFile} does not hold a valid manager key; remove the file and start again`);
   const [managerPort, webPort] = await ports([PREFERRED_PORTS.manager, PREFERRED_PORTS.web]);
   // No cwd: like `dsh web`, the folder the command runs in is the default workspace of new conversations (not a grant).
   return {
@@ -85,6 +86,29 @@ export async function appSettings(home, { ports = freePorts, label = ensureHomeL
     runtimeEntry: fileURLToPath(new URL('../../../local/rulith-local.mjs', import.meta.url)), persona: fileURLToPath(new URL('../runtime-persona.txt', import.meta.url)),
     webPort, kitHome: at('kit'),
   };
+}
+
+/**
+ * Agents the retired English workbench (`rulith start` before 0.19.0) set up on this computer: its manager home,
+ * `~/.rulith/manager`, when it lists instances that are not signed out and the app uses another manager home. Their
+ * Workers do not start with the app; the person keeps them with `rulith manager`, or sets each Agent up again in the app.
+ * Read only: nothing there is moved or changed. Null when there is nothing to say.
+ */
+export function legacyWorkbench(managerHome, userHome = os.homedir()) {
+  const old = path.join(userHome, '.rulith', 'manager');
+  const same = (a, b) => { const fold = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p)); return fold(a) === fold(b); };
+  if (typeof managerHome !== 'string' || !managerHome || same(old, managerHome)) return null;
+  let registry;
+  try { registry = JSON.parse(fs.readFileSync(path.join(old, 'registry.json'), 'utf8')); } catch { return null; }
+  const agents = (Array.isArray(registry?.instances) ? registry.instances : []).filter((row) => row && typeof row === 'object' && !row.signedOutAt).length;
+  return agents > 0 ? { home: old, agents } : null;
+}
+
+/** The one line the command prints for {@link legacyWorkbench} (the app shows the same in its wizard and settings). */
+export function legacyWorkbenchLine({ home, agents }) {
+  return `Rulith: ${agents === 1 ? '1 Agent' : `${agents} Agents`} set up by the retired Rulith workbench (${home}) no longer`
+    + ' start their Workers with `rulith`. Run `rulith manager` to keep them running, or set each Agent up again in the app;'
+    + ' that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console.';
 }
 
 /**
@@ -111,7 +135,7 @@ function ownerOnly(file) {
     if (!/^S-1-[0-9-]+$/.test(sid)) throw new Error('no SID');
     execFileSync(path.join(system, 'icacls.exe'), [file, '/inheritance:r', '/grant:r', `*${sid}:F`], { stdio: 'ignore', windowsHide: true });
   } catch {
-    console.error(`Deep Rulith: could not limit ${file} to this user; it keeps its folder's access.`);
+    console.error(`Rulith: could not limit ${file} to this user; it keeps its folder's access.`);
   }
 }
 
@@ -152,6 +176,6 @@ export async function holdAppHome(home) {
     return lease.release;
   } catch (error) {
     if (error?.name !== 'WorkbenchBusyError') throw error;
-    throw new Error(`Deep Rulith is already running from ${home} (${error.detail}). Use its browser tab, or stop it and start again.`);
+    throw new Error(`Rulith is already running from ${home} (${error.detail}). Use its browser tab, or stop it and start again.`);
   }
 }

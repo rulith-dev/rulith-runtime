@@ -34,6 +34,15 @@
   disabled: true
 - id: ui-settings-web-search
   disabled: true
+# Batch 7 (design §3.2: every element is a Rulith concept or a person's action): the "/" menu keeps only what is
+# Rulith's (/压缩 from the preset below). dsh's permission presets (/权限: the sandbox mode and approval policy of dsh's
+# own shell and file tools, which are off here) and its session-log export (/导出 "下载日志": a ZIP of dsh's raw log) are
+# off. Conversations recorded with them on keep their permission events, which dsh reads as ordinary session events
+# (checked on copies of earlier conversations before this change).
+- id: permission
+  disabled: true
+- id: session-log-download
+  disabled: true
 - id: ui-schedule
   disabled: true
 - id: schedule

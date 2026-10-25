@@ -719,12 +719,12 @@ function rawGet(port, path, headers = {}) {
   })
 }
 
-test('the manager page and its routes are gated exactly like an instance host', async (t) => {
+test('the manager\'s routes are gated exactly like an instance host, and it serves no page', async (t) => {
   await withManager(t, async ({ manager, call }) => {
     const port = manager.port
     const unauthenticated = await rawGet(port, '/', { Host: `127.0.0.1:${port}` })
     assert.equal(unauthenticated.status, 401)
-    assert.doesNotMatch(unauthenticated.body, /<!DOCTYPE html>/i, 'the manager page was served to an unauthenticated caller')
+    assert.doesNotMatch(unauthenticated.body, /<!DOCTYPE html>/i, 'a page was served to an unauthenticated caller')
     assert.doesNotMatch(unauthenticated.body, new RegExp(KEY))
 
     const rebound = await rawGet(port, `/?k=${KEY}`, { Host: 'rulith-manager.attacker.example' })
@@ -734,11 +734,12 @@ test('the manager page and its routes are gated exactly like an instance host', 
     const crossOrigin = await rawGet(port, `/?k=${KEY}`, { Host: `127.0.0.1:${port}`, Origin: 'https://attacker.example' })
     assert.equal(crossOrigin.status, 403)
 
+    // The English workbench page is retired: an authenticated GET / finds nothing and says nothing about the key.
     const page = await rawGet(port, `/?k=${KEY}`, { Host: `127.0.0.1:${port}` })
-    assert.equal(page.status, 200, page.head)
+    assert.equal(page.status, 404, page.head)
     assert.match(page.head, /cache-control: no-store/i)
-    assert.match(page.body, /<title>Rulith<\/title>/)
-    assert.doesNotMatch(page.body, new RegExp(KEY), 'the page must read its key from its address, not carry one')
+    assert.doesNotMatch(page.body, /<!DOCTYPE html>/i)
+    assert.doesNotMatch(page.body, new RegExp(KEY))
 
     // A loopback origin that is not this exact origin is still refused for state changes.
     const other = await call('/manager/instances/create', { name: 'x' }, { origin: 'http://127.0.0.1:1' })

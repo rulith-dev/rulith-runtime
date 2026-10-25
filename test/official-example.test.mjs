@@ -517,14 +517,16 @@ test('RT-EXAMPLE-11 the guide starts a configured Case through Local without scr
   const contract = JSON.parse(readFileSync(join(ROOT, 'test/fixtures/verified-calculation-recipe.json'), 'utf8')).capability.caseContracts[0]
   assert.ok(guide.includes(contract.caseType))
   for (const argument of contract.businessKey.arguments) assert.ok(guide.includes(argument))
-  assert.match(guide, /Use this environment’s tools and files/)
-  assert.match(guide, /first message.*starts the Agent automatically/)
+  // 0.19.0: the Rulith app sets the Agent up on this computer; the retired workbench's toggles are gone.
+  assert.match(guide, /Settings → This computer/)
+  assert.match(guide, /start a new conversation under this Agent/)
+  assert.doesNotMatch(guide, /workbench|rulith start|Use this environment’s tools and files/)
   // rulith/v4: no Case Type or business key is pinned in Local; the model declares the goal.
   assert.doesNotMatch(guide, /preferred Case Type|OpenCase|CloseCase/)
   assert.match(guide, /declare_goal/)
   assert.match(guide, /`exploration` intake/)
   assert.doesNotMatch(guide, /--role|RULITH_LOCAL_CONFIG/)
-  assert.match(guide, /Local composer/)
+  assert.match(guide, /Rulith\s+conversation/)
   assert.match(guide, /Protocol troubleshooting \(optional\)/)
 })
 

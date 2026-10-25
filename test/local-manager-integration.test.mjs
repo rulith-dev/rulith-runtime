@@ -53,7 +53,7 @@ const openOneCase = (body) => (JSON.stringify(body).includes('tool_result')
   : { text: 'Declaring a goal.', toolCalls: [{ name: 'Set',
     input: { operations: [{ op: 'declare_goal', desired: [{ predicate: 'task_done', args: {} }] }] } }] })
 
-/** Read this instance's loopback address the way the page does: by asking the manager. */
+/** Read this instance's loopback address the way the app's host does: by asking the manager. */
 async function instanceEntry(call, instanceId, page = '/') {
   const opened = await call('/manager/instances/open', { instanceId, page })
   assert.equal(opened.status, 200, JSON.stringify(opened.body))
@@ -129,7 +129,7 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
     config.agent.env.RULITH_MAX_ROUNDS = '3'
     saveInstanceConfig(created.body.directory, config)
 
-    const entry = await instanceEntry(call, id, '/setup')
+    const entry = await instanceEntry(call, id)
     // The model is configured through the instance's own setup route, which re-reads the
     // configuration file — including the role selection just written.
     const model = await localCall(entry, '/setup/model', {
@@ -159,7 +159,7 @@ test('two enabled Agents run as two instances on one computer, and revoking the 
 
   // Switch views while that work is in flight. This is the gesture that must be inert.
   await call('/manager/instances/open', { instanceId: beta.id, page: '/' })
-  await call('/manager/instances/open', { instanceId: beta.id, page: '/worker-tools' })
+  await call('/manager/instances/open', { instanceId: beta.id })
   const viewed = await call('/manager/state')
   assert.equal(viewed.body.instances.length, 2)
 

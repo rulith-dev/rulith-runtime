@@ -171,7 +171,9 @@ test('installed dsh: the overlays enable exactly the web tool plugins, and web_s
     'ui-deliverables', 'workspace-changes', 'ui-sidebar-documentpreview', 'office-to-pdf',
     // One Rulith settings page and wizard replace dsh's settings shell, its model pages and "预览版说明"; the model is
     // chosen in Rulith's settings only, so dsh's composer model picker is off (design §3.2).
-    'ui-settings-general', 'ui-settings-models', 'ui-model-selection'];
+    'ui-settings-general', 'ui-settings-models', 'ui-model-selection',
+    // Batch 7: the "/" menu keeps only /压缩; dsh's /权限 (permission presets) and /导出 (session-log export) are off.
+    'permission', 'session-log-download'];
   for (const id of removed) assert.equal(web.find((entry) => entry.id === id), undefined, `${id} is absent from the merged profile`);
   assert.equal(web.some((entry) => /dsh-(?:tool-)?schedule/.test(entry.name)), false, 'no schedule host or tool registrations');
   // dsh's settings forms, theme and language services stay for the Rulith page; its directory picker serves the folder chooser.

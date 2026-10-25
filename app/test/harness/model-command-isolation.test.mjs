@@ -13,8 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { credentialRootRefusal, ensureCredentialRootLabels, ensureHomeLabel, ensureLowLabel, homeLabelVerified, labelOps, labelProjectOpen,
-  releaseProjectLabel } from '../../../local/sandbox-home-label.mjs';
+import { credentialRootRefusal, ensureCredentialRootLabels, ensureHomeLabel, ensureLowLabel, homeLabelVerified, labelFailureReason, labelOps,
+  labelProjectOpen, protectionProblems, releaseProjectLabel } from '../../../local/sandbox-home-label.mjs';
 import { confinedLaunch, adapterSandboxMode, confinementIdentity, credentialRoots, workRootFor } from '../../../worker/adapter-confinement.mjs';
 import { adapterEnv } from '../../../worker/rulith-worker.mjs';
 
@@ -404,4 +404,90 @@ test('ACC-ISO-12 a root with a child that kept another label is refused, naming 
       env: { RULITH_ADAPTER_SANDBOX: 'required', RULITH_CONFINEMENT_REFUSAL: refusal } }), /odd\.json/);
     assert.ok(!fs.existsSync(path.join(base, 'bin2')));
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+// ACC-ISO-13 (non-system drives): a folder on a drive whose inherited access list gives its owner Modify but not
+// WRITE_OWNER (the usual D:\ root on Windows) cannot take an integrity label as it is. The labelling code then uses the
+// owner's implicit WRITE_DAC to add one allow entry for the owner (TakeOwnership, inherited inside), labels with
+// propagation, and for a project folder takes exactly that entry away again on release. Run on throwaway folders next to
+// this checkout, only when the checkout is on a non-system NTFS drive.
+const nonSystemDrive = (() => {
+  if (process.platform !== 'win32') return { skip: 'integrity labels are a win32 mechanism' };
+  const checkout = fs.realpathSync.native(fileURLToPath(new URL('../../../', import.meta.url)));
+  const drive = checkout.slice(0, 2).toUpperCase(), system = String(process.env.SystemDrive || 'C:').toUpperCase();
+  if (drive === system) return { skip: `this checkout is on the system drive ${system}; no non-system NTFS drive to test on` };
+  const format = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `([System.IO.DriveInfo]'${drive}').DriveFormat`],
+    { encoding: 'utf8', windowsHide: true }).stdout.trim();
+  if (format !== 'NTFS') return { skip: `${drive} is ${format || 'unknown'}, not NTFS` };
+  return { skip: false, parent: path.dirname(checkout) };
+})();
+const daclOf = (p) => {
+  const sddl = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-Acl -LiteralPath $env:ISO_P).Sddl'],
+    { encoding: 'utf8', windowsHide: true, env: { ...process.env, ISO_P: p } }).stdout.trim();
+  // The access entries and the protection flag; "AI" only records that inheritance was computed, not what is granted.
+  const dacl = sddl.slice(sddl.indexOf('D:') + 2);
+  return dacl.replace(/^[A-Z]*/, (flags) => flags.replace('AI', ''));
+};
+const labelLineOf = (p) => (spawnSync('icacls', [p], { encoding: 'latin1', windowsHide: true }).stdout.split(/\r?\n/).find((l) => /Mandatory Level/i.test(l)) ?? '').trim();
+test('ACC-ISO-13 credential roots and projects on a non-system drive are labelled through the owner, and a project is put back exactly', {
+  skip: nonSystemDrive.skip, timeout: 120_000,
+}, () => {
+  const base = fs.mkdtempSync(path.join(nonSystemDrive.parent, 'iso-acl-'));
+  const managerHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'iso-acl-manager-')));
+  const fresh = path.join(base, 'fresh'), root = path.join(base, 'cred-root'), proj = path.join(base, 'project');
+  for (const d of [fresh, path.join(root, 'sub'), path.join(proj, 'src')]) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(root, 'sub', 'secret.txt'), 'ROOT-SECRET'); fs.writeFileSync(path.join(root, 'a.txt'), 'A');
+  fs.writeFileSync(path.join(proj, 'src', 'main.txt'), 'BEFORE');
+  try {
+    // What this drive needs: does a label go on without help?
+    const [plain] = labelOps([{ op: 'set', path: fresh, sddl: 'S:(ML;OICI;NRNW;;;ME)' }]);
+    const needsGrant = !plain.ok && /rc=5\b/.test(String(plain.error));
+    if (plain.ok) labelOps([{ op: 'set', path: fresh, sddl: 'S:' }]);
+    console.log(`ACC-ISO-13 on ${base.slice(0, 2)}: labelling ${needsGrant ? 'needs' : 'does not need'} the owner grant`);
+    // A fresh empty folder and one with files inside become credential roots.
+    const roots = ensureCredentialRootLabels([fresh, root], { noteTo: managerHome });
+    assert.deepEqual(roots.unlabeled, [], JSON.stringify(roots));
+    for (const p of [fresh, root, path.join(root, 'a.txt'), path.join(root, 'sub', 'secret.txt')]) assert.equal(homeLabelVerified(p), true, p);
+    // A project folder with files inside: Low, recorded with the grant it needed.
+    const daclBefore = daclOf(proj), childDaclBefore = daclOf(path.join(proj, 'src', 'main.txt'));
+    const opened = labelProjectOpen({ managerHome, directory: proj, holder: 'inst-acl000000001' });
+    assert.equal(opened.ok, true, JSON.stringify(opened));
+    assert.equal(opened.granted, needsGrant, 'the grant is recorded exactly when it was needed');
+    assert.match(labelLineOf(path.join(proj, 'src', 'main.txt')), /Low Mandatory Level/);
+    // A confined command reads neither credential root, and writes the project, including a file that was already there.
+    fs.writeFileSync(path.join(proj, 'probe.mjs'), [
+      "import fs from 'node:fs';const o=[];",
+      "try{fs.readFileSync(process.env.SECRET);o.push('READ')}catch(e){o.push('DENIED_'+e.code)}",
+      "try{fs.writeFileSync('out.txt','W');fs.writeFileSync('src/main.txt','AFTER');o.push('WROTE')}catch(e){o.push('WRITE_'+e.code)}",
+      "process.stdout.write(o.join(','));",
+    ].join('\n'));
+    let launch;
+    try {
+      launch = confinedLaunch({ execPath: process.execPath, argv: [fwd(path.join(proj, 'probe.mjs'))], cwd: proj, binDir: path.join(managerHome, 'bin'),
+        roots: [fresh, root], env: { RULITH_ADAPTER_SANDBOX: 'required' } });
+    } catch (error) { return void test.skip?.(`launcher unavailable: ${error.message}`); }
+    const ran = spawnSync(launch.file, launch.args, { encoding: 'utf8', env: { ...process.env, SECRET: path.join(root, 'sub', 'secret.txt') } });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(ran.stdout, 'DENIED_EPERM,WROTE');
+    assert.equal(fs.readFileSync(path.join(proj, 'src', 'main.txt'), 'utf8'), 'AFTER');
+    // Released: the prior label (none) and the access list as it was, on the folder and on what was inside it.
+    fs.rmSync(path.join(proj, 'out.txt')); fs.rmSync(path.join(proj, 'probe.mjs'));
+    const released = releaseProjectLabel({ managerHome, directory: proj, holder: 'inst-acl000000001' });
+    assert.equal(released.ok, true, JSON.stringify(released));
+    assert.equal(released.ungranted, needsGrant);
+    assert.equal(labelLineOf(proj), ''); assert.equal(labelLineOf(path.join(proj, 'src', 'main.txt')), '');
+    assert.equal(daclOf(proj), daclBefore, 'the folder access list is as it was');
+    assert.equal(daclOf(path.join(proj, 'src', 'main.txt')), childDaclBefore, 'the inside access lists are as they were');
+    assert.deepEqual(protectionProblems(managerHome), [], 'nothing noted as unprotected');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(managerHome, { recursive: true, force: true });
+  }
+});
+
+// The reasons the labelling code gives are English and say what to do.
+test('label failures read as English reasons', () => {
+  assert.match(labelFailureReason('not_owner S-1-5-32-544'), /owned by another account \(S-1-5-32-544\), not by you/);
+  assert.match(labelFailureReason('set rc=5'), /access denied/);
+  assert.match(labelFailureReason('set rc=50'), /NTFS/);
 });

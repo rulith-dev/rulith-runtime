@@ -119,8 +119,9 @@ test('MCP configuration uses the header key, exact browser origin, and does not 
   const refused = await send({ 'x-rulith-local': 'fixture-key', origin: base })
   assert.equal(refused.status, 400)
   assert.match((await refused.json()).teaching, /catalog/)
-  const page = await fetch(base + '/mcp-services?k=fixture-key')
-  assert.equal(page.status, 200)
+  // The English tools page (and its old /mcp-services address) is retired with the workbench; the JSON routes stay.
+  const page = await fetch(base + '/mcp-services?k=fixture-key', { redirect: 'manual' })
+  assert.equal(page.status, 404)
   assert.doesNotMatch(await page.text(), /fixture-key/)
   assert.deepEqual((await (await fetch(base + '/mcp-services/state?k=fixture-key')).json()).services, [])
 })

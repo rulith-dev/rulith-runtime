@@ -15,6 +15,7 @@ import { installOutgoingTrim } from './outgoing-trim.mjs';
 import { installProjectContext, readSourceBindings } from './project-source.mjs';
 import { PROJECT_SOURCE, projectRoutes } from './open-project.mjs';
 import { rulithBackstop, workBase } from '../../../worker/adapter-confinement.mjs';
+import { diagnosisReport, legacyFromEnv } from './diagnosis.mjs';
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
@@ -171,7 +172,8 @@ export async function apply(ctx, config = {}) {
   // 1. The Runtime manager: start it unless one already serves this port; stop only the one started here.
   let child = null;
   if (!(await listening(port))) {
-    child = spawn(process.execPath, [config.runtimeEntry], {
+    // `manager`: only the Runtime manager. With no command the Runtime's executable opens this app (rulith-local.mjs).
+    child = spawn(process.execPath, [config.runtimeEntry, 'manager'], {
       env: { ...process.env, RULITH_MANAGER_HOME: home, RULITH_MANAGER_PORT: String(port), RULITH_MANAGER_KEY: key },
       stdio: 'ignore', windowsHide: true,
     });
@@ -360,9 +362,12 @@ export async function apply(ctx, config = {}) {
   // per Agent of the account, whether it is set up here and its Worker's state. Agents are chosen in the sidebar and
   // Connections are reused automatically (PSC 0.2.27 ②), so no selection, Connection or tool count is shown. `isDefault`
   // is the account's own default Agent, passed on only when the service says so.
+  // Agents an earlier English workbench set up here, as the launcher found them (shown in the wizard and settings).
+  const legacyWorkbench = legacyFromEnv();
   const summary = (state) => {
     const instances = (state.instances ?? []).filter((row) => row.mode === 'local_agent' && !row.signedOutAt);
     return {
+      ...(legacyWorkbench ? { legacyWorkbench } : {}),
       signedIn: state.device?.state === 'linked',
       deviceState: state.device?.state ?? 'unknown',
       account: state.device?.account?.name ?? '',
@@ -557,6 +562,9 @@ export async function apply(ctx, config = {}) {
     'POST /rulith/api/projects/open': (body) => projects.open(body),
     'GET /rulith/api/health': (query) => health(query),
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
+    // Settings → Advanced → Diagnosis: versions, isolation status, folders (diagnosis.mjs). Paths and versions only.
+    'GET /rulith/api/diagnosis': () => diagnosisReport({ managerHome: home, dshHome: process.env.DSH_HOME, appHome: process.env.RULITH_DSH_APP_HOME,
+      kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME, keyFile: config.keyFile, legacyWorkbench }),
     'GET /rulith/api/worker': (query) => workerTrace(query),
     'POST /rulith/api/signin': async () => {
       const reply = await manager('/manager/device/start', { consoleUrl, name: os.hostname() });
@@ -667,8 +675,6 @@ export async function apply(ctx, config = {}) {
       if (view.ended) target.holder.boards.drop(target.conversationKey);
       return view;
     },
-    // The workbench address carries the manager key: handed out only on this guarded same-origin request.
-    'POST /rulith/api/workbench': async () => ({ url: `http://127.0.0.1:${port}/?k=${key}` }),
   };
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix', path: '/rulith/api',

@@ -132,7 +132,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
   const protectCredentialRoots = () => {
     if (!confined) return []
     mkdirSync(registry.root, { recursive: true })
-    const labelled = ensureCredentialRootLabels(credentialRootsOwned())
+    const labelled = ensureCredentialRootLabels(credentialRootsOwned(), { noteTo: registry.root })
     const refusal = credentialRootRefusal(labelled)
     if (refusal) console.error(`Rulith: ${refusal}`)
     return labelled.unlabeled
@@ -379,7 +379,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     // setup step) pointed somewhere it must not go. Opening spawns nothing; starting does.
     if (requirePaired) {
       const exposure = managerExposure(loadInstanceConfig(resolve(row.directory)), resolve(row.directory))
-      if (exposure !== null) return `Instance ${row.name} cannot start: ${exposure} Fix it in this instance's Setup or Tools page.`
+      if (exposure !== null) return `Instance ${row.name} cannot start: ${exposure} Fix the path in this instance's local.json or Worker tool manifest, then set it up on this computer again.`
     }
     if (text(row.origin) !== grant.origin || text(row.accountId) !== String(grant.account?.id ?? '')) {
       return `Instance ${row.name} was attached to a different account or Console address than the one signed in now. Attach it again before using it.`
@@ -1212,21 +1212,14 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     }),
 
     /**
-     * Open this instance's loopback UI and return the exact address for it.
-     *
-     * The address carries this instance's key, and `manager` names where the operator came
-     * from so the page can render a way back. That parameter holds the manager's own browser
-     * key, which is what `GET /` on the manager requires — the alternative tried first, a
-     * single-use ticket redirecting to the real key, was worse in the way that matters:
-     * whoever held the ticket could read the redirect's `Location` and end up with the full
-     * key anyway, so it bought no isolation and cost a link that broke on a second click.
-     *
-     * That key is a loopback browser capability of this run, and an entirely different thing
-     * from the cloud device management token, which appears in no URL, no page, no child
-     * environment and no status body.
+     * Start this instance's loopback host if needed and return its exact address (the Rulith app's host reads the
+     * Worker's events there). The address carries this instance's key: a loopback capability of this run, and an
+     * entirely different thing from the cloud device management token, which appears in no URL, no child environment
+     * and no status body. `managerReturnUrl`, when a caller still passes one, is appended as `manager=`.
      */
     open: (id, page = '/') => admit(() => lifecycle(id, async () => {
-      if (!['/', '/setup', '/worker-tools'].includes(page)) throw new Error('Open the conversation, setup, or tool page of an instance.')
+      // Only the host's own address: its pages (conversation, setup, tools) are retired with the English workbench.
+      if (page !== '/') throw new Error('Open an instance at its own address; its pages are retired.')
       const { host, hostGeneration } = await ensureHostLocked(id)
       const back = managerReturnUrl === undefined ? '' : '&manager=' + encodeURIComponent(managerReturnUrl())
       return { url: `http://127.0.0.1:${host.port}${page}?k=${encodeURIComponent(host.key)}${back}`, hostPort: host.port, hostGeneration }
@@ -1606,7 +1599,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         const answer = await host.stopRole(role, { forceAfterDrain: true })
         results.push({ role, state: answer.body.state, forced: answer.body.forced === true, teaching: text(answer.body.teaching) })
       }
-      if (runningRoles(id).length > 0) throw new Error('The owned processes have been asked to end after the graceful drain bound, but their exit has not been observed. Nothing was removed; check Trace and retry.')
+      if (runningRoles(id).length > 0) throw new Error('The owned processes have been asked to end after the graceful drain bound, but their exit has not been observed. Nothing was removed; check its output and retry.')
       await closeHostLocked(id)
       const row = record(id)
       await registry.update((state) => { state.instances = state.instances.filter((entry) => entry.id !== id); return state })

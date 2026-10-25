@@ -93,11 +93,34 @@ export function labelOpsScript() {
     '  return null;',
     '}',
     "'@",
+    // Setting a mandatory label needs WRITE_OWNER. A folder on a non-system drive often inherits an access list that
+    // gives its owner only Modify (no WRITE_OWNER); the owner's implicit WRITE_DAC lets it add one allow entry for
+    // itself (TakeOwnership, inherited by what is inside) and then set the label. Objects owned by anyone else are
+    // never touched. `ungrant` removes exactly that entry again.
+    "function IsDir($p){ [IO.Directory]::Exists($p) }",
+    "function AccessOf($p){ if(IsDir $p){ [IO.Directory]::GetAccessControl($p,'Access') } else { [IO.File]::GetAccessControl($p,'Access') } }",
+    "function SaveAccess($p,$sec){ if(IsDir $p){ [IO.Directory]::SetAccessControl($p,$sec) } else { [IO.File]::SetAccessControl($p,$sec) } }",
+    'function OwnerRule($p){',
+    '  $me=[Security.Principal.WindowsIdentity]::GetCurrent().User',
+    "  $inherit= if(IsDir $p){ [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None }",
+    '  New-Object Security.AccessControl.FileSystemAccessRule($me,[Security.AccessControl.FileSystemRights]::TakeOwnership,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)',
+    '}',
+    'function Grant($p){',
+    "  $sec= if(IsDir $p){ [IO.Directory]::GetAccessControl($p,'Owner') } else { [IO.File]::GetAccessControl($p,'Owner') }",
+    '  $owner=$sec.GetOwner([Security.Principal.SecurityIdentifier]); $me=[Security.Principal.WindowsIdentity]::GetCurrent().User',
+    '  if($owner.Value -ne $me.Value){ throw "not_owner $($owner.Value)" }',
+    '  $acl=AccessOf $p; $acl.AddAccessRule((OwnerRule $p)); SaveAccess $p $acl',
+    '}',
+    'function Ungrant($p){ $acl=AccessOf $p; [void]$acl.RemoveAccessRule((OwnerRule $p)); SaveAccess $p $acl }',
+    'function SetLabel($p,$psacl){ [Iso.Lbl]::SetNamedSecurityInfoW($p,1,0x10,[IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero,$psacl) }',
     '$out=@()',
     'foreach($o in $ops){',
     '  try{',
     "    if($o.op -eq 'verifyTree'){",
     '      $out+=@{path=$o.path;ok=$true;unprotected=[Iso.Lbl]::FirstUnprotected($o.path)}',
+    "    } elseif($o.op -eq 'ungrant'){",
+    '      Ungrant $o.path',
+    '      $out+=@{path=$o.path;ok=$true}',
     "    } elseif($o.op -eq 'get'){",
     '      $sacl=[IntPtr]::Zero;$sd=[IntPtr]::Zero',
     '      $rc=[Iso.Lbl]::GetNamedSecurityInfoW($o.path,1,0x10,[IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero,[ref]$sacl,[ref]$sd)',
@@ -112,10 +135,18 @@ export function labelOpsScript() {
     '      $present=$false;$psacl=[IntPtr]::Zero;$def=$false',
     '      [Iso.Lbl]::GetSecurityDescriptorSacl($psd,[ref]$present,[ref]$psacl,[ref]$def)|Out-Null',
     // SE_FILE_OBJECT = 1, LABEL_SECURITY_INFORMATION = 0x10; inheritable labels are propagated to existing children.
-    '      $rc=[Iso.Lbl]::SetNamedSecurityInfoW($o.path,1,0x10,[IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero,$psacl)',
-    '      [Iso.Lbl]::LocalFree($psd)|Out-Null',
+    '      $granted=$false',
+    '      try {',
+    '        $rc=SetLabel $o.path $psacl',
+    // ERROR_ACCESS_DENIED (5): no WRITE_OWNER. With `grant`, add it for the owner and try once more; undo it if that fails.
+    '        if($rc -eq 5 -and $o.grant){',
+    '          Grant $o.path; $granted=$true',
+    '          $rc=SetLabel $o.path $psacl',
+    '          if($rc -ne 0){ Ungrant $o.path; $granted=$false }',
+    '        }',
+    '      } finally { [Iso.Lbl]::LocalFree($psd)|Out-Null }',
     '      if($rc -ne 0){ throw "set rc=$rc" }',
-    '      $out+=@{path=$o.path;ok=$true}',
+    '      $out+=@{path=$o.path;ok=$true;granted=$granted}',
     '    }',
     '  } catch { $out+=@{path=$o.path;ok=$false;error="$_"} }',
     '}',
@@ -143,6 +174,16 @@ export function labelOps(ops, { env = process.env, run = execFileSync } = {}) {
   }
 }
 
+/** The helper's error for a label operation, as an English reason. */
+export function labelFailureReason(error) {
+  const text = String(error ?? 'unknown')
+  const owner = /not_owner (S-[0-9-]+)/.exec(text)
+  if (owner) return `it is owned by another account (${owner[1]}), not by you, so Rulith leaves its access settings alone`
+  if (/set rc=5\b/.test(text)) return 'Windows denied changing its integrity label (access denied), even after granting you the right to'
+  if (/set rc=(50|1|87)\b/.test(text)) return 'its drive does not support integrity labels (use an NTFS drive)'
+  return text.slice(0, 200)
+}
+
 const labelLine = (path, { env = process.env, run = execFileSync } = {}) => {
   try { return String(run(icaclsExe(env), [path], { encoding: 'latin1', windowsHide: true })).split(/\r?\n/).find((l) => /Mandatory Level/i.test(l)) ?? '' }
   catch { return '' }
@@ -168,13 +209,13 @@ function labelCredentialRoots(paths, options = {}) {
   const outcome = new Map()
   if (paths.length === 0) return outcome
   const plan = paths.map((path) => ({ path, directory: isDirectory(path) }))
-  const results = labelOps(plan.flatMap(({ path, directory }) => [{ op: 'set', path, sddl: directory ? HOME_LABEL_SDDL : FILE_LABEL_SDDL },
+  const results = labelOps(plan.flatMap(({ path, directory }) => [{ op: 'set', path, sddl: directory ? HOME_LABEL_SDDL : FILE_LABEL_SDDL, grant: true },
     ...(directory ? [{ op: 'verifyTree', path }] : [])]), options)
   const reverts = []
   let at = 0
   for (const { path, directory } of plan) {
     const set = results[at++], tree = directory ? results[at++] : undefined
-    if (!set?.ok) { outcome.set(path, { ok: false, reason: `the label could not be applied (${set?.error ?? 'unknown'})` }); continue }
+    if (!set?.ok) { outcome.set(path, { ok: false, reason: `the label could not be applied: ${labelFailureReason(set?.error)}` }); continue }
     if (!homeLabelVerified(path, options)) { outcome.set(path, { ok: false, reason: 'the label was not present after it was applied' }); continue }
     if (directory && (!tree?.ok || tree.unprotected)) {
       reverts.push({ op: 'set', path, sddl: NO_LABEL_SDDL })
@@ -196,27 +237,32 @@ export function ensureHomeLabel(path, options = {}) {
   return result.ok ? { ok: true, platform: 'win32' } : { ok: false, platform: 'win32', reason: result.reason }
 }
 
-/** Label a directory Low (inheritable, propagated to existing children) and verify it. Windows only. */
+/**
+ * Label a directory Low (inheritable, propagated to existing children) and verify it. Windows only. `granted` says the
+ * owner was given WRITE_OWNER on it to make that possible (see labelOpsScript); the caller decides whether to undo it.
+ */
 export function ensureLowLabel(dir, options = {}) {
   if (process.platform !== 'win32') return { ok: true, platform: process.platform, skipped: 'label is a win32 mechanism' }
-  const [result] = labelOps([{ op: 'set', path: dir, sddl: LOW_LABEL_SDDL }], options)
-  if (!result?.ok) return { ok: false, platform: 'win32', reason: `apply failed: ${result?.error ?? 'unknown'}` }
-  if (!lowLabelVerified(dir, options)) return { ok: false, platform: 'win32', reason: 'Low label not present after apply' }
-  return { ok: true, platform: 'win32' }
+  const [result] = labelOps([{ op: 'set', path: dir, sddl: LOW_LABEL_SDDL, grant: true }], options)
+  if (!result?.ok) return { ok: false, platform: 'win32', reason: labelFailureReason(result?.error) }
+  if (!lowLabelVerified(dir, options)) return { ok: false, platform: 'win32', granted: result.granted === true, reason: 'the Low label was not present after it was applied' }
+  return { ok: true, platform: 'win32', granted: result.granted === true }
 }
 
 /**
  * Make sure every existing directory or file in `paths` is a labeled credential root: those already carrying no-read-up
  * are left alone; the rest are labeled (and, for a directory, checked inside) in one batch. Returns
- * { ok, unlabeled: [paths still not protected], reasons: { path: why } }. Windows only.
+ * { ok, unlabeled: [paths still not protected], reasons: { path: why } }. With `noteTo` (a manager home) the outcome is
+ * noted for Diagnosis. Windows only.
  */
-export function ensureCredentialRootLabels(paths, options = {}) {
+export function ensureCredentialRootLabels(paths, { noteTo, ...options } = {}) {
   if (process.platform !== 'win32') return { ok: true, unlabeled: [], reasons: {} }
   const existing = [...new Set(paths.filter((p) => typeof p === 'string' && p && existsSync(p)).map((p) => resolve(p)))]
   const missing = existing.filter((p) => !homeLabelVerified(p, options))
   const reasons = {}
   for (const [path, result] of labelCredentialRoots(missing, options)) if (!result.ok) reasons[path] = result.reason
   const unlabeled = Object.keys(reasons)
+  if (noteTo) noteProtection(noteTo, 'root', existing.map((path) => ({ path, ok: !(path in reasons), reason: reasons[path] })))
   return { ok: unlabeled.length === 0, unlabeled, reasons }
 }
 
@@ -246,23 +292,46 @@ const writeRecord = (file, record) => {
 /**
  * Open a project folder for confined use: record its prior label once (the first holder), add `holder`, and give it the
  * Low label (propagated). The record lives in the manager home (a credential root), so a confined command cannot forge
- * what the folder is restored to. Windows only; elsewhere a no-op.
+ * what the folder is restored to. When the label needed the owner to be granted WRITE_OWNER on the folder first, the
+ * record says so (`granted`), and the last release takes exactly that entry away again. If the folder cannot be
+ * labelled, this holder is taken off again and the reason is returned (the caller refuses the open). The outcome is
+ * noted for Diagnosis. Windows only; elsewhere a no-op.
  */
 export function labelProjectOpen({ managerHome, directory, holder }, options = {}) {
   if (process.platform !== 'win32') return { ok: true, skipped: 'label is a win32 mechanism' }
   if (!managerHome || !directory || !holder) return { ok: false, reason: 'manager home, folder and holder are required' }
   const file = recordFile(managerHome, directory)
   let record = readRecord(file)
-  if (record === undefined) {
+  // Already held by this holder and still Low: nothing to do (no helper run).
+  if (record?.holders?.includes(holder) && lowLabelVerified(directory, options)) return { ok: true, prior: record.prior, granted: record.granted === true }
+  const fresh = record === undefined
+  if (fresh) {
     const [prior] = labelOps([{ op: 'get', path: directory }], options)
-    if (!prior?.ok) return { ok: false, reason: `could not read the folder's label: ${prior?.error ?? 'unknown'}` }
-    record = { directory: resolve(directory), prior: ownLabel(prior.sddl), holders: [] }
+    if (!prior?.ok) {
+      const reason = `its current label could not be read: ${labelFailureReason(prior?.error)}`
+      noteProtection(managerHome, 'project', [{ path: resolve(directory), ok: false, reason }])
+      return { ok: false, reason }
+    }
+    record = { directory: resolve(directory), prior: ownLabel(prior.sddl), holders: [], granted: false }
   }
-  if (!record.holders.includes(holder)) record.holders.push(holder)
+  const added = !record.holders.includes(holder)
+  if (added) record.holders.push(holder)
   record.openedAt = new Date().toISOString()
   writeRecord(file, record)
   const result = ensureLowLabel(directory, options)
-  return result.ok ? { ok: true, prior: record.prior } : result
+  if (result.granted) { record.granted = true; writeRecord(file, record) }
+  if (!result.ok) {
+    if (added) record.holders = record.holders.filter((h) => h !== holder)
+    if (record.holders.length === 0) {
+      // Nothing holds it: put back what was there (label, and the entry this attempt may have added).
+      labelOps([{ op: 'set', path: record.directory, sddl: record.prior || NO_LABEL_SDDL, grant: true }, ...(record.granted ? [{ op: 'ungrant', path: record.directory }] : [])], options)
+      rmSync(file, { force: true })
+    } else writeRecord(file, record)
+    noteProtection(managerHome, 'project', [{ path: record.directory, ok: false, reason: result.reason }])
+    return { ok: false, reason: result.reason }
+  }
+  noteProtection(managerHome, 'project', [{ path: record.directory, ok: true }])
+  return { ok: true, prior: record.prior, granted: record.granted === true }
 }
 
 /**
@@ -278,10 +347,55 @@ export function releaseProjectLabel({ managerHome, directory, holder }, options 
   if (record === undefined) return { ok: true, skipped: 'no record' }
   record.holders = record.holders.filter((h) => h !== holder)
   if (record.holders.length > 0) { writeRecord(file, record); return { ok: true, remaining: record.holders.length } }
-  const [result] = labelOps([{ op: 'set', path: record.directory, sddl: record.prior || NO_LABEL_SDDL }], options)
-  if (!result?.ok) return { ok: false, reason: `could not restore the folder's label: ${result?.error ?? 'unknown'}` }
+  // The label first (it still needs the WRITE_OWNER entry, if one was added), then the entry this record added.
+  const [result, ungrant] = labelOps([{ op: 'set', path: record.directory, sddl: record.prior || NO_LABEL_SDDL, grant: true },
+    ...(record.granted ? [{ op: 'ungrant', path: record.directory }] : [])], options)
+  if (!result?.ok || (record.granted && !ungrant?.ok)) {
+    const reason = !result?.ok ? `its previous label could not be restored: ${labelFailureReason(result?.error)}`
+      : `the access entry Rulith added could not be removed: ${labelFailureReason(ungrant?.error)}`
+    writeRecord(file, record)
+    noteProtection(managerHome, 'project', [{ path: record.directory, ok: false, reason }])
+    return { ok: false, reason }
+  }
   rmSync(file, { force: true })
-  return { ok: true, restored: record.prior || NO_LABEL_SDDL }
+  noteProtection(managerHome, 'project', [{ path: record.directory, ok: true }])
+  return { ok: true, restored: record.prior || NO_LABEL_SDDL, ungranted: record.granted === true }
+}
+
+// ── What could not be protected, for Diagnosis ────────────────────────────────
+// 中文说明：哪些凭据根、项目目录没能保护以及原因，记在管理器 home 的 isolation-status.json（凭据根内），供设置页「诊断」显示。
+// 只是说明，不是安全判断的依据：拒绝运行由启动器每次自己核验。
+const statusFile = (managerHome) => join(managerHome, 'isolation-status.json')
+/**
+ * Note the outcome of protecting credential roots (`kind` 'root') or project folders ('project'): an entry that is not
+ * ok is kept with its reason and time, an ok one is cleared. Best-effort; never throws.
+ */
+export function noteProtection(managerHome, kind, outcomes) {
+  if (typeof managerHome !== 'string' || !managerHome || !Array.isArray(outcomes) || outcomes.length === 0) return
+  try {
+    const file = statusFile(managerHome)
+    let state = {}
+    try { state = JSON.parse(readFileSync(file, 'utf8')) } catch { state = {} }
+    const rows = Array.isArray(state.problems) ? state.problems : []
+    const key = (row) => `${row.kind}:${fold(row.path)}`
+    const byKey = new Map(rows.filter((row) => row && typeof row.path === 'string').map((row) => [key(row), row]))
+    const at = new Date().toISOString()
+    for (const { path, ok, reason } of outcomes) {
+      if (typeof path !== 'string' || !path) continue
+      const row = { kind, path: resolve(path) }
+      if (ok) byKey.delete(key(row))
+      else byKey.set(key(row), { ...row, reason: String(reason ?? 'unknown').slice(0, 400), at })
+    }
+    if (!existsSync(managerHome)) return
+    writeRecord(file, { problems: [...byKey.values()] })
+  } catch { /* diagnosis only */ }
+}
+/** What could not be protected, as noted: [{ kind, path, reason, at }]. */
+export function protectionProblems(managerHome) {
+  try {
+    const rows = JSON.parse(readFileSync(statusFile(managerHome), 'utf8')).problems
+    return Array.isArray(rows) ? rows.filter((row) => row && typeof row.path === 'string' && typeof row.reason === 'string') : []
+  } catch { return [] }
 }
 
 /** The project folders `holder` holds, with when one was last opened: [{ directory, openedAt }]. */

@@ -11,16 +11,14 @@ import { createConversationReader } from '../agent/conversation-reader.mjs'
 import { DEFAULT_MODEL_URL, reviewerRoute } from './model-settings.mjs'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { localPage, projectOperations } from './local-ui.mjs'
+import { projectOperations } from './operations.mjs'
 import { createMcpServices } from './mcp-services.mjs'
-import { workerToolsPage } from './worker-tools-ui.mjs'
 import { createWorkerToolManagement } from './worker-tool-management.mjs'
 import { writeJsonAtomic } from './manager-registry.mjs'
 import { createSetupService } from './setup-service.mjs'
-import { setupPage } from './setup-ui.mjs'
 import { attachmentInstruction, createMaterialService } from './material-service.mjs'
 import { noteChildExited, noteChildStarted, processStamp } from './process-identity.mjs'
 import { clearStaleLock } from './manager-registry.mjs'
@@ -30,7 +28,13 @@ import {
   MAX_MATERIAL_REQUEST_BYTES, MaterialError, defaultMaterialRoot, materialIdentity, materialDeviceFingerprint,
 } from '../worker/material-store.mjs'
 
-const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
+// npm links a package's command on Linux and macOS: `process.argv[1]` is then the link, while this module's URL is the
+// file it points to. Comparing the resolved path too keeps `rulith` working there (on Windows npm writes a shim instead).
+const IS_MAIN = (() => {
+  const invoked = process.argv[1] ?? ''
+  if (import.meta.url === pathToFileURL(invoked).href) return true
+  try { return import.meta.url === pathToFileURL(realpathSync(invoked)).href } catch { return false }
+})()
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROLE_SET = new Set(['agent', 'worker'])
 const MAX_BODY = 64 * 1024
@@ -728,7 +732,7 @@ export function createLocalHost({
     if (process.platform === 'win32' && adapterSandboxMode(confinedEnv) === 'required') {
       const roots = credentialRoots(confinedEnv)
       let labelled
-      try { labelled = ensureCredentialRootLabels(roots) } catch (error) { labelled = { unlabeled: roots, reasons: Object.fromEntries(roots.map((root) => [root, String(error?.message ?? error)])) } }
+      try { labelled = ensureCredentialRootLabels(roots, { noteTo: confinedEnv.RULITH_MANAGER_HOME }) } catch (error) { labelled = { unlabeled: roots, reasons: Object.fromEntries(roots.map((root) => [root, String(error?.message ?? error)])) } }
       // The launcher refuses an unprotected root at every launch on its own; this names what is wrong in the refusal.
       const refusal = credentialRootRefusal(labelled)
       if (refusal) { confinedEnv.RULITH_CONFINEMENT_REFUSAL = refusal; console.error(`Rulith: ${refusal}`) }
@@ -764,7 +768,7 @@ export function createLocalHost({
       if (Date.now() - components.worker.startedAt >= workerStableMs) workerFailures = 0
       const delay = workerRestartDelays[workerFailures++]
       if (delay === undefined) {
-        workerFailure = 'The Worker repeatedly exited. Automatic retries have stopped. Review Trace and tool setup, then turn this setting on again.'
+        workerFailure = 'The Worker repeatedly exited. Automatic retries have stopped. Review its output and tool setup, then turn this setting on again.'
         emit('worker', 'restart-failed', { note: workerFailure, failures: workerFailures })
         return
       }
@@ -920,9 +924,9 @@ export function createLocalHost({
         return { status: 409, body: { ok: false, state: 'cancelled', teaching:
           `A stop was requested for the ${named} before this start finished, so this start is not confirmed. Nothing about it failed.`
           + (exited
-            ? ' It is not running; retry from the conversation or local tools setting when the workbench is ready.'
+            ? ' It is not running; retry once Rulith is ready (in the app, set this Agent up on this computer again).'
             : ' The stop signal was sent and it has not exited yet, so anything it reported'
-              + ' after that is not a confirmation of this start. Watch Trace for its exit.') } }
+              + ' after that is not a confirmation of this start. Its exit shows in this instance\'s event stream.') } }
       } else if (outcome === 'unconfirmed') {
         // Neither success nor failure, and said as itself. The process is alive, so calling
         // this a failure would be wrong; it has not reported that it finished initializing,
@@ -931,7 +935,7 @@ export function createLocalHost({
           `${named} was started and is still running, but it has not reported that it finished initializing.`
           + ` Rulith confirms a start by the role's own readiness event — the Agent reports its task endpoint is listening,`
           + ' the Worker reports its Tool Manifest is loaded — so a program configured under paths that does not send one cannot'
-          + ' be confirmed here. Open Trace to read what it has printed so far.' } }
+          + ' be confirmed here. What it has printed so far is in this instance\'s event stream.' } }
       }
     }
     // Only a confirmed start reaches here with `error === null`: a stop answered above with
@@ -977,7 +981,7 @@ export function createLocalHost({
       const error = role === 'agent' ? startAgent() : startWorker()
       if (error !== null) throw new Error(error)
       const confirmation = await confirmStart(role)
-      if (confirmation.outcome !== 'ready') throw new Error(`${role === 'agent' ? 'Agent' : 'Worker'} reload is ${confirmation.outcome}. Review Trace and setup.`)
+      if (confirmation.outcome !== 'ready') throw new Error(`${role === 'agent' ? 'Agent' : 'Worker'} reload is ${confirmation.outcome}. Review its output and setup.`)
       emit('local', 'role-reloaded', { role, note: `${role === 'agent' ? 'Agent' : 'Worker'} reloaded automatically.` })
     }).catch(error => { workerFailure = role === 'worker' ? error.message : workerFailure; emit('local', 'error', { role, note: error.message }) })
       .finally(() => {
@@ -1000,7 +1004,7 @@ export function createLocalHost({
         agentStarting = (async () => {
           if (running('agent')) {
             const ready = await confirmStart('agent')
-            if (ready.outcome !== 'ready') throw new Error('The Agent has not finished starting. Check Trace and model setup.')
+            if (ready.outcome !== 'ready') throw new Error('The Agent has not finished starting. Check its output and the model settings.')
           } else {
             const answer = await controlRole('agent', 'start', req)
             if (!answer.body.ok) throw new Error(answer.body.teaching)
@@ -1148,7 +1152,7 @@ export function createLocalHost({
         // loopback origin is not this page, and storing a file is an action on the operator's
         // behalf.
         if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
-          return void json(res, 403, { ok: false, teaching: 'Adding a material requires the Local page key and the same origin.' })
+          return void json(res, 403, { ok: false, teaching: 'Adding a material requires this host\'s key and the same origin.' })
         }
         res.setHeader('cache-control', 'no-store')
         try {
@@ -1160,14 +1164,10 @@ export function createLocalHost({
           return void json(res, 200, { ok: true, ...added })
         } catch (error) { return materialFailure(res, error) }
       }
-      if (path === '/setup' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-        return void res.end(setupPage)
-      }
       if (path === '/setup/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...setup.overview() })
       if (path === '/setup/context' && req.method === 'GET') return void json(res, 200, { ok: true, ...await setup.context() })
       if (path.startsWith('/setup/') && req.method === 'POST') {
-        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Setup requires the Local page key and the same origin.' })
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Setup requires this host\'s key and the same origin.' })
         const body = await readJson(req)
         if (mcpServices.busy) return void json(res, 409, { ok: false, teaching: 'Wait for tool configuration to finish.' })
         const operation = { '/setup/pair/start': setup.start, '/setup/pair/poll': setup.poll, '/setup/pair/cancel': setup.cancel,
@@ -1191,20 +1191,6 @@ export function createLocalHost({
             { ok: false, teaching: String(error.message), errorCode: error.errorCode })
         }
       }
-      if (path === '/mcp-services' && req.method === 'GET') {
-        // A retired address that still has to arrive somewhere useful. The launcher's return
-        // address travels with it: dropping the parameter here is how a redirect quietly
-        // becomes the one page in the product with no way back to where the operator came
-        // from, which reads as the manager having lost the instance.
-        const carried = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('manager')
-        res.writeHead(302, { 'cache-control': 'no-store',
-          location: '/worker-tools?k=' + encodeURIComponent(key) + (carried === null ? '' : '&manager=' + encodeURIComponent(carried)) })
-        return void res.end()
-      }
-      if (path === '/worker-tools' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-        return void res.end(workerToolsPage)
-      }
       if (path === '/worker-tools/state' && req.method === 'GET') {
         return void json(res, 200, { ok: true, ...toolOverview() })
       }
@@ -1219,12 +1205,12 @@ export function createLocalHost({
       if ((path.startsWith('/mcp-services/') || path.startsWith('/worker-tools/')) && req.method === 'POST') {
         // Installing executables requires the page's key header and its exact origin, not any loopback origin.
         if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) {
-          return void json(res, 403, { ok: false, teaching: 'Worker tool configuration requires the Local page key and the same origin.' })
+          return void json(res, 403, { ok: false, teaching: 'Worker tool configuration requires this host\'s key and the same origin.' })
         }
         // An Agent on its environment's tools does not edit them from here: they are shared by every
         // Agent, so the workbench is where they change. Its file-tool mode is its own and still saves here.
         if (toolLibrary?.active() === true && path !== '/worker-tools/workspace') {
-          return void json(res, 409, { ok: false, teaching: `This Agent uses this environment's tools. Add or change them under "This environment's tools" in the Rulith workbench.` })
+          return void json(res, 409, { ok: false, teaching: `This Agent uses this computer's shared tool library. Change it through the manager's tool operations (docs/local-mcp-setup.md).` })
         }
         const body = await readJson(req)
         if (mcpServices.busy || setup.busy) return void json(res, 409, { ok: false, teaching: 'Wait for the current tool configuration operation to finish.' })
@@ -1242,12 +1228,6 @@ export function createLocalHost({
             teaching: (result.teaching || 'Tool configuration saved.') + ' The Worker reloads automatically after running executions drain.' })
         }
       }
-      if (path === '/' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-        // The page carries no embedded secret. It reads the key from its own URL, so a
-        // response that escapes the gate would still not hand anyone a working key.
-        return void res.end(localPage)
-      }
       if ((path === '/conversations' || path === '/conversation') && req.method === 'GET') {
         res.setHeader('cache-control', 'no-store')
         if (!historyFile) return void json(res, 200, { ok: true, available: false, items: [] })
@@ -1262,7 +1242,7 @@ export function createLocalHost({
         } catch (error) { return void json(res, 409, { ok: false, teaching: error.message }) }
       }
       if (path === '/conversation/archive' && req.method === 'POST') {
-        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Archiving requires this page key and the same origin.' })
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Archiving requires this host\'s key and the same origin.' })
         if (!historyFile || historyBusy) return void json(res, 409, { ok: false, teaching: 'Conversation history is unavailable or another archive operation is running.' })
         historyBusy = true
         try {
@@ -1341,13 +1321,13 @@ export function createLocalHost({
         })
       }
       if (path === '/worker-setting' && req.method === 'POST') {
-        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Changing this setting requires the Local page key and the same origin.' })
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Changing this setting requires this host\'s key and the same origin.' })
         const body = await readJson(req)
         if (Object.keys(body).some(field => field !== 'enabled')) throw new Error('Unexpected Worker setting fields.')
         return void json(res, 200, { ok: true, ...await setWorkerEnabled(body.enabled, req) })
       }
       if (path === '/turn/stop' && req.method === 'POST') {
-        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Stopping a turn requires the Local page key and the same origin.' })
+        if (req.headers['x-rulith-local'] !== key || (req.headers.origin && req.headers.origin !== 'http://' + req.headers.host)) return void json(res, 403, { ok: false, teaching: 'Stopping a turn requires this host\'s key and the same origin.' })
         const body = await readJson(req)
         if (!running('agent')) return void json(res, 200, { ok: true, state: 'idle' })
         const response = await fetch(`http://127.0.0.1:${components.agent.servePort}/turn/stop`, {
@@ -1662,18 +1642,28 @@ export function createLocalHost({
 export const CLI_HELP = `Rulith
 
 Usage:
-  rulith                      Open the manager: accounts and independent Agent instances
-  rulith setup                Same manager page, for a first installation
-  rulith start                Same manager page
+  rulith                      Open Rulith in the browser: sign in, choose a model, open a folder,
+                              then say what to do
+  rulith app                  The same; rulith start and rulith setup are earlier names for it
+    --no-open                 Print the page's address instead of opening the browser
+    --port <port>             The page's loopback port (default 3080, else a free one)
   rulith kit install general --agent <name> --kit-home <dir> [--manager-home <dir>]
+  rulith manager              Only the local Runtime manager the app runs beside it (no page)
 
 Environment:
-  RULITH_MANAGER_HOME   Manager directory (default ~/.rulith/manager)
-  RULITH_MANAGER_PORT   Manager loopback UI port (default 7780)
-  RULITH_MANAGER_KEY    Fixed manager browser key: 16-128 of A-Z a-z 0-9 - _
+  RULITH_APP_HOME       Where Rulith keeps its files (default ~/.rulith/app)
+  RULITH_MANAGER_HOME   rulith manager: its directory (default ~/.rulith/manager)
+  RULITH_MANAGER_PORT   rulith manager: its loopback port (default 7780)
+  RULITH_MANAGER_KEY    rulith manager: its fixed key, 16-128 of A-Z a-z 0-9 - _
                         (default: 32 random hex characters, new on every run)`
 
-/** Parse without touching state. Kit installation is explicit; the other commands open the workbench. */
+/** The names that open the app: `rulith` alone, and the earlier `start` and `setup` (the workbench they opened is retired). */
+const APP_COMMANDS = new Set(['app', 'start', 'setup'])
+
+/**
+ * Parse without touching state. Kit installation is explicit; `manager` runs only the Runtime manager (the app starts it
+ * this way); every other invocation opens the app, with only the app's own two options passed on to it.
+ */
 export function parseLocalCli(argv, env = {}) {
   if (argv.includes('--help') || argv.includes('-h')) return { help: true }
   if (argv[0] === 'kit') {
@@ -1681,46 +1671,85 @@ export function parseLocalCli(argv, env = {}) {
     return { command: 'kit', args: argv.slice(3) }
   }
   const input = [...argv]
-  const command = ['setup', 'start', 'manager'].includes(input[0]) ? input.shift() : 'start'
-  if (input.length > 0) throw new Error('Unknown Rulith option: ' + input[0])
-  if (String(env.RULITH_LOCAL_CONFIG ?? '').trim() !== '') {
-    throw new Error('RULITH_LOCAL_CONFIG is no longer supported. Unset it and run rulith to open the workbench.')
+  const command = input[0] === 'manager' ? 'manager' : 'app'
+  if (command === 'manager' || APP_COMMANDS.has(input[0])) input.shift()
+  const args = []
+  while (input.length > 0) {
+    const option = input.shift()
+    if (command === 'app' && option === '--no-open') { args.push(option); continue }
+    if (command === 'app' && (option === '--port' || option.startsWith('--port='))) {
+      const raw = option === '--port' ? input.shift() : option.slice('--port='.length)
+      if (raw === undefined || String(raw).trim() === '') throw new Error('--port needs a port number.')
+      args.push('--port', String(localInteger('--port', raw, 0, { min: 0 })))
+      continue
+    }
+    throw new Error('Unknown Rulith option: ' + option)
   }
-  return { command }
+  if (String(env.RULITH_LOCAL_CONFIG ?? '').trim() !== '') {
+    throw new Error('RULITH_LOCAL_CONFIG is no longer supported. Unset it and run rulith.')
+  }
+  // An app launcher before 0.19.0 starts the Runtime with no command and the manager's key in the environment, expecting
+  // the manager (what `rulith` alone opened then). It gets the manager, not a second app beside itself.
+  if (argv.length === 0 && String(env.RULITH_MANAGER_KEY ?? '').trim() !== '') return { command: 'manager', startedByEarlierLauncher: true }
+  return command === 'app' ? { command, args } : { command }
+}
+
+/** The app's DeepSeek Harness needs Node.js 22.19 or later (the package's engines): an English refusal, or null. */
+export function nodeVersionRefusal(version = process.versions.node) {
+  const [major, minor] = String(version).split('.').map(Number)
+  return major > 22 || (major === 22 && minor >= 19) ? null
+    : `Rulith needs Node.js 22.19 or later; this is Node.js ${version}. Install a newer Node.js from https://nodejs.org and run rulith again.`
 }
 
 if (IS_MAIN) {
   let cli
   try { cli = parseLocalCli(process.argv.slice(2), process.env) } catch (error) { console.error(error.message); process.exit(1) }
   if (cli.help) { console.log(CLI_HELP); process.exit(0) }
-  /**
-   * Started after this module finishes evaluating, deliberately.
-   *
-   * The manager builds its instance hosts out of `createLocalHost`, so its module graph
-   * depends on this one. Importing it from a *top-level* await here would suspend this
-   * module's evaluation while the manager's graph waited for this module to finish — a
-   * cycle that never settles and exits with nothing printed. Loading it from a callback
-   * lets this module complete first, which is all the cycle needs.
-   */
-  void (cli.command === 'kit'
-    ? import('../kits/general/installer.mjs').then(({ installGeneral, parseKitInstall }) => {
-      console.log(installGeneral(parseKitInstall(cli.args, process.env)))
+  const tooOld = nodeVersionRefusal()
+  if (tooOld) { console.error(tooOld); process.exit(1) }
+  if (cli.startedByEarlierLauncher) {
+    console.error('Rulith: started as the local Runtime manager because RULITH_MANAGER_KEY is set and no command was given'
+      + ' (how an app launcher before 0.19.0 starts it). Run `rulith app` to open the app.')
+  }
+  if (cli.command === 'app') {
+    // The app's launcher reads its arguments as it does when run on its own (`npm run app`): from process.argv, after the
+    // script. So the script and the checked options are put there, and the launcher runs in this process.
+    const launcher = new URL('../app/harness/web/start-deep-rulith.mjs', import.meta.url)
+    process.argv = [process.argv[0], fileURLToPath(launcher), ...cli.args]
+    import(launcher.href).catch((error) => {
+      console.error(String(error?.message ?? error))
+      process.exit(1)
     })
-    : import('./manager-server.mjs').then(async ({ createManagerServer }) => {
-    const { defaultManagerRoot } = await import('./manager-registry.mjs')
-    const root = (process.env.RULITH_MANAGER_HOME ?? '').trim() || defaultManagerRoot()
-    const manager = createManagerServer({
-      root,
-      port: localInteger('RULITH_MANAGER_PORT', process.env.RULITH_MANAGER_PORT, 7780),
-      key: (process.env.RULITH_MANAGER_KEY ?? '').trim() || randomUUID().replace(/-/g, ''),
+  } else {
+    /**
+     * Started after this module finishes evaluating, deliberately.
+     *
+     * The manager builds its instance hosts out of `createLocalHost`, so its module graph
+     * depends on this one. Importing it from a *top-level* await here would suspend this
+     * module's evaluation while the manager's graph waited for this module to finish — a
+     * cycle that never settles and exits with nothing printed. Loading it from a callback
+     * lets this module complete first, which is all the cycle needs.
+     */
+    void (cli.command === 'kit'
+      ? import('../kits/general/installer.mjs').then(({ installGeneral, parseKitInstall }) => {
+        console.log(installGeneral(parseKitInstall(cli.args, process.env)))
+      })
+      : import('./manager-server.mjs').then(async ({ createManagerServer }) => {
+      const { defaultManagerRoot } = await import('./manager-registry.mjs')
+      const root = (process.env.RULITH_MANAGER_HOME ?? '').trim() || defaultManagerRoot()
+      const manager = createManagerServer({
+        root,
+        port: localInteger('RULITH_MANAGER_PORT', process.env.RULITH_MANAGER_PORT, 7780),
+        key: (process.env.RULITH_MANAGER_KEY ?? '').trim() || randomUUID().replace(/-/g, ''),
+      })
+      await manager.listen()
+      // No address with a key: the manager has no page, and the app is given its key by the launcher, never by this line.
+      console.log(`Rulith manager: http://127.0.0.1:${manager.port} (the local service the Rulith app uses; it has no page)`)
+      console.log(`Instances: ${resolve(root)} · credentials are stored here; execution credentials are sent to their own configured Gateway.`)
+      process.on('SIGINT', async () => { await manager.close(); process.exit(0) })
+    })).catch((error) => {
+      console.error(String(error?.message ?? error))
+      process.exit(1)
     })
-    await manager.listen()
-    console.log('Rulith')
-    console.log(`Workbench: http://127.0.0.1:${manager.port}/?k=${manager.key}`)
-    console.log(`Instances: ${resolve(root)} · credentials are stored here; execution credentials are sent to their own configured Gateway.`)
-    process.on('SIGINT', async () => { await manager.close(); process.exit(0) })
-  })).catch((error) => {
-    console.error(String(error?.message ?? error))
-    process.exit(1)
-  })
+  }
 }

@@ -63,35 +63,70 @@ async function stop(child) {
   if (child.exitCode === null && child.signalCode === null) {
     try { process.kill(child.pid, 0); alive = true } catch { /* gone */ }
   }
-  if (alive) throw new Error(`Published workbench did not stop after verification: ${killResult?.stderr?.slice(0, 300) ?? ''}`)
+  if (alive) throw new Error(`A published command did not stop after verification: ${killResult?.stderr?.slice(0, 300) ?? ''}`)
 }
 
-async function smokeStart(packageRoot, managerHome) {
-  const port = await unusedPort()
-  const key = `release-smoke-${randomUUID().replaceAll('-', '')}`
-  const child = spawn(process.execPath, [join(packageRoot, 'local/rulith-local.mjs'), 'start'], {
+/** Start one of the package's commands and wait for a line of its output; the child is returned running. */
+async function startUntil(packageRoot, args, env, pattern, what) {
+  const child = spawn(process.execPath, [join(packageRoot, 'local/rulith-local.mjs'), ...args], {
     cwd: packageRoot, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, RULITH_MANAGER_HOME: managerHome, RULITH_MANAGER_PORT: String(port), RULITH_MANAGER_KEY: key },
+    env: { ...process.env, ...env },
   })
   let output = ''
   const line = chunk => { output += chunk.toString('utf8'); if (output.length > 8_000) output = output.slice(-8_000) }
   child.stdout.on('data', line); child.stderr.on('data', line)
+  const deadline = Date.now() + 60_000
+  while (!pattern.test(output) && child.exitCode === null && Date.now() < deadline)
+    await new Promise(accept => setTimeout(accept, 100))
+  if (!pattern.test(output)) {
+    await stop(child)
+    throw new Error(`published ${what} did not start: ${output.slice(0, 800)}`)
+  }
+  return { child, output: () => output }
+}
+
+/**
+ * The published command, isolated in a temporary home: the Runtime manager answers its key and serves no page (the
+ * English workbench is retired), and `rulith app` starts the app (dsh with Rulith's overlay, and the manager beside it)
+ * whose page and host routes answer.
+ */
+async function smokeStart(packageRoot, temp) {
+  const port = await unusedPort()
+  const key = `release-smoke-${randomUUID().replaceAll('-', '')}`
+  const manager = await startUntil(packageRoot, ['manager'], { RULITH_MANAGER_HOME: join(temp, 'manager'),
+    RULITH_MANAGER_PORT: String(port), RULITH_MANAGER_KEY: key }, /Rulith manager: /, 'manager')
   try {
-    const deadline = Date.now() + 15_000
-    while (!output.includes('Workbench:') && child.exitCode === null && Date.now() < deadline)
-      await new Promise(accept => setTimeout(accept, 100))
-    assert.equal(child.exitCode, null, `published workbench exited: ${output.slice(0, 500)}`)
-    assert.match(output, /Workbench:/, `published workbench did not start: ${output.slice(0, 500)}`)
+    assert.equal(manager.output().includes(key), false, 'the published manager printed its key')
     const page = await fetch(`http://127.0.0.1:${port}/?k=${key}`, { signal: AbortSignal.timeout(5_000) })
-    assert.equal(page.status, 200, 'published workbench did not serve its authenticated page')
-    assert.match(await page.text(), /Rulith/i)
+    assert.equal(page.status, 404, 'the published manager still serves a page')
     const state = await fetch(`http://127.0.0.1:${port}/manager/state`, {
       headers: { 'x-rulith-manager': key }, signal: AbortSignal.timeout(5_000),
     })
     assert.equal(state.status, 200, 'published manager status was unavailable')
     assert.equal((await state.json()).ok, true)
-    console.log(`published ${packageName}: isolated workbench started and answered authenticated UI/status requests`)
-  } finally { await stop(child) }
+  } finally { await stop(manager.child) }
+  const home = join(temp, 'home')
+  const app = await startUntil(packageRoot, ['app', '--no-open', '--port', String(await unusedPort())],
+    { RULITH_APP_HOME: join(temp, 'app-home'), HOME: home, USERPROFILE: home }, /dsh web: http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/, 'app')
+  try {
+    const url = new URL(/dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(app.output())[1])
+    // dsh trades the printed token for a cookie on a redirect to its page, as a browser follows it.
+    const entry = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10_000) })
+    const cookie = (entry.headers.get('set-cookie') ?? '').split(';')[0]
+    assert.ok(entry.status === 303 && cookie, `the published app did not accept its printed address (${entry.status})`)
+    const index = await fetch(new URL(entry.headers.get('location') ?? './', url), { headers: { cookie }, signal: AbortSignal.timeout(10_000) })
+    assert.equal(index.status, 200, 'the published app did not serve its page')
+    assert.match(await index.text(), /<title>Rulith<\/title>/)
+    // The app host's routes take the page's dsh session (model-command isolation, D-1024a): refused without it, answered
+    // with the cookie the printed address gave this check, exactly as for the page itself.
+    const api = new URL('/rulith/api/state', url)
+    const refused = await fetch(api, { headers: { 'x-deep-rulith': '1' }, signal: AbortSignal.timeout(20_000) })
+    assert.equal(refused.status, 401, 'the published app host answered without the page session')
+    const state = await fetch(api, { headers: { 'x-deep-rulith': '1', cookie }, signal: AbortSignal.timeout(20_000) })
+    assert.equal(state.status, 200, 'the published app host did not answer its page session')
+    assert.equal(typeof (await state.json()).ok, 'boolean')
+    console.log(`published ${packageName}: isolated manager answered without a page, and the app served its page and host routes`)
+  } finally { await stop(app.child) }
 }
 
 const temp = await mkdtemp(join(tmpdir(), 'rulith-published-'))
@@ -144,7 +179,7 @@ try {
   if (version === localPackage.version) {
     assert.deepEqual(manifestBytes, await readFile(join(ROOT, 'artifact-manifest.json')),
       'npm published an artifact manifest different from this verified release')
-    for (const file of ['CHANGELOG.md', 'README.md', 'CONTRIBUTING.md', 'docs/local-authoring.md']) {
+    for (const file of ['CHANGELOG.md', 'README.md', 'CONTRIBUTING.md', 'app/README.md', 'app/NOTICE']) {
       assert.deepEqual(await readFile(join(packageRoot, file)), await readFile(join(ROOT, file)),
         `npm published different release documentation: ${file}`)
     }
@@ -153,7 +188,7 @@ try {
   const install = join(temp, 'install')
   await mkdir(install)
   command('npm', ['install', '--prefix', install, packageName, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', `--registry=${registry}`])
-  await smokeStart(join(install, 'node_modules', 'rulith'), join(temp, 'manager'))
+  await smokeStart(join(install, 'node_modules', 'rulith'), temp)
   if (fullAuthoring) {
     const probe = await downloadAndProbePublishedAuthoring(checkerManifest, join(temp, 'authoring'), {
       downloadFile: checkerModule.downloadPinnedAuthoringFile,

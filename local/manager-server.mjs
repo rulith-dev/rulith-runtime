@@ -1,74 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * The Rulith Local manager: one loopback page for an account, its enabled Agents, and the
- * independent Local instances running them.
+ * The Rulith Local manager: the loopback service behind the Rulith app for an account, its enabled
+ * Agents, and the independent Local instances running them. It serves no page (the English workbench
+ * page is retired); the app's host is its client.
  *
  * This server is **operator software, not an Agent host**. It holds the device management
  * credential, and that credential never enters a child process environment, a model context,
- * or any response body. What a browser gets is status: names, states, ports it may open, and
+ * or any response body. What a client gets is status: names, states, ports it may open, and
  * teachings about what failed. Nothing here is reachable by a model, because nothing here is
  * offered as a tool.
  *
  * The gate is the same shape the instance hosts use, for the same reason: loopback is shared
  * by every account and every application on the machine, so the per-run key is the only thing
- * separating them, and it travels in the URL the CLI prints rather than in the page.
+ * separating them; the app's launcher hands it to the manager and to its own host, and nothing prints it.
  */
 import http from 'node:http'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { acquireWorkbenchLease, createManagerRegistry, defaultManagerRoot } from './manager-registry.mjs'
 import { createDeviceClient } from './device-client.mjs'
 import { createInstanceManager } from './instance-manager.mjs'
-import { managerPage } from './manager-ui.mjs'
 import { mergeManagerHealth } from './manager-health.mjs'
-import { environmentToolsPage } from './worker-tools-ui.mjs'
-import { installAuthoringChecker } from './authoring-checker.mjs'
-import { materialIdentity, openMaterialStore, MATERIAL_ID_PATTERN, RESULT_ID_PATTERN } from '../worker/material-store.mjs'
-import { proposalDigest, readLocalAuthoringResults } from '../worker/local-authoring.mjs'
-
-/** One checked proposal and certified Case are one logical private save, even after a browser retry or manager restart. */
-export function localAuthoringSaveRequestId({ accountId, agentId, caseId, materialId, documentDigest, proposalDigest }) {
-  return 'local-save:' + createHash('sha256').update(JSON.stringify([
-    accountId, agentId, caseId, materialId, documentDigest, proposalDigest,
-  ])).digest('hex')
-}
-
-/** Only the selected Agent's recent immutable checks are offered as review choices. */
-export function localAuthoringResultVersions(rows, identity, selectedId = '') {
-  const owned = rows.filter((entry) => entry?.profile === identity.profile && entry?.owner === identity.owner
-      && RESULT_ID_PATTERN.test(entry.resultId ?? '') && MATERIAL_ID_PATTERN.test(entry.materialId ?? '')
-      && MATERIAL_ID_PATTERN.test(entry.custodyId ?? '') && /^node_[0-9a-f]{32}$/.test(entry.node ?? '')
-      && /^sha256:[0-9a-f]{64}$/.test(entry.documentDigest ?? '')
-      && /^sha256:[0-9a-f]{64}$/.test(entry.proposalDigest ?? '')
-      && /^sha256:[0-9a-f]{64}$/.test(entry.resultDigest ?? '')
-      && typeof entry.checkedAt === 'string' && entry.checkedAt.length > 0 && entry.checkedAt.length <= 40)
-    .sort((a, b) => String(a.checkedAt ?? '').localeCompare(String(b.checkedAt ?? ''))
-      || String(a.resultId ?? '').localeCompare(String(b.resultId ?? '')))
-  const seen = new Map()
-  const availableResults = []
-  for (const entry of [...owned].reverse()) {
-    const previous = seen.get(entry.resultId)
-    if (previous && JSON.stringify(previous) !== JSON.stringify(entry))
-      throw new Error('The checked result index contains conflicting versions of one result.')
-    if (previous) continue
-    seen.set(entry.resultId, entry)
-    if (availableResults.length < 200 || entry.resultId === selectedId)
-      availableResults.push({ resultId: entry.resultId, materialId: entry.materialId,
-        proposalDigest: entry.proposalDigest, checkedAt: entry.checkedAt })
-  }
-  return { owned, availableResults }
-}
 
 const MAX_BODY = 64 * 1024
 const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/
 const LOOPBACK_ORIGIN = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/
 /**
- * The shape of a manager browser key, agreed with the Local pages that carry it back.
- *
- * `local/theme.mjs` builds the return link from a `manager=` parameter and will only render
- * a `k` matching this alphabet and length. A key outside it would produce a link the pages
- * silently drop, so the constructor refuses it here — at the moment somebody sets it — rather
- * than leaving a manager whose instance pages have no way back and no explanation.
+ * The shape of a manager key: 16–128 URL-safe characters, as the app's launcher makes it (app-home.mjs) and as it travels
+ * in a query string or header. A key outside it is refused when somebody sets it, not when a request first fails.
  */
 export const MANAGER_KEY_PATTERN = /^[A-Za-z0-9_-]{16,128}$/
 
@@ -107,31 +66,16 @@ const onlyFields = (body, allowed) => {
 export function createManagerServer({
   root = defaultManagerRoot(), port = 7780, key = randomUUID().replace(/-/g, ''),
   startConfirmMs, leaseWaitMs = 0, orphanRecheckMs,
-  directoryRefreshMs = 30_000, installChecker = installAuthoringChecker,
+  directoryRefreshMs = 30_000,
 } = {}) {
   /** The installation claim, held from `listen` to `close`. */
   let lease
   if (!MANAGER_KEY_PATTERN.test(String(key))) {
-    throw new Error('A Rulith manager key must be 16–128 characters of A–Z, a–z, 0–9, "-" or "_".'
-      + ' The Local pages that carry the way back will not render a link outside that shape.')
+    throw new Error('A Rulith manager key must be 16–128 characters of A–Z, a–z, 0–9, "-" or "_".')
   }
   const registry = createManagerRegistry({ root })
   const device = createDeviceClient({ root: registry.root })
-  const instances = createInstanceManager({ registry, device, startConfirmMs, orphanRecheckMs,
-    /**
-     * The address an instance page is told to offer as the way back.
-     *
-     * It carries this run's browser key, because `GET /` needs it — the manager page is a
-     * description of which accounts and Agents this computer holds, and serving it
-     * unauthenticated would publish that to anything on loopback.
-     *
-     * This key is a **loopback browser capability of this run**, and it is a different thing
-     * from the cloud device management token: the token authorizes account operations against
-     * the Gateway and appears in no URL, no page, no child environment and no status body.
-     * The key travels only where the operator navigates — the address bar of pages they
-     * opened from this manager, on this machine.
-     */
-    managerReturnUrl: () => `http://127.0.0.1:${server.address()?.port ?? port}/?k=${encodeURIComponent(key)}` })
+  const instances = createInstanceManager({ registry, device, startConfirmMs, orphanRecheckMs })
 
   if (!Number.isFinite(directoryRefreshMs) || directoryRefreshMs < 20) throw new Error('Directory refresh interval must be at least 20 ms.')
   let directoryTimer, directoryPending, directoryLast, closing = false
@@ -170,7 +114,7 @@ export function createManagerServer({
     directoryTimer.unref?.()
   }
 
-  /** Is this request from a loopback page addressing this server by a loopback name? */
+  /** Is this request from a loopback client addressing this server by a loopback name? */
   const localContext = (req) => {
     const origin = req.headers.origin
     if (origin !== undefined && !LOOPBACK_ORIGIN.test(origin)) return { status: 403, teaching: `Cross-origin request rejected (Origin: ${origin}).` }
@@ -180,15 +124,15 @@ export function createManagerServer({
   const presentedKey = (req) => req.headers['x-rulith-manager'] ?? new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('k') ?? ''
 
   /**
-   * One gate for every route, including the page.
+   * One gate for every route.
    *
    * 401 says this request did not authenticate; 403 says it authenticated but arrived from a
    * context this server will not answer — a cross-origin page, or a rebound DNS name whose
-   * `Host` is not loopback. The page is gated too: served unauthenticated, it would be a
+   * `Host` is not loopback. Every read is gated: served unauthenticated, the state would be a
    * public description of which accounts and Agents this computer holds.
    */
   const gate = (req) => (presentedKey(req) !== key
-    ? { status: 401, teaching: 'Missing or invalid Rulith manager key. Open the URL printed at startup, which carries ?k=<key>.' }
+    ? { status: 401, teaching: 'Missing or invalid Rulith manager key.' }
     : localContext(req))
 
   /** State operations additionally require the header and this exact origin, never any loopback one. */
@@ -206,46 +150,6 @@ export function createManagerServer({
     modelDefaults: instances.modelDefaults(),
     instances: instances.overview(),
   })
-  const authoringTarget = (instanceId) => {
-    const grant = device.status()
-    if (grant.state !== 'linked') throw new Error('Sign in before reviewing or saving a local checked draft.')
-    const row = instances.overview().find((entry) => entry.id === instanceId)
-    if (!row || !row.paired || !row.agentId || !row.connectionId) throw new Error('Choose an attached Agent with its Worker connection before reviewing a checked draft.')
-    if (row.origin !== grant.origin || row.accountId !== String(grant.account?.id ?? '') || !grant.agents.some((agent) => agent.id === row.agentId)) {
-      throw new Error('The selected Agent is no longer enabled for this signed-in account.')
-    }
-    if (!row.authoring?.materialRoot) throw new Error('This Agent has no configured local material area.')
-    return { expectedAccountId: String(grant.account.id), agentId: row.agentId, materialRoot: row.authoring.materialRoot }
-  }
-  const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex')
-  const checkedResult = (instanceId, resultId = '') => {
-    const target = authoringTarget(instanceId)
-    const row = instances.overview().find((entry) => entry.id === instanceId)
-    const identity = materialIdentity({ configFile: join(row.directory, 'local.json'), gatewayUrl: row.origin,
-      connectionId: row.connectionId, agentId: row.agentId })
-    const store = openMaterialStore(target.materialRoot, identity, { create: false })
-    const { owned, availableResults } = localAuthoringResultVersions(
-      readLocalAuthoringResults(target.materialRoot, identity), identity, resultId)
-    // A revision is a new immutable result, not an update to the previous draft. Give the
-    // operator exact result identities so review and retry never silently jump to a newer one.
-    const index = owned.filter((entry) => resultId === '' || entry.resultId === resultId).at(-1)
-    if (!index) throw new Error('No checked local authoring result belongs to this selected Agent.')
-    const result = store.read(String(index.resultId)).bytes
-    if (digest(result) !== index.resultDigest) throw new Error('The checked result bytes no longer match their immutable digest.')
-    const payload = JSON.parse(result.toString('utf8'))
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !payload.draft || !payload.report) throw new Error('The checked result has an invalid draft/report payload.')
-    const checkedProposalDigest = proposalDigest(payload.draft)
-    const material = store.resolveSubmitted(String(index.materialId))
-    if (material.id !== index.custodyId) throw new Error('The checked result no longer names its original material custody.')
-    const node = 'node_' + createHash('sha256').update(String(index.materialId) + '\u0000' + String(index.documentDigest), 'utf8').digest('hex').slice(0, 32)
-    if (material.digest !== index.documentDigest || index.proposalDigest !== checkedProposalDigest || payload.report.proposalDigest !== checkedProposalDigest || index.node !== node) {
-      throw new Error('The checked result no longer matches its immutable material and proposal.')
-    }
-    return { taskId: index.materialId, materialId: index.materialId, documentDigest: index.documentDigest,
-      availableResults,
-      proposalDigest: checkedProposalDigest, resultId: index.resultId, checkedAt: index.checkedAt, draft: payload.draft, report: payload.report }
-  }
-
   const operations = {
     '/manager/device/start': (body) => instances.admit(() => device.start(onlyFields(body, ['consoleUrl', 'name']))),
     '/manager/device/poll': async (body) => {
@@ -283,40 +187,6 @@ export function createManagerServer({
     '/manager/instances/connection-key': (body) => {
       const fields = onlyFields(body, ['instanceId', 'expectedOrigin', 'expectedAccountId', 'expectedAgentId', 'expectedConnectionId', 'key'])
       return instances.setConnectionKey(String(fields.instanceId ?? ''), fields)
-    },
-    '/manager/authoring/install-checker': async (body) => {
-      onlyFields(body, [])
-      await installChecker()
-      if (instances.phase === 'ready') for (const { host } of instances.hosts.values()) {
-        if (host.status().workerSetting.enabled) host.reloadWorker()
-      }
-      return { ok: true, teaching: 'Local rule checker installed. Enable local tools; enabled Workers reload after running executions drain.' }
-    },
-    '/manager/authoring/save': (body) => {
-      const fields = onlyFields(body, ['instanceId', 'resultId', 'caseId'])
-      return instances.admit(() => {
-        const checked = checkedResult(String(fields.instanceId ?? ''), String(fields.resultId ?? ''))
-        const target = authoringTarget(String(fields.instanceId ?? ''))
-        return device.authoringSave({ expectedAccountId: target.expectedAccountId, agentId: target.agentId, caseId: fields.caseId,
-          materialId: checked.materialId, documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest,
-          draft: checked.draft, requestId: localAuthoringSaveRequestId({ accountId: target.expectedAccountId,
-            agentId: target.agentId, caseId: fields.caseId, materialId: checked.materialId,
-            documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest }) })
-      })
-    },
-    '/manager/authoring/review': (body) => {
-      const fields = onlyFields(body, ['instanceId', 'resultId'])
-      return instances.admit(async () => {
-        const checked = checkedResult(String(fields.instanceId ?? ''), String(fields.resultId ?? ''))
-        const target = authoringTarget(String(fields.instanceId ?? ''))
-        const cases = await device.authoringCases({ expectedAccountId: target.expectedAccountId, agentId: target.agentId,
-          materialId: checked.materialId, documentDigest: checked.documentDigest, proposalDigest: checked.proposalDigest })
-        const saved = cases.saved && typeof cases.saved === 'object' && !Array.isArray(cases.saved) ? cases.saved : null
-        return { ...checked, cases: Array.isArray(cases.cases) ? cases.cases : [],
-          ...(saved && typeof saved.packId === 'string' && typeof saved.caseId === 'string'
-            ? { savedPackId: saved.packId, savedCaseId: saved.caseId, savedEntryCurrent: saved.entryCurrent === true }
-            : {}) }
-      })
     },
     // ACC-CONV-05/06 (PSC 0.2.16 ③): the signed-in owner's client (Deep Rulith) switches one conversation's exploration
     // mode or post-call review through this computer's device grant. The manager only forwards the exact fields; the
@@ -362,7 +232,7 @@ export function createManagerServer({
     '/manager/tools/mcp-apply': (body) => instances.admit(() => instances.library.apply(onlyFields(body, ['probeId', 'tools', 'confirmed']))),
     '/manager/tools/mcp-remove': (body) => instances.admit(() => instances.library.removeService(onlyFields(body, ['name', 'revision', 'confirmed']))),
   }
-  /** What this environment's tools page reads. Authenticated like everything else, and it changes nothing. */
+  /** Reads. Authenticated like everything else, and they change nothing. */
   const reads = {
     '/manager/instances/setup-local': query => ({ setup: instances.setupLocalStatus(query.get('requestId')) }),
     '/manager/health': async () => {
@@ -397,22 +267,12 @@ export function createManagerServer({
     }
     if (denied !== null) return void json(res, denied.status, { ok: false, teaching: denied.teaching })
     try {
-      if (path === '/' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-        // The page carries no key. It reads one from its own address, so a copy of this
-        // response is not a working credential.
-        return void res.end(managerPage)
-      }
-      if (path === '/tools' && req.method === 'GET') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
-        return void res.end(environmentToolsPage)
-      }
       if (path === '/manager/state' && req.method === 'GET') return void json(res, 200, { ok: true, ...state() })
       if (Object.hasOwn(reads, path) && req.method === 'GET') {
         return void json(res, 200, { ok: true, ...await reads[path](new URL(req.url ?? '/', 'http://127.0.0.1').searchParams) })
       }
       if (Object.hasOwn(operations, path) && req.method === 'POST') {
-        if (!sameOrigin(req)) return void json(res, 403, { ok: false, teaching: 'Manager operations require the manager page key and the same origin.' })
+        if (!sameOrigin(req)) return void json(res, 403, { ok: false, teaching: 'Manager operations require the manager key and the same origin.' })
         const body = await readJsonBody(req)
         const result = await operations[path](body)
         return void json(res, 200, { ok: true, ...(result === undefined ? {} : result), ...state() })
@@ -420,7 +280,7 @@ export function createManagerServer({
       json(res, 404, { ok: false, teaching: 'Endpoint not found.' })
     } catch (error) {
       if (path === '/manager/health') return void json(res, 400, { ok: false, teaching: 'Health could not be read. Refresh Health again.' })
-      // A failed operation still answers with the current state, so a page never has to guess
+      // A failed operation still answers with the current state, so a client never has to guess
       // whether a refused step changed anything. Reachable only after the gate above.
       let snapshot = {}
       try { snapshot = state() } catch { snapshot = {} }

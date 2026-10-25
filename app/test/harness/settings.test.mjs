@@ -146,8 +146,8 @@ test('模型: the form never shows the key back; saving sends the account guard 
   assert.match(text(third.render()), /没有保存：Provide a model name and HTTPS endpoint, or a local HTTP endpoint\./);
 });
 
-test('外观与语言 sets dsh\'s own theme and language services; 高级 points to Console for the MCP token and opens the Runtime workbench for diagnosis', async () => {
-  const page = loadPage({ reply: ({ url }) => (url.endsWith('/workbench') ? { ok: true, url: 'http://127.0.0.1:7790/?k=fixture' } : { ok: true }) });
+test('外观与语言 sets dsh\'s own theme and language services; 高级 points to Console for the MCP token and the English workbench entry is gone', async () => {
+  const page = loadPage({ reply: () => ({ ok: true }) });
   const theme = { preference: 'system', getTheme() { return { preference: this.preference }; }, setTheme(id) { this.preference = id; } };
   const locale = { active: 'zh', getSnapshot() { return { active: this.active, locales: [{ id: 'zh', label: '中文' }, { id: 'en', label: 'English' }] }; },
     setLocale(id) { this.active = id; } };
@@ -167,10 +167,9 @@ test('外观与语言 sets dsh\'s own theme and language services; 高级 points
   const advanced = page.mount(page.plugin.components.AdvancedSection, { state: summary }).render();
   assert.equal(find(advanced, (node) => node.tag === 'a').props.href, 'https://console.example/console/#/agents');
   assert.match(text(advanced), /MCP 令牌[\s\S]*Agent MCP token/);
-  await button(advanced, '打开 Runtime 工作台').props.onClick();
-  assert.equal(page.opened[0].location.href, 'http://127.0.0.1:7790/?k=fixture');
-  assert.equal(page.opened[0].opener, null);
-  assert.equal(page.posted('workbench').length, 1, 'the workbench address is fetched on demand, never stored in the page');
+  // Batch 7 (design §7 合包发布): the English Runtime workbench is retired, and with it the 诊断 entry that opened it.
+  assert.doesNotMatch(text(advanced), /工作台|Runtime|诊断/);
+  assert.equal(nodes(advanced).some((node) => node.tag === 'button'), false);
   // A missing or odd origin gives no link.
   assert.equal(find(page.mount(page.plugin.components.AdvancedSection, { state: { ok: true, origin: 'javascript:alert(1)' } }).render(), (node) => node.tag === 'a'), undefined);
 });

@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { conversationBoards, contextEnv, contextLines, localContextWindow, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
-import { holdAppHome, launcherSettings, settingsCredentialRoots } from './app-home.mjs';
+import { holdAppHome, launcherSettings, legacyWorkbench, legacyWorkbenchLine, settingsCredentialRoots } from './app-home.mjs';
 import { webSearchKey } from '../web-tools.mjs';
 import { attachedAgents, effectiveModel, modelLine, signedInAccount } from './model-runtime.mjs';
 import { credentialRootRefusal, ensureCredentialRootLabels } from '../../../local/sandbox-home-label.mjs';
@@ -19,13 +19,17 @@ import { credentialRootRefusal, ensureCredentialRootLabels } from '../../../loca
 const { settings: s, args, home } = await launcherSettings();
 if (home) {
   await holdAppHome(home).catch((error) => { console.error(error.message); process.exit(1); });
-  console.log(`Deep Rulith keeps its files in ${home}.`);
-} else {
+  console.log(`Rulith keeps its files in ${home}.`);
+}
+// Agents an earlier English workbench set up here (~/.rulith/manager) do not start with the app: say so, once per start.
+const legacy = home ? legacyWorkbench(s.managerHome) : null;
+if (legacy) console.log(legacyWorkbenchLine(legacy));
+if (!home) {
   // 模型命令隔离（D-1024a）：设置文件模式下没有 app home 的整体标签，所以 App 自己给它管的凭据位置打标签：dsh home（会话
   // 凭据 .credentials.yaml）与设置里点名的另一个模型设置目录（modelHome，存模型密钥）整个目录，以及设置里点名的管理器
   // 密钥文件（可以在任意位置，单个文件也是凭据根）。这几项同时交给管理器（RULITH_CREDENTIAL_ROOTS，见下），由它和实例宿主
   // 补标签、由启动器在每条命令前核验；打不上就拒绝运行模型命令（fail-closed），这里只如实说明。管理器 home 由管理器自己打。
-  const refusal = credentialRootRefusal(ensureCredentialRootLabels(settingsCredentialRoots(s)));
+  const refusal = credentialRootRefusal(ensureCredentialRootLabels(settingsCredentialRoots(s), { noteTo: s.managerHome }));
   if (refusal) console.error(`Rulith: ${refusal}`);
 }
 // The model settings live in a Rulith manager home: this one's, or another the settings name (modelHome, developers). Only
@@ -89,6 +93,9 @@ const env = {
   RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
   ...contextEnv(lines),
   RULITH_DSH_CONVERSATION_BOARDS: conversationBoards(s) ? '1' : '0',
+  // The app's Diagnosis (settings → Advanced) names the app home and an earlier workbench's Agents; neither is a secret.
+  ...(home ? { RULITH_DSH_APP_HOME: home } : {}),
+  ...(legacy ? { RULITH_DSH_LEGACY_WORKBENCH: JSON.stringify(legacy) } : {}),
   // 模型命令隔离（D-1024a）：产品默认要求隔离（Windows 低完整性 / Linux bwrap），由 Worker 在启动适配器时落实（见
   // worker/adapter-confinement.mjs）；引擎把隔离设为默认开，无需这里再设 RULITH_ADAPTER_SANDBOX。这里把运行配置真正用到的
   // 凭据根（app home、manager home、dsh home）交给管理器，它据此给每个根打标签并转交给 Worker，供 confinedLaunch 逐个校验；
@@ -99,7 +106,7 @@ const env = {
   RULITH_CREDENTIAL_ROOTS: JSON.stringify([...new Set([...settingsCredentialRoots(s), ...(home ? [home] : [])].map((p) => path.resolve(p)))]),
 };
 if (!env.RULITH_DSH_WEB_SEARCH_KEY) delete env.RULITH_DSH_WEB_SEARCH_KEY;
-if (!model) console.error('Deep Rulith: no model is set for the signed-in Rulith account yet; once one is saved, it is used from the next turn.');
+if (!model) console.error('Rulith: no model is set for the signed-in Rulith account yet; once one is saved, it is used from the next turn.');
 // Which model each Agent attached here uses now (its own model, or the account default), so a wrong selection shows at
 // once: where it comes from, the model id and the endpoint. Never a key, nor whether there is one.
 // 中文说明：启动时逐个打印本机已接上的 Agent 此刻所用的模型（来源、模型 ID、地址），不打印密钥。
@@ -147,7 +154,9 @@ const profilePatch = path.join(s.dshHome, 'profiles', profile, 'cordis.patch.yml
 // 默认模型只在人没有选过别的提供商时才指向 rulith-model。写入的只有模型名与地址，不是机密；密钥仍只经环境变量传入。
 function writeModelRoute() {
   if (!fs.existsSync(profilePatch)) return;
-  const YAML = createRequire(s.dshBin)('yaml'); // dsh 模型页写这个文件用的同一个库，注释与其他条目原样保留
+  // The `yaml` this package declares, at the range dsh's own packages use, so npm installs one copy (the library dsh's
+  // Models page writes this file with): comments and other entries are kept as they are.
+  const YAML = createRequire(import.meta.url)('yaml');
   const doc = YAML.parseDocument(fs.readFileSync(profilePatch, 'utf8'));
   if (doc.errors.length > 0) throw new Error(`Deep Rulith: ${profilePatch} is not valid YAML; fix it and restart`);
   if (!YAML.isSeq(doc.contents)) doc.contents = doc.createNode([]);
@@ -202,7 +211,7 @@ function createProfile() {
   if (made.status !== 0) return made.status ?? 1;
   syncBrowserPlugin();
   writeModelRoute();
-  console.log(`Deep Rulith profile "${profile}" created in ${s.dshHome}.`);
+  console.log(`Rulith profile "${profile}" created in ${s.dshHome}.`);
   return 0;
 }
 if (init) process.exit(createProfile());
@@ -213,7 +222,9 @@ if (!fs.existsSync(path.join(s.dshHome, 'profiles', profile, 'package.json'))) {
 // The general kit is refreshed by the host half once it reaches the manager (kit-install.mjs), through the manager's own
 // setup operation, whether this launcher started the manager or another one did.
 syncBrowserPlugin(); writeModelRoute();
-const child = spawn(process.execPath, [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort ? ['--port', String(s.webPort)] : []), ...args],
+// One --port reaches dsh: the person's (`rulith --port`), else the free one the app home chose.
+const portGiven = args.some((arg) => arg === '--port' || arg.startsWith('--port='));
+const child = spawn(process.execPath, [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort && !portGiven ? ['--port', String(s.webPort)] : []), ...args],
   { cwd: s.cwd, env, stdio: 'inherit' });
 child.on('exit', (code) => process.exit(code ?? 0));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));

@@ -133,7 +133,7 @@ test('one launcher per app home: a second one is refused while the first holds i
     holder.stdout.on('data', (chunk) => { if (String(chunk).includes('held')) resolve(); });
     holder.once('exit', () => reject(new Error('the holder exited')));
   });
-  await assert.rejects(holdAppHome(home), /^Error: Deep Rulith is already running from .* Use its browser tab, or stop it and start again\.$/);
+  await assert.rejects(holdAppHome(home), /^Error: Rulith is already running from .* Use its browser tab, or stop it and start again\.$/);
   holder.kill();
   await new Promise((resolve) => holder.once('exit', resolve));
   const release = await holdAppHome(home);
@@ -179,7 +179,7 @@ test('the launcher creates a missing dsh profile from the web template before it
     ['--profile', 'rulith', '--from-default-profile', 'web', '--patch', overlay, '--dump-config'],
     ['--profile', 'rulith', '--patch', overlay, '--no-open'],
   ]);
-  assert.match(first.run.stdout, /Deep Rulith profile "rulith" created in /);
+  assert.match(first.run.stdout, /Rulith profile "rulith" created in /);
   assert.ok(fs.existsSync(path.join(s.dshHome, 'profiles', 'rulith', 'node_modules', 'rulith-dsh-ui', 'package.json')));
   // dsh marks a created profile with its package.json; the stand-in did not write one, so write it as dsh would.
   fs.writeFileSync(path.join(s.dshHome, 'profiles', 'rulith', 'package.json'), '{}');

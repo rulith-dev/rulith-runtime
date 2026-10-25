@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "bf5233e81b96ca833c728650724fa568c1658972ff1362238ec7e0d68dd1cc2f"
+      "sha256": "3469796d12f9b9e6a8ee1a8a44728128a883ca8b13903b9c16b23dbe3ddea528"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -45,7 +45,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "148553ec685326973b9070a4253aa3e13e10738e4d0cb56cea8c51f3b9696b31"
+      "sha256": "44ce24a59fe780e5694cee7c08a1e40c111ef87e7d75f80bae973b3a2077d0fd"
     },
     "worker/run-artifacts.mjs": {
       "sha256": "911d3e49c10e9b02f389f9c21cf43542dc6cc9261708c80f9ac683e2f97411e4"
@@ -78,7 +78,7 @@
       "sha256": "9edb848c2fb701ce9e1fe11c8c97fec2df67f4a3ef7e63b68075a618d278421e"
     },
     "local/authoring-checker.mjs": {
-      "sha256": "9b7fea8944a706e86a5f3741ea5b22dac6899422d9631e366afceee47aee2348"
+      "sha256": "6f08a333896a802d25ce783eb524782a4c84cd1ec2d590f1f9914be0aab832ab"
     },
     "local/authoring-checker.json": {
       "sha256": "cc43bffb07796f3e56bdf555c955ccaf46114355a9245eff5c73f5cfcbd2a2f5"
@@ -87,16 +87,13 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "d00a66e178c77b47f9d3f9cc9b8788a64ae9d20c98c9809d2c5cb45844392039"
+      "sha256": "cb6fb3ae7a354247a23b838dc2db93ead616b3e697d6866551ef55f768799c3a"
+    },
+    "local/operations.mjs": {
+      "sha256": "6cf1e7ea8077908f53d6423637fca2d1df567fefbdc9e00ff25465f1cacb4e91"
     },
     "local/material-service.mjs": {
       "sha256": "d0c809c405dd903cff1c1e156b69657a1742ab470671446d6c00c7466201aec6"
-    },
-    "local/local-ui.mjs": {
-      "sha256": "a67fc7bcb76dec96975c8610576345f19644af0ddc840e58e009a943a324fec3"
-    },
-    "local/theme.mjs": {
-      "sha256": "a0d692385464527706e0d12126970190a518c4b03077731473bdd58b6f2a141a"
     },
     "local/manager-registry.mjs": {
       "sha256": "8d4d51978e8657cf0dd54ae58327313057610cf4521c0a604726b446102bbc04"
@@ -108,43 +105,34 @@
       "sha256": "b1f50863802c9735a61ece6a7913693423cc3b864673bb5a5364e4ea6e38f12f"
     },
     "local/sandbox-home-label.mjs": {
-      "sha256": "2bc952d4b73fa3951f5d95e5daf3014b5cf173c409fbf2e4cf165d29bf9d9ead"
+      "sha256": "367ff2a5fe364e819ad6a14896614e417ae90911c1a2d74a888bb6b25d822c5b"
     },
     "local/device-client.mjs": {
-      "sha256": "717800d87bc5bae8aed6371b1037ec51e525890a8eb3a909172a479bab1c145f"
+      "sha256": "198c1448f958ef75f8006ec4c87c78995a26a60d9feb675840796b9fd23985da"
     },
     "local/instance-manager.mjs": {
-      "sha256": "0987accba62e9e89246426effc1dc3027f184717ab7190f7d0cb066e279b5c20"
+      "sha256": "76e91b67839c7d00c32d66353b1311d860e258f777c38abcf6b1bfc48c199246"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"
     },
     "local/manager-server.mjs": {
-      "sha256": "f22ce7283216c0f04005661da702c7046f92da696867c463dd3a8bf1cd93b3ba"
-    },
-    "local/manager-ui.mjs": {
-      "sha256": "28048b40e63117d3a6206ad3a83a692add2a703dfe0cb39776690ef0173eb4eb"
+      "sha256": "912d684740f79c02d292b87db1194a9dca38d73098f0ea977de9f9e2977441fe"
     },
     "local/manager-health.mjs": {
       "sha256": "a5e9860bd554218b478d436fe29727b2f6a9b81969123294e440dec5eb3dcba2"
     },
     "docs/local-manager.md": {
-      "sha256": "ccd781f170e99af76d5fe2281dde8ca1a25b0ea5819d0be019b46a021d02606f"
+      "sha256": "99d4f55c5b2f76773370258c801b7d2ed5b00de2ff274f52aac70c970378f046"
     },
     "docs/local-materials.md": {
-      "sha256": "04c363af1a9c62644f0949a6d22d686235fb369f3e45a6ff051485f262291fdb"
-    },
-    "local/markdown.mjs": {
-      "sha256": "dda52e94ccf9957fdb12538d0a29b7e2261826df4c55164de5a89c10a3f62b23"
+      "sha256": "cfd45ae4852a76589844a017ac24f3dbfbc16b273c5a3021547f5800c2d50d1a"
     },
     "local/setup-service.mjs": {
-      "sha256": "14e3eaf78351c25a496f1965694074f124df590c94ae91e829cc777c7e1019ba"
+      "sha256": "c12edc15a558d0f45733aa1ee4cd8f287ee2002f4e9b706a9bb2ca9791a3c4b4"
     },
     "local/setup-local.mjs": {
       "sha256": "f44f35b4278657fea813641cc64b03750391e2e8ea3f49b2df414287a2812f5a"
-    },
-    "local/setup-ui.mjs": {
-      "sha256": "99339aa837b6e643579d0000d1be2c1cfaf0cfbd428d49dc5ad912328e31a488"
     },
     "local/mcp-services.mjs": {
       "sha256": "77ebc8fc0fb8e5093f592cec1075a42d7db9f50b69f86c6618416c9ec3586853"
@@ -152,23 +140,11 @@
     "local/mcp-registry.mjs": {
       "sha256": "78f8e16578d1c91be45d19b96ce1124c61b03ae657eb01538056638425f95e2c"
     },
-    "local/mcp-registry-ui.mjs": {
-      "sha256": "742cb4e5f095bf5fd9cfeba92675c4fbee9f0fb82980ea468f390d0aa8ca3abf"
-    },
-    "local/worker-tools-ui.mjs": {
-      "sha256": "1f677a884efc34fd8fbededc668a0fa76e9d1511446cd396e5de4ac1f019d036"
-    },
-    "local/worker-tools-browser.mjs": {
-      "sha256": "5c67b320fd62d8d96673f5c35d42a95a678fd6717b73aaabb604a504b12d5cd1"
-    },
     "local/worker-tool-management.mjs": {
       "sha256": "8519b78b989bf66ecbdd67769cd3be1d40e6a6aef9bab6cce0cfecdb28e8ca21"
     },
     "docs/local-mcp-setup.md": {
-      "sha256": "d34185a3b5fd296e2c82c5c2e06809d8e3fec116bf4e6a990d80dd71c6c8d15f"
-    },
-    "docs/local-setup.md": {
-      "sha256": "5261f07b97e978a8e6205b6716a7fd4fd519155b672a194e14e192588f070848"
+      "sha256": "605e8cbeaf95b120f9b7705c32c8bbe61fed7cb3c130dc702fd6fd2c83494a0e"
     },
     "config/rulith-sources.example.json": {
       "sha256": "38dd6cb5e0e28e7e5a3b167f59ba5bb2c9263b20123eda28150071c1934f112f"
@@ -180,7 +156,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "ad8de6d78c8d76bd1eda9203ee1e17e8fd93b7cb4ca87596abf1910cb906295c"
+      "sha256": "57b36987911aac360b73b160f2ed4b2c55d27b76698d068f8b0eb834eba356ef"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -189,7 +165,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "6a8c3eb78b1cb76e5981d4a6304490f250fc241ae9cfaff78411dcea6ca41b2c"
+      "sha256": "b1dcfdd9162b932fc98d66b08f1e77e6b348a142f150dab0e0ca45dfeab6dc07"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "e173b13818e54b7f9b07a9ad70fce2a4a7b6426abc514780efe41e080e14d244"

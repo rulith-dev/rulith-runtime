@@ -28,8 +28,6 @@ import { dirname, join, resolve } from 'node:path'
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
 import { processAlive } from '../local/process-identity.mjs'
 import { sampleToolManifest } from '../local/setup-service.mjs'
-import { setupPage } from '../local/setup-ui.mjs'
-import { runPageScript } from './support/mini-dom.mjs'
 import { HOLD, driveWorker } from './support/worker-harness.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -337,7 +335,7 @@ test('a selection Console did not accept still leaves the Worker running, and sa
   assert.equal(prepared.status, 200, JSON.stringify(prepared.body))
   assert.equal(prepared.body.selection, 'failed')
   assert.equal(prepared.body.workerReady, true)
-  assert.match(prepared.body.teaching, /Its Source folder, runtime, was not sent to Console \(Console is briefly unavailable\)\. Send the selection for authorization from this page again, or bind verified-calculation-local in Console with its default location, runtime\./)
+  assert.match(prepared.body.teaching, /Its Source folder, runtime, was not sent to Console \(Console is briefly unavailable\)\. Send the selection for authorization again, or bind verified-calculation-local in Console with its default location, runtime\./)
   assert.equal(setup.proposals.length, 1)
   assert.equal(setup.host.status().worker, true)
 })
@@ -415,31 +413,6 @@ test('a host that begins closing while the sample waits for its Worker starts no
   assert.equal(prepared.body.teaching, 'This Local host began closing while the Worker stopped, so nothing was prepared.')
   assert.equal(existsSync(setup.target), false, 'nothing was written for a Worker the host will not start')
   assert.deepEqual(setup.host.children(), [], 'no role was started after the host began closing')
-})
-
-test('the setup page asks for the stop and start in the button itself, and shows the one outcome it is told', async () => {
-  assert.match(setupPage, /<button id="sample-prepare">Prepare calculation sample<\/button>/)
-  assert.match(setupPage, /also stops this Agent's Worker while the files are written/)
-  for (const selection of ['sent', 'kept']) {
-    const teaching = `Prepared the calculation sample in D:\\Rulith\\calc. (${selection})`
-    const page = await runPageScript(setupPage, { respond: async (path) => ({ body: {
-      '/setup/state': { ok: true, linked: true, consoleUrl: 'https://console.example', agentId: 'agent-1', clientMode: 'local_agent',
-        resources: [], services: [], machineName: 'Laptop', model: { url: '', name: '', maxOutputTokens: 6000 } },
-      '/status': { ok: true, roles: ['agent', 'worker'], agent: false, worker: true },
-      '/setup/context': { ok: true, agentId: 'agent-1', agentName: 'Calculation', sources: [{ name: 'verified-calculation-local', type: 'file' }] },
-      '/setup/example': { ok: true, directory: 'D:\\Rulith\\calc', selection, worker: 'ready', workerReady: true, teaching },
-    }[path] ?? { ok: true } }) })
-    assert.equal(page.$('example').hidden, false, 'the sample is offered once the Capability is installed')
-    page.$('sample-dir').value = 'D:\\Rulith\\calc'
-    await page.$('sample-prepare').onclick()
-    assert.deepEqual(page.calls.filter((call) => call.path === '/setup/example').map((call) => call.body), [{ directory: 'D:\\Rulith\\calc' }])
-    assert.equal(page.calls.some((call) => call.path === '/control' || call.path === '/setup/resources'), false,
-      'the page sends one request; the service does the stop, the send and the start')
-    assert.equal(page.$('notice').textContent, teaching)
-    // Sent means authorization in Console is next, which is where the Start step links.
-    assert.equal(page.$('run').hidden, selection !== 'sent')
-    assert.equal(page.$('resources').hidden, selection === 'sent')
-  }
 })
 
 test('an existing file is never overwritten, and a refusal stops nothing', async (t) => {

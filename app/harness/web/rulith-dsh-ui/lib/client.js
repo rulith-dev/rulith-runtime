@@ -26,15 +26,6 @@ window.__ModuleLoader__.load({
       });
       return response.json();
     }
-    // The English Runtime workbench, kept for diagnosis only (settings → 高级). Its address carries the manager key, so it
-    // is fetched on demand through the guarded API and never stored in this page.
-    async function openWorkbench() {
-      const win = window.open("about:blank", "_blank");
-      try {
-        const reply = await api("workbench", {});
-        if (win && reply.ok && reply.url) { win.opener = null; win.location.replace(reply.url); } else if (win) win.close();
-      } catch { if (win) win.close(); }
-    }
     // Two parts of the page that poll the same route share one read: the composer and the 任务 panel both read
     // `conversation?session=…`, which reaches the account service. A timer tick reuses a read younger than its own interval;
     // `refresh()` (after an action) always reads anew, and the other part's next tick takes that answer.
@@ -1786,6 +1777,7 @@ window.__ModuleLoader__.load({
               style: { fontWeight: step.id === view.current ? 700 : 400, opacity: step.id === view.current || step.done ? 1 : 0.5, color: step.done ? GREEN : "inherit" } },
               (step.done ? "✓ " : ["①", "②", "③"][i] + " ") + step.label))),
             body,
+            h(LegacyWorkbenchNotice, { legacy: state && state.legacyWorkbench }),
             notice ? alertLine(notice) : null,
             h("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 14 } },
               h("button", { type: "button", style: linkButton, disabled: working, onClick: () => setPut(view.account) }, "稍后再说")),
@@ -1858,9 +1850,42 @@ window.__ModuleLoader__.load({
         h("div", { style: section }, "接入其他客户端"),
         h("div", null, "其他 MCP 客户端（例如 Claude Code）可以用智能体的 MCP 令牌接入同一个智能体。令牌在 Console 里取：打开这个智能体的页面，找「Agent MCP token」。"),
         consoleUrl ? h("a", { href: consoleUrl, target: "_blank", rel: "noopener noreferrer", style: { fontSize: 12 } }, "在 Console 打开智能体") : null,
-        h("div", { style: section }, "诊断"),
-        h("div", null, "英文的 Runtime 工作台，只用于排查问题。"),
-        h("div", { style: { marginTop: 6 } }, h("button", { type: "button", style: button, onClick: openWorkbench }, "打开 Runtime 工作台")));
+        h(DiagnosisSection, { state }));
+    }
+    // Agents the retired English workbench set up on this computer (the host's `legacyWorkbench`): their Workers do not
+    // start with the app. Shown in the wizard and under Diagnosis; English (D-1025b).
+    function LegacyWorkbenchNotice({ legacy }) {
+      if (!legacy || !legacy.home) return null;
+      const count = legacy.agents === 1 ? "1 Agent" : legacy.agents + " Agents";
+      return h("div", { "data-rulith-legacy-workbench": "", role: "note", style: { ...small, marginTop: 8, color: AMBER, wordBreak: "break-word" } },
+        count + " set up by the retired Rulith workbench (" + legacy.home + ") no longer start their Workers with rulith. "
+          + "Run \"rulith manager\" to keep them running, or set each Agent up again here; that replaces its Agent token, "
+          + "and Sources bound to its old Connection must be bound again in Console.");
+    }
+    // Settings → Advanced → Diagnosis (design §3.2 设置; batch 7 replaces the retired English workbench with it): versions,
+    // this computer, model-command isolation and folders, from /rulith/api/diagnosis. English (D-1025b).
+    function DiagnosisSection({ state }) {
+      const [report] = usePoll("diagnosis", 60000);
+      const agents = state && state.ok && Array.isArray(state.agents) ? state.agents : [];
+      const line = (text, key) => h("div", { key, style: { padding: "2px 0", wordBreak: "break-word" } }, text);
+      let body;
+      if (!report) body = none("Reading…");
+      else if (!report.ok) body = alertLine(plain(report.teaching, "Rulith could not read its diagnosis."));
+      else {
+        const v = report.versions || {};
+        body = h("div", { "data-rulith-diagnosis": (report.isolation && report.isolation.state) || "" },
+          line("Rulith " + (v.rulith || "?") + " · DeepSeek Harness " + (v.dsh || "?") + " · Node.js " + (v.node || "?") + " · " + (v.platform || "?"), "versions"),
+          line("This computer: " + ((state && state.computer) || "unnamed") + " · " + (state && state.signedIn ? "signed in" : "not signed in")
+            + (agents.length ? " · " + agents.map((a) => a.name + ": " + (a.worker ? a.worker.state || (a.worker.enabled ? "starting" : "off") : "not set up")).join(", ") : ""), "computer"),
+          line("Model-command isolation: " + ((report.isolation && report.isolation.text) || "unknown"), "isolation"),
+          // What could not be protected, and why (a credential folder, or a project folder that could not be made writable).
+          ((report.isolation && report.isolation.problems) || []).map((p) => h("div", { key: "problem:" + p.kind + ":" + p.path, "data-rulith-isolation-problem": p.kind,
+            style: { padding: "2px 0", wordBreak: "break-word", color: AMBER } },
+            (p.kind === "project" ? "Project folder not protected: " : "Not protected: ") + p.path + " (" + p.reason + ")")),
+          (report.folders || []).map((f) => line(f.label + ": " + f.path, "folder:" + f.label)),
+          h(LegacyWorkbenchNotice, { legacy: report.legacyWorkbench }));
+      }
+      return h("div", { "data-rulith-settings-diagnosis": "" }, h("div", { style: section }, "Diagnosis"), body);
     }
     function SettingsPage({ section }) {
       const [state, refresh, setState] = usePoll("state", 5000);
@@ -2182,7 +2207,7 @@ window.__ModuleLoader__.load({
     exports.rightColumnWidth = rightColumnWidth;
     exports.SIGN = SIGN;
     exports.components = { ModelForm, SetupSteps, FolderChooser, ProjectDialog, AccountSection, ComputerSection, AppearanceSection,
-      AdvancedSection, SettingsPage, RulithSettings, RulithSettingsEntry, RulithComposerControls, RulithColumn, RulithSessionColumn, SignDialog };
+      AdvancedSection, DiagnosisSection, LegacyWorkbenchNotice, SettingsPage, RulithSettings, RulithSettingsEntry, RulithComposerControls, RulithColumn, RulithSessionColumn, SignDialog };
     exports.SETTINGS_SECTIONS = SETTINGS_SECTIONS;
     exports.EMPTY_PAGE_CSS = EMPTY_PAGE_CSS;
     exports.RUNNING_CSS = RUNNING_CSS;

@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Public, pinned executables shared by this computer. No account credential reaches this path.
 import { createHash } from 'node:crypto'
-import { readFile, mkdir, mkdtemp, writeFile, rename, rm, stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const manifestPath = fileURLToPath(new URL('./authoring-checker.json', import.meta.url))
-let installation
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const RANGE_BYTES = 256 * 1024
 const RANGE_PARALLELISM = 6
 const RANGE_TIMEOUT_MS = 30_000
 const FILE_TIMEOUT_MS = 25 * 60_000
-const INSTALL_TIMEOUT_MS = 30 * 60_000
 
 function pinnedFile(file) {
   const url = new URL(file.url)
@@ -71,15 +69,8 @@ export async function authoringCheckerStatus() {
 
 export async function discoverLocalAuthoringJar() {
   const state = await authoringCheckerStatus()
-  if (!state.installed) throw new Error('Install the local rule checker from Document assistant before starting this Worker.')
+  if (!state.installed) throw new Error('The local rule checker is not installed on this computer. Set RULITH_AUTHORING_JAR to an installed local-authoring.jar.')
   return state.jar
-}
-
-/** Only an explicit operator preparation installs executables; an Agent tool call never does. */
-export async function installAuthoringChecker({ fetchImpl = fetch } = {}) {
-  if (installation) return installation
-  installation = install(fetchImpl)
-  try { return await installation } finally { installation = undefined }
 }
 
 /** Bounded, independent ranges avoid long-lived cross-region streams; the full pin still decides acceptance. */
@@ -215,26 +206,3 @@ export async function downloadPinnedAuthoringFile(file, fetchImpl = fetch, { sig
   }
 }
 
-async function install(fetchImpl) {
-  const { manifest, directory } = await settings()
-  if (await valid(directory, manifest)) return { installed: true, jar: join(directory, 'local-authoring.jar') }
-  // Never overwrite an existing, modified dependency. Keep it reviewable and fail explicitly.
-  try { await stat(directory); throw new Error('The installed authoring checker differs from its release pins. Remove that dependency directory and prepare again.') }
-  catch (error) { if (error.code !== 'ENOENT') throw error }
-  await mkdir(dirname(directory), { recursive: true, mode: 0o700 })
-  const temporary = await mkdtemp(join(dirname(directory), '.install-'))
-  const signal = AbortSignal.timeout(INSTALL_TIMEOUT_MS)
-  try {
-    for (const file of manifest.files) {
-      const bytes = await downloadPinnedAuthoringFile(file, fetchImpl, { signal })
-      await writeFile(join(temporary, file.name), bytes, { flag: 'wx', mode: 0o600 })
-    }
-    try { await rename(temporary, directory) }
-    catch (error) { if (!(await valid(directory, manifest))) throw error }
-    return { installed: true, jar: join(directory, 'local-authoring.jar') }
-  } finally {
-    const target = resolve(temporary), parent = resolve(dirname(directory))
-    if (dirname(target) !== parent || !target.startsWith(parent)) throw new Error('Invalid dependency cleanup target.')
-    await rm(target, { recursive: true, force: true })
-  }
-}

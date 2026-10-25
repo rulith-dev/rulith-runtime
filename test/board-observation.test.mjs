@@ -11,21 +11,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { HOP_FAILURE, RULITH_META, callTool, runAgent, declareGoal } from './support/agent-harness.mjs'
-import { projectBoardReads, projectOperations } from '../local/local-ui.mjs'
+import { projectOperations } from '../local/operations.mjs'
 
 const RUNNING = [{ tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker' }]
 const toolAnswers = (request) => request.messages.filter((message) => message.role === 'tool')
   .map((message) => JSON.parse(message.content))
 
-test('D-1012g Local recognizes Board Get and historical QueryBoard observations, and excludes Artifact Get', () => {
-  for (const cmd of ['Get', 'QueryBoard']) assert.equal(projectBoardReads([
-    { src: 'agent', type: 'tool-result', cmd, authoritative: true, accepted: true, boardRead: { observed: true } },
-  ]).observed, true)
-  assert.deepEqual(projectBoardReads([
-    { src: 'agent', type: 'tool-result', cmd: 'Get', authoritative: true, accepted: true,
-      output: { ref: 'art-returned', data: 'hello' } },
-  ]), { observed: false, histories: [] })
-})
 test('D-1012e acknowledged writes leave an empty strip without blocking writes or losing goal endings', async () => {
   const run = await runAgent({
     argv: [], chatLines: ['Start, inspect, then cancel the goal.'], captureLocalEvents: true,

@@ -121,6 +121,37 @@ test('host routes forward exactly the Gateway contract through the manager and r
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Model-command isolation (D-1024a): the folder is labelled before the Gateway hears of the open. A folder that cannot be
+// made writable for isolated commands is refused (fail-closed) with an English reason and nothing is sent; when the
+// Gateway refuses the open, the label just applied is released again; a folder seen ready is kept labelled.
+test('ACC-ISO-13 an open labels first: an unlabellable folder is refused unsent, a refused open is released', async () => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'deep-rulith-unprotectable-')));
+  try {
+    const calls = [], labelled = [], released = [];
+    let answer = () => ({ ok: true, ...notOpen(dir, { state: 'ready' }) });
+    const manager = async (route, body) => { calls.push(route); return route === '/manager/state' ? managerState : answer(route, body); };
+    let labelResult = { ok: false, reason: 'it is owned by another account (S-1-5-32-544), not by you, so Rulith leaves its access settings alone' };
+    const routes = projectRoutes({ manager, platform: process.platform, managerHome: 'fixture-manager',
+      labelOpen: (input) => { labelled.push(input); return labelResult; }, labelRelease: (input) => { released.push(input); return { ok: true }; } });
+    const open = (n) => routes.open({ agentId: 'agent-1', directory: dir, requestId: `b3c1d0a2-0000-4000-8000-00000000001${n}`,
+      authorizationVersion: 'sha256:v1', expectedAccountId: 'acct-1' });
+    await assert.rejects(open(1), (error) => error.errorCode === 'project_folder_unprotectable'
+      && /owned by another account/.test(error.message) && !/[一-鿿]/.test(error.message));
+    assert.deepEqual(calls.filter((route) => route === '/manager/projects/open'), [], 'nothing was sent to the Gateway');
+    assert.deepEqual(labelled.map((row) => row.holder), ['inst-1']);
+    // Labelled, then the Gateway refuses: the label is released again.
+    labelResult = { ok: true };
+    answer = (route) => { if (route === '/manager/projects/open') throw Object.assign(new Error('nested'), { errorCode: 'project_nested' }); return { ok: true, ...notOpen(dir) }; };
+    await assert.rejects(open(2), (error) => error.errorCode === 'project_nested');
+    assert.deepEqual(released.map((row) => [row.directory, row.holder]), [[dir, 'inst-1']]);
+    // Seen ready by a state read: kept labelled.
+    answer = () => ({ ok: true, ...notOpen(dir, { state: 'ready' }) });
+    labelled.length = 0;
+    assert.equal((await routes.state({ agentId: 'agent-1', directory: dir })).state, 'ready');
+    assert.deepEqual(labelled.map((row) => row.directory), [dir]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Model-command isolation (D-1024a): a folder that contains, or lies inside, one of Rulith's own credential or work roots
 // is refused before the manager hears of it (and before any label is applied); an unrelated folder goes on as before.
 test('ACC-ISO-09 a project folder overlapping a Rulith credential or work root is refused before anything is sent', async () => {

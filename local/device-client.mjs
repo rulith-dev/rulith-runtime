@@ -529,20 +529,6 @@ export function createDeviceClient({ root } = {}) {
           ...(reconnect ? { reconnectConnectionId: reconnect } : {}) } }).catch(operationRefusal)
     },
 
-    // The manager supplies only the selected Agent's Worker projection. Document bytes never
-    // pass through this device-control client.
-    authoringSave: (body = {}) => {
-      const current = linked()
-      if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) {
-        throw new Error('The selected Agent is no longer enabled for this signed-in account.')
-      }
-      return call(current.origin, '/local-devices/authoring/save', { bearer: current.token, body }).catch(operationRefusal)
-    },
-    authoringCases: (body = {}) => {
-      const current = linked()
-      if (text(body.expectedAccountId) !== text(current.account?.id) || !current.agents?.some(row => row.id === text(body.agentId))) throw new Error('The selected Agent is no longer enabled for this signed-in account.')
-      return call(current.origin, '/local-devices/authoring/cases', { bearer: current.token, body }).catch(operationRefusal)
-    },
     /**
      * ACC-CONV-05/06 (PSC 0.2.16 ③): the signed-in owner's client reads and switches ONE conversation's exploration mode
      * or post-call review through this device grant. The conversation names itself by its key (the Gateway keeps only its

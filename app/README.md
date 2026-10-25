@@ -24,8 +24,8 @@ It is also a worked example of a third-party agent harness using Rulith.
 > Alpha. Not affiliated with DeepSeek. See [NOTICE](NOTICE).
 >
 > Since 2026-10-23 (D-1019c) the app lives in the Rulith Runtime repository under `app/` and uses that repository's own
-> Runtime (`local/`, `worker/`, `kits/general/`); the former `rulith-dev/deep-rulith` repository is retired. Until the app
-> ships in the `rulith` npm package, run it from a checkout of this repository.
+> Runtime (`local/`, `worker/`, `kits/general/`); the former `rulith-dev/deep-rulith` repository is retired. Since 0.19.0
+> it ships in the `rulith` npm package: `rulith` opens it.
 
 ## What is in `app/`
 
@@ -54,11 +54,12 @@ Deep Rulith uses the general Worker kit in this repository's `kits/general/`. Th
 Requires Node.js 22.19 or later (tested with 24).
 
 ```bash
-npm install        # at the repository root; also installs dsh
-npm run app
+npx --yes rulith@latest          # or: npm install --global rulith, then: rulith
 ```
 
-Deep Rulith opens in your browser (`npm run app -- --no-open` only prints the address). Stop it with Ctrl+C in
+From a checkout: `npm install` at the repository root (which also installs dsh), then `npm run app`.
+
+Rulith opens in your browser (`rulith --no-open`, or `npm run app -- --no-open`, only prints the address; `rulith --port <port>` chooses the page's port). Stop it with Ctrl+C in
 its terminal. The folder you start it in is the default workspace of new conversations; that is not a grant of access.
 
 Everything it keeps on this computer is in one folder, `~/.rulith/app` (set `RULITH_APP_HOME` to use another; one Deep
@@ -103,7 +104,8 @@ Later, more folders open from the sidebar: 「📂 打开文件夹…」 under a
 not set up here, with the same progress; 默认 marks the account's default Agent (when the account service says which),
 and the Agent of the open conversation is highlighted. The one settings page (bottom left: the account, this computer's
 state and ⚙ 设置) has 账户, 这台电脑 (each Agent's Worker state, and 「在本机设置」 again as a repair), 模型, 外观与语言 and
-高级 (where other MCP clients get the Agent's token in Console, and the English Runtime workbench for diagnosis). The
+高级 (where other MCP clients get the Agent's token in Console; the English Runtime workbench it also opened is retired,
+batch 7). The
 composer has two chips: 档位, one per conversation (narrowing applies at once, widening asks first), and 模型; 审查
 appears only when the Agent has a reviewer designated.
 
@@ -166,7 +168,7 @@ Worker start); the launcher writes only `reviewerRoutes` and the reviewer reques
 | `kitHome` | none (`kit/` in the app home) | Kit home the setup operation gives an Agent that has none yet (passed to the host as `RULITH_DSH_KIT_HOME`). |
 | `modelHome` | none | Developers: read the account default model from another manager home, the row of the account signed in to that home. Saving the default from this app is then refused. |
 | `localContextWindow` | none (1M) | The context window of a model on this computer (a loopback endpoint); context relief and dsh's compaction measure against it. Must be a positive whole number. |
-| `consoleUrl` | none (sign-in uses `https://console.rulith.ai`) | Console address (no secret), also used for this computer's sign-in. When set, a goal awaiting acceptance in the Rulith panel opens the Agent's cases in Console (`<origin>/console/#/cases?agentId=…`), where the person signs the criteria; without it the panel row offers only the local workbench and says so. |
+| `consoleUrl` | none (sign-in uses `https://console.rulith.ai`) | Console address (no secret), also used for this computer's sign-in. When set, a goal awaiting acceptance in the Rulith panel opens the Agent's cases in Console (`<origin>/console/#/cases?agentId=…`), where the person signs the criteria. |
 
 ## Tests
 
@@ -179,3 +181,4 @@ The tests use this repository's Runtime unless `RULITH_RUNTIME_DIR` names anothe
 ## License
 
 Apache-2.0. dsh is MIT-licensed and installed from npm as a dependency (pinned); this repository contains none of its code.
+What npm installs with it, and under which licenses, is listed in [NOTICE](NOTICE).

@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
-import { projectOperations } from '../local/local-ui.mjs'
+import { projectOperations } from '../local/operations.mjs'
 
 const RUNNING = { tool: 'Execute', label: 'Execute demo.ship', state: 'running', stage: 'at_worker',
   at: '2026-10-01T08:00:00Z', since: '2026-10-01T08:00:01Z' }

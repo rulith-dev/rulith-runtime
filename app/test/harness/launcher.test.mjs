@@ -415,3 +415,28 @@ test('the launcher runs no kit installer of its own, with or without a manager a
     assert.equal(fs.existsSync(calls), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('one --port reaches dsh: the person\'s when given, else the one the settings chose', () => {
+  const dir = temp();
+  try {
+    const out = path.join(dir, 'dsh-argv.json');
+    const fakeDsh = path.join(dir, 'fake-dsh.mjs');
+    fs.writeFileSync(fakeDsh, "import fs from 'node:fs';\nfs.writeFileSync(process.env.FAKE_DSH_OUT, JSON.stringify(process.argv.slice(2)));\n");
+    const s = { dshBin: fakeDsh, dshHome: path.join(dir, 'dsh-home'), cwd: dir, managerHome: path.join(dir, 'manager-home'),
+      keyFile: path.join(dir, 'key.txt'), runtimeEntry: path.join(dir, 'runtime.mjs'), persona: path.join(dir, 'persona.txt'), webPort: 3999 };
+    fs.mkdirSync(path.join(s.dshHome, 'profiles', 'rulith'), { recursive: true });
+    fs.writeFileSync(path.join(s.dshHome, 'profiles', 'rulith', 'package.json'), '{}');
+    const file = path.join(dir, 'deep-rulith.json');
+    fs.writeFileSync(file, JSON.stringify(s));
+    const ports = (args) => {
+      const run = spawnSync(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file, ...args],
+        { env: { ...process.env, FAKE_DSH_OUT: out }, encoding: 'utf8', timeout: 30_000 });
+      assert.equal(run.status, 0, run.stderr);
+      const argv = JSON.parse(fs.readFileSync(out, 'utf8'));
+      return argv.flatMap((arg, i) => (arg === '--port' ? [argv[i + 1]] : arg.startsWith('--port=') ? [arg.slice(7)] : []));
+    };
+    assert.deepEqual(ports([]), ['3999']);
+    assert.deepEqual(ports(['--port', '4555', '--no-open']), ['4555']);
+    assert.deepEqual(ports(['--port=4556']), ['4556']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

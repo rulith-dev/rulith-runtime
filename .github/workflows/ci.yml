@@ -13,7 +13,8 @@ jobs:
   runtime:
     strategy:
       matrix:
-        node: [20, 22]
+        # Node.js 22.19 or later: the package's engines since 0.19.0, when the app (DeepSeek Harness) ships in it.
+        node: [22, 24]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +29,7 @@ jobs:
       - name: Verify the published artifact manifest
         run: git diff --exit-code artifact-manifest.json
   app:
-    # The local app (app/, D-1019c) needs Node.js 22.19 or later (DeepSeek Harness).
+    # The local app (app/, D-1019c; in the package since 0.19.0) needs Node.js 22.19 or later (DeepSeek Harness).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

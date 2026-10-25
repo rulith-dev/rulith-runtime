@@ -10,7 +10,6 @@ import test from 'node:test'
 
 import { adapterToolFromSpec, builtinSourceTools, builtinWorkspaceTools, execute, orderWork, protectedWorkerExecutables, toolDigest, toolFromSpec, workerToolManifest, workerToolsOf, workspaceWriteEnabled } from '../worker/rulith-worker.mjs'
 import { createLocalHost, defaultLocalConfig, effectiveChildEnv, localInteger, modeOf, normalizeLocalConfig, rolesOf } from '../local/rulith-local.mjs'
-import { localPage } from '../local/local-ui.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
@@ -119,7 +118,7 @@ test('the npm package installs the Rulith Local command rather than the retired 
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'))
   assert.equal(pkg.name, 'rulith')
-  assert.equal(pkg.version, '0.18.0')
+  assert.equal(pkg.version, '0.19.0')
   assert.equal(lock.version, pkg.version)
   assert.equal(lock.packages?.['']?.version, pkg.version)
   assert.match(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'),
@@ -1537,94 +1536,6 @@ test('agent lifecycle events shown to users use the English product vocabulary',
   assert.doesNotMatch(source, /log\(`◎ 案卷/)
 })
 
-test('Rulith Local presents a conversation-first Agent workbench with optional Rulith Cases', () => {
-  const hostSource = readFileSync(join(ROOT, 'local', 'rulith-local.mjs'), 'utf8')
-  const visible = localPage.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '')
-  const script = /<script[^>]*>([\s\S]*?)<\/script>/.exec(localPage)?.[1]
-  assert.ok(script)
-  assert.doesNotThrow(() => new Function(script), 'the embedded Local UI script must compile')
-  assert.match(localPage, /New conversation/)
-  assert.match(localPage, /Rulith Case/)
-  assert.match(localPage, /Current frontier/)
-  assert.match(localPage, /Worker activity/)
-  assert.match(localPage, /Message the Agent/)
-  assert.match(localPage, /Rulith available/)
-  assert.match(localPage, /Chat normally/)
-  assert.match(localPage, /sessionKey:state\.session/,
-    'browser follow-ups must stay in one local conversation slot')
-  assert.match(localPage, /state\.session=r\.sessionKey/,
-    'the first accepted message must retain the host-issued conversation identity')
-  assert.match(localPage, /e\.session\|\|e\.sessionKey/,
-    'all events from one local session must render in one conversation')
-  assert.match(localPage, /state\.active=r\.sessionKey/,
-    'the selected sidebar item must be the conversation, not one message id')
-  assert.doesNotMatch(localPage, /state\.active=r\.id/,
-    'a follow-up message must not split the current conversation into a new sidebar item')
-  assert.match(localPage, /if\(key\)state\.session=key/,
-    'selecting an earlier conversation must route composer follow-ups back to that session')
-  assert.match(localPage, /session-detached/,
-    'a reclaimed local conversation must visibly retain the recoverable Rulith Case id')
-  assert.match(localPage, /state\.session=''/,
-    'New conversation must explicitly leave the prior local transcript slot')
-  assert.match(localPage, /receipt committed/)
-  // The Worker panel used to promote an Agent verdict carrying `e.invocation` as an
-  // "authoritative receipt". That field is not in Core's published Agent Profile result, so
-  // it was always absent and the panel simply read empty. It now states the gap instead:
-  // a blank invites no investigation, a stated gap does.
-  assert.match(localPage, /worker-activity-unavailable/)
-  assert.match(localPage, /Invocation reporting unavailable/)
-  assert.doesNotMatch(localPage, /e\.invocation/,
-    'the Worker panel is reading a result field the authority never published')
-  assert.match(localPage, /Rulith MCP/)
-  assert.match(localPage, /'not local'/)
-  assert.match(localPage, /role="dialog"/)
-  assert.match(localPage, /Runtime details/)
-  assert.match(localPage, /Read-only projection of the single-Agent Runtime configuration/)
-  assert.doesNotMatch(localPage, /Start Agent|Stop Agent|Start Worker|Stop Worker/)
-  assert.match(localPage, /Use this environment’s tools and files/)
-  assert.match(localPage, /Stops this turn\. Work already handed to Rulith is not withdrawn\./)
-  assert.match(localPage, /id="detailconfig"/)
-  assert.match(localPage, /id="caseoptions"/)
-  assert.match(localPage, /id="modelbadge"/)
-  assert.match(localPage, /data-view="case"/)
-  assert.match(localPage, /Export view/)
-  assert.doesNotMatch(localPage, /Sign in to Rulith Cloud|Use this Agent|Bind to this Local/)
-  assert.doesNotMatch(localPage, /Provider API key|Load models|data-save=/)
-  assert.doesNotMatch(hostSource, /\/local\/v1\/account|\/account\/logout|\/auth\/start/)
-  assert.doesNotMatch(hostSource, /path === '\/config'/, 'the observer UI has no browser configuration write surface')
-  assert.doesNotMatch(localPage, /<details>/, 'settings must open in a visible modal rather than below the inspector fold')
-  // The page reloads whenever the gate refuses it. Since `/` is now gated too, a missing
-  // or rotated key answers 401 and a rebound Host or foreign Origin answers 403; both
-  // must send the tab back through the gate rather than leave it showing stale state.
-  assert.match(localPage, /response\?\.status===401\|\|response\?\.status===403\)\{location\.reload\(\)/)
-  assert.doesNotMatch(localPage, /__KEY__/, 'the page must not carry a server-substituted key')
-  assert.match(localPage, /\.composebox\{position:relative;width:min\(790px,100%\)/)
-  assert.doesNotMatch(localPage, /padding:12px max\(/, 'percentage padding collapses the composer inside the center grid column')
-  assert.match(hostSource, /'cache-control': 'no-store'/)
-  assert.doesNotMatch(visible, /本地站|智能体（脑）|手的流水|核验通过|还没开单/)
-})
-
-test('Rulith Local keeps the center stream independently scrollable above the fixed composer', () => {
-  const page = readFileSync(join(ROOT, 'local', 'local-ui.mjs'), 'utf8')
-  assert.match(page, /\.main\{[^}]*min-height:0[^}]*height:100vh[^}]*overflow:hidden[^}]*\}/)
-  assert.match(page, /\.stream\{[^}]*min-height:0[^}]*overflow:auto[^}]*padding:[^}]*130px/)
-  assert.match(page, /\.composer\{[^}]*bottom:0/)
-  assert.match(page, /stick=forceTail===true\|\|stream\.scrollHeight-stream\.scrollTop-stream\.clientHeight<80/)
-  assert.match(page, /stream\.scrollTop=stick\?stream\.scrollHeight:oldTop/,
-    'a background refresh must preserve a reader who scrolled away from the tail')
-  assert.match(page, /if\(markup!==state\.lastStream\)\{stream\.innerHTML=markup/,
-    'an unchanged status poll must not destroy text selection or nested scroll positions')
-  assert.match(page, /else if\(stick\)stream\.scrollTop=stream\.scrollHeight/,
-    'an explicit send or navigation must follow the tail even when markup has not changed yet')
-  assert.match(page, /if\(html===state\.lastCases\)return/,
-    'an unchanged status poll must not rebuild and scroll the Activity sidebar')
-  assert.match(page, /frontierMarkup!==state\.lastFrontier/)
-  assert.match(page, /workerMarkup!==state\.lastWorkers/,
-    'an unchanged status poll must not rebuild the inspector and destroy copied text')
-  assert.doesNotMatch(page, /\$\('stream'\)\.scrollTop=\$\('stream'\)\.scrollHeight/,
-    'every refresh must not force the conversation back to the bottom')
-})
-
 test('production-facing runtime text is English-only', () => {
   const files = PRODUCTION_DIRS.flatMap((dir) => productionFiles(join(ROOT, dir)))
   for (const dir of PRODUCTION_DIRS) assert.ok(files.some(file => relative(ROOT, file).replaceAll('\\', '/').startsWith(dir + '/')), `${dir} was not scanned`)
@@ -1694,7 +1605,9 @@ test('public runtime contains no private deployment addresses or credential mate
     'agent/rulith-agent.mjs',
     'worker/rulith-worker.mjs',
     'local/rulith-local.mjs',
-    'local/local-ui.mjs',
+    'app/harness/web/start-deep-rulith.mjs',
+    'app/harness/web/rulith-runtime.mjs',
+    'app/harness/web/rulith-dsh-ui/lib/client.js',
   ]) {
     const source = readFileSync(join(ROOT, rel), 'utf8')
     assert.doesNotMatch(source, /-----BEGIN [A-Z ]*PRIVATE KEY-----/)

@@ -344,7 +344,7 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
       if (exposed) throw new Error(exposed)
       const wasRunning = !workerStopped()
       if (wasRunning) {
-        if (roles === undefined) throw new Error('This host has no Worker drain controls. Prepare the sample through the local workbench.')
+        if (roles === undefined) throw new Error('This host has no Worker drain controls. Prepare the sample through the local Rulith manager, which stops the Worker first.')
         // A start that is already known to be refused is said now, while the Worker still runs.
         const refused = await roles.startRefusal()
         if (refused) throw new Error(`The Worker could not be started again (${String(refused).trim().replace(/\.$/, '')}), so it was not stopped and nothing was prepared.`)
@@ -414,11 +414,11 @@ export function createSetupService({ configFile, getConfig, saveConfig, effectiv
         worker === undefined ? 'Enable this computer’s tools and files so the Worker advertises the three calculation Tools.'
           : workerReady ? `The Worker was ${started} with the three calculation Tools.`
             : worker.body?.state === 'unconfirmed'
-              ? `The Worker was ${started} but has not reported that it finished initializing; open Trace to see what it printed.`
+              ? `The Worker was ${started} but has not reported that it finished initializing; its output says why.`
               : `The Worker did not start: ${text(worker.body?.teaching) || 'its start was not confirmed.'}`,
         selection === 'sent' ? `Its Source folder, ${SAMPLE_DATA}, was sent to Console: review and authorize it there.`
           : selection === 'kept' ? 'Other resources are selected here too, so nothing was sent: review the selection and send it for authorization.'
-            : `Its Source folder, ${SAMPLE_DATA}, was not sent to Console (${selectionTeaching}). Send the selection for authorization from this page again,`
+            : `Its Source folder, ${SAMPLE_DATA}, was not sent to Console (${selectionTeaching}). Send the selection for authorization again,`
               + ` or bind ${SAMPLE_SOURCE} in Console with its default location, ${SAMPLE_DATA}.`,
       ].join(' ')
       return { directory: target, selection, worker: worker === undefined ? 'not_started' : text(worker.body?.state) || (workerReady ? 'ready' : 'failed'),

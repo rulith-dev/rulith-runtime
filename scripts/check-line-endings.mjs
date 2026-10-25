@@ -39,7 +39,11 @@ export function publishedFiles(root = ROOT) {
   const manifested = Object.keys(manifest.files ?? {})
   if (manifested.length === 0) throw new Error('artifact-manifest.json lists no files; the check would pass vacuously')
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
-  const declared = Array.isArray(pkg.files) ? pkg.files.flatMap((entry) => expandDeclared(root, entry)) : []
+  // `files` entries starting with `!` take paths out again (npm reads them the same way); here they are exact paths.
+  const entries = Array.isArray(pkg.files) ? pkg.files : []
+  const excluded = new Set(entries.filter((entry) => entry.startsWith('!')).flatMap((entry) => expandDeclared(root, entry.slice(1))))
+  const declared = entries.filter((entry) => !entry.startsWith('!')).flatMap((entry) => expandDeclared(root, entry))
+    .filter((file) => !excluded.has(file))
   // npm includes package.json, README and LICENSE independently of `files`. Everything
   // else is expanded from the exact allow-list the package declares.
   const automatic = readdirSync(root).filter((name) => /^(?:readme|licen[cs]e)/iu.test(name))

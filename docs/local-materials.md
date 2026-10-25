@@ -1,10 +1,15 @@
 # Local materials
 
-Use **+ → Add files**, or drop a file onto the conversation composer. A file is stored in this Agent profile's local material area before it appears as ready. You can remove it from the message before sending. A message may carry up to eight files, each at most 8 MiB.
+Each Agent profile has a local material area. The English workbench's conversation page, which added
+files there (**+ → Add files**), is retired with the workbench in Rulith 0.19.0; the Rulith app reads
+project files through the official engineering capability instead. What remains is the local host's
+material transport — `POST /materials` on an instance's loopback host, and the Worker's
+`rulith.materials.read@1` — described below for clients that use it. A message may carry up to
+eight files, each at most 8 MiB.
 
-Adding a file gives the page a local `ui_` selection handle. Sending a message is what exposes a separate immutable `mat_` selector and full digest to the Agent. Neither value is the private custody ID used to store bytes. Sending does not upload contents to the Gateway, grant a tool, or certify the document's statements. The Agent must discover and call an authorized material-reading Action before it can use the contents.
+Adding a file gives the client a local `ui_` selection handle. Sending a message is what exposes a separate immutable `mat_` selector and full digest to the Agent. Neither value is the private custody ID used to store bytes. Sending does not upload contents to the Gateway, grant a tool, or certify the document's statements. The Agent must discover and call an authorized material-reading Action before it can use the contents.
 
-An attachment send requires the page's request ID. The Host durably records one receipt for that click, binding the request ID, current Agent and owner, conversation key, and exact selected versions. Retrying the same click recovers its submission ID; changing the conversation or selection under that request ID is refused. The conversation key is retry context, not an authoritative Rulith Case binding. If the Host stops after recording the receipt, an exact retry can finish the per-material ledger. A stranded per-material submission lock still refuses the retry until repaired; it is not silently discarded.
+An attachment send requires the client's request ID. The Host durably records one receipt for that click, binding the request ID, current Agent and owner, conversation key, and exact selected versions. Retrying the same click recovers its submission ID; changing the conversation or selection under that request ID is refused. The conversation key is retry context, not an authoritative Rulith Case binding. If the Host stops after recording the receipt, an exact retry can finish the per-material ledger. A stranded per-material submission lock still refuses the retry until repaired; it is not silently discarded.
 
 For new work, the receipt also stores a private random task proof. The Host registers only its SHA-256 digest through the signed-in device and waits for an exact registration reply before passing the proof to the local Agent in a private task header. The Agent sends it only on the first `ApplyBatch` MCP call of that task that declares a goal without `parent` (under `rulith/v4`, the call that opens the work); it is not model input, task body, event, or conversation history. A registration outage or mismatched reply leaves the durable click locally pending for an exact retry and sends nothing to the Agent. Attachments cannot target existing work: `rulith/v4` has no host selection of an existing goal, and the Host refuses a `caseId`. A standalone Host without the signed-in device registration channel refuses attached tasks; text-only tasks still work. The Java Gateway/Core binding and material-read enforcement are separate integration work and are not implied by this local transport.
 
@@ -56,20 +61,14 @@ An ordinary MCP client can receive permitted material through the Gateway proxy.
 
 ## Retained originals
 
-A failed addition offers **Add again** while the selected file is still available in
-the open page. This retries local storage, not sending a message or reading the file
-through an Action. An earlier request with an unconfirmed response may already have
-stored a copy; explicit retry can retain another immutable original. Removing a chip
-removes it from the draft, not from custody storage.
-
-The page records the model service at file selection. If that destination changes,
-retry refuses before storing bytes and asks the person to remove and select the file
-again. An unset endpoint resolves to the same default used by the Agent. Older materials
-recorded with an empty destination are preserved but require re-selection before use;
-they are not silently granted disclosure to the default provider.
+A client records the model service when a file is selected. If that destination changes,
+storing is refused before any bytes are kept, and the file must be selected again. An unset endpoint
+resolves to the same default used by the Agent. Older materials recorded with an empty destination are
+preserved but require re-selection before use; they are not silently granted disclosure to the default
+provider.
 
 The Worker retains immutable originals and their integrity metadata. Closing a conversation or Case does not delete referenced materials. Keep this area with the profile's backups if the original evidence must remain available. An offline Worker is temporarily unavailable; missing or damaged originals are reported as unavailable or corrupt. The Gateway cannot reconstruct an original from its hash.
 
 The store format is `rulith-materials/3`. An older material area is refused with `materials_store_migration_required`; its files are left in place. Add the files again under a fresh profile area to use them with this release. There is no automatic migration.
 
-The document-to-capability assistant uses this transport for its local source document and checked result. The selector split is a prerequisite for the later Source-bound production guard; it does not itself authorize a new Artifact payload role.
+The selector split is a prerequisite for the later Source-bound production guard; it does not itself authorize a new Artifact payload role. (The document assistant that used this transport for its source document and checked result is retired with the workbench.)

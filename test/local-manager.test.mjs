@@ -24,13 +24,12 @@ import { Socket, createServer as createNetServer } from 'node:net'
 import { tmpdir, uptime } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-import { createManagerServer, localAuthoringSaveRequestId, localAuthoringResultVersions } from '../local/manager-server.mjs'
+import { createManagerServer } from '../local/manager-server.mjs'
 import { processAlive } from '../local/manager-registry.mjs'
 import { processStamp } from '../local/process-identity.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { isolatedEnvironmentBase } from '../local/rulith-local.mjs'
-import { materialDeviceFingerprint, materialIdentity, openMaterialStore } from '../worker/material-store.mjs'
-import { authoringNode, proposalDigest, recordLocalAuthoringResult } from '../worker/local-authoring.mjs'
+import { materialDeviceFingerprint } from '../worker/material-store.mjs'
 import { createDevicesGateway } from './support/local-devices-gateway.mjs'
 
 const sha256Hex = (value) => createHash('sha256').update(String(value)).digest('hex')
@@ -40,89 +39,6 @@ const TASK_AGENT = resolve(import.meta.dirname, 'support', 'task-agent.mjs')
 const ORPHAN_PARENT = resolve(import.meta.dirname, 'support', 'orphan-parent.mjs')
 const KEY = 'manager-instance-key'
 const AGENTS = ['agent-alpha', 'agent-beta', 'agent-gamma']
-
-test('private-save request identity survives a retry and changes with the certified proposal', () => {
-  const proposal = { accountId: 'account-1', agentId: 'agent-1', caseId: 'case-1', materialId: 'mat_' + 'a'.repeat(32),
-    documentDigest: 'sha256:' + 'b'.repeat(64), proposalDigest: 'sha256:' + 'c'.repeat(64) }
-  const first = localAuthoringSaveRequestId(proposal)
-  assert.match(first, /^local-save:[0-9a-f]{64}$/)
-  assert.equal(localAuthoringSaveRequestId({ ...proposal }), first)
-  for (const field of Object.keys(proposal)) {
-    assert.notEqual(localAuthoringSaveRequestId({ ...proposal, [field]: proposal[field] + '-different' }), first, field)
-  }
-})
-
-test('checked authoring versions are ordered, deduplicated and scoped to the selected Agent', () => {
-  const identity = { profile: 'agent-one-profile', owner: 'agent-one-owner' }
-  const first = { ...identity, resultId: 'res_' + '1'.repeat(32), materialId: 'mat_' + 'a'.repeat(32),
-    custodyId: 'mat_' + 'a'.repeat(32), documentDigest: 'sha256:' + 'a'.repeat(64), node: 'node_' + 'a'.repeat(32),
-    resultDigest: 'sha256:' + 'a'.repeat(64), proposalDigest: 'sha256:' + 'b'.repeat(64), checkedAt: '2026-09-25T10:00:00Z' }
-  const second = { ...identity, resultId: 'res_' + '2'.repeat(32), materialId: 'mat_' + 'c'.repeat(32),
-    custodyId: 'mat_' + 'c'.repeat(32), documentDigest: 'sha256:' + 'c'.repeat(64), node: 'node_' + 'c'.repeat(32),
-    resultDigest: 'sha256:' + 'c'.repeat(64), proposalDigest: 'sha256:' + 'd'.repeat(64), checkedAt: '2026-09-25T11:00:00Z' }
-  const { owned, availableResults } = localAuthoringResultVersions([first,
-    { ...first, owner: 'another-agent', resultId: 'res_' + '3'.repeat(32) },
-    { ...first, resultId: 'invalid', checkedAt: '2026-09-26T00:00:00Z' },
-    { ...first, resultId: 'res_' + '4'.repeat(32), materialId: 42, checkedAt: '2026-09-26T00:00:00Z' },
-    { ...first, resultId: 'res_' + '5'.repeat(32), resultDigest: undefined, checkedAt: '2026-09-27T00:00:00Z' }, second, first], identity)
-  assert.equal(owned.length, 3, 'malformed same-Agent rows cannot become the default selected result')
-  assert.deepEqual(availableResults.map(row => row.resultId), [second.resultId, first.resultId])
-  assert.equal(JSON.stringify(availableResults).includes('another-agent'), false)
-  const revisions = Array.from({ length: 205 }, (_, i) => ({ ...first,
-    resultId: `res_${i.toString(16).padStart(32, '0')}`,
-    checkedAt: new Date(Date.UTC(2026, 8, 25) + i * 1000).toISOString() }))
-  const recent = localAuthoringResultVersions(revisions, identity)
-  assert.equal(recent.availableResults.length, 200)
-  assert.equal(recent.availableResults[0].resultId, revisions.at(-1).resultId)
-  const restored = localAuthoringResultVersions(revisions, identity, revisions[0].resultId)
-  assert.equal(restored.availableResults.length, 201)
-  assert.equal(restored.availableResults.at(-1).resultId, revisions[0].resultId,
-    'an explicitly named older result remains reviewable after more than 200 checks')
-})
-
-test('manager reopens an older checked result after newer checks without changing its material or proposal', async t => {
-  await withManager(t, async ({ manager, gateway }) => {
-    const instance = await addInstance(manager, 'Document versions', { agentId: 'agent-alpha' })
-    const identity = materialIdentity({ configFile: join(instance.directory, 'local.json'),
-      gatewayUrl: gateway.origin, connectionId: manager.instances.overview().find(row => row.id === instance.id).connectionId,
-      agentId: 'agent-alpha', modelUrl: 'http://127.0.0.1:11434/v1' })
-    const root = join(instance.directory, 'materials')
-    const store = openMaterialStore(root, identity)
-    const material = store.put({ name: 'rules.txt', mediaType: 'text/plain', bytes: Buffer.from('Original policy text') })
-    store.submitSelected(material.uiHandle, { sessionKey: 'version-case' })
-    const drafts = Array.from({ length: 205 }, (_, i) => ({ program: { id: `p${i}`, title: `Version ${i}` },
-      caseContracts: [], citations: [], examples: [] }))
-    const records = await Promise.all(drafts.map(async (draft, i) => {
-      const candidate = proposalDigest(draft)
-      const result = store.putResult({ name: `check-${i}.json`, mediaType: 'application/json', encoding: 'utf8',
-        bytes: Buffer.from(JSON.stringify({ draft, report: { proposalDigest: candidate, compiled: true } })) })
-      await recordLocalAuthoringResult(root, { profile: identity.profile, owner: identity.owner,
-        materialId: material.selector, custodyId: material.id, documentDigest: material.digest,
-        node: authoringNode(material.selector, material.digest), proposalDigest: candidate,
-        resultId: result.id, resultDigest: result.digest,
-        checkedAt: new Date(Date.UTC(2026, 8, 25) + i * 1000).toISOString() })
-      return result
-    }))
-    const review = async resultId => {
-      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/review`, {
-        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
-        body: JSON.stringify({ instanceId: instance.id, ...(resultId ? { resultId } : {}) }) })
-      return { status: response.status, body: await response.json() }
-    }
-    const latest = await review('')
-    assert.equal(latest.status, 200, JSON.stringify(latest.body))
-    assert.equal(latest.body.resultId, records.at(-1).id)
-    assert.equal(latest.body.availableResults.length, 200)
-    const older = await review(records[0].id)
-    assert.equal(older.status, 200, JSON.stringify(older.body))
-    assert.equal(older.body.resultId, records[0].id)
-    assert.equal(older.body.draft.program.title, 'Version 0')
-    assert.equal(older.body.availableResults.length, 201)
-    assert.equal(older.body.availableResults.at(-1).resultId, records[0].id)
-    assert.equal(older.body.materialId, material.selector)
-    assert.equal(older.body.proposalDigest, proposalDigest(drafts[0]))
-  })
-})
 
 /** A manager and a Gateway on real sockets, signed in unless a scenario asks otherwise. */
 async function withManager(t, run, { signIn = true, agents = AGENTS, ...managerOptions } = {}) {
@@ -382,12 +298,11 @@ test('an instance pointed at the manager\'s own directory cannot start, but can 
     assert.match(refused.message, /device credential/)
     assert.match(manager.instances.overview()[0].blocked, /overlaps the manager directory/)
 
-    // The pages that could repair it are still reachable. Refusing to *open* the host took
-    // Setup and Tools with it — the only two pages that can fix the path — so the instance
-    // could never be recovered from inside the product. Opening spawns nothing; starting does.
-    const opened = await manager.instances.open(instance.id, '/setup')
-    assert.match(opened.url, /^http:\/\/127\.0\.0\.1:\d+\/setup\?k=/)
-    assert.match(refused.message, /Setup or Tools page/)
+    // Its host can still be opened, so its setup routes can repair the path. Opening spawns nothing; starting does.
+    const opened = await manager.instances.open(instance.id)
+    assert.match(opened.url, /^http:\/\/127\.0\.0\.1:\d+\/\?k=/)
+    await assert.rejects(manager.instances.open(instance.id, '/setup'), /its pages are retired/)
+    assert.match(refused.message, /local.json or Worker tool manifest/)
 
     // A sibling instance's directory is refused for the same reason.
     const sibling = await addInstance(manager, 'Sibling', { agentId: 'agent-beta' })
@@ -417,7 +332,7 @@ test('selecting or opening one instance does not start, stop or re-key another, 
     assert.equal(before.agentId, 'agent-alpha', 'the running Agent reports its own identity')
 
     await manager.instances.open(idle.id)
-    await manager.instances.open(idle.id, '/setup')
+    await manager.instances.open(idle.id)
     const overview = manager.instances.overview()
     assert.equal(overview.length, 2)
 
@@ -863,7 +778,7 @@ test('a pairing started under a different client mode than was reserved is refus
       agentId: 'agent-alpha', agentName: 'Alpha', origin: manager.device.peek().origin,
       accountId: manager.device.peek().account.id, clientMode: 'local_agent',
       replaceAgentToken: false, reservedAt: new Date().toISOString() } }))
-    const url = new URL((await manager.instances.open(instance.id, '/setup')).url)
+    const url = new URL((await manager.instances.open(instance.id)).url)
 
     // The instance page starting the reserved pairing as an existing client would mint no
     // Agent token and rewrite this instance's roles, under a grant reserved for the other mode.
@@ -881,7 +796,7 @@ test('a configured MCP server cannot be pointed at the manager directory through
   await withManager(t, async ({ manager, root }) => {
     const instance = await addInstance(manager, 'Tools', { agentId: 'agent-alpha' })
     await manager.registry.patchInstance(instance.id, () => ({ tools: { source: 'own' } }))
-    const url = new URL((await manager.instances.open(instance.id, '/worker-tools')).url)
+    const url = new URL((await manager.instances.open(instance.id)).url)
     const probe = (body) => fetch(url.origin + '/mcp-services/probe', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-rulith-local': url.searchParams.get('k') },
       body: JSON.stringify(body),
@@ -977,7 +892,7 @@ test('a stopped instance takes a live address instead of treating its remembered
     const opened = await manager.instances.open(instance.id)
     const url = new URL(opened.url)
     assert.ok(Number(url.port) > 0 && Number(url.port) <= 65535)
-    assert.equal((await fetch(url)).status, 200)
+    assert.equal((await fetch(`${url.origin}/status?k=${url.searchParams.get('k')}`)).status, 200)
     const after = manager.registry.instance(instance.id)
     assert.equal(after.hostPort, Number(url.port))
     for (const key of ['id', 'agentId', 'accountId', 'directory', 'connectionId']) assert.equal(after[key], before[key], key)
@@ -1019,9 +934,9 @@ test('opens, Worker settings and owned shutdown of one instance interleave witho
     const results = await Promise.allSettled([
       manager.instances.open(instance.id),
       manager.instances.setWorkerEnabled(instance.id, true),
-      manager.instances.open(instance.id, '/setup'),
+      manager.instances.open(instance.id),
       manager.instances.stop(instance.id),
-      manager.instances.open(instance.id, '/worker-tools'),
+      manager.instances.open(instance.id),
     ])
     assert.equal(results.filter((row) => row.status === 'rejected').length, 0, JSON.stringify(results.map((r) => String(r.reason ?? ''))))
     const openedByGeneration = new Map()
@@ -1487,7 +1402,7 @@ test('copying an inherited model creates an independent override and replaces ob
     await manager.instances.setDefaultModel({ ...scope, url: 'http://127.0.0.1:8080/v1', name: 'keyless', key: '', thinking: 'standard' })
     assert.equal(loadInstanceConfig(target.directory).agent.env.RULITH_MODEL, 'default', 'the copied model is now independent')
     for (const open of [false, true]) {
-      if (open) await manager.instances.open(target.id, '/setup')
+      if (open) await manager.instances.open(target.id)
       await manager.instances.setInstanceModel(target.id, { ...scope, source: 'custom', url: 'http://127.0.0.1:8080/v1',
         name: 'previous', key: 'obsolete-key', thinking: 'enabled' })
       const copied = await manager.instances.copyModelSettings(target.id, source.id)
@@ -1510,7 +1425,7 @@ test('disabled thinking survives account inheritance, overrides, copying, and an
     assert.equal(manager.instances.overview().find(row => row.id === source.id).model.thinking, 'disabled')
     assert.equal(manager.instances.overview().find(row => row.id === source.id).model.maxOutputTokens, 12000)
     for (const open of [false, true]) {
-      if (open) await manager.instances.open(target.id, '/setup')
+      if (open) await manager.instances.open(target.id)
       await manager.instances.setInstanceModel(target.id, { ...scope, source: 'custom', url: 'http://127.0.0.1:8080/v1', name: 'other', thinking: 'enabled' })
       await manager.instances.copyModelSettings(target.id, source.id)
       assert.equal(loadInstanceConfig(target.directory).agent.env.RULITH_MODEL_THINKING, 'disabled')
@@ -1526,23 +1441,13 @@ test('disabled thinking survives account inheritance, overrides, copying, and an
 
 // ── The way back, and the rest of the surface ────────────────────────────────
 
-test('an opened instance is given the manager\'s own address to return to, and never the device token', async (t) => {
+test('an opened instance is given its own address and key, no way back to a retired manager page, and never the device token', async (t) => {
   await withManager(t, async ({ manager, gateway }) => {
     const instance = await addInstance(manager, 'Linked back', { agentId: 'agent-alpha' })
     const opened = await manager.instances.open(instance.id)
     const url = new URL(opened.url)
-    const back = new URL(url.searchParams.get('manager'))
-    assert.equal(back.origin, `http://127.0.0.1:${manager.port}`)
-    assert.equal(back.pathname, '/')
-    assert.equal(back.searchParams.get('k'), KEY, 'the page needs the manager key to get back in; GET / is authenticated')
-    assert.match(back.searchParams.get('k'), /^[A-Za-z0-9_-]{16,128}$/, 'the shape the Local pages will render')
-
-    // Following it works, first time and every time.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await fetch(back.href)
-      assert.equal(response.status, 200)
-      assert.match(await response.text(), /<title>Rulith<\/title>/)
-    }
+    assert.equal(url.searchParams.get('manager'), null, 'the manager serves no page to return to')
+    assert.equal(opened.url.includes(KEY), false, 'the manager key does not travel with an instance address')
 
     // The cloud device management token is a different thing entirely and appears nowhere.
     const deviceToken = gateway.deviceToken(manager.device.peek().deviceId)
@@ -1553,26 +1458,11 @@ test('an opened instance is given the manager\'s own address to return to, and n
   })
 })
 
-test('the retired /mcp-services address keeps the way back', async (t) => {
-  await withManager(t, async ({ manager }) => {
-    const instance = await addInstance(manager, 'Redirecting', { agentId: 'agent-alpha' })
-    const url = new URL((await manager.instances.open(instance.id, '/worker-tools')).url)
-    const manager_param = url.searchParams.get('manager')
-    const response = await fetch(`${url.origin}/mcp-services?k=${encodeURIComponent(url.searchParams.get('k'))}&manager=${encodeURIComponent(manager_param)}`, { redirect: 'manual' })
-    assert.equal(response.status, 302)
-    const location = new URL(response.headers.get('location'), url.origin)
-    assert.equal(location.pathname, '/worker-tools')
-    assert.equal(location.searchParams.get('manager'), manager_param,
-      'a redirect that drops the launcher address leaves that one page with no way back')
-  })
-})
-
 test('the manager answers exactly its documented control-plane operations', async (t) => {
   await withManager(t, async ({ manager }) => {
     const source = readFileSync(join(import.meta.dirname, '..', 'local', 'manager-server.mjs'), 'utf8')
     const routes = [...source.matchAll(/'(\/manager\/[a-z/-]+)':/g)].map((match) => match[1]).sort()
     assert.deepEqual(routes, [
-      '/manager/authoring/install-checker', '/manager/authoring/review', '/manager/authoring/save',
       '/manager/conversations/end', '/manager/conversations/end-preview',
       '/manager/conversations/exploration-mode', '/manager/conversations/review', '/manager/conversations/sign-acceptance',
       '/manager/conversations/state',
@@ -1792,33 +1682,7 @@ test('the signed-in client opens a folder as a project through the device grant:
   })
 })
 
-test('a stalled public checker installation cannot delay stopping and signing out of the account', async t => {
-  let releaseInstall, enteredInstall
-  const entered = new Promise(resolve => { enteredInstall = resolve })
-  const installed = new Promise(resolve => { releaseInstall = resolve })
-  await withManager(t, async ({ manager, gateway }) => {
-    const row = await addInstance(manager, 'Download sign-out', { agentId: AGENTS[0] })
-    await startFixtureInstance(manager.instances, row.id)
-    const pending = fetch(`http://127.0.0.1:${manager.port}/manager/authoring/install-checker`, {
-      method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' },
-      body: '{}',
-    })
-    await entered
-    try {
-      const response = await fetch(`http://127.0.0.1:${manager.port}/manager/device/signout`, {
-        method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(3000),
-      })
-      assert.equal(response.status, 200)
-      assert.equal(manager.device.status().state, 'none')
-      assert.equal(manager.instances.hosts.has(row.id), false)
-    } finally { releaseInstall() }
-    const prepared = await pending
-    assert.equal(prepared.status, 200)
-    assert.equal(gateway.requests.some(request => /authoring\/prepare/.test(request.path)), false)
-  }, { installChecker: async () => { enteredInstall(); await installed } })
-})
-
-test('the manager key must be a shape the Local pages will carry back', () => {
+test('the manager key must be 16-128 URL-safe characters', () => {
   const root = mkdtempSync(join(tmpdir(), 'rulith-keyshape-'))
   try {
     for (const bad of ['short', 'has spaces in it!!', 'a'.repeat(129), 'plus+slash/chars=']) {
@@ -1826,7 +1690,7 @@ test('the manager key must be a shape the Local pages will carry back', () => {
     }
     const fine = createManagerServer({ root, port: 0, key: 'a'.repeat(32) })
     assert.equal(fine.key.length, 32)
-    // The default is 32 hex, which the pages accept.
+    // The default is 32 hex.
     assert.match(createManagerServer({ root, port: 0 }).key, /^[0-9a-f]{32}$/)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
@@ -1874,22 +1738,23 @@ test('the workbench has no import route and preserves existing imported profiles
   })
 })
 
-test('the manager page and its routes are gated against unauthenticated, cross-origin and rebound callers', async (t) => {
+test('the manager\'s routes are gated against unauthenticated, cross-origin and rebound callers, and it serves no page', async (t) => {
   await withManager(t, async ({ manager }) => {
     const port = manager.port
     const unauthenticated = await rawGet(port, '/', { Host: `127.0.0.1:${port}` })
     assert.equal(unauthenticated.status, 401)
-    assert.doesNotMatch(unauthenticated.raw, /<!DOCTYPE html>/i, 'the manager page was served to an unauthenticated caller')
+    assert.doesNotMatch(unauthenticated.raw, /<!DOCTYPE html>/i, 'a page was served to an unauthenticated caller')
     assert.doesNotMatch(unauthenticated.raw, new RegExp(KEY))
 
     assert.equal((await rawGet(port, `/?k=${KEY}`, { Host: 'rulith-manager.attacker.example' })).status, 403)
     assert.equal((await rawGet(port, `/?k=${KEY}`, { Host: `127.0.0.1:${port}`, Origin: 'https://attacker.example' })).status, 403)
 
+    // The English workbench page is retired: an authenticated GET / finds nothing, and says nothing about the key.
     const page = await rawGet(port, `/?k=${KEY}`, { Host: `127.0.0.1:${port}` })
-    assert.equal(page.status, 200)
-    assert.match(page.raw, /<title>Rulith<\/title>/)
-    assert.doesNotMatch(page.raw.split('\r\n\r\n').slice(1).join(''), new RegExp(KEY),
-      'the page must read its key from its address, not carry one')
+    assert.equal(page.status, 404)
+    assert.doesNotMatch(page.raw, /<!DOCTYPE html>/i)
+    assert.doesNotMatch(page.raw.split('\r\n\r\n').slice(1).join(''), new RegExp(KEY))
+    assert.equal((await rawGet(port, '/manager/state', { Host: `127.0.0.1:${port}`, 'x-rulith-manager': KEY })).status, 200)
 
     const other = await fetch(`http://127.0.0.1:${port}/manager/instances/create`, {
       method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json', origin: 'http://127.0.0.1:1' },
@@ -2076,7 +1941,7 @@ test('account defaults are scoped, inherited at the next Agent start, and never 
     assert.equal(manager.instances.hosts.get(defaulted.id).host.status().workerSetting.state, 'online')
     await manager.instances.stop(defaulted.id)
 
-    const opened = await manager.instances.open(defaulted.id, '/setup')
+    const opened = await manager.instances.open(defaulted.id)
     const setupUrl = new URL(opened.url)
     const manual = await fetch(setupUrl.origin + '/setup/model', { method: 'POST',
       headers: { 'x-rulith-local': setupUrl.searchParams.get('k'), 'content-type': 'application/json' },
@@ -2146,7 +2011,7 @@ test('leaving a keyed account default needs an explicit custom key', async t => 
     const live = await addInstance(manager, 'Live default to custom', { agentId: AGENTS[1] })
     await manager.instances.setInstanceModel(live.id, { ...scope, source: 'custom',
       url: 'https://provider.example/v1', name: 'old-custom', key: 'shadow-custom-key' })
-    await manager.instances.open(live.id, '/setup')
+    await manager.instances.open(live.id)
     await manager.instances.setInstanceModel(live.id, { ...scope, source: 'default' })
     await manager.instances.setInstanceModel(live.id, { ...scope, source: 'custom',
       url: 'https://provider.example/v1', name: 'new-custom', key: '', clearKey: false })
@@ -2156,22 +2021,21 @@ test('leaving a keyed account default needs an explicit custom key', async t => 
   })
 })
 
-test('checker installation has no account governance effect and retired preparation routes are absent', async t => {
-  let downloads = 0
+test('the retired document assistant routes and pages are absent, and reach no account service', async t => {
   await withManager(t, async ({ manager, gateway }) => {
-    for (const path of ['status', 'prepare']) {
+    for (const path of ['status', 'prepare', 'install-checker', 'review', 'save']) {
       const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/${path}`, {
         method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}',
       })
-      assert.equal(response.status, 404)
+      assert.equal(response.status, 404, path)
     }
-    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/authoring/install-checker`, {
-      method: 'POST', headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: '{}',
-    })
-    assert.equal(response.status, 200)
-    assert.equal(downloads, 1)
-    assert.equal(gateway.requests.some(r => /authoring\/(status|prepare)/.test(r.path)), false)
-  }, { installChecker: async () => { downloads++ } })
+    for (const page of ['/', '/tools']) {
+      const response = await fetch(`http://127.0.0.1:${manager.port}${page}?k=${KEY}`)
+      assert.equal(response.status, 404, page)
+      assert.doesNotMatch(await response.text(), /<!DOCTYPE html>/i)
+    }
+    assert.equal(gateway.requests.some(r => /authoring/.test(r.path)), false)
+  })
 })
 
 // ── Set up this Agent on this computer (PSC 0.2.27 ② ③; ACC-LOCAL-09) ───────────────────────────────────────────

@@ -7,10 +7,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createManagerServer } from '../local/manager-server.mjs'
 import { mergeManagerHealth, managerHealthGroups } from '../local/manager-health.mjs'
-import { managerPage } from '../local/manager-ui.mjs'
 import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { createDevicesGateway } from './support/local-devices-gateway.mjs'
-import { runPageScript } from './support/mini-dom.mjs'
 import { startFixtureInstance } from './support/local-role-controls.mjs'
 
 const KEY = 'health-manager-test-key'
@@ -175,7 +173,7 @@ test('missing and unreadable device records still offer Health without a Gateway
   assert.equal(manager.device.status().state, 'unreadable')
 })
 
-test('neither health JSON nor the rendered page contains stored or reflected credentials', async t => {
+test('health JSON contains no stored or reflected credentials', async t => {
   const { manager, gateway, get } = await fixture(t)
   const row = await attached(manager), config = loadInstanceConfig(row.directory)
   config.agent.env.RULITH_MODEL_KEY = 'sentinel-model-secret'
@@ -185,94 +183,9 @@ test('neither health JSON nor the rendered page contains stored or reflected cre
   gateway.setHealth({ token: secrets[1], key: secrets[3], agents: [cloudAgent({ token: secrets[2],
     name: 'Name ' + secrets[2], connections: [{ ...cloudAgent().connections[0], key: secrets[3] }],
     program: { state: 'rejected', refusal: { message: secrets.join(' / '), secret: secrets[1] } } })] })
-  const reply = await get(), served = await get('/'), health = JSON.parse(reply.text).health
-  const current = manager.state()
-  const page = await runPageScript(served.text, { respond: async path => ({ body: path === '/manager/health' ? { ok: true, health } : { ok: true, ...current } }) })
-  await page.$('health-open').onclick()
-  for (const secret of secrets) {
-    assert.equal(reply.text.includes(secret), false, 'health must redact credential values')
-    assert.equal(served.text.includes(secret), false, 'HTML must contain no stored credentials')
-    assert.equal(page.$('health-items').innerHTML.includes(secret), false, 'health rendering must contain no credentials')
-  }
-  assert.match(page.$('health-items').innerHTML, /\[redacted\]/)
-})
-
-async function pageFor(health, overrides = {}) {
-  const state = { ok: true, device, instances: [local], ...overrides }
-  return runPageScript(managerPage, { respond: async path => ({ body: path === '/manager/health' ? { ok: true, health } : state }) })
-}
-function pressAction(page, label) {
-  const match = [...page.$('health-items').innerHTML.matchAll(/data-health-action="(\d+)"[^>]*>([^<]+)<\/button>/g)].find(row => row[2] === label)
-  assert.ok(match, 'Health offers ' + label)
-  return page.$('health-items').onclick({ target: { dataset: { healthAction: match[1] } } })
-}
-
-test('Health reads only on open or Refresh, lists problems first and collapses healthy Agents', async () => {
-  const health = healthOf(cloudAgent({ key: { state: 'revoked' }, name: '<Alpha>' }), [{ ...local, worker: true }],
-    { gateway: { agents: [cloudAgent({ agentId: 'healthy', name: 'Healthy' }), cloudAgent({ key: { state: 'revoked' }, name: '<Alpha>' })] } })
-  const page = await pageFor(health)
-  assert.equal(page.calls.some(call => call.path === '/manager/health'), false)
-  await page.$('health-open').onclick()
-  const html = page.$('health-items').innerHTML
-  assert.ok(html.includes('&lt;Alpha&gt;'))
-  assert.ok(html.indexOf('&lt;Alpha&gt;') < html.indexOf('Healthy ·'))
-  assert.ok(html.includes('<details><summary>Healthy ·'))
-  assert.ok(html.indexOf('Agent key') < html.indexOf('Source'))
-  await page.api('/manager/state')
-  page.render()
-  assert.equal(page.calls.filter(call => call.path === '/manager/health').length, 1)
-  await page.$('health-refresh').onclick()
-  assert.equal(page.calls.filter(call => call.path === '/manager/health').length, 2)
-})
-
-test('the old-service message keeps local health and sign-in opens the existing account dialog', async () => {
-  const health = healthOf(cloudAgent(), [local], { gatewayState: 'unsupported', device: { ...device, state: 'revoked' } })
-  const page = await pageFor(health, { device: { ...device, state: 'revoked' } })
-  await page.$('health-open').onclick()
-  assert.equal(page.$('health-service').textContent, 'This Rulith service does not offer the health check yet')
-  pressAction(page, 'Sign in')
-  assert.equal(page.$('dlg-account').hidden, false)
-  assert.equal(page.$('signin-reset').hidden, false)
-})
-
-test('Health key replacement uses the existing checkbox and pairing operation on the attached profile', async () => {
-  const page = await pageFor(healthOf(cloudAgent({ key: { state: 'replaced' } })))
-  await page.$('health-open').onclick()
-  await pressAction(page, 'Replace key and connect')
-  assert.equal(page.$('dlg-attach').hidden, false)
-  assert.equal(page.$('attach-form').hidden, false)
-  assert.equal(page.$('attach-repair-copy').hidden, false)
-  assert.equal(page.$('pair').disabled, true)
-  page.$('replace').checked = true; page.$('replace').onchange(); page.applyControls()
-  assert.equal(page.$('pair').disabled, false)
-  page.$('pair').onclick(); await settle()
-  assert.deepEqual(page.calls.find(call => call.path === '/manager/instances/pair').body,
-    { instanceId: local.id, agentId: local.agentId, replaceAgentToken: true })
-})
-
-test('Health reconnect uses the named existing choice and never silently chooses a Connection', async () => {
-  const candidates = [{ connectionId: 'conn-old', name: 'Office', createdAt: '2026-10-01T00:00:00Z' }]
-  const page = await pageFor(healthOf(cloudAgent({ connections: [], reconnectable: candidates })),
-    { device: { ...device, agents: [{ ...device.agents[0], reconnectable: candidates }] } })
-  await page.$('health-open').onclick(); await pressAction(page, 'Reconnect a Connection')
-  assert.equal(page.$('pair').disabled, true)
-  assert.match(page.$('pair-connection-options').innerHTML, /Reconnect “Office”/)
-  page.$('pair-connections').onchange({ target: { name: 'reconnect-choice', checked: true, value: 'conn-old' } })
-  assert.equal(page.$('pair').disabled, false)
-  page.$('pair').onclick(); await settle()
-  assert.equal(page.calls.find(call => call.path === '/manager/instances/pair').body.reconnectConnectionId, 'conn-old')
-})
-
-test('Health Worker start uses the existing local-tools operation and Console links use their specified tabs', async () => {
-  const page = await pageFor(healthOf(cloudAgent({ connections: [{ ...cloudAgent().connections[0], workerOnline: false }],
-    sources: [{ name: '<Files>', state: 'needs_relock' }], pendingCall: { tool: 'Execute', phase: 'waiting', needsPerson: true } })))
-  await page.$('health-open').onclick()
-  const html = page.$('health-items').innerHTML
-  assert.match(html, /&lt;Files&gt;/)
-  assert.ok(html.includes(ORIGIN + '/console/#/agents/agent-alpha?tab=configuration'))
-  assert.ok(html.includes(ORIGIN + '/console/#/agents/agent-alpha?tab=runtime'))
-  await pressAction(page, 'Start Worker')
-  assert.deepEqual(page.calls.find(call => call.path === '/manager/instances/worker-setting').body, { instanceId: local.id, enabled: true })
+  const reply = await get()
+  for (const secret of secrets) assert.equal(reply.text.includes(secret), false, 'health must redact credential values')
+  assert.match(reply.text, /[redacted]/)
 })
 
 test('replacing an attached key reuses the same profile and model settings through encrypted pairing', async t => {
@@ -348,27 +261,14 @@ test('a failed repair retains its proof and the existing Check attachment operat
   assert.equal(JSON.parse(readFileSync(proof, 'utf8')).requestId, requestId)
 })
 
-test('Health repair consent is invalidated when the account changes and never reaches another attachment', async () => {
-  const page = await pageFor(healthOf(cloudAgent({ key: { state: 'revoked' } })))
-  await page.$('health-open').onclick(); await pressAction(page, 'Replace key and connect')
-  page.$('replace').checked = true; page.$('replace').onchange(); page.applyControls()
-  page.render({ device: { ...device, account: { id: 'other' } }, instances: [local] })
-  assert.equal(page.$('pair').disabled, true)
-  page.$('pair').onclick(); await settle()
-  assert.equal(page.calls.some(call => call.path === '/manager/instances/pair'), false)
-  assert.equal(page.$('health-items').innerHTML, '')
-})
-
-test('a health refusal cannot reflect the device bearer into its recovery teaching or page', async t => {
+test('a health refusal cannot reflect the device bearer into its recovery teaching', async t => {
   const { manager, gateway, get } = await fixture(t)
   const token = gateway.deviceToken(manager.device.status().deviceId)
   gateway.refuseHealth('Authorization ' + token + ' was refused')
   const reply = await get()
   assert.equal(reply.text.includes(token), false)
   assert.equal(manager.device.status().teaching.includes(token), false)
-  const current = manager.state()
-  const page = await runPageScript(managerPage, { respond: async () => ({ body: current }) })
-  assert.equal(page.$('unusable-teaching').textContent.includes(token), false)
+  assert.equal(JSON.stringify(manager.state()).includes(token), false)
 })
 
 test('a response for another device cannot invalidate this device or claim its Agents', async t => {
@@ -380,14 +280,3 @@ test('a response for another device cannot invalidate this device or claim its A
   assert.equal(manager.device.status().state, 'linked')
 })
 
-test('ordinary state polling preserves the Health document and its expanded healthy details', async () => {
-  const page = await pageFor(healthOf(cloudAgent(), [{ ...local, worker: true }]))
-  await page.$('health-open').onclick()
-  const node = page.$('health-items')
-  let html = node.innerHTML, writes = 0
-  Object.defineProperty(node, 'innerHTML', { get: () => html, set: value => { writes++; html = value } })
-  await page.api('/manager/state')
-  page.render()
-  assert.equal(writes, 0, 'replacing the Health DOM would close expanded details and lose focus')
-  assert.equal(page.calls.filter(call => call.path === '/manager/health').length, 1)
-})

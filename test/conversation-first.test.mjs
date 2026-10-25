@@ -16,7 +16,6 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { projectCaseRoots } from '../local/local-ui.mjs'
 
 import {
   MCP_SURFACE, MODEL_TOOLS, HOP_FAILURE, TEST_AGENT_ID,
@@ -56,6 +55,9 @@ function vendoredRuntimeSurface() {
   return [...block.groups.body.matchAll(/name: '(?<name>[A-Za-z]+)', target: '(?<target>core|artifact|operation)'/gu)]
     .map((entry) => ({ name: entry.groups.name, target: entry.groups.target }))
 }
+
+/** The last lifecycle the Agent reported for one goal (its `case-state` events). */
+const lastState = (events, goal) => events.filter((event) => event.type === 'case-state' && event.goal === goal).at(-1)
 
 test('RT-TOOLS-1 the model-facing tools are exactly the unified MCP surface list', async () => {
   // Three readings, reconciled: the list the Runtime source declares, the list this harness
@@ -384,9 +386,7 @@ test('RT-META-3 a session whose focus holds several goals is reported as several
     'a second goal in one session was refused by the host, which no longer owns that rule')
   const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1)
   assert.deepEqual(focus.goals.map((row) => row.goal), ['GOAL_1', 'GOAL_2'])
-  const rows = projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))
-  assert.deepEqual(rows.map((row) => [row.goal, row.label]),
-    [['GOAL_1', 'Running'], ['GOAL_2', 'Running']])
+  for (const goal of ['GOAL_1', 'GOAL_2']) assert.equal(lastState(run.localEvents, goal)?.status, 'running')
 })
 
 test('RT-META-4 an independent lifecycle per goal: ending one leaves the other running', async () => {
@@ -402,12 +402,11 @@ test('RT-META-4 an independent lifecycle per goal: ending one leaves the other r
     },
   })
   assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`)
-  const rows = projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))
-  const byId = Object.fromEntries(rows.map((row) => [row.goal, row]))
-  assert.equal(byId.GOAL_1.label, 'Ended')
-  assert.equal(byId.GOAL_1.focused, false)
-  assert.equal(byId.GOAL_2.label, 'Running')
-  assert.equal(byId.GOAL_2.focused, true, 'ending one goal removed another goal from focus')
+  const focus = run.localEvents.filter((event) => event.type === 'focus').at(-1).goals.map((row) => row.goal)
+  assert.equal(lastState(run.localEvents, 'GOAL_1')?.status, 'ended')
+  assert.equal(focus.includes('GOAL_1'), false)
+  assert.equal(lastState(run.localEvents, 'GOAL_2')?.status, 'running')
+  assert.equal(focus.includes('GOAL_2'), true, 'ending one goal removed another goal from focus')
   assert.ok(run.localEvents.some((event) => event.type === 'case-closed' && event.goal === 'GOAL_1' && event.disposition === 'abandoned'))
 })
 
@@ -440,7 +439,6 @@ test('RT-META-5 a goal the authority reports as unavailable loses the status it 
   assert.equal(observations.at(0).status, 'running')
   assert.equal(observations.at(-1).status, 'unavailable',
     `an unavailable goal kept a status the authority stopped reporting: ${JSON.stringify(observations)}`)
-  assert.equal(projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))[0].label, 'Unavailable')
 })
 
 test('RT-META-6 a bounded view that dropped rows says so; a complete one does not', async () => {
@@ -509,9 +507,6 @@ test('RT-META-6b a goal a truncated answer did not reach keeps a labelled observ
   // Truncation is not unavailability: one says "I did not reach it", the other says
   // "I looked and it is not there for you".
   assert.notEqual(last.status, 'unavailable')
-  const row = projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))[0]
-  assert.equal(row.label, 'Running')
-  assert.equal(row.observation, 'Not refreshed by the last bounded answer')
   // And a per-view gap count is not attached to a goal this answer did not describe.
   assert.equal(Object.hasOwn(last, 'gaps'), false)
 })
@@ -1650,10 +1645,8 @@ test('--serve records a recoverable goal before reclaiming an abandoned conversa
   const localEvents = run.localEvents.filter((event) => (event.session || event.sessionKey) === 'client-a').map((event) => ({ ...event, src: 'agent' }))
   assert.ok(localEvents.some((event) => event.type === 'case-state'), 'the --serve publisher feeds the real Local inspector')
   assert.equal(localEvents.some((event) => event.type === 'case-pending'), false, 'normal Local --serve is not the one-shot pending path')
-  const displayed = projectCaseRoots(localEvents)
-  assert.equal(displayed.length, 1)
-  assert.equal(displayed[0].lifecycle, 'running', 'a reclaimed local conversation is not a goal transition')
-  assert.equal(displayed[0].observation, 'Detached · last observed')
+  assert.equal(lastState(localEvents, 'GOAL_1')?.status, 'running', 'a reclaimed local conversation is not a goal transition')
+  assert.ok(localEvents.some((event) => event.type === 'session-detached' && event.goal === 'GOAL_1'))
 })
 
 test('a goal declared in a later message joins the conversation focus rather than replacing the one it has', async () => {
@@ -1740,7 +1733,6 @@ test('a focused goal the Board View never described is unavailable, never invent
   assert.equal(observations.length, 1)
   assert.equal(observations[0].goal, 'GOAL_Q')
   assert.equal(observations[0].status, 'unavailable')
-  assert.equal(projectCaseRoots(run.localEvents.map((event) => ({ ...event, src: 'agent' })))[0].label, 'Unavailable')
 })
 
 test('conversation trail remains bounded when transcript compaction runs repeatedly', async () => {

@@ -2,6 +2,63 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.19.0 - 2026-10-25
+
+- Upgrade, read first: the Rulith app now ships in this package, and `rulith` opens it. `rulith start` and
+  `rulith setup` are kept as names for the same command. The English Runtime workbench they used to open, and its
+  document assistant, are retired: there is no manager page, no instance page (conversation, setup, tools) and no
+  `/manager/authoring/*` operation any more. Sign-in, models, this computer's Agents, projects and the conversation
+  are in the app; Connections, Sources, Health details and calls waiting for a person are in Console. The app keeps
+  its files in `~/.rulith/app` (`RULITH_APP_HOME`), not in the workbench's `~/.rulith/manager`: an earlier
+  workbench installation is left as it is, and the app asks you to sign in again. Agents the workbench set up no
+  longer start their Workers with `rulith`; the command prints one line naming them, and the app's wizard and
+  Settings → Advanced → Diagnosis say the same. Run `rulith manager` to keep running them, or set each Agent up
+  again in the app, which replaces its Agent token; Sources bound to its old Connection must then be bound again in
+  Console.
+- Upgrade: Node.js 22.19 or later is required (the app's DeepSeek Harness needs it). Built-in Tools are pinned to the
+  Runtime release that implements them (`runtime: rulith@0.19.0`), so Agents that locked a built-in Tool re-pin and
+  re-lock it in Console. The general kit's `eng.*` Tools are pinned to their implementation bytes, which this release
+  does not change.
+- Package: the app (`app/README.md`, `app/NOTICE`, `app/harness/`) is in the published files; its experimental
+  headless role is not. Dependencies: `@deepseek-ai/dsh` 0.2.1-alpha.1 (the profile launcher, which installs the
+  web profile's bundles and every plugin they name; MIT, with third-party packages under their own licenses, see
+  `app/NOTICE`) and the four packages the app's own host code imports (`@deepseek-ai/dsh-llm`,
+  `@deepseek-ai/dsh-llm-pi-ai`, `@deepseek-ai/dsh-web-search-deepseek`, `@earendil-works/pi-ai`, and `yaml`, which
+  the launcher writes the dsh profile with), at the versions dsh installs. An installation is several hundred megabytes, most of it dsh dependencies the app does not load
+  (LibreOffice for document previews, the terminal, voice input): dsh 0.2.1-alpha.1 lists them as dependencies of its
+  launcher and its web bundle, and npm cannot leave a dependency's dependencies out.
+- Command line: `rulith [app] [--no-open] [--port <port>]` opens the app (the launcher runs in the same process);
+  `rulith manager` runs only the local Runtime manager, which the app starts with that command; `rulith kit install
+  general` is unchanged. Any other option is refused before anything starts, and a Node.js older than 22.19 is refused
+  in plain words. The command also works through the link npm installs on Linux and macOS (it compared the link's path
+  with its own and did nothing). An app launcher before 0.19.0, which starts the Runtime with no command and
+  `RULITH_MANAGER_KEY` set, gets the manager as before, with a note, not a second app.
+- Local manager: `rulith manager` prints its address without the key and serves no page; `GET /` answers 404. The
+  manager key keeps its 16–128 character shape. The instance hosts' JSON and event routes are unchanged;
+  `/manager/instances/open` answers an instance's own address and key, and refuses the retired pages. Messages that
+  pointed at the retired pages, their Trace view or their page key now name what is there instead. The tool library, material transport and model,
+  pairing and Health operations remain as machine operations (docs/local-manager.md, docs/local-mcp-setup.md,
+  docs/local-materials.md).
+- Local manager since 0.18.0, now released: one operation sets an Agent up on this computer
+  (`/manager/instances/setup-local`: instance, pairing with automatic reuse of this computer's Connection, general kit,
+  Worker, reload; PSC 0.2.27); model settings apply from the next turn without a restart (PSC 0.2.27); and the
+  signed-in owner's client signs a goal's proposed acceptance criteria through the device grant
+  (`/manager/conversations/sign-acceptance`, PSC 0.2.28).
+- Worker since 0.18.0, now released: a lease granted in a held Poll is measured from the answer, not the send.
+- Model-command isolation (PSC 0.2.31, D-1024a; docs/model-command-isolation.md): commands a model runs through a Tool's
+  Adapter cannot read this computer's Rulith credentials. Rulith's credential folders (the app home, the manager home,
+  instance directories, ~/.rulith) are read-protected and separated from a work root; on Windows the Adapter's process
+  tree runs at low integrity, on Linux under bubblewrap (no bwrap, no run); macOS is not isolated yet. The app's own
+  routes (/rulith/api/*) require the page's dsh session. The default is on (fail-closed) on Windows and Linux;
+  `RULITH_ADAPTER_SANDBOX=off` in one instance's `local.json` Worker environment turns it off for that Agent (not
+  recommended).
+- App: the "/" menu keeps only /压缩; dsh's permission presets (/权限) and session-log export (/导出) are off.
+  Conversations recorded with them on replay unchanged. The settings page's entry to the English workbench is replaced
+  by Settings → Advanced → Diagnosis: the versions running, this computer, whether model commands are isolated here,
+  and where Rulith keeps its files (English).
+- The local rule checker of the retired document assistant is no longer installed by Rulith; a Worker uses an
+  installed one, or `RULITH_AUTHORING_JAR`.
+
 ## 0.18.0 - 2026-10-19
 
 - Upgrade, read first: every run Tool digest and every built-in Tool digest changes. Re-pin and re-lock

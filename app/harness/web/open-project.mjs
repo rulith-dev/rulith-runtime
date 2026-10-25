@@ -6,7 +6,7 @@
 // Runtime 管理器（/manager/projects/*）走这台电脑的设备授权，浏览器只看到这里挑出的字段，看不到任何凭据。
 import fs from 'node:fs';
 import path from 'node:path';
-import { labelProjectOpen } from '../../../local/sandbox-home-label.mjs';
+import { labelProjectOpen, releaseProjectLabel } from '../../../local/sandbox-home-label.mjs';
 import { overlapsProtected } from '../../../worker/adapter-confinement.mjs';
 
 /** A refusal made here, before anything is sent; its code tells the page that retrying will not help. */
@@ -94,7 +94,7 @@ const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
  * reported as tools the Agent has not reported. A failed repair is the refusal, with its step's reason and code.
  */
 export function projectRoutes({ manager: call, platform = process.platform, files = LOCAL_FILES, onReady = () => {},
-  repair = async () => {}, managerHome, protectedRoots = () => [], labelOpen = labelProjectOpen }) {
+  repair = async () => {}, managerHome, protectedRoots = () => [], labelOpen = labelProjectOpen, labelRelease = releaseProjectLabel }) {
   // A manager without these routes (Runtime 0.17.2 and earlier) answers 404 without a code: say what to do about it.
   const manager = (route, body) => call(route, body).catch((error) => {
     if (error?.status === 404 && !error.errorCode && route.startsWith('/manager/projects/'))
@@ -115,6 +115,13 @@ export function projectRoutes({ manager: call, platform = process.platform, file
   };
   // The account the authorization belongs to, by the name this computer shows for it, only when the Gateway answered for
   // that same account.
+  // An open project keeps its label: a folder already open (for example after a sign-out on this computer released the
+  // labels) gets it back as soon as it is seen ready. Best-effort here; the open below is where a failure refuses.
+  const keepLabelled = (target, directory, reply) => {
+    if (reply?.state !== 'ready') return;
+    const labelled = labelOpen({ managerHome, directory, holder: target.instanceId });
+    if (labelled && !labelled.ok) console.error(`Rulith: the open project folder ${directory} could not be made writable for model commands (${labelled.reason}).`);
+  };
   const answer = (target, reply) => {
     if (reply?.state === 'ready') onReady(target.instanceId);
     const view = projectView(reply);
@@ -124,8 +131,10 @@ export function projectRoutes({ manager: call, platform = process.platform, file
   return {
     state: async (body) => {
       const { target, directory } = await request(body);
-      return answer(target, await manager('/manager/projects/state', { expectedAccountId: target.accountId,
-        agentId: target.agentId, connectionId: target.connectionId, directory, platform: projectPlatform(platform) }));
+      const reply = await manager('/manager/projects/state', { expectedAccountId: target.accountId,
+        agentId: target.agentId, connectionId: target.connectionId, directory, platform: projectPlatform(platform) });
+      keepLabelled(target, directory, reply);
+      return answer(target, reply);
     },
     // The request id comes from the page: a reply lost on the way back is retried with the same id, which continues the
     // same opening on the Gateway instead of starting another. The account is the one the confirmation was shown for.
@@ -134,16 +143,21 @@ export function projectRoutes({ manager: call, platform = process.platform, file
       if (!REQUEST_ID.test(requestId)) throw refused('open_request_invalid', '这次打开缺少有效的请求号，请重新确认。');
       if (!authorizationVersion) throw refused('open_request_invalid', '这次打开缺少确认过的内容版本，请重新确认。');
       const { target, directory } = await request(body);
-      const reply = await manager('/manager/projects/open', { requestId,
-        expectedAccountId: String(body?.expectedAccountId ?? ''), agentId: target.agentId, connectionId: target.connectionId,
-        directory, platform: projectPlatform(platform), authorizationVersion });
-      // 模型命令隔离（D-1024a）：打开成功后给项目目录打上可继承的低完整性标签（受限适配器才能在其中读写）。目录原本的标签
-      // 先记到管理器 home 的 project-labels（凭据根内，受限命令读写不到），按实例计数；实例移除、或 Worker 发现这个 Source
-      // 被收回时释放，最后一个释放时按原样还原（随继承传播到子项）。只在 Gateway 确认打开后做，失败如实告警，不改打开结果。
-      if (reply?.state === 'ready') {
-        const labelled = labelOpen({ managerHome, directory, holder: target.instanceId });
-        if (labelled && !labelled.ok) console.error(`Rulith: could not give the project folder ${directory} its Low label (${labelled.reason});`
-          + ' confined commands may be unable to write there.');
+      // 模型命令隔离（D-1024a）：在向 Gateway 打开之前先给项目目录打上可继承的低完整性标签（受限命令才能在其中读写）。目录原本
+      // 的标签（以及为能打标签而给所有者加上的那一条 WRITE_OWNER 访问项）记在管理器 home 的 project-labels（凭据根内），按实例
+      // 计数；实例移除、本机登出或 Worker 发现 Source 被收回时释放，最后一个释放时按原样还原。打不上就拒绝打开（fail-closed），
+      // 什么都不发给 Gateway；Gateway 拒绝时把刚打的标签撤回。
+      const labelled = labelOpen({ managerHome, directory, holder: target.instanceId });
+      if (labelled && !labelled.ok) throw refused('project_folder_unprotectable', `Rulith could not make this folder writable for isolated model`
+        + ` commands: ${labelled.reason}. Nothing was opened. Choose a folder on an NTFS drive that your account owns.`);
+      let reply;
+      try {
+        reply = await manager('/manager/projects/open', { requestId,
+          expectedAccountId: String(body?.expectedAccountId ?? ''), agentId: target.agentId, connectionId: target.connectionId,
+          directory, platform: projectPlatform(platform), authorizationVersion });
+      } catch (error) {
+        try { labelRelease({ managerHome, directory, holder: target.instanceId }); } catch { /* the Worker releases it once it sees no Source */ }
+        throw error;
       }
       return answer(target, reply);
     },

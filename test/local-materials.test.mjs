@@ -235,7 +235,7 @@ test('the material routes sit behind the same key, origin and host gate as every
       body: JSON.stringify({ name: 'x.txt', mediaType: 'text/plain', bytes: Buffer.from('x').toString('base64') }),
     })
     assert.equal(viaQuery.status, 403)
-    assert.match((await viaQuery.json()).teaching, /Local page key and the same origin/u)
+    assert.match((await viaQuery.json()).teaching, /this host's key and the same origin/u)
     // Calibration: the same request with the header lands.
     assert.equal((await add(call, { name: 'x.txt', mediaType: 'text/plain', text: 'x' })).status, 200)
   })

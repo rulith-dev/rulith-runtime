@@ -1,9 +1,24 @@
-Deep Rulith
+Rulith app (formerly Deep Rulith)
 Copyright 2026 Shanghai Rulith Technology Co., Ltd.
 
-Deep Rulith is an overlay and a set of plugins for DeepSeek Harness (dsh,
-https://github.com/deepseek-ai/deepseek-harness, MIT License). It does not
-include or modify dsh's code; npm installs dsh as a dependency.
+The Rulith app is an overlay and a set of plugins for DeepSeek Harness (dsh,
+https://github.com/deepseek-ai/deepseek-harness, MIT License). This package does
+not include or modify dsh's code: npm installs dsh and its dependencies from their
+publishers, each under its own license.
+
+What npm installs with rulith 0.19.0 (about 635 packages on Windows x64, counted
+2026-10-25; other platforms differ in their platform-specific packages):
+
+- DeepSeek Harness, about 290 packages under @deepseek-ai: MIT, except
+  @deepseek-ai/node-addon-system (BSD-3-Clause) and @deepseek-ai/libreoffice-kit
+  with its platform package (MPL-2.0; a prebuilt LibreOffice for dsh's document
+  previews, which the Rulith app turns off).
+- Third-party packages: MIT, Apache-2.0, ISC, BSD-3-Clause, BSD-2-Clause, 0BSD,
+  Unlicense, Python-2.0 (argparse) and MIT OR CC0-1.0 (type-fest), and
+  @img/sharp-<platform> (Apache-2.0 AND LGPL-3.0-or-later: the prebuilt libvips
+  image library).
+
+None of them is modified by this package.
 
 This project is not affiliated with, endorsed by or sponsored by DeepSeek.
 "DeepSeek" is used only to name the software this project works with.

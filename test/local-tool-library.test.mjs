@@ -275,7 +275,7 @@ test('an Agent on its environment\'s tools cannot edit them from its own page, k
       ['/mcp-services/remove', { name: 'mail' }], ['/mcp-services/install', { catalogId: 'filesystem' }]]) {
       const refused = await call(instance, path, body)
       assert.equal(refused.status, 409, path)
-      assert.match(refused.body.teaching, /Add or change them under "This environment's tools"/)
+      assert.match(refused.body.teaching, /shared tool library. Change it through the manager's tool operations/)
     }
     // Its file tools are its own: changed here, for this Agent only.
     const mode = await call(instance, '/worker-tools/workspace', { mode: 'read-write', revision: state.body.revision })
@@ -294,17 +294,15 @@ test('an Agent on its environment\'s tools cannot edit them from its own page, k
   })
 })
 
-test('this environment\'s tools are served by the manager with its header and exact origin, and name no grant', async (t) => {
+test('this environment\'s tools are managed through the manager with its header and exact origin, and name no grant', async (t) => {
   await withManager(t, async ({ manager, root }) => {
     const base = `http://127.0.0.1:${manager.port}`
     const send = (path, { body, headers = { 'x-rulith-manager': KEY }, method = body === undefined ? 'GET' : 'POST' } = {}) =>
       fetch(base + path, { method, headers: { 'content-type': 'application/json', ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
         .then(async (response) => ({ status: response.status, text: await response.text() }))
-    const page = await send('/tools')
-    assert.equal(page.status, 200)
-    assert.match(page.text, /<title>This environment’s tools · Rulith<\/title>/)
-    assert.doesNotMatch(page.text, new RegExp(KEY), 'the page carries no key')
-    assert.equal((await send('/tools', { headers: {} })).status, 401)
+    // The English tools page is retired with the workbench; its machine routes remain.
+    assert.equal((await send('/tools')).status, 404)
+    assert.equal((await send('/manager/tools/state', { headers: {} })).status, 401)
     const state = JSON.parse((await send('/manager/tools/state')).text)
     assert.deepEqual(state.keys, [])
     assert.equal(state.libraryRoot, join(root, 'library'))

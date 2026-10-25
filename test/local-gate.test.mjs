@@ -23,7 +23,6 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { createLocalHost, defaultLocalConfig } from '../local/rulith-local.mjs'
-import { localPage } from '../local/local-ui.mjs'
 
 const KEY = 'local-gate-key'
 
@@ -78,7 +77,7 @@ test('GET / without the key is refused with 401 and returns no page', async () =
   await withHost(async ({ port }) => {
     const response = await rawGet(port, '/', { Host: `127.0.0.1:${port}` })
     assert.equal(response.status, 401, response.head)
-    assert.doesNotMatch(response.body, /<!DOCTYPE html>/i, 'the workbench page was served to an unauthenticated caller')
+    assert.doesNotMatch(response.body, /<!DOCTYPE html>/i, 'a page was served to an unauthenticated caller')
     assert.doesNotMatch(response.body, new RegExp(KEY), 'the refusal body disclosed the per-run key')
     assert.match(response.body, /Missing or invalid Rulith key/)
   })
@@ -101,29 +100,22 @@ test('GET /?k=<key> with a cross-origin Origin is refused with 403', async () =>
   })
 })
 
-test('GET /?k=<key> from loopback serves the workbench page (calibration)', async () => {
+test('GET /?k=<key> from loopback serves no page: the English workbench page is retired', async () => {
   await withHost(async ({ port }) => {
     const response = await rawGet(port, `/?k=${KEY}`, { Host: `127.0.0.1:${port}` })
-    assert.equal(response.status, 200, response.head)
-    assert.match(response.head, /content-type: text\/html/i)
-    assert.match(response.head, /cache-control: no-store/i)
-    assert.match(response.body, /<!DOCTYPE html>/i)
-    assert.match(response.body, /New conversation/, 'the page must still be the Agent workbench, not an empty shell')
+    assert.equal(response.status, 404, response.head)
+    assert.doesNotMatch(response.body, /<!DOCTYPE html>/i)
+    assert.doesNotMatch(response.body, new RegExp(KEY), 'the answer disclosed the per-run key')
+    for (const path of ['/setup', '/worker-tools', '/mcp-services']) {
+      const page = await rawGet(port, `${path}?k=${KEY}`, { Host: `127.0.0.1:${port}` })
+      assert.equal(page.status, 404, `${path}: ${page.head}`)
+      assert.doesNotMatch(page.body, /<!DOCTYPE html>/i)
+    }
   })
 })
 
-test('the served page carries no key of its own and takes it from its address', async () => {
-  await withHost(async ({ port }) => {
-    const response = await rawGet(port, `/?k=${KEY}`, { Host: `127.0.0.1:${port}` })
-    assert.doesNotMatch(response.body, new RegExp(KEY),
-      'the page embedded the per-run key, so any copy of the response is a working credential')
-    assert.doesNotMatch(response.body, /__KEY__/, 'a leftover substitution placeholder means the key was meant to be injected')
-    assert.match(localPage, /new URLSearchParams\(location\.search\)\.get\('k'\)/)
-  })
-})
-
-test('the page, once loaded with the key, can still reach the data routes', async () => {
-  // The end the fix must not break: a browser opened at the printed URL keeps working.
+test('with the key, the data routes answer', async () => {
+  // The end the fix must not break: a client holding the key keeps working.
   await withHost(async ({ port }) => {
     const status = await fetch(`http://127.0.0.1:${port}/status?k=${KEY}`)
     assert.equal(status.status, 200)
@@ -136,6 +128,6 @@ test('the page, once loaded with the key, can still reach the data routes', asyn
     await events.body.cancel()
 
     const unauthorized = await fetch(`http://127.0.0.1:${port}/status`)
-    assert.equal(unauthorized.status, 401, 'the data routes must refuse a missing key the same way the page does')
+    assert.equal(unauthorized.status, 401, 'the data routes must refuse a missing key')
   })
 })

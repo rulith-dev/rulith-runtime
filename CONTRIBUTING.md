@@ -4,7 +4,7 @@ The local runtime is intentionally small and protocol-focused. Contributions sho
 preserve these boundaries:
 
 - Business vocabulary and workflow policy belong in capability packages and examples,
-  not in Agent Runtime, Worker, or the Rulith Local host.
+  not in Agent Runtime, Worker, the Rulith Local host or the app.
 - Worker implementations must remain capability-scoped and fail closed when a tool,
   source, credential, or argument contract is missing.
 - A work receipt is evidence of execution, not authority to verify or close a case.
@@ -22,11 +22,7 @@ npm test
 ```
 
 `npm run manifest` is an explicit source update whose diff must be reviewed and
-committed. Packaging never runs it automatically. To cut a release, run
-For the release sequence, see [docs/releasing.md](docs/releasing.md).
-For document-assistant releases, follow the published-account browser run in
-`docs/document-authoring-acceptance.md` and keep its evidence separate from the
-simulated-Gateway Chromium tests.
+committed. Packaging never runs it automatically. For the release sequence, see [docs/releasing.md](docs/releasing.md).
 
 Changes to the Cloud wire contract should include a compatibility note and a focused
 test that fails against the previous behavior.

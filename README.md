@@ -1,92 +1,58 @@
 # Rulith
 
-Run `rulith` or `rulith setup` to open the [Rulith workbench](docs/local-manager.md). Sign in with your browser and choose a default model for this account in this environment. Local lists the account's enabled Agents; Refresh Agents includes newly created or re-enabled Agents. Each Agent can use the default model, override it, or run through an existing MCP client. One installation manages separate Agent instances; opening another Agent does not stop the current one.
+Rulith is a local app for governed work with your own model. Sign in, choose a model, open a folder
+and say what you want done. Every effect — writing a file, running the tests — goes through a Rulith
+Action executed by this computer's Worker and comes back with a receipt on your Agent's Board; a task
+is done when the Board certifies it from evidence against acceptance criteria you signed.
 
-Rulith is a local multi-agent working environment. One installation manages multiple
-fixed-identity Agents: choose an Agent on the left, work in its conversation in the
-center, and follow that conversation's Cases and Worker activity on the right.
-The account sits at the lower left; settings open when needed. Each Agent keeps its
-own identity credentials, model settings and working directory; switching views leaves
-other running tasks alone. Tool definitions and MCP services live once in the
-environment’s [tool library](docs/local-mcp-setup.md), available to every Agent here.
-Console decides what each Agent may call and which Source keys it may use. A tool’s own
-credentials are shared by every Agent that uses the environment; see
-[shared trust](docs/local-mcp-setup.md#shared-trust-in-an-environment).
+This package is the app and the Runtime it runs on: the Agent Runtime, the Worker and the local
+manager. The app ([app/README.md](app/README.md)) is built on
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh), installed from npm as a
+dependency; see [app/NOTICE](app/NOTICE). An installation takes about 550 MB on Windows x64, almost all of it dsh and
+its dependencies; dsh 0.2.1-alpha.1 installs parts the app does not load (the largest is a 180 MB
+LibreOffice for document previews), because npm cannot leave out a dependency's own dependencies.
 
-Use **+ → Add files** in a conversation to retain a document in that Agent's local
-Worker material area. Adding a file supplies metadata; an authorized material-read
-Action is required before the model can read its contents. See
-[local attachments and material access](docs/local-materials.md) for setup and
-the separate permissions for local reading and off-machine disclosure.
+## Install and start
 
-For document-to-capability work, select **Document assistant** for your Agent.
-See the [local document workflow](docs/local-authoring.md) for preparation, checks and private draft review.
-
-It is the canonical source for the downloadable local runtime. Hosted services may
-carry release copies of these files, but changes must originate here and retain the
-hashes recorded in `artifact-manifest.json`.
-
-| Role | Responsibility | Trust boundary |
-| --- | --- | --- |
-| Agent Runtime | Drives the model-to-board loop | Model credentials stay in this process |
-| Worker | Executes declared tools and reports synchronous receipts | Source credentials stay in the local vault |
-| Local host | Starts selected roles and projects one Case-aware CLI/Web experience | Listens on loopback and requires a per-run key |
-| Workbench | Browser-assisted device sign-in and independent instance management | Device management credentials stay out of model context and role environments; tools are still authorized in Console |
-
-The runtime is domain-neutral. An Agent reasons in Actions. Its installed Capability
-defines vocabulary, criteria, Actions, and Source requirements; an independent
-Constitution may constrain them. A Worker Tool Manifest maps each versioned Tool
-referenced by an executed Action to a local Adapter. The local processes contain no
-hidden order-processing policy or other business workflow.
-
-## Requirements
-
-Task and conversation results include `endedGoals` when the Runtime observed goals end
-in that turn. Each entry identifies the goal and how it ended: `completed` when the Board
-certified it, the disposition this host sent on an accepted `end_goal`, or `ended` when
-something else ended it. The CLI and Local result note list them together. A final
-cancellation does not hide an earlier completed goal. Mixed endings are not reported as
-all successful, and refused calls or goals merely leaving focus are not counted as
-completed work. The summary describes observed outcomes, not a second verification decision.
-
-- Node.js 20 or newer
-- A Rulith Cloud account and Agent token
-- A model endpoint compatible with Anthropic Messages or OpenAI Chat Completions
-- A Rulith Connection id and key when a workflow needs local execution
-
-Run the current Rulith CLI without writing to a system-wide npm directory:
+Requires Node.js 22.19 or later, a Rulith account, and a model endpoint compatible with OpenAI
+Chat Completions or Anthropic Messages (a hosted service, or a model on this computer).
 
 ```bash
-npx --yes rulith@latest --help
 npx --yes rulith@latest
 ```
 
-The workbench stores its account grant and separate Agent profiles under
-`~/.rulith/manager` and prints a loopback address with a per-run `?k=` browser key.
-Browser-assisted sign-in creates the account grant; selecting an Agent opens its local
-profile. Configure the default model in the account menu and per-Agent overrides in
-settings. Agent tokens and Worker credentials are delivered during first-use setup.
-Profiles remain separate, and shell credentials are not inherited by every Agent.
-On Windows, protect the profile directory with your account's filesystem permissions.
-
-In **Account → Default model**, or the selected Agent's model settings, enter the
-model service URL, model ID and provider key. For an OpenAI-compatible local model,
-use its server root such as `http://127.0.0.1:1234`; the Agent derives `/v1/chat/completions`.
-A model key is optional only for a loopback endpoint; remote providers still require one.
-
-For DeepSeek Flash, enter `https://api.deepseek.com/chat/completions` as the URL,
-`deepseek-flash` as the model ID, and your provider credential in the key field.
-Under **Model options → Thinking**, choose **Off**, **On**, or **Provider default**.
-Shell model variables do not configure workbench profiles. Provider reasoning continuation is retained in the local conversation
-for subsequent native tool calls; it is not displayed as an answer or submitted as Board
-evidence. See the [DeepSeek thinking/tool contract](https://api-docs.deepseek.com/guides/thinking_mode/).
-
-For a persistent command, install globally into a user-writable npm prefix:
+or, for a persistent command in a user-writable npm prefix:
 
 ```bash
 npm install --global rulith
-rulith start
+rulith
 ```
+
+`rulith` opens Rulith in your browser (`rulith --no-open` prints the address instead; `--port <port>`
+chooses the page's port). A first-run wizard takes you through three steps, each read from the
+account's current state so it resumes where you left off: sign in (the approval opens in the browser);
+choose a model and enter its key (saved for the signed-in account; the key stays on this computer and
+is never shown back); open a folder (this computer is set up for the account's default Agent in one
+step, and the folder is opened as a project after one confirmation). Then a new conversation starts in
+that folder: say what you want done. The app's own words are Chinese in this release; an English
+interface follows. Stop Rulith with Ctrl+C in its terminal. Everything it keeps on this
+computer is in one folder, `~/.rulith/app` (`RULITH_APP_HOME` chooses another); one Rulith runs per
+folder.
+
+`rulith start` and `rulith setup` are earlier names for the same command. The English Runtime
+workbench they used to open, and its document assistant, are retired (0.19.0): signing in, models,
+this computer's Agents and diagnosis are on the app's one settings page; Connections, projects,
+Sources and calls waiting for a person are in Console. `rulith manager` runs only the local Runtime
+manager the app starts beside it ([docs/local-manager.md](docs/local-manager.md)), and
+`rulith kit install general` installs the official general kit by hand.
+
+Upgrading from the workbench: the app keeps its own files and does not use the workbench's
+`~/.rulith/manager`, so sign in again in the app. Agents the workbench set up there no longer start
+their Workers with `rulith` (the command prints one line naming them, and the app's wizard and
+**Settings → Advanced → Diagnosis** show the same): run `rulith manager` to keep running them as
+they are, or set each Agent up again in the app. Setting it up again replaces the Agent's token
+(clients still using the old token stop working) and gives this computer a Connection of its own,
+so Sources bound to the old Connection must be bound again in Console.
 
 A Rulith service checks the client protocol (the MCP date and the `rulith/v4` capabilities),
 not the exact release, and its Console names the one release it recommends. To connect to a
@@ -99,19 +65,44 @@ To inspect or contribute to the source instead:
 ```bash
 git clone --depth 1 https://github.com/rulith-dev/rulith-runtime.git
 cd rulith-runtime
+npm install
 npm test
+npm run app
 ```
 
-No build step is required. Run `npm start` for the workbench, select an Agent, and
-send the first message to start that Agent automatically. Enable **Use this environment’s tools and files** when the Agent needs a local Worker. The roles remain separate child
-processes. Model changes restart the Agent between turns; Worker configuration reloads after
-running executions drain. During a turn, Send becomes Stop: it aborts the model request,
-records a user stop, and waits for any Rulith call already sent without withdrawing it.
-Pause the goal or withdraw work before dispatch in Console to stop Board work.
-**Sign out and stop this environment** remains the global exit. Database tools load the
-optional `pg` package only when used.
+No build step is required. Database tools load the optional `pg` package only when used.
+
+| Role | Responsibility | Trust boundary |
+| --- | --- | --- |
+| Local app | The conversation, the first-run wizard, settings, projects and the task panel; drives the model and calls Rulith's tools | Listens on loopback; the model key stays in this process's memory |
+| Agent Runtime | Drives the model-to-board loop for clients that use the Runtime's own Agent | Model credentials stay in this process |
+| Worker | Executes declared tools and reports synchronous receipts | Source credentials stay in the local vault |
+| Local manager | Device sign-in, one local profile per Agent, and each profile's Agent and Worker processes | Listens on loopback and requires a per-run key; device management credentials stay out of model context and role environments; tools are still authorized in Console |
+
+The runtime is domain-neutral. An Agent reasons in Actions. Its installed Capability
+defines vocabulary, criteria, Actions, and Source requirements; an independent
+Constitution may constrain them. A Worker Tool Manifest maps each versioned Tool
+referenced by an executed Action to a local Adapter. The local processes contain no
+hidden order-processing policy or other business workflow.
 
 ## Agent Runtime
+
+Task and conversation results include `endedGoals` when the Runtime observed goals end
+in that turn. Each entry identifies the goal and how it ended: `completed` when the Board
+certified it, the disposition this host sent on an accepted `end_goal`, or `ended` when
+something else ended it. The CLI and Local result note list them together. A final
+cancellation does not hide an earlier completed goal. Mixed endings are not reported as
+all successful, and refused calls or goals merely leaving focus are not counted as
+completed work. The summary describes observed outcomes, not a second verification decision.
+
+The Agent Runtime needs a Rulith Agent token, a model endpoint compatible with Anthropic
+Messages or OpenAI Chat Completions, and a Rulith Connection id and key when a workflow needs
+local execution.
+
+For DeepSeek Flash, use `https://api.deepseek.com/chat/completions` as the URL and
+`deepseek-flash` as the model ID. Provider reasoning continuation is retained in the local
+conversation for subsequent native tool calls; it is not displayed as an answer or submitted as
+Board evidence. See the [DeepSeek thinking/tool contract](https://api-docs.deepseek.com/guides/thinking_mode/).
 
 ```powershell
 $env:RULITH_TOKEN = '<agent-token>'
@@ -272,7 +263,7 @@ and a stopped model turn is not a paused goal.
 ### One connection, one call at a time, held calls
 
 The Agent has **one authenticated MCP connection**, and everything goes through it: every
-local conversation, the Local UI, and the shadow reviewer. Conversations are
+local conversation, its local host, and the shadow reviewer. Conversations are
 transcripts, not clients — they keep their own message queues and are served **one segment
 at a time**. A second authenticated connection does not isolate two conversations, it takes
 the Agent over from one of them, so a host that opened a session per conversation was
@@ -389,7 +380,7 @@ the turn is still unread.
 ### Several conversations, one session
 
 The Gateway delivers a result to a session and gates a write on what that session was shown. This
-host carries every local conversation — `--serve`, and so every Rulith Local workbench — over its
+host carries every local conversation — `--serve` — over its
 one session, so on its own that guarantee would let one conversation read, and acknowledge, the
 outcome of another conversation's write: the conversation that made the write would then send it
 again and it would run (Board spec TOOL-06). The same follows when the transcript that showed a
@@ -438,7 +429,7 @@ unavailable observation and changes nothing else.
 
 An authoritative refusal is never replayed by the host: the Board judged the step, and
 resending it with the refusal's own words attached would be this client deciding on the
-model's behalf. Local UI shows the recent operations beside the goals in focus.
+model's behalf. The local host keeps the recent operations beside the goals in focus.
 
 Nothing about an unfinished call is kept on disk. Runtime 0.9 recorded such a call in
 `agent-sessions.json`; a record found there is named once at startup, with its request id, and
@@ -479,8 +470,7 @@ ends. Its acceptance is the goal's own desired atoms. Its Terminal Receipt is
 exploratory and never Publisher-billable; only later attribution and replay may
 turn repeated paths into a Capability draft.
 
-Use Rulith for the browser workbench. The direct Agent entry point remains a
-terminal and automation surface. Run `node agent/rulith-agent.mjs --help` to inspect
+The direct Agent entry point is a terminal and automation surface. Run `node agent/rulith-agent.mjs --help` to inspect
 its options without configuring credentials.
 
 The Agent Runtime sends board commands to Rulith Cloud and model requests directly
@@ -754,14 +744,12 @@ must still be approved as its own versioned local Tool and governed Action.
 
 ### Connect a local MCP server
 
-Open **This environment’s tools** in the workbench to inspect contracts, edit declared tools,
-or install and configure MCP services once for every Agent. Under **Add tools**, search the
-official MCP Registry, connect an existing service, declare a tool, or use a Filesystem template.
-Review each change and confirm it once; it applies after running work finishes. MCP discovery
-selects which tools the service contributes to the environment and exports a credential-free
-Source definition for Console authorization. Each Agent’s **Tools** page shows this shared
-inventory and its own file-tool mode. Script tools stay in that Agent’s own tool file.
-See [the environment’s tool library](docs/local-mcp-setup.md) for storage, keys and migration.
+Tool definitions and MCP services installed in the local manager's tool library are available to
+every Agent's Worker on this computer, once; MCP discovery selects which tools a service contributes
+and exports a credential-free Source definition for Console authorization. Script tools stay in that
+Agent's own tool file. The English page that edited the library is retired with the workbench; see
+[the environment’s tool library](docs/local-mcp-setup.md) for its files, keys, migration and the
+manager operations that change it.
 
 Rulith's Worker is an outbound MCP client. It supports local **stdio** processes
 and **Streamable HTTP** endpoints, including initialization, session headers, JSON/SSE
@@ -778,7 +766,7 @@ copying only `rulith-worker.mjs` is insufficient.
    attest. Declare its access modes and versioned Tool references. A stdio Source's
    public access address can be a non-secret locator such as `stdio:local-mail`;
    its actual process configuration stays local. HTTP uses its non-secret endpoint.
-3. Declare the named remote Tool in the Worker manifest, select its Agent in the workbench and enable **Use this environment’s tools and files**,
+3. Declare the named remote Tool in the Worker manifest, turn on that Agent's local tools on this computer (setting the Agent up on this computer in the app does),
    then bind and lock the Source and its required advertised Tools in Console.
    If Rulith also supplies the model, configure it and send the first message.
 4. Use the existing `rulith.mcp.discover@1` through a governed read Action to inspect
@@ -907,14 +895,13 @@ the truth of a result.
 
 ## Managed local profiles
 
-Run `rulith start` and open its printed loopback URL. Sign in, select an Agent, and
-complete first-use setup. The left list selects the Agent; the middle and right areas
-show its conversation and execution information. Switching preserves each profile's
-processes and history. See [the workbench guide](docs/local-manager.md).
+The Rulith app keeps one local profile per Agent set up on this computer, through the local manager
+([docs/local-manager.md](docs/local-manager.md)): the Agent's credentials, its Worker and its
+working files. Profiles stay separate, and shell credentials are not inherited by every Agent.
+Setting a profile up configures local resources; it does not grant cloud authority.
 
 Ordinary conversation declares no goal. The model selects Rulith tools when work benefits
-from persistent state, rules, evidence, execution or an auditable conclusion. The profile's
-setup and tool pages configure its local resources; they do not grant cloud authority.
+from persistent state, rules, evidence, execution or an auditable conclusion.
 
 The deployment configuration owns the model endpoint and key, Agent runtime,
 Worker Connection key, Source credentials, Tool adapters, workspace roots, local Tool
@@ -924,9 +911,9 @@ Tool authorization, Source attestation scope, Case acceptance, Terminal Receipts
 Entitlement, and Billing. Local observes those Cloud decisions but never keeps a second
 governance ledger.
 
-The Local UI is a view of the runtime, not a board or authority service. A remote
-Worker remains independently deployed and outbound-only; its authoritative activity
-appears through the Cloud Connection and receipts rather than direct Local control.
+The app and the local manager are views and controls of the runtime, not a board or authority
+service. A remote Worker remains independently deployed and outbound-only; its authoritative
+activity appears through the Cloud Connection and receipts rather than direct Local control.
 
 ## Five-minute verified file workflow
 
@@ -946,7 +933,7 @@ The model never supplies the trusted input values or the calculated output value
 ## Security model
 
 - Agent tokens and model keys belong to the Agent Runtime process.
-- Rulith stores no Cloud account cookie. The workbench holds a scoped device grant;
+- Rulith stores no Cloud account cookie. The local manager holds a scoped device grant;
   Agent execution still uses only its own Agent-scoped credential.
 - Connection keys and source credentials belong to the Worker machine.
 - Built-in workspace Tools are fenced to the configured Source root, bounded in size and
@@ -974,25 +961,26 @@ The model never supplies the trusted input values or the calculated output value
   and this host own; they never appear in the schemas the model is given, and a model turn
   that names one is refused before anything is sent. `ReadArtifact` accepts only a
   reference this service issued — never a URL, a path, or another Agent's identity.
-- The Local UI requires its per-run key on every route, including the page itself.
+- The local manager and each profile's loopback host require their per-run key on every route; the app's
+  own routes accept only same-origin requests from its page on a loopback host.
 - Submitted work is not self-verification. Acceptance remains a board and policy decision.
 
 See [`SECURITY.md`](SECURITY.md) for reporting and deployment guidance.
 
 ## Local app (`app/`)
 
-`app/` holds the Rulith local app (formerly Deep Rulith, merged here on 2026-10-23, D-1019c): a conversation
-app built on DeepSeek Harness that uses this repository's Runtime as its only tools. It is not part of the published
-package yet; run it from a checkout with `npm install` and `npm run app`, and test it with `npm run test:app`. See
-[app/README.md](app/README.md).
+`app/` holds the Rulith local app (formerly Deep Rulith, merged here on 2026-10-23, D-1019c, and published in this
+package since 0.19.0): a conversation app built on DeepSeek Harness that uses this repository's Runtime as its only
+tools. From a checkout, run it with `npm run app` and test it with `npm run test:app`. See [app/README.md](app/README.md).
 
 ## Project status
 
 The runtime is beta software. Protocol compatibility is versioned, but command-line
-flags and the Local UI may still change before 1.0.
+flags and the app may still change before 1.0.
 
-The Local UI and primary onboarding path are English. Runtime-facing diagnostics
-must be English; internal source comments may use another language.
+The app's own words are Chinese in this release; an English-first interface follows. Model replies
+follow the user's language. Runtime-facing diagnostics must be English; internal source comments may
+use another language.
 
 Please use the [setup question template](https://github.com/rulith-dev/rulith-runtime/issues/new?template=question.yml)
 for workflow design questions and the other issue templates for reproducible defects and feedback.

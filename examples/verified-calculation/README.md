@@ -22,23 +22,23 @@ is needed. The historical 1.0.2 flow is documented below.
 
 ## Install and prepare locally
 
-Have Node.js and a working model endpoint ready. The model may be local or remote;
+Have Node.js 22.19 or later and a working model endpoint ready. The model may be local or remote;
 remote endpoints require a provider key. The five-minute run assumes those prerequisites.
 
 PowerShell:
 
 ```powershell
-npm.cmd install --global rulith@0.18.0
+npm.cmd install --global rulith@0.19.0
 node "$(npm.cmd root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
-rulith start
+rulith
 ```
 
 Bash:
 
 ```bash
-npm install --global rulith@0.18.0
+npm install --global rulith@0.19.0
 node "$(npm root -g)/rulith/examples/verified-calculation/setup.mjs" ./rulith-demo
-rulith start
+rulith
 ```
 
 The bundled setup verifies five files without another network download. It creates
@@ -46,42 +46,37 @@ The bundled setup verifies five files without another network download. It creat
 destination. Adapter paths stay relative to the configured Worker root; the runtime
 does not permit a script manifest to escape that root.
 
-Open the printed workbench URL. Sign in, select `verified-calculation`, and complete
-its first-use setup. The workbench obtains that Agent's runtime credentials and Worker
-Connection. Configure your default model through the account menu, or override it in
-this Agent's settings. Tool configuration reloads the Worker automatically after its current executions drain.
+`rulith` opens the Rulith app. Sign in and save a model in its first-run wizard, then put the
+wizard away instead of opening a folder. In **Settings → This computer**, set the
+`verified-calculation` Agent up on this computer: that obtains the Agent's runtime credentials
+and its Worker Connection on this computer, and turns its Worker on.
 
 ## Register the available Tools, then bind the Source
 
-1. For this new demo Agent, open its gear menu → **Technical details → Files** to find
-   the profile directory. Stop Rulith with Ctrl+C in its terminal before editing that
-   directory's `local.json`. In the existing `worker.env` object, set only
-   `RULITH_WORKER_ROOT` and `RULITH_TOOLS_FILE` to the **Worker root** and **Tool manifest**
-   absolute paths printed by setup. Preserve the rest of the profile, including its
-   credentials, model and session settings. Do not use an Agent with unrelated tool
-   configuration for this demo. On Windows, escape backslashes in JSON or use `/`.
-2. Run `rulith start` again, select the same Agent, and enable **Use this environment’s tools and files**.
-   In Console, open the same Agent's Runtime and confirm its
+1. Stop Rulith with Ctrl+C in its terminal. **Settings → Advanced → Diagnosis** names the local
+   manager folder; its `registry.json` lists this Agent's instance and its directory. In that
+   directory's `local.json`, in the existing `worker.env` object, set only
+   `RULITH_WORKER_ROOT` and `RULITH_TOOLS_FILE` to the **Worker root** and **Tool manifest** absolute
+   paths printed by setup. Preserve the rest of the profile, including its credentials, model and session
+   settings. Do not use an Agent with unrelated tool configuration for this demo. On Windows,
+   escape backslashes in JSON or use `/`. When Rulith starts it adds its general kit's `eng.*`
+   tools to that manifest; the three calculation tools are kept.
+2. Model commands, the calculation Adapters included, run isolated (model-command isolation, the
+   default on Windows and Linux). On Windows they write only where Rulith lets low-integrity
+   processes write, so let them write the demo's `runtime` folder:
+   `icacls rulith-demo\runtime /setintegritylevel (OI)(CI)low`. On Linux, bubblewrap must be
+   installed. Then run `rulith` again. In Console, open the same Agent's Runtime and confirm its
    Connection advertises the three verified-calculation Tools.
 3. Bind `verified-calculation-local` to that Connection. Keep the Release's default
    location, `runtime`, which the Worker resolves against its root, or use the **absolute
    Source location printed by setup**, ending in `rulith-demo/runtime`: both name the same
    folder. Select the three matching Tools and lock the binding. This data directory
    contains neither model credentials nor Adapter code.
-4. The first message in the Local composer starts the Agent automatically. The running Worker loads the
+4. In Rulith, start a new conversation under this Agent. The running Worker loads the
    authorized Source the first time it is given work there, so it needs no restart. That
    holds for a newly bound Source only: when you bind a Source the running Worker already
    knows to another location (for example from a 0.9.1 absolute path to `runtime`), it
-   keeps the old location until you turn **Use this environment’s tools and files** off and back on. The workbench keeps the same
-   profile, Connection and conversation throughout; no separate CLI configuration is needed.
-
-Steps 1 and 2 can also be done from the workbench in one click, without the setup script.
-Open the Agent's setup (**Settings and details → Setup**), go to **Resources**, open
-**Prepare the calculation sample**, enter a new, empty directory and click **Prepare calculation sample**. It writes the same files in the same layout as the setup script, points
-this Agent's Worker at them, sends the Source folder (`runtime` in that directory) for
-authorization unless other resources are selected on that page, and starts the Worker. In
-step 3, the Release's default Source location, `runtime`, already names that folder: it is
-relative to the Worker root.
+   keeps the old location until Rulith restarts.
 
 The standalone Console setup download prepares the same assets using immutable release
 pins. It does not create credentials, install a Capability, or grant access to a Source.
@@ -91,8 +86,8 @@ pins. It does not create credentials, install a Capability, or grant access to a
 Rulith Runtime 0.15.0 speaks `rulith/v4`: the Agent declares goals inside `Set`,
 and the Board completes a goal by itself in the commit that certifies it. The Agent first
 reads the trusted input under an `exploration` intake goal it declares, then declares the
-`verified_calculation` capability's goal with the returned `job_id`. In the Local
-composer, send:
+`verified_calculation` capability's goal with the returned `job_id`. In the Rulith
+conversation, send:
 
 ```text
 Complete a verified_calculation goal for job calc-001 using the installed Capability. Read the configured input, declare the capability's goal with the returned job_id, continue with the steps it returns, and write and independently read back the exact total.
@@ -124,7 +119,7 @@ The order-processing example and paid billing are separate acceptance paths.
 
 ## Protocol troubleshooting (optional)
 
-The normal run uses the Local composer. Inspect `Get` for the installed Action
+The normal run uses the Rulith conversation. Inspect `Get` for the installed Action
 schemas and descriptions, and for the capability goals this Agent can declare
 (`goalTypes`). These examples apply to Capability 1.0.3; existing installations remain
 pinned until their operator installs the new version.

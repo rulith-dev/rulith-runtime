@@ -1,8 +1,8 @@
 {
   "name": "rulith",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "type": "module",
-  "description": "Rulith: a local multi-agent workbench with conversations and governed Worker tools",
+  "description": "Rulith: a local app for governed work with your own model, and the Runtime it runs on",
   "bin": {
     "rulith": "local/rulith-local.mjs"
   },
@@ -18,6 +18,14 @@
     "local/",
     "kits/",
     "config/",
+    "app/README.md",
+    "app/NOTICE",
+    "app/harness/",
+    "!app/harness/rulith.cordis.yml",
+    "!app/harness/rulith-dsh-role.mjs",
+    "!app/harness/host-utils.mjs",
+    "!app/harness/runtime-kit.mjs",
+    "!app/harness/worker-inventory.mjs",
     "protocol/mcp-contract.json",
     "protocol/worker-contract.json",
     "protocol/worker-review-contract.json",
@@ -31,9 +39,7 @@
     "docs/releasing.md",
     "docs/local-manager.md",
     "docs/local-materials.md",
-    "docs/local-authoring.md",
     "docs/local-mcp-setup.md",
-    "docs/local-setup.md",
     "examples/verified-calculation/README.md",
     "examples/verified-calculation/data/input.json",
     "examples/verified-calculation/read-input.mjs",
@@ -52,15 +58,15 @@
     "registry": "https://registry.npmjs.org/"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19"
   },
   "scripts": {
-    "start": "node local/rulith-local.mjs start",
-    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/local-ui.mjs && node --check local/sandbox-home-label.mjs && node --check worker/adapter-confinement.mjs && node --check kits/general/lib.mjs && node --check worker/run-artifacts.mjs && node --check worker/implementation-boundary.mjs && node --check worker/implementation-hooks.mjs && node --check kits/general/adapter.mjs && node --check kits/general/acceptance-specs.mjs && node --check kits/general/acceptance.mjs && node --check kits/general/test_v2.mjs && node --check kits/general/pack/build-pack.mjs && node --check kits/general/installer.mjs && node --check kits/general/web.mjs && node --check scripts/verify-published.mjs && node --check scripts/published-authoring-verifier.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/verify-worker-review-contract.mjs && node scripts/generate-worker-protocol.mjs --check && node scripts/verify-selected-material-overlay.mjs",
+    "start": "node local/rulith-local.mjs",
+    "check": "node --check agent/rulith-agent.mjs && node --check worker/rulith-worker.mjs && node --check local/rulith-local.mjs && node --check local/operations.mjs && node --check local/sandbox-home-label.mjs && node --check worker/adapter-confinement.mjs && node --check kits/general/lib.mjs && node --check app/harness/web/start-deep-rulith.mjs && node --check app/harness/web/rulith-runtime.mjs && node --check worker/run-artifacts.mjs && node --check worker/implementation-boundary.mjs && node --check worker/implementation-hooks.mjs && node --check kits/general/adapter.mjs && node --check kits/general/acceptance-specs.mjs && node --check kits/general/acceptance.mjs && node --check kits/general/test_v2.mjs && node --check kits/general/pack/build-pack.mjs && node --check kits/general/installer.mjs && node --check kits/general/web.mjs && node --check scripts/verify-published.mjs && node --check scripts/published-authoring-verifier.mjs && node --check examples/verified-calculation/setup.mjs && node --check examples/verified-calculation/read-input.mjs && node --check examples/verified-calculation/write-output.mjs && node --check examples/verified-calculation/verify-output.mjs && node scripts/check-line-endings.mjs && node scripts/verify-mcp-contract.mjs && node scripts/generate-mcp-surface.mjs --check && node scripts/verify-worker-contract.mjs && node scripts/verify-worker-review-contract.mjs && node scripts/generate-worker-protocol.mjs --check && node scripts/verify-selected-material-overlay.mjs",
     "manifest": "node scripts/update-artifact-manifest.mjs",
     "verify:manifest": "node scripts/update-artifact-manifest.mjs --check",
     "test": "node --import ./test/support/no-sandbox.mjs --test --test-concurrency=3 test/*.test.mjs",
-    "test:app": "node --import ./test/support/no-sandbox.mjs --test --test-concurrency=4 app/test/harness/kit.test.mjs app/test/harness/board-transcript.test.mjs app/test/harness/context-relief.test.mjs app/test/harness/board-channel.test.mjs app/test/harness/conversation-boards.test.mjs app/test/harness/subagent-integration.test.mjs app/test/harness/write-note.test.mjs app/test/harness/outgoing-trim.test.mjs app/test/harness/project-source.test.mjs app/test/harness/open-project.test.mjs app/test/harness/v4-surface.test.mjs app/test/harness/shadow-reviewer.test.mjs app/test/harness/launcher.test.mjs app/test/harness/web-tools.test.mjs app/test/harness/general-kit.test.mjs app/test/harness/app-home.test.mjs app/test/harness/local-setup.test.mjs app/test/harness/onboarding.test.mjs app/test/harness/settings.test.mjs app/test/harness/task-panel.test.mjs app/test/harness/batch5-surface.test.mjs app/test/harness/model-command-isolation.test.mjs",
+    "test:app": "node --import ./test/support/no-sandbox.mjs --test --test-concurrency=4 app/test/harness/kit.test.mjs app/test/harness/board-transcript.test.mjs app/test/harness/context-relief.test.mjs app/test/harness/board-channel.test.mjs app/test/harness/conversation-boards.test.mjs app/test/harness/subagent-integration.test.mjs app/test/harness/write-note.test.mjs app/test/harness/outgoing-trim.test.mjs app/test/harness/project-source.test.mjs app/test/harness/open-project.test.mjs app/test/harness/v4-surface.test.mjs app/test/harness/shadow-reviewer.test.mjs app/test/harness/launcher.test.mjs app/test/harness/web-tools.test.mjs app/test/harness/general-kit.test.mjs app/test/harness/app-home.test.mjs app/test/harness/local-setup.test.mjs app/test/harness/onboarding.test.mjs app/test/harness/settings.test.mjs app/test/harness/task-panel.test.mjs app/test/harness/batch5-surface.test.mjs app/test/harness/model-command-isolation.test.mjs app/test/harness/diagnosis.test.mjs",
     "app": "node app/harness/web/start-deep-rulith.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
     "release:verify": "npm run verify:manifest && npm run check && npm test",
@@ -73,10 +79,15 @@
     "pg": "^8.23.0"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh": "0.2.1-alpha.1",
     "ajv": "8.20.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@deepseek-ai/dsh": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-web-search-deepseek": "0.2.1-alpha.1",
+    "@earendil-works/pi-ai": "^0.87.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "yaml": "^2.9.0"
   }
 }
