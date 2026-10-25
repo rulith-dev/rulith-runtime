@@ -358,7 +358,7 @@ test('a conversation waiting to reconnect cannot block another; disposal cancels
   assert.equal(f.boards.size, 1);
 });
 
-async function runtimeFixture(t, enabled = true, initialAgents = [], instances = null) {
+async function runtimeFixture(t, enabled = true, initialAgents = [], instances = null, admit = () => ({ peer: {} })) {
   // All I/O is mocked: no manager, credentials, socket, status file or Gateway is accessed.
   const previousFlag = process.env.RULITH_DSH_CONVERSATION_BOARDS;
   process.env.RULITH_DSH_CONVERSATION_BOARDS = enabled ? '1' : '0';
@@ -405,7 +405,7 @@ async function runtimeFixture(t, enabled = true, initialAgents = [], instances =
     },
     effect(fn) { effects.push(fn()); },
     tools: { register(def) { definitions.push(def); return () => {}; } },
-    webServer: { register(route) { server = route; return () => {}; } },
+    webServer: { register(route) { server = route; return () => {}; } }, connection: { admit },
   };
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
   await apply(ctx, { managerHome: 'fixture-manager', runtimeEntry: 'fixture-runtime', keyFile: 'fixture-key.txt',
@@ -468,6 +468,24 @@ test('runtime routes registered tools by conversation, publishes only aggregate 
   emit('session/disposed', child.session); assert.equal(statuses.at(-1).liveConversations, 1);
   emit('session/disposed', fork.session); assert.equal(statuses.at(-1).liveConversations, 0);
   assert.doesNotMatch(JSON.stringify(statuses), /dsh:|fixture-token|fixture-manager-key|fixture-mcp-session/);
+});
+
+// ACC-ISO-01 (model-command isolation, D-1024a / PSC 0.2.28 ①): the app host's /rulith/api routes require the dsh
+// browser session, not only the constant `x-deep-rulith:1` header and a loopback Host. A confined model command that
+// can reach 127.0.0.1:3080 but cannot forge the signed session cookie is refused before any state-changing route runs.
+test('ACC-ISO-01 /rulith/api refuses a request the dsh session did not admit, before the route runs', async (t) => {
+  const { requests, post } = await runtimeFixture(t, true, [], null, () => ({ rejection: 401 }));
+  const reply = await post('conversation/sign-acceptance', { session: 'dsh:parent', node: 'node_x' });
+  assert.equal(reply.ok, false, 'an unauthenticated request is refused');
+  assert.match(reply.teaching, /page's Rulith session/);
+  assert.equal(requests.filter((r) => r.method === 'tools/call').length, 0, 'the route never reached the model');
+});
+
+test('ACC-ISO-01 /rulith/api fails closed when no session authentication is available', async (t) => {
+  // connection.admit returning undefined (misconfiguration) must not fall open to the header-only gate.
+  const { post } = await runtimeFixture(t, true, [], null, () => undefined);
+  const reply = await post('conversation/sign-acceptance', { session: 'dsh:parent', node: 'node_x' });
+  assert.equal(reply.ok, false, 'no admission means refuse, not allow');
 });
 
 test('Board endpoint reads only the requested session cache, including children and cold sessions', async (t) => {

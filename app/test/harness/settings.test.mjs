@@ -342,7 +342,7 @@ test('host routes: the folder chooser, the account default Agent passed on only 
   let server;
   const effects = [];
   await apply({ on() {}, effect(fn) { effects.push(fn()); }, get: (name) => (name === 'directoryPicker' ? directoryPicker : undefined),
-    tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } } },
+    tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } }, connection: { admit: () => ({ peer: {} }) } },
     { managerHome: dir, runtimeEntry: 'fixture-runtime', keyFile, shadow: { enabled: false } });
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
   const call = async (method, route, body) => {

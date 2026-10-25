@@ -80,7 +80,7 @@ test('host routes forward exactly the Gateway contract through the manager and r
     const manager = async (route, body) => { calls.push([route, body]); return route === '/manager/state' ? managerState : answer(route, body); };
     // PSC 0.2.27 ③: the host's "set up on this computer" in repair mode runs first, before the Gateway is asked anything.
     const repairs = [];
-    const routes = projectRoutes({ manager, repair: async (agentId) => { repairs.push([agentId, calls.length]); },
+    const routes = projectRoutes({ manager, labelOpen: () => ({ ok: true }), repair: async (agentId) => { repairs.push([agentId, calls.length]); },
       platform: process.platform, onReady: (id) => ready.push(id) });
     const shown = await routes.state({ agentId: 'agent-1', directory: dir });
     assert.equal(shown.state, 'not_open');
@@ -104,7 +104,7 @@ test('host routes forward exactly the Gateway contract through the manager and r
       await assert.rejects(routes.open(body), (error) => typeof error.errorCode === 'string');
     assert.equal(calls.filter(([route]) => route.startsWith('/manager/projects/')).length, before);
     // A mapped network drive on Windows is refused here too: its real path is a share.
-    const mapped = projectRoutes({ manager, platform: 'win32', files: { statSync: () => ({ isDirectory: () => true }),
+    const mapped = projectRoutes({ manager, labelOpen: () => ({ ok: true }), platform: 'win32', files: { statSync: () => ({ isDirectory: () => true }),
       realpathSync: () => '\\\\server\\share\\proj' } });
     await assert.rejects(mapped.state({ agentId: 'agent-1', directory: 'Z:\\proj' }), (error) => error.errorCode === 'folder_network');
     assert.equal(calls.filter(([route]) => route.startsWith('/manager/projects/')).length, before);
@@ -118,6 +118,28 @@ test('host routes forward exactly the Gateway contract through the manager and r
     answer = () => { throw Object.assign(new Error('Endpoint not found.'), { status: 404 }); };
     await assert.rejects(routes.state({ agentId: 'agent-1', directory: dir }),
       (error) => error.errorCode === 'runtime_unsupported' && /版本太旧/.test(error.message));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Model-command isolation (D-1024a): a folder that contains, or lies inside, one of Rulith's own credential or work roots
+// is refused before the manager hears of it (and before any label is applied); an unrelated folder goes on as before.
+test('ACC-ISO-09 a project folder overlapping a Rulith credential or work root is refused before anything is sent', async () => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'deep-rulith-protected-')));
+  try {
+    const root = path.join(dir, 'rulith-home'), other = path.join(dir, 'other');
+    for (const d of [path.join(root, 'inner'), other]) fs.mkdirSync(d, { recursive: true });
+    const calls = [], labelled = [];
+    const manager = async (route) => { calls.push(route); return route === '/manager/state' ? managerState : { ok: true, ...notOpen(other) }; };
+    const routes = projectRoutes({ manager, platform: process.platform, protectedRoots: () => [root],
+      labelOpen: (input) => { labelled.push(input); return { ok: true }; } });
+    for (const directory of [dir, root, path.join(root, 'inner')]) {
+      await assert.rejects(routes.state({ agentId: 'agent-1', directory }), (error) => error.errorCode === 'project_folder_protected', directory);
+      await assert.rejects(routes.open({ agentId: 'agent-1', directory, requestId: 'b3c1d0a2-0000-4000-8000-000000000009',
+        authorizationVersion: 'sha256:v1', expectedAccountId: 'acct-1' }), (error) => error.errorCode === 'project_folder_protected', directory);
+    }
+    assert.deepEqual(calls, [], 'nothing reached the manager');
+    assert.deepEqual(labelled, [], 'nothing was labelled');
+    assert.equal((await routes.state({ agentId: 'agent-1', directory: other })).state, 'not_open', 'an unrelated folder proceeds');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -433,7 +455,7 @@ test('the host serves the project routes on its guarded same-origin API, with th
   });
   let server;
   const effects = [];
-  await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } } },
+  await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } }, connection: { admit: () => ({ peer: {} }) } },
     { managerHome: 'fixture-manager', runtimeEntry: 'fixture-runtime', keyFile: 'fixture-key.txt', shadow: { enabled: false } });
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
   seen.length = 0; // the start's kit refresh read the manager state once (kit-install.mjs)

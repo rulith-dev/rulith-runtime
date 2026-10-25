@@ -14,6 +14,7 @@ import { installBoardTranscript } from './board-transcript.mjs';
 import { installOutgoingTrim } from './outgoing-trim.mjs';
 import { installProjectContext, readSourceBindings } from './project-source.mjs';
 import { PROJECT_SOURCE, projectRoutes } from './open-project.mjs';
+import { rulithBackstop, workBase } from '../../../worker/adapter-confinement.mjs';
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
@@ -29,7 +30,7 @@ import { refreshGeneralKits } from '../kit-install.mjs';
 export { awaitOutcome } from '../board-channel.mjs';
 
 export const name = 'rulith-runtime';
-export const inject = ['tools', 'webServer', 'llm'];
+export const inject = ['tools', 'webServer', 'llm', 'connection'];
 
 /** The panel observes results already received on this Agent's channel; it never calls MCP. The latest view and its
  * operations strip pass through unchanged, with `recent`: the operations this conversation's results showed (BoardChannel). */
@@ -453,7 +454,11 @@ export async function apply(ctx, config = {}) {
     await setup.ready({ agentId, mode: 'repair' });
     repaired.set(agentId, Date.now());
   };
-  const projects = projectRoutes({ manager, repair, onReady: (instanceId) => sourcesCache.delete(instanceId) });
+  // Model-command isolation (D-1024a): a project may neither contain nor lie inside Rulith's own credential or work
+  // locations; the folder's prior label is recorded in the manager home.
+  const credentialRootsListed = () => { try { const v = JSON.parse(process.env.RULITH_CREDENTIAL_ROOTS ?? '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+  const projects = projectRoutes({ manager, repair, onReady: (instanceId) => sourcesCache.delete(instanceId), managerHome: home,
+    protectedRoots: () => [home, process.env.DSH_HOME, config.keyFile, rulithBackstop(), workBase(), ...credentialRootsListed()] });
   // The Agent and the conversation key a session's settings belong to. Only observed mappings: a session that never used
   // Rulith has no Board yet, and asking must not open a connection (same rule as the Board panel).
   const pendingControls = new Map();
@@ -672,6 +677,15 @@ export async function apply(ctx, config = {}) {
       // check keeps out a rebinding name that resolves to this computer.
       const loopbackHost = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(req.headers.host ?? '');
       if (req.headers['x-deep-rulith'] !== '1' || !loopbackHost) return send(res, 403, { ok: false, teaching: '只接受本页发出的 Rulith 请求。' });
+      // 以前这条前缀路由只看 `x-deep-rulith:1`（一个常量，不是机密）和 loopback Host，不要本页的会话凭据。loopback 对
+      // 这台电脑上每个账户、每个程序共享：模型命令只要能向 127.0.0.1:3080 发请求，就能在不读任何机密的情况下，对这条路由
+      // 做出签字、设置档位、打开项目、setup、删除会话等有后果的操作（SSRF 防线只管工具，管不到命令里启动的 curl/node）。
+      // 所以这里加上与其它接口同一道的会话校验：`ctx.connection.admit()` 验签名 cookie（机密在凭据库里，不在这条路由上，
+      // 命令无法伪造）。本页带 cookie 照常通过；无凭据的请求被拒。model-command-isolation（D-1024a / PSC 0.2.29）。
+      const admission = ctx.connection?.admit?.(req);
+      if (admission === undefined) return send(res, 503, { ok: false, teaching: "Rulith could not confirm this page's session." });
+      if (admission.rejection !== undefined) return send(res, admission.rejection, { ok: false,
+        teaching: admission.rejection === 401 ? "This needs this page's Rulith session." : "This page's Rulith session did not pass the check." });
       const route = routes[`${req.method} ${(req.url ?? '').split('?')[0]}`];
       if (!route) return send(res, 404, { ok: false, teaching: '没有这个 Rulith 接口。' });
       const query = () => {

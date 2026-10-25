@@ -564,7 +564,7 @@ async function hostFixture(t, manager) {
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-11-25',
       tools: TOOLS.map((name) => ({ name, description: name, inputSchema: { type: 'object' } })), _meta: { 'rulith/v4': { agentId: 'agent-1' } } } }), { headers });
   });
-  const ctx = { on() {}, effect(fn) { effects.push(fn()); }, tools: { register() { return () => {}; } }, webServer: { register(route) { server = route; return () => {}; } } };
+  const ctx = { on() {}, effect(fn) { effects.push(fn()); }, tools: { register() { return () => {}; } }, webServer: { register(route) { server = route; return () => {}; } }, connection: { admit: () => ({ peer: {} }) } };
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
   await apply(ctx, { managerHome: 'fixture-manager', runtimeEntry: 'fixture-runtime', keyFile: 'fixture-key.txt', conversationBoards: true, shadow: { enabled: false } });
   const post = async (body) => {

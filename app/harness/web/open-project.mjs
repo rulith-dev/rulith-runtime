@@ -6,6 +6,8 @@
 // Runtime 管理器（/manager/projects/*）走这台电脑的设备授权，浏览器只看到这里挑出的字段，看不到任何凭据。
 import fs from 'node:fs';
 import path from 'node:path';
+import { labelProjectOpen } from '../../../local/sandbox-home-label.mjs';
+import { overlapsProtected } from '../../../worker/adapter-confinement.mjs';
 
 /** A refusal made here, before anything is sent; its code tells the page that retrying will not help. */
 const refused = (code, text) => Object.assign(new Error(text), { errorCode: code });
@@ -92,7 +94,7 @@ const REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
  * reported as tools the Agent has not reported. A failed repair is the refusal, with its step's reason and code.
  */
 export function projectRoutes({ manager: call, platform = process.platform, files = LOCAL_FILES, onReady = () => {},
-  repair = async () => {} }) {
+  repair = async () => {}, managerHome, protectedRoots = () => [], labelOpen = labelProjectOpen }) {
   // A manager without these routes (Runtime 0.17.2 and earlier) answers 404 without a code: say what to do about it.
   const manager = (route, body) => call(route, body).catch((error) => {
     if (error?.status === 404 && !error.errorCode && route.startsWith('/manager/projects/'))
@@ -102,6 +104,11 @@ export function projectRoutes({ manager: call, platform = process.platform, file
   const request = async (body) => {
     const agentId = String(body?.agentId ?? '');
     const directory = localFolder(body?.directory, platform, files);
+    // 模型命令隔离（D-1024a）：项目目录不得包含、也不得位于 Rulith 自己的凭据根或工作根里——否则打开时的低完整性标签会
+    // 扩散进凭据，或凭据目录被当成可读写的项目。确认之前就拒绝，什么都不发出。
+    if (overlapsProtected(directory, protectedRoots().filter(Boolean)))
+      throw refused('project_folder_protected', 'This folder contains, or is inside, a folder where Rulith keeps its own data (credentials or work files),'
+        + ' so it cannot be opened as a project. Choose a folder that holds no Rulith data.');
     await repair(agentId);
     const target = projectTarget(await manager('/manager/state'), agentId);
     return { target, directory };
@@ -127,9 +134,18 @@ export function projectRoutes({ manager: call, platform = process.platform, file
       if (!REQUEST_ID.test(requestId)) throw refused('open_request_invalid', '这次打开缺少有效的请求号，请重新确认。');
       if (!authorizationVersion) throw refused('open_request_invalid', '这次打开缺少确认过的内容版本，请重新确认。');
       const { target, directory } = await request(body);
-      return answer(target, await manager('/manager/projects/open', { requestId,
+      const reply = await manager('/manager/projects/open', { requestId,
         expectedAccountId: String(body?.expectedAccountId ?? ''), agentId: target.agentId, connectionId: target.connectionId,
-        directory, platform: projectPlatform(platform), authorizationVersion }));
+        directory, platform: projectPlatform(platform), authorizationVersion });
+      // 模型命令隔离（D-1024a）：打开成功后给项目目录打上可继承的低完整性标签（受限适配器才能在其中读写）。目录原本的标签
+      // 先记到管理器 home 的 project-labels（凭据根内，受限命令读写不到），按实例计数；实例移除、或 Worker 发现这个 Source
+      // 被收回时释放，最后一个释放时按原样还原（随继承传播到子项）。只在 Gateway 确认打开后做，失败如实告警，不改打开结果。
+      if (reply?.state === 'ready') {
+        const labelled = labelOpen({ managerHome, directory, holder: target.instanceId });
+        if (labelled && !labelled.ok) console.error(`Rulith: could not give the project folder ${directory} its Low label (${labelled.reason});`
+          + ' confined commands may be unable to write there.');
+      }
+      return answer(target, reply);
     },
   };
 }

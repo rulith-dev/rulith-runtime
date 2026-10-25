@@ -473,7 +473,10 @@ test('a sample the workbench prepares is read by the Worker at the Release\'s de
   await new Promise((ready) => cloud.listen(0, '127.0.0.1', ready))
   const configFile = join(directory, 'local.json'), config = defaultLocalConfig()
   config.worker.env = { ...config.worker.env, RULITH_WORK_URL: `http://127.0.0.1:${cloud.address().port}/work`,
-    RULITH_CONNECTION: connection, RULITH_CONNECTION_KEY: connectionKey }
+    RULITH_CONNECTION: connection, RULITH_CONNECTION_KEY: connectionKey,
+    // Model-command isolation (D-1024a): this example runs the real Adapter in a throwaway dir, not the confined
+    // product path, so it runs unconfined (the explicit owner-style disable). ACC-ISO-07/08 prove the confined path.
+    RULITH_ADAPTER_SANDBOX: 'off' }
   // The host's own Worker is the reporting stand-in; the real Worker below runs on what was written.
   config.paths = { agent: join(ROOT, 'test', 'support', 'echo-role.mjs'), worker: join(ROOT, 'test', 'support', 'echo-role.mjs') }
   writeFileSync(configFile, JSON.stringify(config))

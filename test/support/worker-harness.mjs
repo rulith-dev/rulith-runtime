@@ -590,6 +590,10 @@ export async function driveWorker({
       RULITH_WORKER_ROOT: dir,
       RULITH_TOOLS_FILE: join(dir, 'worker-tools.json'),
       RULITH_SECRETS_FILE: join(dir, 'no-secrets.json'),
+      // Model-command isolation (D-1024a): these harness Workers exercise the run loop in throwaway dirs, not the
+      // confined product path, so they run unconfined (the explicit disable, as the owner's persisted setting would).
+      // The confined path is proven end to end by app/test/harness/model-command-isolation.test.mjs (ACC-ISO-07/08).
+      RULITH_ADAPTER_SANDBOX: 'off',
       RULITH_ENVIRONMENT_SECRETS_FILE: '',
       RULITH_REVIEWER_URL: '',
       RULITH_REVIEWER_MODEL: '',

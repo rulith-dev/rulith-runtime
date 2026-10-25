@@ -20,6 +20,7 @@ const temp = (t) => {
   return dir;
 };
 const fixedPorts = async () => [17790, 13080];
+const labelStub = () => ({ ok: true, platform: 'test' });
 // Everything this process writes while `action` runs, so a test can show that a value was never printed.
 async function printed(action) {
   const out = [], { stdout, stderr } = process;
@@ -31,7 +32,7 @@ async function printed(action) {
 
 test('an empty app home gets its directories, a manager key and settings derived from it alone', async (t) => {
   const home = path.join(temp(t), 'nested', 'app');
-  const { value: s, text } = await printed(() => appSettings(home, { ports: fixedPorts }));
+  const { value: s, text } = await printed(() => appSettings(home, { ports: fixedPorts, label: labelStub }));
   for (const dir of ['manager', 'dsh', 'kit']) assert.ok(fs.statSync(path.join(home, dir)).isDirectory(), dir);
   assert.deepEqual(Object.keys(s).sort(), ['dshBin', 'dshHome', 'keyFile', 'kitHome', 'managerHome', 'managerPort', 'persona',
     'runtimeEntry', 'webPort']);
@@ -66,15 +67,15 @@ test('an empty app home gets its directories, a manager key and settings derived
 
 test('a second run reuses the app home as it is: the same key and the same settings', async (t) => {
   const home = temp(t);
-  const first = await appSettings(home, { ports: fixedPorts });
+  const first = await appSettings(home, { ports: fixedPorts, label: labelStub });
   const key = fs.readFileSync(first.keyFile, 'utf8');
-  const { value: second, text } = await printed(() => appSettings(home, { ports: fixedPorts }));
+  const { value: second, text } = await printed(() => appSettings(home, { ports: fixedPorts, label: labelStub }));
   assert.deepEqual(second, first);
   assert.equal(fs.readFileSync(first.keyFile, 'utf8'), key);
   assert.ok(!text.includes(key.trim()));
   // A key file that is not a manager key refuses the start and names the file, never its content.
   fs.writeFileSync(first.keyFile, 'short');
-  await assert.rejects(appSettings(home, { ports: fixedPorts }), (error) =>
+  await assert.rejects(appSettings(home, { ports: fixedPorts, label: labelStub }), (error) =>
     error.message.includes(first.keyFile) && !error.message.includes('short') && /not hold a valid manager key/.test(error.message));
 });
 
@@ -115,11 +116,11 @@ test('a settings file gives exactly its own settings and the launcher arguments 
   assert.deepEqual(viaEnv, { settings: before, args: ['--no-open'] });
   // Without one, every argument is the launcher's and the settings come from the app home.
   const home = path.join(dir, 'app');
-  const derived = await launcherSettings(['node', 'deep-rulith', '--no-open'], { [APP_HOME_ENV]: home }, { ports: fixedPorts });
+  const derived = await launcherSettings(['node', 'deep-rulith', '--no-open'], { [APP_HOME_ENV]: home }, { ports: fixedPorts, label: labelStub });
   assert.equal(derived.home, home);
   assert.deepEqual(derived.args, ['--no-open']);
-  assert.deepEqual(derived.settings, await appSettings(home, { ports: fixedPorts }));
-  assert.deepEqual((await launcherSettings(['node', 'deep-rulith'], { [APP_HOME_ENV]: home }, { ports: fixedPorts })).args, []);
+  assert.deepEqual(derived.settings, await appSettings(home, { ports: fixedPorts, label: labelStub }));
+  assert.deepEqual((await launcherSettings(['node', 'deep-rulith'], { [APP_HOME_ENV]: home }, { ports: fixedPorts, label: labelStub })).args, []);
 });
 
 test('one launcher per app home: a second one is refused while the first holds it, and a dead holder releases it', async (t) => {

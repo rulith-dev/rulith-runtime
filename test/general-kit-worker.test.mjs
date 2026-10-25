@@ -41,7 +41,7 @@ test('a real run adapter hands its image to Worker custody and reports a registe
     process.stdout.write(JSON.stringify(prepared));
   `);
   const output = execFileSync(process.execPath, [probe], { encoding: 'utf8', windowsHide: true, env: {
-    ...process.env, ENG_KIT_HOME: home, RULITH_MATERIALS_ROOT: materials,
+    ...process.env, RULITH_ADAPTER_SANDBOX: 'off', ENG_KIT_HOME: home, RULITH_MATERIALS_ROOT: materials,
     RULITH_MATERIALS_PROFILE: identity.profile, RULITH_MATERIALS_OWNER: identity.owner,
     RULITH_MATERIALS_AGENT_FINGERPRINT: '', RULITH_MATERIALS_DEVICE_ID: '',
     RULITH_MATERIALS_MODEL_DESTINATION: identity.modelDestination,
@@ -70,7 +70,7 @@ test('an existing run adapter relays artifacts JSON byte-for-byte through the re
     process.stdout.write(out);
   `);
   const out = execFileSync(process.execPath, [probe], { encoding: 'utf8', windowsHide: true, env: {
-    ...process.env, RULITH_WORKER_EVENTS: '', RULITH_LOCAL_EVENTS: '',
+    ...process.env, RULITH_ADAPTER_SANDBOX: 'off', RULITH_WORKER_EVENTS: '', RULITH_LOCAL_EVENTS: '',
   } });
   assert.equal(out, stdout);
 });

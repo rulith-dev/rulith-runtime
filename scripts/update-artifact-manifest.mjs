@@ -36,6 +36,8 @@ const files = [
   'worker/material-transport.mjs',
   'worker/local-authoring.mjs',
   'worker/authoring-diagnostics.mjs',
+  // Adapter process-tree confinement (model-command isolation, D-1024a): launched outside the kit pins.
+  'worker/adapter-confinement.mjs',
   // The run Tool implementation boundary (SYS-TOOL-01): the preload and its loader hooks.
   'worker/implementation-boundary.mjs',
   'worker/implementation-hooks.mjs',
@@ -49,6 +51,7 @@ const files = [
   'local/manager-registry.mjs',
   'local/process-identity.mjs',
   'local/model-settings.mjs',
+  'local/sandbox-home-label.mjs',
   'local/device-client.mjs',
   'local/instance-manager.mjs',
   'local/tool-library.mjs',

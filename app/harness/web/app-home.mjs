@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { acquireWorkbenchLease } from '../../../local/manager-registry.mjs';
+import { ensureHomeLabel } from '../../../local/sandbox-home-label.mjs';
 
 export const APP_HOME_ENV = 'RULITH_APP_HOME';
 // The ports the owner's settings have always used; another free one is taken only when one of these is busy.
@@ -43,11 +44,11 @@ export function appHome(env = process.env, home = os.homedir()) {
  * flag), exactly as before: the file's settings, and the launcher's own arguments after the file. Otherwise the app home's
  * derived settings, with every argument passed on. `home` is set only in the second case.
  */
-export async function launcherSettings(argv = process.argv, env = process.env, { ports } = {}) {
+export async function launcherSettings(argv = process.argv, env = process.env, { ports, label } = {}) {
   const file = env.DEEP_RULITH_SETTINGS || (argv[2] && !argv[2].startsWith('-') ? argv[2] : undefined);
   if (file) return { settings: JSON.parse(fs.readFileSync(file, 'utf8')), args: argv.slice(3) };
   const home = appHome(env);
-  return { settings: await appSettings(home, { ports }), args: argv.slice(2), home };
+  return { settings: await appSettings(home, { ports, label }), args: argv.slice(2), home };
 }
 
 /**
@@ -55,9 +56,15 @@ export async function launcherSettings(argv = process.argv, env = process.env, {
  * only when absent; an existing key is reused as it is. The key is read here only to check it, and never printed.
  * The dsh profile is not made here: the launcher creates it from dsh's web template when it is missing.
  */
-export async function appSettings(home, { ports = freePorts } = {}) {
+export async function appSettings(home, { ports = freePorts, label = ensureHomeLabel } = {}) {
   const at = (name) => path.join(home, name);
   for (const dir of [home, at('manager'), at('dsh'), at('kit')]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // 模型命令隔离（D-1024a）：app home 是凭据根（manager.key、manager/、dsh/），由 App 在每次启动时整个目录打上可继承的
+  // 不可读上行标签（会传播到既有子项；之后新写、原子改写的文件与备份都继承）。受限命令要用的东西都在凭据根之外的工作根里，
+  // 不在这里。失败如实告警：此时 Worker 在每次启动适配器前的校验会拒绝运行模型命令（fail-closed）。
+  const homeLabel = label(home);
+  if (homeLabel && !homeLabel.ok) console.error(`Rulith: could not read-protect ${home} (${homeLabel.reason});`
+    + ' model commands are refused until it is protected.');
   const keyFile = at('manager.key');
   // 密钥只在第一次生成：先以 wx 建一个空文件（绝不覆盖已有的），收紧权限，再写入密钥。POSIX 上是 0600；Windows 没有
   // 权限位，改为去掉继承的访问控制、只留当前用户一项（ownerOnly）。
@@ -78,6 +85,16 @@ export async function appSettings(home, { ports = freePorts } = {}) {
     runtimeEntry: fileURLToPath(new URL('../../../local/rulith-local.mjs', import.meta.url)), persona: fileURLToPath(new URL('../runtime-persona.txt', import.meta.url)),
     webPort, kitHome: at('kit'),
   };
+}
+
+/**
+ * The credential locations a launcher's settings name, beyond the manager home (which the manager protects itself): the
+ * dsh home (session credentials), a modelHome (another manager home, holding model keys) and the manager key file, which
+ * a settings file may keep anywhere. Each is a credential root for model-command isolation (D-1024a): labelled, handed to
+ * the manager, and verified before every command.
+ */
+export function settingsCredentialRoots(s) {
+  return [s?.dshHome, s?.modelHome, s?.keyFile].filter((p) => typeof p === 'string' && p !== '');
 }
 
 /**

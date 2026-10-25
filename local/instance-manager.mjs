@@ -24,8 +24,8 @@
  */
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { createLocalHost, defaultLocalConfig, normalizeLocalConfig } from './rulith-local.mjs'
 import { newInstanceId, writeJsonAtomic } from './manager-registry.mjs'
 import { instanceRecordedAt, processRecordRunning, processStamp } from './process-identity.mjs'
@@ -33,6 +33,8 @@ import { checkedModelInput, createModelSettings, maxOutputTokens, modelSignature
 import { createToolLibrary } from './tool-library.mjs'
 import { createLocalSetup } from './setup-local.mjs'
 import { generalKitCurrent, generalToolIds, installGeneralForInstance } from '../kits/general/installer.mjs'
+import { adapterSandboxMode, pathWithin, rulithBackstop, workBase } from '../worker/adapter-confinement.mjs'
+import { credentialRootRefusal, ensureCredentialRootLabels, releaseAllProjectLabels } from './sandbox-home-label.mjs'
 
 export const INSTANCE_MODES = Object.freeze(['local_agent', 'existing_client'])
 /** Credentials a sign-out must remove from an instance; everything else is the operator's. */
@@ -84,7 +86,7 @@ export const saveInstanceConfig = (directory, config) => writeJsonAtomic(instanc
  *   · `RULITH_WORKER_ROOT` defaults to the same place, so workspace tools would read and
  *     write inside the installed package rather than in this instance's workspace.
  */
-export function newInstanceConfig({ directory, mode = 'local_agent', servePort }) {
+export function newInstanceConfig({ directory, mode = 'local_agent', servePort, workRoot }) {
   const config = defaultLocalConfig()
   config.roles = mode === 'existing_client' ? ['worker'] : ['agent', 'worker']
   config.agent = { ...config.agent, env: { ...config.agent.env,
@@ -92,7 +94,10 @@ export function newInstanceConfig({ directory, mode = 'local_agent', servePort }
   config.worker = { ...config.worker, env: { ...config.worker.env,
     RULITH_TOOLS_FILE: join(directory, 'worker-tools.json'),
     RULITH_SECRETS_FILE: join(directory, 'worker-secrets.json'),
-    RULITH_WORKER_ROOT: join(directory, 'workspace') } }
+    // Model-command isolation (D-1024a): under confinement the Worker root (adapter implementation, read by the Low
+    // adapter) lives in the instance's work root, outside every credential root; the instance directory keeps only
+    // its configuration and secrets.
+    RULITH_WORKER_ROOT: workRoot ? join(workRoot, 'worker') : join(directory, 'workspace') } }
   return config
 }
 
@@ -101,11 +106,95 @@ export function newInstanceConfig({ directory, mode = 'local_agent', servePort }
  * @param {ReturnType<import('./manager-registry.mjs').createManagerRegistry>} options.registry
  * @param {ReturnType<import('./device-client.mjs').createDeviceClient>} options.device
  */
-export function createInstanceManager({ registry, device, startConfirmMs, managerReturnUrl, orphanRecheckMs = 10_000 }) {
+export function createInstanceManager({ registry, device, startConfirmMs, managerReturnUrl, orphanRecheckMs = 10_000,
+  workRoots = workBase(), confined = adapterSandboxMode(process.env) === 'required' }) {
   /** Live hosts, by instance id. Created once, cached, never re-created on selection. */
   const hosts = new Map()
   const instancesRoot = join(registry.root, 'instances')
   const modelSettings = createModelSettings({ root: registry.root })
+
+  // ── Model-command isolation (D-1024a) ──────────────────────────────────────
+  // 中文说明：管理器是自己 home 的主人：不论由谁启动（App、rulith start、单独的 Runtime），启动时都给自己的 home、
+  // 每个不在 home 里的实例目录、`~/.rulith` 兜底以及 App 交来的其他凭据根打上可继承的不可读上行标签；受限进程要用的
+  // 东西（Worker 根、kit home、临时与缓存、作业状态）一律放在凭据根之外的工作根里，旧布局在这里迁出。
+  /** An instance's work root: outside every credential root, holding what its confined adapter reads and writes. */
+  const workRootOf = (id) => join(workRoots, id)
+  const extraCredentialRoots = () => {
+    try { const listed = JSON.parse(process.env.RULITH_CREDENTIAL_ROOTS ?? '[]'); return Array.isArray(listed) ? listed.filter((d) => typeof d === 'string' && d) : [] }
+    catch { return [] }
+  }
+  /** The credential roots this manager protects: its home, instance directories outside it, the backstop, the app's. */
+  const credentialRootsOwned = () => [registry.root, rulithBackstop(), ...extraCredentialRoots(),
+    ...registry.read().instances.map((row) => resolve(row.directory)).filter((dir) => !pathWithin(registry.root, dir))]
+  const insideCredentialRoot = (path) => typeof path === 'string' && path !== '' && isAbsolute(path)
+    && credentialRootsOwned().some((root) => pathWithin(root, path))
+  /** Label (or re-label) every credential root; returns the roots that still are not protected. */
+  const protectCredentialRoots = () => {
+    if (!confined) return []
+    mkdirSync(registry.root, { recursive: true })
+    const labelled = ensureCredentialRootLabels(credentialRootsOwned())
+    const refusal = credentialRootRefusal(labelled)
+    if (refusal) console.error(`Rulith: ${refusal}`)
+    return labelled.unlabeled
+  }
+  /**
+   * Move each instance's confined-process state (Worker root, kit home) out of the credential roots into its work root:
+   * copy, switch local.json, keep the old copy; a later start that finds the new layout in use confirms the move and
+   * removes the old copy.
+   */
+  const migrateWorkLayout = () => {
+    if (!confined) return
+    // An old location may be shared (the app's kit was every Agent's default): it is removed only once no instance uses it.
+    const inUse = (old) => registry.read().instances.some((row) => {
+      try {
+        const env = loadInstanceConfig(resolve(row.directory)).worker?.env ?? {}
+        return [env.RULITH_WORKER_ROOT, env.ENG_KIT_HOME].some((p) => typeof p === 'string' && isAbsolute(p) && pathWithin(old, p))
+      } catch { return true }
+    })
+    for (const row of registry.read().instances) {
+      const directory = resolve(row.directory)
+      if (!existsSync(instanceConfigFile(directory))) continue
+      try {
+        const config = loadInstanceConfig(directory)
+        const env = { ...(config.worker?.env ?? {}) }
+        const pending = config.isolationMigration
+        if (pending && !insideCredentialRoot(env.RULITH_WORKER_ROOT) && !insideCredentialRoot(env.ENG_KIT_HOME)) {
+          for (const old of [pending.worker, pending.kit]) {
+            if (insideCredentialRoot(old) && existsSync(old) && !inUse(old)) rmSync(old, { recursive: true, force: true })
+          }
+          delete config.isolationMigration
+          saveInstanceConfig(directory, config)
+          continue
+        }
+        const moves = [['RULITH_WORKER_ROOT', 'worker'], ['ENG_KIT_HOME', 'kit']].filter(([name]) => insideCredentialRoot(env[name]))
+        if (moves.length === 0) continue
+        const migration = {}
+        for (const [name, sub] of moves) {
+          const from = resolve(env[name]), to = join(workRootOf(row.id), sub)
+          if (existsSync(from) && !existsSync(to)) cpSync(from, to, { recursive: true, errorOnExist: true })
+          mkdirSync(to, { recursive: true })
+          env[name] = to
+          migration[sub] = from
+        }
+        config.worker = { ...config.worker, env }
+        config.isolationMigration = { ...(pending ?? {}), ...migration, at: new Date().toISOString() }
+        saveInstanceConfig(directory, config)
+      } catch (error) {
+        console.error(`Rulith: could not move instance ${row.name ?? row.id} out of the credential roots: ${error.message}`)
+      }
+    }
+  }
+  /**
+   * Every project folder any instance holds goes back to its prior label: the device no longer holds any grant (local
+   * sign-out or forgetting the device), so no Source of it is granted any more. Opening a project again re-labels it.
+   */
+  const releaseHeldProjectLabels = () => {
+    for (const row of registry.read().instances) {
+      try { releaseAllProjectLabels({ managerHome: registry.root, holder: row.id }) } catch { /* best-effort; the record stays for a retry */ }
+    }
+  }
+  protectCredentialRoots()
+  migrateWorkLayout()
   /**
    * The tools every Agent in this installation shares (`tool-library.mjs`), and the one place that
    * turns "this Agent is on the environment's tools" into what its Worker is started with.
@@ -546,6 +635,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       managedPolicy: policyFor(id),
       managedCallToken,
       protectedPaths: [registry.root],
+      confinement: { managerHome: registry.root, instanceId: id },
       toolLibrary,
       onChildChange: (children) => {
         // The record of which processes this instance owns comes first, and nothing below can keep it
@@ -1108,8 +1198,9 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         const directory = join(instancesRoot, id)
         if (existsSync(directory) && readdirSync(directory).length > 0) throw new Error('That instance directory already exists and is not empty.')
         const servePort = await freePort(new Set([...hosts.values()].map(entry => entry.servePort)))
-        mkdirSync(join(directory, 'workspace'), { recursive: true, mode: 0o700 })
-        saveInstanceConfig(directory, newInstanceConfig({ directory, mode, servePort }))
+        mkdirSync(confined ? directory : join(directory, 'workspace'), { recursive: true, mode: 0o700 })
+        if (confined) mkdirSync(join(workRootOf(id), 'worker'), { recursive: true })
+        saveInstanceConfig(directory, newInstanceConfig({ directory, mode, servePort, ...(confined ? { workRoot: workRootOf(id) } : {}) }))
         // A new Agent has nothing of its own to carry over, so it starts on the environment's tools.
         result = { id, name: display, mode, directory, servePort, createdAt: new Date().toISOString(), tools: { source: 'library', conflicts: [] },
           ...(target ? { setupTarget: target } : {}),
@@ -1519,6 +1610,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       await closeHostLocked(id)
       const row = record(id)
       await registry.update((state) => { state.instances = state.instances.filter((entry) => entry.id !== id); return state })
+      // The project folders this instance held go back to their prior labels once nothing else holds them.
+      try { releaseAllProjectLabels({ managerHome: registry.root, holder: id }) } catch { /* best-effort; the record stays for a retry */ }
       return { instanceId: id, directory: row.directory, results,
         ...(results.some(row => row.forced) ? { teaching: 'Owned processes were killed after the graceful drain bound and their exits were observed. The instance directory was kept. Work already handed to Rulith may still be running; check Console.' } : {}) }
     },
@@ -1606,6 +1699,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         return current
       })
       device.clear()
+      releaseHeldProjectLabels()
       return { state: 'signed_out', revokeState: revoked.state, alreadyRevoked: revoked.alreadyRevoked === true, cleared, stops,
         ...(stops.some(row => row.results.some(result => result.forced)) ? { teaching: 'Signed out. Owned processes were killed after the graceful drain bound and their exits were observed before revocation. Work already handed to Rulith may still be running; check Console.' } : {}) }
     },
@@ -1692,6 +1786,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         return current
       })
       device.clear()
+      releaseHeldProjectLabels()
       return { state: 'none', cleared, revoke, stops,
         ...(revoke === 'unconfirmed'
           ? { teaching: `The credentials this authorization issued were cleared from every instance, and the account service did not confirm the revocation (${revokeTeaching}). It had already refused this device, so nothing here can still execute; check the device list in Console.` }
@@ -1943,7 +2038,10 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const directory = resolve(record(op.instanceId).directory)
       if (generalKitCurrent(directory)) return { reason: 'The general kit for this Agent is current; nothing was replaced.' }
       const env = loadInstanceConfig(directory).worker?.env ?? {}
-      const kitHome = text(env.ENG_KIT_HOME) || text(op.kitHome) || join(directory, 'general-kit')
+      // Under confinement the kit home is in the instance's work root (never in a credential root such as the app's kit).
+      const kitHome = confined
+        ? (text(env.ENG_KIT_HOME) && !insideCredentialRoot(text(env.ENG_KIT_HOME)) ? text(env.ENG_KIT_HOME) : join(workRootOf(op.instanceId), 'kit'))
+        : text(env.ENG_KIT_HOME) || text(op.kitHome) || join(directory, 'general-kit')
       const { host } = await ensureHostLocked(op.instanceId)
       try {
         await host.replaceWorkerTools(() => installGeneralForInstance({ directory, kitHome }), { restartStopped: op.mode === 'setup' ? op.requestId : false })

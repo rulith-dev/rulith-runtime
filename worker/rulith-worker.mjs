@@ -114,7 +114,9 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { execFile } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { adapterSandboxMode, confinedLaunch, confinedCacheEnv, confinementIdentity, rulithBackstop } from './adapter-confinement.mjs'
+import { projectFoldersHeld, releaseProjectLabel } from '../local/sandbox-home-label.mjs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { invokeMcp, closeMcpClients, McpExecutionUnknownError } from './mcp-client.mjs'
 import { inputAdoptionForTools, toolContractFingerprint, validateDbInputContract, validateHttpInputContract } from './action-input-db.mjs'
@@ -553,6 +555,34 @@ export function grantedSourceContext(granted, ownVault, environmentVault = {}) {
   }
   return { context, count, shared, refused, ignored, localOverrides }
 }
+/** The absolute folders of the file Sources in a Source snapshot. */
+const fileSourceDirectories = (context) => new Set(Object.values(context ?? {})
+  .filter((entry) => entry?.type === 'file' && typeof entry.access === 'string' && isAbsolute(entry.access))
+  .map((entry) => resolve(entry.access)))
+/** When this Worker process started: a project opened before it and not granted now was revoked while it was away. */
+const WORKER_STARTED_AT = Date.now()
+const folderKey = (p) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p))
+/**
+ * Model-command isolation (D-1024a): a project folder this instance holds whose file Source is no longer granted
+ * (revoked: unlocked or deleted in Console, or the device deactivated) is released; when nothing else holds it, its label
+ * goes back to what it was before it was opened. A folder counts as revoked when it was granted in the previous snapshot,
+ * or when it was opened before this Worker started (revoked while no Worker ran); a folder opened since and not yet in
+ * the snapshot is left alone. Best-effort and never in the way of the refresh itself.
+ */
+function releaseRevokedProjectFolders(before, after) {
+  if (process.platform !== 'win32' || adapterSandboxMode(process.env) !== 'required') return
+  const { managerHome, instanceId: holder } = confinementIdentity(process.env)
+  if (!managerHome || !holder) return
+  const granted = new Set([...after].map(folderKey)), previously = new Set([...before].map(folderKey))
+  let held = []
+  try { held = projectFoldersHeld({ managerHome, holder }) } catch { return }
+  for (const { directory, openedAt } of held) {
+    const key = folderKey(directory)
+    if (granted.has(key)) continue
+    if (!previously.has(key) && !(Date.parse(openedAt) < WORKER_STARTED_AT)) continue
+    try { releaseProjectLabel({ managerHome, directory, holder }) } catch { /* the record stays for a retry */ }
+  }
+}
 /** Refresh the non-secret Source metadata before resolving each Source-bound work item.
  * Replace the granted snapshot whole; return false when no current snapshot could be read. */
 async function refreshSourceDefinitions() {
@@ -570,7 +600,9 @@ async function refreshSourceDefinitions() {
         // and a Worker that also decided made the two disagree invisibly.
         if (!j || !Array.isArray(j.sources)) throw new Error('current Gateway Source list is unreadable')
         const { context, count: n, shared, refused, ignored, localOverrides } = grantedSourceContext(j.sources, LOCAL_SOURCE_CONTEXT, readEnvironmentVault())
+        const heldBefore = fileSourceDirectories(SOURCE_CONTEXT)
         SOURCE_CONTEXT = context
+        releaseRevokedProjectFolders(heldBefore, fileSourceDirectories(context))
         if (n > 0) console.log(`· Loaded ${n} source definition(s) from Rulith Cloud. File directories come from the Gateway; credentials remain local.`
           + (shared > 0 ? ` ${shared} of them use the environment's keys.` : ''))
         // Said by name and by which part did not fit, never with the entry's values: the vault holds
@@ -1932,6 +1964,15 @@ export function runAdapterTimeoutMs(env = process.env) {
  */
 const IMPLEMENTATION_BOUNDARY = new URL('./implementation-boundary.mjs', import.meta.url).href
 
+// 适配器隔离的本机参数（见 adapter-confinement.mjs），都从本 Worker 自己的实例目录推出，不依赖启动器设的环境变量：
+// 管理器 home（由管理器在启动 Worker 时指明；没有时从实例目录往上找 registry.json）放编译好的低完整性启动器（凭据根内，
+// 受限进程改不了它）；工作根按实例 id 定位（与管理器、打开项目时用的是同一个 id），放受限进程要读写的东西。
+function adapterLauncherBinDir() { return join(confinementIdentity(process.env).managerHome ?? rulithBackstop(), 'bin') }
+function adapterWorkRoot() { return confinementIdentity(process.env).workRoot }
+const adapterCwd = (access) => (typeof access === 'string' && access !== '' && isAbsolute(access) ? access : undefined)
+const adapterWritableRoots = (access) => [access, process.env.ENG_KIT_HOME]
+  .filter((dir) => typeof dir === 'string' && dir !== '' && isAbsolute(dir))
+
 function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
   return new Promise((finish, reject) => {
     // 只执行已核验的同一份实现字节（SYS-TOOL-01）。没有核验结果的 run Tool 不启动——包括任何
@@ -1983,7 +2024,17 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       files: Object.fromEntries(implementation.paths.map(({ path, sha256 }) => [implementationPinKey(path), sha256])) }),
     process.env[IMPLEMENTATION_HOOKS_ENV])
     const maxBuffer = Number.isSafeInteger(context.resultBytes) && context.resultBytes > 0 ? context.resultBytes : 1_048_576
-    execFile(process.execPath, argv, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout, stderr) => {
+    // 模型命令隔离（D-1024a）：把适配器整个进程树关进隔离壳（Windows 低完整性启动器 / Linux bwrap），模型写下的每条命令都是
+    // 适配器的后代，继承隔离；kit 字节不变。壳不可用且要求隔离时 fail-closed（同步抛出，下面 reject）。
+    let launch
+    try {
+      launch = confinedLaunch({ execPath: process.execPath, argv, cwd: adapterCwd(access), binDir: adapterLauncherBinDir(),
+        writableRoots: adapterWritableRoots(access), workRoot: adapterWorkRoot(), project: adapterCwd(access) })
+    } catch (error) { return reject(new Error(String(error.message))) }
+    // 受限适配器把 TEMP 与包缓存改到工作根里的 kit home 子目录：Windows 上系统 temp 与默认缓存是中完整性、低完整性写不进；
+    // Linux 上家目录只读（npm/pip 默认缓存在家目录里）。
+    if (launch.confined) Object.assign(env, confinedCacheEnv(process.env.ENG_KIT_HOME))
+    execFile(launch.file, launch.args, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout, stderr) => {
       if (err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return reject(new ResultDeliveryError('adapter_output_exceeds_object_budget'))
       // A refusal by the implementation boundary is said in its own words, not inside a stack trace —
       // and honestly: the process had started, so code of this Tool that ran before the refused module
@@ -1991,6 +2042,12 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
       const boundary = /implementation_boundary: .*/.exec(String(stderr ?? ''))
       if (err && boundary) {
         return reject(new Error(`${boundary[0]} The run stopped there; anything this Tool did before that point may already have taken effect.`))
+      }
+      // The low-integrity launcher refused before it started anything: a credential root is not read-protected.
+      const isolation = /rulith-isolation-refused: (.*)/.exec(String(stderr ?? ''))
+      if (err && isolation) {
+        return reject(new Error(`Model-command isolation refused this command: ${isolation[1].trim()} Nothing ran. Restart Rulith so it can`
+          + ' protect that location again; if this persists, the location needs its access settings repaired.'))
       }
       if (err) return reject(new Error(String(err.message)))
       // Capture stays bounded; Artifact routing sees the complete result, never a silent prefix.

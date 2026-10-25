@@ -298,3 +298,17 @@ test('without a search key the addendum offers only web_fetch, and nothing else 
   assert.equal(plain.slice(plain.indexOf(' Web results')), ADDENDUM.slice(ADDENDUM.indexOf(' Web results')));
   assert.match(forDeployment(WEB, {}), /^Your tools are Rulith's three and the read-only tool web_fetch\./);
 });
+
+// ACC-ISO-03 (model-command isolation, D-1024a): the web tools never let the model (or a page it read) reach a local
+// service. A regression over the exact loopback endpoints that hold credentials-equivalent power on this machine: the
+// manager (7790), the app host (3080) and the model engine (8080). SSRF-guarded at the tool seam; a spawned command is
+// instead fenced by the sandbox and the app-host session gate (ACC-ISO-01).
+test('ACC-ISO-03 web_fetch refuses the local manager, app host and model-engine endpoints', async () => {
+  const targets = [
+    'http://127.0.0.1:7790/manager/state', 'http://localhost:7790/manager/instances/setup-local',
+    'http://127.0.0.1:3080/rulith/api/board', 'http://localhost:3080/rulith/api/conversation/sign-acceptance',
+    'http://127.0.0.1:8080/v1/models', 'http://[::1]:7790/', 'http://169.254.169.254/latest/meta-data/',
+  ];
+  const noLookup = () => { throw new Error('no DNS for a literal address'); };
+  for (const url of targets) assert.equal(await fetchRefusal(url, noLookup), FETCH_REFUSALS.local, url);
+});

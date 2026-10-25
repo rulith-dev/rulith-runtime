@@ -10,15 +10,23 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { conversationBoards, contextEnv, contextLines, localContextWindow, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
-import { holdAppHome, launcherSettings } from './app-home.mjs';
+import { holdAppHome, launcherSettings, settingsCredentialRoots } from './app-home.mjs';
 import { webSearchKey } from '../web-tools.mjs';
 import { attachedAgents, effectiveModel, modelLine, signedInAccount } from './model-runtime.mjs';
+import { credentialRootRefusal, ensureCredentialRootLabels } from '../../../local/sandbox-home-label.mjs';
 
 // `args` are the launcher's own arguments: `--init` first, or dsh web flags (--no-open, --port ...).
 const { settings: s, args, home } = await launcherSettings();
 if (home) {
   await holdAppHome(home).catch((error) => { console.error(error.message); process.exit(1); });
   console.log(`Deep Rulith keeps its files in ${home}.`);
+} else {
+  // 模型命令隔离（D-1024a）：设置文件模式下没有 app home 的整体标签，所以 App 自己给它管的凭据位置打标签：dsh home（会话
+  // 凭据 .credentials.yaml）与设置里点名的另一个模型设置目录（modelHome，存模型密钥）整个目录，以及设置里点名的管理器
+  // 密钥文件（可以在任意位置，单个文件也是凭据根）。这几项同时交给管理器（RULITH_CREDENTIAL_ROOTS，见下），由它和实例宿主
+  // 补标签、由启动器在每条命令前核验；打不上就拒绝运行模型命令（fail-closed），这里只如实说明。管理器 home 由管理器自己打。
+  const refusal = credentialRootRefusal(ensureCredentialRootLabels(settingsCredentialRoots(s)));
+  if (refusal) console.error(`Rulith: ${refusal}`);
 }
 // The model settings live in a Rulith manager home: this one's, or another the settings name (modelHome, developers). Only
 // the row of the account signed in counts (account isolation, SYS-LOCAL-01), never the first row of the file; a
@@ -81,6 +89,14 @@ const env = {
   RULITH_SHADOW_MODEL_KEY: shadowModel?.key ?? '',
   ...contextEnv(lines),
   RULITH_DSH_CONVERSATION_BOARDS: conversationBoards(s) ? '1' : '0',
+  // 模型命令隔离（D-1024a）：产品默认要求隔离（Windows 低完整性 / Linux bwrap），由 Worker 在启动适配器时落实（见
+  // worker/adapter-confinement.mjs）；引擎把隔离设为默认开，无需这里再设 RULITH_ADAPTER_SANDBOX。这里把运行配置真正用到的
+  // 凭据根（app home、manager home、dsh home）交给管理器，它据此给每个根打标签并转交给 Worker，供 confinedLaunch 逐个校验；
+  // 设置文件模式与无设置文件模式都适用（两种模式下这几个位置都要遮住）。
+  // The app's credential roots the manager also protects and the Worker verifies before every command: the dsh home, a
+  // modelHome the settings name (another manager home, holding model keys) and the manager key file; in no-settings mode
+  // the app home (which holds all of them) as well. A settings-file location is not assumed to be Rulith's own directory.
+  RULITH_CREDENTIAL_ROOTS: JSON.stringify([...new Set([...settingsCredentialRoots(s), ...(home ? [home] : [])].map((p) => path.resolve(p)))]),
 };
 if (!env.RULITH_DSH_WEB_SEARCH_KEY) delete env.RULITH_DSH_WEB_SEARCH_KEY;
 if (!model) console.error('Deep Rulith: no model is set for the signed-in Rulith account yet; once one is saved, it is used from the next turn.');

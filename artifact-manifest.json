@@ -45,7 +45,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "b1283a797168e97af86693f619349c9ab64fc0abda696353ee542a624566176d"
+      "sha256": "148553ec685326973b9070a4253aa3e13e10738e4d0cb56cea8c51f3b9696b31"
     },
     "worker/run-artifacts.mjs": {
       "sha256": "911d3e49c10e9b02f389f9c21cf43542dc6cc9261708c80f9ac683e2f97411e4"
@@ -68,6 +68,9 @@
     "worker/authoring-diagnostics.mjs": {
       "sha256": "ad65e350929e3bdf0e9261581a88a9c4b668295c08fbb95cde5593cea1ea89c9"
     },
+    "worker/adapter-confinement.mjs": {
+      "sha256": "fcf362a26225aede62765be8c0969e3a081590e3436ebb3783168d3dcc123068"
+    },
     "worker/implementation-boundary.mjs": {
       "sha256": "81ea84b94f4a27d706bd1c3b8e1f80f2b4c201a66f5d941a3f8db6f1c6c9bccc"
     },
@@ -84,7 +87,7 @@
       "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
     },
     "local/rulith-local.mjs": {
-      "sha256": "008c6bc76d395c8e78f8ea16fdf8d4927d7b0b3a70d6c8007c98ccc3dea5cfe3"
+      "sha256": "d00a66e178c77b47f9d3f9cc9b8788a64ae9d20c98c9809d2c5cb45844392039"
     },
     "local/material-service.mjs": {
       "sha256": "d0c809c405dd903cff1c1e156b69657a1742ab470671446d6c00c7466201aec6"
@@ -104,11 +107,14 @@
     "local/model-settings.mjs": {
       "sha256": "b1f50863802c9735a61ece6a7913693423cc3b864673bb5a5364e4ea6e38f12f"
     },
+    "local/sandbox-home-label.mjs": {
+      "sha256": "2bc952d4b73fa3951f5d95e5daf3014b5cf173c409fbf2e4cf165d29bf9d9ead"
+    },
     "local/device-client.mjs": {
       "sha256": "717800d87bc5bae8aed6371b1037ec51e525890a8eb3a909172a479bab1c145f"
     },
     "local/instance-manager.mjs": {
-      "sha256": "fa1bac1dcc1680c768201e41f1b7f31707431b63385a53735633a33cebb1efbd"
+      "sha256": "0987accba62e9e89246426effc1dc3027f184717ab7190f7d0cb066e279b5c20"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"

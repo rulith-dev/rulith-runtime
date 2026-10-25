@@ -492,7 +492,7 @@ test('the host serves setup and model on its guarded API; choosing an Agent not 
   });
   let server;
   const effects = [];
-  await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } } },
+  await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } }, connection: { admit: () => ({ peer: {} }) } },
     { managerHome: dir, runtimeEntry: 'fixture-runtime', keyFile, shadow: { enabled: false } });
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
   const call = async (method, route, body) => {

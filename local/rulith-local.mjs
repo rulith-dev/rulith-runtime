@@ -24,6 +24,8 @@ import { setupPage } from './setup-ui.mjs'
 import { attachmentInstruction, createMaterialService } from './material-service.mjs'
 import { noteChildExited, noteChildStarted, processStamp } from './process-identity.mjs'
 import { clearStaleLock } from './manager-registry.mjs'
+import { credentialRootRefusal, ensureCredentialRootLabels, ensureLowLabel, lowLabelVerified } from './sandbox-home-label.mjs'
+import { adapterSandboxMode, credentialRoots, pathWithin } from '../worker/adapter-confinement.mjs'
 import {
   MAX_MATERIAL_REQUEST_BYTES, MaterialError, defaultMaterialRoot, materialIdentity, materialDeviceFingerprint,
 } from '../worker/material-store.mjs'
@@ -221,6 +223,7 @@ export function createLocalHost({
   materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
   registerMaterialSubmission, acceptedMaterialBinding,
   getApprovedDeviceId, workerRestartDelays = [250, 1000, 4000, 10000], workerStableMs = 60_000, toolLibrary,
+  confinement,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
@@ -709,8 +712,33 @@ export function createLocalHost({
     // these ids before it reports the general kit advertised; an unreadable manifest is the Worker's own startup error.
     let loadedToolIds = []
     try { loadedToolIds = Object.keys(JSON.parse(readFileSync(roleEnv.RULITH_TOOLS_FILE, 'utf8')).tools ?? {}) } catch { /* the Worker reports it */ }
+    // Model-command isolation (D-1024a): the Worker's confined commands must never read a credential root (the manager
+    // home, this instance's directory, the ~/.rulith backstop, and the app's own roots in RULITH_CREDENTIAL_ROOTS). Before
+    // the Worker starts, this Medium host re-applies any missing no-read-up label (the manager labels them at its own
+    // start; this catches a label that went missing since) and gives the kit home in the work root its Low label so the
+    // Low adapter can write there. The Worker's launcher re-verifies every root before every launch and refuses otherwise.
+    // `confinement` names this instance's manager home and id (the manager sets it for every host it builds), so a Worker
+    // whose instance directory lies outside the manager home still checks the manager home, and releases its project
+    // labels under the same id the open recorded them with.
+    const confinedEnv = { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc', ...materialEnv,
+      RULITH_CREDENTIAL_ROOTS: process.env.RULITH_CREDENTIAL_ROOTS ?? '[]',
+      ...(typeof confinement?.managerHome === 'string' && isAbsolute(confinement.managerHome) ? { RULITH_MANAGER_HOME: resolve(confinement.managerHome) } : {}),
+      ...(typeof confinement?.instanceId === 'string' && confinement.instanceId ? { RULITH_INSTANCE_ID: confinement.instanceId } : {}) }
+    delete confinedEnv.RULITH_CONFINEMENT_REFUSAL
+    if (process.platform === 'win32' && adapterSandboxMode(confinedEnv) === 'required') {
+      const roots = credentialRoots(confinedEnv)
+      let labelled
+      try { labelled = ensureCredentialRootLabels(roots) } catch (error) { labelled = { unlabeled: roots, reasons: Object.fromEntries(roots.map((root) => [root, String(error?.message ?? error)])) } }
+      // The launcher refuses an unprotected root at every launch on its own; this names what is wrong in the refusal.
+      const refusal = credentialRootRefusal(labelled)
+      if (refusal) { confinedEnv.RULITH_CONFINEMENT_REFUSAL = refusal; console.error(`Rulith: ${refusal}`) }
+      const kitHome = roleEnv.ENG_KIT_HOME
+      if (typeof kitHome === 'string' && isAbsolute(kitHome) && existsSync(kitHome) && !roots.some((root) => pathWithin(root, kitHome)) && !lowLabelVerified(kitHome)) {
+        try { ensureLowLabel(kitHome) } catch { /* the Low adapter then cannot write its state; it reports that */ }
+      }
+    }
     const child = spawn(process.execPath, [path], {
-      env: { ...roleEnv, RULITH_LOCAL_CONFIG: resolve(configFile), RULITH_LOCAL_EVENTS: 'ipc', ...materialEnv },
+      env: confinedEnv,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
     components.worker = { ...components.worker, child, stamp: processStamp(child.pid, { script: path }), roleEnv, loadedToolIds,

@@ -1,8 +1,8 @@
 {
   "schema": "rulith-psc-conformance-map/v1",
   "repository": "runtime",
-  "contractVersion": "0.2.29",
-  "contractReviewedCommit": "0735deaddcbbcd4f11836e2c49752f813d49edba",
+  "contractVersion": "0.2.31",
+  "contractReviewedCommit": "e58682f7ea30670abb80f9077bf8998206196516",
   "blockers": {
     "contract_changed": "The PSC row changed after this Runtime mapping was made against 0.2.4; its tests must be re-checked against the current clauses before the item can be mapped again (D-1018a reconciliation, 2026-10-18).",
     "evidence_review": "Clause-wide Runtime evidence has not been independently reviewed; existing green tests alone do not establish complete coverage.",
@@ -105,6 +105,85 @@
         {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 an unconfirmed signature is kept until a state read shows it settled"},
         {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 host: the sign route forwards exactly the confirmation"},
         {"file": "test/local-manager.test.mjs", "locator": "ACC-LOCAL-11 the signed-in client signs one goal"}
+      ]
+    },
+    "ACC-ISO-01": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/conversation-boards.test.mjs", "locator": "ACC-ISO-01 /rulith/api refuses a request the dsh session did not admit"},
+        {"file": "app/test/harness/conversation-boards.test.mjs", "locator": "ACC-ISO-01 /rulith/api fails closed when no session authentication is available"}
+      ]
+    },
+    "ACC-ISO-02": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-07 a confined command tree writes its project but cannot read"},
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-08 the managed product path confines a real eng.run"}
+      ]
+    },
+    "ACC-ISO-03": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/web-tools.test.mjs", "locator": "ACC-ISO-03 web_fetch refuses the local manager, app host and model-engine endpoints"}
+      ]
+    },
+    "ACC-ISO-04": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-04 the Windows restricted-token backend confines writes to the workspace"},
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-04 the restricted-token backend does NOT confine reads"}
+      ]
+    },
+    "ACC-ISO-05": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-05 the Linux bwrap profile makes project/kit/temp writable"},
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-05 (Linux) required confinement fails closed when bwrap is absent"}
+      ]
+    },
+    "ACC-ISO-06": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-06 a labeled Rulith home is read-denied to a Low-IL command"}
+      ]
+    },
+    "ACC-ISO-07": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-07 a confined command tree writes its project but cannot read"},
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-07 overhead: the launcher adds a bounded per-command cost"}
+      ]
+    },
+    "ACC-ISO-08": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-08 the managed product path confines a real eng.run"}
+      ]
+    },
+    "ACC-ISO-09": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-09 the Worker refuses a confined launch in a project overlapping"},
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-09 a confined launch refuses a kit home inside a credential root"},
+        {"file": "app/test/harness/open-project.test.mjs", "locator": "ACC-ISO-09 a project folder overlapping a Rulith credential or work root is refused"}
+      ]
+    },
+    "ACC-ISO-10": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-10 an instance outside the manager home"}
+      ]
+    },
+    "ACC-ISO-11": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-11 a key file kept outside Rulith folders"}
+      ]
+    },
+    "ACC-ISO-12": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-12 a root with a child that kept another label"}
       ]
     }
   }
