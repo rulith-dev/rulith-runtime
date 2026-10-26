@@ -124,7 +124,7 @@ test('Settings → Advanced keeps a Diagnosis: versions, this computer, isolatio
   assert.match(text(diagnosis.render()), /Rulith could not read its diagnosis[\s\S]*not reachable/);
   // In the Advanced section, after the MCP client hint.
   const advanced = page.expand(page.mount(page.plugin.components.AdvancedSection, { state: summary }).render());
-  assert.match(text(advanced), /接入其他客户端[\s\S]*Diagnosis/);
+  assert.match(text(advanced), /Other clients[\s\S]*Diagnosis/);
   assert.equal(page.mount(page.plugin.components.LegacyWorkbenchNotice, { legacy: null }).render(), null);
 });
 

@@ -237,9 +237,9 @@ test('the composer tool row carries this conversation\'s one tier, its model and
   cursor = 0; const rendered = flatten(controls({ sessionId: 'session-9' }));
   const text = (node) => flatten(node).filter((n) => typeof n === 'string').join('');
   const strings = rendered.flatMap((n) => n.children || []).filter((c) => typeof c === 'string');
-  assert.ok(strings.some((t) => t.includes('档位：严格')), 'the tier chip names this conversation\'s current tier');
-  assert.ok(strings.some((t) => t.includes('模型：deepseek-flash')), 'the model chip names the model in force');
-  assert.ok(strings.some((t) => t.includes('审查：开')), 'the review chip shows this conversation\'s switch');
+  assert.ok(strings.some((t) => t.includes('Mode: Strict')), 'the tier chip names this conversation\'s current tier');
+  assert.ok(strings.some((t) => t.includes('Model: deepseek-flash')), 'the model chip names the model in force');
+  assert.ok(strings.some((t) => t.includes('Review: On')), 'the review chip shows this conversation\'s switch');
   assert.ok(rendered.some((n) => n.props && n.props['data-rulith-composer'] === 'session-9'));
   void text;
   // A conversation without a Board yet still shows the tier and review chips, reading "默认": a choice will open the Board first.
@@ -248,8 +248,8 @@ test('the composer tool row carries this conversation\'s one tier, its model and
   for (const fn of effects.splice(0)) await fn();
   await new Promise((resolve) => setImmediate(resolve));
   cursor = 0; const freshStrings = flatten(controls({ sessionId: 'session-new' })).flatMap((n) => n.children || []).filter((c) => typeof c === 'string');
-  assert.ok(freshStrings.some((t) => t.includes('档位：默认')), 'no Board yet: the tier chip reads 默认');
-  assert.ok(freshStrings.some((t) => t.includes('审查：默认')), 'no Board yet: the review chip reads 默认');
+  assert.ok(freshStrings.some((t) => t.includes('Mode: Default')), 'no Board yet: the tier chip reads Default');
+  assert.ok(freshStrings.some((t) => t.includes('Review: Default')), 'no Board yet: the review chip reads Default');
 });
 
 test('a conversation that never called Rulith is addressed by the key of its session id, and a holder can be made for it', async () => {
@@ -278,7 +278,7 @@ test('the sidebar groups conversations Agent -> directory -> conversation, activ
   const now = Date.now();
   const tree = { defaultAgentId: 'a', assignments: { s4: 'b' }, agents: [
     { agentId: 'a', name: 'alpha', attached: true, directories: [{ path: 'D:\\Work\\game', label: 'game', source: 'game' }] },
-    { agentId: 'b', name: 'beta', attached: true, directories: [{ path: 'D:\\run\\agents\\beta', label: '工作台', source: null }] },
+    { agentId: 'b', name: 'beta', attached: true, directories: [{ path: 'D:\\run\\agents\\beta', label: 'Workspace', source: null }] },
     { agentId: 'c', name: 'gamma', attached: false, directories: [] },
   ] };
   const row = (id, cwd, updatedAt, extra = {}) => ({ id, cwd, updatedAt, running: false, blank: false, title: 'T' + id, ...extra });
@@ -300,7 +300,7 @@ test('the sidebar groups conversations Agent -> directory -> conversation, activ
   assert.equal(view.others.open, false, 'conversations no Agent owns wait folded');
   assert.equal(alpha.open, true, 'the Agent holding the current conversation is open');
   const beta = view.agents.find((e) => e.agent.agentId === 'b');
-  assert.deepEqual(plain(beta.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['工作台', []], ['game', ['s4']]]);
+  assert.deepEqual(plain(beta.dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['Workspace', []], ['game', ['s4']]]);
   assert.equal(view.agents.find((e) => e.agent.agentId === 'c').open, false, 'an idle Agent is folded');
   const stored = plugin.buildTree({ tree, list, workspaces: {}, current: 's3', filter: '', collapsed: { a: true } });
   assert.equal(stored.agents.find((e) => e.agent.agentId === 'a').open, false, 'the person\'s fold is remembered');
@@ -373,20 +373,20 @@ test('conversation rows have only deletion; archive occurs only after confirmati
     let rendered = render();
     const session = f.nodes(rendered).find((node) => node.props['data-rulith-session'] === 's');
     const buttons = f.nodes(session).filter((node) => node.tag === 'button');
-    assert.equal(buttons.length, 1); assert.equal(buttons[0].children.join(''), '删除');
+    assert.equal(buttons.length, 1); assert.equal(buttons[0].children.join(''), 'Delete');
     session.props.onClick(); assert.deepEqual(opened, ['s']);
     await buttons[0].props.onClick({ stopPropagation() {} });
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(archived, []); assert.equal(f.requests.length, 1);
     rendered = render();
     const dialog = f.nodes(rendered).find((node) => node.props.role === 'dialog'); assert.ok(dialog);
-    f.nodes(dialog).find((node) => node.tag === 'button' && node.children.join('') === '取消').props.onClick();
+    f.nodes(dialog).find((node) => node.tag === 'button' && node.children.join('') === 'Keep').props.onClick();
     assert.deepEqual(archived, []); assert.equal(f.requests.length, 1, 'cancel does not delete or archive');
     rendered = render();
     await f.nodes(rendered).find((node) => node.props['data-rulith-delete'] === 's').props.onClick({ stopPropagation() {} });
     await new Promise((resolve) => setImmediate(resolve));
     rendered = render();
-    const confirm = f.nodes(rendered).find((node) => node.tag === 'button' && node.children.join('') === '删除' && !node.props['data-rulith-delete']);
+    const confirm = f.nodes(rendered).find((node) => node.tag === 'button' && node.children.join('') === 'Delete' && !node.props['data-rulith-delete']);
     assert.ok(confirm); await confirm.props.onClick();
     assert.deepEqual(archived, partial ? [] : ['s']);
     assert.equal(f.requests.filter((request) => request.url.endsWith('/end')).length, 1);

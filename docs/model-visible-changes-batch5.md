@@ -95,6 +95,11 @@ cmd's own `mkdir` works (without `-p`).
 
 ## PSC 0.2.29 本机客户端文字（逐字）
 
+> 已被取代（D-1025b，2026-10-25）：本机应用改为英文优先，规范文字是 `docs/ui-texts-english.md` 列出的英文（PSC 0.2.32），
+> 测试按 `app/test/harness/psc-0.2.32-text.mjs` 逐字核对；下面的中文只是浏览器语言为中文时显示的译文，已不再逐字固定
+> （`psc-0.2.29-text.mjs` 已删除；`refusedPrefix`、`unavailablePrefix` 改为带 `{teaching}`、`{category}` 的整句）。
+> 本节保留作批次 5 的历史记录。
+
 以下是本机客户端（Rulith 应用）的中文文字，由 PSC 0.2.29（D-1025a）逐字固定；Console 保留它自己的英文文字（签字的
 文字 A、档位的文字 9）。客户端代码 `app/harness/web/rulith-dsh-ui/lib/client.js` 里的 `SIGN`、`SIGN_REASONS`、
 `TIER`、`MODE_WORDS`、`MODE_HINTS`、`WIDEN_TEXT`、`TIER_REFUSALS`、`REVIEW_REFUSALS` 与这里逐字相同，测试

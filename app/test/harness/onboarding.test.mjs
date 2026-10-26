@@ -11,7 +11,7 @@ const signedIn = { ok: true, signedIn: true, account: 'Owner', computer: 'OWNER-
 const modelReady = { ok: true, model: { source: 'default', url: 'https://api.deepseek.com/v1', name: 'deepseek-flash', modelId: 'deepseek-flash',
   configured: true, keyConfigured: true, expectedOrigin: 'https://console.example', expectedAccountId: 'acct-1' } };
 const agent = (agentId, extra = {}) => ({ agentId, name: agentId === 'a1' ? 'Default agent' : 'Other', attached: true, paired: true,
-  directories: [{ path: 'C:\\app\\agents\\' + agentId, label: '工作台', source: null }], ...extra });
+  directories: [{ path: 'C:\\app\\agents\\' + agentId, label: 'Workspace', source: null }], ...extra });
 const project = { path: 'D:\\Work\\game', label: 'game', source: 'project' };
 
 test('wizard steps are read from the state they name: resumable, per account, and never shown to a returning user', () => {
@@ -63,15 +63,15 @@ function wizard(reply, { state = signedIn, model = modelReady, tree = { ok: true
 const find = (root, test) => nodes(root).find(test);
 const button = (root, words) => find(root, (node) => node.tag === 'button' && text(node).includes(words));
 
-test('the wizard shows ① sign-in, then ② the model form, then ③ the folder under the account\'s default Agent; 稍后再说 puts it away', async () => {
+test('the wizard shows ① sign-in, then ② the model form, then ③ the folder under the account\'s default Agent; Later puts it away', async () => {
   // ① Signed out: one button, which opens Rulith's approval page and polls until this computer is signed in.
   let w = wizard(({ url }) => (url.endsWith('/signin') ? { ok: true, url: 'https://console.example/console/#/devices?code=X' }
     : url.endsWith('/signin/poll') ? signedIn : { ok: true }), { state: { ok: true, signedIn: false }, model: null, tree: null });
   let shown = w.m.render();
   assert.equal(find(shown, (node) => node.props['data-rulith-wizard'] !== undefined).props['data-rulith-wizard'], 'signin');
-  assert.match(text(shown), /① 登录.*② 选模型并填密钥.*③ 打开文件夹/);
+  assert.match(text(shown), /① Sign in.*② Choose a model and enter its key.*③ Open a folder/);
   assert.doesNotMatch(text(shown), /预览版|探索未至之境/);
-  await button(shown, '登录 Rulith').props.onClick();
+  await button(shown, 'Sign in to Rulith').props.onClick();
   await flush();
   assert.equal(w.page.opened[0].location.href, 'https://console.example/console/#/devices?code=X', 'the approval opens in the tab made by the click');
   assert.equal(w.m.cells[0].signedIn, true, 'the wizard moves on with the signed-in account');
@@ -83,7 +83,7 @@ test('the wizard shows ① sign-in, then ② the model form, then ③ the folder
   // ③ The folder: the account's default Agent as the service marks it.
   w = wizard(() => ({ ok: true }), { tree: { ok: true, agents: [agent('a2'), agent('a1', { isDefault: true })] } });
   shown = w.m.render();
-  assert.match(text(shown), /智能体：Default agent（默认）/);
+  assert.match(text(shown), /Agent: Default agent \(default\)/);
   assert.ok(find(shown, (node) => node.tag === w.page.plugin.components.FolderChooser));
   // Without a default named and with several Agents, the owner chooses; with one, it is that one.
   w = wizard(() => ({ ok: true }), { tree: { ok: true, agents: [agent('a1'), agent('a2')] } });
@@ -91,10 +91,10 @@ test('the wizard shows ① sign-in, then ② the model form, then ③ the folder
   assert.ok(find(shown, (node) => node.tag === 'select'), 'no default is guessed');
   assert.equal(find(shown, (node) => node.tag === w.page.plugin.components.FolderChooser), undefined);
   w = wizard(() => ({ ok: true }), { tree: { ok: true, agents: [agent('a1')] } });
-  assert.match(text(w.m.render()), /智能体：Default agent(?!（默认）)/);
+  assert.match(text(w.m.render()), /Agent: Default agent(?! \(default\))/);
   // 稍后再说: put away for this account on this page load.
   shown = w.m.render();
-  button(shown, '稍后再说').props.onClick();
+  button(shown, 'Later').props.onClick();
   assert.equal(w.m.render(), null);
   // A returning user: nothing.
   w = wizard(() => ({ ok: true }), { tree: { ok: true, agents: [agent('a1', { directories: [project] })] } });
@@ -126,13 +126,13 @@ test('the wizard\'s step ③ sets the Agent up with its steps shown, opens the c
   for (let i = 0; i < 50 && !w.m.cells[8]; i++) await flush(1);
   const dialog = w.page.expand(find(w.m.render(), (node) => node.tag === w.page.plugin.components.ProjectDialog));
   assert.ok(find(dialog, (node) => node.props['data-rulith-project-dialog'] !== undefined));
-  assert.match(text(dialog), /文件夹D:\\work\\game智能体Default agent · 这台电脑 .*可以做的事.*档位/);
+  assert.match(text(dialog), /FolderD:\\work\\gameAgentDefault agent · this computer .*What it may do.*Exploration mode/);
   // The tools used are listed in view, in plain words, with the capability; only their ids and versions are under 详细.
   const folded = find(dialog, (node) => node.tag === 'details');
-  assert.ok(folded, 'tool versions are folded under 详细');
-  assert.match(text(dialog), /所用工具读文件、运行命令。来自这个智能体已装的官方编程能力。档位/);
-  assert.match(text(folded), /eng\.read@2、eng\.run@2/);
-  assert.doesNotMatch(text(dialog).replace(text(folded), ''), /eng\.|@\d/, 'no id or version outside 详细');
+  assert.ok(folded, 'tool versions are folded under Details');
+  assert.match(text(dialog), /Tools usedRead files, run commands\. From this Agent's installed official engineering capability\.Exploration mode/);
+  assert.match(text(folded), /eng\.read@2, eng\.run@2/);
+  assert.doesNotMatch(text(dialog).replace(text(folded), ''), /eng\.|@\d/, 'no id or version outside Details');
   // The setup ran first, as one operation, and its steps were shown.
   assert.deepEqual(plain(w.page.posted('setup').map((r) => r.body)), [{ agentId: 'a1' }]);
   assert.deepEqual(plain(w.m.cells[10]).view.steps.map((step) => step.state), ['done', 'done', 'done', 'done', 'done', 'done']);
@@ -152,19 +152,19 @@ test('setup progress: the steps in the order they run, under the owner\'s words,
   const view = (states, extra = {}) => ({ ok: true, requestId: 'setup-0001', state: 'running',
     steps: ['instance', 'pair', 'kit', 'worker', 'reload', 'ready'].map((name, i) => ({ name, state: states[i], reason: 'r-' + name, ...(extra[name] || {}) })) });
   assert.deepEqual(plain(plugin.setupSteps(view(['done', 'running', 'pending', 'pending', 'pending', 'pending']))).map((row) => [row.label, row.state]),
-    [['接上 Rulith', 'running'], ['安装编程工具', 'pending'], ['开启这台电脑', 'pending'], ['重新载入', 'pending'], ['完成', 'pending']]);
+    [['Connect to Rulith', 'running'], ['Install the coding tools', 'pending'], ['Turn on this computer', 'pending'], ['Reload', 'pending'], ['Done', 'pending']]);
   assert.deepEqual(plain(plugin.setupSteps(view(['done', 'done', 'done', 'done', 'done', 'done']))).map((row) => row.state), ['done', 'done', 'done', 'done', 'done']);
   const failed = plain(plugin.setupSteps(view(['done', 'done', 'done', 'failed', 'pending', 'pending'],
     { worker: { reason: 'The Worker could not start.' } })));
   // A reason the page has no words for is never hidden: the manager's own reason is shown.
-  assert.deepEqual(failed[2], { label: '开启这台电脑', state: 'failed', reason: 'The Worker could not start.' });
+  assert.deepEqual(failed[2], { label: 'Turn on this computer', state: 'failed', reason: 'The Worker could not start.' });
   // A refusal the page knows is said in plain words.
   assert.match(plain(plugin.setupSteps(view(['done', 'failed', 'pending', 'pending', 'pending', 'pending'],
-    { pair: { errorCode: 'connection_rejected' } })))[0].reason, /不再接受这台电脑为这个智能体保存的密钥/);
+    { pair: { errorCode: 'connection_rejected' } })))[0].reason, /no longer accepts the key this computer saved for this Agent/);
   // PSC 0.2.27 ②: a Connection in use by a Worker elsewhere is refused and nothing is created; the words say what to wait for.
   assert.match(plain(plugin.setupSteps(view(['done', 'failed', 'pending', 'pending', 'pending', 'pending'],
     { pair: { errorCode: 'local_setup_connection_in_use', reason: 'That Connection is in use by a Worker on another computer.' } })))[0].reason,
-  /正在另一台电脑上工作.*没有另建一份.*再点「在本机设置」/);
+  /working on another computer.*did not create another copy.*choose “Set up on this computer” again/);
   // runSetup follows one setup to its end and reports every step list it read.
   const answers = [view(['running', 'pending', 'pending', 'pending', 'pending', 'pending']),
     { ...view(['done', 'done', 'failed', 'pending', 'pending', 'pending'], { kit: { reason: 'The general kit could not be installed.' } }), state: 'failed' }];
@@ -176,17 +176,17 @@ test('setup progress: the steps in the order they run, under the owner\'s words,
   assert.ok(reports.some((r) => !r.settled && r.view), 'progress is shown while it runs');
   // The rendering names the failed step and why, and never claims success.
   const shown = mount(plugin.components.SetupSteps, { run: { agentId: 'a1', ...result } }).render();
-  assert.match(text(shown), /「安装编程工具」没有完成：The general kit could not be installed\./);
-  assert.doesNotMatch(text(shown), /已在这台电脑上设置好/);
+  assert.match(text(shown), /“Install the coding tools” did not finish: The general kit could not be installed\./);
+  assert.doesNotMatch(text(shown), /Set up on this computer; no restart needed/);
   const ok = mount(plugin.components.SetupSteps, { run: { agentId: 'a1', settled: true, ok: true, view: { ...view(Array(6).fill('done')), state: 'done' } } }).render();
-  assert.match(text(ok), /✓ 接上 Rulith→ ✓ 安装编程工具→ ✓ 开启这台电脑→ ✓ 重新载入→ ✓ 完成/);
-  assert.match(text(ok), /不需要重启/);
+  assert.match(text(ok), /✓ Connect to Rulith→ ✓ Install the coding tools→ ✓ Turn on this computer→ ✓ Reload→ ✓ Done/);
+  assert.match(text(ok), /Set up on this computer; no restart needed\./);
   // A refused start (signed out) is said in plain words.
   const refused = plain(await plugin.runSetup({ api: async () => ({ ok: false, errorCode: 'not_signed_in', teaching: 'Sign in first.' }), agentId: 'a1', wait: async () => {} }));
-  assert.match(refused.error, /没有登录 Rulith/);
+  assert.match(refused.error, /not signed in to Rulith/);
 });
 
-test('the tree: 默认 marks only the account\'s default Agent (never guessed), the open conversation\'s Agent is highlighted, and 在本机设置 shows its steps', async () => {
+test('the tree: Default marks only the account\'s default Agent (never guessed), the open conversation\'s Agent is highlighted, and Set up on this computer shows its steps', async () => {
   const page = loadPage({ reply: ({ url, method }) => (url === '/rulith/api/setup' && method === 'POST'
     ? { ok: true, requestId: 'setup-0009', state: 'failed', steps: [{ name: 'instance', state: 'done', reason: 'Done.' },
       { name: 'pair', state: 'failed', reason: 'That Connection is in use by a Worker on another computer.' }] } : { ok: true }) });
@@ -217,8 +217,8 @@ test('the tree: 默认 marks only the account\'s default Agent (never guessed), 
   shown = m.render();
   assert.deepEqual(plain(page.posted('setup').map((r) => r.body)), [{ agentId: 'a3' }]);
   const progress = page.expand(find(find(shown, (node) => node.props['data-rulith-agent'] === 'a3'), (node) => node.tag === plugin.components.SetupSteps));
-  assert.match(text(progress), /「接上 Rulith」没有完成：That Connection is in use by a Worker on another computer\./);
-  assert.doesNotMatch(text(shown), /重启|重新接上|新建连接/);
+  assert.match(text(progress), /“Connect to Rulith” did not finish: That Connection is in use by a Worker on another computer\./);
+  assert.doesNotMatch(text(shown), /restart|Reconnect|new connection/);
   // Attached Agents end with the folder chooser.
   assert.ok(find(find(shown, (node) => node.props['data-rulith-agent'] === 'a1'), (node) => node.tag === plugin.components.FolderChooser));
 });
@@ -239,13 +239,13 @@ test('setup asks before replacing an Agent token another computer holds, and onl
   // What is asked, and when: only for a setup that stopped on a refusal only the owner can lift.
   const asked = plain(plugin.replaceConfirmation({ settled: true, ok: false, view: failed('runtime_credential_exists') }));
   assert.equal(asked.code, 'runtime_credential_exists');
-  assert.match(asked.lines.join(''), /另一台电脑（或另一个客户端）上使用/);
-  assert.match(asked.lines.join(''), /另一台电脑上的）会停止工作/, 'the other computer\'s client stops working');
-  assert.match(asked.lines.join(''), /那台电脑的接入不会被接走/);
-  assert.match(asked.lines.join(''), /不授予任何文件夹或工具的权限/);
+  assert.match(asked.lines.join(''), /in use on another computer \(or another client\)/);
+  assert.match(asked.lines.join(''), /including on another computer\) stop working/, 'the other computer\'s client stops working');
+  assert.match(asked.lines.join(''), /that computer's connection is not taken/);
+  assert.match(asked.lines.join(''), /grants no folder or tool permission/);
   const reconnect = plain(plugin.replaceConfirmation({ settled: true, ok: false, view: failed('connection_missing') }));
-  assert.match(reconnect.title, /重新接上这台电脑/);
-  assert.match(reconnect.lines.join(''), /同时替换这个智能体的密钥.*停止工作/);
+  assert.match(reconnect.title, /Reconnect this computer/);
+  assert.match(reconnect.lines.join(''), /also replaces this Agent's key.*stop working/);
   for (const run of [{ settled: true, ok: false, view: failed('local_setup_connection_in_use') }, { settled: false, ok: false, view: failed('runtime_credential_exists') },
     { settled: true, ok: true, view: done }, null]) assert.equal(plugin.replaceConfirmation(run), null);
   // In the tree: 「在本机设置」 stops at 连接 with the reason and the question; nothing is replaced yet.
@@ -257,23 +257,23 @@ test('setup asks before replacing an Agent token another computer holds, and onl
   await find(m.render(), (node) => node.props['data-rulith-setup-agent'] === 'a3').props.onClick();
   const steps = () => page.expand(find(find(m.render(), (node) => node.props['data-rulith-agent'] === 'a3'), (node) => node.tag === plugin.components.SetupSteps));
   let shown = steps();
-  assert.match(text(shown), /「接上 Rulith」没有完成：这个智能体的密钥正在别处使用/);
+  assert.match(text(shown), /“Connect to Rulith” did not finish: This Agent's key is in use elsewhere/);
   const asking = find(shown, (node) => node.props['data-rulith-replace-token'] === 'runtime_credential_exists');
-  assert.match(text(asking), /替换这个智能体的密钥？/);
+  assert.match(text(asking), /Replace this Agent's key\?/);
   assert.deepEqual(plain(page.posted('setup').map((r) => r.body)), [{ agentId: 'a3' }]);
   // 「不替换」 puts the question away and sends nothing.
   const declined = page.mount(plugin.components.SetupSteps, find(find(m.render(), (node) => node.props['data-rulith-agent'] === 'a3'),
     (node) => node.tag === plugin.components.SetupSteps).props);
-  button(declined.render(), '不替换').props.onClick();
+  button(declined.render(), 'Don\'t replace').props.onClick();
   assert.equal(find(declined.render(), (node) => node.props['data-rulith-replace-token'] !== undefined), undefined);
   assert.equal(page.posted('setup').length, 1);
   // Confirmed: the setup runs again with the replacement, and finishes.
   shown = steps();
-  await button(shown, '替换密钥并继续设置').props.onClick();
+  await button(shown, 'Replace the key and go on').props.onClick();
   await flush();
   assert.deepEqual(plain(page.posted('setup').map((r) => r.body)), [{ agentId: 'a3' }, { agentId: 'a3', replaceAgentToken: true }]);
   m.cells[0] = tree;   // the tree as before (this stand-in answers the tree's refresh with nothing)
-  assert.match(text(steps()), /已在这台电脑上设置好/);
+  assert.match(text(steps()), /Set up on this computer; no restart needed\./);
 });
 
 test('the empty conversation page shows one line above the input, without brand animation or preview badge', () => {
@@ -286,9 +286,9 @@ test('the empty conversation page shows one line above the input, without brand 
   function selectionOwner(store) { return { selection: store }; }
   page.plugin.apply(ctx);
   const line = registrations.get('conversation.hero.brand.mark|').component;
-  assert.equal(text(page.mount(line).render()), '说出你要做的事');
+  assert.equal(text(page.mount(line).render()), 'Say what you want done');
   selection.value = {};
-  assert.equal(text(page.mount(line).render()), '在左侧的智能体下开一个新会话');
+  assert.equal(text(page.mount(line).render()), 'Start a new conversation under an Agent on the left');
   // dsh's own headline (title and 预览版 badge) and its workspace chip row are hidden; the mark slot carries the line.
   assert.match(page.plugin.EMPTY_PAGE_CSS, /span:has\(> \[data-slot="conversation\.hero\.brand\.mark"\]\) \+ span/);
   assert.match(page.plugin.EMPTY_PAGE_CSS, /div:has\(> \[data-slot="conversation\.hero\.workspace"\]\)/);

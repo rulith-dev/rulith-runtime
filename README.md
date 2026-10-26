@@ -34,8 +34,8 @@ account's current state so it resumes where you left off: sign in (the approval 
 choose a model and enter its key (saved for the signed-in account; the key stays on this computer and
 is never shown back); open a folder (this computer is set up for the account's default Agent in one
 step, and the folder is opened as a project after one confirmation). Then a new conversation starts in
-that folder: say what you want done. The app's own words are Chinese in this release; an English
-interface follows. Stop Rulith with Ctrl+C in its terminal. Everything it keeps on this
+that folder: say what you want done. The app speaks English, or Chinese when your browser's language
+is Chinese. Stop Rulith with Ctrl+C in its terminal. Everything it keeps on this
 computer is in one folder, `~/.rulith/app` (`RULITH_APP_HOME` chooses another); one Rulith runs per
 folder.
 
@@ -978,8 +978,8 @@ tools. From a checkout, run it with `npm run app` and test it with `npm run test
 The runtime is beta software. Protocol compatibility is versioned, but command-line
 flags and the app may still change before 1.0.
 
-The app's own words are Chinese in this release; an English-first interface follows. Model replies
-follow the user's language. Runtime-facing diagnostics must be English; internal source comments may
+The app's own words are English (the normative text, `docs/ui-texts-english.md`), with a Chinese
+rendering when the browser's language is Chinese. Model replies follow the user's language. Runtime-facing diagnostics must be English; internal source comments may
 use another language.
 
 Please use the [setup question template](https://github.com/rulith-dev/rulith-runtime/issues/new?template=question.yml)

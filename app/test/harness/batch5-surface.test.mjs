@@ -10,7 +10,7 @@ import vm from 'node:vm';
 import { loadPage, nodes, text, plain, flush } from './browser-page.mjs';
 import { brandIndex, installBrand, ICON_PATH, MANIFEST_PATH, ICON_SVG, MANIFEST, TITLE } from '../../harness/web/brand.mjs';
 import { requestFolder } from '../../harness/web/rulith-runtime.mjs';
-import * as PSC from './psc-0.2.29-text.mjs';
+import * as PSC from './psc-0.2.32-text.mjs';
 
 const find = (root, test) => nodes(root).find(test);
 const attr = (name, value) => (node) => node.props && (value === undefined ? node.props[name] !== undefined : node.props[name] === value);
@@ -122,9 +122,12 @@ function checkWords(locale, english) {
   const chat = locale.bind('chat'), conversation = locale.bind('conversation');
   assert.equal(chat('chat.deepDiving'), english ? 'Deep diving' : '深度求索中', 'dsh\'s words until the app installs its own');
   const undo = plugin.installTextOverrides(locale);
-  assert.equal(chat('chat.deepDiving'), english ? 'Working…' : '正在处理…');
-  assert.equal(chat('chat.deepDivingFor', { duration: '3秒' }), english ? 'Working for 3秒 ···' : '正在处理，用时 3秒 ···');
-  assert.equal(conversation('placeholder.default'), english ? 'Say what you want done' : '说出你要做的事');
+  // English is the contract (PSC 0.2.32); the Chinese rendering is whatever the app's Chinese table says.
+  const zh = (key) => plugin.TEXTS.zh.dsh[key];
+  assert.equal(chat('chat.deepDiving'), english ? PSC.PAGE.dsh['chat:chat.deepDiving'] : zh('chat:chat.deepDiving'));
+  assert.equal(chat('chat.deepDiving'), english ? 'Working…' : zh('chat:chat.deepDiving'));
+  assert.equal(chat('chat.deepDivingFor', { duration: '3s' }), english ? 'Working for 3s ···' : zh('chat:chat.deepDivingFor').replace('{duration}', '3s'));
+  assert.equal(conversation('placeholder.default'), english ? 'Say what you want done' : zh('conversation:placeholder.default'));
   assert.equal(conversation('placeholder.hero'), '', 'the empty page has only its one line above the input');
   assert.equal(chat('chat.loadOlder'), english ? 'Load older' : '加载更早', 'every other word is dsh\'s');
   assert.deepEqual(plugin.installTextOverrides(locale)(), undefined, 'a second install does nothing');
@@ -133,7 +136,7 @@ function checkWords(locale, english) {
   assert.equal(plugin.installTextOverrides(undefined)(), undefined);
 }
 
-test('the running line says 正在处理…, and the placeholders advertise neither / commands nor @ conversations', () => {
+test('the running line says Working…, and the placeholders advertise neither / commands nor @ conversations', () => {
   checkWords(fakeLocale('zh'), false);
   checkWords(fakeLocale('en'), true);
   const { plugin } = loadPage();
@@ -168,60 +171,60 @@ const settled = (name, args, answer, extra = {}) => ({ phase: 'result', toolName
 const write = { action: 'worker_c0ffee_eng_write_file_2', args: { source: 'project', path: 'src/fizzbuzz.py', text: 'print(1)', expect_digest: '' } };
 const strip = (action, entry) => [{ tool: 'Execute', label: `Execute ${action} → goal-7`, at: '2026-10-25T08:00:00Z', since: '2026-10-25T08:00:00Z', ...entry }];
 
-test('a Rulith call reads as one plain line; 查看依据 holds the receipt, the call and the whole answer', () => {
+test('a Rulith call reads as one plain line; Show evidence holds the receipt, the call and the whole answer', () => {
   const { plugin, mount } = loadPage();
   const line = (owner) => { const out = plain(plugin.toolCallLine(owner)); return [out.text, out.tone, out.state]; };
   const view = { goals: { directory: [] }, actions: [{ action: 'x' }] };
   // Written, with the file named by the receipt; the test passed or failed by its exit code.
   const wrote = settled('Execute', write, { accepted: true, view, operations: strip(write.action, { state: 'done', result: { receipt: { path: 'src/fizzbuzz.py', digest: 'ab'.repeat(32) } } }) });
-  assert.deepEqual(line(wrote), ['写入 fizzbuzz.py', 'ok', 'done']);
+  assert.deepEqual(line(wrote), ['Write fizzbuzz.py', 'ok', 'done']);
   const test = { action: 'worker_c0ffee_eng_test_3', args: { source: 'project', check: 'unit' } };
   assert.deepEqual(line(settled('Execute', test, { accepted: true, view, operations: strip(test.action, { state: 'done', result: { rows: [{ exit_code: 0 }] } }) })),
-    ['运行测试：通过', 'ok', 'done']);
+    ['Run tests: passed', 'ok', 'done']);
   assert.deepEqual(line(settled('Execute', test, { accepted: true, view, operations: strip(test.action, { state: 'done', result: { rows: [{ exit_code: 1 }] } }) })),
-    ['运行测试：没有通过', 'warn', 'done']);
+    ['Run tests: did not pass', 'warn', 'done']);
   // Refused because the project's grant was withdrawn; the reason's own words stay behind 查看依据.
   const refused = settled('Execute', write, { accepted: false, requestExecuted: false, errorCode: 'source_revoked', teaching: 'The owner withdrew this grant.', operations: [] });
-  assert.deepEqual(line(refused), ['被拒绝：项目授权已收回', 'warn', 'refused']);
-  assert.equal(plain(plugin.toolCallLine(refused)).detail, '写入 fizzbuzz.py');
+  assert.deepEqual(line(refused), ['Refused: the project\'s grant was withdrawn', 'warn', 'refused']);
+  assert.equal(plain(plugin.toolCallLine(refused)).detail, 'Write fizzbuzz.py');
   // Set and Get say what they asked; a result the host waited for names its own state.
   assert.deepEqual(line(settled('Set', { operations: [{ op: 'declare_goal', label: '写 fizzbuzz.py', desired: [{ predicate: 'work.verified', args: { name: 'fizz' } }] }] },
-    { accepted: true, view, operations: [] })), ['开始任务「写 fizzbuzz.py」', 'ok', 'done']);
+    { accepted: true, view, operations: [] })), ['Start the task “写 fizzbuzz.py”', 'ok', 'done']);
   assert.deepEqual(line(settled('Set', { operations: [{ op: 'declare_goal', parent: 'goal-7', label: 'unit', desired: [{ predicate: 'eng.check_passed', args: { key: 'k' } }] }] },
-    { accepted: true, view, operations: [] })), ['提出验收标准', 'ok', 'done']);
-  assert.deepEqual(line(settled('Set', { operations: [{ op: 'assert_fact', predicate: 'note', args: {} }] }, { accepted: true, view, operations: [] })), ['记下依据', 'ok', 'done']);
-  assert.deepEqual(line(settled('Set', { operations: [{ op: 'end_goal', goal: 'goal-7', reason: 'r' }] }, { accepted: true, view, operations: [] })), ['结束任务', 'ok', 'done']);
-  assert.deepEqual(line(settled('Get', {}, { accepted: true, view, operations: [] })), ['查看进展', 'ok', 'done']);
-  assert.deepEqual(line(settled('Get', { artifact: { ref: 'art_' + '0'.repeat(32) } }, { accepted: true, view, operations: [] })), ['读取结果', 'ok', 'done']);
+    { accepted: true, view, operations: [] })), ['Propose acceptance criteria', 'ok', 'done']);
+  assert.deepEqual(line(settled('Set', { operations: [{ op: 'assert_fact', predicate: 'note', args: {} }] }, { accepted: true, view, operations: [] })), ['Record evidence', 'ok', 'done']);
+  assert.deepEqual(line(settled('Set', { operations: [{ op: 'end_goal', goal: 'goal-7', reason: 'r' }] }, { accepted: true, view, operations: [] })), ['End the task', 'ok', 'done']);
+  assert.deepEqual(line(settled('Get', {}, { accepted: true, view, operations: [] })), ['Check progress', 'ok', 'done']);
+  assert.deepEqual(line(settled('Get', { artifact: { ref: 'art_' + '0'.repeat(32) } }, { accepted: true, view, operations: [] })), ['Read a result', 'ok', 'done']);
   assert.deepEqual(line(settled('Execute', write, { accepted: true, tool: 'Execute', state: 'done', result: { receipt: { path: 'src/fizzbuzz.py' } }, view, operations: [] })),
-    ['写入 fizzbuzz.py', 'ok', 'done']);
+    ['Write fizzbuzz.py', 'ok', 'done']);
   // Before the answer: preparing, then running with the file named by the call; a stopped call; a lost outcome.
-  assert.deepEqual(line({ phase: 'preparing', toolName: 'Execute', block: { phase: 'preparing', callId: 'c1' } }), ['正在准备一次操作…', 'info', 'preparing']);
+  assert.deepEqual(line({ phase: 'preparing', toolName: 'Execute', block: { phase: 'preparing', callId: 'c1' } }), ['Preparing an operation…', 'info', 'preparing']);
   assert.deepEqual(line({ phase: 'start', toolName: 'Execute', block: { phase: 'start', callId: 'c1', name: 'Execute', argsRaw: JSON.stringify(write) } }),
-    ['写入 fizzbuzz.py：进行中', 'info', 'running']);
-  assert.deepEqual(line({ ...wrote, block: { ...wrote.block, content: [], isError: true, error: { code: 'interrupted' } } }), ['写入 fizzbuzz.py：已停止', 'warn', 'stopped']);
+    ['Write fizzbuzz.py: in progress', 'info', 'running']);
+  assert.deepEqual(line({ ...wrote, block: { ...wrote.block, content: [], isError: true, error: { code: 'interrupted' } } }), ['Write fizzbuzz.py: stopped', 'warn', 'stopped']);
   assert.deepEqual(line({ ...wrote, block: { ...wrote.block, isError: true, content: [{ type: 'text', text: 'The connection to Rulith was interrupted during this call; its outcome is unknown. Do not repeat it: Get shows its outcome in the operations strip.' }] } }),
-    ['写入 fizzbuzz.py：结果未知，请在 Console 核对', 'error', 'unknown']);
+    ['Write fizzbuzz.py: result unknown, reconcile it in Console', 'error', 'unknown']);
   // The row: one line and 查看依据; no JSON, id, code or digest until it is opened.
   const row = mount(plugin.RulithToolRow, wrote);
   let shown = row.render();
-  assert.equal(text(find(shown, attr('data-rulith-call-line'))), '写入 fizzbuzz.py');
-  assert.equal(text(find(shown, attr('data-rulith-call-evidence'))), '查看依据');
+  assert.equal(text(find(shown, attr('data-rulith-call-line'))), 'Write fizzbuzz.py');
+  assert.equal(text(find(shown, attr('data-rulith-call-evidence'))), 'Show evidence');
   assert.equal(find(shown, attr('data-rulith-call-detail')), undefined);
   assert.doesNotMatch(text(shown), /[{}]|worker_|eng\.|Execute|goal-7|abab|accepted/);
   find(shown, attr('data-rulith-call-evidence')).props.onClick();
   shown = row.render();
   const detail = text(find(shown, attr('data-rulith-call-detail')));
-  assert.match(detail, /^回执\{\n {2}"receipt": \{\n {4}"path": "src\/fizzbuzz\.py"/);
-  assert.match(detail, /这次调用\{\n {2}"action": "worker_c0ffee_eng_write_file_2"/);
-  assert.match(detail, /完整原文\{"content":\[/);
-  assert.equal(text(find(shown, attr('data-rulith-call-evidence'))), '收起依据');
+  assert.match(detail, /^Receipt\{\n {2}"receipt": \{\n {4}"path": "src\/fizzbuzz\.py"/);
+  assert.match(detail, /This call\{\n {2}"action": "worker_c0ffee_eng_write_file_2"/);
+  assert.match(detail, /Full original text\{"content":\[/);
+  assert.equal(text(find(shown, attr('data-rulith-call-evidence'))), 'Hide evidence');
   // dsh's disclosure keeps the row open across redraws when it is given.
   let expanded = false;
   const kept = mount(plugin.RulithToolRow, { ...refused, useDisclosure: () => ({ expanded, toggle: () => { expanded = !expanded; } }) });
   find(kept.render(), attr('data-rulith-call-evidence')).props.onClick();
   assert.equal(expanded, true);
-  assert.match(text(find(kept.render(), attr('data-rulith-call-detail'))), /^原因The owner withdrew this grant\. source_revoked/);
+  assert.match(text(find(kept.render(), attr('data-rulith-call-detail'))), /^ReasonThe owner withdrew this grant\. source_revoked/);
   // A running call has nothing to show yet.
   assert.equal(find(mount(plugin.RulithToolRow, { phase: 'start', toolName: 'Get', block: { phase: 'start', name: 'Get', argsRaw: '{}' } }).render(),
     attr('data-rulith-call-evidence')), undefined);
@@ -235,7 +238,7 @@ test('the reviewer\'s notes after the answer and an answer carried in an error b
     { accepted: false, errorCode: 'review_blocked', operations: [] });
   assert.equal(plugin.rulithAnswer('not json'), null);
   const blocked = settled('Execute', write, { accepted: false, requestExecuted: false, errorCode: 'review_blocked', teaching: 'blocked', operations: [] });
-  assert.equal(plain(plugin.toolCallLine(blocked)).text, '被拒绝：审查没有通过');
+  assert.equal(plain(plugin.toolCallLine(blocked)).text, 'Refused: the review did not pass');
 });
 
 test('the app registers its row for exactly Rulith\'s three tools, in dsh\'s keyed tool view', () => {
@@ -256,15 +259,15 @@ test('installed dsh: a keyed tool view replaces the generic row and gets the cal
 });
 
 // ---- Batch 4 leftovers (P3).
-test('a deleted conversation\'s 任务 panel says it is deleted instead of waiting for its next result', () => {
+test('a deleted conversation\'s Tasks panel says it is deleted instead of waiting for its next result', () => {
   const page = loadPage();
   const m = page.mount(page.plugin.components.RulithSessionColumn, { sessionId: 's1' });
   m.cells[0] = { ok: true, available: true, view: null };
   m.cells[1] = { ok: true, found: true, conversation: { boardId: 'b', endedAt: '2026-10-25T08:00:00Z', awaitingSignature: [] } };
   m.cells[2] = { ok: true, available: true, state: 'online', computer: 'PC' };
   const shown = m.render();
-  assert.equal(text(find(shown, attr('data-rulith-panel-message'))), '这个会话已删除，不能再继续。它的回执和记录仍保留，可在 Console 的任务记录里查看。');
-  assert.doesNotMatch(text(shown), /下一个结果/);
+  assert.equal(text(find(shown, attr('data-rulith-panel-message'))), 'This conversation is deleted and cannot continue. Its receipts and records are kept and can be read in Console\'s task records.');
+  assert.doesNotMatch(text(shown), /next result/);
 });
 
 test('an unconfirmed signature keeps its request id across a reload of the page, until a state read settles it', async () => {
@@ -321,17 +324,28 @@ test('the panel\'s health and worker reads resolve the Agent from the conversati
   assert.match(host, /const workerTrace = async \(query = \{\}\) => \{\s*const agent = agentForRequest\(query\);/);
 });
 
-// ---- One name per thing, one language (design §1, §2).
-test('the page\'s Chinese sentences use the vocabulary: no Board, Worker, Agent token, Connection words, 非严格 or DeepSeek', () => {
-  const source = fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8')
-    .split('\n').filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line)).join('\n');
-  const sentences = (source.match(/"(?:[^"\\\n]|\\.)*"/g) || []).filter((literal) => /[一-鿿]/.test(literal));
-  assert.ok(sentences.length > 200, 'the page\'s sentences were found');
-  // The signing texts say 任务 too (PSC 0.2.29): no sentence is exempt.
-  for (const literal of sentences)
-    assert.doesNotMatch(literal, /Board|Worker|Agent token|Connection|租约|连接凭据|本机连接「|非严格|DeepSeek|深度求索|预览版|验收合同|目标|Deep Rulith/, literal);
+// ---- One name per thing, one table per language (design §1, §2; D-1025b).
+test('the page\'s words use the vocabulary: no Board, Worker, Agent token or Connection words in Chinese, no DeepSeek or Deep Rulith in either', () => {
+  const { plugin } = loadPage();
+  const leaves = (value, at = '') => (typeof value === 'string' ? [[at, value]]
+    : Object.entries(value).flatMap(([key, item]) => leaves(item, at ? at + '.' + key : key)));
+  // Diagnosis names the versions it runs (DeepSeek Harness is the conversation engine); dsh's own keys are dsh's.
+  const exempt = (at) => at === 'diagnosis.versions' || at.startsWith('dsh.');
+  const zh = leaves(plain(plugin.TEXTS.zh)).filter(([at]) => !exempt(at));
+  assert.ok(zh.length > 300, 'the page\'s sentences were found');
+  // The signing texts say 任务 too: no Chinese sentence is exempt.
+  for (const [at, words] of zh)
+    assert.doesNotMatch(words, /Board|Worker|Agent token|Connection|租约|连接凭据|本机连接「|非严格|DeepSeek|深度求索|预览版|验收合同|目标|Deep Rulith/, at);
+  // English uses Console's words, Board included where Console's approved sentences say it.
+  for (const [at, words] of leaves(plain(plugin.TEXTS.en)).filter(([key]) => !exempt(key)))
+    assert.doesNotMatch(words, /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]|DeepSeek|Deep Rulith|lease|\bgoal-\d/, at);
+  // The host speaks through its tables too: no sentence for the person is written into its route modules.
+  for (const file of ['rulith-runtime.mjs', 'open-project.mjs', 'local-setup.mjs', 'folder-picker.mjs', 'model-runtime.mjs', 'diagnosis.mjs']) {
+    const code = fs.readFileSync(new URL('../../harness/web/' + file, import.meta.url), 'utf8').split('\n')
+      .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line)).map((line) => line.replace(/\/\/.*$/, '')).join('\n');
+    assert.doesNotMatch(code, /[\u4e00-\u9fff]/, file);
+  }
   const host = fs.readFileSync(new URL('../../harness/web/rulith-runtime.mjs', import.meta.url), 'utf8');
-  // The host's answers to the page are in Chinese (its startup errors and the model's tool errors are not the page's).
   assert.doesNotMatch(host, /Choose an Agent first|Invalid session id|Name the conversation|That Agent is not set up|another Agent's Board|Name the goal|Same-origin Deep Rulith|No such Deep Rulith|Rulith answered/);
 });
 
@@ -345,14 +359,15 @@ test('the model-visible changes of batch 5 are listed verbatim in their document
   assert.ok(doc.includes(projectLine('<directory>', null)));
 });
 
-test('every local-client string PSC 0.2.29 fixes is written verbatim under its heading in the batch 5 document', () => {
-  const doc = fs.readFileSync(new URL('../../../docs/model-visible-changes-batch5.md', import.meta.url), 'utf8');
-  const heading = doc.indexOf('## PSC 0.2.29 本机客户端文字（逐字）');
-  assert.ok(heading > 0, 'the heading');
-  const section = doc.slice(heading);
-  for (const words of PSC.ALL) assert.ok(section.includes(words), words);
-  // The page ships exactly those strings.
+test('every normative English string of PSC 0.2.32 is listed in docs/ui-texts-english.md, and the app ships exactly them', async () => {
+  const doc = fs.readFileSync(new URL('../../../docs/ui-texts-english.md', import.meta.url), 'utf8');
+  for (const words of PSC.ALL) assert.ok(doc.includes('`' + words + '`'), words);
+  // The page and the host ship exactly those strings.
   const { plugin } = loadPage();
+  assert.equal(plugin.LOCALE, 'en', 'English unless the browser\'s language is Chinese');
+  assert.deepEqual(plain(plugin.TEXTS.en), PSC.PAGE);
+  const { HOST_TEXTS } = await import('../../harness/web/ui-texts.mjs');
+  assert.deepEqual(HOST_TEXTS.en, PSC.HOST);
   assert.deepEqual(plain(plugin.SIGN), PSC.SIGNING);
   assert.deepEqual(plain(plugin.SIGN_REASONS), PSC.SIGN_REASONS);
   assert.deepEqual(plain(plugin.TIER), PSC.TIER);
@@ -361,6 +376,69 @@ test('every local-client string PSC 0.2.29 fixes is written verbatim under its h
   assert.deepEqual(plain(plugin.WIDEN_TEXT), PSC.WIDEN_TEXT);
   assert.deepEqual(plain(plugin.TIER_REFUSALS), PSC.TIER_REFUSALS);
   assert.deepEqual(plain(plugin.REVIEW_REFUSALS), PSC.REVIEW_REFUSALS);
+  // Console's approved English is reused verbatim where the meaning is the same (Text A, Text 9, the non-strict
+  // confirmation, PSC 0.2.20 ③, Console's Conversations texts).
+  assert.equal(PSC.SIGNING.body, 'You are signing these criteria as the acceptance for this goal. The Agent proposed them; from now on it cannot end or change them, and the goal completes only when every criterion holds on the current state. This is your decision under your account.');
+  assert.deepEqual([PSC.SIGNING.title, PSC.SIGNING.button, PSC.SIGNING.accept, PSC.SIGNING.cancel, PSC.SIGNING.signed, PSC.SIGNING.refused],
+    ['Proposed acceptance criteria', 'Sign these criteria', 'Sign', 'Not yet', 'Signed.', 'Nothing was signed: {teaching}.']);
+  assert.deepEqual([PSC.WIDEN_TEXT.derived.title, PSC.WIDEN_TEXT.derived.accept, PSC.WIDEN_TEXT.derived.cancel],
+    ['Switch to derived exploration mode?', 'Switch to derived', 'Keep strict']);
+  assert.deepEqual([PSC.WIDEN_TEXT.non_strict.title, PSC.WIDEN_TEXT.non_strict.accept, PSC.WIDEN_TEXT.non_strict.cancel],
+    ['Switch to non-strict exploration mode?', 'Switch to non-strict', 'Keep strict']);
+  assert.equal(PSC.TIER_REFUSALS.review_required_by_derived_mode, 'Turn post-call review back on for this conversation before switching it to derived mode.');
+  assert.equal(PSC.REVIEW_REFUSALS.derived_requires_review, 'Switch this conversation out of derived mode before turning its review off.');
+  assert.deepEqual([PSC.PAGE.tree.dialogTitle, PSC.PAGE.tree.delete, PSC.PAGE.tree.keep, PSC.PAGE.tree.finish],
+    ['Delete this conversation?', 'Delete', 'Keep', 'Finish deleting']);
+});
+
+test('the page\'s language is chosen once from the browser\'s: Chinese for zh, else English; every request names it', async () => {
+  for (const [language, locale] of [[undefined, 'en'], ['en-US', 'en'], ['en-GB', 'en'], ['fr-FR', 'en'], ['zh-CN', 'zh'], ['zh-TW', 'zh'], ['zh', 'zh']]) {
+    const page = loadPage(language ? { windowExtra: { navigator: { language } } } : {});
+    assert.equal(page.plugin.LOCALE, locale, String(language));
+    // The words shown are that language's table.
+    assert.deepEqual(plain(page.plugin.SIGN), plain(page.plugin.TEXTS[locale].sign));
+    const m = page.mount(page.plugin.components.RulithSessionColumn, { sessionId: 's1' });
+    m.cells[0] = { ok: true, available: true, agentName: 'A', view: { goals: { directory: [] } }, operations: [] };
+    m.cells[1] = { ok: true, found: true, conversation: { boardId: 'b', awaitingSignature: [] } };
+    m.cells[2] = { ok: true, available: true, state: 'online', computer: 'PC' };
+    assert.match(text(m.render()), new RegExp(page.plugin.TEXTS[locale].panel.recent));
+    // Every request to the host names the page's language, so the host answers in it.
+    const diagnosis = page.mount(page.plugin.components.DiagnosisSection, { state: null });
+    diagnosis.render();
+    await diagnosis.runEffects();
+    assert.ok(page.requests.length > 0);
+    for (const request of page.requests) assert.equal(request.headers['x-rulith-locale'], locale, request.url);
+  }
+  // The host's own sentences (marked `own`) are shown as they are; any other reason follows the page's own sentence.
+  const en = loadPage().plugin, zh = loadPage({ windowExtra: { navigator: { language: 'zh-CN' } } }).plugin;
+  assert.equal(en.plain({ teaching: 'This Agent is not set up on this computer yet.', own: true }, 'Could not read Rulith'), 'This Agent is not set up on this computer yet.');
+  assert.equal(en.plain({ teaching: 'Endpoint not found.' }, 'Could not read Rulith'), 'Could not read Rulith: Endpoint not found.');
+  assert.equal(en.plain('fetch failed', 'Not saved.'), 'Not saved: fetch failed');
+  assert.equal(zh.plain({ teaching: '这个智能体还没有在这台电脑上设置好。' }, '读不到 Rulith'), '这个智能体还没有在这台电脑上设置好。');
+  assert.equal(zh.plain({ teaching: 'Endpoint not found.' }, '读不到 Rulith'), '读不到 Rulith：Endpoint not found.');
+  // The page's own sentences are its own too: an unfinished sign-in is said once, not after "Sign-in did not succeed".
+  const unfinished = await en.signInFlow({ api: async (route) => (route === 'signin' ? { ok: true, url: 'https://rulith.example/approve' } : { ok: true }),
+    openTab: () => null, wait: async () => {}, tries: 1 });
+  assert.equal(en.plain(unfinished, en.TEXTS.en.signIn.failed), en.TEXTS.en.signIn.notFinished);
+});
+
+test('the Chinese tables are a complete rendering: every English key has Chinese words with the same placeholders', async () => {
+  const { plugin } = loadPage();
+  const { HOST_TEXTS } = await import('../../harness/web/ui-texts.mjs');
+  const holes = (words) => (words.match(/\{\w+\}/g) || []).sort().join();
+  const same = (en, zh, at) => {
+    if (typeof en === 'string') {
+      assert.equal(typeof zh, 'string', at + ' has a Chinese rendering');
+      if (en !== '' && !/^[\s\p{P}·]*$/u.test(en)) assert.ok(zh.trim() !== '', at + ' is not empty');
+      assert.equal(holes(zh), holes(en), at + ' fills the same values');
+      return;
+    }
+    assert.ok(zh && typeof zh === 'object', at);
+    assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), at + ' has the same keys');
+    for (const key of Object.keys(en)) same(en[key], zh[key], at ? at + '.' + key : key);
+  };
+  same(plain(plugin.TEXTS.en), plain(plugin.TEXTS.zh), '');
+  same(HOST_TEXTS.en, HOST_TEXTS.zh, '');
 });
 
 test('a refused call never borrows another call\'s receipt or file from the operations strip', () => {
@@ -370,7 +448,7 @@ test('a refused call never borrows another call\'s receipt or file from the oper
   const refused = settled('Execute', write, { accepted: false, requestExecuted: false, errorCode: 'source_revoked', teaching: 'The owner withdrew this grant.',
     view: { actions: [] }, operations: earlier });
   const line = plain(plugin.toolCallLine(refused));
-  assert.deepEqual([line.text, line.detail, line.state], ['被拒绝：项目授权已收回', '写入 fizzbuzz.py', 'refused'], 'its own call\'s file, not other.py');
+  assert.deepEqual([line.text, line.detail, line.state], ['Refused: the project\'s grant was withdrawn', 'Write fizzbuzz.py', 'refused'], 'its own call\'s file, not other.py');
   assert.equal(line.evidence.receipt, undefined, 'no foreign receipt');
   assert.equal(line.evidence.summary, '');
   assert.equal(line.evidence.reason, 'The owner withdrew this grant. source_revoked');
@@ -379,10 +457,10 @@ test('a refused call never borrows another call\'s receipt or file from the oper
   find(row.render(), attr('data-rulith-call-evidence')).props.onClick();
   // Only the whole answer (完整原文, folded) still carries the strip as the service sent it.
   const shown = text(row.render());
-  assert.doesNotMatch(shown.slice(0, shown.indexOf('完整原文')), /other\.py|cdcd|回执/);
+  assert.doesNotMatch(shown.slice(0, shown.indexOf('Full original text')), /other\.py|cdcd|Receipt/);
   // An outcome the host waited for names its own state: its receipt is its own.
   const delivered = settled('Execute', write, { accepted: false, tool: 'Execute', state: 'refused', teaching: 'A person refused this call.', view: {}, operations: earlier });
-  assert.deepEqual([plain(plugin.toolCallLine(delivered)).text, plain(plugin.toolCallLine(delivered)).evidence.receipt], ['被拒绝：你拒绝了这次操作', undefined]);
+  assert.deepEqual([plain(plugin.toolCallLine(delivered)).text, plain(plugin.toolCallLine(delivered)).evidence.receipt], ['Refused: you refused this operation', undefined]);
 });
 
 test('an unconfirmed signature made on earlier criteria says so on the card, and only that request is ever resent', async () => {

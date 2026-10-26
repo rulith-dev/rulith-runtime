@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { labelProjectOpen, releaseProjectLabel } from '../../../local/sandbox-home-label.mjs';
 import { overlapsProtected } from '../../../worker/adapter-confinement.mjs';
+import { say } from './ui-texts.mjs';
 
 /** A refusal made here, before anything is sent; its code tells the page that retrying will not help. */
 const refused = (code, text) => Object.assign(new Error(text), { errorCode: code });
@@ -19,7 +20,6 @@ export const PROJECT_SOURCE = /^project(-[0-9a-f]{8})?$/;
 export const projectPlatform = (platform = process.platform) => (platform === 'win32' ? 'windows' : 'posix');
 
 const LOCAL_FILES = { statSync: fs.statSync, realpathSync: fs.realpathSync.native };
-const NETWORK_FOLDER = '这是网络上的文件夹（共享文件夹或映射的网络盘）。在这台电脑上运行命令时不能把它当作工作目录，请选本机磁盘上的文件夹。';
 const NETWORK_PATH = /^[\\/]{2}/;
 
 /**
@@ -34,16 +34,16 @@ const NETWORK_PATH = /^[\\/]{2}/;
  */
 export function localFolder(raw, platform = process.platform, files = LOCAL_FILES) {
   const value = typeof raw === 'string' ? raw.trim() : '';
-  if (!value) throw refused('folder_invalid', '请填写一个文件夹路径。');
+  if (!value) throw refused('folder_invalid', say('folder.empty'));
   const windows = platform === 'win32';
-  if (windows && NETWORK_PATH.test(value)) throw refused('folder_network', NETWORK_FOLDER);
+  if (windows && NETWORK_PATH.test(value)) throw refused('folder_network', say('folder.network'));
   if (windows ? !/^[A-Za-z]:[\\/]/.test(value) : !value.startsWith('/'))
-    throw refused('folder_invalid', windows ? '请填写完整路径，例如 D:\\work\\project。' : '请填写完整路径，例如 /home/you/project。');
+    throw refused('folder_invalid', say(windows ? 'folder.fullWindows' : 'folder.fullPosix'));
   const resolved = (windows ? path.win32 : path.posix).resolve(value);
   let real = '';
   try { if (files.statSync(resolved).isDirectory()) real = files.realpathSync(resolved); } catch { real = ''; }
-  if (!real) throw refused('folder_invalid', '这台电脑上没有这个文件夹：' + resolved);
-  if (windows && NETWORK_PATH.test(real)) throw refused('folder_network', NETWORK_FOLDER);
+  if (!real) throw refused('folder_invalid', say('folder.missing', { path: resolved }));
+  if (windows && NETWORK_PATH.test(real)) throw refused('folder_network', say('folder.network'));
   return real;
 }
 
@@ -52,13 +52,13 @@ export function localFolder(raw, platform = process.platform, files = LOCAL_FILE
  * on this computer, all read from the manager's own state.
  */
 export function projectTarget(state, agentId) {
-  if (state?.device?.state !== 'linked') throw refused('not_signed_in', '这台电脑没有登录 Rulith：先在左下角登录。');
+  if (state?.device?.state !== 'linked') throw refused('not_signed_in', say('open.notSignedIn'));
   const accountId = String(state.device.account?.id ?? '');
   if (!accountId || !(state.device.agents ?? []).some((agent) => agent.id === agentId))
-    throw refused('agent_not_in_account', '这个智能体不在当前登录的账户里。');
+    throw refused('agent_not_in_account', say('open.notInAccount'));
   const instance = (state.instances ?? []).find((row) => row.agentId === agentId && row.mode === 'local_agent'
     && !row.signedOutAt && row.paired && row.connectionId);
-  if (!instance) throw refused('agent_not_set_up', '这个智能体还没有在这台电脑上设置：先在左侧点「在本机设置」。');
+  if (!instance) throw refused('agent_not_set_up', say('open.notSetUp'));
   return { accountId, accountName: String(state.device.account?.name ?? ''), agentId, connectionId: String(instance.connectionId),
     instanceId: instance.id };
 }
@@ -98,7 +98,7 @@ export function projectRoutes({ manager: call, platform = process.platform, file
   // A manager without these routes (Runtime 0.17.2 and earlier) answers 404 without a code: say what to do about it.
   const manager = (route, body) => call(route, body).catch((error) => {
     if (error?.status === 404 && !error.errorCode && route.startsWith('/manager/projects/'))
-      throw refused('runtime_unsupported', '这台电脑上的 Rulith Runtime 版本太旧，还不能打开项目：请更新 Rulith 应用后再试。');
+      throw refused('runtime_unsupported', say('open.runtimeOld'));
     throw error;
   });
   const request = async (body) => {
@@ -107,8 +107,7 @@ export function projectRoutes({ manager: call, platform = process.platform, file
     // 模型命令隔离（D-1024a）：项目目录不得包含、也不得位于 Rulith 自己的凭据根或工作根里——否则打开时的低完整性标签会
     // 扩散进凭据，或凭据目录被当成可读写的项目。确认之前就拒绝，什么都不发出。
     if (overlapsProtected(directory, protectedRoots().filter(Boolean)))
-      throw refused('project_folder_protected', 'This folder contains, or is inside, a folder where Rulith keeps its own data (credentials or work files),'
-        + ' so it cannot be opened as a project. Choose a folder that holds no Rulith data.');
+      throw refused('project_folder_protected', say('open.protectedFolder'));
     await repair(agentId);
     const target = projectTarget(await manager('/manager/state'), agentId);
     return { target, directory };
@@ -140,16 +139,15 @@ export function projectRoutes({ manager: call, platform = process.platform, file
     // same opening on the Gateway instead of starting another. The account is the one the confirmation was shown for.
     open: async (body) => {
       const requestId = String(body?.requestId ?? ''), authorizationVersion = String(body?.authorizationVersion ?? '');
-      if (!REQUEST_ID.test(requestId)) throw refused('open_request_invalid', '这次打开缺少有效的请求号，请重新确认。');
-      if (!authorizationVersion) throw refused('open_request_invalid', '这次打开缺少确认过的内容版本，请重新确认。');
+      if (!REQUEST_ID.test(requestId)) throw refused('open_request_invalid', say('open.noRequestId'));
+      if (!authorizationVersion) throw refused('open_request_invalid', say('open.noVersion'));
       const { target, directory } = await request(body);
       // 模型命令隔离（D-1024a）：在向 Gateway 打开之前先给项目目录打上可继承的低完整性标签（受限命令才能在其中读写）。目录原本
       // 的标签（以及为能打标签而给所有者加上的那一条 WRITE_OWNER 访问项）记在管理器 home 的 project-labels（凭据根内），按实例
       // 计数；实例移除、本机登出或 Worker 发现 Source 被收回时释放，最后一个释放时按原样还原。打不上就拒绝打开（fail-closed），
       // 什么都不发给 Gateway；Gateway 拒绝时把刚打的标签撤回。
       const labelled = labelOpen({ managerHome, directory, holder: target.instanceId });
-      if (labelled && !labelled.ok) throw refused('project_folder_unprotectable', `Rulith could not make this folder writable for isolated model`
-        + ` commands: ${labelled.reason}. Nothing was opened. Choose a folder on an NTFS drive that your account owns.`);
+      if (labelled && !labelled.ok) throw refused('project_folder_unprotectable', say('open.unprotectable', { reason: labelled.reason }));
       let reply;
       try {
         reply = await manager('/manager/projects/open', { requestId,

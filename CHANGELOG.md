@@ -4,6 +4,23 @@ All notable changes to the local runtime are documented here.
 
 ## 0.19.0 - 2026-10-25
 
+- App, English first (D-1025b; normative texts fixed by PSC 0.2.32, listed in `docs/ui-texts-english.md`): everything the
+  app shows comes from one table per language, English by default; Chinese is shown when the browser's language is
+  Chinese (`navigator.language` starting with `zh`), as a rendering that is no longer fixed verbatim (it replaces the
+  Chinese texts PSC 0.2.28/0.2.29 fixed). Console's approved English is reused where the meaning is the same (signing
+  is Text A, widening Text 9 and the non-strict confirmation, deleting a conversation Console's Conversations texts),
+  and the open-project confirmation carries PSC 0.2.31 ④'s text. Model replies still follow the user's language;
+  nothing the model sees changes.
+- dsh's own words follow the browser's language as the page does: when dsh's language differs (a choice saved earlier
+  in its settings, or a browser whose first language is neither English nor Chinese), the app sets dsh's to the page's,
+  and dsh keeps that choice in the app's dsh home. Settings → Appearance and language no longer offers a second language
+  choice that changed only part of the page.
+- The app's host answers each request in the language the page names (`x-rulith-locale`, read only after the session
+  check; a request that names none is answered in English) and marks its own sentences so the page shows them as they
+  are. Words the host says outside a request (a turn refused before anything is sent) follow the page that last named
+  its language.
+- Local manager: the two messages that still pointed at the retired Trace view now point at Settings → Advanced →
+  Diagnosis in the app.
 - Upgrade, read first: the Rulith app now ships in this package, and `rulith` opens it. `rulith start` and
   `rulith setup` are kept as names for the same command. The English Runtime workbench they used to open, and its
   document assistant, are retired: there is no manager page, no instance page (conversation, setup, tools) and no

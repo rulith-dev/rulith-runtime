@@ -11,6 +11,7 @@ import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import { localFolder, projectPlatform, projectRoutes, projectTarget, projectView, PROJECT_SOURCE }
   from '../../harness/web/open-project.mjs';
+import { inRequestLanguage } from '../../harness/web/ui-texts.mjs';
 
 const TOOLS = ['eng.acceptance@2', 'eng.apply_patch@2', 'eng.glob@1', 'eng.job_poll@2', 'eng.job_start@2', 'eng.job_stop@2',
   'eng.list@1', 'eng.patch_file@2', 'eng.read@2', 'eng.read_image@1', 'eng.run@2', 'eng.search@1', 'eng.test@3',
@@ -38,12 +39,16 @@ test('the platform comes from this computer, and a folder must be an existing ab
   assert.equal(localFolder('/mnt/share/game', 'linux', files), '/mnt/share/game', 'a mounted share is an ordinary directory elsewhere');
   // Windows: a network folder, typed as a share or reached through a mapped drive, cannot be a working directory of cmd.exe.
   for (const raw of ['\\\\server\\share\\game', '//server/share/game', 'Z:\\proj'])
-    assert.throws(() => localFolder(raw, 'win32', files), (error) => error.errorCode === 'folder_network' && /网络上的文件夹/.test(error.message), raw);
+    assert.throws(() => localFolder(raw, 'win32', files), (error) => error.errorCode === 'folder_network' && /This is a network folder/.test(error.message), raw);
   for (const [raw, platform] of [['', 'win32'], ['game', 'win32'], ['D:game', 'win32'], ['\\game', 'win32'], ['/home/owner/game', 'win32'],
     ['home/owner', 'linux'], ['D:\\Work\\absent', 'win32'], ['/home/owner/absent', 'linux']])
-    assert.throws(() => localFolder(raw, platform, files), (error) => error.errorCode === 'folder_invalid' && /[\u4e00-\u9fff]/.test(error.message), raw);
+    assert.throws(() => localFolder(raw, platform, files), (error) => error.errorCode === 'folder_invalid' && /^(Enter|This computer has no such folder)/.test(error.message), raw);
+  // A page in Chinese gets the host's Chinese rendering of the same sentences (the language it names on its requests).
+  inRequestLanguage('zh', () => assert.throws(() => localFolder('game', 'win32', files),
+    (error) => error.errorCode === 'folder_invalid' && /[\u4e00-\u9fff]/.test(error.message)));
+  assert.throws(() => localFolder('game', 'win32', files), (error) => /^Enter the full path/.test(error.message), 'outside that request: English');
   const file = { statSync: () => ({ isDirectory: () => false }), realpathSync: (p) => p };
-  assert.throws(() => localFolder('/home/owner/game', 'linux', file), /没有这个文件夹/);
+  assert.throws(() => localFolder('/home/owner/game', 'linux', file), /This computer has no such folder: \/home\/owner\/game/);
   // On this computer, with the real file system.
   const here = fs.mkdtempSync(path.join(os.tmpdir(), 'deep-rulith-folder-'));
   try { assert.equal(localFolder(here), fs.realpathSync.native(here)); } finally { fs.rmSync(here, { recursive: true, force: true }); }
@@ -117,7 +122,7 @@ test('host routes forward exactly the Gateway contract through the manager and r
     // A Runtime manager without the project routes (0.17.2 and earlier) says so in plain words.
     answer = () => { throw Object.assign(new Error('Endpoint not found.'), { status: 404 }); };
     await assert.rejects(routes.state({ agentId: 'agent-1', directory: dir }),
-      (error) => error.errorCode === 'runtime_unsupported' && /版本太旧/.test(error.message));
+      (error) => error.errorCode === 'runtime_unsupported' && /too old to open projects/.test(error.message));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -193,51 +198,53 @@ function loadClient() {
 const client = loadClient();
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-test('the confirmation lists in view the folder, the Agent on this computer, what may be done, the tools in plain words, the tier, the caution and how to withdraw; only tool ids with versions and the account are under 详细', () => {
+test('the confirmation lists in view the folder, the Agent on this computer, what may be done, the tools in plain words, the tier, the caution and how to withdraw; only tool ids with versions and the account are under Details', () => {
   const shown = plain(client.projectConfirmation(notOpen()));
   // Every item SYS-LOCAL-01 (PSC 0.2.24) requires the confirmation to list is in view, in this order, the tools used
   // included; design §3.2 folds only the ids with their versions and the account.
-  assert.deepEqual(shown.rows.map(([name]) => name), ['文件夹', '智能体', '可以做的事', '所用工具', '档位', '请注意', '怎么收回']);
-  const text = [shown.title, ...shown.rows.flat(), ...shown.details.flat(), shown.footer].join('\n');
+  assert.deepEqual(shown.rows.map(([name]) => name), ['Folder', 'Agent', 'What it may do', 'Tools used', 'Exploration mode', 'Note', 'How to withdraw']);
+  // The caution is PSC 0.2.31 ④'s own text, checked exactly below; every other word is the page's.
+  const text = [shown.title, ...shown.rows.filter(([name]) => name !== 'Note').flat(), ...shown.details.flat(), shown.footer].join('\n');
   const row = (label) => shown.rows.find(([name]) => name === label)?.[1];
   const detail = (label) => shown.details.find(([name]) => name === label)?.[1];
-  assert.equal(row('文件夹'), 'D:\\Work\\game');
-  assert.match(row('可以做的事'), /读文件.*写文件.*运行命令/);
-  assert.match(row('请注意'), /不是操作系统级的隔离/);
-  assert.match(row('怎么收回'), /Console 这个智能体页面上这个项目的一行里收回授权/);
-  assert.match(row('怎么收回'), /停用这台电脑的登录/);
+  assert.equal(row('Folder'), 'D:\\Work\\game');
+  assert.match(row('What it may do'), /Read files, write files and run commands/);
+  // PSC 0.2.31 ④ (in force) fixes this text, replacing 0.2.24's sentence that the folder is not OS-level isolation.
+  assert.equal(row('Note'), 'On this computer, reading, writing and running commands in this project folder are carried out by the Agent\'s engineering capability. Commands run without this computer\'s keys or tokens in their environment, and tool access to loopback and private network addresses (including this computer\'s manager and app ports) is refused. By system: on Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; this folder is writable for commands while it is open, and its previous setting is restored when it is revoked or this computer is deactivated. On Linux, commands can write only this project folder and their tool folder, the system is read-only, Rulith\'s credential folders are hidden, the network stays available, and background jobs end with the tool call that started them. On macOS, commands are not yet isolated on this computer. If isolation cannot be set up, commands do not run (unless you chose "Run without isolation (not recommended)" in Settings). The non-strict tier means the commands and arguments the model gives no longer need grounds on the Board; whether the work is done is still certified only by the acceptance contract you sign. To revoke: unlock this project in Console, or deactivate this computer.');
+  assert.match(row('How to withdraw'), /withdraw the grant on this project's row of this Agent's page in Console/);
+  assert.match(row('How to withdraw'), /revoke this computer's sign-in/);
   assert.doesNotMatch(shown.rows.flat().join('\n'), /eng\.|@\d|1\.0\.0/, 'tool ids and versions stay folded');
   // The tools, in plain words, each once, with the capability they come from (by its name, without its version).
-  const words = row('所用工具').split('。')[0].split('、');
-  assert.deepEqual(words, ['运行验收检查', '按补丁修改文件', '按名称找文件', '查看后台命令', '在后台运行命令', '停止后台命令', '列出文件', '修改文件',
-    '读文件', '读图片', '运行命令', '搜索文件内容', '运行测试', '查看文件夹的改动', '写文件'], 'one entry per tool, in the order the service lists them');
-  assert.match(row('所用工具'), /来自这个智能体已装的官方编程能力。$/);
-  // Batch 5 (design §2): the capability's id and the Connection's name are internal words, so they are under 详细.
-  assert.deepEqual(shown.details.map(([name]) => name), ['账户', '工具与版本', '本机连接']);
-  assert.equal(detail('本机连接'), 'Workspace');
-  assert.equal(detail('账户'), 'acct-1', 'without a name the account shows by its id');
-  assert.equal(plain(client.projectConfirmation(notOpen(undefined, { accountName: 'Owner' }))).details.find(([name]) => name === '账户')[1], 'Owner');
-  assert.equal(row('智能体'), 'Default agent · 这台电脑 OWNER-PC');
-  for (const tool of TOOLS) assert.ok(detail('工具与版本').includes(tool.id), tool.id);
-  assert.match(detail('工具与版本'), /engineering_work 1\.0\.0/);
-  assert.match(row('档位'), /默认用「宽松」档/);
-  assert.match(row('档位'), /命令和参数不需要事先有依据/);
-  assert.match(row('档位'), /只由你签字的验收标准认定/);
-  assert.doesNotMatch(shown.rows.flat().join('\n'), /engineering_work|本机连接|非严格/, 'no internal word in view');
-  assert.match(shown.footer, /已有的会话不受影响/);
-  assert.doesNotMatch(text, /Board|Action|程序|program|治理|Release|Source|摘要|digest/i, 'no internal terms');
+  const words = row('Tools used').split('. ')[0].split(', ');
+  assert.deepEqual(words, ['Run acceptance checks', 'edit files by patch', 'find files by name', 'check background commands', 'run commands in the background', 'stop background commands', 'list files', 'edit files',
+    'read files', 'read images', 'run commands', 'search file contents', 'run tests', 'see the folder\'s changes', 'write files'], 'one entry per tool, in the order the service lists them');
+  assert.match(row('Tools used'), /From this Agent's installed official engineering capability\.$/);
+  // Batch 5 (design §2): the capability's id and the Connection's name are internal words, so they are under Details.
+  assert.deepEqual(shown.details.map(([name]) => name), ['Account', 'Tools and versions', 'Local connection']);
+  assert.equal(detail('Local connection'), 'Workspace');
+  assert.equal(detail('Account'), 'acct-1', 'without a name the account shows by its id');
+  assert.equal(plain(client.projectConfirmation(notOpen(undefined, { accountName: 'Owner' }))).details.find(([name]) => name === 'Account')[1], 'Owner');
+  assert.equal(row('Agent'), 'Default agent · this computer OWNER-PC');
+  for (const tool of TOOLS) assert.ok(detail('Tools and versions').includes(tool.id), tool.id);
+  assert.match(detail('Tools and versions'), /engineering_work 1\.0\.0/);
+  assert.match(row('Exploration mode'), /use Non-strict mode by default/);
+  assert.match(row('Exploration mode'), /commands and inputs run without needing evidence first/);
+  assert.match(row('Exploration mode'), /decided only by the acceptance criteria you sign/);
+  assert.doesNotMatch(shown.rows.flat().join('\n'), /engineering_work|Local connection|non_strict/, 'no internal word in view');
+  assert.match(shown.footer, /Existing conversations are not affected/);
+  assert.doesNotMatch(text, /\bBoard\b|\bAction\b|程序|\bprogram\b|治理|Release|Source|摘要|digest/i, 'no internal terms');
   // The server's list is the truth: other tools, another folder, another computer show as they are.
   // A tool this page has no words for is still listed, by its name without the version; two versions of one tool are one entry.
   const other = plain(client.projectConfirmation(notOpen('/home/o/x', { tools: [{ id: 'eng.new_tool@1' }, { id: 'eng.read@1' }, { id: 'eng.read@2' }],
     computer: { label: '' }, capability: undefined })));
-  assert.equal(other.rows.find(([name]) => name === '所用工具')[1], 'eng.new_tool、读文件。');
-  assert.equal(other.details.find(([name]) => name === '工具与版本')[1], 'eng.new_tool@1、eng.read@1、eng.read@2。');
-  assert.equal(other.rows.find(([name]) => name === '智能体')[1], 'Default agent · 这台电脑 未命名的电脑');
+  assert.equal(other.rows.find(([name]) => name === 'Tools used')[1], 'eng.new_tool, read files.');
+  assert.equal(other.details.find(([name]) => name === 'Tools and versions')[1], 'eng.new_tool@1, eng.read@1, eng.read@2.');
+  assert.equal(other.rows.find(([name]) => name === 'Agent')[1], 'Default agent · this computer unnamed computer');
   // Nothing to confirm when the answer is incomplete or the mode cannot be explained.
   for (const broken of [notOpen('', {}), notOpen(undefined, { tools: [] }), notOpen(undefined, { authorizationVersion: '' }),
     notOpen(undefined, { computer: undefined }), notOpen(undefined, { accountId: '' }), notOpen(undefined, { accountId: undefined })])
     assert.ok(client.projectConfirmation(broken).error);
-  assert.match(client.projectConfirmation(notOpen(undefined, { mode: { requested: 'strict_plus' } })).error, /说明不了要设置的档位/);
+  assert.match(client.projectConfirmation(notOpen(undefined, { mode: { requested: 'strict_plus' } })).error, /cannot explain the mode it would set/);
 });
 
 // A scripted Gateway behind the page's api(): each call takes the next answer, recorded with what was sent.
@@ -275,9 +282,9 @@ test('flow: confirm, open with a fresh request id and the confirmed version, fol
   const open = { agentId: 'agent-1', directory: 'd:/work/game', requestId: 'req-0001', authorizationVersion: 'sha256:v1', expectedAccountId: 'acct-1' };
   const state = ['projects/state', { agentId: 'agent-1', directory: 'd:/work/game' }];
   assert.deepEqual(sent, [state, ['projects/open', open], state, ['projects/open', open], state, state]);
-  assert.ok(f.progress.some((text) => text.includes('第 1 步') && text.includes('调用没有结束')));
-  assert.ok(f.progress.some((text) => text.includes('第 2 步')));
-  assert.ok(f.progress.some((text) => text.includes('第 3 步') && text.includes('宽松')));
+  assert.ok(f.progress.some((text) => text.includes('(step 1 of 3)') && text.includes('a call that has not ended')));
+  assert.ok(f.progress.some((text) => text.includes('(step 2 of 3)')));
+  assert.ok(f.progress.some((text) => text.includes('(step 3 of 3)') && text.includes('Non-strict')));
   assert.ok(f.waits.every((ms) => ms > 0 && ms <= 2000), 'short pauses only');
 });
 
@@ -291,7 +298,7 @@ test('flow: an open folder needs no dialog; cancelling sends nothing; a Console-
   s = scripted([{ ok: true, ...notOpen(undefined, { state: 'unavailable', recovery: 'console' }) }]); f = flowUi();
   const conflict = plain(await client.openProjectFlow({ api: s.api, agentId: 'agent-1', directory: 'D:\\Work\\game', ui: f.ui, newRequestId: ids() }));
   assert.equal(conflict.outcome, 'refused');
-  assert.match(conflict.text, /另一项授权占用/);
+  assert.match(conflict.text, /already held by another grant/);
 });
 
 test('flow: a terminal state asks again, and only a new confirmation (new request id) opens again', async () => {
@@ -302,11 +309,11 @@ test('flow: a terminal state asks again, and only a new confirmation (new reques
   const result = await client.openProjectFlow({ api: s.api, agentId: 'agent-1', directory: 'D:\\Work\\game', ui: f.ui, newRequestId: ids() });
   assert.equal(result.outcome, 'ready');
   assert.equal(f.asked.length, 2);
-  assert.match(f.asked[1].note, /档位又被改回去了/);
+  assert.match(f.asked[1].note, /exploration mode was changed back/);
   const opens = s.sent.filter(([route]) => route === 'projects/open').map(([, body]) => [body.requestId, body.authorizationVersion]);
   assert.deepEqual(opens, [['req-0001', 'sha256:v1'], ['req-0002', 'sha256:v2']]);
   // Each terminal state says why the owner is asked again; a state read that finds one asks again the same way.
-  for (const [state, words] of [['opened_elsewhere', /不是在这台电脑上确认的/], ['mode_refused', /多次没有成功/], ['revoked', /授权已经收回/]]) {
+  for (const [state, words] of [['opened_elsewhere', /was not confirmed on this computer/], ['mode_refused', /did not succeed several times/], ['revoked', /grant has been withdrawn/]]) {
     const again = scripted([{ ok: true, ...notOpen(undefined, { state, recovery: 'confirm_again' }) }, { ok: true, ...notOpen(undefined, { state: 'ready' }) }]);
     const g = flowUi();
     assert.equal((await client.openProjectFlow({ api: again.api, agentId: 'agent-1', directory: 'D:\\Work\\game', ui: g.ui, newRequestId: ids() })).outcome, 'ready');
@@ -318,7 +325,7 @@ test('flow: a terminal state asks again, and only a new confirmation (new reques
   const h = flowUi();
   assert.equal((await client.openProjectFlow({ api: retry.api, agentId: 'agent-1', directory: 'D:\\Work\\game', ui: h.ui, newRequestId: ids() })).outcome, 'ready');
   assert.equal(h.asked.length, 1);
-  assert.ok(h.progress.some((text) => text.includes('正在重试')));
+  assert.ok(h.progress.some((text) => text.includes('retrying')));
 });
 
 const opensOf = (s) => s.sent.filter(([route]) => route === 'projects/open').map(([, body]) => [body.requestId, body.authorizationVersion]);
@@ -337,7 +344,7 @@ test('flow: content changed after the confirmation is shown again; a lost reply 
   const result = await client.openProjectFlow({ api: s.api, agentId: 'agent-1', directory: 'D:\\Work\\game', ui: f.ui, newRequestId: ids() });
   assert.equal(result.outcome, 'ready');
   assert.equal(f.asked.length, 2);
-  assert.match(f.asked[1].note, /变了/);
+  assert.match(f.asked[1].note, /changed after you confirmed/);
   assert.deepEqual(opensOf(s), [['req-0001', 'sha256:v1'], ['req-0002', 'sha256:v3'], ['req-0002', 'sha256:v3'], ['req-0002', 'sha256:v3']],
     'after the content changed a new confirmation; after a lost reply the same request');
   assert.deepEqual(routesOf(s), ['state', 'open', 'state', 'open', 'state', 'open', 'state', 'open'], 'every resend follows a state read');
@@ -352,14 +359,14 @@ test('flow: a withdrawal, other content or a recorded opening found before a res
   let f = flowUi();
   assert.equal((await client.openProjectFlow({ api: s.api, agentId: 'agent-1', directory: 'D:\\Work\\game', ui: f.ui, newRequestId: ids() })).outcome, 'ready');
   assert.deepEqual(opensOf(s), [['req-0001', 'sha256:v1'], ['req-0002', 'sha256:v9']]);
-  assert.match(f.asked[1].note, /授权已经收回/);
+  assert.match(f.asked[1].note, /grant has been withdrawn/);
   // The open's reply was lost and the content is now different: ask again rather than resend.
   s = scripted([{ ok: true, ...notOpen() }, new TypeError('fetch failed'), { ok: true, ...notOpen(undefined, { authorizationVersion: 'sha256:v2' }) },
     { ok: true, ...notOpen(undefined, { state: 'ready' }) }]);
   f = flowUi();
   assert.equal((await client.openProjectFlow({ api: s.api, agentId: 'agent-1', directory: 'D:\\Work\\game', ui: f.ui, newRequestId: ids() })).outcome, 'ready');
   assert.deepEqual(opensOf(s), [['req-0001', 'sha256:v1'], ['req-0002', 'sha256:v2']]);
-  assert.match(f.asked[1].note, /变了/);
+  assert.match(f.asked[1].note, /changed after you confirmed/);
   // The open's reply was lost but the opening was recorded: follow it, nothing is resent.
   s = scripted([{ ok: true, ...notOpen() }, new TypeError('fetch failed'), pending('program'), { ok: true, ...notOpen(undefined, { state: 'ready' }) }]);
   f = flowUi();
@@ -374,14 +381,14 @@ test('flow: at most three confirmations, three failed calls in a row, three chan
   let f = flowUi();
   let result = plain(await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: f.ui, newRequestId: ids() }));
   assert.equal(result.outcome, 'refused');
-  assert.match(result.text, /多次没有打开成功/);
+  assert.match(result.text, /did not open after several tries/);
   assert.equal(f.asked.length, 3);
   assert.equal(opensOf(s).length, 3);
   const lost = () => new TypeError('fetch failed');
   s = scripted([{ ok: true, ...notOpen() }, lost(), lost(), lost(), lost()]);
   f = flowUi();
   result = plain(await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: f.ui, newRequestId: ids() }));
-  assert.deepEqual(result, { outcome: 'refused', text: '没有打开项目：fetch failed' }, 'the reason is never hidden');
+  assert.deepEqual(result, { outcome: 'refused', text: 'Project not opened: fetch failed' }, 'the reason is never hidden');
   assert.deepEqual(routesOf(s), ['state', 'open', 'state', 'state', 'state'], 'three retries, all state reads, then it stops');
   assert.deepEqual(f.waits, [1000, 1000, 1000]);
   const changed = (v) => [{ ok: false, errorCode: 'authorization_changed', teaching: 'changed' }, { ok: true, ...notOpen(undefined, { authorizationVersion: v }) }];
@@ -390,18 +397,18 @@ test('flow: at most three confirmations, three failed calls in a row, three chan
   f = flowUi();
   result = plain(await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: f.ui, newRequestId: ids() }));
   assert.equal(result.outcome, 'refused');
-  assert.match(result.text, /确认之后又变了/);
+  assert.match(result.text, /changed after you confirmed/);
   assert.equal(f.asked.length, 3);
   assert.deepEqual(opensOf(s), [['req-0001', 'sha256:v1'], ['req-0002', 'sha256:v2'], ['req-0003', 'sha256:v3']]);
 });
 
-test('flow: refusals read in plain Chinese and are not retried', async () => {
+test('flow: refusals read in plain words and are not retried', async () => {
   const cases = {
-    not_authorized: /没有被授权使用这个智能体/, account_changed: /账户和刚才显示的不一样/,
-    connection_not_of_this_device: /不是这台电脑自己设置的/, client_authority_refused: /只能由服务端决定/,
-    device_revoked: /重新登录/, official_capability_not_installed: /没有装官方编程能力/,
-    project_directory_in_use: /另一项授权占用/, project_nested: /重叠/, platform_mismatch: /写法/,
-    worker_tools_unavailable: /这台电脑还没有报告要用的工具/, not_signed_in: /没有登录 Rulith/, manager_signing_out: /正在退出/, manager_closing: /正在关闭/,
+    not_authorized: /not authorized to use this Agent/, account_changed: /is not the one shown a moment ago/,
+    connection_not_of_this_device: /was not set up by this computer/, client_authority_refused: /only the service may decide/,
+    device_revoked: /Sign in again/, official_capability_not_installed: /does not have the official engineering capability installed/,
+    project_directory_in_use: /already held by another grant/, project_nested: /overlap/, platform_mismatch: /is not written the way/,
+    worker_tools_unavailable: /has not reported the tools it needs/, not_signed_in: /not signed in to Rulith/, manager_signing_out: /signing out/, manager_closing: /is closing/,
   };
   for (const [code, words] of Object.entries(cases)) {
     const s = scripted([{ ok: true, ...notOpen() }, { ok: false, errorCode: code, teaching: 'English teaching' }]);
@@ -411,15 +418,15 @@ test('flow: refusals read in plain Chinese and are not retried', async () => {
     assert.equal(s.sent.length, 2, code + ' is not retried');
   }
   // A refusal made before anything was sent shows its own words; a path the Gateway rejects shows the Gateway's reason.
-  let s = scripted([{ ok: false, errorCode: 'folder_invalid', teaching: '这台电脑上没有这个文件夹：D:\\x' }]);
+  let s = scripted([{ ok: false, errorCode: 'folder_invalid', teaching: 'This computer has no such folder: D:\\x' }]);
   assert.equal((await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: flowUi().ui, newRequestId: ids() })).text,
-    '没有打开项目：这台电脑上没有这个文件夹：D:\\x');
-  assert.match(client.refusalText({ errorCode: 'bad_command', teaching: 'A whole drive or share cannot be opened as a project; choose a folder in it.' }), /^这个文件夹不能作为项目打开：整个磁盘或共享不能作为项目打开，请选其中的一个文件夹。$/);
+    'Project not opened: This computer has no such folder: D:\\x');
+  assert.match(client.refusalText({ errorCode: 'bad_command', teaching: 'A whole drive or share cannot be opened as a project; choose a folder in it.' }), /^This folder cannot be opened as a project: A whole drive or share cannot be opened as a project; choose a folder in it\.$/);
   // The setup before opening stopped where only the owner can decide (SYS-LOCAL-01): the words point to the place that asks.
   for (const code of ['runtime_credential_exists', 'connection_rejected', 'connection_missing'])
-    assert.match(client.refusalText({ errorCode: code, teaching: 'English reason' }), /「这台电脑」里对它点「在本机设置」，确认.*后再打开文件夹/, code);
-  assert.match(client.refusalText({ errorCode: 'worker_taken_over' }), /接走了.*「在本机设置」/);
-  assert.match(client.refusalText({ errorCode: 'local_setup_connection_in_use', teaching: 'English reason' }), /正在另一台电脑上工作.*没有另建一份/);
+    assert.match(client.refusalText({ errorCode: code, teaching: 'English reason' }), /“Set up on this computer” for it under This computer in Settings, confirm .*then open the folder again/, code);
+  assert.match(client.refusalText({ errorCode: 'worker_taken_over' }), /took over.*“Set up on this computer”/);
+  assert.match(client.refusalText({ errorCode: 'local_setup_connection_in_use', teaching: 'English reason' }), /working on another computer.*did not create another copy/);
   // The mode cannot be explained: no dialog, nothing opened.
   s = scripted([{ ok: true, ...notOpen(undefined, { mode: { requested: 'unknown_mode' } }) }]);
   const f = flowUi();
@@ -433,8 +440,8 @@ test('flow: waiting is bounded and the owner can stop during a wait; the words c
   const f = flowUi();
   const waited = plain(await client.openProjectFlow({ api: s.api, agentId: 'a', directory: 'D:\\x', ui: f.ui, newRequestId: ids(), maxWaitMs: 4000 }));
   assert.equal(waited.outcome, 'waiting');
-  assert.match(waited.text, /会从当前进度继续，或重新请你确认/);
-  assert.doesNotMatch(waited.text, /不会丢|服务端接着/);
+  assert.match(waited.text, /continues from where it is, or asks you to confirm again/);
+  assert.doesNotMatch(waited.text, /never lost|the service goes on/);
   assert.ok(f.waits.reduce((a, b) => a + b, 0) >= 4000);
   // Stopped while waiting between reads, and while waiting after a lost reply: nothing more is sent.
   for (const second of [pending(), new TypeError('fetch failed')]) {
@@ -444,15 +451,15 @@ test('flow: waiting is bounded and the owner can stop during a wait; the words c
     g.ui.wait = async () => { stop = true; };
     g.ui.stopped = () => stop;
     const stopped = plain(await client.openProjectFlow({ api: t.api, agentId: 'a', directory: 'D:\\x', ui: g.ui, newRequestId: ids() }));
-    assert.deepEqual(stopped, { outcome: 'stopped', text: '已停止等待。之后可以在左侧再次打开这个文件夹：会从当前进度继续，或重新请你确认。' });
+    assert.deepEqual(stopped, { outcome: 'stopped', text: 'Stopped waiting. You can open this folder again on the left later: it continues from where it is, or asks you to confirm again.' });
     assert.deepEqual(routesOf(t), ['state', 'open'], 'no call after the owner stopped');
   }
-  assert.doesNotMatch(client.refusalText({ errorCode: 'project_unavailable' }), /接着刚才那次/);
+  assert.doesNotMatch(client.refusalText({ errorCode: 'project_unavailable' }), /goes on with the earlier one/);
 });
 
 test('the conversation panel no longer proposes folders for Console approval', () => {
   const source = fs.readFileSync(new URL('../../harness/web/rulith-dsh-ui/lib/client.js', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /在 Console 确认一次|api\("folder"|使用这个文件夹/);
+  assert.doesNotMatch(source, /在 Console 确认一次|api\("folder"|使用这个文件夹|confirm once in Console|use this folder/);
   const host = fs.readFileSync(new URL('../../harness/web/rulith-runtime.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(host, /\/rulith\/api\/folder|setup\/resources/);
 });

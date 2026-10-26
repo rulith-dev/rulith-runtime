@@ -52,7 +52,7 @@ test('setup routes start the manager operation, read its steps, and wait for it 
   await assert.rejects(routes.ready({ agentId: 'agent-bad', requestId: 'setup-app-0002', mode: 'repair' }),
     (error) => error.message === 'That Connection is in use by a Worker on another computer.' && error.errorCode === 'local_setup_connection_in_use');
   assert.equal(sent.at(-1)[1].mode, 'repair');
-  await assert.rejects(routes.status({ requestId: '../x' }), /缺少要查看的设置请求/);
+  await assert.rejects(routes.status({ requestId: '../x' }), /No setup request was named to look at/);
   // A request id is made when the page sends none, so a new click is a new request.
   await routes.start({ agentId: 'agent-1' });
   assert.match(sent.at(-1)[1].requestId, /^[0-9a-f-]{36}$/);
@@ -248,7 +248,7 @@ test('every turn uses the model saved for its Agent; a running turn keeps its mo
   assert.equal(built.length, 3);
   // Signed out, or switched to an account with no model: the turn is refused, nothing falls back to an earlier key.
   model = { source: 'default', url: '', name: '', key: '' };
-  await assert.rejects(dsh.request(5), /现在登录的账户还没有为这个会话的智能体设置模型/);
+  await assert.rejects(dsh.request(5), /has not set a model for this conversation's Agent yet/);
   // Hosts without dsh's LLM registry (tests, older dsh) are left alone.
   assert.equal(installLiveModels({ on() {} }, { routeFor: () => ({ account: ACCOUNT, model }) }).installed, false);
 });
@@ -369,9 +369,9 @@ test('a conversation\'s turns use only its own Agent\'s model: an Agent not set 
     const refused = conversationModel({ home: dir }, agentId);
     assert.deepEqual(refused.account, ACCOUNT);
     assert.equal(refused.model, undefined);
-    assert.match(refused.refusal, new RegExp(`这个会话属于智能体「${name}」，它没有以现在登录的账户在这台电脑上设置`));
+    assert.match(refused.refusal, new RegExp(`This conversation belongs to Agent “${name}”, which is not set up on this computer under the account signed in now`));
   }
-  assert.match(conversationModel({ home: home(t, { signedIn: false }) }, 'agent-1').refusal, /没有以现在登录的账户在这台电脑上设置/);
+  assert.match(conversationModel({ home: home(t, { signedIn: false }) }, 'agent-1').refusal, /which is not set up on this computer under the account signed in now/);
   // The live routes: the refused turn and the conversation's compaction send nothing, not even to the route its log names.
   const dsh = fakeDsh();
   let answer = { account: ACCOUNT, model: { source: 'default', url: 'https://x.example/v1', name: 'model-x', key: 'key-x' } };
@@ -380,9 +380,9 @@ test('a conversation\'s turns use only its own Agent\'s model: an Agent not set 
   const before = await dsh.request(1);
   dsh.header = { config: { provider: before.provider, model: 'model-x' } };
   answer = conversationModel({ home: dir }, 'agent-a');
-  await assert.rejects(dsh.request(2), /这个会话属于智能体「Alpha」/);
+  await assert.rejects(dsh.request(2), /This conversation belongs to Agent “Alpha”/);
   await assert.rejects(dsh.side({ purpose: 'compaction', sessionId: 's-1', provider: before.provider, model: 'model-x', messages: [] }),
-    /这个会话属于智能体「Alpha」/);
+    /This conversation belongs to Agent “Alpha”/);
   assert.equal(dsh.registered.has(before.provider), true, 'the same account: its routes stay for its other conversations');
 });
 
@@ -416,7 +416,7 @@ test('the host routes a conversation by the Agent recorded for it, attached or n
     origin: ACCOUNT.origin, account: { id: 'acct-b', name: 'Other' }, agents: [{ id: 'agent-b', name: 'B' }] }));
   await fs.promises.writeFile(path.join(dir, 'model-defaults.json'), JSON.stringify({ version: 1, defaults: [
     { origin: ACCOUNT.origin, accountId: 'acct-b', url: 'https://b.example/v1', name: 'model-b', key: 'key-b' }] }));
-  await assert.rejects(request(2), /这个会话属于智能体「agent-1」，它没有以现在登录的账户在这台电脑上设置/);
+  await assert.rejects(request(2), /This conversation belongs to Agent “agent-1”, which is not set up on this computer under the account signed in now/);
   assert.equal([...registered.keys()].length, 0, 'nothing of either account is serving this conversation');
 });
 
@@ -495,9 +495,9 @@ test('the host serves setup and model on its guarded API; choosing an Agent not 
   await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } }, connection: { admit: () => ({ peer: {} }) } },
     { managerHome: dir, runtimeEntry: 'fixture-runtime', keyFile, shadow: { enabled: false } });
   t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
-  const call = async (method, route, body) => {
+  const call = async (method, route, body, headers = {}) => {
     const req = new EventEmitter();
-    Object.assign(req, { method, url: '/rulith/api/' + route, headers: { host: '127.0.0.1:3080', 'x-deep-rulith': '1' } });
+    Object.assign(req, { method, url: '/rulith/api/' + route, headers: { host: '127.0.0.1:3080', 'x-deep-rulith': '1', ...headers } });
     let reply;
     const done = server.handler(req, { writeHead() {}, end(text) { reply = JSON.parse(text); } });
     queueMicrotask(() => { if (body) req.emit('data', JSON.stringify(body)); req.emit('end'); });
@@ -522,7 +522,25 @@ test('the host serves setup and model on its guarded API; choosing an Agent not 
   assert.deepEqual(sent.at(-1)[1], { requestId: 'setup-host-0003', agentId: 'agent-2', mode: 'setup' });
   assert.equal(sent.some(([, body]) => body && Object.hasOwn(body, 'newConnection')), false);
   // The Agent radio list and the Worker checkbox are gone from the page, and so are their routes.
-  for (const route of ['select', 'worker']) assert.match((await call('POST', route, { agentId: 'agent-1' })).teaching, /没有这个 Rulith 接口/);
+  for (const route of ['select', 'worker']) assert.match((await call('POST', route, { agentId: 'agent-1' })).teaching, /There is no such Rulith route/);
+  // D-1025b: each request is answered in the language it names (one that names none, in English), and the host marks its
+  // own sentences so the page shows them as they are (a manager's or the Gateway's words get the page's sentence first).
+  const { currentLocale } = await import('../../harness/web/ui-texts.mjs');
+  assert.deepEqual(await call('POST', 'select', {}, { 'x-rulith-locale': 'zh' }), { ok: false, teaching: '没有这个 Rulith 接口。', own: true });
+  assert.equal(currentLocale(), 'zh', 'words said outside a request follow the page that last named its language');
+  // Two requests in flight at once, in two languages: each answer is in its own request's language.
+  const [zhAnswer, enAnswer, unnamed] = await Promise.all([
+    call('GET', 'setup?requestId=../x', undefined, { 'x-rulith-locale': 'zh' }),
+    call('GET', 'setup?requestId=../x', undefined, { 'x-rulith-locale': 'en' }),
+    call('GET', 'setup?requestId=../x')]);
+  assert.deepEqual(zhAnswer, { ok: false, teaching: '缺少要查看的设置请求。', errorCode: 'setup_unknown', own: true });
+  assert.deepEqual(enAnswer, { ok: false, teaching: 'No setup request was named to look at.', errorCode: 'setup_unknown', own: true });
+  assert.deepEqual(unnamed, enAnswer, 'a request that names no language is answered in English');
+  assert.deepEqual(await call('POST', 'worker', {}), { ok: false, teaching: 'There is no such Rulith route.', own: true });
+  // Before the session gate passes nothing the request says is read, its language included.
+  assert.deepEqual(await call('POST', 'worker', {}, { 'x-deep-rulith': '0', 'x-rulith-locale': 'zh' }),
+    { ok: false, teaching: 'Only Rulith requests sent by this page are accepted.', own: true });
+  assert.equal(currentLocale(), 'en', 'the last admitted page named English');
   // The account entry: the account, this computer and each Agent's state here; no selection, Connection or tool count.
   const summary = await call('GET', 'state');
   assert.deepEqual(Object.keys(summary).sort(), ['account', 'agents', 'computer', 'deviceState', 'ok', 'origin', 'signedIn', 'teaching']);

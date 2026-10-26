@@ -36,7 +36,7 @@ export function loadPage({ reply = () => ({ ok: true }), windowExtra = {} } = {}
   vm.runInNewContext(fs.readFileSync(SOURCE, 'utf8'), {
     window, console, URL, setTimeout: (fn) => { setImmediate(fn); return 0; }, setInterval: () => 0, clearInterval() {},
     fetch: async (url, init = {}) => {
-      const request = { url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : undefined };
+      const request = { url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : undefined, headers: { ...(init.headers || {}) } };
       requests.push(request);
       const answer = await reply(request);
       return { json: async () => answer };

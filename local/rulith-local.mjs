@@ -548,7 +548,7 @@ export function createLocalHost({
       // that answers the stop signal by reporting readiness would otherwise confirm the very
       // start the operator had just cancelled. A signal is a request, not an acknowledgement,
       // so a report that arrives after the request cannot be read as the report the pending
-      // start was waiting for. The event still reaches the Trace stream below, unedited.
+      // start was waiting for. The event still reaches the event stream below, unedited.
       if (event.type === ROLE_READY_EVENT[src] && components[src].child === child && !stopRequested.has(child)) {
         components[src].readyAt = Date.now()
         components[src].managedStop = event.managedStop === true
@@ -842,7 +842,7 @@ export function createLocalHost({
    *
    * A late readiness cannot reach `ready` here either. `wireChild` stops recording readiness for
    * a child once its stop has been requested, so a process that answers the stop signal by
-   * reporting itself ready confirms nothing — the report is still shown in Trace, it simply is
+   * reporting itself ready confirms nothing — the report is still in the event stream, it simply is
    * not evidence for a start the operator has already cancelled.
    *
    * There is deliberately no "replaced by a newer child" outcome. A start is refused while the
@@ -906,13 +906,13 @@ export function createLocalHost({
         ? { ok: true, state: 'stopped', forced, ...(forced ? { teaching:
           `The ${role === 'agent' ? 'Agent' : 'Worker'} was killed after the graceful drain bound; its exit was observed. Work already handed to Rulith may still be running; check Console.` } : {}) }
         : { ok: true, state: 'stopping', forced, teaching:
-            `The ${forced ? 'forced termination' : 'stop'} request was sent to ${role === 'agent' ? 'the Agent' : 'the Worker'}, and its exit has not been observed. It is still listed as running; check Trace and Console.` } }
+            `The ${forced ? 'forced termination' : 'stop'} request was sent to ${role === 'agent' ? 'the Agent' : 'the Worker'}, and its exit has not been observed. It is still listed as running; check Settings → Advanced → Diagnosis in the Rulith app and this Agent in Console before starting it again.` } }
     }
     if (error === null && operation === 'start') {
       const named = role === 'agent' ? 'Agent' : 'Worker'
       const { outcome, exited } = await confirmStart(role)
       if (outcome === 'exited') {
-        error = `${named} exited during startup. Open Trace for the exact diagnostic and fix the missing local configuration before retrying.`
+        error = `${named} exited during startup. Check Settings → Advanced → Diagnosis in the Rulith app (isolation and Rulith's folders) and fix the missing local configuration before retrying.`
       } else if (outcome === 'cancelled') {
         // Said as a cancellation, not a defect: the operator stopped it, and there is
         // nothing here for them to go and fix. What is *not* claimed is that it has gone —

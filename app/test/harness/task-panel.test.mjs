@@ -11,7 +11,7 @@ import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
 import { loadPage, nodes, text, plain, flush } from './browser-page.mjs';
 // PSC 0.2.29 (D-1025a) fixes the local client's signing texts verbatim: every assertion below reads them from one table.
-import * as PSC from './psc-0.2.29-text.mjs';
+import * as PSC from './psc-0.2.32-text.mjs';
 import { TOOLS } from '../../harness/rulith-mcp.mjs';
 import { apply, consoleGoalsUrl, consoleRuntimeUrl, conversationView } from '../../harness/web/rulith-runtime.mjs';
 
@@ -46,22 +46,22 @@ function panel(page, { board = boardData(), conversation = state(awaiting()), wo
 }
 const signRequests = (page) => page.posted('conversation/sign-acceptance');
 
-test('the 任务 panel before a Board, while reading, unreadable and before setup: one plain sentence instead of an empty panel', () => {
+test('the Tasks panel before a Board, while reading, unreadable and before setup: one plain sentence instead of an empty panel', () => {
   const page = loadPage();
   const only = (data) => { const m = panel(page, data); const shown = m.render(); return [text(shown), !!find(shown, attr('data-rulith-panel-message'))]; };
   assert.deepEqual(only({ board: { ok: true, available: true, view: null }, conversation: { ok: true, found: false } }),
-    ['这个会话还没有开始任务。说出你要做的事，开始后这里显示任务、验收标准和最近操作。', true]);
-  assert.deepEqual(only({ board: null }), ['正在读取…', true]);
-  assert.deepEqual(only({ board: { ok: true, available: true, view: null }, conversation: null }), ['正在读取…', true]);
-  assert.deepEqual(only({ board: { ok: true, available: false } }), ['还没有接入 Rulith：先登录，再在左侧为智能体「在本机设置」。', true]);
-  // The host's words, in Chinese, are shown as they are; an English sentence gives way to the panel's own (batch 5).
-  assert.deepEqual(only({ board: { ok: false, teaching: '这个会话的智能体还没有在这台电脑上设置好：先在左侧为它「在本机设置」。' } }),
-    ['这个会话的智能体还没有在这台电脑上设置好：先在左侧为它「在本机设置」。', true]);
-  assert.deepEqual(only({ board: { ok: false, teaching: 'Choose an Agent first' } }), ['读不到 Rulith：Choose an Agent first', true],
+    ['This conversation has not started a task yet. Say what you want done; once it starts, its task, acceptance criteria and recent operations show here.', true]);
+  assert.deepEqual(only({ board: null }), ['Reading…', true]);
+  assert.deepEqual(only({ board: { ok: true, available: true, view: null }, conversation: null }), ['Reading…', true]);
+  assert.deepEqual(only({ board: { ok: true, available: false } }), ['Rulith is not connected yet: sign in, then choose “Set up on this computer” for an Agent on the left.', true]);
+  // The host's words, a sentence in the page's language, are shown as they are; a fragment follows the panel's own (batch 5).
+  assert.deepEqual(only({ board: { ok: false, own: true, teaching: 'This conversation\'s Agent is not set up on this computer yet: choose “Set up on this computer” for it on the left first.' } }),
+    ['This conversation\'s Agent is not set up on this computer yet: choose “Set up on this computer” for it on the left first.', true]);
+  assert.deepEqual(only({ board: { ok: false, teaching: 'Choose an Agent first' } }), ['Could not read Rulith: Choose an Agent first', true],
     'a reason the page has no words for is shown after the page\'s own sentence, never hidden');
   // A conversation whose Board exists but whose results this process has not seen yet shows what its state says.
   const m = panel(page, { board: { ok: true, available: true, view: null }, conversation: state([]) });
-  assert.match(text(m.render()), /任务这个会话的下一个结果到来后，这里显示它的任务。/);
+  assert.match(text(m.render()), /TasksThis conversation's tasks show here once its next result arrives\./);
 });
 
 test('running: the task in plain words, its criteria and whether each holds, plain operations, and this computer online', () => {
@@ -82,47 +82,47 @@ test('running: the task in plain words, its criteria and whether each holds, pla
   const shown = m.render();
   assert.equal(find(shown, attr('data-rulith-awaiting-signature')), undefined, 'nothing to sign: no card at the top');
   const tasks = nodes(shown).filter(attr('data-rulith-task')).map(text);
-  assert.deepEqual(tasks, ['写 fizzbuzz.py进行中', '（没有名字的任务）已暂停', '统计单词已完成（验收通过）'], 'open tasks first; never a node id');
+  assert.deepEqual(tasks, ['写 fizzbuzz.pyRunning', '(Unnamed task)Paused', '统计单词Completed (acceptance passed)'], 'open tasks first; never a node id');
   const criteria = nodes(shown).filter(attr('data-rulith-criterion')).map(text);
   assert.equal(criteria.length, 2);
-  assert.match(criteria[0], /^unittest 在 fizzbuzz\.py 上通过成立 · 已签字eng\.check_passed\(key: game:unit:sha256:abababab…\)$/);
-  assert.match(criteria[1], /^输出 1 到 100未成立 · 已签字/);
+  assert.match(criteria[0], /^unittest 在 fizzbuzz\.py 上通过Holds · Signedeng\.check_passed\(key: game:unit:sha256:abababab…\)$/);
+  assert.match(criteria[1], /^输出 1 到 100Does not hold · Signed/);
   const operations = nodes(shown).filter(attr('data-rulith-operation')).map(text);
-  assert.deepEqual(operations.map((line) => line.replace(/\d\d:\d\d$/, '')), ['运行测试：通过', '写入 fizzbuzz.py', '开始任务']);
-  assert.equal(text(find(shown, attr('data-rulith-computer'))), 'VS-STATION · 在线');
+  assert.deepEqual(operations.map((line) => line.replace(/\d\d:\d\d$/, '')), ['Run tests: passed', 'Write fizzbuzz.py', 'Start a task']);
+  assert.equal(text(find(shown, attr('data-rulith-computer'))), 'VS-STATION · Online');
   assert.equal(find(shown, attr('data-rulith-computer')).props['data-rulith-computer'], 'online');
   // No internal word, id or code anywhere but the criterion lines' small text.
   const plainText = text(shown).replace(/eng\.check_passed\([^)]*\)/g, '');
   assert.doesNotMatch(plainText, /goal-\d|leaf-|worker_|eng\.|Execute|running|completed|confirmed|租约|席位|等签收|Board|代）/);
-  assert.match(text(shown), /^智能体：Default agent刷新/);
+  assert.match(text(shown), /^Agent: Default agentRefresh/);
 });
 
-test('awaiting signature: the criteria card goes to the top, with each leaf, its criterion in small text, and 签下这些标准', () => {
+test('awaiting signature: the criteria card goes to the top, with each leaf, its criterion in small text, and Sign these criteria', () => {
   const page = loadPage();
   const m = panel(page);
   const shown = m.render();
   const panelNode = find(shown, attr('data-rulith-task-panel'));
-  const order = panelNode.children.map((child) => (child.props['data-rulith-awaiting-signature'] ? 'card' : text(child).slice(0, 4)));
-  assert.equal(order[1], 'card', 'the card comes right after the header, before 任务');
-  assert.ok(order.indexOf('card') < order.findIndex((label) => label.startsWith('任务')));
+  const order = panelNode.children.map((child) => (child.props['data-rulith-awaiting-signature'] ? 'card' : text(child).slice(0, 5)));
+  assert.equal(order[1], 'card', 'the card comes right after the header, before Tasks');
+  assert.ok(order.indexOf('card') < order.findIndex((label) => label.startsWith('Tasks')));
   const card = find(shown, attr('data-rulith-awaiting-signature', 'goal-7'));
-  assert.match(text(card), /^待你签字的验收标准写 fizzbuzz\.py/);
+  assert.match(text(card), /^Proposed acceptance criteria写 fizzbuzz\.py/);
   const leaf = (node) => text(find(card, attr('data-rulith-leaf', node)));
   assert.equal(leaf('leaf-a'), 'unittest 在 fizzbuzz.py 上通过eng.check_passed(key: game:unit:sha256:abababab…)');
-  assert.match(leaf('leaf-b'), /^输出 1 到 100已签/);
-  assert.match(leaf('leaf-c'), /^代码好读不能作为验收标准work\.note\(text: readable\)$/);
-  assert.match(leaf('leaf-d'), /^旧的检查已签签字后会被替换eng\.check_passed\(check: old, spec_digest: sha256:abababab…\)$/);
-  assert.equal(text(find(card, attr('data-rulith-sign', 'goal-7'))), '签下这些标准');
-  assert.equal(text(find(shown, attr('data-rulith-task', 'goal-7'))), '写 fizzbuzz.py等你签字');
+  assert.match(leaf('leaf-b'), /^输出 1 到 100Signed/);
+  assert.match(leaf('leaf-c'), /^代码好读Not a criterionwork\.note\(text: readable\)$/);
+  assert.match(leaf('leaf-d'), /^旧的检查SignedWill be replacedeng\.check_passed\(check: old, spec_digest: sha256:abababab…\)$/);
+  assert.equal(text(find(card, attr('data-rulith-sign', 'goal-7'))), 'Sign these criteria');
+  assert.equal(text(find(shown, attr('data-rulith-task', 'goal-7'))), '写 fizzbuzz.pyWaiting for your signature');
   // Every criterion of the goal, signed or not, in 验收标准与状态.
   assert.deepEqual(nodes(shown).filter(attr('data-rulith-criterion')).map((row) => text(row).split('eng.')[0].split('work.')[0]),
-    ['unittest 在 fizzbuzz.py 上通过成立 · 未签字', '输出 1 到 100未成立 · 已签字', '代码好读还没读到是否成立 · 不能作为验收标准', '旧的检查还没读到是否成立 · 已签字']);
+    ['unittest 在 fizzbuzz.py 上通过Holds · Not signed', '输出 1 到 100Does not hold · Signed', '代码好读Not read yet whether it holds · Not a criterion', '旧的检查Not read yet whether it holds · Signed']);
   // Only a leaf that is not a criterion is left unsigned: nothing waits for the person, so no card; it says why in its row.
   const noteOnly = panel(page, { conversation: state(awaiting({ leaves: [LEAVES[1], LEAVES[2]] })) }).render();
   assert.equal(find(noteOnly, attr('data-rulith-awaiting-signature')), undefined);
-  assert.equal(text(find(noteOnly, attr('data-rulith-task', 'goal-7'))), '写 fizzbuzz.py等你签字在 Console 里验收',
+  assert.equal(text(find(noteOnly, attr('data-rulith-task', 'goal-7'))), '写 fizzbuzz.pyWaiting for your signatureAccept in Console',
     'a goal waiting for acceptance with nothing to sign here is accepted in Console');
-  assert.match(text(find(noteOnly, attr('data-rulith-criterion', 'leaf-c'))), /· 不能作为验收标准/);
+  assert.match(text(find(noteOnly, attr('data-rulith-criterion', 'leaf-c'))), /· Not a criterion/);
   assert.equal(signRequests(page).length, 0, 'drawing the panel signs nothing');
   // A criterion that is not JSON is shown as it is, on one line.
   const plainCriterion = panel(page, { conversation: state(awaiting({ leaves: [{ node: 'leaf-x', label: 'x', criterion: 'eng.check_passed(\n key)', signed: false, eligible: true }] })) });
@@ -136,7 +136,7 @@ test('signable:false and a shortened list: the reason in Chinese and no button; 
     const shown = card({ signable: false, refusal, leaves: LEAVES.map((leaf) => ({ ...leaf, eligible: false })) });
     assert.equal(find(shown, attr('data-rulith-sign')), undefined, refusal);
     assert.equal(find(shown, attr('data-rulith-leaf-ineligible')), undefined, 'the reason is the goal\'s, not each leaf\'s');
-    assert.equal(text(find(shown, attr('data-rulith-sign-unavailable'))), PSC.SIGNING.unavailablePrefix + words + '。');
+    assert.equal(text(find(shown, attr('data-rulith-sign-unavailable'))), PSC.fill(PSC.SIGNING.unavailable, { category: words }));
   }
   const truncated = card({ leavesTruncated: true });
   assert.equal(find(truncated, attr('data-rulith-sign')), undefined, 'a shortened list would replace leaves this page never saw');
@@ -146,44 +146,44 @@ test('signable:false and a shortened list: the reason in Chinese and no button; 
   // awaitingSignature: null — the service cannot tell now.
   let shown = panel(page, { conversation: state(null) }).render();
   assert.equal(find(shown, attr('data-rulith-awaiting-signature')), undefined);
-  assert.equal(text(find(shown, attr('data-rulith-awaiting-unknown'))), '暂时读不到待签字的标准');
-  assert.doesNotMatch(text(shown), /还没有验收标准/);
+  assert.equal(text(find(shown, attr('data-rulith-awaiting-unknown'))), 'The criteria awaiting your signature cannot be read right now');
+  assert.doesNotMatch(text(shown), /No acceptance criteria yet/);
   // Absent (an older service): the same, whatever the cached results show.
   const conversation = { ok: true, found: true, conversation: { boardId: 'board-1' } };
   for (const board of [boardData(), boardData({ view: { goals: { directory: [{ goal: 'goal-7', label: '写 fizzbuzz.py', status: 'running' }] } } })]) {
     shown = panel(page, { conversation, board }).render();
-    assert.equal(text(find(shown, attr('data-rulith-awaiting-unknown'))), '暂时读不到待签字的标准');
-    assert.doesNotMatch(text(shown), /还没有验收标准/);
+    assert.equal(text(find(shown, attr('data-rulith-awaiting-unknown'))), 'The criteria awaiting your signature cannot be read right now');
+    assert.doesNotMatch(text(shown), /No acceptance criteria yet/);
   }
   // An ended conversation reports []: nothing to sign; a goal waiting for acceptance with nothing proposed goes to Console.
   shown = panel(page, { conversation: state([]), board: boardData({ casesUrl: 'https://rulith.example/console/#/cases?agentId=a1' }) }).render();
   const task = find(shown, attr('data-rulith-task', 'goal-7'));
   assert.equal(find(task, (node) => node.tag === 'a').props.href, 'https://rulith.example/console/#/cases?agentId=a1');
-  assert.equal(text(find(task, (node) => node.tag === 'a')), '去 Console 处理');
+  assert.equal(text(find(task, (node) => node.tag === 'a')), 'Handle in Console');
   // More goals than the service lists.
   shown = panel(page, { conversation: { ok: true, found: true, conversation: { awaitingSignature: awaiting(), awaitingSignatureTruncated: true } } }).render();
-  assert.match(text(shown), /还有等签字的任务没有列在这里：请在 Console 里查看。/);
+  assert.match(text(shown), /More tasks await your signature than are listed here: see them in Console\./);
 });
 
-test('a failed state read never claims no Board or nothing to sign: 暂时读不到 with the results there are, and after a restart', () => {
+test('a failed state read never claims no Board or nothing to sign: cannot be read right now, with the results there are, and after a restart', () => {
   const page = loadPage();
   for (const conversation of [{ ok: false, teaching: 'The account service is temporarily unavailable.' }, { ok: false, errorCode: 'conversations_unavailable' },
     { ok: false, teaching: 'Sign in to a Rulith account from the manager first.' }]) {
     // With this process's cached results.
     let shown = panel(page, { conversation, board: boardData({ view: { goals: { directory: [{ goal: 'goal-7', label: '写 fizzbuzz.py', status: 'running' }] } } }) }).render();
-    assert.equal(text(find(shown, attr('data-rulith-awaiting-unknown'))), '暂时读不到待签字的标准', JSON.stringify(conversation));
-    assert.doesNotMatch(text(shown), /还没有验收标准|还没有开始任务/);
-    assert.match(text(shown), /验收标准与状态读到后，这里显示验收标准。/);
+    assert.equal(text(find(shown, attr('data-rulith-awaiting-unknown'))), 'The criteria awaiting your signature cannot be read right now', JSON.stringify(conversation));
+    assert.doesNotMatch(text(shown), /No acceptance criteria yet|has not started a task/);
+    assert.match(text(shown), /Acceptance criteria and statusAcceptance criteria show here once they are read\./);
     // After a restart (no cached results yet) while the service cannot be read: not "no task yet", not "no Board".
     shown = panel(page, { conversation, board: { ok: true, available: true, agentName: 'Default agent', view: null } }).render();
     assert.equal(find(shown, attr('data-rulith-panel-message')), undefined);
-    assert.doesNotMatch(text(shown), /还没有开始任务|还没有验收标准|还没有任务/);
-    assert.match(text(shown), /暂时读不到待签字的标准/);
-    assert.match(text(shown), /任务暂时读不到这个会话的任务：这个会话的下一个结果到来后，这里显示它。/);
+    assert.doesNotMatch(text(shown), /has not started a task|No acceptance criteria yet|No tasks yet/);
+    assert.match(text(shown), /The criteria awaiting your signature cannot be read right now/);
+    assert.match(text(shown), /TasksThis conversation's tasks cannot be read right now: they show here once its next result arrives\./);
   }
   // Only the service's found:false is "no Board yet"; a reply without the field says nothing either way.
-  assert.match(text(panel(page, { conversation: { ok: true, found: false }, board: { ok: true, available: true, view: null } }).render()), /^这个会话还没有开始任务。/);
-  assert.equal(text(panel(page, { conversation: { ok: true }, board: { ok: true, available: true, view: null } }).render()), '正在读取…');
+  assert.match(text(panel(page, { conversation: { ok: true, found: false }, board: { ok: true, available: true, view: null } }).render()), /^This conversation has not started a task yet\./);
+  assert.equal(text(panel(page, { conversation: { ok: true }, board: { ok: true, available: true, view: null } }).render()), 'Reading…');
 });
 
 test('an operation that waits for a person: one sentence and 去 Console 处理; this computer offline points to settings', () => {
@@ -191,31 +191,31 @@ test('an operation that waits for a person: one sentence and 去 Console 处理;
   const waiting = { tool: 'Execute', label: 'Execute worker_c0ffee_eng_run_1', state: 'waiting_for_decision', decision: "a person's decision in Console", at: '2026-10-24T08:02:00Z' };
   let shown = panel(page, { board: boardData({ recent: [waiting], consoleUrl: 'https://rulith.example/console/#/agents/a1?tab=runtime' }) }).render();
   const decision = find(shown, attr('data-rulith-decision'));
-  assert.equal(text(decision), '有一次操作在等你决定。 去 Console 处理');
+  assert.equal(text(decision), 'An operation is waiting for your decision. Handle in Console');
   assert.equal(find(decision, (node) => node.tag === 'a').props.href, 'https://rulith.example/console/#/agents/a1?tab=runtime');
-  assert.match(text(find(shown, attr('data-rulith-operation'))), /^运行命令：等你决定/);
+  assert.match(text(find(shown, attr('data-rulith-operation'))), /^Run commands: waiting for your decision/);
   // Without a Console address (signed out, say) the sentence still says where; a person's reconciliation reads as such.
   shown = panel(page, { board: boardData({ recent: [{ ...waiting, state: 'needs_person' }] }) }).render();
-  assert.equal(text(find(shown, attr('data-rulith-decision'))), '有一次操作的结果需要你在 Console 核对。 请在 Console 里处理。');
+  assert.equal(text(find(shown, attr('data-rulith-decision'))), 'An operation\'s result needs you to reconcile it in Console. Handle it in Console.');
   // A goal waiting for a decision says so in 任务, with the same sentence.
   shown = panel(page, { conversation: state([]), board: boardData({ view: { goals: { directory: [{ goal: 'goal-7', label: '写 fizzbuzz.py', status: 'running', awaiting: 'decision' }] } } }) }).render();
-  assert.equal(text(find(shown, attr('data-rulith-task', 'goal-7'))), '写 fizzbuzz.py等你决定');
-  assert.match(text(find(shown, attr('data-rulith-decision'))), /^有一次操作在等你决定。/);
+  assert.equal(text(find(shown, attr('data-rulith-task', 'goal-7'))), '写 fizzbuzz.pyWaiting for your decision');
+  assert.match(text(find(shown, attr('data-rulith-decision'))), /^An operation is waiting for your decision\./);
   // Offline: 在线／离线 only, and where to look.
   shown = panel(page, { worker: { ok: true, available: true, state: 'offline', computer: 'VS-STATION' } }).render();
   const computer = find(shown, attr('data-rulith-computer'));
   assert.equal(computer.props['data-rulith-computer'], 'offline');
-  assert.equal(text(computer), 'VS-STATION · 离线在设置里查看');
+  assert.equal(text(computer), 'VS-STATION · OfflineView in Settings');
   find(computer, (node) => node.tag === 'button').props.onClick();
   assert.deepEqual(plain(page.plugin.settingsView.getSnapshot()), { open: true, section: 'computer' });
-  assert.equal(text(find(panel(page, { worker: null }).render(), attr('data-rulith-computer'))), '正在读取…');
-  assert.equal(text(find(panel(page, { worker: { ok: true, available: false, computer: 'VS-STATION' } }).render(), attr('data-rulith-computer'))), 'VS-STATION · 离线在设置里查看');
+  assert.equal(text(find(panel(page, { worker: null }).render(), attr('data-rulith-computer'))), 'Reading…');
+  assert.equal(text(find(panel(page, { worker: { ok: true, available: false, computer: 'VS-STATION' } }).render(), attr('data-rulith-computer'))), 'VS-STATION · OfflineView in Settings');
   // A Worker state that could not be read is 读不到, never 离线.
   for (const worker of [{ ok: false, teaching: 'the Worker trace answered 500' }, { ok: true, available: true, state: 'unknown', computer: 'VS-STATION' }]) {
     const unread = find(panel(page, { worker }).render(), attr('data-rulith-computer'));
     assert.equal(unread.props['data-rulith-computer'], 'unread');
-    assert.doesNotMatch(text(unread), /离线|在设置里查看/);
-    assert.match(text(unread), /读不到$/);
+    assert.doesNotMatch(text(unread), /Offline|View in Settings/);
+    assert.match(text(unread), /Could not be read$/);
   }
 });
 
@@ -227,10 +227,10 @@ test('a call waiting for a person shows after a restart too, from the Agent\'s H
   const restarted = { ok: true, available: true, agentName: 'Default agent', view: null };
   let shown = panel(page, { board: restarted, conversation: state([]), health: health('waiting') }).render();
   let decision = find(shown, attr('data-rulith-decision'));
-  assert.equal(text(decision), '这个智能体有一次操作在等你决定。 去 Console 处理');
+  assert.equal(text(decision), 'This Agent has an operation waiting for your decision. Handle in Console');
   assert.equal(find(decision, (node) => node.tag === 'a').props.href, 'https://rulith.example/console/#/agents/a1?tab=runtime');
   shown = panel(page, { board: restarted, conversation: state([]), health: health('reconciliation_required') }).render();
-  assert.equal(text(find(shown, attr('data-rulith-decision'))), '这个智能体有一次操作的结果需要你在 Console 核对。 去 Console 处理');
+  assert.equal(text(find(shown, attr('data-rulith-decision'))), 'An operation of this Agent needs you to reconcile its result in Console. Handle in Console');
   // Nothing needs a person, or the read failed: no sentence.
   for (const read of [health('forwarding', { pendingCall: { needsPerson: false, phase: 'forwarding' } }), { ok: true, available: true, pendingCall: null },
     { ok: false, teaching: 'Rulith answered 400' }, null])
@@ -239,7 +239,7 @@ test('a call waiting for a person shows after a restart too, from the Agent\'s H
   const waiting = { tool: 'Execute', label: 'Execute worker_c0ffee_eng_run_1', state: 'waiting_for_decision', at: '2026-10-24T08:02:00Z' };
   shown = panel(page, { board: boardData({ recent: [waiting] }), health: health('waiting') }).render();
   decision = find(shown, attr('data-rulith-decision'));
-  assert.equal(text(decision), '有一次操作在等你决定。 去 Console 处理');
+  assert.equal(text(decision), 'An operation is waiting for your decision. Handle in Console');
   assert.equal(find(decision, (node) => node.tag === 'a').props.href, 'https://rulith.example/console/#/agents/a1?tab=runtime');
 });
 
@@ -249,43 +249,43 @@ test('operation lines are plain one-liners: never a tool id, a state code or a r
   const exec = (action, extra = {}) => ({ tool: 'Execute', label: `Execute worker_c0ffee_eng_${action}_1 → goal-7`, state: 'done', ...extra });
   const withResult = (value) => ({ result: { content: [{ type: 'text', text: JSON.stringify(value) }] } });
   const cases = [
-    [exec('write_file', withResult({ result: { receipt: { path: 'D:\\game\\fizzbuzz.py' } } })), '写入 fizzbuzz.py'],
-    [exec('write_file'), '写文件'],
-    [exec('patch_file', withResult({ result: { path: 'src/app.js' } })), '修改 app.js'],
-    [exec('read', withResult({ result: { path: 'README.md' } })), '读取 README.md'],
-    [exec('test', withResult({ result: { rows: [{ exit_code: 0 }] } })), '运行测试：通过'],
-    [exec('test', withResult({ result: { rows: [{ exit_code: 1 }] } })), '运行测试：没有通过'],
-    [exec('test'), '运行测试'],
-    [exec('acceptance', withResult({ exit_code: 0 })), '运行验收检查：通过'],
-    [exec('run', { state: 'failed', summary: 'the Worker reported failure' }), '运行命令：失败'],
-    [exec('run', { state: 'refused', reason: 'The owner withdrew this grant after this conversation began; nothing was run. A new conversation uses the owner\'s current grants.' }), '被拒绝：项目授权已收回'],
-    [exec('run', { state: 'refused', reason: 'The execution environment for this Action is offline; nothing was run. Try again later or use another Action.' }), '被拒绝：这台电脑不在线'],
-    [exec('run', { state: 'refused', reason: 'A person refused this call. No work was dispatched.' }), '被拒绝：你拒绝了这次操作'],
-    [exec('run', { state: 'refused', summary: 'refused: bad_command', reason: 'command refused' }), '运行命令：被拒绝'],
-    [exec('run', { state: 'refused', contentWithheld: true }), '运行命令：被拒绝'],
-    [exec('run', { state: 'unknown', summary: 'reconciled; the external effect is unknown' }), '运行命令：结果未知，请在 Console 核对'],
-    [exec('job_start', { state: 'running', stage: 'at_worker' }), '在后台运行命令：正在这台电脑上执行'],
-    [exec('run', { state: 'running', stage: 'not_dispatched' }), '运行命令：进行中'],
-    [exec('run', { state: 'waiting_for_decision' }), '运行命令：等你决定'],
-    [exec('run', { state: 'needs_person' }), '运行命令：需要你在 Console 核对'],
-    [{ tool: 'Execute', label: 'Execute write_calculation_result → goal-2', state: 'done' }, '执行一个操作'],
-    [{ tool: 'Execute', label: 'Execute constructor', state: 'done' }, '执行一个操作'],
-    [{ tool: 'Set', label: 'Set', state: 'done', summary: 'declared goal goal-7' }, '开始任务'],
-    [{ tool: 'Set', label: 'Set', state: 'done', summary: '3 nodes written' }, '记下依据'],
-    [{ tool: 'Set', label: 'Set', state: 'done', summary: '3 nodes written; completed goal-7' }, '记下依据'],
-    [{ tool: 'Set', label: 'Set', state: 'done', summary: 'completed goal-7' }, '任务完成（验收通过）'],
-    [{ tool: 'Set', label: 'Set end_goal goal-7', state: 'done', summary: 'ended goal-7 as abandoned' }, '结束任务'],
-    [{ tool: 'Get', label: 'Get artifact art-1', state: 'done' }, '读取结果'],
+    [exec('write_file', withResult({ result: { receipt: { path: 'D:\\game\\fizzbuzz.py' } } })), 'Write fizzbuzz.py'],
+    [exec('write_file'), 'Write files'],
+    [exec('patch_file', withResult({ result: { path: 'src/app.js' } })), 'Edit app.js'],
+    [exec('read', withResult({ result: { path: 'README.md' } })), 'Read README.md'],
+    [exec('test', withResult({ result: { rows: [{ exit_code: 0 }] } })), 'Run tests: passed'],
+    [exec('test', withResult({ result: { rows: [{ exit_code: 1 }] } })), 'Run tests: did not pass'],
+    [exec('test'), 'Run tests'],
+    [exec('acceptance', withResult({ exit_code: 0 })), 'Run acceptance checks: passed'],
+    [exec('run', { state: 'failed', summary: 'the Worker reported failure' }), 'Run commands: failed'],
+    [exec('run', { state: 'refused', reason: 'The owner withdrew this grant after this conversation began; nothing was run. A new conversation uses the owner\'s current grants.' }), 'Refused: the project\'s grant was withdrawn'],
+    [exec('run', { state: 'refused', reason: 'The execution environment for this Action is offline; nothing was run. Try again later or use another Action.' }), 'Refused: this computer is offline'],
+    [exec('run', { state: 'refused', reason: 'A person refused this call. No work was dispatched.' }), 'Refused: you refused this operation'],
+    [exec('run', { state: 'refused', summary: 'refused: bad_command', reason: 'command refused' }), 'Run commands: refused'],
+    [exec('run', { state: 'refused', contentWithheld: true }), 'Run commands: refused'],
+    [exec('run', { state: 'unknown', summary: 'reconciled; the external effect is unknown' }), 'Run commands: result unknown, reconcile it in Console'],
+    [exec('job_start', { state: 'running', stage: 'at_worker' }), 'Run commands in the background: running on this computer'],
+    [exec('run', { state: 'running', stage: 'not_dispatched' }), 'Run commands: in progress'],
+    [exec('run', { state: 'waiting_for_decision' }), 'Run commands: waiting for your decision'],
+    [exec('run', { state: 'needs_person' }), 'Run commands: needs you to reconcile it in Console'],
+    [{ tool: 'Execute', label: 'Execute write_calculation_result → goal-2', state: 'done' }, 'Run an operation'],
+    [{ tool: 'Execute', label: 'Execute constructor', state: 'done' }, 'Run an operation'],
+    [{ tool: 'Set', label: 'Set', state: 'done', summary: 'declared goal goal-7' }, 'Start a task'],
+    [{ tool: 'Set', label: 'Set', state: 'done', summary: '3 nodes written' }, 'Record evidence'],
+    [{ tool: 'Set', label: 'Set', state: 'done', summary: '3 nodes written; completed goal-7' }, 'Record evidence'],
+    [{ tool: 'Set', label: 'Set', state: 'done', summary: 'completed goal-7' }, 'Task completed (acceptance passed)'],
+    [{ tool: 'Set', label: 'Set end_goal goal-7', state: 'done', summary: 'ended goal-7 as abandoned' }, 'End the task'],
+    [{ tool: 'Get', label: 'Get artifact art-1', state: 'done' }, 'Read a result'],
   ];
   for (const [op, words] of cases) {
     const shown = line(op);
     assert.equal(shown.text, words, JSON.stringify(op).slice(0, 120));
-    assert.doesNotMatch(shown.text + (shown.detail || ''), /worker_|eng[._]|Execute|goal-|refused|running|done|source_revoked|bad_command|\bSet\b/);
+    assert.doesNotMatch(shown.text + (shown.detail || ''), /worker_|eng[._]|Execute|goal-|waiting_for_decision|needs_person|at_worker|not_dispatched|source_revoked|bad_command|\bSet\b/);
   }
-  assert.equal(line(cases[9][0]).detail, '运行命令', 'a refusal with its reason keeps what was refused beside it');
+  assert.equal(line(cases[9][0]).detail, 'Run commands', 'a refusal with its reason keeps what was refused beside it');
 });
 
-test('ACC-LOCAL-11 signing in the client: only the dialog\'s 签字 signs; the same request id on retry; 已签字', async () => {
+test('ACC-LOCAL-11 signing in the client: only the dialog\'s Sign signs; the same request id on retry; Signed', async () => {
   const answers = [{ ok: true, state: 'pending' }, { ok: true, state: 'complete', result: { accepted: true } }];
   const page = loadPage({ reply: ({ url }) => (url === '/rulith/api/conversation/sign-acceptance' ? answers.shift()
     : url.startsWith('/rulith/api/conversation?') ? state([]) : { ok: true }) });
@@ -315,7 +315,7 @@ test('ACC-LOCAL-11 signing in the client: only the dialog\'s 签字 signs; the s
   signButton().props.onClick();
   asked = dialog();
   const confirm = find(asked, attr('data-rulith-sign-confirm'));
-  assert.equal(text(confirm), '签字');
+  assert.equal(text(confirm), 'Sign');
   confirm.props.onClick(); confirm.props.onClick();
   assert.equal(plugin.signView.getSnapshot(), null);
   await until(() => answers.length === 0 && m.cells[NOTE]?.state === 'signed');
@@ -352,13 +352,17 @@ test('ACC-LOCAL-11 sign outcomes: each refusal code in words, pending and lost a
   // The Kernel's refusal is a complete control with accepted:false; nothing was signed.
   for (const [code, reason] of [...Object.entries(PSC.SIGN_REASONS), ['bad_command', PSC.SIGNING.unknownReason], ['constructor', PSC.SIGNING.unknownReason]]) {
     const { outcome, sent } = await flow([{ ok: true, state: 'complete', result: { accepted: false, errorCode: code, teaching: 'x' } }]);
-    assert.deepEqual(outcome, { state: 'refused', errorCode: code, text: PSC.SIGNING.refusedPrefix + reason + '。', answered: true }, code);
+    assert.deepEqual(outcome, { state: 'refused', errorCode: code, text: PSC.fill(PSC.SIGNING.refused, { teaching: reason }), answered: true }, code);
     assert.equal(sent.length, 1, 'a refusal is not retried');
   }
   // A refusal of the request itself (4xx with its code) and a complete control without a result are refusals too.
   for (const reply of [{ ok: false, errorCode: 'request_conflict', teaching: 'x' }, { ok: false, errorCode: 'conversation_ended' },
-    { ok: false, teaching: 'Invalid session id.' }, { ok: true, state: 'complete' }])
-    assert.equal((await flow([reply])).outcome.text, PSC.SIGNING.refusedPrefix + PSC.SIGNING.unknownReason + '。');
+    { ok: false }, { ok: true, state: 'complete' }])
+    assert.equal((await flow([reply])).outcome.text, PSC.fill(PSC.SIGNING.refused, { teaching: PSC.SIGNING.unknownReason }));
+  // A refusal without a code says the service's own reason (Console Text A's {teaching}), never "unknown".
+  assert.equal((await flow([{ ok: false, teaching: 'The signing request is incomplete.' }])).outcome.text, 'Nothing was signed: The signing request is incomplete.');
+  assert.equal((await flow([{ ok: true, state: 'complete', result: { accepted: false, teaching: 'This goal is not open.' } }])).outcome.text,
+    'Nothing was signed: This goal is not open.');
   // 202, a 503 or a lost answer (signature_unconfirmed) and a network failure: pending, sent again with the same id.
   const retried = await flow([{ ok: true, state: 'pending' }, { ok: false, errorCode: 'signature_unconfirmed' }, new TypeError('Failed to fetch'),
     { ok: true, state: 'complete', result: { accepted: true } }]);
@@ -381,7 +385,7 @@ test('ACC-LOCAL-11 sign outcomes: each refusal code in words, pending and lost a
   }
   // The Kernel's answer is definite even then.
   assert.deepEqual((await flow([{ ok: true, state: 'pending' }, { ok: true, state: 'complete', result: { accepted: false, errorCode: 'goal_ended' } }])).outcome,
-    { state: 'refused', errorCode: 'goal_ended', text: PSC.SIGNING.refusedPrefix + PSC.SIGN_REASONS.goal_ended + '。', answered: true });
+    { state: 'refused', errorCode: 'goal_ended', text: PSC.fill(PSC.SIGNING.refused, { teaching: PSC.SIGN_REASONS.goal_ended }), answered: true });
   // Still unconfirmed after the last try: it says so, never that nothing was signed.
   const exhausted = await flow([{ ok: true, state: 'pending' }, { ok: true, state: 'pending' }, new Error('offline')], 3);
   assert.deepEqual(exhausted.outcome, { state: 'pending', text: SIGN.pending });
@@ -402,7 +406,7 @@ test('ACC-LOCAL-11 a refused or unconfirmed signature in the panel says so, and 
   find(page.mount(page.plugin.components.SignDialog).render(), attr('data-rulith-sign-confirm')).props.onClick();
   await until(() => m.cells[NOTE]?.state === 'refused');
   let note = find(m.render(), attr('data-rulith-sign-note'));
-  assert.equal(text(note), PSC.SIGNING.refusedPrefix + PSC.SIGN_REASONS.leaf_not_proposed + '。');
+  assert.equal(text(note), PSC.fill(PSC.SIGNING.refused, { teaching: PSC.SIGN_REASONS.leaf_not_proposed }));
   assert.equal(note.props.role, 'alert');
   // Unconfirmed every time: the button waits while it retries, and the note says the outcome is not confirmed.
   m.cells[1] = state(awaiting());
@@ -459,7 +463,7 @@ test('ACC-LOCAL-11 an unconfirmed signature is kept until a state read shows it 
   assert.equal(page.plugin.unconfirmedSignatures.size, 0);
 });
 
-test('the right column opens at most a third of the window, keeps the conversation wide, and registers as 任务', () => {
+test('the right column opens at most a third of the window, keeps the conversation wide, and registers as Tasks', () => {
   const page = loadPage({ windowExtra: { innerWidth: 1600 } });
   const { plugin } = page;
   for (const [width, right] of [[1280, 426], [1600, 533], [1920, 640]]) {
@@ -476,10 +480,10 @@ test('the right column opens at most a third of the window, keeps the conversati
     sidebarRightTabs: { register: (tab) => { tabs.push(tab); return () => {}; } },
     inject(deps, fn) { if (deps[0] === 'layout') fn({ layout, slots }); } });
   assert.deepEqual(set, [533]);
-  assert.equal(tabs[0].title(), '任务');
-  assert.equal(tabs[0].guide[0].description(), '任务、验收标准、最近操作和这台电脑');
+  assert.equal(tabs[0].title(), 'Tasks');
+  assert.equal(tabs[0].guide[0].description(), 'Tasks, acceptance criteria, recent operations and this computer');
   assert.ok(registered.has('shell.overlay|rulith-sign'), 'the signing confirmation is drawn over the whole page');
-  assert.equal(text(registered.get('sidebar.right.pane.tab.title|rulith-dsh-ui/board')()), '任务');
+  assert.equal(text(registered.get('sidebar.right.pane.tab.title|rulith-dsh-ui/board')()), 'Tasks');
   // A layout face without panel actions (another dsh) is left as it is.
   plugin.apply({ slots, effect(fn) { fn(); }, sidebarRight: { mounted: { subscribe() { return () => {}; }, getSnapshot: () => undefined } },
     sidebarRightTabs: { register: () => () => {} }, inject(deps, fn) { if (deps[0] === 'layout') fn({ layout: { toggleSidebar() {} }, slots }); } });
@@ -606,7 +610,7 @@ test('ACC-LOCAL-11 host: the sign route forwards exactly the confirmation and co
   for (const wrong of [{ requestId: 'other-request' }, { agentId: 'agent-2' }, { operation: { kind: 'SignAcceptance', goal: 'goal-7', leaves: ['leaf-a'] } },
     { operation: { kind: 'SetExplorationMode', mode: 'strict' } }, { operation: undefined }]) {
     answer = (body) => [200, record(body, wrong)];
-    assert.deepEqual(await f.post(signBody), { ok: false, teaching: '收到的回答不能确认这次签字。', errorCode: 'signature_unconfirmed' }, JSON.stringify(wrong));
+    assert.deepEqual(await f.post(signBody), { ok: false, teaching: 'The answer received does not confirm this signature.', errorCode: 'signature_unconfirmed', own: true }, JSON.stringify(wrong));
   }
   // The manager's refusal keeps its code; its "no definite answer" stays unconfirmed.
   answer = () => [400, { ok: false, errorCode: 'request_conflict', teaching: 'This request id was used for another operation.' }];

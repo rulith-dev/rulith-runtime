@@ -1,8 +1,8 @@
 {
   "schema": "rulith-psc-conformance-map/v1",
   "repository": "runtime",
-  "contractVersion": "0.2.31",
-  "contractReviewedCommit": "e58682f7ea30670abb80f9077bf8998206196516",
+  "contractVersion": "0.2.32",
+  "contractReviewedCommit": "b07f08094b06c4fc56bb0fab9f00083b787a2b5a",
   "blockers": {
     "contract_changed": "The PSC row changed after this Runtime mapping was made against 0.2.4; its tests must be re-checked against the current clauses before the item can be mapped again (D-1018a reconciliation, 2026-10-18).",
     "evidence_review": "Clause-wide Runtime evidence has not been independently reviewed; existing green tests alone do not establish complete coverage.",

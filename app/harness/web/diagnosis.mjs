@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { rulithBackstop, workBase } from '../../../worker/adapter-confinement.mjs';
 import { homeLabelVerified, protectionProblems } from '../../../local/sandbox-home-label.mjs';
+import { say } from './ui-texts.mjs';
 
 const require = createRequire(import.meta.url);
 const versionAt = (file) => { try { return String(JSON.parse(fs.readFileSync(file, 'utf8')).version ?? ''); } catch { return ''; } };
@@ -26,12 +27,12 @@ const versionAt = (file) => { try { return String(JSON.parse(fs.readFileSync(fil
 export function isolationStatus({ platform = process.platform, roots = [], offFor = [], problems = [], protectedRoot = homeLabelVerified,
   bwrap = () => spawnSync('bwrap', ['--version'], { windowsHide: true }).status === 0 } = {}) {
   if (platform !== 'win32' && platform !== 'linux')
-    return { state: 'unavailable', text: 'Not available on this platform yet: model commands run with your account\'s access.' };
+    return { state: 'unavailable', text: say('isolation.unavailable') };
   let status;
   if (platform === 'linux') {
     status = bwrap()
-      ? { state: 'on', text: 'On: model commands run under bubblewrap, with Rulith\'s own folders hidden.' }
-      : { state: 'refusing', text: 'Bubblewrap (bwrap) is not installed: model commands are refused until it is.' };
+      ? { state: 'on', text: say('isolation.linuxOn') }
+      : { state: 'refusing', text: say('isolation.noBwrap') };
   } else {
     const unprotected = roots.filter((root) => {
       try { return fs.existsSync(root) && !protectedRoot(root); } catch { return true; }
@@ -39,9 +40,9 @@ export function isolationStatus({ platform = process.platform, roots = [], offFo
     const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
     const reasonOf = (root) => problems.find((row) => row.kind === 'root' && same(row.path, root))?.reason;
     status = unprotected.length
-      ? { state: 'refusing', text: `Model commands are refused: ${unprotected.map((root) => (reasonOf(root) ? `${root} (${reasonOf(root)})` : root)).join(', ')}`
-        + ` ${unprotected.length === 1 ? 'is' : 'are'} not read-protected. Restart Rulith to protect ${unprotected.length === 1 ? 'it' : 'them'} again.` }
-      : { state: 'on', text: 'On: model commands run at low integrity and cannot read Rulith\'s own folders.' };
+      ? { state: 'refusing', text: say(unprotected.length === 1 ? 'isolation.refusingOne' : 'isolation.refusingMany',
+        { roots: unprotected.map((root) => (reasonOf(root) ? `${root} (${reasonOf(root)})` : root)).join(', ') }) }
+      : { state: 'on', text: say('isolation.windowsOn') };
     // Root problems noted earlier but fixed since are not shown; project problems are.
     const shown = problems.filter((row) => row.kind === 'project' || (row.kind === 'root' && unprotected.some((root) => same(root, row.path))))
       .map(({ kind, path: where, reason }) => ({ kind, path: where, reason }));
@@ -49,7 +50,7 @@ export function isolationStatus({ platform = process.platform, roots = [], offFo
   }
   if (!offFor.length) return status;
   return { state: status.state === 'on' ? 'partly-off' : status.state,
-    text: `${status.text} Turned off for ${offFor.join(', ')} (RULITH_ADAPTER_SANDBOX=off; not recommended).` };
+    text: say('isolation.offFor', { status: status.text, agents: offFor.join(', ') }) };
 }
 
 /**
@@ -74,9 +75,9 @@ export function diagnosisReport({ managerHome, dshHome, appHome, kitHome, keyFil
   try { const parsed = JSON.parse(env.RULITH_CREDENTIAL_ROOTS ?? '[]'); if (Array.isArray(parsed)) listed = parsed.filter((p) => typeof p === 'string'); } catch { listed = []; }
   const roots = [...new Set([managerHome, dshHome, keyFile, rulithBackstop(), ...listed].filter((p) => typeof p === 'string' && p).map((p) => path.resolve(p)))];
   const folders = [
-    ['Rulith files', appHome], ['Local manager', managerHome], ['Conversations (DeepSeek Harness)', dshHome],
-    ['Logs', dshHome ? path.join(dshHome, 'logs') : ''], ['General kit settings', kitHome], ['Model command work area', workBase(env)],
-  ].filter(([, where]) => typeof where === 'string' && where).map(([label, where]) => ({ label, path: path.resolve(where) }));
+    ['folders.files', appHome], ['folders.manager', managerHome], ['folders.conversations', dshHome],
+    ['folders.logs', dshHome ? path.join(dshHome, 'logs') : ''], ['folders.kit', kitHome], ['folders.work', workBase(env)],
+  ].filter(([, where]) => typeof where === 'string' && where).map(([key, where]) => ({ label: say(key), path: path.resolve(where) }));
   return {
     versions: {
       rulith: versionAt(new URL('../../../package.json', import.meta.url)),

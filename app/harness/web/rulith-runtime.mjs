@@ -28,6 +28,7 @@ import { contextWindowSetting, conversationModel, effectiveModel, installLiveMod
 import { folderPicker } from './folder-picker.mjs';
 import { installBrand } from './brand.mjs';
 import { refreshGeneralKits } from '../kit-install.mjs';
+import { inRequestLanguage, isHostText, localeOf, notePageLocale, say } from './ui-texts.mjs';
 export { awaitOutcome } from '../board-channel.mjs';
 
 export const name = 'rulith-runtime';
@@ -38,7 +39,7 @@ export const inject = ['tools', 'webServer', 'llm', 'connection'];
 export function cachedBoard(current, status, session) {
   // Session ids are opaque: unusual strings are routed through conversationKey's digest form.
   if (session !== undefined && typeof session !== 'string')
-    throw new Error('会话标识无效。');
+    throw new Error(say('session.invalid'));
   if (!current) return { available: false, tools: status };
   if (current.boards?.enabled) {
     if (session === undefined) return { available: true, agentName: current.agentName, liveConversations: current.boards.size };
@@ -190,7 +191,7 @@ export async function apply(ctx, config = {}) {
     const reply = await response.json().catch(() => ({}));
     if (!response.ok || reply.ok === false) {
       // The refusal's code travels with it (the project flow tells the owner what happened from it); only a plain code.
-      const error = Object.assign(new Error(reply.teaching || `本机 Rulith 没有完成这个请求（${response.status}）。`), { status: response.status });
+      const error = Object.assign(new Error(reply.teaching || say('manager.incomplete', { status: response.status })), { status: response.status });
       if (typeof reply.errorCode === 'string' && /^[a-z_]{1,64}$/.test(reply.errorCode)) error.errorCode = reply.errorCode;
       throw error;
     }
@@ -468,10 +469,10 @@ export async function apply(ctx, config = {}) {
   // Rulith has no Board yet, and asking must not open a connection (same rule as the Board panel).
   const pendingControls = new Map();
   const conversationTarget = (session) => {
-    if (typeof session !== 'string' || !session) throw new Error('会话标识无效。');
+    if (typeof session !== 'string' || !session) throw new Error(say('session.invalid'));
     const holder = resolveHolder(session, sessions.get(session)?.session?.header?.cwd);
-    if (!holder) throw new Error('这个会话的智能体还没有在这台电脑上设置好：先在左侧为它「在本机设置」。');
-    if (!holder.boards.enabled) throw new Error('这个应用设置成所有会话共用一份记录（conversationBoards 关闭），会话的档位和审查只能在 Console 里改。');
+    if (!holder) throw new Error(say('conversation.agentNotSetUp'));
+    if (!holder.boards.enabled) throw new Error(say('conversation.sharedBoard'));
     // The key is a function of the top-level session id (subagents.mjs), so a conversation that has not called Rulith yet,
     // or one opened from before this launcher started, is addressed the same way as an observed one.
     const key = holder.boards.sessions.get(session) ?? conversationKey({ session: { id: session } });
@@ -515,7 +516,7 @@ export async function apply(ctx, config = {}) {
         if (!directories.length) {
           const own = path.join(stateDir, 'agents', slug(agent.name));
           try { fs.mkdirSync(own, { recursive: true }); } catch {}
-          directories.push({ path: own, label: '工作台', source: null });
+          directories.push({ path: own, label: say('tree.workspace'), source: null });
         }
       }
       // `isDefault`: the account's default Agent, as the service marks it; absent when it does not say (no badge then).
@@ -588,14 +589,14 @@ export async function apply(ctx, config = {}) {
     // conversation that already has a Board keeps its Agent.
     'POST /rulith/api/sessions/assign': async (body) => {
       const session = String(body.session ?? ''), agentId = String(body.agentId ?? '');
-      if (!session || !agentId) throw new Error('请求里缺少会话或智能体。');
+      if (!session || !agentId) throw new Error(say('assign.incomplete'));
       const holder = attached.get(agentId);
-      if (!holder) throw new Error('这个智能体还没有在这台电脑上设置好。');
+      if (!holder) throw new Error(say('assign.notSetUp'));
       const before = assignments.get(session);
       if (before && before !== agentId) {
         const previous = attached.get(before);
         const hasBoard = previous?.boards.sessions.has(session) && previous.boards.holders.has(previous.boards.sessions.get(session));
-        if (hasBoard) throw new Error('这个会话已经属于另一个智能体：请开一个新会话。');
+        if (hasBoard) throw new Error(say('assign.otherAgent'));
         previous?.boards.disposeSession({ id: session });
       }
       assignments.set(session, agentId); await saveAssignments();
@@ -643,7 +644,7 @@ export async function apply(ctx, config = {}) {
       const requestId = typeof body.requestId === 'string' ? body.requestId : '';
       if (!goal || goal.length > 256 || !leaves.length || leaves.length > 64 || new Set(leaves).size !== leaves.length
         || leaves.some((leaf) => typeof leaf !== 'string' || !leaf || leaf.length > 256) || !/^[A-Za-z0-9._:-]{8,128}$/.test(requestId))
-        throw new Error('签字请求不完整：缺少任务、确认过的标准或这次确认的请求号。');
+        throw new Error(say('sign.incomplete'));
       let reply;
       try {
         reply = await manager('/manager/conversations/sign-acceptance',
@@ -651,14 +652,14 @@ export async function apply(ctx, config = {}) {
       } catch (error) {
         // An answer of the manager (with or without a code) is definite; a connection refused never reached it.
         if (error.errorCode || error.status !== undefined || error.cause?.code === 'ECONNREFUSED') throw error;
-        throw Object.assign(new Error('签字已经发出，结果还没有确认。'), { errorCode: 'signature_unconfirmed' });
+        throw Object.assign(new Error(say('sign.unconfirmed')), { errorCode: 'signature_unconfirmed' });
       }
       // The answer is Console's control record (as Console checks it): this request id, this Agent and exactly this
       // operation. Any other record does not confirm this signature, so the same request is sent again.
       const operation = reply.operation;
       if (reply.requestId !== requestId || reply.agentId !== target.agentId || !operation || operation.kind !== 'SignAcceptance'
         || operation.goal !== goal || JSON.stringify(operation.leaves) !== JSON.stringify(leaves))
-        throw Object.assign(new Error('收到的回答不能确认这次签字。'), { errorCode: 'signature_unconfirmed' });
+        throw Object.assign(new Error(say('sign.notThisRequest')), { errorCode: 'signature_unconfirmed' });
       return conversationView(reply);
     },
     // PSC 0.2.21: deleting a conversation. The preview feeds the confirmation dialog; the deletion seals the conversation's
@@ -682,18 +683,27 @@ export async function apply(ctx, config = {}) {
       // A custom header keeps cross-site pages out (they cannot send it without a preflight dsh does not grant); the Host
       // check keeps out a rebinding name that resolves to this computer.
       const loopbackHost = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(req.headers.host ?? '');
-      if (req.headers['x-deep-rulith'] !== '1' || !loopbackHost) return send(res, 403, { ok: false, teaching: '只接受本页发出的 Rulith 请求。' });
+      // A sentence of the host's own (ui-texts.mjs) is marked `own`: the page shows it as it is, and puts its own sentence
+      // before any other reason (the manager's or the Gateway's words, a raw error). Before the session gate passes,
+      // nothing the request says is read, its language included: those refusals are in English.
+      let locale = 'en';
+      const marked = (body) => (isHostText(body?.teaching, locale) ? { ...body, own: true } : body);
+      if (req.headers['x-deep-rulith'] !== '1' || !loopbackHost) return send(res, 403, marked({ ok: false, teaching: say('route.pageOnly', {}, locale) }));
       // 以前这条前缀路由只看 `x-deep-rulith:1`（一个常量，不是机密）和 loopback Host，不要本页的会话凭据。loopback 对
       // 这台电脑上每个账户、每个程序共享：模型命令只要能向 127.0.0.1:3080 发请求，就能在不读任何机密的情况下，对这条路由
       // 做出签字、设置档位、打开项目、setup、删除会话等有后果的操作（SSRF 防线只管工具，管不到命令里启动的 curl/node）。
       // 所以这里加上与其它接口同一道的会话校验：`ctx.connection.admit()` 验签名 cookie（机密在凭据库里，不在这条路由上，
       // 命令无法伪造）。本页带 cookie 照常通过；无凭据的请求被拒。model-command-isolation（D-1024a / PSC 0.2.29）。
       const admission = ctx.connection?.admit?.(req);
-      if (admission === undefined) return send(res, 503, { ok: false, teaching: "Rulith could not confirm this page's session." });
-      if (admission.rejection !== undefined) return send(res, admission.rejection, { ok: false,
-        teaching: admission.rejection === 401 ? "This needs this page's Rulith session." : "This page's Rulith session did not pass the check." });
+      if (admission === undefined) return send(res, 503, marked({ ok: false, teaching: say('route.sessionUnconfirmed', {}, locale) }));
+      if (admission.rejection !== undefined) return send(res, admission.rejection, marked({ ok: false,
+        teaching: say(admission.rejection === 401 ? 'route.sessionNeeded' : 'route.sessionRefused', {}, locale) }));
+      // Admitted: the page names its language on every request (D-1025b). This request is answered in it (a request that
+      // names none, in English), and the host's words outside a request follow the page that last named one.
+      locale = localeOf(req.headers['x-rulith-locale']);
+      notePageLocale(req.headers['x-rulith-locale']);
       const route = routes[`${req.method} ${(req.url ?? '').split('?')[0]}`];
-      if (!route) return send(res, 404, { ok: false, teaching: '没有这个 Rulith 接口。' });
+      if (!route) return send(res, 404, marked({ ok: false, teaching: say('route.unknown', {}, locale) }));
       const query = () => {
         const params = new URL(req.url, 'http://127.0.0.1').searchParams;
         return { ...Object.fromEntries(params), workspace: params.get('workspace'), session: params.get('session') ?? undefined };
@@ -701,9 +711,9 @@ export async function apply(ctx, config = {}) {
       // Aborted when the page goes away before the answer (the folder chooser closes then).
       const gone = new AbortController();
       res.on?.('close', () => { if (!res.writableEnded) gone.abort(); });
-      try { send(res, 200, { ok: true, ...(await route(req.method === 'POST' ? await readBody(req) : query(), { signal: gone.signal })) }); }
-      catch (error) { send(res, 200, { ok: false, teaching: String(error?.message ?? error).slice(0, 400),
-        ...(typeof error?.errorCode === 'string' ? { errorCode: error.errorCode } : {}) }); }
+      try { send(res, 200, marked({ ok: true, ...(await inRequestLanguage(locale, async () => route(req.method === 'POST' ? await readBody(req) : query(), { signal: gone.signal }))) })); }
+      catch (error) { send(res, 200, marked({ ok: false, teaching: String(error?.message ?? error).slice(0, 400),
+        ...(typeof error?.errorCode === 'string' ? { errorCode: error.errorCode } : {}) })); }
     },
   }));
   await tick();

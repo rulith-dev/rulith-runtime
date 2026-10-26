@@ -10,8 +10,10 @@
 // IFileOpenDialog，macOS 用 osascript，Linux 用 zenity／KDialog）。dsh 只在人看得见这台电脑屏幕时才挂原生实现，
 // 否则页面退回手动输入路径。选中的文件夹照常走"打开项目"（网络文件夹照旧拒绝），这里不授予任何权限。
 
-/** What the page says when no chooser can be opened here. */
-export const PICK_UNAVAILABLE = '这台电脑上打不开系统的选择文件夹窗口：请手动输入文件夹的完整路径。';
+import { say } from './ui-texts.mjs';
+
+/** What the page says when no chooser can be opened here (in the page's language). */
+export const pickUnavailable = () => say('picker.unavailable');
 
 /**
  * @param {object} options
@@ -35,8 +37,8 @@ export function folderPicker({ service = () => undefined, log = (line) => consol
      */
     pick: async ({ signal } = {}) => {
       const chooser = native();
-      if (!chooser) return { state: 'unavailable', teaching: PICK_UNAVAILABLE };
-      if (open) throw Object.assign(new Error('选择文件夹的窗口已经开着：先在那个窗口里选好或取消。'), { errorCode: 'picker_open' });
+      if (!chooser) return { state: 'unavailable', teaching: pickUnavailable() };
+      if (open) throw Object.assign(new Error(say('picker.open')), { errorCode: 'picker_open' });
       open = true;
       try {
         const chosen = await chooser.pick(signal ?? new AbortController().signal);
@@ -44,7 +46,7 @@ export function folderPicker({ service = () => undefined, log = (line) => consol
       } catch (error) {
         if (signal?.aborted) return { state: 'cancelled' };
         log(`[rulith folder] the folder chooser could not be opened: ${String(error?.message ?? error).slice(0, 200)}`);
-        return { state: 'unavailable', teaching: PICK_UNAVAILABLE };
+        return { state: 'unavailable', teaching: pickUnavailable() };
       } finally { open = false; }
     },
   };

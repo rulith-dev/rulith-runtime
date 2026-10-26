@@ -560,7 +560,7 @@ test('every paired Agent is attached at once; tool calls go to the Agent the con
     'the assigned conversation uses beta; the unassigned one uses the default (first attached) Agent');
   const moved = await f.post('sessions/assign', { session: 'parent', agentId: 'agent-b' });
   assert.equal(moved.ok, false, 'a conversation that has a Board keeps its Agent');
-  assert.match(moved.teaching, /已经属于另一个智能体/);
+  assert.match(moved.teaching, /already belongs to another Agent/);
   assert.equal((await f.post('sessions/assign', { session: 'x', agentId: 'agent-c' })).ok, false, 'an Agent not set up here cannot take a conversation');
   assert.equal((await f.panel('?session=other')).agentName, 'beta', 'the panel reads the conversation\'s own Agent');
   assert.equal(f.statuses.at(-1).liveConversations, 2);
