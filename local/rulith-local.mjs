@@ -23,7 +23,8 @@ import { attachmentInstruction, createMaterialService } from './material-service
 import { noteChildExited, noteChildStarted, processStamp } from './process-identity.mjs'
 import { clearStaleLock } from './manager-registry.mjs'
 import { credentialRootRefusal, ensureCredentialRootLabels, ensureLowLabel, lowLabelVerified } from './sandbox-home-label.mjs'
-import { adapterSandboxMode, credentialRoots, pathWithin } from '../worker/adapter-confinement.mjs'
+import { adapterSandboxMode, credentialRoots, ISOLATION_SETTING, isolationSwitchedOff, pathWithin } from '../worker/adapter-confinement.mjs'
+import { noteUnconfinedEnd, noteUnconfinedStart, sweepUnconfined, UNCONFINED_RECORDS } from './process-tree.mjs'
 import {
   MAX_MATERIAL_REQUEST_BYTES, MaterialError, defaultMaterialRoot, materialIdentity, materialDeviceFingerprint,
 } from '../worker/material-store.mjs'
@@ -121,6 +122,18 @@ export const INHERITED_CREDENTIAL_VARIABLES = Object.freeze(['ANTHROPIC_API_KEY'
 export function isolatedEnvironmentBase(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) =>
     !/^RULITH_/i.test(name) && !INHERITED_CREDENTIAL_VARIABLES.includes(name)))
+}
+
+/**
+ * A Worker environment with the owner's "Run without isolation (not recommended)" (PSC 0.2.31 ③) set or removed: every
+ * variable named RULITH_ADAPTER_SANDBOX in any case is dropped (Windows reads names without case), then `true` names
+ * `RULITH_ADAPTER_SANDBOX=off` once; `false` leaves it out, which is the default (isolation required on Windows and
+ * Linux; worker/adapter-confinement.mjs adapterSandboxMode). Pure.
+ */
+export function withIsolationSetting(env = {}, runWithoutIsolation) {
+  const next = Object.fromEntries(Object.entries(env ?? {}).filter(([name]) => name.toUpperCase() !== ISOLATION_SETTING))
+  if (runWithoutIsolation === true) next[ISOLATION_SETTING] = 'off'
+  return next
 }
 
 // Flushed to disk before the rename (see writeJsonAtomic).
@@ -227,10 +240,17 @@ export function createLocalHost({
   materialRoot, onModelConfigured, modelOverlay, authorizeConnectionKey, conversationOwner,
   registerMaterialSubmission, acceptedMaterialBinding,
   getApprovedDeviceId, workerRestartDelays = [250, 1000, 4000, 10000], workerStableMs = 60_000, toolLibrary,
-  confinement,
+  confinement, onIsolationSweep,
 }) {
   const selectedRoles = rolesOf(roles)
   const configDir = dirname(resolve(configFile))
+  /**
+   * What this Agent's Worker started without isolation (PSC 0.2.31 ③): each Adapter it started unconfined, as it reported
+   * it, kept in this instance's directory (a credential root, out of reach of confined commands). When isolation is
+   * required again, what those starts left running — detached background jobs included — is ended before a confined
+   * Worker starts (local/process-tree.mjs sweepUnconfined), and the owner is told what was stopped (`onIsolationSweep`).
+   */
+  const unconfinedRecords = join(configDir, UNCONFINED_RECORDS)
   const historyDirectory = join(configDir, 'conversations')
   const historyFile = conversationOwner ? conversationFile(historyDirectory, conversationOwner) : undefined
   let historyBusy = false
@@ -334,7 +354,10 @@ export function createLocalHost({
       : running('worker') && components.worker.readyAt !== undefined && !stopRequested.has(components.worker.child)
         ? components.worker.availability ?? 'offline' : 'offline',
     reloading: !!reloads.worker, failures: workerFailures, failure: workerFailure,
-    retryAt: components.worker.retryAt ?? null })
+    retryAt: components.worker.retryAt ?? null,
+    // The running Worker was started without isolation (on a platform that has it): until it restarts, a change of
+    // the setting has not applied yet.
+    unconfined: running('worker') && components.worker.unconfined === true })
   /**
    * Who this host is, for the purposes of owning material.
    *
@@ -556,6 +579,12 @@ export function createLocalHost({
         components[src].onReady = undefined
         settle?.()
       }
+      if (src === 'worker' && event.type === 'adapter-unconfined') {
+        try { noteUnconfinedStart(unconfinedRecords, { pid: event.pid, startedAt: event.startedAt, mark: event.mark }) } catch { /* reported by the sweep's absence */ }
+      }
+      if (src === 'worker' && event.type === 'adapter-unconfined-exit') {
+        try { noteUnconfinedEnd(unconfinedRecords, { pid: event.pid, endedAt: event.endedAt }) } catch { /* the window stays open */ }
+      }
       if (src === 'worker' && components.worker.child === child && event.type === 'availability') {
         components.worker.availability = ['online', 'offline', 'needs setup'].includes(event.state) ? event.state : 'offline'
       }
@@ -674,6 +703,21 @@ export function createLocalHost({
    * not a crash restart, not a reload, not a page — so no call can run on half-replaced adapter bytes.
    */
   let workerToolsUpdating = false
+  const isolatingPlatform = () => process.platform === 'win32' || process.platform === 'linux'
+  /** Whether this configuration requires the Worker's commands to be isolated (PSC 0.2.31 ③). */
+  const isolationRequiredNow = () => isolatingPlatform()
+    && adapterSandboxMode(effectiveChildEnv(baseEnv(), config.worker?.env ?? {})) === 'required'
+  /** End what unconfined starts left running (local/process-tree.mjs); tell the owner when anything was found. */
+  const sweepUnconfinedNow = () => {
+    let result
+    try { result = sweepUnconfined(unconfinedRecords) } catch (error) { result = { at: Date.now(), stopped: [], failed: [], error: String(error?.message ?? error) } }
+    if (result === null) return null
+    if (result.stopped.length || result.failed.length || result.error) {
+      emit('local', 'isolation-sweep', { stopped: result.stopped, failed: result.failed, ...(result.error ? { note: result.error } : {}) })
+      try { onIsolationSweep?.(result) } catch { /* the owner's record of it is best-effort */ }
+    }
+    return result
+  }
   const startWorker = () => {
     if (closing) return closingRefusal
     if (workerToolsUpdating) return 'This Agent\'s general kit is being replaced; its Worker starts again when that finishes.'
@@ -729,24 +773,30 @@ export function createLocalHost({
       ...(typeof confinement?.managerHome === 'string' && isAbsolute(confinement.managerHome) ? { RULITH_MANAGER_HOME: resolve(confinement.managerHome) } : {}),
       ...(typeof confinement?.instanceId === 'string' && confinement.instanceId ? { RULITH_INSTANCE_ID: confinement.instanceId } : {}) }
     delete confinedEnv.RULITH_CONFINEMENT_REFUSAL
-    if (process.platform === 'win32' && adapterSandboxMode(confinedEnv) === 'required') {
-      const roots = credentialRoots(confinedEnv)
+    // One spelling of the isolation setting reaches the Worker, whatever case the configuration used (Windows reads
+    // names without case): every reader then sees what the Worker does.
+    const workerEnv = withIsolationSetting(confinedEnv, isolationSwitchedOff(confinedEnv))
+    const unconfined = isolatingPlatform() && adapterSandboxMode(workerEnv) === 'off'
+    // Isolation is required for this start: first end what an earlier unconfined Worker's commands left running.
+    if (isolatingPlatform() && !unconfined) sweepUnconfinedNow()
+    if (process.platform === 'win32' && adapterSandboxMode(workerEnv) === 'required') {
+      const roots = credentialRoots(workerEnv)
       let labelled
-      try { labelled = ensureCredentialRootLabels(roots, { noteTo: confinedEnv.RULITH_MANAGER_HOME }) } catch (error) { labelled = { unlabeled: roots, reasons: Object.fromEntries(roots.map((root) => [root, String(error?.message ?? error)])) } }
+      try { labelled = ensureCredentialRootLabels(roots, { noteTo: workerEnv.RULITH_MANAGER_HOME }) } catch (error) { labelled = { unlabeled: roots, reasons: Object.fromEntries(roots.map((root) => [root, String(error?.message ?? error)])) } }
       // The launcher refuses an unprotected root at every launch on its own; this names what is wrong in the refusal.
       const refusal = credentialRootRefusal(labelled)
-      if (refusal) { confinedEnv.RULITH_CONFINEMENT_REFUSAL = refusal; console.error(`Rulith: ${refusal}`) }
+      if (refusal) { workerEnv.RULITH_CONFINEMENT_REFUSAL = refusal; console.error(`Rulith: ${refusal}`) }
       const kitHome = roleEnv.ENG_KIT_HOME
       if (typeof kitHome === 'string' && isAbsolute(kitHome) && existsSync(kitHome) && !roots.some((root) => pathWithin(root, kitHome)) && !lowLabelVerified(kitHome)) {
         try { ensureLowLabel(kitHome) } catch { /* the Low adapter then cannot write its state; it reports that */ }
       }
     }
     const child = spawn(process.execPath, [path], {
-      env: confinedEnv,
+      env: workerEnv,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: dirname(path),
     })
     components.worker = { ...components.worker, child, stamp: processStamp(child.pid, { script: path }), roleEnv, loadedToolIds,
-      readyAt: undefined, onReady: undefined, managedStop: false, availability: 'offline' }
+      readyAt: undefined, onReady: undefined, managedStop: false, availability: 'offline', unconfined }
     noteChildStarted(child.pid)
     wireChild('worker', child)
     child.on('exit', (code) => {
@@ -754,6 +804,9 @@ export function createLocalHost({
       emit('worker', 'exit', { code })
       if (components.worker.child === child) components.worker.child = null
       announceChildren()
+      // Isolation is required now (turned back on while this Worker ran unconfined, perhaps while it was being turned
+      // off): end what its commands left running, whether or not a Worker starts again.
+      if (!closing && isolationRequiredNow()) sweepUnconfinedNow()
       if (closing || !workerEnabled() || stopRequested.has(child)) return
       if (code === 3 || code === WORKER_TAKEN_OVER_EXIT_CODE) {
         components.worker.availability = code === 3 ? 'needs setup' : 'offline'
@@ -1489,6 +1542,31 @@ export function createLocalHost({
       activeModelOverlay = replacement
       requestReload('agent')
       requestReload('worker')
+    },
+    /**
+     * Manager-only: the owner's "Run without isolation (not recommended)" for this Agent (PSC 0.2.31 ③). `true` writes
+     * `RULITH_ADAPTER_SANDBOX=off` into this instance's local.json Worker environment; `false` removes it, so the Worker
+     * is back on the default (isolation required on Windows and Linux). Only that one field changes, in the file and
+     * here. A running Worker restarts once its running executions drain, so the value it decides confinement from is
+     * the new one; a Worker that is not running takes it when it next starts. There is deliberately no HTTP route for
+     * this: the instance's key does not open it, only the manager holding this object does.
+     *
+     * 中文说明：「不隔离运行（不推荐）」只经管理器在进程内调用这里写入；实例 HTTP 路由（即使持有实例 key）都改不了它。
+     * 运行中的 Worker 在手头的执行结束后重启以用上新值；没在运行的，下次启动时用上。
+     */
+    setRunWithoutIsolation: (on) => {
+      if (typeof on !== 'boolean') throw new Error('Say whether this Agent\'s model commands run without isolation.')
+      if (closing) throw new Error(closingRefusal)
+      const saved = existsSync(configFile) ? JSON.parse(readFileSync(configFile, 'utf8')) : structuredClone(config)
+      saved.worker = { ...saved.worker, env: withIsolationSetting(saved.worker?.env, on) }
+      saveConfig(configFile, saved)
+      config = { ...config, worker: { ...config.worker, env: withIsolationSetting(config.worker?.env, on) } }
+      // A Worker that is stopping because local tools were turned off is not restarted, so it is not `restarting`.
+      const restarting = running('worker') && workerEnabled()
+      if (restarting) requestReload('worker', 'Isolation setting saved. The Worker restarts with it after its running executions drain.')
+      // With no Worker running, what an unconfined one left running is ended now; a running one's, when it exits.
+      const sweep = !on && !running('worker') && isolationRequiredNow() ? sweepUnconfinedNow() : null
+      return { restarting, ...(sweep ? { sweep } : {}) }
     },
     /**
      * The operating-system processes this host currently owns.

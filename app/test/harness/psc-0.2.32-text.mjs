@@ -553,6 +553,20 @@ export const PAGE = {
     "many": "{n} Agents",
     "notice": "{count} set up by the retired Rulith workbench ({home}) no longer start their Workers with rulith. Run \"rulith manager\" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console."
   },
+  "isolationSwitch": {
+    "title": "Model-command isolation",
+    "label": "Run without isolation (not recommended)",
+    "confirmTitle": "Run model commands without isolation?",
+    "confirmBody": "Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials. Turn this on only if isolation cannot work here and you accept that risk.",
+    "accept": "Run without isolation",
+    "cancel": "Keep isolation",
+    "restarting": "Saved. {agent} restarts on this computer to apply it, once any command it is running finishes.",
+    "nextStart": "Saved. It applies the next time {agent} starts on this computer.",
+    "notSaved": "Not saved",
+    "stopped": "Stopped what model commands had started without isolation: {names}.",
+    "notStopped": "Could not stop what model commands started without isolation: {names}. Stop them yourself, or restart this computer.",
+    "notChecked": "Could not check what model commands started without isolation left running: {reason}."
+  },
   "diagnosis": {
     "title": "Diagnosis",
     "reading": "Reading…",
@@ -647,6 +661,9 @@ export const HOST = {
   "isolation.refusingMany": "Model commands are refused: {roots} are not read-protected. Restart Rulith to protect them again.",
   "isolation.windowsOn": "On: model commands run at low integrity and cannot read Rulith's own folders.",
   "isolation.offFor": "{status} Turned off for {agents} (RULITH_ADAPTER_SANDBOX=off; not recommended).",
+  "isolation.pendingFor": "{status} For {agents} it applies after the Worker restarts, once the commands it is running finish.",
+  "isolation.incomplete": "The request does not say which Agent, or whether its model commands run without isolation.",
+  "isolation.unconfirmed": "Running model commands without isolation needs your confirmation. Nothing was changed.",
   "folders.files": "Rulith files",
   "folders.manager": "Local manager",
   "folders.conversations": "Conversations (DeepSeek Harness)",

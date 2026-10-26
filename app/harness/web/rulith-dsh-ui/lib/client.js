@@ -318,6 +318,17 @@ window.__ModuleLoader__.load({
         },
         legacy: { one: "1 Agent", many: "{n} Agents",
           notice: "{count} set up by the retired Rulith workbench ({home}) no longer start their Workers with rulith. Run \"rulith manager\" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console." },
+        // Settings → Advanced: the owner's "Run without isolation (not recommended)" per Agent and its confirmation
+        // (PSC 0.2.31 ③ ④, verbatim).
+        isolationSwitch: { title: "Model-command isolation", label: "Run without isolation (not recommended)",
+          confirmTitle: "Run model commands without isolation?",
+          confirmBody: "Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials. Turn this on only if isolation cannot work here and you accept that risk.",
+          accept: "Run without isolation", cancel: "Keep isolation",
+          restarting: "Saved. {agent} restarts on this computer to apply it, once any command it is running finishes.",
+          nextStart: "Saved. It applies the next time {agent} starts on this computer.", notSaved: "Not saved",
+          stopped: "Stopped what model commands had started without isolation: {names}.",
+          notStopped: "Could not stop what model commands started without isolation: {names}. Stop them yourself, or restart this computer.",
+          notChecked: "Could not check what model commands started without isolation left running: {reason}." },
         diagnosis: { title: "Diagnosis", reading: "Reading…", unreadable: "Rulith could not read its diagnosis.",
           versions: "Rulith {rulith} · DeepSeek Harness {dsh} · Node.js {node} · {platform}", computer: "This computer: {name} · {signedIn}",
           unnamed: "unnamed", signedIn: "signed in", notSignedIn: "not signed in", starting: "starting", off: "off", notSetUp: "not set up",
@@ -607,6 +618,15 @@ window.__ModuleLoader__.load({
         },
         legacy: { one: "1 个智能体", many: "{n} 个智能体",
           notice: "已停用的 Rulith 工作台（{home}）设置的 {count}不再随 rulith 在这台电脑上开启。运行 \"rulith manager\" 让它们继续运行，或在这里重新设置每个智能体；这会替换它的智能体密钥，绑定在它旧接入上的 Source 要在 Console 里重新绑定。" },
+        isolationSwitch: { title: "模型命令隔离", label: "不隔离运行（不推荐）",
+          confirmTitle: "不隔离运行模型命令？",
+          confirmBody: "模型经编程能力运行的命令将能读取你的账户在这台电脑上能读的一切，包括 Rulith 自己的凭据。只有在这里无法隔离、且你接受这个风险时才打开。",
+          accept: "不隔离运行", cancel: "保持隔离",
+          restarting: "已保存。{agent} 会在手头的命令结束后在这台电脑上重新开启，用上这个设置。",
+          nextStart: "已保存。{agent} 下次在这台电脑上开启时生效。", notSaved: "没有保存",
+          stopped: "已结束模型命令在不隔离时启动的进程：{names}。",
+          notStopped: "没能结束模型命令在不隔离时启动的进程：{names}。请自己结束它们，或重启这台电脑。",
+          notChecked: "没能检查模型命令在不隔离时启动、仍在运行的进程：{reason}。" },
         diagnosis: { title: "诊断", reading: "正在读取…", unreadable: "Rulith 读不到它的诊断。",
           versions: "Rulith {rulith} · DeepSeek Harness {dsh} · Node.js {node} · {platform}", computer: "这台电脑：{name} · {signedIn}",
           unnamed: "未命名", signedIn: "已登录", notSignedIn: "未登录", starting: "正在启动", off: "关闭", notSetUp: "未设置",
@@ -2399,14 +2419,73 @@ window.__ModuleLoader__.load({
         pair(S.language, h("span", { "data-rulith-language": LOCALE }, S.languageValue)),
         h("div", { style: { ...small, marginTop: 6 } }, S.languageNote));
     }
-    function AdvancedSection({ state }) {
+    function AdvancedSection({ state, refresh }) {
       let consoleUrl = "";
       try { const origin = new URL(state && state.origin).origin; if (/^https?:/.test(origin)) consoleUrl = origin + "/console/#/agents"; } catch {}
       return h("div", { "data-rulith-settings-advanced": "" },
         h("div", { style: section }, T.settings.otherClients),
         h("div", null, T.settings.otherClientsLine),
         consoleUrl ? h("a", { href: consoleUrl, target: "_blank", rel: "noopener noreferrer", style: { fontSize: 12 } }, T.settings.openInConsole) : null,
+        h(IsolationSection, { state, refresh }),
         h(DiagnosisSection, { state }));
+    }
+    // Settings → Advanced: the owner's "Run without isolation (not recommended)" for each Agent set up on this computer
+    // (PSC 0.2.31 ③), off by default, shown only where model commands can be isolated (Windows, Linux). Turning it on asks
+    // first, with the PSC's confirmation verbatim, and only "Run without isolation" sends it (with `confirmed`); turning it
+    // off sends at once. The manager saves it in that Agent's own files on this computer and restarts its Worker with it;
+    // the line under the switches says when it applies. When isolation is required again, what that Agent's commands
+    // started without isolation and left running is ended before it starts isolated; under its switch the page names what
+    // was stopped, and what could not be.
+    const processNames = (rows) => (Array.isArray(rows) ? rows : []).map((row) => (row.name || "?") + T.p.open + row.pid + T.p.close).join(T.p.list);
+    /** What was ended, or could not be, when isolation was required again for one Agent. Pure. */
+    function sweepLines(sweep) {
+      if (!sweep || typeof sweep !== "object") return null;
+      const S = T.isolationSwitch, lines = [];
+      if (sweep.stopped && sweep.stopped.length)
+        lines.push(h("div", { key: "stopped", "data-rulith-isolation-sweep": "stopped", style: small }, fill(S.stopped, { names: processNames(sweep.stopped) })));
+      if (sweep.failed && sweep.failed.length)
+        lines.push(h("div", { key: "failed", "data-rulith-isolation-sweep": "failed", role: "alert", style: { fontSize: 12, color: AMBER } },
+          fill(S.notStopped, { names: processNames(sweep.failed) })));
+      if (sweep.error)
+        lines.push(h("div", { key: "error", "data-rulith-isolation-sweep": "error", role: "alert", style: { fontSize: 12, color: AMBER } },
+          fill(S.notChecked, { reason: sweep.error })));
+      return lines.length ? lines : null;
+    }
+    function IsolationSection({ state, refresh }) {
+      const [asking, setAsking] = useState(null);
+      const [busy, setBusy] = useState("");
+      const [notice, setNotice] = useState(null);
+      if (!state || !state.ok || !state.signedIn || state.isolationAvailable !== true) return null;
+      const agents = (Array.isArray(state.agents) ? state.agents : []).filter((agent) => agent.paired && typeof agent.runWithoutIsolation === "boolean");
+      if (!agents.length) return null;
+      const S = T.isolationSwitch;
+      const save = async (agent, on) => {
+        setAsking(null); setBusy(agent.id); setNotice(null);
+        let reply;
+        try { reply = await api("isolation", on ? { agentId: agent.id, runWithoutIsolation: true, confirmed: true } : { agentId: agent.id, runWithoutIsolation: false }); }
+        catch (error) { reply = { ok: false, own: true, teaching: errorText(error) }; }
+        setBusy("");
+        setNotice(reply && reply.ok ? { ok: true, text: fill(reply.restarting ? S.restarting : S.nextStart, { agent: agent.name }) }
+          : { ok: false, text: plain(reply, S.notSaved) });
+        if (refresh) refresh();
+      };
+      return h("div", { "data-rulith-settings-isolation": "" },
+        h("div", { style: section }, S.title),
+        agents.map((agent) => h("div", { key: agent.id, "data-rulith-isolation-agent": agent.id },
+          h("label", { style: { display: "flex", alignItems: "center", gap: 8, padding: "3px 0", cursor: "pointer" } },
+            h("input", { type: "checkbox", checked: agent.runWithoutIsolation, disabled: !!busy,
+              onChange: () => (agent.runWithoutIsolation ? save(agent, false) : setAsking(agent)) }),
+            h("span", { style: { flex: 1 } }, S.label),
+            h("span", { style: small }, agent.name + (agent.isDefault === true ? T.common.default : ""))),
+          sweepLines(agent.isolationSweep))),
+        notice ? (notice.ok ? h("div", { role: "status", style: { ...small, marginTop: 4 } }, notice.text) : alertLine(notice.text)) : null,
+        asking ? backdrop(2000, () => setAsking(null),
+          h("div", { role: "alertdialog", "aria-modal": "true", "data-rulith-isolation-dialog": asking.id, onClick: (event) => event.stopPropagation(), style: card(480) },
+            h("div", { style: { fontWeight: 700, fontSize: 15, marginBottom: 8 } }, S.confirmTitle),
+            h("div", null, S.confirmBody),
+            h("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 } },
+              h("button", { type: "button", style: primary, onClick: () => setAsking(null) }, S.cancel),
+              h("button", { type: "button", style: { ...button, borderColor: AMBER, color: AMBER }, onClick: () => save(asking, true) }, S.accept)))) : null);
     }
     // Agents the retired English workbench set up on this computer (the host's `legacyWorkbench`): their Workers do not
     // start with the app. Shown in the wizard and under Diagnosis.
@@ -2453,7 +2532,7 @@ window.__ModuleLoader__.load({
       const body = section === "computer" ? h(ComputerSection, { state, refresh })
         : section === "model" ? (state && state.ok && !state.signedIn ? none(T.settings.modelSignInFirst) : h(ModelForm, {}))
         : section === "appearance" ? h(AppearanceSection, {})
-        : section === "advanced" ? h(AdvancedSection, { state })
+        : section === "advanced" ? h(AdvancedSection, { state, refresh })
         : h(AccountSection, { state, setState });
       return backdrop(1600, closeSettings,
         h("div", { role: "dialog", "aria-modal": "true", "data-rulith-settings": section, onClick: (event) => event.stopPropagation(),
@@ -2763,7 +2842,7 @@ window.__ModuleLoader__.load({
     exports.rightColumnWidth = rightColumnWidth;
     exports.SIGN = SIGN;
     exports.components = { ModelForm, SetupSteps, FolderChooser, ProjectDialog, AccountSection, ComputerSection, AppearanceSection,
-      AdvancedSection, DiagnosisSection, LegacyWorkbenchNotice, SettingsPage, RulithSettings, RulithSettingsEntry, RulithComposerControls, RulithColumn, RulithSessionColumn, SignDialog };
+      AdvancedSection, IsolationSection, DiagnosisSection, LegacyWorkbenchNotice, SettingsPage, RulithSettings, RulithSettingsEntry, RulithComposerControls, RulithColumn, RulithSessionColumn, SignDialog };
     exports.SETTINGS_SECTIONS = SETTINGS_SECTIONS;
     exports.EMPTY_PAGE_CSS = EMPTY_PAGE_CSS;
     exports.RUNNING_CSS = RUNNING_CSS;

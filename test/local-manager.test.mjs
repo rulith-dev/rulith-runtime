@@ -27,8 +27,10 @@ import { dirname, join, resolve } from 'node:path'
 import { createManagerServer } from '../local/manager-server.mjs'
 import { processAlive } from '../local/manager-registry.mjs'
 import { processStamp } from '../local/process-identity.mjs'
-import { loadInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
+import { loadInstanceConfig, newInstanceConfig, saveInstanceConfig } from '../local/instance-manager.mjs'
 import { isolatedEnvironmentBase } from '../local/rulith-local.mjs'
+import { adapterSandboxMode } from '../worker/adapter-confinement.mjs'
+import { isolationOffFor, isolationPendingFor } from '../app/harness/web/diagnosis.mjs'
 import { materialDeviceFingerprint } from '../worker/material-store.mjs'
 import { createDevicesGateway } from './support/local-devices-gateway.mjs'
 
@@ -1468,6 +1470,8 @@ test('the manager answers exactly its documented control-plane operations', asyn
       '/manager/conversations/state',
       '/manager/device/forget', '/manager/device/poll', '/manager/device/refresh', '/manager/device/signout',
       '/manager/device/start', '/manager/health', '/manager/instances/connection-key', '/manager/instances/create', '/manager/instances/forget',
+      // PSC 0.2.31 ③ (ACC-ISO-14): the owner's "Run without isolation (not recommended)" for one Agent, the only writer.
+      '/manager/instances/isolation',
       '/manager/instances/model', '/manager/instances/model/copy', '/manager/instances/open', '/manager/instances/pair',
       '/manager/instances/pair/cancel', '/manager/instances/pair/poll',
       // PSC 0.2.27 ② ③: one operation sets an Agent up on this computer (the POST) and its progress is read (the GET).
@@ -2520,5 +2524,157 @@ test('repair never restarts a Worker that stopped itself; only an explicit setup
     assert.equal(explicit.state, 'done', JSON.stringify(explicit))
     assert.equal(spawns(), before + 1)
     assert.equal(host().status().ready.worker, true)
+  })
+})
+
+// ACC-ISO-14 (PSC 0.2.31 ③): the owner's "Run without isolation (not recommended)" for one Agent on this computer. It is
+// off by default (a new instance's Worker environment does not name it, so the Worker requires isolation on Windows and
+// Linux); turning it on needs the owner's confirmation; only the manager's operation, behind the manager key, writes it,
+// into the instance's local.json Worker environment; the Worker restarts unconfined after it is turned on and confined
+// after it is turned off, and what its unconfined commands left running (a detached child here) is ended first. Neither
+// the instance's own page key nor an environment variable of the manager's process can turn it on.
+// 中文说明：缺省关闭；打开要确认；只有管理器（凭管理器密钥）写入；打开后 Worker 不隔离重启，关掉后先结束不隔离时留下的
+// 进程（含脱离父进程的子进程），再隔离重启。
+const alive = (pid) => { try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' } }
+const isolating = ['win32', 'linux'].includes(process.platform)
+const readPid = async (file) => {
+  await waitUntil(() => existsSync(file) && /^\d+$/.test(readFileSync(file, 'utf8')))
+  return Number(readFileSync(file, 'utf8'))
+}
+
+test('ACC-ISO-14 the isolation switch is off by default, needs confirmation to turn on, is written only by the manager, and the Worker restarts with it', async (t) => {
+  await withManager(t, async ({ manager, root }) => {
+    const row = await addInstance(manager, 'Switch', { agentId: 'agent-alpha' })
+    const tree = join(root, 'unconfined-child.txt'), records = join(row.directory, 'unconfined-processes.json')
+    const children = []
+    t.after(() => { for (const pid of children) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } } })
+    const prepared = loadInstanceConfig(row.directory)
+    prepared.worker.env = { ...prepared.worker.env, RULITH_TEST_UNCONFINED_TREE: tree }
+    saveInstanceConfig(row.directory, prepared)
+    const isolated = isolating ? 'required' : 'off'
+    const named = () => Object.keys(loadInstanceConfig(row.directory).worker.env).some((name) => name.toUpperCase() === 'RULITH_ADAPTER_SANDBOX')
+    assert.equal(Object.hasOwn(newInstanceConfig({ directory: row.directory, servePort: 1 }).worker.env, 'RULITH_ADAPTER_SANDBOX'), false)
+    assert.equal(named(), false, 'off by default')
+    const overviewRow = () => manager.instances.overview().find((entry) => entry.id === row.id)
+    assert.equal(overviewRow().runWithoutIsolation, false)
+    assert.equal((await controlFixtureInstance(manager.instances, row.id, { role: 'worker', operation: 'start' })).started, true)
+    await manager.instances.setWorkerEnabled(row.id, true)
+    const host = () => manager.instances.hosts.get(row.id).host
+    const lastWorkerEnv = () => childEvents(manager, row.id, 'worker').filter((event) => event.observed !== undefined).at(-1).observed
+    const restarted = () => waitUntil(() => !host().status().workerSetting.reloading && host().status().ready.worker)
+    // This test process runs with RULITH_ADAPTER_SANDBOX=off (test/support/no-sandbox.mjs); the Worker does not inherit it.
+    assert.equal(process.env.RULITH_ADAPTER_SANDBOX, 'off')
+    assert.equal(lastWorkerEnv().RULITH_ADAPTER_SANDBOX, undefined)
+    assert.equal(adapterSandboxMode(lastWorkerEnv()), isolated)
+
+    const operation = (body, headers = { 'x-rulith-manager': KEY }) => fetch(`http://127.0.0.1:${manager.port}/manager/instances/isolation`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+    }).then(async (response) => ({ status: response.status, body: await response.json().catch(() => ({})) }))
+    assert.equal((await operation({ instanceId: row.id, runWithoutIsolation: true, confirmed: true }, {})).status, 401, 'no manager key, no write')
+    const unconfirmed = await operation({ instanceId: row.id, runWithoutIsolation: true })
+    assert.equal(unconfirmed.status, 400)
+    assert.equal(unconfirmed.body.errorCode, 'isolation_unconfirmed')
+    assert.match(unconfirmed.body.teaching, /explicit confirmation\. Nothing was changed/)
+    assert.equal((await operation({ instanceId: row.id, runWithoutIsolation: 'on', confirmed: true })).status, 400)
+    assert.equal(named(), false, 'a refused request changes nothing')
+    // The instance's own page key opens no way to it: its Worker setting takes `enabled` only, and it has no such route.
+    const opened = new URL((await manager.instances.open(row.id)).url)
+    const page = (path, body) => fetch(opened.origin + path, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-rulith-local': opened.searchParams.get('k') }, body: JSON.stringify(body) })
+      .then(async (response) => ({ status: response.status, body: await response.json().catch(() => ({})) }))
+    assert.match((await page('/worker-setting', { enabled: true, runWithoutIsolation: true })).body.teaching, /Unexpected Worker setting fields/)
+    for (const path of ['/isolation', '/worker-isolation', '/setup/isolation']) assert.equal((await page(path, { runWithoutIsolation: true })).status, 404, path)
+    assert.equal(named(), false)
+
+    // The owner's confirmed switch: written into local.json, and the running Worker restarts unconfined.
+    const on = await operation({ instanceId: row.id, runWithoutIsolation: true, confirmed: true })
+    assert.equal(on.status, 200, JSON.stringify(on.body))
+    assert.deepEqual([on.body.instanceId, on.body.runWithoutIsolation, on.body.restarting], [row.id, true, true])
+    assert.equal(on.body.instances.find((entry) => entry.id === row.id).runWithoutIsolation, true, 'the state says so')
+    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_ADAPTER_SANDBOX, 'off')
+    await restarted()
+    assert.equal(lastWorkerEnv().RULITH_ADAPTER_SANDBOX, 'off')
+    assert.equal(adapterSandboxMode(lastWorkerEnv()), 'off')
+    if (isolating) {
+      // Its "Adapter" left a detached child running; the host recorded the start in the instance's directory.
+      const first = await readPid(tree)
+      children.push(first)
+      assert.equal(alive(first), true)
+      await waitUntil(() => existsSync(records) && JSON.parse(readFileSync(records, 'utf8')).some((entry) => entry.endedAt !== undefined))
+      assert.equal(overviewRow().workerSetting.unconfined, true)
+      rmSync(tree, { force: true })
+      // Turning it off needs no confirmation; the detached child is ended before the Worker restarts confined.
+      const off = await operation({ instanceId: row.id, runWithoutIsolation: false })
+      assert.equal(off.status, 200, JSON.stringify(off.body))
+      assert.equal(named(), false)
+      await restarted()
+      await waitUntil(() => !alive(first))
+      assert.equal(existsSync(records), false, 'nothing recorded is left')
+      assert.deepEqual(overviewRow().isolationSweep.stopped.filter((entry) => entry.pid === first).length, 1, 'the state names what was stopped')
+      assert.deepEqual(overviewRow().isolationSweep.failed, [])
+      assert.equal(overviewRow().workerSetting.unconfined, false)
+      assert.equal(existsSync(tree), false, 'a confined Worker starts nothing unconfined')
+    } else {
+      assert.equal((await operation({ instanceId: row.id, runWithoutIsolation: false })).status, 200)
+      await restarted()
+    }
+    assert.equal(lastWorkerEnv().RULITH_ADAPTER_SANDBOX, undefined)
+    assert.equal(adapterSandboxMode(lastWorkerEnv()), isolated)
+
+    // With no host open the manager writes the file itself, and the next Worker starts with it; turned back on with no
+    // host open, the manager ends what that Worker's commands left running at once.
+    await manager.instances.stop(row.id)
+    assert.equal(manager.instances.hosts.has(row.id), false)
+    assert.deepEqual(await manager.instances.setRunWithoutIsolation(row.id, { runWithoutIsolation: true, confirmed: true }),
+      { instanceId: row.id, runWithoutIsolation: true, restarting: false })
+    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_ADAPTER_SANDBOX, 'off')
+    assert.equal((await startFixtureInstance(manager.instances, row.id)).started, true)
+    assert.equal(adapterSandboxMode(lastWorkerEnv()), 'off')
+    if (isolating) {
+      const second = await readPid(tree)
+      children.push(second)
+      await waitUntil(() => existsSync(records) && JSON.parse(readFileSync(records, 'utf8')).some((entry) => entry.endedAt !== undefined))
+      await manager.instances.stop(row.id)
+      assert.equal(alive(second), true, 'a detached child outlives its Worker')
+      const back = await manager.instances.setRunWithoutIsolation(row.id, { runWithoutIsolation: false })
+      assert.equal(back.restarting, false)
+      assert.equal(back.sweep.stopped.filter((entry) => entry.pid === second).length, 1, JSON.stringify(back.sweep))
+      await waitUntil(() => !alive(second))
+      assert.equal(existsSync(records), false)
+    }
+  })
+})
+
+test('ACC-ISO-14 any case of the setting\'s name is the same switch; a change waits for the Worker to restart; a Worker being turned off is not restarting', async (t) => {
+  await withManager(t, async ({ manager, root }) => {
+    const row = await addInstance(manager, 'Case', { agentId: 'agent-alpha' })
+    const config = loadInstanceConfig(row.directory)
+    // Windows reads variable names without case: a lower-case name is the switch there, and every reader says so.
+    config.worker.env = { ...config.worker.env, rulith_adapter_sandbox: 'off', RULITH_TEST_STOP_DELAY_MS: '1500' }
+    saveInstanceConfig(row.directory, config)
+    const overviewRow = () => manager.instances.overview().find((entry) => entry.id === row.id)
+    assert.equal(overviewRow().runWithoutIsolation, true)
+    assert.equal(isolationOffFor(root).length, 1, 'Diagnosis says so too')
+    assert.equal((await controlFixtureInstance(manager.instances, row.id, { role: 'worker', operation: 'start' })).started, true)
+    await manager.instances.setWorkerEnabled(row.id, true)
+    const host = () => manager.instances.hosts.get(row.id).host
+    const lastWorkerEnv = () => childEvents(manager, row.id, 'worker').filter((event) => event.observed !== undefined).at(-1).observed
+    assert.equal(lastWorkerEnv().RULITH_ADAPTER_SANDBOX, 'off', 'one spelling reaches the Worker')
+    assert.equal(adapterSandboxMode(lastWorkerEnv()), 'off')
+    // Turned back on: every spelling is removed; until the draining Worker restarts, Diagnosis says it applies after that.
+    const back = await manager.instances.setRunWithoutIsolation(row.id, { runWithoutIsolation: false })
+    assert.equal(back.restarting, true)
+    assert.deepEqual(Object.keys(loadInstanceConfig(row.directory).worker.env).filter((name) => name.toUpperCase() === 'RULITH_ADAPTER_SANDBOX'), [])
+    assert.equal(overviewRow().runWithoutIsolation, false)
+    assert.deepEqual(isolationPendingFor([overviewRow()]).length, isolating ? 1 : 0, 'the running Worker is still unconfined')
+    await waitUntil(() => !host().status().workerSetting.reloading && host().status().ready.worker)
+    assert.deepEqual(isolationPendingFor([overviewRow()]), [], 'applied')
+    assert.equal(lastWorkerEnv().RULITH_ADAPTER_SANDBOX, undefined)
+    // Local tools turned off: the Worker drains (1.5 s here) and is not started again, so a change is not "restarting".
+    await manager.instances.setWorkerEnabled(row.id, false)
+    assert.equal(host().status().worker, true, 'still finishing')
+    const off = await manager.instances.setRunWithoutIsolation(row.id, { runWithoutIsolation: true, confirmed: true })
+    assert.equal(off.restarting, false)
+    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_ADAPTER_SANDBOX, 'off')
   })
 })

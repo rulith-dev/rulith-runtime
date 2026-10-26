@@ -2,6 +2,30 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.19.1 - 2026-10-25
+
+- App, Settings → Advanced (PSC 0.2.31 ③ ④): "Run without isolation (not recommended)", one switch for each Agent set
+  up on this computer, shown on Windows and Linux, off by default. Turning it on first asks "Run model commands without
+  isolation?" with the PSC's text; only "Run without isolation" turns it on, and "Keep isolation" leaves it off. Turning
+  it off asks nothing. The page then says whether the Agent restarts on this computer now (after any command it is
+  running finishes) or takes it at its next start. Diagnosis keeps naming the Agents whose isolation is off, and while
+  an Agent whose isolation was required again still runs unconfined it says the change applies after the Worker
+  restarts. The new English texts are listed in `docs/ui-texts-english.md`.
+- Turning isolation back on ends what model commands started without it and left running, detached background jobs
+  included, before the Worker starts isolated (or at once when no Worker runs). The Worker reports each Adapter it
+  starts unconfined; the host keeps those reports in the instance's directory and finds what they left running by
+  process id and the time each Adapter held it (Windows), or by a mark the commands inherit (Linux). Under the Agent's
+  switch the page names what was stopped, and what could not be.
+- Local manager: `POST /manager/instances/isolation` (`{instanceId, runWithoutIsolation, confirmed?}`) is the only
+  writer of that switch. Turning isolation off needs `confirmed: true`. It writes `RULITH_ADAPTER_SANDBOX=off` into
+  that instance's `local.json` Worker environment, or removes it, and a running Worker restarts with the new value
+  after its running executions drain. The instance host has no route for it. The app reaches it through its
+  session-gated `/rulith/api/isolation`. Each instance in the manager's state says `runWithoutIsolation`, and
+  `isolationSweep` once something was ended. Any case of the variable's name counts as the switch (Windows reads names
+  without case), and turning it back on removes every spelling. New instances still require isolation.
+- Upgrade: built-in Tools are pinned to the Runtime release that implements them (`runtime: rulith@0.19.1`), so Agents
+  that locked a built-in Tool re-pin and re-lock it in Console. The general kit's bytes and pins are unchanged.
+
 ## 0.19.0 - 2026-10-25
 
 - App, English first (D-1025b; normative texts fixed by PSC 0.2.32, listed in `docs/ui-texts-english.md`): everything the

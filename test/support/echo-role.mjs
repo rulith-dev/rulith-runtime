@@ -13,6 +13,9 @@
  * manager's environment isolation exactly as any other configured value does.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { adapterSandboxMode, UNCONFINED_MARK_ENV } from '../../worker/adapter-confinement.mjs'
 
 const agentRole = process.argv.includes('--serve')
 const observed = Object.fromEntries(Object.entries(process.env)
@@ -110,6 +113,28 @@ process.send?.({
   },
 })
 if (!agentRole) process.send?.({ protocol: 'rulith-local-event', event: { type: 'availability', t: Date.now(), state: 'online' } })
+
+/**
+ * `RULITH_TEST_UNCONFINED_TREE` names a file. A Worker stand-in started without isolation does what an Adapter the Worker
+ * starts unconfined may do: a process (the "Adapter", carrying the start's mark) starts a detached child that outlives
+ * it, then exits; the stand-in reports the Adapter as the Worker does (`adapter-unconfined`, `adapter-unconfined-exit`)
+ * and writes the child's pid to the file. Started with isolation required, it does nothing.
+ */
+const tree = process.env.RULITH_TEST_UNCONFINED_TREE
+if (!agentRole && tree && ['win32', 'linux'].includes(process.platform) && adapterSandboxMode(process.env) === 'off') {
+  const mark = randomUUID().replaceAll('-', '')
+  const adapter = spawn(process.execPath, ['-e', "const{spawn}=require('child_process');"
+    + "const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',windowsHide:true});c.unref();console.log(c.pid)"],
+  { env: { ...process.env, [UNCONFINED_MARK_ENV]: mark }, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+  const report = (type, data) => process.send?.({ protocol: 'rulith-local-event', event: { type, t: Date.now(), ...data } })
+  report('adapter-unconfined', { pid: adapter.pid, startedAt: Date.now(), mark })
+  let printed = ''
+  adapter.stdout.on('data', (chunk) => { printed += chunk })
+  adapter.once('close', () => {
+    report('adapter-unconfined-exit', { pid: adapter.pid, endedAt: Date.now() })
+    writeFileSync(tree, printed.trim())
+  })
+}
 const beat = setInterval(() => {}, 1000)
 const leave = () => { clearInterval(beat); process.exit(0) }
 const drainThenLeave = () => {

@@ -115,7 +115,7 @@ import { execFile } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { adapterSandboxMode, confinedLaunch, confinedCacheEnv, confinementIdentity, rulithBackstop } from './adapter-confinement.mjs'
+import { adapterSandboxMode, confinedLaunch, confinedCacheEnv, confinementIdentity, rulithBackstop, UNCONFINED_MARK_ENV } from './adapter-confinement.mjs'
 import { projectFoldersHeld, releaseProjectLabel } from '../local/sandbox-home-label.mjs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { invokeMcp, closeMcpClients, McpExecutionUnknownError } from './mcp-client.mjs'
@@ -157,7 +157,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '3b53a055e8b1986da2bd479100ff2f6af00c40dd'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.19.0"
+const RULITH_RUNTIME_VERSION = "0.19.1"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -2034,7 +2034,16 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
     // 受限适配器把 TEMP 与包缓存改到工作根里的 kit home 子目录：Windows 上系统 temp 与默认缓存是中完整性、低完整性写不进；
     // Linux 上家目录只读（npm/pip 默认缓存在家目录里）。
     if (launch.confined) Object.assign(env, confinedCacheEnv(process.env.ENG_KIT_HOME))
-    execFile(launch.file, launch.args, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout, stderr) => {
+    // 负责人选了「不隔离运行」：给这次启动一个标记（命令与后台作业继承它），并把适配器的 pid 与起止时间报给宿主。之后重新
+    // 要求隔离时，宿主据此在受限的 Worker 启动前结束这棵进程树里还在运行的一切（local/process-tree.mjs）。
+    // Started without isolation (the owner's setting): the start gets a mark its commands and jobs inherit, and the host
+    // is told the Adapter's pid and when it ran, so that what it leaves running is ended once isolation is required again.
+    // Only under a host (Rulith Local), which keeps the reports; a standalone Worker has no switch to turn back.
+    const unconfinedMark = WEV_IPC && !launch.confined && (process.platform === 'win32' || process.platform === 'linux')
+      ? randomUUID().replaceAll('-', '') : ''
+    if (unconfinedMark) env[UNCONFINED_MARK_ENV] = unconfinedMark
+    const adapter = execFile(launch.file, launch.args, { timeout: RUN_ADAPTER_TIMEOUT_MS, env, maxBuffer }, (err, stdout, stderr) => {
+      if (unconfinedMark && adapter.pid) wev('adapter-unconfined-exit', { pid: adapter.pid, endedAt: Date.now() })
       if (err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return reject(new ResultDeliveryError('adapter_output_exceeds_object_budget'))
       // A refusal by the implementation boundary is said in its own words, not inside a stack trace —
       // and honestly: the process had started, so code of this Tool that ran before the refused module
@@ -2058,6 +2067,7 @@ function handRun(t, args, context = {}, sources = SOURCE_CONTEXT) {
         putResult: data => materialStore().putResult(data),
       }).then(finish, reject)
     })
+    if (unconfinedMark && adapter.pid) wev('adapter-unconfined', { pid: adapter.pid, startedAt: Date.now(), mark: unconfinedMark })
   })
 }
 

@@ -26,14 +26,15 @@ import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
-import { createLocalHost, defaultLocalConfig, normalizeLocalConfig } from './rulith-local.mjs'
+import { createLocalHost, defaultLocalConfig, normalizeLocalConfig, withIsolationSetting } from './rulith-local.mjs'
 import { newInstanceId, writeJsonAtomic } from './manager-registry.mjs'
 import { instanceRecordedAt, processRecordRunning, processStamp } from './process-identity.mjs'
 import { checkedModelInput, createModelSettings, maxOutputTokens, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
 import { createToolLibrary } from './tool-library.mjs'
 import { createLocalSetup } from './setup-local.mjs'
 import { generalKitCurrent, generalToolIds, installGeneralForInstance } from '../kits/general/installer.mjs'
-import { adapterSandboxMode, pathWithin, rulithBackstop, workBase } from '../worker/adapter-confinement.mjs'
+import { adapterSandboxMode, isolationSwitchedOff, pathWithin, rulithBackstop, workBase } from '../worker/adapter-confinement.mjs'
+import { sweepUnconfined, UNCONFINED_RECORDS } from './process-tree.mjs'
 import { credentialRootRefusal, ensureCredentialRootLabels, releaseAllProjectLabels } from './sandbox-home-label.mjs'
 
 export const INSTANCE_MODES = Object.freeze(['local_agent', 'existing_client'])
@@ -110,6 +111,8 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
   workRoots = workBase(), confined = adapterSandboxMode(process.env) === 'required' }) {
   /** Live hosts, by instance id. Created once, cached, never re-created on selection. */
   const hosts = new Map()
+  /** The last time isolation was required again for an instance and something its unconfined Worker left running was found: { at, stopped, failed, error? }. */
+  const isolationSweeps = new Map()
   const instancesRoot = join(registry.root, 'instances')
   const modelSettings = createModelSettings({ root: registry.root })
 
@@ -636,6 +639,7 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       managedCallToken,
       protectedPaths: [registry.root],
       confinement: { managerHome: registry.root, instanceId: id },
+      onIsolationSweep: (result) => isolationSweeps.set(id, result),
       toolLibrary,
       onChildChange: (children) => {
         // The record of which processes this instance owns comes first, and nothing below can keep it
@@ -942,6 +946,11 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
         // Whether this instance has a general kit home (it had the kit installed once): the app's start refreshes only
         // those (PSC 0.2.27 ③); a first install is an explicit setup or opening a folder.
         generalKit: text(worker.ENG_KIT_HOME) !== '',
+        // The owner's "Run without isolation (not recommended)" for this Agent (PSC 0.2.31 ③): exactly the value the
+        // Worker decides confinement from at its start. Not a secret.
+        runWithoutIsolation: isolationSwitchedOff(worker),
+        // What was ended, or could not be, when isolation was required again (process ids and names only).
+        isolationSweep: isolationSweeps.get(row.id) ?? null,
         createdAt: row.createdAt ?? '', importedFrom: row.importedFrom ?? '',
         origin: row.origin ?? '', accountId: row.accountId ?? '', agentId: row.agentId ?? '',
         agentName: row.agentName ?? '', connectionId: row.connectionId ?? '', paired: Boolean(row.agentId || row.connectionId),
@@ -1231,6 +1240,42 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const answer = await localCall(host, '/worker-setting', { enabled })
       if (!answer.body.ok) throw new Error(answer.body.teaching)
       return { instanceId: id, ...answer.body }
+    })),
+    /**
+     * The owner's "Run without isolation (not recommended)" for one Agent on this computer (PSC 0.2.31 ③), off by
+     * default. It is `RULITH_ADAPTER_SANDBOX=off` in the instance's local.json Worker environment — the one value the
+     * Worker decides confinement from — and only the manager writes it: the file is inside a credential root (a
+     * confined command can neither read nor write it), this operation needs the manager key, and the instance host has
+     * no HTTP route for it. Turning isolation off needs `confirmed: true`, the owner's explicit confirmation; turning
+     * it back on needs nothing. A running Worker restarts with the new value once its running executions drain
+     * (`restarting`); otherwise the Worker takes it at its next start.
+     *
+     * 中文说明：「不隔离运行（不推荐）」按智能体保存在实例 local.json 的 Worker 环境里，只由管理器写入；打开它必须带
+     * 负责人的明确确认，关掉不需要。运行中的 Worker 排空后重启以用上新值。
+     */
+    setRunWithoutIsolation: (id, { runWithoutIsolation, confirmed } = {}) => admit(() => lifecycle(id, async () => {
+      if (typeof runWithoutIsolation !== 'boolean') throw new Error('Say whether this Agent\'s model commands run without isolation.')
+      if (runWithoutIsolation && confirmed !== true) {
+        throw Object.assign(new Error('Running model commands without isolation needs the owner\'s explicit confirmation. Nothing was changed.'),
+          { errorCode: 'isolation_unconfirmed' })
+      }
+      const row = record(id)
+      const live = hosts.get(id)
+      let restarting = false, sweep = null
+      if (live !== undefined) ({ restarting, sweep = null } = live.host.setRunWithoutIsolation(runWithoutIsolation))
+      else {
+        const directory = resolve(row.directory)
+        if (!existsSync(instanceConfigFile(directory))) throw new Error(`Instance ${row.name} has no configuration at ${instanceConfigFile(directory)}.`)
+        const config = loadInstanceConfig(directory)
+        config.worker = { ...config.worker, env: withIsolationSetting(config.worker.env, runWithoutIsolation) }
+        saveInstanceConfig(directory, config)
+        // No Worker is running: what an unconfined one's commands left running is ended now.
+        if (!runWithoutIsolation && adapterSandboxMode(config.worker.env) === 'required') {
+          sweep = sweepUnconfined(join(directory, UNCONFINED_RECORDS))
+          if (sweep && (sweep.stopped.length || sweep.failed.length || sweep.error)) isolationSweeps.set(id, sweep)
+        }
+      }
+      return { instanceId: id, runWithoutIsolation, restarting, ...(sweep ? { sweep } : {}) }
     })),
     restoreWorkers: () => admit(async () => {
       for (const row of registry.read().instances) {

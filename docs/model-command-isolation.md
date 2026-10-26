@@ -152,6 +152,19 @@ worker_tools_mismatch），把隔离放在 **Worker 启动适配器的那一刻*
    - **macOS：** 本批不隔离，命令照常运行（确认框与 PSC 如实写明）。
    - 默认在 Windows 与 Linux 要求隔离、壳不可用即拒；`RULITH_ADAPTER_SANDBOX=off` 是 "Run without isolation (not recommended)"（不隔离运行，不推荐）开关，只认
      实例 local.json 的 worker.env 或测试引导里显式写的 off，缺省即要求。App／管理器／Worker 自身都在中完整性运行。
+   - **开关的设置界面（0.19.1，ACC-ISO-14）：** 按智能体（每个实例一个 Worker、一份 local.json，诊断也按智能体列出），
+     在 App「设置 → 高级」里，只在 Windows 与 Linux 显示，缺省关闭。打开时先弹 PSC 0.2.31 ④ 的确认框（英文逐字），只有
+     「Run without isolation」才发出，并带 `confirmed: true`；关掉直接发出。链路：浏览器 → App 宿主 `/rulith/api/isolation`
+     （要本页会话）→ 管理器 `/manager/instances/isolation`（要管理器密钥；打开时要 `confirmed: true`）→ 写实例 local.json
+     的 `worker.env.RULITH_ADAPTER_SANDBOX`（打开写 `off`，关掉删去该键）。实例宿主在管理器进程内，只有进程内的方法能改它，
+     没有任何 HTTP 路由（持实例 key 也改不了）；管理器进程自己的环境变量被实例宿主的隔离环境剥掉，传不到 Worker。运行中的
+     Worker 排空后重启以用上新值，没在运行的下次启动时用上，页面告诉负责人是哪一种。新实例不写这个键，即要求隔离。
+     这个键名不分大小写（Windows 读环境变量不分大小写）：Worker、宿主、管理器状态与诊断都按同一条规则读，关掉时删去所有
+     写法，交给 Worker 的只有一种写法。重新要求隔离时，在受限的 Worker 启动之前（没有 Worker 在运行就立刻），结束不隔离
+     期间模型命令留下仍在运行的进程，包括脱离父进程的后台作业：Worker 把每次不隔离启动的适配器（pid、起止时间、标记）报给
+     宿主，宿主记在实例目录（凭据根内）；Windows 上按父进程号与创建时间追（只认适配器持有该 pid 期间创建的子进程），Linux
+     上另按命令继承的环境变量标记在 /proc 里找。设置页在该智能体的开关下列出结束了什么、哪些没能结束；Worker 仍在不隔离
+     地收尾时，诊断说要等它重启后才生效。
 
 ## 6. 对正常项目工作的影响
 
@@ -262,7 +275,6 @@ worker_tools_mismatch），把隔离放在 **Worker 启动适配器的那一刻*
   测试、安装不受影响。
 - **csc 不可用**：无 .NET Framework csc 的精简 Windows 上 fail-closed 拒绝并提示；PowerShell `Add-Type` 后备编译未实现。
 - **Linux bwrap 未在本机实跑**：argv 与 fail-closed 已测，bwrap 在场的实跑按原因跳过。
-- **"Run without isolation (not recommended)" 的 App 设置界面**：引擎侧已实现并测试，App 设置里的确认框（文字见 §7）是界面小项。
 - **HTTP 代理解析**：工具经代理时主机名由代理解析，重绑定／fake-ip 时本机防线看不到代理连向的地址。
 - **实验限制**：所有本机实验只用一次性临时目录与一次性账户目录（USERPROFILE／LOCALAPPDATA 指向临时目录），且已清理。
 
@@ -271,5 +283,5 @@ worker_tools_mismatch），把隔离放在 **Worker 启动适配器的那一刻*
 - 已交付并验证：App 宿主会话门、工具 loopback 回归、凭据根目录级不可读上行标签（主人启动时打、实例宿主补、启动器每次核验）、
   工作根布局与迁移、项目标签记录与还原、项目目录重叠拒绝、Windows 低完整性启动器与产品路径端到端（ACC-ISO-08）、Linux 同一
   结构的 bwrap 代码与 fail-closed、`adapterEnv` 命令环境洗净。kit 字节与 main 一致（已断言）。
-- 紧随小项：① PowerShell `Add-Type` 后备编译；② Linux 装了 bwrap 的机器上实跑；③ "Run without isolation (not recommended)" 的设置确认框；
-  ④ macOS Seatbelt（需在 macOS 上验证后再发）。
+- 紧随小项：① PowerShell `Add-Type` 后备编译；② Linux 装了 bwrap 的机器上实跑；③ macOS Seatbelt（需在 macOS 上验证后再发）。
+  "Run without isolation (not recommended)" 的设置界面与确认框已在 0.19.1 交付（§5，ACC-ISO-14）。

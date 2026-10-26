@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "3469796d12f9b9e6a8ee1a8a44728128a883ca8b13903b9c16b23dbe3ddea528"
+      "sha256": "7f13e3ea408df7fb3716b88ceadba7132d61120e6e76b2e26b4e03c7290ebb52"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -45,7 +45,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "44ce24a59fe780e5694cee7c08a1e40c111ef87e7d75f80bae973b3a2077d0fd"
+      "sha256": "40fb0d6da198d95251df7a8cfca1f4bad9a426b9707931c9e66a7d7a57eee8ca"
     },
     "worker/run-artifacts.mjs": {
       "sha256": "911d3e49c10e9b02f389f9c21cf43542dc6cc9261708c80f9ac683e2f97411e4"
@@ -69,7 +69,7 @@
       "sha256": "ad65e350929e3bdf0e9261581a88a9c4b668295c08fbb95cde5593cea1ea89c9"
     },
     "worker/adapter-confinement.mjs": {
-      "sha256": "fcf362a26225aede62765be8c0969e3a081590e3436ebb3783168d3dcc123068"
+      "sha256": "57db91899dcbc36c93baf585c7465090a6acdef7ebe17db4fbef6024ed91702f"
     },
     "worker/implementation-boundary.mjs": {
       "sha256": "81ea84b94f4a27d706bd1c3b8e1f80f2b4c201a66f5d941a3f8db6f1c6c9bccc"
@@ -84,10 +84,10 @@
       "sha256": "cc43bffb07796f3e56bdf555c955ccaf46114355a9245eff5c73f5cfcbd2a2f5"
     },
     "local/process-tree.mjs": {
-      "sha256": "0800d298ee75d7f9b8de5f7ee782cd206dfa905f17852cc79776abf8240bac2b"
+      "sha256": "b61aadb7c1c672612232d268c33b34d588599b08c3c3499af40c75af2778c391"
     },
     "local/rulith-local.mjs": {
-      "sha256": "a936c6410bbc0a36d5cc22cf62095a23486bc691d5ad062af52242200cc7ce23"
+      "sha256": "341cce89b6617d222b50dbddad1cc4668c3eed4e30530f65cc1d020ee06463ca"
     },
     "local/operations.mjs": {
       "sha256": "6cf1e7ea8077908f53d6423637fca2d1df567fefbdc9e00ff25465f1cacb4e91"
@@ -111,19 +111,19 @@
       "sha256": "198c1448f958ef75f8006ec4c87c78995a26a60d9feb675840796b9fd23985da"
     },
     "local/instance-manager.mjs": {
-      "sha256": "76e91b67839c7d00c32d66353b1311d860e258f777c38abcf6b1bfc48c199246"
+      "sha256": "a64f41f7b4b707acac14a3761c8aa33684c1d7d905d8d4eb5e9311e348685bb9"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"
     },
     "local/manager-server.mjs": {
-      "sha256": "912d684740f79c02d292b87db1194a9dca38d73098f0ea977de9f9e2977441fe"
+      "sha256": "173e6c4b0c1683dc30dae6afaa56da0611401a06fae72a8eb64d198537151072"
     },
     "local/manager-health.mjs": {
       "sha256": "a5e9860bd554218b478d436fe29727b2f6a9b81969123294e440dec5eb3dcba2"
     },
     "docs/local-manager.md": {
-      "sha256": "99d4f55c5b2f76773370258c801b7d2ed5b00de2ff274f52aac70c970378f046"
+      "sha256": "413275df53d4d463465f86e6dcfe50d5e87743962cbce5a47b93659f904d886a"
     },
     "docs/local-materials.md": {
       "sha256": "cfd45ae4852a76589844a017ac24f3dbfbc16b273c5a3021547f5800c2d50d1a"
@@ -156,7 +156,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "57b36987911aac360b73b160f2ed4b2c55d27b76698d068f8b0eb834eba356ef"
+      "sha256": "bca3033c83bd5742086c03559a75bf4825e283130beed06706e207032de83ddb"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -165,7 +165,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "b1dcfdd9162b932fc98d66b08f1e77e6b348a142f150dab0e0ca45dfeab6dc07"
+      "sha256": "35799925fb085529a24dd2726bfb4c09d2bdb03a9671c7356f76cfe398bc6855"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "e173b13818e54b7f9b07a9ad70fce2a4a7b6426abc514780efe41e080e14d244"

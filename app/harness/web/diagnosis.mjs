@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { rulithBackstop, workBase } from '../../../worker/adapter-confinement.mjs';
+import { isolationSwitchedOff, rulithBackstop, workBase } from '../../../worker/adapter-confinement.mjs';
 import { homeLabelVerified, protectionProblems } from '../../../local/sandbox-home-label.mjs';
 import { say } from './ui-texts.mjs';
 
@@ -19,12 +19,14 @@ const versionAt = (file) => { try { return String(JSON.parse(fs.readFileSync(fil
  * Windows at low integrity with Rulith's credential folders read-protected, on Linux under bubblewrap, nowhere else yet.
  * `roots` are the credential folders the Worker checks before every command; one that is not protected means commands
  * are refused (fail-closed), which is what this says. `offFor` names the Agents whose isolation is switched off: the
- * switch is per Agent (RULITH_ADAPTER_SANDBOX=off in its instance's Worker environment), never the app's. `problems` are
+ * switch is per Agent (RULITH_ADAPTER_SANDBOX=off in its instance's Worker environment), never the app's. `pendingFor`
+ * names the Agents whose isolation is required again while their Worker still runs unconfined (it is finishing its
+ * running commands before it restarts): for them it applies only after that restart. `problems` are
  * what the labelling code noted it could not protect, and why (sandbox-home-label.mjs noteProtection): the reason is
  * shown next to a root that is still unprotected, and every project folder that could not be made writable (or put back)
  * is listed in `problems` of the answer.
  */
-export function isolationStatus({ platform = process.platform, roots = [], offFor = [], problems = [], protectedRoot = homeLabelVerified,
+export function isolationStatus({ platform = process.platform, roots = [], offFor = [], pendingFor = [], problems = [], protectedRoot = homeLabelVerified,
   bwrap = () => spawnSync('bwrap', ['--version'], { windowsHide: true }).status === 0 } = {}) {
   if (platform !== 'win32' && platform !== 'linux')
     return { state: 'unavailable', text: say('isolation.unavailable') };
@@ -48,14 +50,26 @@ export function isolationStatus({ platform = process.platform, roots = [], offFo
       .map(({ kind, path: where, reason }) => ({ kind, path: where, reason }));
     if (shown.length) status.problems = shown;
   }
-  if (!offFor.length) return status;
-  return { state: status.state === 'on' ? 'partly-off' : status.state,
-    text: say('isolation.offFor', { status: status.text, agents: offFor.join(', ') }) };
+  if (!offFor.length && !pendingFor.length) return status;
+  let text = status.text;
+  if (offFor.length) text = say('isolation.offFor', { status: text, agents: offFor.join(', ') });
+  if (pendingFor.length) text = say('isolation.pendingFor', { status: text, agents: pendingFor.join(', ') });
+  return { ...status, state: status.state === 'on' ? 'partly-off' : status.state, text };
 }
 
 /**
- * The Agents set up here whose isolation is switched off: `RULITH_ADAPTER_SANDBOX=off` in their instance's Worker
- * environment. Only that one field of each instance's local.json is read; nothing else of it leaves this function.
+ * The Agents whose isolation is required again while their Worker still runs unconfined (the manager's state: the
+ * setting, and how the running Worker was started). Names only.
+ */
+export function isolationPendingFor(instances = []) {
+  return (Array.isArray(instances) ? instances : []).filter((row) => row && !row.signedOutAt && row.runWithoutIsolation !== true
+    && row.workerSetting?.unconfined === true).map((row) => String(row.agentName || row.name || row.id));
+}
+
+/**
+ * The Agents set up here whose isolation is switched off: `RULITH_ADAPTER_SANDBOX=off`, under any case of the name, in
+ * their instance's Worker environment. Only that setting of each instance's local.json is read; nothing else of it
+ * leaves this function.
  */
 export function isolationOffFor(managerHome) {
   let rows = [];
@@ -63,14 +77,14 @@ export function isolationOffFor(managerHome) {
   return (Array.isArray(rows) ? rows : []).filter((row) => row && typeof row.directory === 'string' && !row.signedOutAt).filter((row) => {
     try {
       const env = JSON.parse(fs.readFileSync(path.join(row.directory, 'local.json'), 'utf8'))?.worker?.env;
-      return String(env?.RULITH_ADAPTER_SANDBOX ?? '').toLowerCase() === 'off';
+      return isolationSwitchedOff(env ?? {});
     } catch { return false; }
   }).map((row) => String(row.agentName || row.name || row.id));
 }
 
 /** The Diagnosis report for the page. `legacyWorkbench` is what the launcher found (app-home.mjs legacyWorkbench). */
 export function diagnosisReport({ managerHome, dshHome, appHome, kitHome, keyFile, legacyWorkbench = null, env = process.env,
-  isolation = isolationStatus } = {}) {
+  pendingFor = [], isolation = isolationStatus } = {}) {
   let listed = [];
   try { const parsed = JSON.parse(env.RULITH_CREDENTIAL_ROOTS ?? '[]'); if (Array.isArray(parsed)) listed = parsed.filter((p) => typeof p === 'string'); } catch { listed = []; }
   const roots = [...new Set([managerHome, dshHome, keyFile, rulithBackstop(), ...listed].filter((p) => typeof p === 'string' && p).map((p) => path.resolve(p)))];
@@ -84,7 +98,7 @@ export function diagnosisReport({ managerHome, dshHome, appHome, kitHome, keyFil
       dsh: (() => { try { return versionAt(require.resolve('@deepseek-ai/dsh/package.json')); } catch { return ''; } })(),
       node: process.version, platform: `${process.platform}-${process.arch}`,
     },
-    isolation: isolation({ roots, offFor: typeof managerHome === 'string' && managerHome ? isolationOffFor(managerHome) : [],
+    isolation: isolation({ roots, offFor: typeof managerHome === 'string' && managerHome ? isolationOffFor(managerHome) : [], pendingFor,
       problems: typeof managerHome === 'string' && managerHome ? protectionProblems(managerHome) : [] }),
     folders,
     ...(legacyWorkbench ? { legacyWorkbench } : {}),

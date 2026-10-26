@@ -104,8 +104,9 @@ Later, more folders open from the sidebar: 「📂 打开文件夹…」 under a
 not set up here, with the same progress; 默认 marks the account's default Agent (when the account service says which),
 and the Agent of the open conversation is highlighted. The one settings page (bottom left: the account, this computer's
 state and ⚙ 设置) has 账户, 这台电脑 (each Agent's Worker state, and 「在本机设置」 again as a repair), 模型, 外观与语言 and
-高级 (where other MCP clients get the Agent's token in Console; the English Runtime workbench it also opened is retired,
-batch 7). The
+高级 (where other MCP clients get the Agent's token in Console; on Windows and Linux, for each Agent set up here, the
+owner's "Run without isolation (not recommended)", off by default and turned on only after its confirmation; and
+Diagnosis; the English Runtime workbench it also opened is retired, batch 7). The
 composer has two chips: 档位, one per conversation (narrowing applies at once, widening asks first), and 模型; 审查
 appears only when the Agent has a reviewer designated.
 

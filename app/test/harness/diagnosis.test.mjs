@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadPage, nodes, text } from './browser-page.mjs';
 import { legacyWorkbench, legacyWorkbenchLine } from '../../harness/web/app-home.mjs';
-import { diagnosisReport, isolationOffFor, isolationStatus, legacyFromEnv } from '../../harness/web/diagnosis.mjs';
+import { diagnosisReport, isolationOffFor, isolationPendingFor, isolationStatus, legacyFromEnv } from '../../harness/web/diagnosis.mjs';
 import { noteProtection, protectionProblems } from '../../../local/sandbox-home-label.mjs';
 
 const tmp = (t) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rulith-diagnosis-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
@@ -51,6 +51,17 @@ test('isolation status says what the Worker does on each platform, fail-closed i
   const partly = isolationStatus({ platform: 'win32', roots: [], offFor: ['Research'], protectedRoot: () => true });
   assert.equal(partly.state, 'partly-off');
   assert.match(partly.text, /Turned off for Research \(RULITH_ADAPTER_SANDBOX=off; not recommended\)\.$/);
+  // ACC-ISO-14: required again while that Agent's Worker still runs unconfined (finishing its commands): not "On" yet.
+  const pending = isolationStatus({ platform: 'win32', roots: [], pendingFor: ['Research'], protectedRoot: () => true });
+  assert.equal(pending.state, 'partly-off');
+  assert.equal(pending.text, 'On: model commands run at low integrity and cannot read Rulith\'s own folders.'
+    + ' For Research it applies after the Worker restarts, once the commands it is running finish.');
+  assert.deepEqual(isolationPendingFor([
+    { agentName: 'Research', runWithoutIsolation: false, workerSetting: { unconfined: true } },
+    { agentName: 'Off', runWithoutIsolation: true, workerSetting: { unconfined: true } },
+    { agentName: 'Applied', runWithoutIsolation: false, workerSetting: { unconfined: false } },
+    { agentName: 'Gone', runWithoutIsolation: false, workerSetting: { unconfined: true }, signedOutAt: 'x' }, null]), ['Research']);
+  assert.equal(isolationStatus({ platform: 'darwin', pendingFor: ['Research'] }).state, 'unavailable');
 });
 
 test('Diagnosis reads versions, folders and the per-Agent switch, and nothing secret', (t) => {
@@ -60,6 +71,10 @@ test('Diagnosis reads versions, folders and the per-Agent switch, and nothing se
   writeJson(path.join(instance, 'local.json'), { agent: { env: { RULITH_TOKEN: 'rlt_agt_secret-value' } },
     worker: { env: { RULITH_CONNECTION_KEY: 'conn-secret-value', RULITH_ADAPTER_SANDBOX: 'off' } } });
   assert.deepEqual(isolationOffFor(manager), ['Research']);
+  // ACC-ISO-14: Windows reads variable names without case, so any case of the name is the switch.
+  writeJson(path.join(instance, 'local.json'), { worker: { env: { rulith_adapter_sandbox: 'OFF' } } });
+  assert.deepEqual(isolationOffFor(manager), ['Research']);
+  writeJson(path.join(instance, 'local.json'), { worker: { env: { RULITH_ADAPTER_SANDBOX: 'off' } } });
   const report = diagnosisReport({ managerHome: manager, dshHome: path.join(home, 'dsh'), appHome: home, kitHome: path.join(home, 'kit'),
     keyFile: path.join(home, 'manager.key'), legacyWorkbench: { home: '/old', agents: 1 }, env: {},
     isolation: ({ offFor }) => ({ state: 'test', text: 'off for ' + offFor.join(',') }) });

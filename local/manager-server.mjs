@@ -215,6 +215,12 @@ export function createManagerServer({
       const fields = onlyFields(body, ['instanceId', 'enabled'])
       return instances.setWorkerEnabled(String(fields.instanceId ?? ''), fields.enabled)
     },
+    // PSC 0.2.31 ③: the owner's "Run without isolation (not recommended)" for one Agent on this computer, off by default.
+    // Turning it on needs `confirmed: true`; only this operation (the manager key) writes it.
+    '/manager/instances/isolation': (body) => {
+      const fields = onlyFields(body, ['instanceId', 'runWithoutIsolation', 'confirmed'])
+      return instances.setRunWithoutIsolation(String(fields.instanceId ?? ''), fields)
+    },
     '/manager/instances/forget': (body) => instances.forget(String(onlyFields(body, ['instanceId']).instanceId ?? '')),
     // "Check again": try once more to move an Agent that kept its own tools into this environment's.
     '/manager/instances/tools': (body) => instances.checkTools(String(onlyFields(body, ['instanceId']).instanceId ?? '')),

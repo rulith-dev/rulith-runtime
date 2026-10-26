@@ -1,8 +1,8 @@
 {
   "schema": "rulith-psc-conformance-map/v1",
   "repository": "runtime",
-  "contractVersion": "0.2.32",
-  "contractReviewedCommit": "b07f08094b06c4fc56bb0fab9f00083b787a2b5a",
+  "contractVersion": "0.2.33",
+  "contractReviewedCommit": "d18baee6910c3eebf2243f81ac98a180ecdcfdb6",
   "blockers": {
     "contract_changed": "The PSC row changed after this Runtime mapping was made against 0.2.4; its tests must be re-checked against the current clauses before the item can be mapped again (D-1018a reconciliation, 2026-10-18).",
     "evidence_review": "Clause-wide Runtime evidence has not been independently reviewed; existing green tests alone do not establish complete coverage.",
@@ -184,6 +184,17 @@
       "state": "mapped",
       "targets": [
         {"file": "app/test/harness/model-command-isolation.test.mjs", "locator": "ACC-ISO-12 a root with a child that kept another label"}
+      ]
+    },
+    "ACC-ISO-14": {
+      "state": "mapped",
+      "targets": [
+        {"file": "app/test/harness/local-setup.test.mjs", "locator": "ACC-ISO-14 the isolation switch route needs the page"},
+        {"file": "app/test/harness/settings.test.mjs", "locator": "ACC-ISO-14 Settings → Advanced: Run without isolation is off by default"},
+        {"file": "test/local-manager.test.mjs", "locator": "ACC-ISO-14 the isolation switch is off by default, needs confirmation to turn on"},
+        {"file": "test/local-manager.test.mjs", "locator": "ACC-ISO-14 any case of the setting"},
+        {"file": "test/process-tree.test.mjs", "locator": "ACC-ISO-14 a detached child an unconfined Adapter left running is ended"},
+        {"file": "test/process-tree.test.mjs", "locator": "ACC-ISO-14 a sweep says what it stopped and what it could not"}
       ]
     }
   }

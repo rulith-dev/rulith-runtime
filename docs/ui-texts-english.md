@@ -562,6 +562,25 @@ themselves are `TEXTS` in `app/harness/web/rulith-dsh-ui/lib/client.js` (the pag
 - `legacy.many`: `{n} Agents`
 - `legacy.notice`: `{count} set up by the retired Rulith workbench ({home}) no longer start their Workers with rulith. Run "rulith manager" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console.`
 
+### Settings → Advanced: running model commands without isolation (PSC 0.2.31 ③ ④) (`isolationSwitch`)
+
+One switch per Agent set up on this computer, off by default, shown only where model commands can be isolated (Windows
+and Linux). Turning it on asks first with the confirmation below; only its `accept` button turns it on. Turning it off
+asks nothing. The switch's name and the whole confirmation are PSC 0.2.31 ④'s English, verbatim.
+
+- `isolationSwitch.title`: `Model-command isolation`
+- `isolationSwitch.label`: `Run without isolation (not recommended)` (PSC 0.2.31 ③, the switch's name)
+- `isolationSwitch.confirmTitle`: `Run model commands without isolation?` (PSC 0.2.31 ④)
+- `isolationSwitch.confirmBody`: `Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials. Turn this on only if isolation cannot work here and you accept that risk.` (PSC 0.2.31 ④)
+- `isolationSwitch.accept`: `Run without isolation` (PSC 0.2.31 ④)
+- `isolationSwitch.cancel`: `Keep isolation` (PSC 0.2.31 ④)
+- `isolationSwitch.restarting`: `Saved. {agent} restarts on this computer to apply it, once any command it is running finishes.`
+- `isolationSwitch.nextStart`: `Saved. It applies the next time {agent} starts on this computer.`
+- `isolationSwitch.notSaved`: `Not saved`
+- `isolationSwitch.stopped`: `Stopped what model commands had started without isolation: {names}.` (under an Agent's switch, after isolation was required again; `{names}` is each process's name and id)
+- `isolationSwitch.notStopped`: `Could not stop what model commands started without isolation: {names}. Stop them yourself, or restart this computer.`
+- `isolationSwitch.notChecked`: `Could not check what model commands started without isolation left running: {reason}.`
+
 ### Settings → Advanced → Diagnosis (`diagnosis`)
 
 - `diagnosis.title`: `Diagnosis`
@@ -687,7 +706,7 @@ themselves are `TEXTS` in `app/harness/web/rulith-dsh-ui/lib/client.js` (the pag
 - `model.chooseSource`: `Choose whether to use the account's model or this Agent's own.`
 - `model.defaultsElsewhere`: `This app reads the account's model settings from another Rulith folder (modelHome); change them there.`
 
-### Model-command isolation (Diagnosis) (`isolation.*`)
+### Model-command isolation: Diagnosis, and the switch's route (`isolation.*`)
 
 - `isolation.unavailable`: `Not available on this platform yet: model commands run with your account's access.`
 - `isolation.linuxOn`: `On: model commands run under bubblewrap, with Rulith's own folders hidden.`
@@ -696,6 +715,9 @@ themselves are `TEXTS` in `app/harness/web/rulith-dsh-ui/lib/client.js` (the pag
 - `isolation.refusingMany`: `Model commands are refused: {roots} are not read-protected. Restart Rulith to protect them again.`
 - `isolation.windowsOn`: `On: model commands run at low integrity and cannot read Rulith's own folders.`
 - `isolation.offFor`: `{status} Turned off for {agents} (RULITH_ADAPTER_SANDBOX=off; not recommended).`
+- `isolation.pendingFor`: `{status} For {agents} it applies after the Worker restarts, once the commands it is running finish.` (isolation required again while that Agent's Worker still runs unconfined)
+- `isolation.incomplete`: `The request does not say which Agent, or whether its model commands run without isolation.` (the switch's route)
+- `isolation.unconfirmed`: `Running model commands without isolation needs your confirmation. Nothing was changed.` (the switch's route, turned on without the confirmation)
 
 ### Where Rulith keeps its files (Diagnosis) (`folders.*`)
 

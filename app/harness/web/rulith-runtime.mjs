@@ -15,14 +15,14 @@ import { installOutgoingTrim } from './outgoing-trim.mjs';
 import { installProjectContext, readSourceBindings } from './project-source.mjs';
 import { PROJECT_SOURCE, projectRoutes } from './open-project.mjs';
 import { rulithBackstop, workBase } from '../../../worker/adapter-confinement.mjs';
-import { diagnosisReport, legacyFromEnv } from './diagnosis.mjs';
+import { diagnosisReport, isolationPendingFor, legacyFromEnv } from './diagnosis.mjs';
 import { ShadowReviewer, reviewWithModel, reviewLog } from './shadow-reviewer.mjs';
 
 import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
 import { handOf, conversationKey, depthOf } from '../subagents.mjs';
 import { ConversationBoards } from './conversation-boards.mjs';
 import { conversationBoards } from './launcher-settings.mjs';
-import { setupRoutes } from './local-setup.mjs';
+import { isolationRoutes, setupRoutes } from './local-setup.mjs';
 import { contextWindowSetting, conversationModel, effectiveModel, installLiveModels, installLiveSearch, modelRoutes, signedInAccount }
   from './model-runtime.mjs';
 import { folderPicker } from './folder-picker.mjs';
@@ -200,6 +200,7 @@ export async function apply(ctx, config = {}) {
   // PSC 0.2.27 ② ③: "set up this Agent on this computer" is the manager's one operation (local-setup.mjs). A new Agent's
   // general kit home is the app home's kit (the launcher passes it); an Agent that has one keeps it.
   const setup = setupRoutes({ manager, kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME || '' });
+  const isolation = isolationRoutes({ manager });
   const models = modelRoutes({ manager, read: readModel, defaultsElsewhere: Boolean(modelHome) });
 
   // 2. Every paired Agent is attached at once (owner 2026-10-17: the sidebar is Agent -> directory -> conversation). The
@@ -365,6 +366,10 @@ export async function apply(ctx, config = {}) {
   // is the account's own default Agent, passed on only when the service says so.
   // Agents an earlier English workbench set up here, as the launcher found them (shown in the wizard and settings).
   const legacyWorkbench = legacyFromEnv();
+  const sweepRows = (rows) => (Array.isArray(rows) ? rows : []).slice(0, 20)
+    .map((row) => ({ pid: Number.isSafeInteger(row?.pid) ? row.pid : 0, name: String(row?.name ?? '').slice(0, 100) }));
+  const sweepView = (sweep) => ({ at: Number(sweep.at) || 0, stopped: sweepRows(sweep.stopped), failed: sweepRows(sweep.failed),
+    ...(typeof sweep.error === 'string' && sweep.error ? { error: sweep.error.slice(0, 200) } : {}) });
   const summary = (state) => {
     const instances = (state.instances ?? []).filter((row) => row.mode === 'local_agent' && !row.signedOutAt);
     return {
@@ -375,12 +380,19 @@ export async function apply(ctx, config = {}) {
       origin: state.device?.origin || consoleUrl,
       computer: os.hostname(),
       teaching: state.device?.teaching ?? '',
+      // Whether model commands can be isolated on this computer at all (Windows and Linux; PSC 0.2.31 ③): where they
+      // cannot, Settings → Advanced has no "Run without isolation" switch to offer.
+      isolationAvailable: process.platform === 'win32' || process.platform === 'linux',
       agents: (state.device?.agents ?? []).map((agent) => {
         const instance = instances.find((row) => row.agentId === agent.id);
         return { id: agent.id, name: agent.name, ...(typeof agent.isDefault === 'boolean' ? { isDefault: agent.isDefault } : {}),
           paired: !!instance?.paired,
           worker: instance?.workerSetting ? { enabled: !!instance.workerSetting.enabled, state: instance.workerSetting.state ?? '',
-            failure: instance.workerSetting.failure ?? '' } : null };
+            failure: instance.workerSetting.failure ?? '' } : null,
+          // This Agent's "Run without isolation (not recommended)" on this computer (its instance's Worker environment), and
+          // what was ended, or could not be, when isolation was required again (process ids and names).
+          ...(instance ? { runWithoutIsolation: instance.runWithoutIsolation === true } : {}),
+          ...(instance?.isolationSweep ? { isolationSweep: sweepView(instance.isolationSweep) } : {}) };
       }),
     };
   };
@@ -564,9 +576,17 @@ export async function apply(ctx, config = {}) {
     'GET /rulith/api/health': (query) => health(query),
     'GET /rulith/api/state': async () => summary(await manager('/manager/state')),
     // Settings → Advanced → Diagnosis: versions, isolation status, folders (diagnosis.mjs). Paths and versions only.
-    'GET /rulith/api/diagnosis': () => diagnosisReport({ managerHome: home, dshHome: process.env.DSH_HOME, appHome: process.env.RULITH_DSH_APP_HOME,
-      kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME, keyFile: config.keyFile, legacyWorkbench }),
+    // An Agent whose isolation was required again while its Worker still runs unconfined is named from the manager's state.
+    'GET /rulith/api/diagnosis': async () => {
+      let instances = [];
+      try { instances = (await manager('/manager/state')).instances ?? []; } catch { instances = []; }
+      return diagnosisReport({ managerHome: home, dshHome: process.env.DSH_HOME, appHome: process.env.RULITH_DSH_APP_HOME,
+        kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME, keyFile: config.keyFile, legacyWorkbench, pendingFor: isolationPendingFor(instances) });
+    },
     'GET /rulith/api/worker': (query) => workerTrace(query),
+    // Settings → Advanced: one Agent's "Run without isolation (not recommended)" on this computer (PSC 0.2.31 ③; see
+    // local-setup.mjs isolationRoutes). Turning it on is passed on only with the page's confirmation.
+    'POST /rulith/api/isolation': (body) => isolation.set(body),
     'POST /rulith/api/signin': async () => {
       const reply = await manager('/manager/device/start', { consoleUrl, name: os.hostname() });
       return { url: reply.device?.consoleUrl ?? '' };

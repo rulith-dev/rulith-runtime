@@ -42,8 +42,31 @@ const sha256 = (buf) => createHash('sha256').update(buf).digest('hex')
  */
 export function adapterSandboxMode(env = process.env) {
   if (!(process.platform === 'win32' || process.platform === 'linux')) return 'off'
-  return (env.RULITH_ADAPTER_SANDBOX ?? '').toLowerCase() === 'off' ? 'off' : 'required'
+  return isolationSwitchedOff(env) ? 'off' : 'required'
 }
+
+/** The name of the owner's "Run without isolation (not recommended)" in a Worker's environment (value `off`). */
+export const ISOLATION_SETTING = 'RULITH_ADAPTER_SANDBOX'
+/**
+ * Whether an environment carries the owner's "Run without isolation (not recommended)": `RULITH_ADAPTER_SANDBOX=off`
+ * under any case of the name. Windows reads variable names without case, so a Worker there runs unconfined on
+ * `rulith_adapter_sandbox=off` too; every reader (the Worker, its host, the manager's state, Diagnosis) uses this one
+ * rule, so none of them can say "isolated" while the Worker is not. Pure.
+ *
+ * 中文说明：变量名不分大小写地认这个开关（Windows 读环境变量不分大小写）；所有读它的地方都用这一条规则。
+ */
+export function isolationSwitchedOff(env = {}) {
+  return Object.entries(env ?? {}).some(([name, value]) => name.toUpperCase() === ISOLATION_SETTING
+    && String(value ?? '').toLowerCase() === 'off')
+}
+
+/**
+ * The variable a Worker gives an Adapter it starts without isolation, with a value of its own for that start
+ * (`UNCONFINED_RUN_MARK`; neither ENG_ nor RULITH_, so the general kit passes it on to commands and background jobs). On
+ * Linux it is how the host finds, in /proc, what that start left running after its Adapter exited (a detached job is
+ * re-parented away from it); the host ends them when isolation is required again (local/process-tree.mjs).
+ */
+export const UNCONFINED_MARK_ENV = 'UNCONFINED_RUN_MARK'
 
 // Production-facing runtime text is English (the user-facing Chinese is rendered by the app layer).
 const CONFINE_FAILCLOSED_WIN = 'model-command isolation unavailable: could not prepare the low-integrity launcher'

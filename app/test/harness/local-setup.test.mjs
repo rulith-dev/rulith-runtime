@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { setupRoutes, setupView } from '../../harness/web/local-setup.mjs';
+import { isolationRoutes, setupRoutes, setupView } from '../../harness/web/local-setup.mjs';
 import { conversationModel, createRouteAdapter, effectiveModel, installLiveModels, liveRoute, modelRoutes, publicModel, signedInAccount }
   from '../../harness/web/model-runtime.mjs';
 
@@ -543,8 +543,104 @@ test('the host serves setup and model on its guarded API; choosing an Agent not 
   assert.equal(currentLocale(), 'en', 'the last admitted page named English');
   // The account entry: the account, this computer and each Agent's state here; no selection, Connection or tool count.
   const summary = await call('GET', 'state');
-  assert.deepEqual(Object.keys(summary).sort(), ['account', 'agents', 'computer', 'deviceState', 'ok', 'origin', 'signedIn', 'teaching']);
-  assert.deepEqual(summary.agents.map((agent) => Object.keys(agent).sort()), [['id', 'name', 'paired', 'worker'], ['id', 'name', 'paired', 'worker']]);
+  assert.deepEqual(Object.keys(summary).sort(), ['account', 'agents', 'computer', 'deviceState', 'isolationAvailable', 'ok', 'origin', 'signedIn', 'teaching']);
+  // An Agent set up here also says whether it runs without isolation (PSC 0.2.31 ③), an Agent that is not says nothing.
+  assert.deepEqual(summary.agents.map((agent) => Object.keys(agent).sort()), [['id', 'name', 'paired', 'runWithoutIsolation', 'worker'], ['id', 'name', 'paired', 'worker']]);
+  assert.equal(summary.agents[0].runWithoutIsolation, false);
+  assert.equal(summary.isolationAvailable, process.platform === 'win32' || process.platform === 'linux');
+});
+
+// ACC-ISO-14 (PSC 0.2.31 ③), the app host's half of "Run without isolation (not recommended)": it names one Agent of the
+// signed-in account set up on this computer, passes turning isolation off on only with the page's confirmation, and is
+// served only to a request the page's session admitted. The manager is a recording stand-in.
+test('ACC-ISO-14 the isolation switch route needs the page\'s confirmation to turn isolation off, and names only an Agent set up here', async () => {
+  const sent = [];
+  const state = { device: { state: 'linked', agents: [{ id: 'agent-1', name: 'One' }, { id: 'agent-2', name: 'Two' }] },
+    instances: [{ id: 'inst-1', agentId: 'agent-1', mode: 'local_agent', signedOutAt: '' },
+      { id: 'inst-2', agentId: 'agent-2', mode: 'local_agent', signedOutAt: '2026-10-20T00:00:00Z' },
+      { id: 'inst-x', agentId: 'agent-x', mode: 'local_agent', signedOutAt: '' }] };
+  const manager = async (route, body) => {
+    sent.push([route, body]);
+    if (route === '/manager/state') return state;
+    // The manager appends its whole state to every answer; none of it may reach the page.
+    return { instanceId: body.instanceId, runWithoutIsolation: body.runWithoutIsolation, restarting: true, instances: [{ token: SECRET }] };
+  };
+  const { set } = isolationRoutes({ manager });
+  const writes = () => sent.filter(([route]) => route === '/manager/instances/isolation');
+  for (const bad of [{}, { agentId: 'agent-1' }, { agentId: 'agent-1', runWithoutIsolation: 'yes' }, { agentId: 3, runWithoutIsolation: true, confirmed: true }])
+    await assert.rejects(set(bad), /does not say which Agent/, JSON.stringify(bad));
+  for (const confirmed of [undefined, 'yes', 1])
+    await assert.rejects(set({ agentId: 'agent-1', runWithoutIsolation: true, confirmed }),
+      (error) => error.errorCode === 'isolation_unconfirmed' && /needs your confirmation\. Nothing was changed/.test(error.message));
+  // An Agent signed out here, not in the account, or not set up on this computer at all.
+  for (const agentId of ['agent-2', 'agent-x', 'agent-none'])
+    await assert.rejects(set({ agentId, runWithoutIsolation: false }), /not set up on this computer/, agentId);
+  assert.equal(writes().length, 0, 'nothing reached the manager');
+  const on = await set({ agentId: 'agent-1', runWithoutIsolation: true, confirmed: true });
+  assert.deepEqual(on, { agentId: 'agent-1', runWithoutIsolation: true, restarting: true });
+  assert.deepEqual(writes().at(-1), ['/manager/instances/isolation', { instanceId: 'inst-1', runWithoutIsolation: true, confirmed: true }]);
+  const off = await set({ agentId: 'agent-1', runWithoutIsolation: false, confirmed: true });
+  assert.deepEqual(off, { agentId: 'agent-1', runWithoutIsolation: false, restarting: true });
+  assert.deepEqual(writes().at(-1), ['/manager/instances/isolation', { instanceId: 'inst-1', runWithoutIsolation: false }],
+    'turning isolation back on needs and carries no confirmation');
+  assert.equal(JSON.stringify([on, off]).includes(SECRET), false);
+});
+
+test('ACC-ISO-14 the isolation switch is served on the guarded API only to a request the page\'s session admitted', async (t) => {
+  // All I/O is mocked or local: no manager process, no socket to it, no credential of this computer.
+  const net = (await import('node:net')).default;
+  const { EventEmitter } = await import('node:events');
+  const { apply } = await import('../../harness/web/rulith-runtime.mjs');
+  const dir = home(t);
+  const keyFile = path.join(dir, 'fixture-key.txt');
+  fs.writeFileSync(keyFile, 'fixture-manager-key');
+  t.mock.method(fs, 'writeFileSync', () => {});
+  t.mock.method(globalThis, 'setInterval', () => 0);
+  t.mock.method(net, 'connect', (_options, callback) => { const socket = new EventEmitter(); socket.destroy = () => {}; queueMicrotask(callback); return socket; });
+  const state = { device: { state: 'linked', origin: ACCOUNT.origin, account: { id: ACCOUNT.accountId, name: 'Owner' }, agents: [{ id: 'agent-1', name: 'One' }] },
+    instances: [{ id: 'own', agentId: 'agent-1', mode: 'local_agent', paired: true, signedOutAt: '', runWithoutIsolation: false }] };
+  const sent = [];
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const route = new URL(url).pathname, body = init?.body ? JSON.parse(init.body) : undefined;
+    sent.push([route, body]);
+    if (route === '/manager/state') return new Response(JSON.stringify({ ok: true, ...state }));
+    if (route === '/manager/instances/isolation') {
+      state.instances[0].runWithoutIsolation = body.runWithoutIsolation;
+      return new Response(JSON.stringify({ ok: true, instanceId: body.instanceId, runWithoutIsolation: body.runWithoutIsolation, restarting: false, ...state }));
+    }
+    return new Response(JSON.stringify({ ok: false, teaching: 'unexpected' }), { status: 404 });
+  });
+  let server, admitted = false;
+  const effects = [];
+  await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } },
+    connection: { admit: () => (admitted ? { peer: {} } : { rejection: 401 }) } },
+    { managerHome: dir, runtimeEntry: 'fixture-runtime', keyFile, shadow: { enabled: false } });
+  t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
+  const call = async (method, route, body) => {
+    const req = new EventEmitter();
+    Object.assign(req, { method, url: '/rulith/api/' + route, headers: { host: '127.0.0.1:3080', 'x-deep-rulith': '1' } });
+    let reply, status;
+    const done = server.handler(req, { writeHead(code) { status = code; }, end(text) { reply = JSON.parse(text); } });
+    queueMicrotask(() => { if (body) req.emit('data', JSON.stringify(body)); req.emit('end'); });
+    await done;
+    return { status, ...reply };
+  };
+  sent.length = 0;
+  // A command that reaches this port but holds no session is refused before the route runs: nothing is written.
+  const refused = await call('POST', 'isolation', { agentId: 'agent-1', runWithoutIsolation: true, confirmed: true });
+  assert.deepEqual([refused.status, refused.ok], [401, false]);
+  assert.match(refused.teaching, /page's Rulith session/);
+  assert.equal(sent.length, 0, 'the manager was not asked anything');
+  admitted = true;
+  const on = await call('POST', 'isolation', { agentId: 'agent-1', runWithoutIsolation: true, confirmed: true });
+  assert.deepEqual(on, { status: 200, ok: true, agentId: 'agent-1', runWithoutIsolation: true, restarting: false });
+  assert.deepEqual(sent.find(([route]) => route === '/manager/instances/isolation')[1], { instanceId: 'own', runWithoutIsolation: true, confirmed: true });
+  assert.equal((await call('GET', 'state')).agents[0].runWithoutIsolation, true, 'the settings page reads it back per Agent');
+  // What was ended when isolation was required again reaches the page as process ids and names only.
+  state.instances[0].isolationSweep = { at: 7, stopped: [{ pid: 5, name: 'node.exe', commandLine: 'never' }], failed: [], token: 'never' };
+  assert.deepEqual((await call('GET', 'state')).agents[0].isolationSweep, { at: 7, stopped: [{ pid: 5, name: 'node.exe' }], failed: [] });
+  const unconfirmed = await call('POST', 'isolation', { agentId: 'agent-1', runWithoutIsolation: true });
+  assert.deepEqual([unconfirmed.ok, unconfirmed.errorCode, unconfirmed.own], [false, 'isolation_unconfirmed', true]);
 });
 
 // Installed-dsh contract (ACC-LOCAL-10): dsh's real agent loop, LlmRuntime and agent/request waterfall, with dsh's own

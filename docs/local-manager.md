@@ -86,6 +86,24 @@ Its status is **online**, **offline** or **needs setup**, from the Connection an
 lease. This setting grants no Gateway permission; tool and resource authorization stays in Console,
 or comes from the person opening a project in the app.
 
+## Running model commands without isolation
+
+On Windows and Linux the commands a model runs through a Tool's Adapter are isolated, and refused when isolation cannot
+be set up (`docs/model-command-isolation.md`). The owner can turn that off for one Agent on this computer: in the app,
+Settings → Advanced → "Run without isolation (not recommended)", off by default, which asks for confirmation before it
+turns on. It is `POST /manager/instances/isolation` (`{instanceId, runWithoutIsolation, confirmed?}`); turning it on
+needs `confirmed: true`, turning it off needs nothing. The manager writes `RULITH_ADAPTER_SANDBOX=off` into that
+instance's `local.json` Worker environment (or removes it), inside a credential root a confined command can neither read
+nor write; the instance host has no route for it, and the manager's own environment never reaches the Worker. A running
+Worker restarts with the new value after its running executions drain; otherwise the Worker takes it at its next start.
+Any case of the variable's name counts (Windows reads names without case); turning it back on removes every spelling.
+While it is on, the Worker reports each Adapter it starts unconfined, and the host records them in the instance's
+directory (`unconfined-processes.json`). When isolation is required again, before a Worker starts isolated (or at once
+when none runs), what those Adapters left running is ended, detached background jobs included: on Windows by process id
+and the time each Adapter held it, on Linux also by a mark the commands inherit (`UNCONFINED_RUN_MARK`). Each instance in
+the state says `runWithoutIsolation`, and `isolationSweep` (`{at, stopped, failed, error?}`, process ids and names) once
+something was found. New instances never name it, so they require isolation.
+
 ## Health
 
 `GET /manager/health` reads this computer's sign-in, Agent keys, Worker Connections, Sources,

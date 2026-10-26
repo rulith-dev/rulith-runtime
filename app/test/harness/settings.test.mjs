@@ -517,3 +517,75 @@ test('the exploration-mode route names no Connection: one request per conversati
   assert.match(route, /manager\('\/manager\/conversations\/exploration-mode',\s*\{ agentId: target\.agentId, conversationKey: target\.conversationKey, mode, requestId \}\)/);
   assert.doesNotMatch(route, /connectionId/);
 });
+
+// ACC-ISO-14 (PSC 0.2.31 ③ ④): Settings → Advanced has the owner's "Run without isolation (not recommended)" for each
+// Agent set up on this computer, off by default. Turning it on asks first with the PSC's confirmation verbatim, and only
+// "Run without isolation" sends it, with the confirmation; turning it off sends at once and asks nothing.
+test('ACC-ISO-14 Settings → Advanced: Run without isolation is off by default, asks first with the PSC confirmation, and turning it off asks nothing', async () => {
+  const page = loadPage({ reply: (request) => (request.url === '/rulith/api/isolation'
+    ? { ok: true, agentId: request.body.agentId, runWithoutIsolation: request.body.runWithoutIsolation, restarting: request.body.runWithoutIsolation }
+    : { ok: true }) });
+  const { plugin } = page;
+  const S = PSC.PAGE.isolationSwitch;
+  const state = { ...summary, isolationAvailable: true, agents: [{ ...summary.agents[0], runWithoutIsolation: false }, summary.agents[1]] };
+  let refreshed = 0;
+  const refresh = () => { refreshed += 1; };
+  const m = page.mount(plugin.components.IsolationSection, { state, refresh });
+  let shown = m.render();
+  const boxes = (root) => nodes(root).filter((node) => node.tag === 'input' && node.props.type === 'checkbox');
+  assert.equal(boxes(shown).length, 1, 'one switch, for the Agent set up here');
+  assert.equal(boxes(shown)[0].props.checked, false, 'off by default');
+  assert.match(text(shown), /^Model-command isolationRun without isolation \(not recommended\)Default agent \(default\)$/);
+  // Turning it on: the confirmation, and nothing sent yet.
+  boxes(shown)[0].props.onChange();
+  shown = m.render();
+  const dialog = find(shown, (node) => node.props['data-rulith-isolation-dialog'] === 'a1');
+  assert.equal(text(dialog), S.confirmTitle + S.confirmBody + S.cancel + S.accept);
+  assert.equal(dialog.props.role, 'alertdialog');
+  assert.equal(S.confirmTitle, 'Run model commands without isolation?');
+  assert.equal(S.confirmBody, 'Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith\'s own credentials. Turn this on only if isolation cannot work here and you accept that risk.');
+  assert.deepEqual([S.label, S.accept, S.cancel], ['Run without isolation (not recommended)', 'Run without isolation', 'Keep isolation']);
+  assert.equal(page.posted('isolation').length, 0, 'nothing is sent before the confirmation');
+  button(shown, S.cancel).props.onClick();
+  shown = m.render();
+  assert.equal(find(shown, (node) => node.props['data-rulith-isolation-dialog'] !== undefined), undefined);
+  assert.equal(page.posted('isolation').length, 0, 'Keep isolation sends nothing');
+  // Accepted: sent with the confirmation; the line says when it applies.
+  boxes(shown)[0].props.onChange();
+  await button(m.render(), S.accept).props.onClick();
+  assert.deepEqual(plain(page.posted('isolation').map((request) => request.body)), [{ agentId: 'a1', runWithoutIsolation: true, confirmed: true }]);
+  shown = m.render();
+  assert.equal(find(shown, (node) => node.props['data-rulith-isolation-dialog'] !== undefined), undefined);
+  assert.match(text(shown), /Saved\. Default agent restarts on this computer to apply it, once any command it is running finishes\.$/);
+  assert.equal(refreshed, 1, 'the page reads the state again');
+  // On: unchecking sends at once, without a confirmation.
+  const on = { ...state, agents: [{ ...state.agents[0], runWithoutIsolation: true }, state.agents[1]] };
+  shown = m.render({ state: on, refresh });
+  assert.equal(boxes(shown)[0].props.checked, true);
+  await boxes(shown)[0].props.onChange();
+  assert.deepEqual(plain(page.posted('isolation').at(-1).body), { agentId: 'a1', runWithoutIsolation: false });
+  shown = m.render();
+  assert.equal(find(shown, (node) => node.props['data-rulith-isolation-dialog'] !== undefined), undefined, 'no confirmation to turn isolation back on');
+  assert.match(text(shown), /Saved\. It applies the next time Default agent starts on this computer\.$/);
+  // A refusal is said, with the host's reason.
+  const refusing = loadPage({ reply: () => ({ ok: false, own: true, teaching: 'Running model commands without isolation needs your confirmation. Nothing was changed.' }) });
+  const r = refusing.mount(refusing.plugin.components.IsolationSection, { state: on, refresh });
+  await boxes(r.render())[0].props.onChange();
+  assert.match(text(r.render()), /needs your confirmation\. Nothing was changed\.$/);
+  // Not offered where model commands cannot be isolated (macOS), when signed out, or with no Agent set up here.
+  for (const without of [{ ...state, isolationAvailable: false }, { ...state, signedIn: false }, { ...state, agents: [summary.agents[1]] }, null])
+    assert.equal(page.mount(plugin.components.IsolationSection, { state: without, refresh }).render(), null);
+  // In Advanced, between the MCP client hint and Diagnosis.
+  const advanced = page.expand(page.mount(plugin.components.AdvancedSection, { state, refresh }).render());
+  assert.match(text(advanced), /Other clients[\s\S]*Model-command isolation[\s\S]*Diagnosis/);
+  // Isolation required again: under the Agent's switch, what its commands had left running and was stopped, and what
+  // could not be.
+  const swept = { ...state, agents: [{ ...state.agents[0], isolationSweep: { at: 1, stopped: [{ pid: 4242, name: 'node.exe' }, { pid: 77, name: '' }],
+    failed: [{ pid: 99, name: 'python.exe' }] } }, state.agents[1]] };
+  const sweptNode = page.mount(plugin.components.IsolationSection, { state: swept, refresh }).render();
+  assert.match(text(sweptNode), /Stopped what model commands had started without isolation: node\.exe \(4242\), \? \(77\)\./);
+  assert.match(text(sweptNode), /Could not stop what model commands started without isolation: python\.exe \(99\)\. Stop them yourself, or restart this computer\./);
+  const unread = { ...state, agents: [{ ...state.agents[0], isolationSweep: { at: 1, stopped: [], failed: [], error: 'the process list could not be read' } }] };
+  assert.match(text(page.mount(plugin.components.IsolationSection, { state: unread, refresh }).render()),
+    /Could not check what model commands started without isolation left running: the process list could not be read\./);
+});

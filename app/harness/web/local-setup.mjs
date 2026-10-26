@@ -63,3 +63,31 @@ export function setupRoutes({ manager, kitHome = '', wait = (ms) => new Promise(
   };
   return { start, status, ready };
 }
+
+/**
+ * Settings → Advanced: the owner's "Run without isolation (not recommended)" for one Agent on this computer (PSC 0.2.31
+ * ③), off by default. The page sends `{ agentId, runWithoutIsolation, confirmed? }`; turning it on is passed on only with
+ * `confirmed: true`, which the page sends after its confirmation (`Run model commands without isolation?`) was
+ * accepted. The manager writes it into that Agent's instance local.json Worker environment (`RULITH_ADAPTER_SANDBOX=off`,
+ * inside a credential root) and restarts a running Worker with it once its running executions drain (`restarting`).
+ * Only the Agent, the value and whether the Worker restarts reach the page.
+ *
+ * 中文说明：「不隔离运行（不推荐）」按智能体设置：打开必须带页面确认框的确认（confirmed: true），关掉不需要；写入由管理器
+ * 完成，运行中的 Worker 排空后重启以用上新值。
+ */
+export function isolationRoutes({ manager }) {
+  const set = async (body = {}) => {
+    const agentId = typeof body.agentId === 'string' ? body.agentId : '';
+    const on = body.runWithoutIsolation;
+    if (!agentId || typeof on !== 'boolean') throw new Error(say('isolation.incomplete'));
+    if (on && body.confirmed !== true) throw Object.assign(new Error(say('isolation.unconfirmed')), { errorCode: 'isolation_unconfirmed' });
+    // The Agent must be one of the signed-in account's, set up on this computer (the instance the settings page lists).
+    const state = await manager('/manager/state');
+    const inAccount = (state.device?.agents ?? []).some((agent) => agent.id === agentId);
+    const instance = (state.instances ?? []).find((row) => row.mode === 'local_agent' && row.agentId === agentId && !row.signedOutAt);
+    if (!inAccount || !instance) throw new Error(say('assign.notSetUp'));
+    const reply = await manager('/manager/instances/isolation', { instanceId: instance.id, runWithoutIsolation: on, ...(on ? { confirmed: true } : {}) });
+    return { agentId, runWithoutIsolation: reply.runWithoutIsolation === true, restarting: reply.restarting === true };
+  };
+  return { set };
+}
