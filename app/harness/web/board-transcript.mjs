@@ -53,7 +53,10 @@ import { createHash } from 'node:crypto';
 // 取代 10-14 上午的两个滑动窗口——它们每当一份大结果或长参数滑出窗口就改一次前缀，79 步里约 20 次让缓存退到 40～90K）：
 //   - 减负线与压缩线见 context-relief.mjs：默认是模型上下文窗口的 0.7 与 0.8（deep-rulith.json 可改）；实际的减负线还要
 //     在 dsh 实际的压缩线之前留出一步（RELIEF_MARGIN），按会话所用路线的窗口与请求的 maxTokens 在这里算出并记日志。
-//     窗口取 dsh 自己用的那个（会话里最新 request/context 的 contextWindow；本地模型来自 deep-rulith.json 的 localContextWindow）。
+//     窗口取 dsh 的压缩用的那个：请求头记下的路线此刻由适配器报告的窗口（路线的实际窗口：人设定的、开发者设置
+//     localContextWindow、从本机或局域网推理服务读到的，认出是推理服务却没读到时估计 128K，否则 1M；见
+//     context-window.mjs），读不到时用会话里最新 request/context 的 contextWindow。窗口改了，下一步的两条线就按新窗口算并
+//     重新记日志。窗口太小、没有能用的两条线时不减负，日志记一次（context-relief.mjs MIN_USABLE_CONTEXT_WINDOW）。
 //   - 触发：dsh 记下的最近一次模型请求的真实提示大小（assistant/message 的 usage：inputTokens + cacheReadTokens，
 //     有 cacheWriteTokens 的也算上）达到减负线。
 //     那次请求之后 dsh 压缩过（有 compaction/summary），那次的用量已不代表现在的对话，不触发；不知道窗口或用量，也不触发。
@@ -98,7 +101,7 @@ import { createHash } from 'node:crypto';
 
 import { projectToolCall } from '../tool-history.mjs';
 import { NOTE_PREFIX } from './shadow-reviewer.mjs';
-import { RELIEF_MARK, RELIEF_RATIO, contextLinesFor, reasoningChars, shortenArguments, startsTurn } from './context-relief.mjs';
+import { MIN_USABLE_CONTEXT_WINDOW, RELIEF_MARK, RELIEF_RATIO, contextLinesFor, reasoningChars, shortenArguments, startsTurn } from './context-relief.mjs';
 
 const ERROR_PREFIX = 'Error: ';
 const RULITH_TOOLS = new Set(['Get', 'Set', 'Execute']);
@@ -648,15 +651,17 @@ export function latestPromptTokens(session) {
 }
 
 /**
- * 这个会话所用路线上实际的两条线：窗口取最新的 request/context，输出上限取记下的请求头（与 dsh 的压缩同一来源）。
- * 不知道窗口时返回 null。
+ * 这个会话所用路线上实际的两条线：窗口取 `route`（installBoardTranscript 传来：请求头记下的路线此刻由适配器报告的窗口，
+ * 与 dsh 的压缩量会话用的同一个），没有时取最新的 request/context；输出上限取记下的请求头（与 dsh 的压缩同一来源）。
+ * 不知道窗口时返回 null；窗口太小、没有能用的两条线时 relief 与 compaction 为 null（不减负）。
  */
-export function sessionLines(session, { reliefRatio = RELIEF_RATIO, compaction = {} } = {}) {
-  const route = session.requestContext?.();
-  if (!Number.isFinite(route?.contextWindow)) return null;
+export function sessionLines(session, { reliefRatio = RELIEF_RATIO, compaction = {}, route } = {}) {
+  const used = Number.isFinite(route?.contextWindow) ? route : session.requestContext?.();
+  if (!Number.isFinite(used?.contextWindow)) return null;
   const maxTokens = session.requestHeader?.()?.config?.maxTokens ?? 0;
-  return { provider: route.provider, model: route.model, contextWindow: route.contextWindow, maxTokens,
-    ...contextLinesFor({ contextWindow: route.contextWindow, maxTokens, reliefRatio, compaction }) };
+  const lines = contextLinesFor({ contextWindow: used.contextWindow, maxTokens, reliefRatio, compaction });
+  return { provider: used.provider, model: used.model, contextWindow: used.contextWindow, maxTokens,
+    ...(lines ?? { relief: null, compaction: null }) };
 }
 
 /**
@@ -760,7 +765,7 @@ export function rewriteSession(session, options = {}) {
   const lines = sessionLines(session, options);
   if (lines !== null) onLines?.(lines);
   const prompt = latestPromptTokens(session);
-  if (lines !== null && prompt !== null && prompt >= lines.relief) {
+  if (lines !== null && lines.relief !== null && prompt !== null && prompt >= lines.relief) {
     const candidate = items.findLastIndex((item) => item.later >= keep);
     if (candidate > boundary) {
       const batch = textsFor(candidate);
@@ -811,14 +816,29 @@ export function installBoardTranscript(ctx, options = {}) {
     const key = JSON.stringify([lines.provider, lines.model, lines.contextWindow, lines.maxTokens]);
     if (logged.has(key)) return;
     logged.add(key);
-    ctx.logger?.info?.(`rulith context lines for ${lines.provider}/${lines.model} (window ${lines.contextWindow}, output ${lines.maxTokens}): `
-      + `relief at ${lines.relief} tokens (reliefRatio ${reliefRatio}), dsh compacts at ${lines.compaction}`);
+    const route = `rulith context lines for ${lines.provider}/${lines.model} (window ${lines.contextWindow}, output ${lines.maxTokens}): `;
+    ctx.logger?.info?.(lines.relief === null
+      ? `${route}none usable: the window is too small for context relief and compaction (Rulith needs at least ${MIN_USABLE_CONTEXT_WINDOW} tokens); no relief on this route`
+      : `${route}relief at ${lines.relief} tokens (reliefRatio ${reliefRatio}), dsh compacts at ${lines.compaction}`);
+  };
+  /**
+   * 0.19.3：两条线按 dsh 的压缩量会话用的同一个窗口算——请求头记下的路线此刻由适配器报告的窗口（model-runtime.mjs 可在两轮
+   * 之间更新它），而不是上一次请求记下的 request/context。读不到（没有请求头、没有这条路线）时用 request/context。
+   */
+  const routeWindow = async (session) => {
+    const config = session?.requestHeader?.()?.config;
+    if (typeof ctx.llm?.resolveModelInfo !== 'function' || !config?.provider || !config?.model) return undefined;
+    try {
+      const contextWindow = (await ctx.llm.resolveModelInfo(config.provider, config.model))?.context?.contextWindow;
+      return Number.isFinite(contextWindow) ? { provider: config.provider, model: config.model, contextWindow } : undefined;
+    } catch { return undefined; }
   };
   ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
     try {
       // 这一步要进会话的消息（dsh 在这个瀑布之后才把它们追加进会话）里有开始新一轮的，估计时以前的回答都已在当前这一轮之前。
       const turnStarting = Array.isArray(messages) && messages.some(startsTurn);
-      if (agent?.session) rewriteSession(agent.session, { reliefRatio, compaction, onLines, turnStarting, onBatch: (info) => ctx.logger?.info?.(
+      const route = agent?.session ? await routeWindow(agent.session) : undefined;
+      if (agent?.session) rewriteSession(agent.session, { reliefRatio, compaction, route, onLines, turnStarting, onBatch: (info) => ctx.logger?.info?.(
         `rulith context relief: prompt ${info.prompt} >= ${info.trigger} tokens (window ${info.contextWindow}); `
         + `relieved up to seq ${info.boundarySeq}, about ${info.freedTokens} tokens freed`) });
     } catch (error) {

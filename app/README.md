@@ -40,8 +40,10 @@ Deep Rulith uses the general Worker kit in this repository's `kits/general/`. Th
 ## What leaves your computer
 
 - Model requests, including file text and command output the model has seen, go to the
-  OpenAI-compatible endpoint set in Rulith's model settings. The overlay uses DeepSeek's thinking
-  format and a 1M-token context window; change `rulith-web.cordis.yml` for other models.
+  OpenAI-compatible endpoint set in Rulith's model settings, with DeepSeek's thinking format on Chat
+  Completions. For a model server on this computer or a private network address, the app also asks that
+  server for its context window (`GET` of `/props`, `/models`, `/api/v1/models` and `/api/ps`, with the
+  model's key); see "The context window" below.
 - Tool calls go to the Rulith Gateway you sign in to. Worker receipts recorded on your Agent's
   Board include bounded file text (up to 1 KiB head and tail), command output and digests.
 - The model's native web tools (D-1015c, read-only and outside Rulith): `web_search` sends its queries to DeepSeek's
@@ -155,9 +157,26 @@ account signed in at that moment (the Agent's own model, else the account defaul
 The launcher no longer passes any model key to dsh; the key is read from the manager home per turn and kept in memory.
 The turn's model is chosen when the turn starts, before dsh's step compaction, and a conversation's compaction and title
 requests go to it (between turns, to the model in force then), never to an older route its log names; routes of an
-account no longer signed in are unregistered. A model on this computer (127.0.0.1, localhost or ::1) has `localContextWindow`
-as its context window. At start the launcher prints, for each Agent attached here, where its model comes from, the model id
-and the endpoint (never a key).
+account no longer signed in are unregistered. At start the launcher prints, for each Agent attached here, where its model
+comes from, the model id and the endpoint (never a key).
+
+The context window (0.19.3, `harness/web/context-window.mjs`): context relief, dsh's compaction and the composer's context
+popover measure a conversation against its route's window, the first of: the window the person sets in Settings → Model
+(at least 85536 tokens, what Rulith needs); `localContextWindow` (below); for a model server at localhost or an IP
+address on this computer or a private network (the ranges web_fetch refuses: 127/8, ::1, 10/8, 172.16/12, 192.168/16,
+100.64/10, 169.254/16, fc00::/7, fe80::/10, IPv4-mapped IPv6 of those; not 0.0.0.0 or ::), the per-request window the
+server reports (llama.cpp `/props?model=…&autoload=false`, then `/props`: `default_generation_settings.n_ctx`, the slot
+context; a `/models` entry's `max_model_len` (vLLM, SGLang); LM Studio's loaded instance `context_length`; Ollama's
+running model `context_length`; never a training length); 131072 tokens assumed for a server one of those probes
+recognised as a local inference server that did not say (Settings says so and asks for the size); else 1M as before
+(hosted models, and a local address that is a proxy to hosted models or was not reached). The server is asked with the
+model's saved key within 3 s when the model is saved, once after the app starts with an account signed in, at a turn's
+start in the background (not asked yet in this run, a minute after a miss, ten minutes after a window), and after a
+request was refused for exceeding the window. A window a server reports below 85536 is used as it is, Settings warns that
+it is too small, and relief is off on that route (logged once). What is known is kept in the dsh home's
+`rulith-context-windows.json` (route hash, windows, whether the server was recognised, address and model id; no key),
+never sent to the Gateway. A changed window reaches the route when a turn starts on it, without a restart (a turn already
+running on the route may take it at its next request); the "rulith context lines" log line shows it.
 `web_search` is offered when the signed-in account's model is DeepSeek's own API at start, and each search uses the key
 of its turn's model. The local Worker's reviewer route follows the Agent's model too (the Runtime derives it at each
 Worker start); the launcher writes only `reviewerRoutes` and the reviewer request extra into Worker settings.
@@ -171,7 +190,7 @@ Worker start); the launcher writes only `reviewerRoutes` and the reviewer reques
 | `agentName` | none | The Agent this launcher uses; the kit refresh at start covers only this Agent. |
 | `kitHome` | none (`kit/` in the app home) | Kit home the setup operation gives an Agent that has none yet (passed to the host as `RULITH_DSH_KIT_HOME`). |
 | `modelHome` | none | Developers: read the account default model from another manager home, the row of the account signed in to that home. Saving the default from this app is then refused. |
-| `localContextWindow` | none (1M) | The context window of a model on this computer (a loopback endpoint); context relief and dsh's compaction measure against it. Must be a positive whole number. |
+| `localContextWindow` | none (detected, else 131072 assumed or 1M) | Developers: the context window of a model on this computer or a private network address; it wins over detection, the window set in Settings wins over it. Must be a positive whole number. Not in `deep-rulith.example.json`, so a copied example does not override detection. |
 | `consoleUrl` | none (sign-in uses `https://console.rulith.ai`) | Console address (no secret), also used for this computer's sign-in. When set, a goal awaiting acceptance in the Rulith panel opens the Agent's cases in Console (`<origin>/console/#/cases?agentId=…`), where the person signs the criteria. |
 
 ## Tests

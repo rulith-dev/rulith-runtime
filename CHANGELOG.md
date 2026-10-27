@@ -2,6 +2,53 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.19.3 - 2026-10-27
+
+- App: a model on a local inference server is measured against its real context window (owner direction 2026-10-27).
+  Before, every model route was treated as 1M tokens unless the developer setting `localContextWindow` said otherwise,
+  so with a local llama.cpp server of 262144 tokens per slot the composer showed "~194K / 1M", and neither context relief
+  (0.7 × window) nor dsh's compaction (0.8 × window) ran before the server refused the prompt.
+- Which servers are asked: a model whose base address is localhost or an IP address on this computer or a private
+  network (127/8, ::1, 10/8, 172.16/12, 192.168/16, 100.64/10 (CGNAT, Tailscale), 169.254/16, fc00::/7, fe80::/10, and
+  IPv4-mapped IPv6 of those; the ranges web_fetch refuses, except 0.0.0.0/8 and ::). It is asked with the key the app
+  holds for it (a Bearer token to that server only; never logged or stored): llama.cpp's `/props?model=…&autoload=false`
+  and then `/props` (`default_generation_settings.n_ctx`, the slot context; a router answers for a loaded model), an
+  OpenAI-style `/models` entry's `max_model_len` (vLLM, SGLang), LM Studio's loaded instance `context_length`, or
+  Ollama's running model `context_length`. A training length, LM Studio's `max_context_length` and llama.cpp's
+  `/v1/models` `meta.n_ctx` are never used. All probes share a 3 s deadline.
+- The rule: 131072 tokens are assumed only for a server one of those probes recognised as a local inference server by
+  its own answer that did not say its window (Settings says it is assumed and asks for the size). A local or LAN address
+  not recognised as one (a proxy to hosted models such as LiteLLM, one-api or a company gateway, or a server not reached
+  yet) keeps 1M, as before; hosted models keep 1M.
+- When: when the model is saved (the save waits at most 3 s); once after the app starts, at the first tick that finds an
+  account signed in; in the background at a turn's start when the route was not asked yet in this run, a minute after a
+  try that found no window, or ten minutes after the window was read; and in the background after a request on the
+  route was refused for exceeding the context window. A turn never waits for it.
+- Precedence: the window the person sets in Settings → Model, then `localContextWindow` (now for any local server, LAN
+  included), then the detected window, then 131072 assumed or 1M. The window is given to the route's registered adapter
+  when a turn starts, without a restart; the adapter is shared by every conversation on that route, so a turn already
+  running on it may take the new window at its next request. Context relief, compaction's measure, the logged "rulith
+  context lines" and the composer's context popover use it; the relief lines now use the route's current window, the one
+  dsh's compaction measures with, not the window the last request recorded. What is known is kept in
+  `rulith-context-windows.json` in the app's dsh home (a hash of protocol, address and model id, the windows, whether the
+  server was recognised, the address and model id; no key) and is not sent to the Gateway.
+- Windows too small for Rulith: Rulith needs at least 85536 tokens (its output cap 32768 + compaction headroom 16384 +
+  relief margin 20000 + a minimal prompt 16384). A person's window below that is refused. A smaller window a server
+  reports is real and is used (Ollama and LM Studio load models with 4096 by default); Settings warns that it is too
+  small and how to raise it on the server. On such a route there are no usable relief and compaction lines: relief is
+  off and the route is logged once ("none usable"), never with a line at or below 0.
+- Settings → Model shows "Context window: {tokens} tokens ({source})" — detected from the model server, set by you, from
+  the settings file, assumed: the model server did not report it, or the default — with the assumed hint or the
+  too-small warning when they apply, and a "Context window (tokens)" field for the person's own (a whole number from
+  85536 to 100000000; empty returns to the detected or default one). Saving only the window does not save the model
+  again. The new English texts are listed in `docs/ui-texts-english.md`. No model-visible text changes.
+- `app/deep-rulith.example.json` no longer sets `localContextWindow` (copied, it would override detection); the setting
+  stays documented.
+- Known limitation: the Settings field sets the window of the account's model. An Agent with its own model on another
+  route gets that route's detected window, the settings file's `localContextWindow`, or the default; it has no field of
+  its own yet.
+- The Runtime, Worker, kit and manager are unchanged apart from the version.
+
 ## 0.19.2 - 2026-10-26
 
 - The conversation the app sends to the model only grows at the end between context reliefs, so a model server's

@@ -23,8 +23,9 @@ import { handOf, conversationKey, depthOf } from '../subagents.mjs';
 import { ConversationBoards } from './conversation-boards.mjs';
 import { conversationBoards } from './launcher-settings.mjs';
 import { isolationRoutes, reviewRoutes, setupRoutes } from './local-setup.mjs';
-import { contextWindowSetting, conversationModel, effectiveModel, installLiveModels, installLiveSearch, modelRoutes, signedInAccount }
-  from './model-runtime.mjs';
+import { attachedAgents, contextWindowSetting, conversationModel, effectiveModel, installLiveModels, installLiveSearch, modelRoutes,
+  signedInAccount } from './model-runtime.mjs';
+import { CONTEXT_WINDOWS_FILE, createContextWindows } from './context-window.mjs';
 import { folderPicker } from './folder-picker.mjs';
 import { installBrand } from './brand.mjs';
 import { refreshGeneralKits } from '../kit-install.mjs';
@@ -153,7 +154,7 @@ export async function apply(ctx, config = {}) {
   // PSC 0.2.27 ④: every turn uses the model saved in Rulith for the conversation's Agent under the account signed in now
   // (model-runtime.mjs), installed before anything below can wait, so no conversation starts without it. `modelHome` is a
   // developer setting that reads the account defaults of another manager home; `localContextWindow` (launcher settings)
-  // is the context window of a model on this computer.
+  // is the developer's context window for a model on a local server.
   const modelHome = config.modelHome || process.env.RULITH_DSH_MODEL_HOME || '';
   const readModel = (agentId) => {
     const account = signedInAccount(home);
@@ -165,9 +166,17 @@ export async function apply(ctx, config = {}) {
   // (model-runtime.mjs conversationModel). 中文说明：会话按自己的 Agent 选模型，不因 Agent 暂时没接上就改用默认模型。
   const conversationAgent = (sessionId, cwd) => (typeof sessionId === 'string' ? assignments.get(sessionId) : undefined)
     || resolveHolder(sessionId, cwd)?.agentId;
+  // 0.19.3: the context window each model route is measured against (context-window.mjs): the person's (Settings →
+  // Model), else the developer setting, else what a local server reports, else 128K assumed for a recognised local
+  // inference server, else 1M. Kept in this app's dsh home, never sent to the Gateway; the log names model and address,
+  // never a key.
+  // 中文说明：每条模型路线的上下文窗口，按人设定 > 开发者设置 > 本机/局域网服务报告 > 认出是推理服务时估计 128K > 1M。
+  const windows = createContextWindows({ file: path.join(stateDir, CONTEXT_WINDOWS_FILE),
+    developerWindow: contextWindowSetting(config.localContextWindow ?? process.env.RULITH_DSH_LOCAL_CONTEXT_WINDOW),
+    log: (line) => ctx.logger?.info?.(line) });
   const live = installLiveModels(ctx, {
     routeFor: (agent) => conversationModel({ home, modelHome }, conversationAgent(topSession(agent), agent?.session?.header?.cwd)),
-    localContextWindow: contextWindowSetting(config.localContextWindow ?? process.env.RULITH_DSH_LOCAL_CONTEXT_WINDOW),
+    windows,
   });
   void installLiveSearch(ctx, live).catch(() => {
     console.error('[rulith model] web_search could not be tied to the Rulith model; it stays unavailable.');
@@ -205,7 +214,7 @@ export async function apply(ctx, config = {}) {
   const setup = setupRoutes({ manager, kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME || '' });
   const isolation = isolationRoutes({ manager });
   const reviews = reviewRoutes({ manager });
-  const models = modelRoutes({ manager, read: readModel, defaultsElsewhere: Boolean(modelHome) });
+  const models = modelRoutes({ manager, read: readModel, defaultsElsewhere: Boolean(modelHome), windows });
 
   // 2. Every paired Agent is attached at once (owner 2026-10-17: the sidebar is Agent -> directory -> conversation). The
   //    three tools are registered once; each call goes to the Agent its conversation belongs to. A conversation belongs to
@@ -332,6 +341,22 @@ export async function apply(ctx, config = {}) {
     kitRefresh = 'running';
     refreshGeneralKits(manager, setup, { agentName: config.agentName }).then(() => { kitRefresh = 'done'; }, () => { kitRefresh = 'pending'; });
   };
+  // 0.19.3: once, at the first periodic tick (about 3 s after the app's start, so the start never waits) that finds an
+  // account signed in, every model in force here — that account's default and each attached Agent's — that is on a local
+  // server is asked for its context window, in the background. A model saved later is asked when it is saved; a turn's
+  // start asks again when the window is unknown or old (context-window.mjs detectSoon).
+  let windowsAsked = false;
+  const askWindows = () => {
+    if (windowsAsked) return;
+    try {
+      const account = signedInAccount(home);
+      if (!account) return;
+      const inForce = [effectiveModel({ home, modelHome }, account, undefined),
+        ...attachedAgents(home, account).map((agent) => effectiveModel({ home, modelHome }, account, agent.agentId))];
+      windowsAsked = true;
+      for (const model of inForce) void windows.detect(model);
+    } catch { /* a record that cannot be read now: the next tick asks again */ }
+  };
   let busy = false;
   const tick = async () => {
     if (busy) return; busy = true;
@@ -359,7 +384,7 @@ export async function apply(ctx, config = {}) {
       for (const holder of attached.values()) void holder.boards.reconnectIdle();
     } catch (error) { report('failed', { error: String(error?.message ?? error).slice(0, 300) }); } finally { busy = false; }
   };
-  const timer = setInterval(tick, 3000);
+  const timer = setInterval(() => { askWindows(); void tick(); }, 3000);
   ctx.effect(() => () => { clearInterval(timer); for (const holder of [...attached.values()]) drop(holder); });
 
   // 3. The browser half's API: same origin only (the custom header cannot be sent cross-origin without a preflight,
@@ -570,6 +595,9 @@ export async function apply(ctx, config = {}) {
     'GET /rulith/api/model': (query) => models.get(query.agentId || !query.session ? query
       : { agentId: conversationAgent(query.session, sessions.get(query.session)?.session?.header?.cwd) }),
     'POST /rulith/api/model': (body) => models.save(body),
+    // 0.19.3: the person's context window for the route of the model in force (empty returns to the detected or default
+    // one); kept on this computer only, used from the next turn.
+    'POST /rulith/api/model/context-window': (body) => models.setContextWindow(body),
     // Design §3.2 打开文件夹: the operating system's folder chooser, opened in this process and closed again when the page
     // goes away. GET: { available }. POST: { state: chosen | cancelled | unavailable, path?, teaching? }; the chosen folder
     // is then opened through the project routes below like a typed one.

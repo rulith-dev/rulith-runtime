@@ -131,14 +131,19 @@ test('a developer launcher reading another home\'s defaults (modelHome) matches 
   assert.deepEqual(effectiveModel({ home: dir, modelHome: other }, account, 'agent-2'), { source: 'default', url: '', name: '', key: '' });
 });
 
-test('a model on this computer takes localContextWindow as its route\'s window; other models keep the 1M default', () => {
+test('a model on a local server takes localContextWindow as its route\'s window; without it and without a window store, the 1M default', () => {
   const local = { url: 'http://127.0.0.1:8080/v1', name: 'qwen', key: '' };
   assert.equal(liveRoute(local, { localContextWindow: 262144 }).contextWindow, 262144);
   assert.equal(liveRoute({ ...local, url: 'http://localhost:8080/v1' }, { localContextWindow: 131072 }).contextWindow, 131072);
   assert.equal(liveRoute({ ...local, url: 'http://[::1]:8080/v1' }, { localContextWindow: 131072 }).contextWindow, 131072);
+  assert.equal(liveRoute({ url: 'https://192.168.1.20:8443/v1', name: 'qwen', key: 'k' }, { localContextWindow: 65536 }).contextWindow, 65536,
+    'a private LAN address is a local server too (0.19.3)');
+  // Without the setting and with no window store nothing says the server is a local inference server: 1M, as before
+  // (0.19.3 assumes 128K only for a server detection recognised, context-window.test.mjs).
   assert.equal(liveRoute(local).contextWindow, 1_000_000, 'without the setting, the default');
   assert.equal(liveRoute(local, { localContextWindow: -1 }).contextWindow, 1_000_000, 'an invalid setting is no setting');
   assert.equal(liveRoute({ url: 'https://api.deepseek.com', name: 'deepseek-chat', key: 'k' }, { localContextWindow: 262144 }).contextWindow, 1_000_000);
+  assert.equal(liveRoute({ url: 'https://api.deepseek.com', name: 'deepseek-chat', key: 'k' }).contextWindow, 1_000_000, 'hosted: unchanged');
   // The window is what the adapter tells dsh (context relief and compaction read it).
   return createRouteAdapter(liveRoute(local, { localContextWindow: 262144 }), 'rulith-live-test').then(async (adapter) => {
     const info = await adapter.resolveModel('rulith-live-test', 'qwen');

@@ -29,6 +29,17 @@ export const DSH_THRESHOLD_RATIO = 0.8;
 export const DSH_HEADROOM_TOKENS = 65536;
 /** 实际压缩线之前至少留出的余量：约一步的增长。 */
 export const RELIEF_MARGIN = 20000;
+/** 每条 Rulith 模型路线在 dsh 里的输出上限（model-runtime.mjs）：长工具参数曾在更小的上限下被截断（2026-10-14）。 */
+export const MODEL_MAX_TOKENS = 32768;
+/** 一次请求至少要给提示留的空间：应用自己的指令、工具和第一份 Board。 */
+export const MIN_PROMPT_TOKENS = 16384;
+/**
+ * Rulith 能用的最小上下文窗口（0.19.3）：默认设置下减负线至少留出 MIN_PROMPT_TOKENS，即输出上限 + 压缩余量 + 减负余量 +
+ * 最小提示（32768 + 16384 + 20000 + 16384 = 85536）。更小的窗口里减负线、压缩线落到 0 或以下（dsh 的压缩配置出错、不再
+ * 压缩），而 pi-ai 把请求的输出上限压到“窗口 − 提示 − 4096”，最少 1 个 token，对话就一直只回 1 个 token。人在设置里填的
+ * 窗口不得小于它；从模型服务读到的更小窗口是真实的，照实使用，设置里提示太小、怎么调大（context-window.mjs）。
+ */
+export const MIN_USABLE_CONTEXT_WINDOW = MODEL_MAX_TOKENS + COMPACTION_HEADROOM_TOKENS + RELIEF_MARGIN + MIN_PROMPT_TOKENS;
 
 /** dsh compaction-basic 的压缩线（与它的 resolveCompactSpec 同一算式）。 */
 export const compactionLine = (contextWindow, ratio, maxTokens, headroomTokens) =>
@@ -36,12 +47,14 @@ export const compactionLine = (contextWindow, ratio, maxTokens, headroomTokens) 
 
 /**
  * 一条模型路线上实际的两条线（token）。compaction 是交给 dsh compaction-basic 的那份配置（thresholdRatio、headroomTokens；
- * 缺省为 dsh 的默认值），maxTokens 是请求的输出上限（会话里记下的请求头；没有记为 0）。
+ * 缺省为 dsh 的默认值），maxTokens 是请求的输出上限（会话里记下的请求头；没有记为 0）。窗口太小、减负线或压缩线不在 0 之上时
+ * 返回 null：没有能用的两条线，调用方不减负，只记一次日志（board-transcript.mjs）。
  */
 export function contextLinesFor({ contextWindow, maxTokens = 0, reliefRatio = RELIEF_RATIO, compaction = {} }) {
   const compactAt = compactionLine(contextWindow, compaction.thresholdRatio ?? DSH_THRESHOLD_RATIO, maxTokens,
     compaction.headroomTokens ?? DSH_HEADROOM_TOKENS);
-  return { relief: Math.max(0, Math.min(Math.floor(reliefRatio * contextWindow), compactAt - RELIEF_MARGIN)), compaction: compactAt };
+  const relief = Math.min(Math.floor(reliefRatio * contextWindow), compactAt - RELIEF_MARGIN);
+  return compactAt > 0 && relief > 0 ? { relief, compaction: compactAt } : null;
 }
 
 /**

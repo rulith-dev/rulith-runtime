@@ -27,17 +27,28 @@
 //   4. A provider id an earlier run of this process logged (it is unregistered after a restart, or after an account
 //      switch) is answered by the conversation's current route, so dsh's compaction can still measure the conversation.
 //      Such an id is never registered for a route as well: a generation an alias holds is skipped.
+//   5. A route's context window (context-window.mjs: the person's setting, the developer setting, what a local server
+//      reports, 128K assumed for a recognised local inference server that did not say, else 1M) is read when a turn starts
+//      and is not part of the provider id. When it changes, every adapter registered for that route reports the new window
+//      from then on — to every conversation on the route, a turn already running included, at its next request — so
+//      relief, compaction and the composer's context popover follow it without a restart. A request on a local route
+//      refused for exceeding the context window has the server asked again for its window (in the background).
+//      中文说明：路线的上下文窗口不进提供商 id；它变了，这条路线已注册的适配器从此报告新窗口（同一路线上正在进行的一轮在
+//      下一次请求也用上），不需要重启。本机路线的请求因超出窗口被拒后，后台再问一次服务的窗口。
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createDeviceClient } from '../../../local/device-client.mjs';
-import { isLoopback, modelEndpoint, modelReady } from '../../../local/model-settings.mjs';
+import { modelEndpoint, modelReady } from '../../../local/model-settings.mjs';
+import { DEFAULT_CONTEXT_WINDOW, MIN_USABLE_CONTEXT_WINDOW, isLocalModelServer, personWindow, resolveWindow, routeKey } from './context-window.mjs';
+import { MODEL_MAX_TOKENS } from './context-relief.mjs';
 import { webSearchKey } from '../web-tools.mjs';
 import { withBoardCache } from './outgoing-trim.mjs';
 import { say } from './ui-texts.mjs';
 
-/** Output cap of every Rulith model route in dsh: long tool arguments were cut off below it (2026-10-14). */
-export const MODEL_MAX_TOKENS = 32768;
+/** Output cap of every Rulith model route in dsh: long tool arguments were cut off below it (2026-10-14). Defined with
+ * the context lines it enters (context-relief.mjs). */
+export { MODEL_MAX_TOKENS };
 const DISPLAY_NAME = 'Rulith model';
 
 const readJson = (file) => {
@@ -141,8 +152,8 @@ export function publicModel(model, account) {
 
 /** The prefix of every provider id this module registers. */
 export const LIVE_PROVIDER_PREFIX = 'rulith-live-';
-/** The context window of a route when nothing says otherwise. */
-export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
+/** The context window of a hosted route when nothing says otherwise (context-window.mjs). */
+export { DEFAULT_CONTEXT_WINDOW };
 
 /** `localContextWindow` from the launcher settings, when it is a positive whole number; otherwise none. */
 export const contextWindowSetting = (value) => {
@@ -151,26 +162,29 @@ export const contextWindowSetting = (value) => {
 };
 
 /**
- * The dsh route for a saved model: protocol, base URL, model id and a provider id that is a hash of those three, and the
- * context window dsh measures it against. A model on this computer (a loopback endpoint) takes the launcher settings'
- * `localContextWindow` when one is set — what the earlier launcher gave such providers, and what context relief and
- * compaction read (board-transcript.mjs, dsh compaction-basic); every other route keeps the 1M default.
+ * The dsh route for a saved model: protocol, base URL, model id and a provider id that is a hash of those three
+ * (context-window.mjs routeKey), and the context window dsh measures it against — what context relief and compaction
+ * read (board-transcript.mjs, dsh compaction-basic) and the composer's context popover shows. `windows` is this
+ * computer's window store (context-window.mjs createContextWindows): the person's setting, the developer setting, the
+ * detected window, 128K assumed for a recognised local inference server that did not say, else 1M. Without a store
+ * (tests, a host that has none) only `localContextWindow`, the launcher settings' developer window, applies before 1M.
  */
-export function liveRoute(model, { localContextWindow } = {}) {
+export function liveRoute(model, { localContextWindow, windows } = {}) {
   if (!modelReady(model)) return undefined;
   const endpoint = modelEndpoint(model.url);
   const name = text(model.name).trim();
-  const id = LIVE_PROVIDER_PREFIX + createHash('sha256').update(`${endpoint.api}\u0000${endpoint.base}\u0000${name}`).digest('hex').slice(0, 12);
-  let local = false;
-  try { local = isLoopback(new URL(endpoint.base)); } catch { local = false; }
-  const window = local ? contextWindowSetting(localContextWindow) : undefined;
-  return { id, api: endpoint.api, baseUrl: endpoint.base, model: name, key: text(model.key), contextWindow: window ?? DEFAULT_CONTEXT_WINDOW };
+  const id = LIVE_PROVIDER_PREFIX + routeKey(model);
+  const window = windows ? windows.info(model).tokens
+    : resolveWindow({ local: isLocalModelServer(endpoint.base), developer: contextWindowSetting(localContextWindow) }).tokens;
+  return { id, api: endpoint.api, baseUrl: endpoint.base, model: name, key: text(model.key), contextWindow: window };
 }
 
 /**
  * One pi-ai adapter for one route, built through dsh's own adapter class and pi-ai's protocol implementations — the same
  * pieces dsh's llm-pi-ai plugin assembles for a configured route (a declared, non-catalog provider: no reasoning levels,
  * DeepSeek thinking format on Chat Completions, the route's context window and this cap). The key is resolved from memory.
+ * The window is read from `route` at each request (pi-ai asks the provider for its models every time), so a window
+ * `installLiveModels` updates on the route reaches dsh at once (invariant 5).
  */
 export async function createRouteAdapter(route, providerId) {
   const [{ PiAiAdapter }, { resolveRetryPolicy }, { openAICompletionsApi }, { anthropicMessagesApi }] = await Promise.all([
@@ -188,7 +202,8 @@ export async function createRouteAdapter(route, providerId) {
   // Anthropic Messages: pi-ai's one conversation cache breakpoint would sit on the current Board at the end of the last
   // message, which changes every request; withBoardCache moves it to the content just before the Board (outgoing-trim.mjs).
   const sent = (options) => (messages ? withBoardCache(options) : options);
-  const piProvider = { id: providerId, name: DISPLAY_NAME, baseUrl: route.baseUrl, auth, getModels: () => [model],
+  const piProvider = { id: providerId, name: DISPLAY_NAME, baseUrl: route.baseUrl, auth,
+    getModels: () => [{ ...model, contextWindow: route.contextWindow ?? DEFAULT_CONTEXT_WINDOW }],
     stream: (m, context, options) => wire.stream(m, context, sent(options)),
     streamSimple: (m, context, options) => wire.streamSimple(m, context, sent(options)) };
   const profile = { provider: providerId, displayName: DISPLAY_NAME, piProvider, modelErrors: new Map(),
@@ -237,8 +252,11 @@ const keyDigest = (key) => createHash('sha256').update(text(key)).digest('hex');
 
 /**
  * Route every dsh Agent's turns to the live Rulith model. `routeFor(agent)` returns `{ account, model }`: the account
- * signed in now and the saved model for that agent's conversation (`effectiveModel`). `localContextWindow` is the
- * launcher settings' window for models on this computer (`liveRoute`).
+ * signed in now and the saved model for that agent's conversation (`effectiveModel`). `windows` is this computer's
+ * window store and `localContextWindow` the launcher settings' developer window, used when there is no store
+ * (`liveRoute`). At a turn's start a local route that follows its server is asked again in the background when its
+ * window is unknown or old (`windows.detectSoon`), and after an overflow (`windows.detectAfterOverflow`); the turn never
+ * waits for that.
  *
  * The turn's route is chosen when the turn starts: an outermost `agent/pre-step` listener at the turn's first step,
  * ahead of dsh's step compaction, registers it; `agent/request` then uses it for every step of that turn. dsh's
@@ -249,7 +267,7 @@ const keyDigest = (key) => createHash('sha256').update(text(key)).digest('hex');
  * Returns `searchKeyFor(agent)`: the DeepSeek key of the route that agent's current turn started with, while its account
  * is still the signed-in one, or '' — what web search may use (web-tools.mjs `webSearchKey`).
  */
-export function installLiveModels(ctx, { routeFor, createAdapter = createRouteAdapter, localContextWindow } = {}) {
+export function installLiveModels(ctx, { routeFor, createAdapter = createRouteAdapter, localContextWindow, windows } = {}) {
   const turns = new WeakMap();      // agent -> { turn, provider, model, searchKey, account, active }
   let signedIn;                     // the account key last seen signed in (undefined before the first look)
   const searchKeyFor = (agent) => {
@@ -285,13 +303,18 @@ export function installLiveModels(ctx, { routeFor, createAdapter = createRouteAd
   const ensure = async (route, account) => {
     const providerId = providerFor(route, account);
     if (!registered.has(providerId)) {
-      const entry = { account, settled: undefined };
+      // `route` is the adapter's own: it reads the window from it at each request (createRouteAdapter).
+      const entry = { account, route, settled: undefined };
       entry.ready = Promise.resolve(createAdapter(route, providerId))
         .then((adapter) => (entry.settled = { adapter, dispose: ctx.llm.registerAdapter([providerId], adapter) }))
         .catch((error) => { if (registered.get(providerId) === entry) registered.delete(providerId); throw error; });
       registered.set(providerId, entry);
     }
     await registered.get(providerId).ready;
+    // Invariant 5: the route's window now (detected, or set in Settings since it was registered) is what every adapter
+    // registered for this route reports from now on, the generations of earlier keys included.
+    for (const entry of registered.values())
+      if (entry.route?.id === route.id && entry.route.contextWindow !== route.contextWindow) entry.route.contextWindow = route.contextWindow;
     return providerId;
   };
   /** Unregister every route and alias of another account than `account` (a key; '' when signed out). */
@@ -332,9 +355,11 @@ export function installLiveModels(ctx, { routeFor, createAdapter = createRouteAd
     const key = accountKey(account);
     sweep(key);
     if (typeof refusal === 'string' && refusal !== '') return { refusal };
-    const route = liveRoute(model ?? {}, { localContextWindow });
+    const route = liveRoute(model ?? {}, { localContextWindow, windows });
     if (!route) return undefined;
-    return { provider: await ensure(route, key), model: route.model, searchKey: webSearchKey(model), account: key };
+    windows?.detectSoon(model);
+    // `saved`: the model as saved (its key included, in memory only), for asking its server again after an overflow.
+    return { provider: await ensure(route, key), model: route.model, searchKey: webSearchKey(model), account: key, saved: model };
   };
   /** Start `turn` of `agent`: choose its route, and let the conversation's logged route answer with it. */
   const begin = async (agent, turn) => {
@@ -369,6 +394,13 @@ export function installLiveModels(ctx, { routeFor, createAdapter = createRouteAd
     }, { prepend: true });
   };
   ctx.on('agent/created', ({ agent }) => install(agent));
+  // A request of a turn refused for exceeding the context window (dsh-llm's CONTEXT_WINDOW_EXCEEDED): the server may have
+  // been restarted with a smaller window, so it is asked again in the background (a local route that follows its server).
+  ctx.on('agent/request-error', (payload, next) => {
+    const turn = payload?.agent ? turns.get(payload.agent) : undefined;
+    if (payload?.failure?.code === 'CONTEXT_WINDOW_EXCEEDED' && turn?.saved) windows?.detectAfterOverflow(turn.saved);
+    return next();
+  });
   ctx.on('agent/status', (payload) => {
     const turn = payload?.agent ? turns.get(payload.agent) : undefined;
     if (turn !== undefined && payload.status === 'idle') turn.active = false;
@@ -433,15 +465,28 @@ export async function installLiveSearch(ctx, { searchKeyFor }) {
 }
 
 /**
- * The two host routes (`GET`/`POST /rulith/api/model`). Saving goes through the manager's own model APIs for the
- * signed-in account (`/manager/model/default`, `/manager/instances/model`), guarded by the account the page read.
+ * What the page may see of a route's context window (context-window.mjs `info`): the window in use, where it comes from
+ * (set | developer | detected | assumed | default), the person's own setting if any, the window without it, and, when
+ * the window in use is too small for Rulith, `tooSmall` with the `minimum` Rulith needs.
  */
-export function modelRoutes({ manager, read, defaultsElsewhere = false }) {
+export const contextWindowView = ({ tokens, source, set, fallback, tooSmall }) => ({ tokens, source, ...(set !== undefined ? { set } : {}), fallback,
+  ...(tooSmall ? { tooSmall: true, minimum: MIN_USABLE_CONTEXT_WINDOW } : {}) });
+
+/**
+ * The host routes of the model (`GET`/`POST /rulith/api/model`, `POST /rulith/api/model/context-window`). Saving goes
+ * through the manager's own model APIs for the signed-in account (`/manager/model/default`, `/manager/instances/model`),
+ * guarded by the account the page read. With `windows` (context-window.mjs) a usable model's answer also carries its
+ * route's context window (`contextWindow`); a saved model on a local server is asked for its window before the answer
+ * (at most the detection deadline), and the person's own window is kept on this computer only.
+ */
+export function modelRoutes({ manager, read, defaultsElsewhere = false, windows }) {
   const fields = ['url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'];
+  const view = (model, account) => ({ ...publicModel(model, account),
+    ...(windows && modelReady(model) ? { contextWindow: contextWindowView(windows.info(model)) } : {}) });
   return {
     get: async (query = {}) => {
       const { account, model } = await read(query.agentId ? String(query.agentId) : undefined);
-      return { model: publicModel(model, account) };
+      return { model: view(model, account) };
     },
     save: async (body = {}) => {
       const state = await manager('/manager/state');
@@ -467,7 +512,30 @@ export function modelRoutes({ manager, read, defaultsElsewhere = false }) {
         await manager('/manager/model/default', { ...guard, ...values });
       }
       const { account, model } = await read(agentId || undefined);
-      return { model: publicModel(model, account), applies: 'next_turn' };
+      if (windows) await windows.detect(model);
+      return { model: view(model, account), applies: 'next_turn' };
+    },
+    /**
+     * The person's context window for the route of the model in force (the account default, or `agentId`'s), from the
+     * next turn on: a whole number of tokens from MIN_USABLE_CONTEXT_WINDOW (what Rulith needs, context-relief.mjs) to
+     * 100000000, or empty (`''`, `null`) to return to the detected or default window. Guarded by the account the page
+     * read, like saving the model; nothing reaches the manager or the Gateway.
+     */
+    setContextWindow: async (body = {}) => {
+      const { account, model } = await read(body.agentId ? String(body.agentId) : undefined);
+      if (!account) throw Object.assign(new Error(say('model.notSignedIn')), { errorCode: 'not_signed_in' });
+      if (body.expectedOrigin !== account.origin || body.expectedAccountId !== account.accountId) {
+        throw Object.assign(new Error(say('model.accountChanged')), { errorCode: 'account_changed' });
+      }
+      if (!windows || !modelReady(model)) throw Object.assign(new Error(say('model.windowNoModel')), { errorCode: 'model_not_set' });
+      const raw = body.contextWindow;
+      const cleared = raw === null || raw === undefined || (typeof raw === 'string' && raw.trim() === '');
+      const tokens = cleared ? null : personWindow(raw);
+      if (tokens === undefined) {
+        throw Object.assign(new Error(say('model.windowInvalid', { min: MIN_USABLE_CONTEXT_WINDOW })), { errorCode: 'context_window_invalid' });
+      }
+      windows.set(model, tokens);
+      return { model: view(model, account), applies: 'next_turn' };
     },
   };
 }

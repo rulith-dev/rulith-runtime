@@ -7,7 +7,10 @@
 // conversation follows Console's Conversations texts.
 // Later releases change it in place: 0.19.1 added the isolation switch (PSC 0.2.33); 0.19.2 makes post-call review
 // optional in every mode with no Console step (D-1026a, owner 2026-10-26): the derived-mode review refusals are gone,
-// derived mode's one refusal is about writing rules, and Settings → Advanced has the Post-call review block.
+// derived mode's one refusal is about writing rules, and Settings → Advanced has the Post-call review block. 0.19.3
+// (owner direction 2026-10-27) adds the model's context window to the model form (`model.window*`, with the too-small
+// warning `model.windowTooSmall`) and the host's two refusals of the window field (`model.windowNoModel`,
+// `model.windowInvalid`).
 //
 // 中文说明：应用的规范英文文字（PSC 0.2.32）。测试拿发布的文字与这份表逐字核对；中文表只核对每个键都有译文。
 
@@ -102,7 +105,19 @@ export const PAGE = {
     "keyPlaceholder": "API key",
     "hint": "An OpenAI-compatible address, or an Anthropic address ending in /messages; a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.",
     "saving": "Saving…",
-    "save": "Save"
+    "save": "Save",
+    "window": "Context window: {tokens} tokens ({source})",
+    "windowSources": {
+      "detected": "detected from the model server",
+      "set": "set by you",
+      "developer": "from the settings file",
+      "assumed": "assumed: the model server did not report it",
+      "default": "the default"
+    },
+    "windowAssumed": "Enter the context size this model server allows per request, so Rulith shortens the conversation before the server refuses it.",
+    "windowField": "Context window (tokens)",
+    "windowEmpty": "Leave empty to use {tokens}",
+    "windowTooSmall": "Rulith needs a context window of at least {min} tokens, so this one is too small. Raise the context size on the model server (llama.cpp -c, Ollama num_ctx, the context length in LM Studio), then save the model again."
   },
   "sign": {
     "title": "Proposed acceptance criteria",
@@ -672,6 +687,8 @@ export const HOST = {
   "model.agentNotSetUp": "Set this Agent up on this computer first, then give it a model of its own.",
   "model.chooseSource": "Choose whether to use the account's model or this Agent's own.",
   "model.defaultsElsewhere": "This app reads the account's model settings from another Rulith folder (modelHome); change them there.",
+  "model.windowNoModel": "Save a usable model first, then set its context window.",
+  "model.windowInvalid": "Enter the context window as a whole number of tokens from {min} to 100000000, such as 131072, or leave it empty.",
   "isolation.unavailable": "Not available on this platform yet: model commands run with your account's access.",
   "isolation.linuxOn": "On: model commands run under bubblewrap, with Rulith's own folders hidden.",
   "isolation.noBwrap": "Bubblewrap (bwrap) is not installed: model commands are refused until it is.",

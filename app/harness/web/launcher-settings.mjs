@@ -31,9 +31,10 @@ export function contextLines(settings = {}) {
 }
 
 /**
- * deep-rulith.json 的 localContextWindow：本机模型（地址是 127.0.0.1、localhost 或 ::1）的上下文窗口，正整数；不设为
- * undefined。设了却不成立时启动器拒绝启动。它交给宿主（RULITH_DSH_LOCAL_CONTEXT_WINDOW），作为本机模型那条实时路线的
- * 窗口——减负与压缩都按它算（model-runtime.mjs liveRoute）；以前的启动器把它写给本机地址的提供商，这里保持同样的效果。
+ * deep-rulith.json 的 localContextWindow：本机或局域网模型服务（context-window.mjs isLocalModelServer）的上下文窗口，
+ * 正整数；不设为 undefined。设了却不成立时启动器拒绝启动。它交给宿主（RULITH_DSH_LOCAL_CONTEXT_WINDOW），作为这类实时
+ * 路线的窗口——减负与压缩都按它算（model-runtime.mjs liveRoute）。0.19.3 起优先次序是：人在设置里填的 > 这一项 >
+ * 从模型服务读到的 > 认出是本机推理服务时估计 128K，否则 1M（见 context-window.mjs）。
  */
 export function localContextWindow(settings = {}) {
   const value = settings.localContextWindow;

@@ -29,6 +29,14 @@ Console step. The two derived-mode review refusals are gone (`tierRefusals.revie
 中文摘要：0.19.2 起事后审查在每个档位都可选，按会话在输入行开关，智能体的默认值在设置 → 高级 → 事后审查，不需要 Console；
 推导档与审查的两条互斥拒绝删除，推导档不可用只剩“需要允许模型写规则”。
 
+Changed in 0.19.3 (owner direction 2026-10-27): the model form shows the context window the model's conversations are
+measured against and where it comes from, with a field for the person's own window (`model.window`,
+`model.windowSources.*`, `model.windowAssumed`, `model.windowField`, `model.windowEmpty`, and `model.windowTooSmall`
+when the window in use is too small for Rulith), and the host refuses an invalid window, one below what Rulith needs, or
+one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
+中文摘要：0.19.3 起模型表单显示对话所按的上下文窗口及其来源（从模型服务读到、由你设定、来自设置文件、估计值、托管模型的默认值），
+并可填写自己的窗口。
+
 ## The page (`client.js` `TEXTS.en`)
 
 ### Punctuation the page puts between its own words and a service's (`p`)
@@ -123,6 +131,16 @@ Console step. The two derived-mode review refusals are gone (`tierRefusals.revie
 - `model.hint`: `An OpenAI-compatible address, or an Anthropic address ending in /messages; a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.`
 - `model.saving`: `Saving…`
 - `model.save`: `Save`
+- `model.window`: `Context window: {tokens} tokens ({source})` (0.19.3; `{tokens}` with thousands separators, `{source}` one of the five below)
+- `model.windowSources.detected`: `detected from the model server`
+- `model.windowSources.set`: `set by you`
+- `model.windowSources.developer`: `from the settings file` (the developer setting `localContextWindow`)
+- `model.windowSources.assumed`: `assumed: the model server did not report it` (a recognised local inference server; 131072 tokens)
+- `model.windowSources.default`: `the default` (1000000 tokens: a hosted model, or a local address not recognised as an inference server)
+- `model.windowAssumed`: `Enter the context size this model server allows per request, so Rulith shortens the conversation before the server refuses it.` (shown only with the assumed window)
+- `model.windowField`: `Context window (tokens)`
+- `model.windowEmpty`: `Leave empty to use {tokens}` (the field's placeholder: the window without the person's own)
+- `model.windowTooSmall`: `Rulith needs a context window of at least {min} tokens, so this one is too small. Raise the context size on the model server (llama.cpp -c, Ollama num_ctx, the context length in LM Studio), then save the model again.` (shown when the window in use, as the server reports it or the settings file sets it, is below `{min}`, 85536 tokens)
 
 ### Signing proposed acceptance criteria (Console Text A) (`sign`)
 
@@ -736,6 +754,8 @@ asks nothing. The switch's name and the whole confirmation are PSC 0.2.31 ④'s 
 - `model.agentNotSetUp`: `Set this Agent up on this computer first, then give it a model of its own.`
 - `model.chooseSource`: `Choose whether to use the account's model or this Agent's own.`
 - `model.defaultsElsewhere`: `This app reads the account's model settings from another Rulith folder (modelHome); change them there.`
+- `model.windowNoModel`: `Save a usable model first, then set its context window.` (0.19.3)
+- `model.windowInvalid`: `Enter the context window as a whole number of tokens from {min} to 100000000, such as 131072, or leave it empty.` (0.19.3; `{min}` is the smallest window Rulith can use, 85536)
 
 ### Model-command isolation: Diagnosis, and the switch's route (`isolation.*`)
 

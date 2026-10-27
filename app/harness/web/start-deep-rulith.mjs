@@ -163,6 +163,9 @@ function writeModelRoute() {
   if (!YAML.isSeq(doc.contents)) doc.contents = doc.createNode([]);
   const rows = doc.contents;
   const row = (id) => rows.items.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));
+  // This route is only the default a new conversation starts from: the app sends every turn, and a conversation's
+  // compaction and title requests, on the live route instead (model-runtime.mjs), so the window here is nominal. The
+  // window conversations are measured against is the live route's (context-window.mjs), which needs no restart.
   const route = {
     api: 'openai-completions', apiKeyEnv: 'RULITH_MODEL_KEY', baseURL: env.RULITH_DSH_MODEL_BASE,
     compat: { thinkingFormat: 'deepseek' }, models: [{ id: env.RULITH_DSH_MODEL, contextWindow: 1000000, maxTokens: MODEL_MAX_TOKENS }],

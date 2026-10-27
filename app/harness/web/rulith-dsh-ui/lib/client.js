@@ -70,6 +70,13 @@ window.__ModuleLoader__.load({
           address: "Address", modelId: "Model ID", key: "Key", keySaved: "Saved; leave empty to keep it", keyPlaceholder: "API key",
           hint: "An OpenAI-compatible address, or an Anthropic address ending in /messages; a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.",
           saving: "Saving…", save: "Save",
+          // The context window the model's conversations are measured against (0.19.3) and where it comes from.
+          window: "Context window: {tokens} tokens ({source})",
+          windowSources: { detected: "detected from the model server", set: "set by you", developer: "from the settings file",
+            assumed: "assumed: the model server did not report it", default: "the default" },
+          windowAssumed: "Enter the context size this model server allows per request, so Rulith shortens the conversation before the server refuses it.",
+          windowField: "Context window (tokens)", windowEmpty: "Leave empty to use {tokens}",
+          windowTooSmall: "Rulith needs a context window of at least {min} tokens, so this one is too small. Raise the context size on the model server (llama.cpp -c, Ollama num_ctx, the context length in LM Studio), then save the model again.",
         },
         // Signing proposed criteria: Console Text A (PSC 0.2.17), verbatim where Console has the sentence.
         sign: {
@@ -402,6 +409,12 @@ window.__ModuleLoader__.load({
           address: "地址", modelId: "模型 ID", key: "密钥", keySaved: "已保存；留空则不改", keyPlaceholder: "API 密钥",
           hint: "OpenAI 兼容的地址，或以 /messages 结尾的 Anthropic 地址；本机的模型可以用 http://127.0.0.1:端口/v1。保存后从下一轮起生效，不需要重启；密钥只留在这台电脑上，不会再显示。",
           saving: "正在保存…", save: "保存",
+          window: "上下文窗口：{tokens} token（{source}）",
+          windowSources: { detected: "从模型服务读到", set: "由你设定", developer: "来自设置文件",
+            assumed: "估计值：模型服务没有告知", default: "默认值" },
+          windowAssumed: "请填写这个模型服务每个请求允许的上下文大小，好让 Rulith 在服务拒绝之前先缩短对话。",
+          windowField: "上下文窗口（token）", windowEmpty: "留空则用 {tokens}",
+          windowTooSmall: "Rulith 需要至少 {min} token 的上下文窗口，这个太小了。请在模型服务上调大上下文（llama.cpp 的 -c、Ollama 的 num_ctx、LM Studio 里的上下文长度），然后再保存一次模型。",
         },
         sign: {
           title: "待你签字的验收标准", button: "签下这些标准",
@@ -900,11 +913,20 @@ window.__ModuleLoader__.load({
     }
 
     // ---- The model (PSC 0.2.27 ④): the signed-in account's default model; saved, it is used from the next turn.
-    /** The model form of the wizard's step ② and of settings → 模型. The key is sent, never shown back. */
+    /** A whole number of tokens with thousands separators (262,144), the same in both languages. Pure. */
+    const tokenCount = (value) => String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    /**
+     * The model form of the wizard's step ② and of settings → 模型. The key is sent, never shown back. Once a usable
+     * model is saved it also shows the context window its conversations are measured against and where it comes from
+     * (0.19.3: detected from a local model server, set by the person, from the settings file, assumed, or a hosted model's
+     * default), with a field for the person's own window; emptied, the detected or default one applies again. Saving the
+     * window alone does not save the model again.
+     */
     function ModelForm({ onSaved }) {
       const [loaded, reload] = usePoll("model", 60000);
       const [draft, setDraft] = useState(null);     // { url, name } once edited
       const [key, setKey] = useState("");
+      const [windowDraft, setWindowDraft] = useState(null);   // the window field's text once edited
       const [busy, setBusy] = useState(false);
       const [notice, setNotice] = useState(null);   // { ok, text }
       if (!loaded) return none(T.model.reading);
@@ -913,14 +935,33 @@ window.__ModuleLoader__.load({
       const url = draft ? draft.url : m.url || "";
       const name = draft ? draft.name : m.name || "";
       const edit = (which, value) => setDraft({ url, name, [which]: value });
+      const cw = m.configured && m.contextWindow && typeof m.contextWindow === "object" ? m.contextWindow : null;
+      const windowSet = cw && cw.set !== undefined ? String(cw.set) : "";
+      const windowText = windowDraft !== null ? windowDraft : windowSet;
+      const windowChanged = !!cw && windowDraft !== null && windowDraft.trim() !== windowSet;
+      const modelChanged = draft !== null || key.trim() !== "";
+      /** The person's window for the model in force; `true` when it was saved. */
+      const saveWindow = async () => {
+        const reply = await api("model/context-window", { expectedOrigin: m.expectedOrigin, expectedAccountId: m.expectedAccountId,
+          contextWindow: windowDraft.trim() });
+        if (!reply.ok) { setNotice({ ok: false, text: plain(reply, T.model.notSaved) }); return false; }
+        setWindowDraft(null);
+        return true;
+      };
       const save = async () => {
         setBusy(true); setNotice(null);
         try {
+          if (windowChanged && !modelChanged) {
+            if (await saveWindow()) { reload(); setNotice({ ok: true, text: T.model.saved }); }
+            return;
+          }
           const reply = await api("model", { expectedOrigin: m.expectedOrigin, expectedAccountId: m.expectedAccountId,
             url: url.trim(), name: name.trim(), ...(key.trim() ? { key: key.trim() } : {}) });
           if (!reply.ok) { setNotice({ ok: false, text: plain(reply, T.model.notSaved) }); return; }
-          setKey(""); setDraft(null); reload();
+          setKey(""); setDraft(null);
           const ready = !!(reply.model && reply.model.configured);
+          if (windowChanged && ready && !(await saveWindow())) { reload(); return; }
+          reload();
           setNotice({ ok: ready, text: ready ? T.model.saved : T.model.savedNoKey });
           if (ready && onSaved) onSaved(reply.model);
         } catch (error) { setNotice({ ok: false, text: fill(T.model.notSavedError, { error: errorText(error) }) }); }
@@ -928,14 +969,23 @@ window.__ModuleLoader__.load({
       };
       const host = (value) => String(value || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
       const label = (text, input) => h("label", { style: { display: "block", marginTop: 8 } }, h("div", { style: small }, text), input);
+      const source = cw && Object.prototype.hasOwnProperty.call(T.model.windowSources, cw.source) ? T.model.windowSources[cw.source] : "";
       return h("div", { "data-rulith-model-form": "" },
         h("div", null, m.configured ? fill(T.model.current, { name: m.name, host: host(m.url) }) : T.model.none),
+        cw ? h("div", { "data-rulith-context-window": cw.source || "", style: { marginTop: 4 } },
+          fill(T.model.window, { tokens: tokenCount(cw.tokens), source })) : null,
+        cw && cw.source === "assumed" ? h("div", { style: { ...small, opacity: 1, color: AMBER, marginTop: 2 } }, T.model.windowAssumed) : null,
+        cw && cw.tooSmall ? h("div", { role: "alert", "data-rulith-context-window-small": "", style: { ...small, opacity: 1, color: AMBER, marginTop: 2 } },
+          fill(T.model.windowTooSmall, { min: tokenCount(cw.minimum) })) : null,
         label(T.model.address, h("input", { value: url, list: "rulith-model-endpoints", placeholder: "https://api.deepseek.com/v1", disabled: busy, style: field,
           onChange: (event) => edit("url", event.target.value) })),
         h("datalist", { id: "rulith-model-endpoints" }, h("option", { value: "https://api.deepseek.com/v1" }), h("option", { value: "https://api.anthropic.com/v1/messages" })),
         label(T.model.modelId, h("input", { value: name, placeholder: "deepseek-flash", disabled: busy, style: field, onChange: (event) => edit("name", event.target.value) })),
         label(T.model.key, h("input", { type: "password", value: key, autoComplete: "new-password", disabled: busy, style: field,
           placeholder: m.keyConfigured ? T.model.keySaved : T.model.keyPlaceholder, onChange: (event) => setKey(event.target.value) })),
+        cw ? label(T.model.windowField, h("input", { value: windowText, inputMode: "numeric", disabled: busy, style: field,
+          "data-rulith-context-window-field": "", placeholder: fill(T.model.windowEmpty, { tokens: tokenCount(cw.fallback) }),
+          onChange: (event) => setWindowDraft(event.target.value) })) : null,
         h("div", { style: { ...small, marginTop: 6 } }, T.model.hint),
         h("div", { style: { marginTop: 10 } }, h("button", { type: "button", style: primary, disabled: busy || !url.trim() || !name.trim(), onClick: save }, busy ? T.model.saving : T.model.save)),
         notice ? alertLine(notice.text, notice.ok ? GREEN : AMBER) : null);

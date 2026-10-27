@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { boardTail, classify, clearFirst, currentBoard, identity, plan, rewriteSession as rewrite, latestPromptTokens, reliefBoundary, sessionLines,
   KEEP, CLEAR_AT_LEAST, CLEAR_FIRST_LINE, CHARS_PER_TOKEN, FULL_FIRST, FULL_HEAD, DELTA_HEAD, LONG_LINE } from '../../harness/web/board-transcript.mjs';
-import { RELIEF_MARK, RELIEF_RATIO, RELIEF_MARGIN, contextLinesFor } from '../../harness/web/context-relief.mjs';
+import { MIN_PROMPT_TOKENS, MIN_USABLE_CONTEXT_WINDOW, RELIEF_MARK, RELIEF_RATIO, RELIEF_MARGIN, contextLinesFor } from '../../harness/web/context-relief.mjs';
+import { installBoardTranscript } from '../../harness/web/board-transcript.mjs';
 import { contextEnv } from '../../harness/web/launcher-settings.mjs';
 import { trimOutgoing, clearedArgument } from '../../harness/web/outgoing-trim.mjs';
 
@@ -364,6 +365,51 @@ test("the relief line is the session route's own: a smaller window moves it one 
   assert.deepEqual(lines.at(-1), { provider: 'p', model: 'm', contextWindow: 131_072, maxTokens: MAX_TOKENS, relief, compaction: 81_920 });
   assert.deepEqual(sessionLines(session, { compaction: COMPACTION }), lines.at(-1));
   assert.equal(session.visible().filter((text) => text.endsWith(`\n${RELIEF_MARK}`)).length, 1, 'one batch at the moved line');
+});
+
+// 0.19.3 (review P1): a window too small for the two lines gives none: no relief, never a line at or below 0, logged once.
+test('a window too small for Rulith has no usable lines: no relief at any prompt, and the route is logged once as such', async () => {
+  for (const contextWindow of [4096, 32_768, 49_152, 65_536, 69_152, MIN_USABLE_CONTEXT_WINDOW - 16_385])
+    assert.equal(contextLinesFor({ contextWindow, maxTokens: MAX_TOKENS, compaction: COMPACTION }), null, String(contextWindow));
+  assert.deepEqual(contextLinesFor({ contextWindow: MIN_USABLE_CONTEXT_WINDOW, maxTokens: MAX_TOKENS, compaction: COMPACTION }),
+    { relief: MIN_PROMPT_TOKENS, compaction: MIN_USABLE_CONTEXT_WINDOW - MAX_TOKENS - COMPACTION.headroomTokens }, 'the smallest usable window');
+  const lines = [];
+  const session = fakeSession();
+  session.window = 32_768;
+  history(20).forEach((text) => step(session, 30_000, text, { onLines: (line) => lines.push(line), clearAtLeast: 0 }));
+  assert.equal(session.visible().some((text) => text.includes('"cleared"') || text.endsWith(`\n${RELIEF_MARK}`)), false, 'nothing relieved');
+  assert.deepEqual(lines.at(-1), { provider: 'p', model: 'm', contextWindow: 32_768, maxTokens: MAX_TOKENS, relief: null, compaction: null });
+  // The plugin logs the route once, saying why.
+  const logged = [];
+  let preStep;
+  installBoardTranscript({ on: (event, fn) => { if (event === 'agent/pre-step') preStep = fn; }, logger: { info: (line) => logged.push(line), warn() {} } },
+    { compaction: COMPACTION });
+  for (let i = 0; i < 3; i++) await preStep({ agent: { session }, messages: [] }, async () => 'next');
+  assert.equal(logged.length, 1, logged.join('\n'));
+  assert.equal(logged[0], `rulith context lines for p/m (window 32768, output ${MAX_TOKENS}): none usable: the window is too small for context relief `
+    + `and compaction (Rulith needs at least ${MIN_USABLE_CONTEXT_WINDOW} tokens); no relief on this route`);
+});
+
+// 0.19.3 (review P2-5): the lines use the window dsh's compaction uses, the logged route's window now, not the last request's.
+test("the lines follow the route's window now, as compaction reads it, not the window the last request recorded", async () => {
+  const session = fakeSession();
+  session.window = 1_000_000;
+  const asked = [];
+  const logged = [];
+  let preStep;
+  const llm = { resolveModelInfo: async (provider, model) => { asked.push([provider, model]); return { provider, id: model, name: model, context: { contextWindow: 262_144 } }; } };
+  installBoardTranscript({ on: (event, fn) => { if (event === 'agent/pre-step') preStep = fn; }, llm, logger: { info: (line) => logged.push(line), warn() {} } },
+    { compaction: COMPACTION });
+  assert.equal(await preStep({ agent: { session }, messages: [] }, async () => 'next'), 'next');
+  assert.deepEqual(asked, [['p', 'm']], 'the route the request header names, as dsh compaction-basic measures it');
+  const at = contextLinesFor({ contextWindow: 262_144, maxTokens: MAX_TOKENS, compaction: COMPACTION });
+  assert.deepEqual(logged, [`rulith context lines for p/m (window 262144, output ${MAX_TOKENS}): relief at ${at.relief} tokens (reliefRatio 0.7), dsh compacts at ${at.compaction}`]);
+  // The route cannot be read: the recorded request/context, as before.
+  const fallback = [];
+  installBoardTranscript({ on: (event, fn) => { if (event === 'agent/pre-step') preStep = fn; },
+    llm: { resolveModelInfo: async () => { throw new Error('no adapter'); } }, logger: { info: (line) => fallback.push(line), warn() {} } }, { compaction: COMPACTION });
+  await preStep({ agent: { session }, messages: [] }, async () => 'next');
+  assert.match(fallback[0], /\(window 1000000, /);
 });
 
 test('relief keeps the per-section layout: the line naming absent sections stays, and the rows are read back the same', () => {

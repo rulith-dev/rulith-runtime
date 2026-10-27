@@ -10,7 +10,6 @@
   "webPort": 3080,
   "shadow": { "enabled": false },
   "reviewerThinking": true,
-  "localContextWindow": 262144,
   "reliefRatio": 0.7,
   "compactionRatio": 0.8
 }

@@ -12,16 +12,17 @@
 // 2. Throwaway account homes. Every per-user location the product derives (the ~/.rulith backstop and app home, the
 //    work root under %LOCALAPPDATA%\Rulith or $XDG_DATA_HOME/rulith-work, anything under %APPDATA%) points into one
 //    temporary directory for the whole run: USERPROFILE, HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME are replaced
-//    before any test module loads, and child processes inherit them. A manager a test starts without the isolation
-//    switch (for example through an environment that strips RULITH_*) therefore labels and fills throwaway folders,
-//    never the account's real ones.
+//    before any test module loads, and child processes inherit them; an inherited DSH_HOME is cleared. A manager a test
+//    starts without the isolation switch (for example through an environment that strips RULITH_*) therefore labels and
+//    fills throwaway folders, never the account's real ones.
 //
 //    A guard in the runner process snapshots the real %LOCALAPPDATA%\Rulith, ~/.rulith and $XDG_DATA_HOME/rulith-work
 //    before the suite and compares them when it exits; anything created, removed or modified there (contents, size,
 //    times, including a security change) fails the run and is listed. The one exception is the periodic bookkeeping of
 //    a Rulith app the owner keeps running from the real app home (~/.rulith/app) while the suite runs: exactly the files
-//    it rewrites on a timer, and only while its manager's lease shows it running the whole time and its device record
-//    keeps the same account and device (see liveAppRewrite).
+//    it rewrites on a timer (and, since 0.19.3, its context-window file, which it writes when a detected window changes),
+//    and only while its manager's lease shows it running the whole time and its device record keeps the same account and
+//    device (the decision is test-home-guard.mjs unexplainedChanges).
 //
 // 中文说明：测试引导在运行器和它派生的每个测试进程里都会加载。它把隔离默认关掉（理由见上），并把整轮测试的账户目录
 // （USERPROFILE、HOME、LOCALAPPDATA、APPDATA、XDG_DATA_HOME）换成一个临时目录，子进程继承；运行器进程里另有守卫，
@@ -30,6 +31,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { processRecordRunning } from '../../local/process-identity.mjs'
+import { unexplainedChanges } from './test-home-guard.mjs'
 
 if (process.env.RULITH_ADAPTER_SANDBOX === undefined) process.env.RULITH_ADAPTER_SANDBOX = 'off'
 
@@ -46,6 +48,9 @@ if (!process.env.RULITH_TEST_HOMES) {
     APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_DATA_HOME: path.join(home, '.local', 'share') }
   for (const dir of Object.values(homes)) fs.mkdirSync(dir, { recursive: true })
   Object.assign(process.env, homes, { RULITH_TEST_HOMES: base })
+  // A DSH_HOME inherited from the shell (a developer's or the owner's dsh home) is not the suite's: the app host keeps its
+  // state there when it is set (rulith-runtime.mjs), so it is cleared here; tests that need one set their own.
+  delete process.env.DSH_HOME
 
   /** path → what identifies its state: kind, size, modification and change times. */
   const snapshot = () => {
@@ -72,7 +77,10 @@ if (!process.env.RULITH_TEST_HOMES) {
   // 租约就够。另外要求真实 manager/device.json 里几个不含机密的身份字段（state、origin、deviceId、account.id）在测试前后
   // 不变：应用的例行改写只更新目录的刷新时间，不动这些；它们变了（登录、退出、换账户或换设备）就不是例行改写。只读这四个
   // 字段，文件里的其它内容既不保留也不打印。应用没在跑、跑到一半才启动或换了一个、身份字段变了，或者被改的是别的文件
-  // （包括这几个文件被新建或删除），一律照旧算作测试的改动、整轮失败。
+  // （包括这几个文件被新建或删除），一律照旧算作测试的改动、整轮失败。0.19.3 起应用在读到的上下文窗口变了时原子改写
+  // dsh/rulith-context-windows.json（先写同名 .tmp 再改名，所以 dsh 目录本身的时间也跟着变）；它第一次读到窗口时这个
+  // 文件可能在测试期间新建。同样的条件下放过它的新建与改写、它的临时文件，以及只在它被写过时 dsh 目录本身的改动；
+  // 它被删除仍算测试的改动（应用从不删它）。判断写在 test-home-guard.mjs，有单独的测试。
   const appHome = path.join(realHome, '.rulith', 'app')
   const managerHome = path.join(appHome, 'manager')
   const managerLease = path.join(managerHome, 'workbench.lock')
@@ -91,8 +99,6 @@ if (!process.env.RULITH_TEST_HOMES) {
     } catch { return 'unreadable' }
   }
   const identityBefore = deviceIdentity()
-  const periodicRewrites = new Set([path.join(appHome, 'dsh', 'rulith-runtime-status.json'), path.join(managerHome, 'device.json'), managerHome])
-  const deviceTemporary = (p) => path.dirname(p) === managerHome && /^device\.json\.[0-9a-f-]{36}\.tmp$/.test(path.basename(p))
   let appLive
   /** Was the app that owns the real app home running for the whole suite? Asked only when a change could be its own. */
   const appRanThroughout = () => {
@@ -103,14 +109,9 @@ if (!process.env.RULITH_TEST_HOMES) {
     }
     return appLive
   }
-  /** One change a live app makes on its own: a periodic rewrite (`modified`), or its atomic write's temporary file. */
-  const liveAppRewrite = (p, kind) => (kind === 'modified' ? periodicRewrites.has(p) : deviceTemporary(p)) && appRanThroughout()
   const before = snapshot()
   process.on('exit', () => {
-    const after = snapshot(), changed = []
-    const note = (kind, p) => { if (!liveAppRewrite(p, kind)) changed.push(`${kind} ${p}`) }
-    for (const [p, state] of after) if (!before.has(p)) note('created', p); else if (before.get(p) !== state) note('modified', p)
-    for (const p of before.keys()) if (!after.has(p)) note('removed', p)
+    const changed = unexplainedChanges(before, snapshot(), { appHome, appRanThroughout })
     try { fs.rmSync(base, { recursive: true, force: true }) } catch { /* a process still holding a file there */ }
     if (changed.length) {
       console.error(`\nTest-home guard: the suite changed the account's real Rulith folders (${changed.length}):\n  `
