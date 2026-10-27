@@ -10,7 +10,7 @@ import { noteUnconfinedEnd, noteUnconfinedStart, readUnconfinedRecords, runBound
 import { UNCONFINED_MARK_ENV } from '../worker/adapter-confinement.mjs'
 
 test('bounded command timeout terminates a spawned child tree', async () => {
-  const script = "const{spawn}=require('child_process');const c=spawn(process.execPath,['-e','setTimeout(()=>{},10000)']);console.log(c.pid);setTimeout(()=>{},10000)"
+  const script = "const{spawn}=require('child_process');const c=spawn(process.execPath,['-e','setTimeout(()=>{},10000)']);process.stdout.write(String(c.pid));setTimeout(()=>{},10000)"
   await assert.rejects(() => runBounded(process.execPath, ['-e', script], { timeoutMs: 100, maxBytes: 4096, env: process.env }), /local_authoring_timeout/)
 })
 
@@ -73,7 +73,7 @@ test('ACC-ISO-14 a detached child an unconfined Adapter left running is ended', 
   const mark = randomUUID().replaceAll('-', '')
   // The "Adapter": starts a detached child that outlives it, says its pid, and exits.
   const script = "const{spawn}=require('child_process');const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],"
-    + "{detached:true,stdio:'ignore',windowsHide:true});c.unref();console.log(c.pid)"
+    + "{detached:true,stdio:'ignore',windowsHide:true});c.unref();process.stdout.write(String(c.pid))"
   const adapter = spawn(process.execPath, ['-e', script], { env: { ...process.env, [UNCONFINED_MARK_ENV]: mark }, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
   noteUnconfinedStart(file, { pid: adapter.pid, startedAt: Date.now(), mark })
   let printed = ''

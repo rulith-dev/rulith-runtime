@@ -124,7 +124,7 @@ const tree = process.env.RULITH_TEST_UNCONFINED_TREE
 if (!agentRole && tree && ['win32', 'linux'].includes(process.platform) && adapterSandboxMode(process.env) === 'off') {
   const mark = randomUUID().replaceAll('-', '')
   const adapter = spawn(process.execPath, ['-e', "const{spawn}=require('child_process');"
-    + "const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',windowsHide:true});c.unref();console.log(c.pid)"],
+    + "const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',windowsHide:true});c.unref();process.stdout.write(String(c.pid))"],
   { env: { ...process.env, [UNCONFINED_MARK_ENV]: mark }, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
   const report = (type, data) => process.send?.({ protocol: 'rulith-local-event', event: { type, t: Date.now(), ...data } })
   report('adapter-unconfined', { pid: adapter.pid, startedAt: Date.now(), mark })
