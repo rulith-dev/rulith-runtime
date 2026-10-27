@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 // 上下文减负的共同规则（2026-10-14）。三处共用、只在这里定义：board-transcript.mjs（请求前判断要不要减负、改写 Rulith 结果、
-// 写下边界标记）、outgoing-trim.mjs（发出的副本里缩短边界之前回答的长参数）、启动器（把两条线交给 dsh 与 rulith-runtime）。
+// 写下边界标记）、outgoing-trim.mjs（发出的副本里去掉边界之前回答的思考、缩短长参数）、启动器（把两条线交给 dsh 与 rulith-runtime）。
 // 这里不依赖别的模块，所以前两者可以互相用对方的东西而不成环。
 //
 // 两条线（所有者：都按模型上下文窗口的比例定，都可在 deep-rulith.json 设置）：
@@ -49,6 +49,21 @@ export function contextLinesFor({ contextWindow, maxTokens = 0, reliefRatio = RE
  * 之前的模型回答里的长参数在发出时缩短。只认 board-transcript 按结构认出的带板结果的最后一行，别处出现的同样文字不算。
  */
 export const RELIEF_MARK = 'Context relieved up to here: earlier Rulith results keep only their outcome and Board changes, and long tool-call arguments are shortened; the Board holds the state.';
+
+// ---- 哪些回答的思考随减负去掉（outgoing-trim.mjs 发出时用；board-transcript.mjs 估算一批能省多少时用同一套）----
+//
+// 思考块只在减负边界之前、而且在最后一条“开始新一轮”的消息之前的回答里去掉（D-1026b，审查 P1-2）。实际观察到的情况：
+// DeepSeek 的指南说带工具调用时要把思考发回；10-14～10-26 生产里每当人发来新一轮消息就去掉以前各轮的思考，DeepSeek 上
+// 没有出过错。所以当前这一轮的思考一定发回（严格要求的只有这一部分）；边界落在当前这一轮里时，这一轮的思考要等下一轮
+// 开始才去掉；以前各轮的思考只随减负去掉。
+
+/** 开始新一轮的消息：人发来的（source.kind user），或上级 Agent 发给子 Agent 的（agent-message）。dsh 的压缩摘要
+ * （compact-checkpoint）与项目上下文（rulith-project）也是 user 角色，但会出现在一轮中间，不算。 */
+export const TURN_SOURCES = new Set(['user', 'agent-message']);
+export const startsTurn = (message) => message?.role === 'user' && TURN_SOURCES.has(message?.source?.kind);
+/** 一个模型回答里思考块的字符数：发出时去掉它们省下的。 */
+export const reasoningChars = (message) => (Array.isArray(message?.content) ? message.content : [])
+  .reduce((n, block) => n + (block?.type === 'reasoning' && typeof block.text === 'string' ? block.text.length : 0), 0);
 
 // ---- 长参数怎样缩短（outgoing-trim.mjs 发出时用；board-transcript.mjs 估算一批能省多少时用同一个函数）----
 

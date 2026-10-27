@@ -2,6 +2,53 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.19.2 - 2026-10-26
+
+- The conversation the app sends to the model only grows at the end between context reliefs, so a model server's
+  prompt cache is reused (owner decision D-1026b). Each Rulith result is laid out once, as its changes, when it arrives
+  and is not rewritten afterwards; the whole current Board goes only into the request copy, at the end of its last
+  message, under "Current Board as of your latest Rulith result that returned a view (…)"; earlier turns' reasoning is
+  dropped only with a relief batch (the current turn's always stays) and the relief estimate counts it. On Anthropic
+  Messages routes the conversation cache breakpoint sits just before the Board. Replaying a real session, re-prefilled
+  text fell from 554,528 to 284,974 characters. Every model-visible change is listed verbatim in
+  `docs/model-visible-changes-d1026b.md`.
+- Post-call review is optional in every exploration mode and needs no Console step (owner decision D-1026a). The
+  composer's "Review" chip is always shown, derived mode included; a conversation not started yet shows its Agent's
+  default for new conversations ("Default" only when the account service does not say it). Turning review on for a
+  conversation whose Agent has no eligible reviewer (none, or one whose Connection was revoked or deleted) first makes
+  this computer the reviewer, then turns the conversation's review on, and says "This computer now reviews this Agent's
+  write calls, with the Agent's own model." only when this computer did become the reviewer, also if the switch itself
+  is then refused. With an account service from before these routes it only switches the conversation, as 0.19.1 did.
+  A conversation's state no longer passes the reviewer's or the Agent's Connection ids to the page. The derived-mode review
+  refusals and their texts are gone; "Derived mode needs permission for the model to write rules." is derived mode's one
+  refusal. The changed English texts are listed in `docs/ui-texts-english.md`.
+- App, Settings → Advanced → Post-call review, for each Agent: "Review new conversations" (turning it on when the Agent
+  has no eligible reviewer makes this computer the reviewer), "Reviewer: This computer | Another computer | None" with
+  "Use this computer" and "Remove reviewer", and the review deadline in seconds (60 to 300, sent with the designation),
+  under one line saying the reviewer reads each write call after it runs, may add advice, and never blocks a call.
+- Local manager: `POST /manager/agents/reviewer` (`{agentId, connectionId, reviewSeconds?, ifNone?}`; `connectionId: null`
+  cancels; `ifNone: true` designates only while the Agent has no eligible reviewer), `POST /manager/agents/review-default` (`{agentId, enabled}`) and `POST /manager/agents/review-state`
+  (`{agentId}`, a read that creates nothing) forward to the Gateway's `/local-devices/agents/*` routes over the device
+  grant. The reviewer route accepts only this computer's own Connection for that Agent, else it refuses with
+  `reviewer_not_this_computer` and sends nothing; the app never names a Connection. A conversation's state now passes
+  `reviewSeconds` and `reviewNewConversations` through.
+- Worker: the reviewer speaks its Agent's model's own wire. An endpoint ending in `/messages` is Anthropic Messages
+  (`x-api-key`, `anthropic-version`, `system` beside one user message; only text parts are the answer), any other
+  OpenAI-compatible Chat Completions as before; the reviewer prompt and content are the same bytes on both. The local
+  manager now gives a Worker whose Agent uses a Messages model that model as its reviewer route; before, such an Agent's
+  Worker had no reviewer, so designating its Connection produced no advice. The Messages request carries no `temperature`
+  (current Claude models refuse it) and not RULITH_REVIEWER_REQUEST_EXTRA (OpenAI-shaped; Chat Completions only). The
+  reviewer's output budget is the Agent's effective maximum output (its saved one, else the default 6000), at most 16000,
+  and the clearance review uses it too (it was a fixed 2000); a reviewer on a model that thinks by default may need a
+  higher maximum output on the Agent. A designation applies from the Worker's next Poll (it advertises the reviewer seat on
+  every Poll); no restart is needed.
+- Known: on a local model server with one slot, a post-call review request can evict the conversation's cached prompt
+  prefix while review is on, so the conversation's next request is prefilled again.
+- Windows: a second `rulith` no longer takes over a running app's `launcher.lock`; the lock names the script the process
+  really runs (rulith-local.mjs), and one written by `rulith` 0.19.1 or earlier counts as held while that app runs.
+- Upgrade: built-in Tools are pinned to the Runtime release that implements them (`runtime: rulith@0.19.2`), so Agents
+  that locked a built-in Tool re-pin and re-lock it in Console. The general kit's bytes and pins are unchanged.
+
 ## 0.19.1 - 2026-10-25
 
 - App, Settings → Advanced (PSC 0.2.31 ③ ④): "Run without isolation (not recommended)", one switch for each Agent set

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, clearFirst, identity, plan, rewriteSession as rewrite, latestPromptTokens, reliefBoundary, sessionLines, KEEP,
-  CLEAR_AT_LEAST, CLEAR_FIRST_LINE, CHARS_PER_TOKEN, FULL_HEAD, DELTA_HEAD } from '../../harness/web/board-transcript.mjs';
+import { boardTail, classify, clearFirst, currentBoard, identity, plan, rewriteSession as rewrite, latestPromptTokens, reliefBoundary, sessionLines,
+  KEEP, CLEAR_AT_LEAST, CLEAR_FIRST_LINE, CHARS_PER_TOKEN, FULL_FIRST, FULL_HEAD, DELTA_HEAD, LONG_LINE } from '../../harness/web/board-transcript.mjs';
 import { RELIEF_MARK, RELIEF_RATIO, RELIEF_MARGIN, contextLinesFor } from '../../harness/web/context-relief.mjs';
 import { contextEnv } from '../../harness/web/launcher-settings.mjs';
 import { trimOutgoing, clearedArgument } from '../../harness/web/outgoing-trim.mjs';
@@ -83,7 +83,7 @@ function step(session, prompt, text, options = {}) {
   return rewriteSession(session, options);
 }
 
-test('results up to the boundary are relieved; later ones and the latest view are shown as they were', () => {
+test('results up to the boundary are relieved; later ones and the current Board are shown as they were', () => {
   const items = () => history(10).map(classify);
   const boundary = 3;
   const texts = plan(items(), { boundary });
@@ -120,11 +120,13 @@ test('results up to the boundary are relieved; later ones and the latest view ar
       assert.ok(label > 0 && lines[label + 1].startsWith(`output ${i} output ${i}`));
     }
   }
-  // The latest whole view keeps complete raw lines.
-  const latest = texts[9].split('\n');
-  assert.equal(latest[3], FULL_HEAD); // line 1, then the output's text block (label and one line)
-  assert.ok(latest.some((line) => line.startsWith('+ operations: {"tool":"Execute","step":9')));
-  assert.ok(latest.some((line) => line.includes('"inputSchema"')));
+  // The latest result keeps only its changes too (line 1, then the output's text block: label and one line).
+  assert.equal(texts[9].split('\n')[3], DELTA_HEAD);
+  // The current Board keeps complete raw lines.
+  const current = boardTail(items()).split('\n');
+  assert.equal(current[1], FULL_HEAD);
+  assert.ok(current.some((line) => line.startsWith('+ operations: {"tool":"Execute","step":9')));
+  assert.ok(current.some((line) => line.includes('"inputSchema"')));
 });
 
 test('relief changes what is shown, never what changed: every step marks the same identities as without relief', () => {
@@ -141,15 +143,15 @@ test('relief changes what is shown, never what changed: every step marks the sam
   assert.ok(total(relieved) < total(plain) / 2);
 });
 
-test('below the relief line nothing earlier is rewritten: each step only demotes the previous latest view', () => {
+test('below the relief line nothing earlier is rewritten: each step only lays out the new result', () => {
   const session = fakeSession();
   let before = [];
-  history(24).forEach((text, i) => {
+  history(24).forEach((text) => {
     const rewritten = step(session, TRIGGER - 1, text);
     const now = session.visible();
-    // The new result is laid out and the previous latest becomes its changes; everything older is byte-identical.
-    assert.equal(rewritten, i === 0 ? 1 : 2);
-    assert.deepEqual(now.slice(0, -2), before.slice(0, -1));
+    // D-1026b: the new result is laid out once; everything before it is byte-identical.
+    assert.equal(rewritten, 1);
+    assert.deepEqual(now.slice(0, -1), before);
     before = now;
   });
   assert.ok(session.visible().every((text) => !text.includes(RELIEF_MARK) && !text.split('\n')[0].includes('"cleared"')));
@@ -179,14 +181,14 @@ test('at the relief line one batch relieves everything older than the latest six
     if (i <= boundary) {
       assert.ok(after[i].split('\n')[0].includes('"cleared"'), `result ${i} relieved`);
       assert.equal(after[i].endsWith(`\n${RELIEF_MARK}`), i === boundary);
-    } else if (i < 19) assert.equal(after[i], below[i], `result ${i} untouched`);
+    } else if (i < 20) assert.equal(after[i], below[i], `result ${i} untouched`);
   }
   assert.equal(reliefBoundary(session.messages()), session.messages().findIndex((m) => m.role === 'tool' && m.content[0].text.endsWith(RELIEF_MARK)));
-  // Still above the line, but the next results would free too little: only the demotion happens, old bytes stay.
+  // Still above the line, but the next results would free too little: only the new result is laid out, old bytes stay.
   for (const text of texts.slice(21, 24)) {
     const previous = session.visible();
-    assert.equal(step(session, TRIGGER + 5000, text, { onBatch }), 2);
-    assert.deepEqual(session.visible().slice(0, -2), previous.slice(0, -1));
+    assert.equal(step(session, TRIGGER + 5000, text, { onBatch }), 1);
+    assert.deepEqual(session.visible().slice(0, -1), previous);
   }
   assert.equal(batches.length, 1);
 });
@@ -206,7 +208,7 @@ test('no batch when it would free less than CLEAR_AT_LEAST; exactly enough makes
   const short = build();
   const before = short.visible();
   rewriteSession(short, { clearAtLeast: freed + 1 });
-  assert.deepEqual(short.visible().slice(0, -2), before.slice(0, -2));
+  assert.deepEqual(short.visible().slice(0, -1), before.slice(0, -1));
   assert.ok(short.visible().every((text) => !text.endsWith(RELIEF_MARK)));
   const enough = build();
   rewriteSession(enough, { clearAtLeast: freed });
@@ -381,6 +383,37 @@ test('relief keeps the per-section layout: the line naming absent sections stays
   assert.equal(rewriteSession(session), 0);
 });
 
+// D-1026b: the whole current view lives only in the copy that goes out, so relief cannot shorten it. A batch may now take the
+// latest Board result too (six other tool results after it); its long lines stay whole in the current Board, read from the
+// original record, and so they do after a dsh compaction that keeps it.
+test('relief may take the latest Board result; the current Board keeps its complete lines from the original', () => {
+  const session = fakeSession();
+  const big = raw(stepAnswer(1, 2000));
+  session.result(session.reply(1000)[0], big);
+  rewriteSession(session);
+  const fetched = 'Fetched https://example.test (HTTP 200)\n' + 'page '.repeat(20_000);
+  for (let i = 0; i < KEEP; i++) session.result(session.reply(i === KEEP - 1 ? TRIGGER : 1000, [{ name: 'web_fetch', args: {} }])[0], fetched);
+  rewriteSession(session, { clearAtLeast: 0 });
+  const [relieved] = session.visible();
+  assert.ok(relieved.split('\n')[0].includes('"cleared"'));
+  assert.ok(relieved.endsWith(`\n${RELIEF_MARK}`), 'the latest Board result is the boundary');
+  assert.ok(relieved.split('\n').some((line) => /^\+ operations: #[0-9a-f]{16} \(\d+ characters\)$/.test(line)));
+  const board = currentBoard(session);
+  const operations = board.text.split('\n').find((line) => line.startsWith('+ operations: '));
+  assert.ok(operations.length > LONG_LINE && operations.startsWith('+ operations: {"tool":"Execute","step":1'));
+  // dsh compacts the web pages away and keeps the Board result: still complete, the same marks; after a compaction it can no
+  // longer tell that this was the first view of the conversation.
+  session.append('compaction/summary', { summary: 'recap' });
+  session.append('user/message', { message: { role: 'user', content: [{ type: 'text', text: 'checkpoint' }], source: { kind: 'compact-checkpoint' } } },
+    { surfaceOp: { op: 'replace', startSeq: session.surface.nodes[2], endSeq: session.surface.nodes.at(-1) } });
+  assert.ok(board.text.includes(FULL_FIRST));
+  assert.equal(currentBoard(session).text, board.text.replace(FULL_FIRST, FULL_HEAD));
+  // dsh compacts the Board result away as well: no current Board.
+  session.append('user/message', { message: { role: 'user', content: [{ type: 'text', text: 'checkpoint 2' }], source: { kind: 'compact-checkpoint' } } },
+    { surfaceOp: { op: 'replace', startSeq: session.surface.nodes[0], endSeq: session.surface.nodes.at(-1) } });
+  assert.equal(currentBoard(session), null);
+});
+
 // Installed-dsh contract: dsh's real session, agent loop and llm/stream waterfall with a scripted adapter. Proves that the
 // recorded usage and the routed window reach the relief decision, that dsh accepts the batch's replace records, and that
 // the copy sent to the model shortens long arguments before the mark.
@@ -443,6 +476,12 @@ test('installed dsh: a relief batch on the real session and agent loop', {
     const sent = received.at(-1).filter((m) => m.role === 'assistant' && m.content.some((b) => b.type === 'tool-call'))
       .map((m) => JSON.parse(m.content.find((b) => b.type === 'tool-call').arguments).text);
     sent.forEach((text, i) => assert.equal(text, i <= 5 ? clearedArgument(file(i)) : file(i), `call ${i}`));
+    // D-1026b: the last request ends with the current Board (the latest result's whole view); the session does not have it.
+    const lastSent = received.at(-1).at(-1);
+    assert.equal(lastSent.role, 'tool');
+    assert.equal(lastSent.content.at(-1).text, `\n\n${currentBoard(session).text}`);
+    assert.ok(lastSent.content.at(-1).text.includes('+ operations: {"tool":"Execute","step":11'));
+    assert.ok(session.deriveMessages().every((m) => m.content.every((b) => !String(b.text ?? '').includes('Current Board as of'))));
     // The originals stay in the log for the person's transcript.
     const originals = session.snapshotEvents().filter((event) => event.type === 'tool/result' && event.surfaceOp === 'append');
     assert.equal(originals.length, 12);

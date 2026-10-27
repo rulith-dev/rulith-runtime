@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import { createDeviceClient } from '../../../local/device-client.mjs';
 import { isLoopback, modelEndpoint, modelReady } from '../../../local/model-settings.mjs';
 import { webSearchKey } from '../web-tools.mjs';
+import { withBoardCache } from './outgoing-trim.mjs';
 import { say } from './ui-texts.mjs';
 
 /** Output cap of every Rulith model route in dsh: long tool arguments were cut off below it (2026-10-14). */
@@ -184,9 +185,12 @@ export async function createRouteAdapter(route, providerId) {
   // The harness-authenticated api-key method, as llm-pi-ai gives a declared route: the request's key is the credential.
   const auth = { apiKey: { name: DISPLAY_NAME, resolve: ({ credential }) => Promise.resolve({
     auth: credential?.key === undefined ? {} : { apiKey: credential.key }, source: DISPLAY_NAME }) } };
+  // Anthropic Messages: pi-ai's one conversation cache breakpoint would sit on the current Board at the end of the last
+  // message, which changes every request; withBoardCache moves it to the content just before the Board (outgoing-trim.mjs).
+  const sent = (options) => (messages ? withBoardCache(options) : options);
   const piProvider = { id: providerId, name: DISPLAY_NAME, baseUrl: route.baseUrl, auth, getModels: () => [model],
-    stream: (m, context, options) => wire.stream(m, context, options),
-    streamSimple: (m, context, options) => wire.streamSimple(m, context, options) };
+    stream: (m, context, options) => wire.stream(m, context, sent(options)),
+    streamSimple: (m, context, options) => wire.streamSimple(m, context, sent(options)) };
   const profile = { provider: providerId, displayName: DISPLAY_NAME, piProvider, modelErrors: new Map(),
     configuredMaxTokens: new Map([[route.model, MODEL_MAX_TOKENS]]), streamIdleTimeoutMs: 300_000,
     maxRequestImageBytes: 20 * 1024 * 1024, requestImagePixelBudget: 2048 * 2048, requestImageMaxBytes: 1024 * 1024,

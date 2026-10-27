@@ -173,16 +173,15 @@ window.__ModuleLoader__.load({
           manager_signing_out: "This computer is signing out of Rulith, so this cannot be changed now.",
           manager_closing: "Rulith on this computer is closing, so this cannot be changed now.",
         },
-        // Only on the mode switch (PSC 0.2.20 ③ verbatim; Text 9's unavailable notice), and only on the review switch.
-        tierRefusals: { review_required_by_derived_mode: "Turn post-call review back on for this conversation before switching it to derived mode.",
-          derived_mode_unavailable: "Derived mode needs a reviewer for this Agent and permission for the model to write rules. Designate a reviewer for it in Console first." },
-        reviewRefusals: { derived_requires_review: "Switch this conversation out of derived mode before turning its review off." },
+        // Only on the mode switch. D-1026a: derived mode no longer needs post-call review or a reviewer, so the only reason
+        // left is that the model may not write rules.
+        tierRefusals: { derived_mode_unavailable: "Derived mode needs permission for the model to write rules." },
         composer: { ended: "This conversation is deleted and cannot continue",
           modelTitleOverride: "This Agent uses its own model setting; opens the account's model settings",
           modelTitle: "The model this conversation uses next turn; opens Settings to change it", model: "Model: {name}", modelNotSet: "not set",
           reviewTitle: "This conversation's post-call review (changes only this conversation)", review: "Review: {state}",
           reviewDefault: "Default", reviewOn: "On", reviewOff: "Off", reviewMenu: "Post-call review of this conversation's write calls, from the next call",
-          reviewOnItem: "On: write calls go to the reviewer", reviewOffItem: "Off: this conversation is not reviewed (not in derived mode)" },
+          reviewOnItem: "On: write calls go to the reviewer", reviewOffItem: "Off: this conversation is not reviewed" },
         // Opening a folder as a project (PSC 0.2.24 SYS-LOCAL-01): the confirmation, why it was refused, and its progress.
         project: {
           incomplete: "What was read about this opening is incomplete, so you cannot be asked to confirm it. Try again later.",
@@ -329,6 +328,17 @@ window.__ModuleLoader__.load({
           stopped: "Stopped what model commands had started without isolation: {names}.",
           notStopped: "Could not stop what model commands started without isolation: {names}. Stop them yourself, or restart this computer.",
           notChecked: "Could not check what model commands started without isolation left running: {reason}." },
+        // Settings → Advanced → Post-call review (D-1026a): each Agent's default for new conversations, its reviewer and
+        // review deadline; `designated` is also the composer's notice when turning review on made this computer the reviewer.
+        reviewSettings: { title: "Post-call review",
+          explain: "The reviewer reads each write call after it runs and may add advice to its result; it never blocks a call.",
+          newConversations: "Review new conversations", reviewer: "Reviewer: {name}", thisComputer: "This computer",
+          otherComputer: "Another computer", none: "None",
+          useThisComputer: "Use this computer", remove: "Remove reviewer", deadline: "Review deadline (seconds)", save: "Save",
+          deadlineRange: "The review deadline is a whole number of seconds from 60 to 300.",
+          notHere: "To review on this computer, set this Agent up under This computer first.",
+          designated: "This computer now reviews this Agent's write calls, with the Agent's own model.",
+          saved: "Saved.", notSaved: "Not saved", unreadable: "Could not read this Agent's review settings." },
         diagnosis: { title: "Diagnosis", reading: "Reading…", unreadable: "Rulith could not read its diagnosis.",
           versions: "Rulith {rulith} · DeepSeek Harness {dsh} · Node.js {node} · {platform}", computer: "This computer: {name} · {signedIn}",
           unnamed: "unnamed", signedIn: "signed in", notSignedIn: "not signed in", starting: "starting", off: "off", notSetUp: "not set up",
@@ -481,14 +491,12 @@ window.__ModuleLoader__.load({
           manager_signing_out: "这台电脑正在退出 Rulith 登录，现在不能改。",
           manager_closing: "本机 Rulith 正在关闭，现在不能改。",
         },
-        tierRefusals: { review_required_by_derived_mode: "先为这个会话打开事后审查，再切到推导档。",
-          derived_mode_unavailable: "推导档需要这个智能体有审查员，并允许模型写规则：先在 Console 里为它指定审查员。" },
-        reviewRefusals: { derived_requires_review: "先把这个会话切出推导档，再关闭事后审查。" },
+        tierRefusals: { derived_mode_unavailable: "推导档需要允许模型写规则。" },
         composer: { ended: "这个会话已删除，不能再继续",
           modelTitleOverride: "这个智能体用它自己的模型设置；点开看账户的模型设置", modelTitle: "这个会话下一轮用的模型；点开在设置里修改",
           model: "模型：{name}", modelNotSet: "未设置", reviewTitle: "这个会话的事后审查（只改这个会话）", review: "审查：{state}",
           reviewDefault: "默认", reviewOn: "开", reviewOff: "关", reviewMenu: "这个会话写入调用的事后审查，自下一次调用起",
-          reviewOnItem: "开：写入调用送审查员", reviewOffItem: "关：这个会话不审（推导档下不能关）" },
+          reviewOnItem: "开：写入调用送审查员", reviewOffItem: "关：这个会话不审" },
         project: {
           incomplete: "读到的打开内容不完整，不能请你确认。请稍后再试。",
           unexplained: "这个版本的 Rulith 应用说明不了要设置的档位，不能请你确认。请先更新 Rulith 应用。",
@@ -627,6 +635,14 @@ window.__ModuleLoader__.load({
           stopped: "已结束模型命令在不隔离时启动的进程：{names}。",
           notStopped: "没能结束模型命令在不隔离时启动的进程：{names}。请自己结束它们，或重启这台电脑。",
           notChecked: "没能检查模型命令在不隔离时启动、仍在运行的进程：{reason}。" },
+        reviewSettings: { title: "事后审查",
+          explain: "审查员在每次写入调用执行后读它，可以在结果里附上建议；它从不拦下调用。",
+          newConversations: "新会话默认审查", reviewer: "审查员：{name}", thisComputer: "这台电脑", otherComputer: "另一台电脑", none: "无",
+          useThisComputer: "用这台电脑", remove: "取消审查员", deadline: "审查期限（秒）", save: "保存",
+          deadlineRange: "审查期限是 60 到 300 之间的整数秒。",
+          notHere: "要在这台电脑上审查，先在「这台电脑」里设置这个智能体。",
+          designated: "这台电脑现在用这个智能体自己的模型审查它的写入调用。",
+          saved: "已保存。", notSaved: "没有保存", unreadable: "读不到这个智能体的审查设置。" },
         diagnosis: { title: "诊断", reading: "正在读取…", unreadable: "Rulith 读不到它的诊断。",
           versions: "Rulith {rulith} · DeepSeek Harness {dsh} · Node.js {node} · {platform}", computer: "这台电脑：{name} · {signedIn}",
           unnamed: "未命名", signedIn: "已登录", notSignedIn: "未登录", starting: "正在启动", off: "关闭", notSetUp: "未设置",
@@ -1531,9 +1547,9 @@ window.__ModuleLoader__.load({
           model.computer.state === "offline" ? h("button", { type: "button", style: linkButton, onClick: () => openSettings("computer") }, T.panel.viewInSettings) : null)));
     }
 
-    // ---- The composer row (design §3.2 会话的输入行): exactly two chips, 档位 and 模型, and 审查 only when the Agent has a
-    // reviewer designated. The browser only sees what the launcher's conversationView picks out; a switch travels
-    // manager -> device grant -> Gateway (PSC 0.2.16 ③, 0.2.20, 0.2.27 ①).
+    // ---- The composer row (design §3.2 会话的输入行): the chips 档位, 模型 and 审查. Post-call review is optional in every
+    // exploration mode (D-1026a), so its chip is always there. The browser only sees what the launcher's conversationView
+    // picks out; a switch travels manager -> device grant -> Gateway (PSC 0.2.16 ③, 0.2.20, 0.2.27 ①).
     // Exploration tiers, narrow to wide (TOOL-08b/08c), and the Console's approved confirmation texts for widening.
     const MODE_ORDER = ["strict", "derived", "non_strict"];
     // Design §2: the three tiers are named only in this menu and in the project confirmation, each with one plain
@@ -1563,7 +1579,8 @@ window.__ModuleLoader__.load({
     // the service's own text (plain), never nothing.
     const SWITCH_REFUSALS = T.switchRefusals;
     const TIER_REFUSALS = { ...SWITCH_REFUSALS, ...T.tierRefusals };
-    const REVIEW_REFUSALS = { ...SWITCH_REFUSALS, ...T.reviewRefusals };
+    // D-1026a: review no longer depends on the mode, so the review switch has no refusals of its own.
+    const REVIEW_REFUSALS = SWITCH_REFUSALS;
     /** A refused switch in words: its code's sentence, else the generic one followed by the service's own text. Pure. */
     const switchRefusal = (table, answer, generic) => own(table, answer && answer.errorCode)
       || plain(answer && answer.teaching ? answer : (answer && answer.errorCode) || "", generic);
@@ -1584,13 +1601,19 @@ window.__ModuleLoader__.load({
         } catch (error) { setNote(errorText(error)); }
         refresh();
       };
+      // Turning review on for an Agent with no reviewer makes this computer its reviewer first (the host does it). Says
+      // whether it did, so the page can say that this computer now reviews, with the Agent's own model.
       const applyReview = async (enabled) => {
         setNote("");
+        let designated = false;
         try {
           const reply = await api("conversation/review", { session: sessionId, enabled });
           if (!reply.ok) setNote(switchRefusal(REVIEW_REFUSALS, reply, TIER.notSwitched));
+          // Said also when the switch itself was then refused: this computer is the reviewer either way.
+          designated = reply.designated === true;
         } catch (error) { setNote(errorText(error)); }
         refresh();
+        return designated;
       };
       return { settings, refresh, note, setNote, applyMode, applyReview };
     }
@@ -1605,7 +1628,9 @@ window.__ModuleLoader__.load({
       const [model] = usePoll("model?session=" + encodeURIComponent(sessionId), 30000);
       const [open, setOpen] = useState(null);           // null | "tier" | "review"
       const [confirming, setConfirming] = useState(null); // the wider tier awaiting the approved confirmation
-      useEffect(() => { setOpen(null); setConfirming(null); setNote(""); }, [sessionId]);
+      // A line that is not a refusal: turning review on made this computer the Agent's reviewer (D-1026a).
+      const [info, setInfo] = useState("");
+      useEffect(() => { setOpen(null); setConfirming(null); setNote(""); setInfo(""); }, [sessionId]);
       // Nothing to show until the launcher can read this conversation. Without a Board yet (no Rulith call so far) the
       // tier reads "默认": the first choice opens the Board with the Agent's defaults and then applies.
       if (!settings || !settings.ok) return null;
@@ -1614,7 +1639,7 @@ window.__ModuleLoader__.load({
         return h("span", { "data-rulith-composer": sessionId, "data-rulith-ended": "", style: { ...small, marginLeft: 4 } }, T.composer.ended);
       const fresh = settings.found === false;
       const tier = fresh ? { mode: undefined, mixed: false } : conversationTier(settings.conversation);
-      const close = () => { setOpen(null); setConfirming(null); };
+      const close = () => { setOpen(null); setConfirming(null); setInfo(""); };
       const choose = (next) => {
         // Narrowing applies at once; widening first shows the approved confirmation (a fresh conversation counts from strict).
         if (MODE_ORDER.indexOf(next) > MODE_ORDER.indexOf(fresh ? "strict" : tier.mode)) { setConfirming(next); return; }
@@ -1642,20 +1667,24 @@ window.__ModuleLoader__.load({
       const modelChip = h("button", { key: "model", type: "button", style: chip, "data-rulith-model": current ? current.modelId || "" : "",
         title: current && current.source === "override" ? T.composer.modelTitleOverride : T.composer.modelTitle,
         onClick: () => openSettings("model") }, fill(T.composer.model, { name: !current ? "…" : current.configured ? current.modelId || current.name : T.composer.modelNotSet }));
-      // The post-call review switch exists only when the Agent has a reviewer designated (otherwise it would review nothing).
-      const reviewOn = fresh ? true : settings.conversation && settings.conversation.postCallReview === true;
-      const review = settings.reviewer ? h("span", { key: "review", style: { position: "relative", display: "inline-flex" }, "data-rulith-review": fresh ? "default" : reviewOn ? "on" : "off" },
+      // The post-call review switch, in every mode (D-1026a). A conversation with no Board yet shows the Agent's default for
+      // new conversations (an older service that does not say it: "Default"); the first choice opens its Board, as for the
+      // tier. Turning it on when the Agent has no reviewer makes this computer the reviewer (useConversationSettings).
+      const freshDefault = typeof settings.reviewNewConversations === "boolean" ? settings.reviewNewConversations : undefined;
+      const reviewOn = fresh ? freshDefault : !!(settings.conversation && settings.conversation.postCallReview === true);
+      const marked = (on) => reviewOn === on;
+      const review = h("span", { key: "review", style: { position: "relative", display: "inline-flex" }, "data-rulith-review": reviewOn === undefined ? "default" : reviewOn ? "on" : "off" },
         h("button", { type: "button", style: chip, "aria-haspopup": "menu", "aria-expanded": open === "review", title: T.composer.reviewTitle,
-          onClick: () => setOpen(open === "review" ? null : "review") }, fill(T.composer.review, { state: fresh ? T.composer.reviewDefault : reviewOn ? T.composer.reviewOn : T.composer.reviewOff }), h("span", { style: { opacity: 0.6 } }, "▾")),
+          onClick: () => setOpen(open === "review" ? null : "review") }, fill(T.composer.review, { state: reviewOn === undefined ? T.composer.reviewDefault : reviewOn ? T.composer.reviewOn : T.composer.reviewOff }), h("span", { style: { opacity: 0.6 } }, "▾")),
         open === "review" ? h("div", { role: "menu", style: menu },
           h("div", { style: { ...small, padding: "2px 8px 4px" } }, T.composer.reviewMenu),
-          h("button", { type: "button", role: "menuitemradio", "aria-checked": !fresh && reviewOn, style: { ...item, fontWeight: !fresh && reviewOn ? 600 : 400 }, disabled: !fresh && reviewOn,
-            onClick: () => { close(); applyReview(true); } }, (!fresh && reviewOn ? "● " : "○ ") + T.composer.reviewOnItem),
-          h("button", { type: "button", role: "menuitemradio", "aria-checked": !fresh && !reviewOn, style: { ...item, fontWeight: !fresh && !reviewOn ? 600 : 400 }, disabled: !fresh && !reviewOn,
-            onClick: () => { close(); applyReview(false); } }, (!fresh && !reviewOn ? "● " : "○ ") + T.composer.reviewOffItem)) : null) : null;
+          [[true, T.composer.reviewOnItem], [false, T.composer.reviewOffItem]].map(([on, words]) => h("button", { key: String(on), type: "button", role: "menuitemradio",
+            "aria-checked": marked(on), style: { ...item, fontWeight: marked(on) ? 600 : 400 }, disabled: !fresh && marked(on),
+            onClick: async () => { close(); if (await applyReview(on)) setInfo(T.reviewSettings.designated); } }, (marked(on) ? "● " : "○ ") + words))) : null);
       return h("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 4 }, "data-rulith-composer": sessionId },
         tierChip, modelChip, review,
-        note ? h("span", { role: "alert", style: { ...small, color: AMBER, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }, title: note }, note) : null);
+        note ? h("span", { role: "alert", style: { ...small, color: AMBER, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }, title: note }, note) : null,
+        info ? h("span", { role: "status", "data-rulith-review-designated": "", style: { ...small, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }, title: info }, info) : null);
     }
 
     // ---- Opening a folder as a project (PSC 0.2.24 SYS-LOCAL-01, D-1018b batch 3). The owner picks a folder under an
@@ -2426,8 +2455,78 @@ window.__ModuleLoader__.load({
         h("div", { style: section }, T.settings.otherClients),
         h("div", null, T.settings.otherClientsLine),
         consoleUrl ? h("a", { href: consoleUrl, target: "_blank", rel: "noopener noreferrer", style: { fontSize: 12 } }, T.settings.openInConsole) : null,
+        h(ReviewSection, { state }),
         h(IsolationSection, { state, refresh }),
         h(DiagnosisSection, { state }));
+    }
+    // Settings → Advanced → Post-call review (D-1026a, owner 2026-10-26): review is optional in every exploration mode and
+    // needs no Console. For each Agent of the account: whether new conversations are reviewed (the composer's chip changes
+    // one conversation), who reviews (this computer, another computer, or none) with "Use this computer", and
+    // the review deadline in seconds (60–300), sent with the designation, so it is changed here only while this computer
+    // reviews. Turning the default on for an Agent with no reviewer makes this computer its reviewer (the host does it).
+    // The reviewer reads each write call after it runs and may add advice to its result; it never blocks a call. Read and
+    // set through /rulith/api/review (local-setup.mjs reviewRoutes); no Connection id reaches the page.
+    // 中文说明：事后审查在每个档位都可选，不需要 Console；这里设每个智能体的新会话默认值、审查员和审查期限。
+    function ReviewSection({ state }) {
+      if (!state || !state.ok || !state.signedIn) return null;
+      const agents = Array.isArray(state.agents) ? state.agents : [];
+      if (!agents.length) return null;
+      const R = T.reviewSettings;
+      return h("div", { "data-rulith-settings-review": "" },
+        h("div", { style: section }, R.title),
+        h("div", { style: { ...small, marginBottom: 4 } }, R.explain),
+        agents.map((agent) => h(AgentReview, { key: agent.id, agent })));
+    }
+    /** A deadline as typed: a whole number of seconds from 60 to 300, else null. Pure. */
+    const reviewSeconds = (value) => (/^\s*\d+\s*$/.test(String(value)) && Number(value) >= 60 && Number(value) <= 300 ? Number(value) : null);
+    function AgentReview({ agent }) {
+      const [view, refresh] = usePoll("review?agentId=" + encodeURIComponent(agent.id), 60000);
+      const [busy, setBusy] = useState(false);
+      const [notice, setNotice] = useState(null);
+      const [typed, setTyped] = useState(null);
+      const R = T.reviewSettings;
+      const head = h("div", { style: { fontWeight: 600, marginTop: 6 } }, agent.name + (agent.isDefault === true ? T.common.default : ""));
+      if (!view) return h("div", { "data-rulith-review-agent": agent.id }, head, none(T.common.reading));
+      if (!view.ok) return h("div", { "data-rulith-review-agent": agent.id }, head, alertLine(plain(view, R.unreadable)));
+      const deadline = typed !== null ? typed : String(view.reviewSeconds || 60);
+      const run = async (route, body) => {
+        setBusy(true); setNotice(null);
+        let reply;
+        try { reply = await api(route, body); } catch (error) { reply = { ok: false, own: true, teaching: errorText(error) }; }
+        setBusy(false);
+        if (reply && reply.ok) setTyped(null);
+        // "This computer now reviews…" only when this request made it the reviewer (the host says so); else just saved.
+        setNotice(reply && reply.ok ? { ok: true, text: reply.designated === true ? R.designated : R.saved }
+          : { ok: false, text: plain(reply, R.notSaved) });
+        refresh();
+      };
+      // This computer becomes the reviewer with the deadline in the field (also how the deadline is changed while it reviews).
+      const useHere = () => {
+        const seconds = reviewSeconds(deadline);
+        if (seconds === null) { setNotice({ ok: false, text: R.deadlineRange }); return undefined; }
+        return run("review/reviewer", { agentId: agent.id, reviewer: "this", reviewSeconds: seconds });
+      };
+      const who = view.reviewer === "this" ? R.thisComputer : view.reviewer === "other" ? R.otherComputer : R.none;
+      const row = { display: "flex", alignItems: "center", gap: 8, padding: "3px 0", flexWrap: "wrap" };
+      return h("div", { "data-rulith-review-agent": agent.id, style: { paddingBottom: 4 } },
+        head,
+        h("label", { style: { ...row, cursor: "pointer" } },
+          h("input", { type: "checkbox", checked: view.reviewNewConversations === true, disabled: busy || typeof view.reviewNewConversations !== "boolean",
+            onChange: () => run("review/default", { agentId: agent.id, enabled: view.reviewNewConversations !== true }) }),
+          h("span", null, R.newConversations)),
+        h("div", { style: row, "data-rulith-reviewer": view.reviewer },
+          h("span", { style: { flex: 1 } }, fill(R.reviewer, { name: who })),
+          view.reviewer !== "this" && view.thisComputer ? h("button", { type: "button", style: button, disabled: busy, onClick: useHere }, R.useThisComputer) : null,
+          view.reviewer !== "none" ? h("button", { type: "button", style: button, disabled: busy,
+            onClick: () => run("review/reviewer", { agentId: agent.id, reviewer: "none" }) }, R.remove) : null),
+        !view.thisComputer && view.reviewer !== "this" ? h("div", { style: small }, R.notHere) : null,
+        h("div", { style: row },
+          h("label", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            h("span", null, R.deadline),
+            h("input", { type: "number", min: 60, max: 300, step: 1, value: deadline, disabled: busy || view.reviewer === "other",
+              onChange: (event) => setTyped(event.target.value), style: { ...field, width: 80 } })),
+          view.reviewer === "this" ? h("button", { type: "button", style: button, disabled: busy, onClick: useHere }, R.save) : null),
+        notice ? (notice.ok ? h("div", { role: "status", style: small }, notice.text) : alertLine(notice.text)) : null);
     }
     // Settings → Advanced: the owner's "Run without isolation (not recommended)" for each Agent set up on this computer
     // (PSC 0.2.31 ③), off by default, shown only where model commands can be isolated (Windows, Linux). Turning it on asks
@@ -2842,7 +2941,7 @@ window.__ModuleLoader__.load({
     exports.rightColumnWidth = rightColumnWidth;
     exports.SIGN = SIGN;
     exports.components = { ModelForm, SetupSteps, FolderChooser, ProjectDialog, AccountSection, ComputerSection, AppearanceSection,
-      AdvancedSection, IsolationSection, DiagnosisSection, LegacyWorkbenchNotice, SettingsPage, RulithSettings, RulithSettingsEntry, RulithComposerControls, RulithColumn, RulithSessionColumn, SignDialog };
+      AdvancedSection, ReviewSection, AgentReview, IsolationSection, DiagnosisSection, LegacyWorkbenchNotice, SettingsPage, RulithSettings, RulithSettingsEntry, RulithComposerControls, RulithColumn, RulithSessionColumn, SignDialog };
     exports.SETTINGS_SECTIONS = SETTINGS_SECTIONS;
     exports.EMPTY_PAGE_CSS = EMPTY_PAGE_CSS;
     exports.RUNNING_CSS = RUNNING_CSS;

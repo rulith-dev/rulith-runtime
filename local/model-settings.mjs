@@ -89,15 +89,33 @@ export function modelEndpoint(raw) {
 }
 
 /**
- * The Worker's reviewer route (D-1013f) derived from one Agent's own model. The reviewer speaks OpenAI-compatible
- * Chat Completions only, so a Messages endpoint, or no model, leaves the route empty: the Worker then does not review.
- * The key travels only into that Agent's own Worker environment.
+ * The Worker's reviewer route (D-1013f) derived from one Agent's own model, on either wire the app's models use: the
+ * Worker's reviewer reads a URL ending in /messages as Anthropic Messages and any other as OpenAI-compatible Chat
+ * Completions, the rule above (0.19.2, D-1026a: a reviewer Connection reviews with its Agent's own model, whichever wire
+ * it speaks). No model leaves the route empty: the Worker then does not review. The key travels only into that Agent's
+ * own Worker environment.
  */
 export function reviewerRoute({ url, name, key } = {}) {
   const endpoint = modelEndpoint(url)
-  const usable = endpoint?.api === 'openai-completions' && clean(name) !== ''
+  const usable = endpoint !== undefined && clean(name) !== ''
   return { RULITH_REVIEWER_URL: usable ? endpoint.url : '', RULITH_REVIEWER_MODEL: usable ? clean(name) : '',
     RULITH_REVIEWER_KEY: usable ? text(key) : '' }
+}
+
+/**
+ * The reviewer's output budget per model call (RULITH_REVIEWER_MAX_TOKENS): the Agent's effective maximum output — its
+ * saved one, or, with none saved (or one that cannot be read), the default its own route uses (DEFAULT_MAX_OUTPUT_TOKENS) —
+ * and at most 16000, so the reviewer never asks the Agent's model for more than the Agent's own requests do. A model that
+ * thinks by default spends part of it thinking (2026-10-14: 8000 went entirely to thinking on 20-25k characters of review
+ * material), so such an Agent may need a higher maximum output for its reviews.
+ * 中文说明：审查员每次模型调用的输出上限：智能体实际用的最大输出（存过的，没存就是它自己的路线用的缺省 6000），最多 16000。
+ */
+export const REVIEWER_MAX_TOKENS = 16000
+export function reviewerMaxTokens(agentMaxOutputTokens) {
+  let own
+  try { own = maxOutputTokens(typeof agentMaxOutputTokens === 'string' ? agentMaxOutputTokens.trim() : agentMaxOutputTokens) }
+  catch { own = DEFAULT_MAX_OUTPUT_TOKENS }
+  return String(Math.min(own, REVIEWER_MAX_TOKENS))
 }
 
 function load(file) {

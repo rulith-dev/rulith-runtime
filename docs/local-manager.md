@@ -104,6 +104,32 @@ and the time each Adapter held it, on Linux also by a mark the commands inherit 
 the state says `runWithoutIsolation`, and `isolationSweep` (`{at, stopped, failed, error?}`, process ids and names) once
 something was found. New instances never name it, so they require isolation.
 
+## Post-call review
+
+Post-call review (D-1013f) is optional in every exploration mode and needs no Console step (D-1026a): the owner's client
+switches it per conversation (`/manager/conversations/review`, unchanged, and no longer refused in derived mode), and sets
+the Agent's side of it through this computer's device grant:
+
+- `POST /manager/agents/reviewer` (`{agentId, connectionId, reviewSeconds?, ifNone?}`) designates the Agent's reviewer
+  Connection with its review deadline (60 to 300 seconds; left out, an unchanged reviewer keeps its own), or cancels it
+  with `connectionId: null`; with `ifNone: true` the Gateway designates only while the Agent has no eligible reviewer.
+  The only Connection it accepts is this computer's own for that Agent (the local Agent instance attached to it under
+  the signed-in account); any other id is refused with `reviewer_not_this_computer` and nothing is sent. It forwards to
+  `/local-devices/agents/reviewer`.
+- `POST /manager/agents/review-default` (`{agentId, enabled}`) sets the Agent's "review new conversations" default
+  (off for a new Agent), forwarded to `/local-devices/agents/review-default`.
+- `POST /manager/agents/review-state` (`{agentId}`) reads them, forwarded to `/local-devices/agents/review-state`, which
+  creates nothing.
+
+All three answer `{agentId, reviewer, reviewerState, reviewSeconds, reviewNewConversations}`. `reviewerState` is
+`not_designated`, `ineligible` (the reviewer's Connection was revoked or deleted: it counts as none and may be
+replaced), `disconnected` (its Worker is offline or its key is being changed), `not_configured` (its Worker does not
+offer review) or `ready`; the last three keep the reviewer. `/manager/conversations/state` carries the same fields; the app passes none of the Connection ids to its page.
+An account service from before these routes answers them `not_found`: the app then shows that it cannot read the
+settings, and turning a conversation's review on only switches the conversation, as 0.19.1 did. A reviewer Connection reviews with its Agent's own model: the Worker's reviewer route is that model (see
+Model settings), it advertises the reviewer seat on every Poll, so a designation applies from its next Poll without a
+restart, and it reads each write call after it runs and may add advice; it never blocks a call.
+
 ## Health
 
 `GET /manager/health` reads this computer's sign-in, Agent keys, Worker Connections, Sources,
@@ -121,7 +147,10 @@ OpenAI-compatible services that support it) and the maximum output tokens per re
 not support, and Rulith does not silently lower it). The app uses a saved model from the next turn
 of every conversation, without a restart; a turn already running finishes on the previous one. A
 local Agent's Worker takes the same model as its reviewer route at its next reload, unless the
-profile's own Worker settings name one.
+profile's own Worker settings name one, with the Agent's effective maximum output tokens (at most 16000) as its review
+budget: a reviewer on a model that thinks by default may need a higher maximum output on the Agent; the reviewer speaks the model's own wire (an address ending in `/messages` is
+Anthropic Messages, any other OpenAI-compatible Chat Completions; before 0.19.2 a Messages model left the Worker without
+a reviewer).
 
 Saved keys are never returned. A blank key keeps a saved key only for the same model service;
 changing services requires a new key or an explicit clear. Moving an Agent from the account default

@@ -253,7 +253,9 @@
     # The only agent preset. dsh's stock presets carry their own shell, file, web and subagent tools at the agent layer,
     # which a global tool restriction does not reach, so they stay off. Its one agent-layer group is dsh's compaction
     # (所有者 2026-10-09：长会话需要它)：上下文到压缩线时把较早的一段对话压成摘要，最近约 16% 原样保留；上下文溢出时先压缩
-    # 再重试；也可手动 /compact。摘要只是对话的回顾，不是证据：Board 上记下的才算，最新一份 Rulith 结果照样给出整个视图。
+    # 再重试；也可手动 /compact。摘要只是对话的回顾，不是证据：Board 上记下的才算；发出副本末尾的当前整视图（outgoing-trim.mjs）
+    # 照样给出整个视图，只要最新一份带板结果在保留的那部分里。压缩登记在 rulith-runtime 之后，在同一步的 agent/pre-step 里排在
+    # 板视图转录之后才跑；当前整视图在发出时才算，所以总是压缩之后的样子。
     # dsh 的结果裁剪器不挂：Rulith 结果由板视图转录安排。
     # 压缩线（2026-10-14）= compactionRatio × 窗口（默认 0.8，deep-rulith.json 可改），在减负线（reliefRatio，默认 0.7）之上：
     # 启动器把 thresholdRatio、headroomTokens（16384，使“窗口 − 输出上限 − headroom”不再先起作用）与摘要的输出上限

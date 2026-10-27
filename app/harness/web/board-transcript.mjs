@@ -1,11 +1,22 @@
 import { createHash } from 'node:crypto';
-// Deep Rulith 的板视图转录（D-1008e，所有者 2026-10-08 批准沿用最初 galaxy-core 的 delta-history 设计）。
+// Deep Rulith 的板视图转录（D-1008e，所有者 2026-10-08 批准沿用最初 galaxy-core 的 delta-history 设计；2026-10-26 起按
+// D-1026b“两次减负之间只追加”）。
 //
 // Rulith 每个工具结果都带当时的板视图（view）和操作条（operations）。原样留在对话里，几十份几乎相同的板叠在一起：
 // 模型要自己比对哪里变了（幻觉的来源），旧板还可能被当成当前局面，上下文也越滚越大。这里在每次请求模型之前，
-// 把对话里 Rulith 的结果改写成两种形态（只改模型看到的那份；界面上的对话原文不变）：
-//   - 最新一份：整个视图，每行一项；比较后新增的行前标 `+`，消失的行以 `-` 列出，未变的标 `=`；
-//   - 更早的：只留这一步的变化（`+`／`-` 行）。
+// 把对话里新到的 Rulith 结果排成历史形态（只改模型看到的那份；界面上的对话原文不变）：只留这一步的变化（`+`／`-` 行）。
+// 当前的整个视图（最新一份带板结果的整个视图，每行一项；新增的行前标 `+`，消失的行以 `-` 列出，未变的标 `=`）不写进
+// 会话：currentBoard 在这里按同样的规则算出它，outgoing-trim.mjs 只在发出的副本里把它接在最后一条消息的末尾。
+//
+// 两次减负之间只追加（D-1026b，所有者 2026-10-26 批准）：以前最新一份排成整视图，下一份到来时再改写成变化（降级），
+// 而上一份“最新”可能在很远处（中间隔着几份三万字符以上的 web_fetch 结果），从那里起的一切都要重新预填。10-26 本机
+// llama.cpp（开着提示缓存）实测：同一对话里两次请求只复用了前约 1.6 万与 1.7 万个 token，重新预填 8.7 万与 7.3 万个
+// （约 64 秒与 56 秒）。现在：
+//   - 每份结果在它到来后的第一次请求之前（那时它还从没发出过）一次排成最终形态：只有这一步相对上一份视图的变化，
+//     比较规则（按段，见下）不变；本对话第一份没有更早的视图，所以它的每一行都是 `+`。此后除减负外不再改。
+//   - 整个当前视图只在发出的副本末尾（不进会话、不进界面）；下一次请求只在上一次末尾那段开始处分叉。
+//   - 以前的版本排好的结果（旧表头）按原样读回，不再改写（减负除外）；只有当时留在最后的整视图（连同写板提醒）在升级后
+//     的第一次请求之前降为变化，只此一次（那次请求的前缀本来就要变：以前各轮的思考又发回了，见 outgoing-trim.mjs）。
 //
 // 10-09 模型的反馈（项目内容，事后报告）：表头说“整块板”，而视图自己写着 rootScope.lossy 与 dropped，两者打架——这里
 // 给的其实是“Rulith 这次返回的整个视图”，省略了什么由视图自己说；未变的行只靠两个空格，不醒目，改标 `=`；Get
@@ -19,9 +30,9 @@ import { createHash } from 'node:crypto';
 // gapsTruncated、gapsTotal；见下面的 INCLUDE_GROUPS）整组不在这份视图里，就是“没带”，不是“消失”：这样的组与“最近一份带
 // 这一组的视图”比较，没带时它的行永远不列成 `-`；其余的键照常与上一份视图比较，不见了就是 `-`（审查 e83bd1d 的 P2-1：
 // 截断标志、没有动作时的 actions、空焦点时的 taskStatus、{unavailable:true} 都会在同一种视图里出现或消失，不能当成“没带”）。
-// 最新一份整视图的 +／-／= 也这样标。这份视图没带、而本对话更早的视图带过的组，在表头下用一行列出它们的键（ABSENT_PREFIX）。
-// 新的比较方式用新的表头（FULL_HEAD、DELTA_HEAD、DELTA_NONE）；10-14 之前排好的变化（旧表头）按当时的方式（与上一份整体
-// 比较）读回，原样不动。
+// 当前整视图的 +／-／= 也这样标。这份视图没带、而本对话更早的视图带过的组，在表头下用一行列出它们的键（ABSENT_PREFIX）。
+// 按组比较的变化用 DELTA_HEAD、DELTA_NONE（10-14～10-26 的写法 SCOPED_DELTA_HEAD、SCOPED_DELTA_NONE 同样按组读回）；
+// 10-14 之前排好的变化（旧表头）按当时的方式（与上一份整体比较）读回，原样不动。
 //
 // 结果怎样读（2026-10-14，所有者：工具结果要读得自然，不要满屏反斜杠）：板以外的部分（结果头）是一行紧凑 JSON。
 // Worker 的输出由平台作为字符串带回，原样就是 JSON 里套着转义的 JSON；这里把“本身是一行 JSON（对象或数组）”的字符串解开，
@@ -33,10 +44,10 @@ import { createHash } from 'node:crypto';
 // 都不会被认成板行、提示或标记。这只是展示：Board 与 dsh 记下的原始工具结果不变。
 // 不带板的 Rulith 结果（Get 读 artifact 等）同样只排结果头；其他工具（子 Agent 等）的结果不动。
 //
-// 一份结果只排两次，此后逐字沿用（缓存稳定）：进入转录时（最新的排成整视图，否则直接排成变化），以及被下一份取代、
-// 由整视图降为变化时。之后只有减负会改它（压结果头、长行换短身份、加标记），减负前后各自是固定点。以前每次都按会话
-// 重算全部变化，重建的行序与原视图不同时，刚降为变化的一份会在下一步再被改一次（多一次前缀变化）；不再重算就没有这回事。
-// 之前排好的结果（旧表头、旧的结果头）照旧读、照旧显示。
+// 一份结果只排一次（D-1026b），此后逐字沿用（缓存稳定）：进入转录时直接排成变化。之后只有减负会改它（压结果头、
+// 长行换短身份、加标记），减负前后各自是固定点。以前每次都按会话重算全部变化，重建的行序与原视图不同时，同一份会在
+// 下一步再被改一次；不再重算就没有这回事。之前排好的结果（旧表头、旧的结果头）照旧读、照旧显示；以前留在最后的整视图
+// 降为变化一次（见上）。
 //
 // 上下文减负（2026-10-14，所有者：只在上下文空间不够时才减负，仿 Anthropic context editing 的 trigger／keep／clear_at_least；
 // 取代 10-14 上午的两个滑动窗口——它们每当一份大结果或长参数滑出窗口就改一次前缀，79 步里约 20 次让缓存退到 40～90K）：
@@ -49,10 +60,13 @@ import { createHash } from 'node:crypto';
 //   - 一批（keep）：比最近 KEEP 份工具结果（带板与否都算）更早的最新一份带板结果成为新的边界。上一个边界之后、新边界及之前的
 //     Rulith 结果一次全部减负：结果头超过 CLEAR_FIRST_LINE 个字符时压成一行仍可解析的紧凑 JSON（只留 accepted、errorCode、tool、
 //     requestExecuted、result.action/ok/status，并写明清掉了多少字符；文本块随之去掉，指向它们的字段不留），其中超过 LONG_LINE
-//     的 `+` 行与 `-` 行一样只显示短身份；新边界那份末尾加一行减负标记（RELIEF_MARK）。发出副本时，最新一个标记之前的模型
-//     回答里的长参数一并缩短（outgoing-trim.mjs 用这里的 reliefBoundary 认标记）。
+//     的 `+` 行与 `-` 行一样只显示短身份；新边界那份末尾加一行减负标记（RELIEF_MARK）。
+//     新边界也可以是最新一份带板结果（它之后已有 KEEP 份别的工具结果）：整视图只在发出副本的末尾，按原文算，不受减负影响。
+//     发出副本时，最新一个标记之前的模型回答里的长参数缩短；其中在最后一条开始新一轮的消息之前的，思考块也去掉
+//     （outgoing-trim.mjs 用这里的 reliefBoundary 认标记；当前这一轮的思考要等下一轮开始才去掉）。
 //   - 够才做（clear_at_least）：这一批估计至少省 CLEAR_AT_LEAST 个 token 才做——结果减负前后的字符差，加上新落到边界之前的
-//     旧回答里长参数缩短省下的字符，按 CHARS_PER_TOKEN 折算。不够就什么都不改，余下的交给 dsh 的压缩。
+//     旧回答里长参数缩短省下的字符、以及其中这一批就去掉的思考（在最后一条开始新一轮的消息之前的），按 CHARS_PER_TOKEN
+//     折算。不够就什么都不改，余下的交给 dsh 的压缩。
 //   - 一批之后，边界及之前的一切不再变，直到下一次触发。
 //
 // 单一真相放在会话里（而不是只在发出的副本里）：触发要用 dsh 记下的用量与请求上下文，只有会话日志里有（发出的请求只带消息）；
@@ -62,10 +76,11 @@ import { createHash } from 'node:crypto';
 //
 // 不变式（中文写明，便于审计）：
 //   1. include 决定的组的变化相对的是“这个对话里最近一份带这一组的视图”，其余键的变化相对的是上一份视图；从第一份起把
-//      各步变化依次叠加，得到每一组最后一次出现时的样子，最新一份整视图就是其中它带了的那些。第一份没有更早的视图，它的
+//      各步变化依次叠加，得到每一组最后一次出现时的样子，当前整视图就是其中最新一份带了的那些。第一份没有更早的视图，它的
 //      每一行都标 `+`。
 //   2. 改写只依据会话记录本身（对话、dsh 记下的用量、请求上下文与请求头；无内存状态），重启或回放后结果相同；已经排好的
-//      不再改。低于减负线时，每一步只把上一份“最新”降为变化，前缀其余部分逐字不变，模型服务的前缀缓存照常命中；
+//      不再改。两次减负之间，每一步只排新到的、还从没发出过的结果，此前的一切逐字不变：发出的消息列表去掉当前整视图之后，
+//      总是上一次请求的列表在末尾追加（D-1026b；几种例外逐条列在 outgoing-trim.mjs 的不变式 3），模型服务的前缀缓存照常命中。
 //      一批减负改的是边界及之前尚未减负的结果，此后它们不再变。以前的决定不因对话变长而改动。
 //   3. 这不是第二份真相：板的真相仍在 Rulith，这里只是把它沿时间拆成“历次变化 + 最新全量”给模型看。
 //   4. 读不懂的结果（传输错误等不是 JSON 的结果）原样不动。
@@ -73,22 +88,36 @@ import { createHash } from 'node:crypto';
 //      cleared，短身份按原样就是它自己的身份），第二遍什么也不变。
 //   6. dsh 压缩把从对话开头起的一段换成摘要。标记若在被压缩的那段里，它之前的一切也都在里面，剩下的对话里没有边界，
 //      也没有比边界更早的东西；若在保留的尾部，边界照旧。压缩后的第一次请求之前不触发（用量已过时）。留下的变化不重排；
-//      之后新排的整视图只与留下的视图比较（被压缩掉的那部分它不再知道）。
+//      之后新排的变化只与留下的视图比较（被压缩掉的那部分它不再知道）；当前整视图的各行取自最新一份带板结果的原文、
+//      标记取自它存下的变化，所以压缩后仍完整、标记不变；最新一份带板结果本身被压缩掉了，就没有当前整视图。
 //   7. 10-14 上午用滑动窗口减负过的会话照旧读：带 cleared 的结果头与短身份原样保留；它们没有标记，所以直到下一批之前，
 //      旧回答的长参数照常发出。
+//   8. 当前整视图（currentBoard，D-1026b）也只依据会话记录：各行取自对话里最新一份带板结果的原文（沿 dsh 的替换记录找回
+//      最初那条记录；找不到时用叠加历次变化得到的视图），标记取自这份结果存下的这一步变化（+ 仍是 +，- 照抄，其余为 =），
+//      所以与它的变化一致，dsh 压缩之后也不变。它不写进会话，所以不占历史；同一会话状态总得到同一段文字。
 
 import { projectToolCall } from '../tool-history.mjs';
 import { NOTE_PREFIX } from './shadow-reviewer.mjs';
-import { RELIEF_MARK, RELIEF_RATIO, contextLinesFor, shortenArguments } from './context-relief.mjs';
+import { RELIEF_MARK, RELIEF_RATIO, contextLinesFor, reasoningChars, shortenArguments, startsTurn } from './context-relief.mjs';
 
 const ERROR_PREFIX = 'Error: ';
 const RULITH_TOOLS = new Set(['Get', 'Set', 'Execute']);
 
-// 表头。按组比较的（10-14 起）：
+// 表头。按组比较的（10-14 起）；整视图的两种表头 10-26 起只出现在发出副本末尾的当前整视图里（TAIL_HEAD 之下）：
 export const FULL_HEAD = 'Board view now (the whole view Rulith returned; + new, - gone, = unchanged; parts a view does not include keep their last state):';
 export const FULL_FIRST = 'Board view now (the whole view Rulith returned; your first view in this conversation, so every line is +):';
-export const DELTA_HEAD = 'Board view changes at this step (+ new, - gone; unchanged lines left out; parts a view does not include keep their last state; the latest result shows the whole view):';
-export const DELTA_NONE = 'Board view changes at this step: none (parts a view does not include keep their last state; the latest result shows the whole view).';
+// 变化的表头（D-1026b，10-26 起）：整视图不再在最新一份结果里，而在对话末尾，所以括号末尾那句改说它在哪里。
+export const DELTA_HEAD = 'Board view changes at this step (+ new, - gone; unchanged lines left out; parts a view does not include keep their last state; the whole current view is at the end of the conversation):';
+export const DELTA_NONE = 'Board view changes at this step: none (parts a view does not include keep their last state; the whole current view is at the end of the conversation).';
+// 10-14～10-26 按组比较的变化表头：照旧按组读回，排好的原样不动。
+export const SCOPED_DELTA_HEAD = 'Board view changes at this step (+ new, - gone; unchanged lines left out; parts a view does not include keep their last state; the latest result shows the whole view):';
+export const SCOPED_DELTA_NONE = 'Board view changes at this step: none (parts a view does not include keep their last state; the latest result shows the whole view).';
+const SCOPED_DELTA_HEADERS = new Set([DELTA_HEAD, DELTA_NONE, SCOPED_DELTA_HEAD, SCOPED_DELTA_NONE]);
+/**
+ * 当前整视图的表头（D-1026b，模型可见）：发出副本最后一条消息末尾空一行之后的第一行；其下是整视图表头（FULL_HEAD／
+ * FULL_FIRST）、可有的“没带的段”一行、各行，以及可有的写板提醒。
+ */
+export const TAIL_HEAD = 'Current Board as of your latest Rulith result that returned a view (added by the app at the end of the conversation; not part of the message above):';
 // 这份视图没带、而更早的视图带过的段（表头下一行）。
 export const ABSENT_PREFIX = 'Not in this view (read with Get to see them): ';
 // 与上一份视图整体比较的旧表头（10-09～10-14，以及 10-09 之前的写法）：照旧认得，排好的原样不动。
@@ -234,26 +263,48 @@ export function identity(line) {
  */
 function mark(prev, curr) {
   const remaining = new Map(prev ?? []);
-  const rows = curr.map((line) => {
+  const rows = markRows(remaining, curr);
+  return withGone(rows, expand(remaining));
+}
+
+/** curr 的各行：每个身份的前 unchanged.get(身份) 行标 `=`，其余标 `+`（用掉的从 unchanged 里减去）。 */
+function markRows(unchanged, curr) {
+  return curr.map((line) => {
     const key = identity(line);
-    const left = remaining.get(key) ?? 0;
-    if (left > 0) { remaining.set(key, left - 1); return { mark: '=', line }; }
+    const left = unchanged.get(key) ?? 0;
+    if (left > 0) { unchanged.set(key, left - 1); return { mark: '=', line }; }
     return { mark: '+', line };
   });
-  // 消失的行按字典序排列，重算总得到同一段文本。
-  for (const gone of expand(remaining).sort()) {
-    const at = rows.findLastIndex((row) => section(row.line) === section(gone));
-    rows.splice(at === -1 ? rows.length : at + 1, 0, { mark: '-', line: gone });
+}
+
+/** 消失的行（身份）插到同一段最后一行之后，按字典序插：重算总得到同一段文本。 */
+function withGone(rows, gone) {
+  for (const line of [...gone].sort()) {
+    const at = rows.findLastIndex((row) => section(row.line) === section(line));
+    rows.splice(at === -1 ? rows.length : at + 1, 0, { mark: '-', line });
   }
   return rows;
 }
 
+/**
+ * 按一份结果存下的这一步变化标出它的整个视图（审查 P2-2）：变化里的 `+` 仍是 `+`（同一身份的几行里排在 `=` 之后，与
+ * mark 一样），`-` 行照抄，其余为 `=`。没有压缩时与 mark(那时的基准, curr) 逐字相同；dsh 压缩掉更早的结果之后，
+ * 基准已不全，这样得到的仍是这份结果到来时的标记。
+ */
+function markFromChanges(curr, changes) {
+  const unchanged = countLines(curr.map(identity));
+  for (const row of changes) if (row.mark === '+') unchanged.set(identity(row.line), (unchanged.get(identity(row.line)) ?? 0) - 1);
+  return withGone(markRows(unchanged, curr), changes.filter((row) => row.mark === '-').map((row) => row.line));
+}
+
 const absentLines = (absent) => (absent.length > 0 ? [ABSENT_PREFIX + absent.join(', ')] : []);
 
-/** 最新一份：结果头 + 整个视图（带 +／-／=）。prev 为 null 表示本对话还没有过视图；absent 是这份没带而更早带过的段。 */
-export function renderFull(first, curr, prev, absent = []) {
-  const rows = mark(prev, curr);
-  return [first, prev === null ? FULL_FIRST : FULL_HEAD, ...absentLines(absent), ...rows.map((row) => `${row.mark} ${row.line}`)].join('\n');
+/**
+ * 整个视图的各行（带 +／-／=）及其表头：当前整视图（boardTail）用。prev 为 null 表示这份之前本对话还没有过视图；
+ * absent 是这份没带而更早带过的段。
+ */
+export function renderWhole(curr, prev, absent = []) {
+  return [prev === null ? FULL_FIRST : FULL_HEAD, ...absentLines(absent), ...mark(prev, curr).map((row) => `${row.mark} ${row.line}`)];
 }
 
 /** 超过 LONG_LINE 的 `+` 行在减负时显示它的身份（长行即短身份），与 `-` 行一样，读回时得到同一个身份。 */
@@ -360,7 +411,7 @@ export function classify(text) {
     // `=` 未变；旧会话里未变是两个空格。
     for (; at < lines.length && /^[ =+-] /.test(lines[at]); at += 1) rows.push({ mark: lines[at][0] === ' ' ? '=' : lines[at][0], line: lines[at].slice(2) });
     const tail = lines.slice(at);
-    return { kind, legacy: kind === 'delta' && header !== DELTA_HEAD && header !== DELTA_NONE, text,
+    return { kind, legacy: kind === 'delta' && !SCOPED_DELTA_HEADERS.has(header), text,
       first: lines.slice(0, headEnd).join('\n'), header, absentLine,
       absent: absentLine === null ? [] : absentLine.slice(ABSENT_PREFIX.length).split(', '), rows, tail,
       notes: tail.filter((line) => line.startsWith(NOTE_PREFIX)), marked: tail.at(-1) === RELIEF_MARK };
@@ -410,8 +461,8 @@ export function reliefBoundary(messages) {
 }
 
 // G1（D-1008j，取自 galaxy-core 实测：提醒把所学写到板上，写板次数与板上事实都明显增加）：最新一份结果之前，
-// 连续这么多次 Rulith 调用都没有被接受的 Set，就在最新一份末尾附一句提醒。只出现在最新一份里，
-// 降为变化时随之消失，所以不在对话里堆积。
+// 连续这么多次 Rulith 调用都没有被接受的 Set，就附一句提醒。10-26 起（D-1026b）它接在当前整视图之后（以前在最新一份
+// 结果末尾，降为变化时去掉）：当前整视图只在发出的副本里，所以提醒也只出现一次、不在对话里堆积，也不改写历史。
 export const WRITE_NOTE_AFTER = 6;
 export const writeNote = (n) => `Note: ${n} Rulith calls since your last accepted Set. Record what you have learned on the Board before relying on it.`;
 const acceptedBatch = (item) => {
@@ -482,39 +533,81 @@ function keep(item, old, marked) {
 }
 
 /**
+ * 依次比较一份份视图的状态（render 与 boardTail 共用同一套比较）：previous 是上一份视图（身份 → 次数，旧表头的变化相对它），
+ * known 是组 → 最近一份带这一组的视图里这一组的 { 身份多重集 ids, 顶层键 keys }（按各组第一次出现的顺序）。
+ *   view(item)：这份结果所带视图的行；against(curr)：这份视图的比较基准、没带的段、是否本对话第一份视图；record(curr)：记下它。
+ */
+function tracker() {
+  let previous = null;
+  const known = new Map();
+  return {
+    view: (item) => viewOf(item, previous, known),
+    against(curr) {
+      const present = groupsOf(curr);
+      return { base: baseOf(known, present), absent: absentKeys(known, present), first: known.size === 0 };
+    },
+    record(curr) {
+      const ids = curr.map(identity);
+      previous = countLines(ids);
+      for (const group of groupsOf(ids)) {
+        const mine = ids.filter((id) => groupOf(id) === group);
+        known.set(group, { ids: countLines(mine), keys: [...new Set(mine.map(topSection))].filter((key) => !COMPANIONS.has(key)) });
+      }
+    },
+  };
+}
+
+/**
  * 每一份带板结果应有的文本（items 按对话顺序给出 classify 的结果，null 已滤掉）。boundary 是减负边界在 items 里的下标
- * （-1 为没有）：它及之前的历史结果减负，它本身末尾带减负标记；已经带标记的照留。
- * 原样的结果在这里第一次排（最新的排成整视图，否则排成变化）；不是最新的整视图降为变化；其余已排好的原样留下。
+ * （-1 为没有）：它及之前的结果减负，它本身末尾带减负标记；已经带标记的照留。
+ * 原样的结果在这里第一次、也是唯一一次排成变化（D-1026b：最新一份也一样，整视图只在发出副本的末尾）；以前的版本留下的
+ * 整视图（连同它的写板提醒）在升级后的第一次请求之前降为变化，只此一次（审查 P2-5：那次请求的前缀本来就要变，因为以前
+ * 各轮的思考又发回了）；其余已排好的原样留下（10-14～10-26 的按组变化也一样）。
  */
 function render(items, boundary) {
-  let previous = null; // 上一份视图（身份 → 次数）：旧表头的变化相对它
-  const known = new Map(); // 组 → 最近一份带这一组的视图里这一组的 { 身份多重集 ids, 顶层键 keys }；按各组第一次出现的顺序
-  let sinceWrite = 0;
-  for (const item of items) sinceWrite = acceptedBatch(item) ? 0 : sinceWrite + 1;
+  const t = tracker();
   return items.map((item, index) => {
-    const last = index === items.length - 1;
-    const old = !last && index <= boundary;
-    const marked = item.marked || (!last && index === boundary);
-    const curr = viewOf(item, previous, known);
+    const old = index <= boundary;
+    const marked = item.marked || index === boundary;
+    const curr = t.view(item);
     let text;
-    if (item.kind === 'raw' || (item.kind === 'full' && !last)) {
-      const present = groupsOf(curr);
-      const base = baseOf(known, present);
-      const absent = absentKeys(known, present);
-      const note = last && sinceWrite >= WRITE_NOTE_AFTER ? `\n${writeNote(sinceWrite)}` : '';
-      text = (last ? renderFull(item.first, curr, known.size === 0 ? null : base, absent) + note : renderDelta(item.first, curr, base, old, absent))
+    if (item.kind === 'raw' || item.kind === 'full') {
+      const { base, absent } = t.against(curr);
+      text = renderDelta(item.first, curr, base, old, absent)
         + (item.notes.length ? '\n' + item.notes.join('\n') : '') + (marked ? `\n${RELIEF_MARK}` : '');
     } else {
       text = keep(item, old, marked);
     }
-    const ids = curr.map(identity);
-    previous = countLines(ids);
-    for (const group of groupsOf(ids)) {
-      const mine = ids.filter((id) => groupOf(id) === group);
-      known.set(group, { ids: countLines(mine), keys: [...new Set(mine.map(topSection))].filter((key) => !COMPANIONS.has(key)) });
-    }
+    t.record(curr);
     return text;
   });
+}
+
+/**
+ * 当前整视图（D-1026b）：items 是对话里的带板结果（按顺序，带 tool），latest 是最新一份所带视图的原样各行（取自它的原文；
+ * 给 null 时由历次变化叠加得到）。已排好的最新一份按它存下的这一步变化标记（+ 仍是 +，- 照抄，其余为 =；没带的段也取它
+ * 自己那一行），所以 dsh 压缩掉更早的结果之后标记不变（审查 P2-2）；还没排的（原样的）与它之前的视图比较。compacted 为真
+ * （对话里有 dsh 的压缩摘要）时，不说“本对话第一份视图”。写板提醒（G1）接在最后。没有带板结果时返回 null。纯函数。
+ */
+export function boardTail(items, latest = null, { compacted = false } = {}) {
+  if (items.length === 0) return null;
+  const last = items.at(-1);
+  const t = tracker();
+  for (const item of items.slice(0, -1)) t.record(t.view(item));
+  let whole;
+  if (last.kind === 'raw') {
+    const curr = latest ?? last.lines;
+    const { base, absent, first } = t.against(curr);
+    whole = renderWhole(curr, first && !compacted ? null : base, absent);
+  } else {
+    const curr = latest ?? t.view(last);
+    const first = last.kind === 'full' ? last.header === FULL_FIRST : items.length === 1 && !compacted;
+    whole = [first ? FULL_FIRST : FULL_HEAD, ...absentLines(last.absent),
+      ...markFromChanges(curr, last.rows.filter((row) => row.mark !== '=')).map((row) => `${row.mark} ${row.line}`)];
+  }
+  let sinceWrite = 0;
+  for (const item of items) sinceWrite = acceptedBatch(item) ? 0 : sinceWrite + 1;
+  return [TAIL_HEAD, ...whole, ...(sinceWrite >= WRITE_NOTE_AFTER ? [writeNote(sinceWrite)] : [])].join('\n');
 }
 
 /** 已有的减负边界：最新一份带减负标记的结果（items 下标），没有为 -1。 */
@@ -567,20 +660,25 @@ export function sessionLines(session, { reliefRatio = RELIEF_RATIO, compaction =
 }
 
 /**
- * 在一次请求模型之前改写这个对话：只动 Rulith 的工具结果，用 dsh 自己的“替换”记录（原文仍在日志里，界面显示原文），
- * 与 dsh 的工具结果裁剪器同一做法。到了减负线时按上面的规则判断要不要做一批。返回改写了几份。
- * options：reliefRatio、compaction（交给 dsh 的压缩配置）、keep、clearAtLeast 覆盖默认值；onLines(lines) 收到这个会话
- * 实际的两条线；onBatch(info) 在做了一批时被调用（日志与回放统计用）。
+ * 读出对话里（dsh 的模型可见面上）的 Rulith 结果与模型回答：entries 是 Rulith 结果（带板的 board 为真，不带板的为假），
+ * 各带 classify 的结果、所在记录与位置；replies 是模型回答及其位置。工具名取自模型消息里的工具调用块（旧名映射为新名）。
+ * turnStart 是最后一条开始新一轮的消息（人或上级 Agent 发来的）的位置，没有为 -1；compacted 表示对话里有 dsh 的压缩摘要。
  */
-export function rewriteSession(session, options = {}) {
-  const { keep = KEEP, clearAtLeast = CLEAR_AT_LEAST, onBatch, onLines } = options;
+function readSession(session) {
   const entries = []; // Rulith 结果：带板的（board）与不带板的
   const replies = []; // 模型回答及其在对话里的位置
   const toolOf = new Map(); // 调用 ID → 工具名，取自模型消息里的工具调用块
   let results = 0; // 对话里的工具结果（带板与否都算），用来判断哪些结果在最近 KEEP 份之外
+  let turnStart = -1, compacted = false;
   const nodes = [...session.surface.nodes];
   nodes.forEach((seq, position) => {
     const event = session.eventAt(seq);
+    if (event?.type === 'user/message') {
+      const message = session.deriveEventMessage(event);
+      if (startsTurn(message)) turnStart = position;
+      if (message?.source?.kind === 'compact-checkpoint') compacted = true;
+      return;
+    }
     if (event?.type === 'assistant/message') {
       const message = session.deriveEventMessage(event);
       replies.push({ position, message });
@@ -603,6 +701,51 @@ export function rewriteSession(session, options = {}) {
     if (plain !== null) entries.push({ seq, event, message, item: plain, board: false, ordinal: results, position });
   });
   for (const entry of entries) entry.item.later = results - entry.ordinal;
+  return { entries, replies, turnStart, compacted };
+}
+
+/**
+ * 一份工具结果最初的原文：dsh 记下的那条 append 记录（沿替换记录 surfaceOp.startSeq 往回找；dsh 的替换记录原样留在日志里）。
+ * 找不到（链断了、不是工具结果）时返回 null。
+ */
+function originalText(session, seq) {
+  let event = session.eventAt(seq);
+  for (let hops = 0; hops < 10_000 && event?.type === 'tool/result'; hops += 1) {
+    const op = event.surfaceOp;
+    if (op === undefined || op === 'append') return textOf(session.deriveEventMessage(event));
+    if (op?.op !== 'replace' || op.startSeq !== op.endSeq) return null;
+    event = session.eventAt(op.startSeq);
+  }
+  return null;
+}
+
+/**
+ * 这个对话现在的当前整视图（D-1026b）：{ toolCallId, text }，toolCallId 是最新一份带板结果的调用 ID，text 是接在发出副本
+ * 末尾的那段（TAIL_HEAD 起）；对话里没有带板结果时返回 null。各行取自那份结果的原文，所以减负与 dsh 压缩之后仍完整；
+ * 原文读不出时用历次变化叠加得到的视图。只读会话，不写（outgoing-trim.mjs 在每次 Agent 请求之前调用）。
+ */
+export function currentBoard(session) {
+  const { entries, compacted } = readSession(session);
+  const board = entries.filter((entry) => entry.board);
+  if (board.length === 0) return null;
+  const latest = board.at(-1);
+  const original = latest.item.kind === 'raw' ? latest.item : classify(originalText(session, latest.seq) ?? '');
+  const lines = original?.kind === 'raw' ? original.lines : null;
+  return { toolCallId: latest.message.toolCallId, text: boardTail(board.map((entry) => entry.item), lines, { compacted }) };
+}
+
+/**
+ * 在一次请求模型之前改写这个对话：只动 Rulith 的工具结果，用 dsh 自己的“替换”记录（原文仍在日志里，界面显示原文），
+ * 与 dsh 的工具结果裁剪器同一做法。到了减负线时按上面的规则判断要不要做一批。返回改写了几份。
+ * options：reliefRatio、compaction（交给 dsh 的压缩配置）、keep、clearAtLeast 覆盖默认值；onLines(lines) 收到这个会话
+ * 实际的两条线；onBatch(info) 在做了一批时被调用（日志与回放统计用）；turnStarting 为真表示这一步要进会话的消息里有一条
+ * 开始新一轮（pre-step 时它还不在会话里），这一批的估计因此把会话里所有回答都算作当前这一轮之前。
+ */
+export function rewriteSession(session, options = {}) {
+  const { keep = KEEP, clearAtLeast = CLEAR_AT_LEAST, onBatch, onLines, turnStarting = false } = options;
+  const read = readSession(session);
+  const { entries, replies } = read;
+  const turnStart = turnStarting ? Infinity : read.turnStart;
   const board = entries.filter((entry) => entry.board);
   const items = board.map((entry) => entry.item);
   const textsFor = (boundary) => {
@@ -625,7 +768,12 @@ export function rewriteSession(session, options = {}) {
       batch.forEach((text, index) => { freedChars += wanted[index].length - text.length; });
       const from = boundary === -1 ? -1 : board[boundary].position;
       const to = board[candidate].position;
-      for (const reply of replies) if (reply.position > from && reply.position < to) freedChars += argumentSavings(reply.message);
+      // 新落到边界之前的回答：长参数缩短；在最后一条开始新一轮的消息之前的，思考也一并去掉（审查 P1-1；当前这一轮的思考
+      // 要等下一轮开始才去掉，不算进这一批；一轮的第一步之前，人发来的新消息还没进会话，由 turnStarting 补上）。
+      for (const reply of replies) {
+        if (reply.position <= from || reply.position >= to) continue;
+        freedChars += argumentSavings(reply.message) + (reply.position < turnStart ? reasoningChars(reply.message) : 0);
+      }
       const freedTokens = Math.floor(freedChars / CHARS_PER_TOKEN);
       if (freedTokens >= clearAtLeast) {
         boundary = candidate;
@@ -648,7 +796,10 @@ export function rewriteSession(session, options = {}) {
 }
 
 /**
- * 挂到 dsh 的 agent/pre-step：每次请求模型之前改写一次（dsh 的压缩在同一瀑布里先跑）；出错只记日志，对话照常按原样继续。
+ * 挂到 dsh 的 agent/pre-step：每次请求模型之前改写一次；出错只记日志，对话照常按原样继续。dsh 的压缩（compaction-basic，
+ * 在 Agent 预设里，登记在本插件之后）在同一瀑布里随后才跑：这一步若压缩，压缩看到的已是排好的结果；压缩之后的第一次
+ * 请求之前不再触发减负（latestPromptTokens 见到压缩摘要即不知道现在多大）。当前整视图在发出时才由会话算出
+ * （outgoing-trim.mjs），所以总是压缩之后的样子。
  * options 来自 rulith-runtime 的配置：reliefRatio（deep-rulith.json 的 reliefRatio）与 compaction（启动器交给 dsh 的压缩配置），
  * 都经启动器的环境变量传来。每条模型路线实际的两条线记一次日志。
  */
@@ -663,9 +814,11 @@ export function installBoardTranscript(ctx, options = {}) {
     ctx.logger?.info?.(`rulith context lines for ${lines.provider}/${lines.model} (window ${lines.contextWindow}, output ${lines.maxTokens}): `
       + `relief at ${lines.relief} tokens (reliefRatio ${reliefRatio}), dsh compacts at ${lines.compaction}`);
   };
-  ctx.on('agent/pre-step', async ({ agent }, next) => {
+  ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
     try {
-      if (agent?.session) rewriteSession(agent.session, { reliefRatio, compaction, onLines, onBatch: (info) => ctx.logger?.info?.(
+      // 这一步要进会话的消息（dsh 在这个瀑布之后才把它们追加进会话）里有开始新一轮的，估计时以前的回答都已在当前这一轮之前。
+      const turnStarting = Array.isArray(messages) && messages.some(startsTurn);
+      if (agent?.session) rewriteSession(agent.session, { reliefRatio, compaction, onLines, turnStarting, onBatch: (info) => ctx.logger?.info?.(
         `rulith context relief: prompt ${info.prompt} >= ${info.trigger} tokens (window ${info.contextWindow}); `
         + `relieved up to seq ${info.boundarySeq}, about ${info.freedTokens} tokens freed`) });
     } catch (error) {

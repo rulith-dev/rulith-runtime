@@ -227,6 +227,21 @@ test('the same script under the pid is still the recorded process, however its p
   }
 })
 
+test('a launcher lock `rulith` 0.19.1 or earlier wrote names start-deep-rulith.mjs, and its holder running rulith-local.mjs still holds it', () => {
+  // Up to 0.19.1 `rulith` ran the launcher in its own process after putting the launcher in process.argv[1]
+  // (local/rulith-local.mjs startApp). Only that one alias counts, one way only.
+  const launcher = stamped({ script: 'start-deep-rulith.mjs' })
+  const npx = 'C:\\Program Files\\nodejs\\node.exe C:\\Users\\op\\AppData\\Local\\npm-cache\\_npx\\64eb\\node_modules\\.bin\\\\..\\rulith\\local\\rulith-local.mjs'
+  assert.deepEqual(verdict(launcher, { probe: { commandLine: () => npx } }), { running: true, reason: '' })
+  assert.deepEqual(verdict(launcher, { probe: { commandLine: () => 'node D:\\Work\\rulith-p1\\app\\harness\\web\\start-deep-rulith.mjs' } }),
+    { running: true, reason: '' })
+  assert.deepEqual(verdict(launcher, { probe: { commandLine: () => 'node.exe D:\\projects\\site\\node_modules\\vite\\bin\\vite.js' } }),
+    { running: false, reason: 'pid_reused' })
+  assert.deepEqual(verdict(stamped({ script: 'rulith-local.mjs' }), { probe: { commandLine: () => 'node D:\\x\\start-deep-rulith.mjs' } }),
+    { running: false, reason: 'pid_reused' }, 'a workbench recorded as rulith-local.mjs is not the launcher')
+  assert.deepEqual(verdict(agentRecord(), { probe: { commandLine: () => npx } }), { running: false, reason: 'pid_reused' })
+})
+
 test('a command line that cannot be read proves nothing', () => {
   // An elevated process, a process that exited meanwhile, PowerShell unavailable: all are ''.
   assert.deepEqual(verdict(agentRecord(), { probe: { commandLine: () => '' } }), { running: true, reason: '' })

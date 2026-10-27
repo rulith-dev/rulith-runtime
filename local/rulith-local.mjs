@@ -8,7 +8,7 @@
 import http from 'node:http'
 import { conversationFile, openConversations } from '../agent/conversation-store.mjs'
 import { createConversationReader } from '../agent/conversation-reader.mjs'
-import { DEFAULT_MODEL_URL, reviewerRoute } from './model-settings.mjs'
+import { DEFAULT_MODEL_URL, reviewerMaxTokens, reviewerRoute } from './model-settings.mjs'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
@@ -730,13 +730,16 @@ export function createLocalHost({
     // A local Agent's Worker is the platform reviewer's model route (D-1013f): when this profile names no reviewer route
     // of its own, it is the Agent's own model — the account default or this Agent's override, resolved at this start —
     // so a saved model change reaches the reviewer at the Worker's next reload, and another account's key never does.
-    // It reviews only if Console designates this Connection as a reviewer; carrying the route grants nothing.
+    // Its output budget is the Agent's effective maximum output, at most 16000 (model-settings.mjs reviewerMaxTokens). It
+    // reviews only while this Connection is the Agent's designated reviewer (the owner sets it in the app, D-1026a);
+    // carrying the route grants nothing.
     // 中文说明：本机 Agent 的 Worker 就是平台审查员的模型路线。实例自己没写审查员路线时，用这个 Agent 此刻的模型（账户默认值
-    // 或它的明确覆盖），模型保存后 Worker 下次重新载入即跟上；只有 Console 指定这条连接为审查员时才会用到。
+    // 或它的明确覆盖），模型保存后 Worker 下次重新载入即跟上；只有这条连接被指定为这个智能体的审查员时才会用到（在应用里设置）。
     if (selectedRoles.includes('agent') && String(config.worker?.env?.RULITH_REVIEWER_URL ?? '').trim() === '') {
       const modelEnv = agentEnvironment()
       roleEnv = { ...roleEnv, ...reviewerRoute({ url: modelEnv.RULITH_MODEL_URL, name: modelEnv.RULITH_MODEL, key: modelEnv.RULITH_MODEL_KEY }),
-        ...(String(config.worker?.env?.RULITH_REVIEWER_MAX_TOKENS ?? '').trim() === '' ? { RULITH_REVIEWER_MAX_TOKENS: '16000' } : {}) }
+        ...(String(config.worker?.env?.RULITH_REVIEWER_MAX_TOKENS ?? '').trim() === ''
+          ? { RULITH_REVIEWER_MAX_TOKENS: reviewerMaxTokens(modelEnv.RULITH_MODEL_MAX_OUTPUT_TOKENS) } : {}) }
     }
     if (toolLibrary !== undefined) {
       // Where an environment's keys live is for composition to say and for nothing else to: a value
@@ -1779,6 +1782,24 @@ export function nodeVersionRefusal(version = process.versions.node) {
     : `Rulith needs Node.js 22.19 or later; this is Node.js ${version}. Install a newer Node.js from https://nodejs.org and run rulith again.`
 }
 
+/**
+ * `rulith` (or `rulith app`): the app's launcher, run in this process with `args` as its own arguments. The launcher reads
+ * them from `process.argv` after the script, as it does when run on its own (`npm run app`), so only the arguments are
+ * replaced: `process.argv[1]` stays the script this process really runs. A lock ticket names that script
+ * (manager-registry.mjs), and on Windows a ticket's holder counts as running only while its command line runs it
+ * (process-identity.mjs). Up to 0.19.1 the launcher was put in `process.argv[1]`, so the app's own `launcher.lock` named
+ * start-deep-rulith.mjs while its process ran rulith-local.mjs: a second `rulith` read the running app's lock as left by
+ * an ended process and took it over.
+ * 中文说明：启动器从 process.argv 第三项起读自己的参数，所以这里只换参数，argv[1] 保持这个进程真正运行的入口脚本。锁票据
+ * 记下的入口脚本取自 argv[1]，Windows 上判断锁的持有者是否还在时要拿它去对进程的命令行。以前这里把 argv[1] 改成了
+ * start-deep-rulith.mjs，而命令行跑的是 rulith-local.mjs：运行中的应用的 launcher.lock 被判成"持有者已结束"，第二次
+ * `rulith` 会把它当过期锁删掉、自己接管。
+ */
+export function startApp(args, launcher = new URL('../app/harness/web/start-deep-rulith.mjs', import.meta.url)) {
+  process.argv = [process.argv[0], process.argv[1], ...args]
+  return import(launcher.href)
+}
+
 if (IS_MAIN) {
   let cli
   try { cli = parseLocalCli(process.argv.slice(2), process.env) } catch (error) { console.error(error.message); process.exit(1) }
@@ -1790,11 +1811,8 @@ if (IS_MAIN) {
       + ' (how an app launcher before 0.19.0 starts it). Run `rulith app` to open the app.')
   }
   if (cli.command === 'app') {
-    // The app's launcher reads its arguments as it does when run on its own (`npm run app`): from process.argv, after the
-    // script. So the script and the checked options are put there, and the launcher runs in this process.
-    const launcher = new URL('../app/harness/web/start-deep-rulith.mjs', import.meta.url)
-    process.argv = [process.argv[0], fileURLToPath(launcher), ...cli.args]
-    import(launcher.href).catch((error) => {
+    // The app's launcher runs in this process, with the checked options as its arguments (startApp).
+    startApp(cli.args).catch((error) => {
       console.error(String(error?.message ?? error))
       process.exit(1)
     })

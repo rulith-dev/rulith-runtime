@@ -65,7 +65,10 @@ export function reconcileProjectContext(session, line) {
   return retained;
 }
 
-/** Per-step admission uses the conversation's cwd, never the host process's cwd. Read failures carry no model text. */
+/** Per-step admission uses the conversation's cwd, never the host process's cwd. Read failures carry no model text.
+ * A failed read changes nothing on the model surface: the context line already there stays as it was (D-1026b review: blanking
+ * it and restoring it on the next good read changed the prompt prefix twice, so the model server re-read everything after it).
+ * Only a real change of the conversation's Source replaces the line. 中文说明：读 Source 失败时不动已有的项目上下文。 */
 export function installProjectContext(ctx, sourcesForConversation) {
   ctx.on('agent/pre-step', async ({ agent, step }, next) => {
     const decision = await next();
@@ -79,7 +82,8 @@ export function installProjectContext(ctx, sourcesForConversation) {
       line = projectLine(workspace, resolveProject(workspace, sources));
     } catch {
       // Fetch errors can contain addresses or credentials. The visible diagnosis deliberately contains neither.
-      console.error('[rulith project] Sources cannot be read or the conversation workspace is unavailable; project context omitted');
+      console.error('[rulith project] Sources cannot be read or the conversation workspace is unavailable; project context left as it was');
+      return decision;
     }
     if (reconcileProjectContext(session, line) || !line || (!decision.messages.length && step <= 1)) return decision;
     return { ...decision, messages: [...decision.messages, { id: randomUUID(), role: 'user',

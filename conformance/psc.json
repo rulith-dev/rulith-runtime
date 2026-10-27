@@ -1,8 +1,8 @@
 {
   "schema": "rulith-psc-conformance-map/v1",
   "repository": "runtime",
-  "contractVersion": "0.2.33",
-  "contractReviewedCommit": "d18baee6910c3eebf2243f81ac98a180ecdcfdb6",
+  "contractVersion": "0.2.34",
+  "contractReviewedCommit": "d5f6aef4d47e5442f8ea2dc6cb8b42f54c891835",
   "blockers": {
     "contract_changed": "The PSC row changed after this Runtime mapping was made against 0.2.4; its tests must be re-checked against the current clauses before the item can be mapped again (D-1018a reconciliation, 2026-10-18).",
     "evidence_review": "Clause-wide Runtime evidence has not been independently reviewed; existing green tests alone do not establish complete coverage.",
@@ -63,7 +63,7 @@
       "state": "mapped",
       "targets": [
         {"file": "app/test/harness/settings.test.mjs", "locator": "one tier per conversation: the strictest the Gateway reports, never a wider one"},
-        {"file": "app/test/harness/settings.test.mjs", "locator": "the composer has exactly two chips, 档位 and 模型; narrowing applies at once, widening shows the approved confirmation first"}
+        {"file": "app/test/harness/settings.test.mjs", "locator": "the composer has the chips 档位, 模型 and 审查; narrowing applies at once, widening shows the approved confirmation first"}
       ]
     },
     "ACC-LOCAL-09": {
@@ -105,6 +105,39 @@
         {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 an unconfirmed signature is kept until a state read shows it settled"},
         {"file": "app/test/harness/task-panel.test.mjs", "locator": "ACC-LOCAL-11 host: the sign route forwards exactly the confirmation"},
         {"file": "test/local-manager.test.mjs", "locator": "ACC-LOCAL-11 the signed-in client signs one goal"}
+      ]
+    },
+    "ACC-LOCAL-12": {
+      "state": "mapped",
+      "targets": [
+        {
+          "file": "app/test/harness/outgoing-trim.test.mjs",
+          "locator": "between reliefs every request only appends to the previous one, with the current Board at its end"
+        },
+        {
+          "file": "app/test/harness/outgoing-trim.test.mjs",
+          "locator": "a relief batch is the one exception: the request after it diverges at the batch, then appending resumes"
+        },
+        {
+          "file": "app/test/harness/outgoing-trim.test.mjs",
+          "locator": "reasoning is kept across messages from a person; only replies before the relief boundary and before the current turn lose it"
+        },
+        {
+          "file": "app/test/harness/outgoing-trim.test.mjs",
+          "locator": "a relief mark inside a turn: that turn keeps its reasoning until the next message from a person, then only it changes"
+        },
+        {
+          "file": "app/test/harness/outgoing-trim.test.mjs",
+          "locator": "the current Board goes at the end of the last message, whatever it is, only in the copy"
+        },
+        {
+          "file": "app/test/harness/outgoing-trim.test.mjs",
+          "locator": "installed dsh: the agent loop sends the trimmed copy to the adapter and keeps the session as recorded"
+        },
+        {
+          "file": "app/test/harness/board-transcript.test.mjs",
+          "locator": "each result is laid out once, when it arrives; nothing earlier is rewritten and a second pass changes nothing"
+        }
       ]
     },
     "ACC-ISO-01": {

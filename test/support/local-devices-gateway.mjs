@@ -56,6 +56,8 @@ export function createDevicesGateway({
   accountId = 'acct-1', accountName = 'Test Account',
   agents = [{ id: 'agent-alpha', name: 'Alpha' }, { id: 'agent-beta', name: 'Beta' }, { id: 'agent-gamma', name: 'Gamma' }],
   model = () => ({ text: 'Nothing further is needed.' }),
+  // false: an account service from before D-1026a's review routes (they answer a 404 without a code).
+  reviewRoutes = true,
 } = {}) {
   /** Every request the server saw: path, whether it carried an Origin, and its body. */
   const requests = []
@@ -73,6 +75,17 @@ export function createDevicesGateway({
   const conversationModes = new Map()
   const conversationReview = new Map()
   const conversationEnded = new Set()
+  /** D-1026a: each Agent's reviewer Connection (or null), its review deadline and its "review new conversations" default. */
+  const agentReview = new Map()
+  const reviewStored = (agentId) => agentReview.get(agentId) ?? { reviewer: null, reviewSeconds: 60, reviewNewConversations: false }
+  /** Every review answer carries `reviewerState` (rulith-java b56f9560): not_designated, ineligible (revoked or deleted),
+   * disconnected (Worker offline), not_configured (Worker offers no review; not modelled here) or ready. */
+  const reviewerState = (reviewer) => {
+    if (reviewer === null) return 'not_designated'
+    const connection = connections.get(reviewer)
+    return connection === undefined || connection.revoked || connection.deleted ? 'ineligible' : connection.workerActive ? 'ready' : 'disconnected'
+  }
+  const reviewOf = (agentId) => { const row = reviewStored(agentId); return { ...row, reviewerState: reviewerState(row.reviewer) } }
   /** Signing confirmations by request id (batch 4): the same id again is the same confirmation. */
   const signatures = new Map()
   const conversationRow = (key) => ({ boardId: 'board-' + sha256(String(key)).slice(0, 12), createdAt: '2026-10-17T00:00:00Z', lastActivityAt: null,
@@ -285,7 +298,7 @@ export function createDevicesGateway({
       onlyFields(body, ['agentId', 'conversationKey'])
       const device = grantUsable(deviceByToken(bearer))
       if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
-      return { agentId: body.agentId, found: true, connections: [{ connectionId: 'conn-1', name: 'Workspace' }], reviewer: null,
+      return { agentId: body.agentId, found: true, connections: [{ connectionId: 'conn-1', name: 'Workspace' }], ...reviewOf(body.agentId),
         conversation: conversationRow(body.conversationKey) }
     },
     'POST /local-devices/conversations/exploration-mode': (body, { bearer }) => {
@@ -301,10 +314,45 @@ export function createDevicesGateway({
       const device = grantUsable(deviceByToken(bearer))
       if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'agent_out_of_scope')
       if (typeof body.enabled !== 'boolean') refuse(400, 'enabled must be true or false', 'bad_command')
-      if (body.enabled === false && conversationModes.get(body.conversationKey) === 'derived')
-        refuse(409, 'Switch this conversation out of derived mode before turning its review off.', 'derived_requires_review')
+      // D-1026a: review is optional in every mode; derived mode no longer needs it.
       conversationReview.set(body.conversationKey, body.enabled)
       return conversationRow(body.conversationKey)
+    },
+    // D-1026a: the Agent's reviewer (an active Connection of that Agent, or null to cancel) with its deadline, and its
+    // default; review-state reads them and creates nothing.
+    'POST /local-devices/agents/review-state': (body, { bearer }) => {
+      onlyFields(body, ['agentId'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'not_authorized')
+      return { agentId: body.agentId, ...reviewOf(body.agentId) }
+    },
+    'POST /local-devices/agents/reviewer': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'connectionId', 'reviewSeconds', 'ifNone'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'not_authorized')
+      if (body.connectionId !== null) {
+        const connection = connections.get(String(body.connectionId ?? ''))
+        if (connection === undefined || connection.agentId !== body.agentId || connection.revoked)
+          refuse(409, 'The reviewer must be an active compute Connection of this Agent.', 'reviewer_connection_invalid')
+      } else if (body.reviewSeconds !== undefined) refuse(400, 'A review deadline is set with a reviewer.', 'bad_command')
+      if (body.reviewSeconds !== undefined && !(Number.isInteger(body.reviewSeconds) && body.reviewSeconds >= 60 && body.reviewSeconds <= 300))
+        refuse(400, 'reviewSeconds must be 60 to 300.', 'bad_command')
+      // `ifNone`: only while the Agent has no eligible reviewer (online or not). Without a deadline an unchanged reviewer
+      // keeps its own and a new one gets 60.
+      const current = reviewOf(body.agentId)
+      if (body.ifNone === true && !['not_designated', 'ineligible'].includes(current.reviewerState)) return { agentId: body.agentId, ...current }
+      const next = { ...reviewStored(body.agentId), reviewer: body.connectionId,
+        reviewSeconds: body.reviewSeconds ?? (current.reviewer === body.connectionId ? current.reviewSeconds : 60) }
+      agentReview.set(body.agentId, next)
+      return { agentId: body.agentId, ...reviewOf(body.agentId) }
+    },
+    'POST /local-devices/agents/review-default': (body, { bearer }) => {
+      onlyFields(body, ['agentId', 'enabled'])
+      const device = grantUsable(deviceByToken(bearer))
+      if (!device.agentIds.includes(body.agentId)) refuse(403, 'This Agent is outside the device grant.', 'not_authorized')
+      if (typeof body.enabled !== 'boolean') refuse(400, 'enabled must be true or false', 'bad_command')
+      agentReview.set(body.agentId, { ...reviewStored(body.agentId), reviewNewConversations: body.enabled })
+      return { agentId: body.agentId, ...reviewOf(body.agentId) }
     },
     'POST /local-devices/conversations/end-preview': (body, { bearer }) => {
       onlyFields(body, ['agentId', 'conversationKey'])
@@ -573,7 +621,8 @@ export function createDevicesGateway({
         if (request.headers.origin !== undefined) refuse(403, 'This route does not accept browser requests.')
         if (url.search !== '') refuse(400, 'This route takes no query parameters.')
       }
-      const handler = deviceRoutes[`${method} ${url.pathname}`] ?? setupRoutes[`${method} ${url.pathname}`]
+      const known = reviewRoutes || !url.pathname.startsWith('/local-devices/agents/')
+      const handler = known ? deviceRoutes[`${method} ${url.pathname}`] ?? setupRoutes[`${method} ${url.pathname}`] : undefined
       if (handler !== undefined) {
         const answered = handler(body, { bearer }) ?? {}
         const status = answered instanceof Answer ? answered.status : 200

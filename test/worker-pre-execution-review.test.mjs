@@ -5,8 +5,9 @@ import { readFileSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { readWorkerReviewContract, loadWorkerReviewContract } from '../scripts/verify-worker-review-contract.mjs'
 import { readWorkerContract } from '../scripts/verify-worker-contract.mjs'
-import { askPreExecutionReviewer, createPreExecutionReviewHandler, parsePreExecutionReply,
+import { askPreExecutionReviewer, createPreExecutionReviewHandler, parsePreExecutionReply, reviewerAnswer,
   reviewerAdvertisement, reviewerMaxTokens, reviewerRequestExtra, REVIEWER_REQUEST_RESERVED_KEYS } from '../worker/rulith-worker.mjs'
+import { reviewerMaxTokens as reviewerBudget, reviewerRoute } from '../local/model-settings.mjs'
 import { shapeFaults } from './support/contract-shape.mjs'
 import { DONE, HOLD, RESET, activeLease, driveWorker } from './support/worker-harness.mjs'
 
@@ -200,6 +201,64 @@ test('in-process request extra is merged into the post-call model request beside
   assert.equal(body.model, 'review-test')
   assert.equal(body.max_tokens, 1234)
   assert.equal(body.temperature, 0)
+})
+
+// 0.19.2 (D-1026a): a reviewer Connection reviews with its Agent's own model, so the reviewer speaks that model's wire.
+// An endpoint ending in /messages is Anthropic Messages; the system prompt and the user content are the same bytes as on
+// the Chat Completions wire, only the envelope and the key's header differ.
+const messagesResponse = (text, stop = 'end_turn', extra = []) => new Response(JSON.stringify({ type: 'message', role: 'assistant',
+  content: [{ type: 'thinking', thinking: '{"verdict":"allow"} perhaps' }, ...(text === null ? [] : [{ type: 'text', text }]), ...extra],
+  stop_reason: stop }))
+test('in-process reviewer speaks Anthropic Messages for an endpoint ending in /messages, with the same prompt and content', async () => {
+  const seen = []
+  const capture = respond => async (url, request) => { seen.push({ url, headers: request.headers, body: JSON.parse(request.body) }); return respond() }
+  const note = '{"verdict":"note","node":"F1","advice":"Check the premise."}'
+  const settings = { timeoutMs: 5000, maxTokens: 1234, extra: {}, key: 'k-review', model: 'review-test' }
+  assert.deepEqual(await askPreExecutionReviewer(offer(), { ...settings, url: 'http://reviewer.invalid/v1',
+    fetchReviewer: capture(() => replyResponse(note)) }), { reply: { verdict: 'note', node: 'F1', advice: 'Check the premise.' } })
+  assert.deepEqual(await askPreExecutionReviewer(offer(), { ...settings, url: 'http://reviewer.invalid/v1/messages',
+    fetchReviewer: capture(() => messagesResponse(note)) }), { reply: { verdict: 'note', node: 'F1', advice: 'Check the premise.' } })
+  const [chat, messages] = seen
+  assert.deepEqual(chat.headers, { 'content-type': 'application/json', authorization: 'Bearer k-review' })
+  assert.deepEqual(messages.headers, { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': 'k-review' })
+  // No temperature on Messages: current Claude models refuse sampling parameters (HTTP 400).
+  assert.deepEqual(messages.body, { model: 'review-test', max_tokens: 1234, system: chat.body.messages[0].content,
+    messages: [{ role: 'user', content: chat.body.messages[1].content }] })
+  assert.equal(chat.body.temperature, 0, 'Chat Completions keeps temperature 0')
+  // RULITH_REVIEWER_REQUEST_EXTRA is OpenAI-shaped: it reaches the Chat Completions wire only.
+  const extra = reviewerRequestExtra('{"chat_template_kwargs":{"enable_thinking":true},"reasoning_effort":"low"}')
+  await askPreExecutionReviewer(offer(), { ...settings, extra, url: 'http://reviewer.invalid/v1/messages', fetchReviewer: capture(() => messagesResponse(note)) })
+  await askPreExecutionReviewer(offer(), { ...settings, extra, url: 'http://reviewer.invalid/v1', fetchReviewer: capture(() => replyResponse(note)) })
+  assert.deepEqual(Object.keys(seen[2].body).sort(), ['max_tokens', 'messages', 'model', 'system'])
+  assert.deepEqual(Object.keys(seen[3].body).sort(), ['chat_template_kwargs', 'max_tokens', 'messages', 'model', 'reasoning_effort', 'temperature'])
+  assert.equal(chat.body.messages[0].content, offer().systemPrompt, 'the reviewer prompt is the contract\'s, unchanged')
+  // Only text parts are the answer (never a thinking part); a cut-off or empty answer is asked once more; a tool call or
+  // another stop reason is malformed.
+  assert.deepEqual(reviewerAnswer({ content: [{ type: 'thinking', thinking: 'x' }, { type: 'text', text: 'a' }, { type: 'text', text: 'b' }], stop_reason: 'end_turn' }),
+    { content: 'ab', finish: 'stop', toolUse: false })
+  assert.deepEqual(reviewerAnswer({ choices: [{ finish_reason: 'stop', message: { content: 'c' } }] }), { content: 'c', finish: 'stop', toolUse: false })
+  let calls = 0
+  assert.deepEqual(await askPreExecutionReviewer(offer(), { ...settings, url: 'http://reviewer.invalid/v1/messages',
+    fetchReviewer: async () => (++calls === 1 ? messagesResponse(null, 'max_tokens') : messagesResponse('{"verdict":"allow"}')) }),
+  { reply: { verdict: 'allow' } })
+  assert.equal(calls, 2, 'a cut-off answer is asked once more')
+  for (const [response, why] of [[() => messagesResponse(null, 'tool_use', [{ type: 'tool_use', id: 't', name: 'x', input: {} }]), 'tool'],
+    [() => messagesResponse('{"verdict":"allow"}', 'refusal'), 'refusal'], [() => messagesResponse('```json\n{"verdict":"allow"}\n```'), 'fence']]) {
+    assert.deepEqual(await askPreExecutionReviewer(offer(), { ...settings, url: 'http://reviewer.invalid/v1/messages', fetchReviewer: async () => response() }),
+      { errorCode: 'review_invalid_reply' }, why)
+  }
+})
+
+test('in-process the Agent\'s own model is its Worker\'s reviewer route on either wire, and no model leaves none', () => {
+  assert.deepEqual(reviewerRoute({ url: 'https://api.anthropic.com/v1/messages', name: 'claude-test', key: 'k' }),
+    { RULITH_REVIEWER_URL: 'https://api.anthropic.com/v1/messages', RULITH_REVIEWER_MODEL: 'claude-test', RULITH_REVIEWER_KEY: 'k' })
+  assert.deepEqual(reviewerRoute({ url: 'https://api.deepseek.com/v1', name: 'deepseek-chat', key: 'k' }),
+    { RULITH_REVIEWER_URL: 'https://api.deepseek.com/v1/chat/completions', RULITH_REVIEWER_MODEL: 'deepseek-chat', RULITH_REVIEWER_KEY: 'k' })
+  for (const model of [{}, { url: 'https://api.deepseek.com/v1', name: '' }, { url: '', name: 'm' }])
+    assert.deepEqual(reviewerRoute(model), { RULITH_REVIEWER_URL: '', RULITH_REVIEWER_MODEL: '', RULITH_REVIEWER_KEY: '' }, JSON.stringify(model))
+  // Its output budget: the Agent's effective maximum output (saved, else the route's default 6000), at most 16000.
+  assert.deepEqual([undefined, '', '6000', ' 9000 ', '16000', '20000', 'abc', '100'].map(reviewerBudget),
+    ['6000', '6000', '6000', '9000', '16000', '16000', '6000', '6000'])
 })
 
 test('in-process single-line advice may contain quoted JSON and Unicode at the schema limit', () => {
@@ -541,7 +600,8 @@ test('runtime RULITH_REVIEWER_REQUEST_EXTRA reaches the post-call and the cleara
   })
   assert.equal(clearance.timedOut, false, clearance.output)
   assert.deepEqual(clearance.modelRequests[0].body.chat_template_kwargs, extra.chat_template_kwargs)
-  assert.equal(clearance.modelRequests[0].body.max_tokens, 2000)
+  // The clearance review has the post-call review's output budget (0.19.2; it was a fixed 2000).
+  assert.equal(clearance.modelRequests[0].body.max_tokens, 8000)
   assert.equal(clearance.of('ReportWork')[0].operation.verdict, 'allow')
 })
 

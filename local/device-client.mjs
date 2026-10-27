@@ -553,6 +553,17 @@ export function createDeviceClient({ root } = {}) {
     // PSC 0.2.21: what deleting a conversation would do, and deleting it (seal its Board, close its open goals as abandoned).
     conversationEndPreview: (body = {}) => conversationCall('/local-devices/conversations/end-preview', body),
     conversationEnd: (body = {}) => conversationCall('/local-devices/conversations/end', body),
+    // D-1026a (owner, 2026-10-26): post-call review is optional in every mode and needs no Console. The owner's client
+    // designates (or, with `connectionId: null`, cancels) the Agent's reviewer Connection with its review deadline, and sets
+    // the Agent's "review new conversations" default, through this device grant, and reads them (`review-state`, which
+    // creates nothing). All three answer `{ agentId, reviewer, reviewSeconds, reviewNewConversations }`.
+    // A 404 that names no code (a proxy in front of an account service without this route) is the route missing.
+    agentReviewState: (body = {}) => conversationCall('/local-devices/agents/review-state', body).catch((error) => {
+      if (error instanceof DeviceRefused && error.status === 404 && !error.errorCode) error.errorCode = 'not_found'
+      throw error
+    }),
+    agentReviewer: (body = {}) => conversationCall('/local-devices/agents/reviewer', body),
+    agentReviewDefault: (body = {}) => conversationCall('/local-devices/agents/review-default', body),
     // PSC 0.2.24: what opening a folder as a project would grant (the confirmation's content and its version), and
     // opening it. In progress answers `recovery: "retry"`; a terminal state of this opening answers its full state
     // with `recovery: "confirm_again"` (or `"console"`); `state: "ready"` when the project is open.

@@ -98,21 +98,27 @@ test('no match emits the unapproved-workspace line; a changed Source replaces th
   assert.deepEqual(projectTexts(s), [projectLine(s.header.cwd, null)]);
 });
 
-test('unreadable Sources clear stale context, emit no project line and log visibly without error secrets', async (t) => {
+test('unreadable Sources leave the context as it was, emit no project line and log visibly without error secrets', async (t) => {
   const errors = []; t.mock.method(console, 'error', (...args) => errors.push(args.join(' ')));
   const s = session(work + '/rulith-java');
   await contextHarness(async () => sources)(s, 1, [user('work')]);
   const unavailable = contextHarness(async () => { throw new Error('private fetch detail'); });
+  const before = s.log.length, kept = projectTexts(s);
   await unavailable(s, 1, [user('next turn')]);
-  assert.deepEqual(projectTexts(s), []);
+  // D-1026b review: a failed read changes nothing on the surface (blanking and restoring it changed the prompt twice).
+  assert.deepEqual(projectTexts(s), kept);
+  assert.equal(kept.length, 1);
+  assert.deepEqual(s.log.slice(before).map((event) => event.data.source?.kind), ['user'], 'only the message from the person was added');
   const fresh = session(work + '/rulith-java');
   await unavailable(fresh, 1, [user('work')]);
   assert.deepEqual(projectTexts(fresh), []);
   assert.equal(errors.length, 2);
   assert.ok(errors.every((line) => line.includes('[rulith project]') && line.includes('Sources cannot be read')));
   assert.ok(errors.every((line) => !line.includes('private fetch detail')));
+  const settled = s.log.length;
   await contextHarness(async () => sources)(s, 2);
-  assert.equal(projectTexts(s).length, 1, 'read recovery reuses the cleared context');
+  assert.equal(projectTexts(s).length, 1);
+  assert.equal(s.log.length, settled, 'a good read after the failure finds the line unchanged and rewrites nothing');
 });
 
 test('compaction restores context, duplicate retained copies are cleared, and empty/rejected steps add nothing', async () => {

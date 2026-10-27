@@ -920,6 +920,20 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
     admit,
 
     /**
+     * D-1026a: this computer's own Connection for one Agent — the Connection of the local Agent instance attached to it
+     * under the signed-in account — or '' when this computer has none (not signed in, not set up, signed out, or another
+     * account's). The only Connection the owner's client may designate as that Agent's reviewer from here.
+     * 中文说明：这台电脑自己给这个智能体的连接；没有就是空串。
+     */
+    connectionHere: (agentId) => {
+      const grant = device.status()
+      if (grant.state !== 'linked' || text(agentId) === '') return ''
+      const row = registry.read().instances.find((entry) => entry.mode === 'local_agent' && !entry.signedOutAt
+        && entry.agentId === agentId && text(entry.origin) === grant.origin && text(entry.accountId) === String(grant.account?.id ?? ''))
+      return row === undefined ? '' : text(row.connectionId)
+    },
+
+    /**
      * Public, secret-free state for the manager page.
      *
      * The grant and the registry are read once for the whole list rather than once per row.

@@ -22,7 +22,7 @@ import { readToolKinds, renderChannelResult } from '../board-channel.mjs';
 import { handOf, conversationKey, depthOf } from '../subagents.mjs';
 import { ConversationBoards } from './conversation-boards.mjs';
 import { conversationBoards } from './launcher-settings.mjs';
-import { isolationRoutes, setupRoutes } from './local-setup.mjs';
+import { isolationRoutes, reviewRoutes, setupRoutes } from './local-setup.mjs';
 import { contextWindowSetting, conversationModel, effectiveModel, installLiveModels, installLiveSearch, modelRoutes, signedInAccount }
   from './model-runtime.mjs';
 import { folderPicker } from './folder-picker.mjs';
@@ -65,9 +65,11 @@ export function conversationView(reply) {
   const out = {};
   // PSC 0.2.27 ①: one tier per conversation (`explorationMode`, the strictest, and `explorationModesMixed`); ⑤: whether a
   // deletion is finished (`settled`, `deletion`, `refusedGoals`, `goalsUnread`).
-  for (const field of ['found', 'conversation', 'connections', 'reviewer', 'state', 'result', 'teaching', 'requestId', 'boardId',
-    'postCallReview', 'explorationMode', 'explorationModesMixed', 'explorationModes', 'openGoals', 'pendingCall', 'ended', 'endedAt',
-    'closedGoals', 'unconfirmedGoals', 'goalsUnread', 'settled', 'refusedGoals', 'deletion'])
+  // D-1026a: the Agent's review deadline and its "review new conversations" default (shown on a conversation with no Board).
+  // No Connection id reaches the page: the reviewer and the Agent's Connections are not passed on.
+  for (const field of ['found', 'conversation', 'reviewSeconds', 'reviewNewConversations', 'state', 'result',
+    'teaching', 'requestId', 'boardId', 'postCallReview', 'explorationMode', 'explorationModesMixed', 'explorationModes', 'openGoals',
+    'pendingCall', 'ended', 'endedAt', 'closedGoals', 'unconfirmedGoals', 'goalsUnread', 'settled', 'refusedGoals', 'deletion'])
     if (reply?.[field] !== undefined) out[field] = reply[field];
   return out;
 }
@@ -140,12 +142,13 @@ export async function apply(ctx, config = {}) {
   const statusFile = path.join(stateDir, 'rulith-runtime-status.json');
   const chosenName = () => readJson(selectionFile)?.agentName || config.agentName || undefined;
   // 历史工具调用只在模型侧改名；必须先映射，再排板视图与统计已接受的 Set。
-  // 模型看到的 Rulith 结果：最新一份整块板（+／- 标出变化），更早的只留变化（D-1008e）；上下文到减负线（reliefRatio ×
-  // 窗口）时一批减负（见 board-transcript.mjs）。
+  // 模型看到的 Rulith 结果：每份只留这一步的变化（D-1008e），到来时排一次、此后不再改（D-1026b）；上下文到减负线
+  // （reliefRatio × 窗口）时一批减负（见 board-transcript.mjs）。
   installBoardTranscript(ctx, { reliefRatio: config.reliefRatio, compaction: config.compaction });
   // The page's title, icon and manifest are Rulith's (design §3.2 页面标题、图标; brand.mjs).
   installBrand(ctx);
-  // 发给模型的那一份在发出前减负（会话不改）：之前轮次的思考不发，减负边界之前的调用长参数缩短（见 outgoing-trim.mjs）。
+  // 发给模型的那一份在发出前整理（会话不改）：减负边界之前的回答去掉思考、长参数缩短；末尾接上当前整视图（D-1026b，
+  // 见 outgoing-trim.mjs）。
   installOutgoingTrim(ctx);
   // PSC 0.2.27 ④: every turn uses the model saved in Rulith for the conversation's Agent under the account signed in now
   // (model-runtime.mjs), installed before anything below can wait, so no conversation starts without it. `modelHome` is a
@@ -201,6 +204,7 @@ export async function apply(ctx, config = {}) {
   // general kit home is the app home's kit (the launcher passes it); an Agent that has one keeps it.
   const setup = setupRoutes({ manager, kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME || '' });
   const isolation = isolationRoutes({ manager });
+  const reviews = reviewRoutes({ manager });
   const models = modelRoutes({ manager, read: readModel, defaultsElsewhere: Boolean(modelHome) });
 
   // 2. Every paired Agent is attached at once (owner 2026-10-17: the sidebar is Agent -> directory -> conversation). The
@@ -587,6 +591,11 @@ export async function apply(ctx, config = {}) {
     // Settings → Advanced: one Agent's "Run without isolation (not recommended)" on this computer (PSC 0.2.31 ③; see
     // local-setup.mjs isolationRoutes). Turning it on is passed on only with the page's confirmation.
     'POST /rulith/api/isolation': (body) => isolation.set(body),
+    // Settings → Advanced → Post-call review (D-1026a; local-setup.mjs reviewRoutes): who reviews for one Agent, its review
+    // deadline and its "review new conversations" default, read and set here with no Console step.
+    'GET /rulith/api/review': (query) => reviews.read(query),
+    'POST /rulith/api/review/reviewer': (body) => reviews.designate(body),
+    'POST /rulith/api/review/default': (body) => reviews.setDefault(body),
     'POST /rulith/api/signin': async () => {
       const reply = await manager('/manager/device/start', { consoleUrl, name: os.hostname() });
       return { url: reply.device?.consoleUrl ?? '' };
@@ -646,10 +655,19 @@ export async function apply(ctx, config = {}) {
       if (view.state === 'complete') pendingControls.delete(pendingKey);
       return view;
     },
+    // D-1026a: review is optional in every exploration mode. Turning it on for a conversation whose Agent has no reviewer
+    // first makes this computer the reviewer (it reviews with the Agent's own model), then turns the conversation's review
+    // on; `designated` tells the page to say so, also when the conversation's switch then fails (the designation stands).
+    // 中文说明：智能体还没有审查员时，打开审查先把这台电脑指定为审查员；之后会话的开关失败，也照样告诉页面已指定。
     'POST /rulith/api/conversation/review': async (body) => {
       const target = { ...conversationTarget(body.session), session: body.session };
-      return withBoard(target, async () => conversationView(await manager('/manager/conversations/review',
-        { agentId: target.agentId, conversationKey: target.conversationKey, enabled: body.enabled === true })));
+      const enabled = body.enabled === true;
+      const designated = enabled ? await reviews.designateIfNone(target.agentId) : false;
+      try {
+        const view = await withBoard(target, async () => conversationView(await manager('/manager/conversations/review',
+          { agentId: target.agentId, conversationKey: target.conversationKey, enabled })));
+        return designated ? { ...view, designated: true } : view;
+      } catch (error) { throw designated ? Object.assign(error, { designated: true }) : error; }
     },
     // Batch 4 (design §5 d, D-1024a; PSC 0.2.28): the person signs the criteria the Agent proposed for one goal of this
     // conversation as its acceptance, from their own client through this computer's device grant (the same path as the tier
@@ -733,7 +751,9 @@ export async function apply(ctx, config = {}) {
       res.on?.('close', () => { if (!res.writableEnded) gone.abort(); });
       try { send(res, 200, marked({ ok: true, ...(await inRequestLanguage(locale, async () => route(req.method === 'POST' ? await readBody(req) : query(), { signal: gone.signal }))) })); }
       catch (error) { send(res, 200, marked({ ok: false, teaching: String(error?.message ?? error).slice(0, 400),
-        ...(typeof error?.errorCode === 'string' ? { errorCode: error.errorCode } : {}) })); }
+        ...(typeof error?.errorCode === 'string' ? { errorCode: error.errorCode } : {}),
+        // A refusal that still changed something says so (turning a conversation's review on designated this computer).
+        ...(error?.designated === true ? { designated: true } : {}) })); }
     },
   }));
   await tick();

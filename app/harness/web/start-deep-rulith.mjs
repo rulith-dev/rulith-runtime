@@ -45,7 +45,7 @@ const defaultOf = (home) => {
 const model = defaultOf(modelHome);
 // An independent modelHome uses the same Rulith model-defaults format as the main route. Otherwise shadow follows
 // the actual dsh request route, including a provider selected on the Models page; no separate key is needed.
-// D-1013c: the Board review now runs on the platform (a reviewer Connection designated in Console), so the host-side
+// D-1013c: the Board review now runs on the platform (a reviewer Connection the owner designates in this app, D-1026a), so the host-side
 // shadow is off unless the settings turn it on with "shadow": {"enabled": true}.
 const shadow = s.shadow ?? {};
 const hostShadow = shadow.enabled === true;
@@ -118,7 +118,8 @@ for (const agent of attachedAgents(s.managerHome, account))
 // instances. So the launcher no longer writes a default route: it removes the one earlier launchers wrote into every
 // instance, and writes only what the settings ask for explicitly — reviewerRoutes for Agents of a name prefix (a provider
 // of the dsh profile; its key from where dsh reads it, file to file, never printed) and the reviewer request extra.
-// Designating the Connection as reviewer in Console is what turns the review on.
+// A Worker reviews only while its Connection is the Agent's designated reviewer and a conversation's review is on; the owner
+// sets both in this app (Settings, or the composer's Review chip; D-1026a).
 function writeReviewerRoute(YAML, doc) {
   const rows = YAML.isSeq(doc.contents) ? doc.contents.items : [];
   const row = (id) => rows.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));

@@ -104,11 +104,14 @@ Later, more folders open from the sidebar: 「📂 打开文件夹…」 under a
 not set up here, with the same progress; 默认 marks the account's default Agent (when the account service says which),
 and the Agent of the open conversation is highlighted. The one settings page (bottom left: the account, this computer's
 state and ⚙ 设置) has 账户, 这台电脑 (each Agent's Worker state, and 「在本机设置」 again as a repair), 模型, 外观与语言 and
-高级 (where other MCP clients get the Agent's token in Console; on Windows and Linux, for each Agent set up here, the
-owner's "Run without isolation (not recommended)", off by default and turned on only after its confirmation; and
-Diagnosis; the English Runtime workbench it also opened is retired, batch 7). The
-composer has two chips: 档位, one per conversation (narrowing applies at once, widening asks first), and 模型; 审查
-appears only when the Agent has a reviewer designated.
+高级 (where other MCP clients get the Agent's token in Console; for each Agent, Post-call review: "Review new
+conversations", the reviewer (this computer, another computer, or none, with "Use this computer") and the review
+deadline; on Windows and Linux, for each Agent set up here, the owner's "Run without isolation (not recommended)", off by
+default and turned on only after its confirmation; and Diagnosis; the English Runtime workbench it also opened is
+retired, batch 7). The composer has three chips: 档位, one per conversation (narrowing applies at once, widening asks
+first), 模型, and 审查, this conversation's post-call review in every mode (D-1026a). A conversation not started yet shows
+the Agent's default; turning review on when the Agent has no reviewer makes this computer its reviewer, with the Agent's
+own model, and says so.
 
 The right column is the conversation's 任务 panel (design §3.2 右栏, batch 4): the tasks in plain words with their status,
 each task's acceptance criteria with whether each holds and whether it is signed, recent operations as one line each

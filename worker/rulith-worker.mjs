@@ -28,7 +28,8 @@
  *                        ReleaseLease may wait (default 30000). The rest scale from it: one
  *                        ClaimWork attempt 2x (60 s), resending an unanswered claim or
  *                        registration at most 4x (2 min), an unanswered report at most 10x (5 min)
- *   RULITH_REVIEWER_URL  审查员端点(OpenAI 兼容 chat completions)——**配了才当清关工人**
+ *   RULITH_REVIEWER_URL  审查员端点——**配了才当清关工人**。以 /messages 结尾的是 Anthropic Messages 端点,
+ *                        其余按 OpenAI 兼容 chat completions(0.19.2 起;与本机管理器解读模型地址同一条规则)
  *   RULITH_REVIEWER_MODEL  审查员模型名(如 qwen/qwen3.6-35b-a3b-mtp)
  *   RULITH_REVIEWER_MAX_TOKENS  执行前审查每次模型调用的 max_tokens(正整数,默认 8000;
  *                        思维链模型的 reasoning 也计入,不合法的值按默认)
@@ -157,7 +158,7 @@ const CONNECTION_KEY = process.env.RULITH_CONNECTION_KEY
 // except the Runtime version from package.json.
 const RULITH_WORKER_CONTRACT_SOURCE_COMMIT = '3b53a055e8b1986da2bd479100ff2f6af00c40dd'
 /** This package's own release: a refusal that names a newer one gets an install line. */
-const RULITH_RUNTIME_VERSION = "0.19.1"
+const RULITH_RUNTIME_VERSION = "0.19.2"
 /** The one serialization rule the two execution vectors share, and nothing else uses. */
 const EXECUTION_CANONICALIZATION = 'rulith-execution-canonical-json/1'
 const EXECUTION_REQUEST_VERSION = 'rulith-execution-request/2'
@@ -671,7 +672,7 @@ async function selectedHttpSourceSnapshot(sourceRecordId, expectedAccess) {
 
 /**
  * 审查员请求体的附加字段(RULITH_REVIEWER_REQUEST_EXTRA,0.16.3):一个 JSON 对象,原样并入事后审查与
- * 宪法清关审查的 chat completions 请求体。用途是按请求设引擎参数,例如本地引擎的思考开关
+ * 宪法清关审查的 chat completions 请求体(只用于 OpenAI 兼容端点;Anthropic Messages 端点不带它,见 reviewerRequest)。用途是按请求设引擎参数,例如本地引擎的思考开关
  * {"chat_template_kwargs":{"enable_thinking":true}}:主智能体不思考、影子审查员思考。
  * Worker 掌管的键不许覆盖:model、messages 与 max_tokens、temperature 定了问什么、问谁、答多长,
  * stream、tools、tool_choice、n 会改变回复的形状,而严格回复解析只认一个非流式、无工具调用的回答。
@@ -702,7 +703,7 @@ const REVIEWER_REQUEST_EXTRA = REVIEWER_REQUEST_EXTRA_READ.extra ?? Object.freez
 /** Why the reviewer configuration is refused, or undefined. A refused configuration leaves this Worker no reviewer. */
 const REVIEWER_CONFIG_ERROR = REVIEWER_REQUEST_EXTRA_READ.error
 
-/** 审查员(清关工人的"判卷"那一席): OpenAI 兼容 chat 端点。不配=这台不是清关工人,review 案卷不领。 */
+/** 审查员(清关工人的"判卷"那一席): OpenAI 兼容 chat 端点或 Anthropic Messages 端点。不配=这台不是清关工人,review 案卷不领。 */
 const REVIEWER_URL = REVIEWER_CONFIG_ERROR === undefined ? process.env.RULITH_REVIEWER_URL : undefined
 const REVIEWER_MODEL = REVIEWER_CONFIG_ERROR === undefined ? process.env.RULITH_REVIEWER_MODEL : undefined
 /**
@@ -4320,6 +4321,48 @@ export const REVIEWER_SYSTEM_PROMPT =
   // 「判不了就写 uncertain」在四词表下会歧义(不适用也是一种"判不了"),故点明是哪一种。
   + 'When the clause applies but evidence is insufficient, return uncertain. Do not guess.'
 
+/**
+ * The reviewer's wire (0.19.2, D-1026a). A reviewer Connection reviews with its Agent's own model (the local manager gives
+ * the Worker that model as its reviewer route), so the reviewer speaks whichever wire that model does: an endpoint ending
+ * in /messages is an Anthropic Messages endpoint, any other an OpenAI-compatible Chat Completions one — the rule the local
+ * manager reads a saved model address by (local/model-settings.mjs modelEndpoint). Both carry the same system prompt and
+ * the same user content; only the envelope differs. The key goes where that wire expects it.
+ *
+ * The Messages envelope carries neither `temperature` nor the request extra: current Claude models refuse sampling
+ * parameters (HTTP 400), and RULITH_REVIEWER_REQUEST_EXTRA is OpenAI-shaped (chat_template_kwargs, reasoning_effort),
+ * meant for a Chat Completions engine only.
+ * 中文说明：审查员用它所属智能体自己的模型，模型说哪种协议就用哪种；两种协议送的系统提示词与内容完全相同，只是外层格式不同。
+ * Messages 请求里不带 temperature（现行 Claude 模型拒收采样参数，返回 400），也不并入 RULITH_REVIEWER_REQUEST_EXTRA（那是
+ * 给 OpenAI 兼容引擎的参数）。
+ */
+export const reviewerSpeaksMessages = url => /\/messages\/?$/.test(String(url ?? ''))
+export function reviewerRequest(url, { model, system, user, maxTokens, extra = {}, key = process.env.RULITH_REVIEWER_KEY }) {
+  if (reviewerSpeaksMessages(url)) {
+    return { headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', ...(key ? { 'x-api-key': key } : {}) },
+      body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }) }
+  }
+  return { headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
+    body: JSON.stringify({ ...extra, model, temperature: 0, max_tokens: maxTokens,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) }
+}
+/**
+ * One reviewer answer read the same way from either wire: its text (`content`, never a reasoning or thinking part),
+ * why it stopped (`finish`: 'stop' for a finished answer, 'length' when the token limit cut it, else the provider's own
+ * reason) and whether it tried to call a tool. Pure.
+ */
+export function reviewerAnswer(body) {
+  if (Array.isArray(body?.content)) {
+    const text = body.content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join('')
+    const stop = body.stop_reason
+    return { content: text === '' ? null : text,
+      finish: stop === 'end_turn' || stop === 'stop_sequence' ? 'stop' : stop === 'max_tokens' ? 'length' : stop ?? null,
+      toolUse: stop === 'tool_use' || body.content.some(part => part?.type === 'tool_use') }
+  }
+  const choice = body?.choices?.[0], message = choice?.message
+  return { content: message?.content, finish: choice?.finish_reason ?? null,
+    toolUse: message?.tool_calls != null || message?.function_call != null }
+}
+
 async function askReviewer(caseFile) {
   const rendered = String(caseFile?.rendered ?? '')
   if (rendered === '') return SAFE('The review record is empty; there is no evidence to evaluate')
@@ -4328,26 +4371,18 @@ async function askReviewer(caseFile) {
   try {
     const r = await fetch(REVIEWER_URL, {
       method: 'POST', signal: ac.signal,
-      headers: { 'content-type': 'application/json', ...(process.env.RULITH_REVIEWER_KEY ? { authorization: `Bearer ${process.env.RULITH_REVIEWER_KEY}` } : {}) },
-      body: JSON.stringify({
-        ...REVIEWER_REQUEST_EXTRA,
-        model: REVIEWER_MODEL,
-        temperature: 0,
-        max_tokens: 2000, // 思维链模型的 reasoning 计入 completion——400 会把 content 截没,判词恒 uncertain
-        messages: [
-          { role: 'system', content: REVIEWER_SYSTEM_PROMPT },
-          { role: 'user', content: rendered },
-        ],
-      }),
+      // max_tokens 与事后审查同一个上限(RULITH_REVIEWER_MAX_TOKENS,0.19.2 起;以前固定 2000):思维链模型的 reasoning
+      // 计入 completion,Messages 模型的思考也一样,上限太低会把 content 截没,判词恒 uncertain
+      ...reviewerRequest(REVIEWER_URL, { model: REVIEWER_MODEL, system: REVIEWER_SYSTEM_PROMPT, user: rendered,
+        maxTokens: REVIEWER_MAX_TOKENS, extra: REVIEWER_REQUEST_EXTRA }),
     })
     const body = await r.text()
     if (!r.ok) return SAFE(`Reviewer HTTP ${r.status}: ${body.slice(0, 160)}`)
     let j
     try { j = JSON.parse(body) } catch (e) { return SAFE(`Reviewer returned non-JSON content (${e.message})`) }
-    const msg = j.choices?.[0]?.message ?? {}
-    // **读 content 不读 reasoning_content**: 带思维链的模型两个字段都有,读错拿到的是
+    // **读 content 不读 reasoning_content**(Messages 只读 text 块,不读 thinking): 带思维链的模型两样都有,读错拿到的是
     // 它的思考过程——里面常有"可能可以放行"这类中途念头,当判词用就是灾难。
-    return parseVerdict(msg.content)
+    return parseVerdict(reviewerAnswer(j).content)
   } catch (e) {
     return SAFE(e.name === 'AbortError' ? `Reviewer timed out after ${REVIEWER_TIMEOUT_MS}ms` : `Reviewer is unreachable: ${e.message}`)
   } finally { clearTimeout(timer) }
@@ -4482,7 +4517,8 @@ function reviewError(code) {
 }
 
 export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchReviewer = fetch,
-  url = REVIEWER_URL, model = REVIEWER_MODEL, maxTokens = REVIEWER_MAX_TOKENS, extra = REVIEWER_REQUEST_EXTRA } = {}) {
+  url = REVIEWER_URL, model = REVIEWER_MODEL, maxTokens = REVIEWER_MAX_TOKENS, extra = REVIEWER_REQUEST_EXTRA,
+  key = process.env.RULITH_REVIEWER_KEY } = {}) {
   if (!url || !model) return reviewError('reviewer_unconfigured')
   if (!(timeoutMs > 0)) return reviewError('review_timeout')
   const ac = new AbortController()
@@ -4492,13 +4528,8 @@ export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchRevie
   const timer = setTimeout(() => ac.abort('review_timeout'), timeoutMs)
   const startedAt = performance.now()
   try {
-    const request = {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(process.env.RULITH_REVIEWER_KEY ? { authorization: `Bearer ${process.env.RULITH_REVIEWER_KEY}` } : {}) },
-      body: JSON.stringify({ ...extra, model, temperature: 0, max_tokens: maxTokens,
-        messages: [{ role: 'system', content: w.systemPrompt },
-          { role: 'user', content: JSON.stringify(canonical(w.material)) }] }),
-    }
+    const request = { method: 'POST',
+      ...reviewerRequest(url, { model, system: w.systemPrompt, user: JSON.stringify(canonical(w.material)), maxTokens, extra, key }) }
     /** One model call. `cutOff` marks a reply that was truncated or empty, never one that was answered badly. */
     const askOnce = async () => {
       ac.signal.throwIfAborted()
@@ -4506,13 +4537,12 @@ export async function askPreExecutionReviewer(w, { signal, timeoutMs, fetchRevie
       if (!response.ok) return { outcome: reviewError('review_model_http_error') }
       const body = await response.json()
       ac.signal.throwIfAborted()
-      const choice = body?.choices?.[0], message = choice?.message
-      const toolUse = message?.tool_calls != null || message?.function_call != null
-      const cutOff = !toolUse && (choice?.finish_reason === 'length' || message?.content == null || message.content === '')
-      if ((choice?.finish_reason != null && choice.finish_reason !== 'stop') || toolUse) {
+      const answer = reviewerAnswer(body)
+      const cutOff = !answer.toolUse && (answer.finish === 'length' || answer.content == null || answer.content === '')
+      if ((answer.finish != null && answer.finish !== 'stop') || answer.toolUse) {
         return { outcome: reviewError('review_invalid_reply'), cutOff }
       }
-      const reply = parsePreExecutionReply(message?.content, w.material)
+      const reply = parsePreExecutionReply(answer.content, w.material)
       return { outcome: reply === undefined ? reviewError('review_invalid_reply') : { reply }, cutOff }
     }
     const first = await askOnce()

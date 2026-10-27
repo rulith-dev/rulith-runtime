@@ -385,8 +385,10 @@ test('every normative English string of PSC 0.2.32 is listed in docs/ui-texts-en
     ['Switch to derived exploration mode?', 'Switch to derived', 'Keep strict']);
   assert.deepEqual([PSC.WIDEN_TEXT.non_strict.title, PSC.WIDEN_TEXT.non_strict.accept, PSC.WIDEN_TEXT.non_strict.cancel],
     ['Switch to non-strict exploration mode?', 'Switch to non-strict', 'Keep strict']);
-  assert.equal(PSC.TIER_REFUSALS.review_required_by_derived_mode, 'Turn post-call review back on for this conversation before switching it to derived mode.');
-  assert.equal(PSC.REVIEW_REFUSALS.derived_requires_review, 'Switch this conversation out of derived mode before turning its review off.');
+  // D-1026a: post-call review is optional in every mode; derived mode's one refusal is about writing rules.
+  assert.equal(PSC.TIER_REFUSALS.derived_mode_unavailable, 'Derived mode needs permission for the model to write rules.');
+  assert.deepEqual(Object.keys(PSC.TIER_REFUSALS).filter((code) => /review/.test(code)), []);
+  assert.deepEqual(PSC.REVIEW_REFUSALS, PSC.PAGE.switchRefusals);
   assert.deepEqual([PSC.PAGE.tree.dialogTitle, PSC.PAGE.tree.delete, PSC.PAGE.tree.keep, PSC.PAGE.tree.finish],
     ['Delete this conversation?', 'Delete', 'Keep', 'Finish deleting']);
 });

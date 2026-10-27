@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { isolationRoutes, setupRoutes, setupView } from '../../harness/web/local-setup.mjs';
+import { effectiveReviewer, isolationRoutes, reviewRoutes, setupRoutes, setupView } from '../../harness/web/local-setup.mjs';
 import { conversationModel, createRouteAdapter, effectiveModel, installLiveModels, liveRoute, modelRoutes, publicModel, signedInAccount }
   from '../../harness/web/model-runtime.mjs';
 
@@ -584,6 +584,198 @@ test('ACC-ISO-14 the isolation switch route needs the page\'s confirmation to tu
   assert.deepEqual(writes().at(-1), ['/manager/instances/isolation', { instanceId: 'inst-1', runWithoutIsolation: false }],
     'turning isolation back on needs and carries no confirmation');
   assert.equal(JSON.stringify([on, off]).includes(SECRET), false);
+});
+
+// D-1026a (owner, 2026-10-26): post-call review is optional in every mode and needs no Console. The host reads who reviews
+// for an Agent (this computer, another computer, or none), makes this computer the reviewer with its own
+// Connection id only (the page never names one), cancels it, and sets the default; turning the default (or a
+// conversation's review) on when the Agent has no reviewer makes this computer the reviewer first.
+test('D-1026a review routes: who reviews by kind, only this computer\'s own Connection, and on with no reviewer designates this computer', async () => {
+  const sent = [];
+  const agents = new Map([['agent-1', { reviewer: null, reviewSeconds: 90, reviewNewConversations: false }],
+    ['agent-2', { reviewer: null, reviewSeconds: 60, reviewNewConversations: false }]]);
+  const state = { device: { state: 'linked', agents: [{ id: 'agent-1' }, { id: 'agent-2' }] },
+    instances: [{ id: 'inst-1', agentId: 'agent-1', mode: 'local_agent', signedOutAt: '', connectionId: 'conn-here' },
+      { id: 'inst-2', agentId: 'agent-2', mode: 'local_agent', signedOutAt: '2026-10-20T00:00:00Z', connectionId: 'conn-gone' }] };
+  // A Gateway stand-in: `ifNone` designates only while the Agent has no eligible reviewer, a deadline left out keeps an
+  // unchanged reviewer's own, and every answer says `reviewerState`. The manager appends its whole state to every
+  // answer; none of it may reach the page.
+  const ineligible = new Set(['conn-revoked']);
+  const offline = new Set(['conn-offline']);
+  const stateOf = (reviewer) => (!reviewer ? 'not_designated' : ineligible.has(reviewer) ? 'ineligible' : offline.has(reviewer) ? 'disconnected' : 'ready');
+  let unsupported = null;
+  const manager = async (route, body) => {
+    sent.push([route, body]);
+    if (route === '/manager/state') return state;
+    const row = agents.get(body.agentId);
+    const answer = () => ({ agentId: body.agentId, ...row, reviewerState: stateOf(row.reviewer), instances: [{ token: SECRET }] });
+    if (route === '/manager/agents/review-state') {
+      if (unsupported) throw Object.assign(new Error('The requested route does not exist.'), unsupported);
+      return answer();
+    }
+    if (route === '/manager/agents/reviewer') {
+      if (body.ifNone === true && row.reviewer && !ineligible.has(row.reviewer)) return answer();
+      Object.assign(row, { reviewSeconds: body.reviewSeconds ?? (row.reviewer === body.connectionId ? row.reviewSeconds : 60), reviewer: body.connectionId });
+    } else if (route === '/manager/agents/review-default') row.reviewNewConversations = body.enabled;
+    else throw new Error('unexpected ' + route);
+    return answer();
+  };
+  const reviews = reviewRoutes({ manager });
+  const writes = () => sent.filter(([route]) => ['/manager/agents/reviewer', '/manager/agents/review-default'].includes(route));
+  const seen = [];
+  const keep = (value) => { seen.push(value); return value; };
+  assert.deepEqual(keep(await reviews.read({ agentId: 'agent-1' })),
+    { agentId: 'agent-1', reviewer: 'none', reviewSeconds: 90, reviewNewConversations: false, thisComputer: true });
+  assert.deepEqual(sent.find(([route]) => route === '/manager/agents/review-state')[1], { agentId: 'agent-1' }, 'the read names only the Agent');
+  assert.equal(sent.some(([route]) => route === '/manager/conversations/state'), false, 'no conversation is asked about');
+  // Another computer reviews; one that is only offline still does; a revoked or deleted one is no reviewer.
+  for (const [reviewer, kind] of [['conn-other', 'other'], ['conn-offline', 'other'], ['conn-revoked', 'none'], ['conn-here', 'this']]) {
+    agents.get('agent-1').reviewer = reviewer;
+    assert.equal(keep(await reviews.read({ agentId: 'agent-1' })).reviewer, kind, reviewer);
+  }
+  // The Gateway's states (rulith-java b56f9560): only `ineligible` (revoked or deleted) counts as no reviewer.
+  assert.equal(effectiveReviewer({ reviewer: 'c', reviewerState: 'ineligible' }), '');
+  for (const kept of ['ready', 'disconnected', 'not_configured']) assert.equal(effectiveReviewer({ reviewer: 'c', reviewerState: kept }), 'c', kept);
+  assert.equal(effectiveReviewer({ reviewer: null, reviewerState: 'not_designated' }), '');
+  assert.equal(effectiveReviewer({ reviewer: 'c' }), 'c', 'an answer without the state: the reviewer as named');
+  agents.get('agent-1').reviewer = null;
+  assert.equal(keep(await reviews.read({ agentId: 'agent-2' })).thisComputer, false, 'signed out here: no Connection of this computer');
+  // Refused before anything is written: no Agent, no choice, a Connection id from the page, a deadline out of range or
+  // without this computer, an Agent outside the account, an Agent not set up here.
+  for (const bad of [{}, { agentId: 'agent-1' }, { agentId: 'agent-1', reviewer: 'conn-other' }, { agentId: 'agent-1', connectionId: 'conn-other' }])
+    await assert.rejects(reviews.designate(bad), /does not say which Agent/, JSON.stringify(bad));
+  for (const reviewSeconds of [59, 301, 90.5, '120'])
+    await assert.rejects(reviews.designate({ agentId: 'agent-1', reviewer: 'this', reviewSeconds }), /from 60 to 300/, String(reviewSeconds));
+  await assert.rejects(reviews.designate({ agentId: 'agent-1', reviewer: 'none', reviewSeconds: 120 }), /from 60 to 300/);
+  await assert.rejects(reviews.setDefault({ agentId: 'agent-1', enabled: 'yes' }), /does not say which Agent/);
+  await assert.rejects(reviews.designate({ agentId: 'agent-9', reviewer: 'this' }), /not in the signed-in account/);
+  await assert.rejects(reviews.designate({ agentId: 'agent-2', reviewer: 'this' }),
+    (error) => error.errorCode === 'reviewer_not_set_up_here' && /not set up on this computer/.test(error.message));
+  await assert.rejects(reviews.setDefault({ agentId: 'agent-2', enabled: true }), (error) => error.errorCode === 'reviewer_not_set_up_here');
+  assert.equal(writes().length, 0, 'nothing was written');
+  // This computer, with the page's deadline: the Connection id is this computer's own, from the manager; `designated`
+  // only when this computer became the reviewer by this request.
+  assert.deepEqual(keep(await reviews.designate({ agentId: 'agent-1', reviewer: 'this', reviewSeconds: 120 })),
+    { agentId: 'agent-1', reviewer: 'this', reviewSeconds: 120, reviewNewConversations: false, thisComputer: true, designated: true });
+  assert.deepEqual(writes().at(-1), ['/manager/agents/reviewer', { agentId: 'agent-1', connectionId: 'conn-here', reviewSeconds: 120 }]);
+  const again = keep(await reviews.designate({ agentId: 'agent-1', reviewer: 'this' }));
+  assert.deepEqual(writes().at(-1)[1], { agentId: 'agent-1', connectionId: 'conn-here' }, 'without a deadline the Gateway keeps the reviewer\'s');
+  assert.deepEqual([again.reviewSeconds, again.designated], [120, false], 'already the reviewer: not designated again');
+  const none = keep(await reviews.designate({ agentId: 'agent-1', reviewer: 'none' }));
+  assert.deepEqual([none.reviewer, none.designated], ['none', false]);
+  assert.deepEqual(writes().at(-1), ['/manager/agents/reviewer', { agentId: 'agent-1', connectionId: null }]);
+  // The default on, with no reviewer: this computer first (ifNone, no deadline), then the default.
+  let from = writes().length;
+  assert.deepEqual(keep(await reviews.setDefault({ agentId: 'agent-1', enabled: true })),
+    { agentId: 'agent-1', reviewer: 'this', reviewSeconds: 60, reviewNewConversations: true, thisComputer: true, designated: true });
+  assert.deepEqual(writes().slice(from), [['/manager/agents/reviewer', { agentId: 'agent-1', connectionId: 'conn-here', ifNone: true }],
+    ['/manager/agents/review-default', { agentId: 'agent-1', enabled: true }]]);
+  // With an eligible reviewer elsewhere (offline included) it stays that one; turning the default off designates nothing.
+  for (const reviewer of ['conn-other', 'conn-offline']) {
+    agents.get('agent-1').reviewer = reviewer;
+    from = writes().length;
+    const kept = keep(await reviews.setDefault({ agentId: 'agent-1', enabled: true }));
+    assert.deepEqual([kept.reviewer, kept.designated], ['other', false], reviewer);
+    assert.deepEqual(writes().slice(from), [['/manager/agents/review-default', { agentId: 'agent-1', enabled: true }]], reviewer);
+  }
+  from = writes().length;
+  await reviews.setDefault({ agentId: 'agent-1', enabled: false });
+  assert.deepEqual(writes().slice(from), [['/manager/agents/review-default', { agentId: 'agent-1', enabled: false }]]);
+  // A conversation's review turned on (rulith-runtime.mjs): this computer only when the Agent has no eligible reviewer.
+  assert.equal(await reviews.designateIfNone('agent-1'), false);
+  for (const reviewer of [null, 'conn-revoked']) {
+    agents.get('agent-1').reviewer = reviewer;
+    from = writes().length;
+    assert.equal(await reviews.designateIfNone('agent-1'), true, String(reviewer));
+    assert.deepEqual(writes().slice(from), [['/manager/agents/reviewer', { agentId: 'agent-1', connectionId: 'conn-here', ifNone: true }]]);
+  }
+  // Another computer became the reviewer meanwhile: the Gateway keeps it, and this computer was not designated.
+  agents.get('agent-1').reviewer = null;
+  const racing = reviewRoutes({ manager: async (route, body) => {
+    if (route === '/manager/agents/reviewer') { agents.get('agent-1').reviewer = 'conn-other'; return manager(route, body); }
+    return manager(route, body);
+  } });
+  assert.equal(await racing.designateIfNone('agent-1'), false);
+  // An account service from before these routes (PSC 0.2.33): nothing is designated, and the switch goes on; a Settings
+  // read says it cannot read them.
+  // A manager from before them (already running on the port) answers 404 itself; a proxy's codeless 404 arrives as
+  // not_found (device-client.mjs).
+  for (const failure of [{ errorCode: 'not_found' }, { errorCode: 'bad_command' }, { status: 404 }]) {
+    unsupported = failure;
+    from = writes().length;
+    assert.equal(await reviews.designateIfNone('agent-1'), false, JSON.stringify(failure));
+    assert.equal(writes().length, from, JSON.stringify(failure));
+    await assert.rejects(reviews.read({ agentId: 'agent-1' }), (error) => error.message === 'The requested route does not exist.');
+  }
+  // Any other failure of the read is not taken for an older service: it is said.
+  unsupported = { errorCode: 'review_settings_unavailable', status: 400 };
+  await assert.rejects(reviews.designateIfNone('agent-1'), (error) => error.errorCode === 'review_settings_unavailable');
+  unsupported = null;
+  assert.equal(JSON.stringify(seen).includes(SECRET), false);
+  assert.equal(JSON.stringify(seen).includes('conn-'), false, 'no Connection id reaches the page');
+});
+
+test('D-1026a the review routes are served on the guarded API only to the page, and a conversation\'s review designates this computer first', async (t) => {
+  const net = (await import('node:net')).default;
+  const { EventEmitter } = await import('node:events');
+  const { apply } = await import('../../harness/web/rulith-runtime.mjs');
+  const dir = home(t);
+  const keyFile = path.join(dir, 'fixture-key.txt');
+  fs.writeFileSync(keyFile, 'fixture-manager-key');
+  t.mock.method(fs, 'writeFileSync', () => {});
+  t.mock.method(globalThis, 'setInterval', () => 0);
+  t.mock.method(net, 'connect', (_options, callback) => { const socket = new EventEmitter(); socket.destroy = () => {}; queueMicrotask(callback); return socket; });
+  const state = { device: { state: 'linked', origin: ACCOUNT.origin, account: { id: ACCOUNT.accountId, name: 'Owner' }, agents: [{ id: 'agent-1', name: 'One' }] },
+    instances: [{ id: 'own', agentId: 'agent-1', mode: 'local_agent', paired: true, signedOutAt: '', connectionId: 'conn-here' }] };
+  const sent = [];
+  let review = { reviewer: null, reviewSeconds: 60, reviewNewConversations: false };
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    const route = new URL(url).pathname, body = init?.body ? JSON.parse(init.body) : undefined;
+    sent.push([route, body]);
+    const answer = (value) => new Response(JSON.stringify({ ok: true, ...value, ...state }));
+    if (route === '/manager/state') return answer({});
+    if (route === '/manager/agents/review-state') return answer({ agentId: body.agentId, ...review });
+    if (route === '/manager/agents/reviewer') { review = { ...review, reviewer: body.connectionId }; return answer({ agentId: body.agentId, ...review }); }
+    return new Response(JSON.stringify({ ok: false, teaching: 'unexpected' }), { status: 404 });
+  });
+  let server, admitted = false;
+  const effects = [];
+  await apply({ on() {}, effect(fn) { effects.push(fn()); }, tools: { register: () => () => {} }, webServer: { register(route) { server = route; return () => {}; } },
+    connection: { admit: () => (admitted ? { peer: {} } : { rejection: 401 }) } },
+    { managerHome: dir, runtimeEntry: 'fixture-runtime', keyFile, shadow: { enabled: false } });
+  t.after(() => { for (const dispose of effects.reverse()) dispose?.(); });
+  const call = async (method, route, body) => {
+    const req = new EventEmitter();
+    Object.assign(req, { method, url: '/rulith/api/' + route, headers: { host: '127.0.0.1:3080', 'x-deep-rulith': '1' } });
+    let reply, status;
+    const done = server.handler(req, { writeHead(code) { status = code; }, end(text) { reply = JSON.parse(text); } });
+    queueMicrotask(() => { if (body) req.emit('data', JSON.stringify(body)); req.emit('end'); });
+    await done;
+    return { status, ...reply };
+  };
+  sent.length = 0;
+  const refused = await call('POST', 'review/reviewer', { agentId: 'agent-1', reviewer: 'this' });
+  assert.deepEqual([refused.status, refused.ok], [401, false]);
+  assert.equal(sent.length, 0, 'without the page\'s session the manager is not asked anything');
+  admitted = true;
+  const read = await call('GET', 'review?agentId=agent-1');
+  assert.deepEqual(read, { status: 200, ok: true, agentId: 'agent-1', reviewer: 'none', reviewSeconds: 60, reviewNewConversations: false, thisComputer: true });
+  const designated = await call('POST', 'review/reviewer', { agentId: 'agent-1', reviewer: 'this', reviewSeconds: 200 });
+  assert.deepEqual([designated.ok, designated.reviewer, designated.designated], [true, 'this', true]);
+  assert.deepEqual(sent.find(([route]) => route === '/manager/agents/reviewer')[1], { agentId: 'agent-1', connectionId: 'conn-here', reviewSeconds: 200 });
+  const bad = await call('POST', 'review/reviewer', { agentId: 'agent-1', reviewer: 'this', reviewSeconds: 30 });
+  assert.deepEqual([bad.ok, bad.own], [false, true]);
+  assert.equal(bad.teaching, 'The review deadline is a whole number of seconds from 60 to 300.');
+  assert.equal(JSON.stringify([read, designated, bad]).includes('conn-'), false, 'no Connection id reaches the page');
+  // A conversation's review switch: when it is turned on and the Agent has no reviewer, this computer is designated
+  // first; turning it off designates nothing (the route's order, read from its source).
+  const host = fs.readFileSync(new URL('../../harness/web/rulith-runtime.mjs', import.meta.url), 'utf8');
+  const route = host.slice(host.indexOf("'POST /rulith/api/conversation/review'"), host.indexOf("'POST /rulith/api/conversation/sign-acceptance'"));
+  assert.match(route, /const designated = enabled \? await reviews\.designateIfNone\(target\.agentId\) : false;[\s\S]*'\/manager\/conversations\/review'/);
+  assert.match(route, /return designated \? \{ \.\.\.view, designated: true \} : view;/);
+  // A switch refused after this computer was designated still says it was (the designation stands).
+  assert.match(route, /catch \(error\) \{ throw designated \? Object\.assign\(error, \{ designated: true \}\) : error; \}/);
+  assert.match(host, /\.\.\.\(error\?\.designated === true \? \{ designated: true \} : \{\}\)/, 'the guarded API passes it on with the refusal');
 });
 
 test('ACC-ISO-14 the isolation switch is served on the guarded API only to a request the page\'s session admitted', async (t) => {

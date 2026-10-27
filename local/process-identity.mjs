@@ -188,6 +188,19 @@ function cachedWindowsImage(pid, record) {
 const runsScript = (commandLine, script) => commandLine.toLowerCase().includes(script.toLowerCase())
 
 /**
+ * Entry scripts a recorded process may be running under another script's name. Up to 0.19.1, `rulith` ran the app's
+ * launcher inside its own process after putting the launcher in `process.argv[1]`, so the launcher's lock ticket names
+ * start-deep-rulith.mjs while that process's command line runs rulith-local.mjs (local/rulith-local.mjs startApp; from
+ * 0.19.2 the ticket names rulith-local.mjs). Such an app, still running, still holds its lock: a newer `rulith` started
+ * beside it must not take it over. One way only, and it can only keep a record alive.
+ * 中文说明：0.19.1 及以前经 `rulith` 启动的应用，锁票据写的是 start-deep-rulith.mjs，命令行跑的却是 rulith-local.mjs；
+ * 这样的应用还在运行时，它的锁仍算有人持有，新版本的 `rulith` 不能接管。
+ */
+const ALSO_RUN_AS = Object.freeze({ 'start-deep-rulith.mjs': Object.freeze(['rulith-local.mjs']) })
+const runsRecordedScript = (commandLine, script) => [script, ...(ALSO_RUN_AS[script.toLowerCase()] ?? [])]
+  .some((name) => runsScript(commandLine, name))
+
+/**
  * Printed before the command line, so that nothing else PowerShell may write to standard output —
  * a warning, a notice about loading a module — is ever read as a command line. Only the text after
  * this mark counts; without the mark the answer is unknown.
@@ -237,7 +250,7 @@ function cachedWindowsCommandLine(pid, record) {
   const commandLine = windowsCommandLine(pid)
   if (commandLineAnswers.size >= 256) commandLineAnswers.clear()
   commandLineAnswers.set(key, { commandLine, at: performance.now(),
-    final: commandLine !== '' && script !== '' && !runsScript(commandLine, script) })
+    final: commandLine !== '' && script !== '' && !runsRecordedScript(commandLine, script) })
   return commandLine
 }
 
@@ -354,7 +367,7 @@ export function processRecordVerdict(record, { recordedAt, probe = systemProcess
       const script = text(record.script)
       if (stamped && current === expected && PLAIN_ASCII.test(script) && !probe.startedChildren().has(pid)) {
         const commandLine = probe.commandLine(pid, record)
-        if (commandLine !== '' && !runsScript(commandLine, script)) return gone('pid_reused')
+        if (commandLine !== '' && !runsRecordedScript(commandLine, script)) return gone('pid_reused')
       }
     }
   }

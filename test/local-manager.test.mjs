@@ -43,9 +43,9 @@ const KEY = 'manager-instance-key'
 const AGENTS = ['agent-alpha', 'agent-beta', 'agent-gamma']
 
 /** A manager and a Gateway on real sockets, signed in unless a scenario asks otherwise. */
-async function withManager(t, run, { signIn = true, agents = AGENTS, ...managerOptions } = {}) {
+async function withManager(t, run, { signIn = true, agents = AGENTS, gatewayOptions = {}, ...managerOptions } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'rulith-instances-'))
-  const gateway = createDevicesGateway()
+  const gateway = createDevicesGateway(gatewayOptions)
   await gateway.listen()
   const manager = createManagerServer({ root, port: 0, key: KEY, startConfirmMs: 8000, ...managerOptions })
   await manager.listen()
@@ -1465,6 +1465,8 @@ test('the manager answers exactly its documented control-plane operations', asyn
     const source = readFileSync(join(import.meta.dirname, '..', 'local', 'manager-server.mjs'), 'utf8')
     const routes = [...source.matchAll(/'(\/manager\/[a-z/-]+)':/g)].map((match) => match[1]).sort()
     assert.deepEqual(routes, [
+      // D-1026a: the Agent's post-call reviewer (this computer's own Connection, or none) and its default, with no Console.
+      '/manager/agents/review-default', '/manager/agents/review-state', '/manager/agents/reviewer',
       '/manager/conversations/end', '/manager/conversations/end-preview',
       '/manager/conversations/exploration-mode', '/manager/conversations/review', '/manager/conversations/sign-acceptance',
       '/manager/conversations/state',
@@ -1518,12 +1520,8 @@ test('the signed-in client switches one conversation\'s exploration mode and rev
     assert.equal(widened.body.result.accepted, true)
     const after = await post('/manager/conversations/state', { agentId: 'agent-alpha', conversationKey: key })
     assert.equal(after.body.conversation.explorationModes['conn-1'], 'derived')
-    // Derived and review-off exclude each other; the Gateway's refusal reaches the client with its code.
-    const refused = await post('/manager/conversations/review', { agentId: 'agent-alpha', conversationKey: key, enabled: false })
-    assert.equal(refused.status, 400)
-    assert.match(refused.body.teaching, /out of derived mode/)
-    await post('/manager/conversations/exploration-mode',
-      { agentId: 'agent-alpha', conversationKey: key, connectionId: 'conn-1', mode: 'strict', requestId: 'req-2' })
+    // D-1026a: the Agent's review fields come with the state; review is optional in every mode, derived included.
+    assert.deepEqual([after.body.reviewer, after.body.reviewSeconds, after.body.reviewNewConversations], [null, 60, false])
     const off = await post('/manager/conversations/review', { agentId: 'agent-alpha', conversationKey: key, enabled: false })
     assert.equal(off.status, 200, JSON.stringify(off.body))
     assert.equal(off.body.postCallReview, false)
@@ -1545,6 +1543,77 @@ test('the signed-in client switches one conversation\'s exploration mode and rev
     assert.deepEqual(ended.body.closedGoals, ['case-1'])
     assert.equal((await post('/manager/conversations/end', { agentId: 'agent-zeta', conversationKey: key, requestId: 'end-2' })).status, 400)
   })
+})
+
+test('D-1026a the Agent\'s reviewer is this computer\'s own Connection or none, with its deadline; its default is forwarded as given', async t => {
+  // The owner's client makes this computer the Agent's reviewer, or cancels it, and sets "review new conversations",
+  // through the device grant with no Console step. A Connection id that is not this computer's own for that Agent is
+  // refused before anything leaves this computer, whoever sends it.
+  await withManager(t, async ({ manager, gateway }) => {
+    const post = async (path, body) => {
+      const response = await fetch(`http://127.0.0.1:${manager.port}${path}`, { method: 'POST',
+        headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: response.status, body: await response.json() }
+    }
+    const sentToAgents = () => gateway.requests.filter(row => row.path.startsWith('/local-devices/agents/'))
+    // Not set up on this computer yet: no Connection of its own to designate.
+    const early = await post('/manager/agents/reviewer', { agentId: 'agent-alpha', connectionId: 'conn-elsewhere' })
+    assert.equal(early.status, 400)
+    assert.equal(early.body.errorCode, 'reviewer_not_this_computer')
+    const instance = await addInstance(manager, 'Reviewer', { agentId: 'agent-alpha' })
+    const own = manager.state().instances.find(row => row.id === instance.id).connectionId
+    assert.match(own, /^conn-/)
+    for (const other of ['conn-elsewhere', '', own.toUpperCase(), 42]) {
+      const refused = await post('/manager/agents/reviewer', { agentId: 'agent-alpha', connectionId: other })
+      assert.equal(refused.status, 400, String(other))
+      assert.equal(refused.body.errorCode, 'reviewer_not_this_computer')
+    }
+    // This computer's own Connection, but for another Agent of the grant, is not this Agent's.
+    assert.equal((await post('/manager/agents/reviewer', { agentId: 'agent-beta', connectionId: own })).body.errorCode, 'reviewer_not_this_computer')
+    assert.equal((await post('/manager/agents/reviewer', { agentId: 'agent-alpha', connectionId: own, extra: 1 })).status, 400)
+    assert.equal(sentToAgents().length, 0, 'nothing reached the account service')
+    const designated = await post('/manager/agents/reviewer', { agentId: 'agent-alpha', connectionId: own, reviewSeconds: 120 })
+    assert.equal(designated.status, 200, JSON.stringify(designated.body))
+    assert.deepEqual([designated.body.agentId, designated.body.reviewer, designated.body.reviewSeconds, designated.body.reviewNewConversations],
+      ['agent-alpha', own, 120, false])
+    assert.deepEqual(sentToAgents().at(-1).body, { agentId: 'agent-alpha', connectionId: own, reviewSeconds: 120 })
+    assert.ok(['ready', 'disconnected'].includes(designated.body.reviewerState), 'the Gateway says whether the reviewer may review now')
+    // `ifNone` travels as given: the Gateway designates only while the Agent has no eligible reviewer.
+    const ifNone = await post('/manager/agents/reviewer', { agentId: 'agent-alpha', connectionId: own, ifNone: true })
+    assert.equal(ifNone.status, 200, JSON.stringify(ifNone.body))
+    assert.deepEqual(sentToAgents().at(-1).body, { agentId: 'agent-alpha', connectionId: own, ifNone: true })
+    assert.deepEqual([ifNone.body.reviewer, ifNone.body.reviewSeconds], [own, 120], 'an eligible reviewer and its deadline stay')
+    // The read: exactly the Agent, forwarded to the review-state route.
+    const read = await post('/manager/agents/review-state', { agentId: 'agent-alpha' })
+    assert.equal(read.status, 200, JSON.stringify(read.body))
+    assert.deepEqual([read.body.agentId, read.body.reviewer, read.body.reviewSeconds, read.body.reviewNewConversations], ['agent-alpha', own, 120, false])
+    assert.deepEqual([sentToAgents().at(-1).path, sentToAgents().at(-1).body], ['/local-devices/agents/review-state', { agentId: 'agent-alpha' }])
+    assert.equal((await post('/manager/agents/review-state', { agentId: 'agent-alpha', conversationKey: 'dsh:x' })).status, 400)
+    const byDefault = await post('/manager/agents/review-default', { agentId: 'agent-alpha', enabled: true })
+    assert.equal(byDefault.status, 200, JSON.stringify(byDefault.body))
+    assert.equal(byDefault.body.reviewNewConversations, true)
+    assert.deepEqual(sentToAgents().at(-1).body, { agentId: 'agent-alpha', enabled: true })
+    const cancelled = await post('/manager/agents/reviewer', { agentId: 'agent-alpha', connectionId: null })
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body))
+    assert.equal(cancelled.body.reviewer, null)
+    // Outside the grant: refused before anything is sent.
+    const before = sentToAgents().length
+    assert.equal((await post('/manager/agents/review-default', { agentId: 'agent-zeta', enabled: true })).status, 400)
+    assert.equal((await post('/manager/agents/reviewer', { agentId: 'agent-zeta', connectionId: null })).status, 400)
+    assert.equal((await post('/manager/agents/review-state', { agentId: 'agent-zeta' })).status, 400)
+    assert.equal(sentToAgents().length, before)
+    assert.ok(sentToAgents().every(row => row.origin === undefined), 'device routes never carry a browser Origin')
+  })
+})
+
+test('D-1026a an account service without the review routes: the read is refused as not_found, even behind a proxy\'s codeless 404', async t => {
+  await withManager(t, async ({ manager }) => {
+    const response = await fetch(`http://127.0.0.1:${manager.port}/manager/agents/review-state`, { method: 'POST',
+      headers: { 'x-rulith-manager': KEY, 'content-type': 'application/json' }, body: JSON.stringify({ agentId: 'agent-alpha' }) })
+    const body = await response.json()
+    assert.equal(response.status, 400)
+    assert.equal(body.errorCode, 'not_found', 'the app then switches a conversation\'s review without designating')
+  }, { gatewayOptions: { reviewRoutes: false } })
 })
 
 test('ACC-LOCAL-11 the signed-in client signs one goal\'s proposed criteria through the device grant: exact fields, pending, refusals, unconfirmed', async t => {

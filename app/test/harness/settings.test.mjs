@@ -1,5 +1,5 @@
 // Batch 2 (design §3.2 设置, 账户面板, 会话的输入行, 打开文件夹; PSC 0.2.27 ① ④): the one Rulith settings page and its entry,
-// the composer's two chips, and the folder chooser — the page half on the shipped browser script (browser-page.mjs) and
+// the composer's chips, and the folder chooser — the page half on the shipped browser script (browser-page.mjs) and
 // the host half on its guarded API with a recording manager stand-in. No network, no manager process, no credential.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -205,8 +205,9 @@ test('one tier per conversation: the strictest the Gateway reports, never a wide
 });
 
 // The composer row over a scripted conversation reply.
-function composer(conversation, { reviewer = 'conn-r', found = true } = {}) {
-  const settings = { ok: true, found, reviewer, connections: [{ connectionId: 'c1' }, { connectionId: 'c2' }], ...(found ? { conversation } : {}) };
+function composer(conversation, { reviewer = 'conn-r', found = true, agentDefault } = {}) {
+  const settings = { ok: true, found, reviewer, connections: [{ connectionId: 'c1' }, { connectionId: 'c2' }], ...(found ? { conversation } : {}),
+    ...(agentDefault === undefined ? {} : { reviewNewConversations: agentDefault }) };
   const page = loadPage({ reply: ({ url }) => (url.includes('exploration-mode') ? { ok: true, state: 'complete' }
     : url.startsWith('/rulith/api/conversation?') ? settings : { ok: true }) });
   const m = page.mount(page.plugin.components.RulithComposerControls, { sessionId: 's1' });
@@ -216,11 +217,12 @@ function composer(conversation, { reviewer = 'conn-r', found = true } = {}) {
 }
 const chips = (shown) => nodes(shown).filter((node) => node.tag === 'button' && node.props['aria-haspopup'] === 'menu' || node.props?.['data-rulith-model'] !== undefined).map(text);
 
-test('the composer has exactly two chips, 档位 and 模型; narrowing applies at once, widening shows the approved confirmation first', async () => {
+test('the composer has the chips 档位, 模型 and 审查; narrowing applies at once, widening shows the approved confirmation first', async () => {
   let { page, m } = composer({ postCallReview: true, explorationMode: 'derived', explorationModesMixed: false, explorationModes: { c1: 'derived', c2: 'derived' } },
     { reviewer: null });
   let shown = m.render();
-  assert.deepEqual(chips(shown), ['Mode: Derived▾', 'Model: deepseek-flash'], 'one tier chip for two Connections; no review chip without a reviewer');
+  // D-1026a: review is optional in every mode, so its chip is there with or without a reviewer, derived mode included.
+  assert.deepEqual(chips(shown), ['Mode: Derived▾', 'Model: deepseek-flash', 'Review: On▾'], 'one tier chip for two Connections');
   // Narrowing: immediate, one request for the conversation, naming no Connection.
   find(shown, (node) => node.props['data-rulith-tier'] === 'derived').children[0].props.onClick();
   shown = m.render();
@@ -255,12 +257,15 @@ test('the composer has exactly two chips, 档位 and 模型; narrowing applies a
   again.props.onClick();
   await flush();
   assert.deepEqual(plain(page.posted('conversation/exploration-mode').map((r) => r.body)), [{ session: 's1', mode: 'strict' }]);
-  // With a reviewer designated, 审查 appears; the model chip opens the settings page's model section.
+  // The review chip reads this conversation's own switch; the model chip opens the settings page's model section.
   shown = m.render();
   assert.deepEqual(chips(shown), ['Mode: Strict (mixed)▾', 'Model: deepseek-flash', 'Review: Off▾']);
   find(shown, (node) => node.props['data-rulith-model'] !== undefined).props.onClick();
   assert.deepEqual(plain(page.plugin.settingsView.getSnapshot()), { open: true, section: 'model' });
-  // A conversation without a Board yet: 默认, and widening from it is confirmed too.
+  // A conversation without a Board yet: 默认, and widening from it is confirmed too. Its review shows the Agent's default
+  // for new conversations (D-1026a); a service that does not say it shows Default.
+  for (const [agentDefault, words] of [[true, 'Review: On▾'], [false, 'Review: Off▾'], [undefined, 'Review: Default▾']])
+    assert.equal(chips(composer(undefined, { found: false, agentDefault }).m.render())[2], words, String(agentDefault));
   ({ page, m } = composer(undefined, { found: false }));
   shown = m.render();
   assert.equal(chips(shown)[0], 'Mode: Default▾');
@@ -390,6 +395,10 @@ test('host routes: the folder chooser, the account default Agent passed on only 
     explorationMode: 'strict', explorationModesMixed: true, device: { token: 'never' } });
   assert.deepEqual(view, { found: true, conversation: { explorationMode: 'strict', explorationModesMixed: true, explorationModes: null },
     explorationMode: 'strict', explorationModesMixed: true });
+  // No Connection id reaches the page (D-1026a): the reviewer and the Agent's Connections stay in the host; the Agent's
+  // review deadline and default do pass.
+  assert.deepEqual(conversationView({ found: false, connections: [{ connectionId: 'conn-1', name: 'PC' }], reviewer: 'conn-1', reviewerState: 'active',
+    reviewSeconds: 90, reviewNewConversations: true }), { found: false, reviewSeconds: 90, reviewNewConversations: true });
   // And a deletion's outcome (PSC 0.2.27 ⑤): finished or not, why not, and the closings Core refused.
   const ended = conversationView({ agentId: 'a1', boardId: 'b', ended: true, endedAt: 't', settled: false, closedGoals: [], refusedGoals: [{ caseId: 'c', code: 'x' }],
     unconfirmedGoals: ['g'], goalsUnread: true, found: true, deletion: { settled: false, reasons: [{ code: 'goals_unread' }] }, instances: [{ id: 'never' }] });
@@ -465,12 +474,12 @@ test('a tier switch reports its outcome: pending says why it waits, a refusal sa
   // The codes the tier route returns (GatewayConversationController, GatewayControlService, AgentControlStore): a refused
   // request (ok:false with its code) or a complete control the Kernel refused. A code the page has no words for shows the
   // generic sentence followed by the service's own text.
-  const turnOnReview = 'Turn post-call review back on for this conversation before switching it to derived mode.';
+  // D-1026a: derived mode no longer needs review or a reviewer; its one refusal is about writing rules.
   const cases = [[{ ok: true, state: 'pending', teaching: 'The switch is committed between calls.' }, PSC.TIER.betweenCalls],
     [{ ok: true, state: 'pending' }, PSC.TIER.later],
     [{ ok: true, state: 'pending', teaching: 'Waiting for the Kernel.' }, PSC.TIER.accepted + ': Waiting for the Kernel.'],
-    [{ ok: false, errorCode: 'review_required_by_derived_mode', teaching: turnOnReview }, 'Turn post-call review back on for this conversation before switching it to derived mode.'],
-    [{ ok: true, state: 'complete', result: { accepted: false, errorCode: 'review_required_by_derived_mode', teaching: turnOnReview } }, PSC.TIER_REFUSALS.review_required_by_derived_mode],
+    [{ ok: true, state: 'complete', result: { accepted: false, errorCode: 'derived_mode_unavailable', teaching: 'Kernel words.' } },
+      'Derived mode needs permission for the model to write rules.'],
     [{ ok: false, errorCode: 'something_new', teaching: 'A new reason.' }, PSC.TIER.notSwitched + ': A new reason.'],
     [{ ok: false, errorCode: 'something_new' }, PSC.TIER.notSwitched + ': something_new'],
     [{ ok: true, state: 'complete', result: { accepted: false, errorCode: 'kernel_new', teaching: 'Kernel words.' } }, PSC.TIER.notAccepted + ': Kernel words.'],
@@ -490,10 +499,10 @@ test('a tier switch reports its outcome: pending says why it waits, a refusal sa
   assert.deepEqual(plain(loadPage().plugin.TIER_REFUSALS), PSC.TIER_REFUSALS);
 });
 
-test('a review switch refused says why and what to do, with the codes the review route returns', async () => {
-  const cases = [[{ ok: false, errorCode: 'derived_requires_review', teaching: 'Switch this conversation out of derived mode before turning its review off.' },
-    'Switch this conversation out of derived mode before turning its review off.'],
-  [{ ok: false, errorCode: 'something_new', teaching: 'A new reason.' }, PSC.TIER.notSwitched + ': A new reason.'],
+test('a review switch refused says why and what to do, with the codes the review route returns; in derived mode it turns off', async () => {
+  // D-1026a: review is optional in every mode, so turning it off in derived mode is sent and accepted like any other.
+  const cases = [[{ ok: false, errorCode: 'something_new', teaching: 'A new reason.' }, PSC.TIER.notSwitched + ': A new reason.'],
+  [{ ok: false, own: true, errorCode: 'reviewer_not_set_up_here', teaching: PSC.HOST['review.notHere'] }, PSC.HOST['review.notHere']],
   [{ ok: true, found: true }, null],
   ...Object.entries(PSC.REVIEW_REFUSALS).map(([code, words]) => [{ ok: false, errorCode: code, teaching: 'English teaching' }, words])];
   for (const [answer, words] of cases) {
@@ -509,6 +518,118 @@ test('a review switch refused says why and what to do, with the codes the review
     if (words) assert.equal(text(note), words, JSON.stringify(answer)); else assert.equal(note, undefined);
   }
   assert.deepEqual(plain(loadPage().plugin.REVIEW_REFUSALS), PSC.REVIEW_REFUSALS);
+});
+
+test('D-1026a turning a conversation\'s review on when the Agent has no reviewer says this computer now reviews, with the Agent\'s own model', async () => {
+  const settings = { ok: true, found: true, reviewer: null, conversation: { explorationMode: 'strict', explorationModes: { c1: 'strict' }, postCallReview: false } };
+  const page = loadPage({ reply: ({ url }) => (url.endsWith('/conversation/review') ? { ok: true, found: true, postCallReview: true, designated: true }
+    : url.startsWith('/rulith/api/conversation?') ? settings : { ok: true }) });
+  const m = page.mount(page.plugin.components.RulithComposerControls, { sessionId: 's1' });
+  m.cells[0] = settings;
+  find(m.render(), (node) => node.props['data-rulith-review'] === 'off').children[0].props.onClick();
+  const items = nodes(m.render()).filter((node) => node.props.role === 'menuitemradio');
+  assert.deepEqual(items.map(text), ['○ On: write calls go to the reviewer', '● Off: this conversation is not reviewed']);
+  items[0].props.onClick();
+  await flush();
+  assert.deepEqual(plain(page.posted('conversation/review').map((r) => r.body)), [{ session: 's1', enabled: true }], 'the page names no Connection');
+  const shown = m.render();
+  assert.equal(text(find(shown, (node) => node.props.role === 'status')), 'This computer now reviews this Agent\'s write calls, with the Agent\'s own model.');
+  assert.equal(find(shown, (node) => node.props.role === 'alert'), undefined);
+  // The switch refused after this computer was designated: both are said.
+  const refused = loadPage({ reply: ({ url }) => (url.endsWith('/conversation/review')
+    ? { ok: false, errorCode: 'something_new', teaching: 'A new reason.', designated: true }
+    : url.startsWith('/rulith/api/conversation?') ? settings : { ok: true }) });
+  const r = refused.mount(refused.plugin.components.RulithComposerControls, { sessionId: 's1' });
+  r.cells[0] = settings;
+  find(r.render(), (node) => node.props['data-rulith-review'] === 'off').children[0].props.onClick();
+  nodes(r.render()).filter((node) => node.props.role === 'menuitemradio')[0].props.onClick();
+  await flush();
+  const both = r.render();
+  assert.equal(text(find(both, (node) => node.props.role === 'alert')), PSC.TIER.notSwitched + ': A new reason.');
+  assert.equal(text(find(both, (node) => node.props.role === 'status')), 'This computer now reviews this Agent\'s write calls, with the Agent\'s own model.');
+  // Not designated (the Agent already had a reviewer, or an older account service): no such line.
+  const plainOn = loadPage({ reply: ({ url }) => (url.endsWith('/conversation/review') ? { ok: true, found: true, postCallReview: true }
+    : url.startsWith('/rulith/api/conversation?') ? settings : { ok: true }) });
+  const p = plainOn.mount(plainOn.plugin.components.RulithComposerControls, { sessionId: 's1' });
+  p.cells[0] = settings;
+  find(p.render(), (node) => node.props['data-rulith-review'] === 'off').children[0].props.onClick();
+  nodes(p.render()).filter((node) => node.props.role === 'menuitemradio')[0].props.onClick();
+  await flush();
+  assert.equal(find(p.render(), (node) => node.props.role === 'status'), undefined);
+});
+
+// D-1026a: Settings → Advanced → Post-call review, per Agent: the default for new conversations, who reviews (this
+// computer, another computer, or none) with "Use this computer", and the review deadline, sent with the
+// designation. No Connection id is shown or sent by the page.
+test('D-1026a Settings → Advanced → Post-call review: the default, the reviewer with Use this computer, and the deadline', async () => {
+  const R = PSC.PAGE.reviewSettings;
+  const views = { a1: { ok: true, agentId: 'a1', reviewer: 'none', reviewSeconds: 60, reviewNewConversations: false, thisComputer: true },
+    a2: { ok: true, agentId: 'a2', reviewer: 'other', reviewSeconds: 180, reviewNewConversations: true, thisComputer: false } };
+  let answer = { ok: true, designated: true };
+  const page = loadPage({ reply: ({ url }) => (url.startsWith('/rulith/api/review?') ? views[new URL(url, 'http://x').searchParams.get('agentId')] : answer) });
+  const { plugin } = page;
+  const state = { ...summary };
+  const section = page.expand(page.mount(plugin.components.ReviewSection, { state }).render());
+  assert.match(text(section), /^Post-call reviewThe reviewer reads each write call after it runs and may add advice to its result; it never blocks a call\./);
+  for (const without of [null, { ok: false }, { ...summary, signedIn: false }, { ...summary, agents: [] }])
+    assert.equal(page.mount(plugin.components.ReviewSection, { state: without }).render(), null);
+  // In Advanced, before the isolation switches.
+  const advanced = page.expand(page.mount(plugin.components.AdvancedSection, { state: { ...summary, isolationAvailable: true,
+    agents: [{ ...summary.agents[0], runWithoutIsolation: false }] }, refresh() {} }).render());
+  assert.match(text(advanced), /Other clients[\s\S]*Post-call review[\s\S]*Model-command isolation[\s\S]*Diagnosis/);
+  // An Agent with no reviewer, set up here.
+  const one = page.mount(plugin.components.AgentReview, { agent: summary.agents[0] });
+  one.cells[0] = views.a1;
+  let shown = one.render();
+  assert.match(text(shown), /^Default agent \(default\)Review new conversationsReviewer: NoneUse this computerReview deadline \(seconds\)$/);
+  const box = find(shown, (node) => node.tag === 'input' && node.props.type === 'checkbox');
+  assert.equal(box.props.checked, false);
+  assert.equal(button(shown, R.remove), undefined, 'nothing to remove');
+  // The deadline is checked before anything is sent.
+  find(shown, (node) => node.tag === 'input' && node.props.type === 'number').props.onChange({ target: { value: '30' } });
+  button(one.render(), R.useThisComputer).props.onClick();
+  assert.equal(page.posted('review/reviewer').length, 0);
+  assert.equal(text(find(one.render(), (node) => node.props.role === 'alert')), R.deadlineRange);
+  find(one.render(), (node) => node.tag === 'input' && node.props.type === 'number').props.onChange({ target: { value: '150' } });
+  await button(one.render(), R.useThisComputer).props.onClick();
+  assert.deepEqual(plain(page.posted('review/reviewer').map((r) => r.body)), [{ agentId: 'a1', reviewer: 'this', reviewSeconds: 150 }]);
+  assert.equal(text(find(one.render(), (node) => node.props.role === 'status')), R.designated);
+  // The default: one request with the new value; the host designates this computer when there is no reviewer.
+  await find(one.render(), (node) => node.tag === 'input' && node.props.type === 'checkbox').props.onChange();
+  assert.deepEqual(plain(page.posted('review/default').map((r) => r.body)), [{ agentId: 'a1', enabled: true }]);
+  // This computer reviews: Save changes the deadline (the same designation); Remove reviewer cancels it.
+  one.cells[0] = { ...views.a1, reviewer: 'this', reviewSeconds: 150, reviewNewConversations: true };
+  shown = one.render();
+  assert.match(text(shown), /Reviewer: This computerRemove reviewer/);
+  assert.equal(button(shown, R.useThisComputer), undefined);
+  answer = { ok: true, designated: false };
+  await button(shown, R.remove).props.onClick();
+  assert.deepEqual(plain(page.posted('review/reviewer').at(-1).body), { agentId: 'a1', reviewer: 'none' });
+  assert.equal(text(find(one.render(), (node) => node.props.role === 'status')), R.saved);
+  // The page reads the Agent's settings again after each change; here it still reviews, and Save is refused.
+  one.cells[0] = { ...views.a1, reviewer: 'this', reviewSeconds: 150, reviewNewConversations: true };
+  answer = { ok: false, own: true, teaching: PSC.HOST['review.notHere'] };
+  await button(one.render(), R.save).props.onClick();
+  assert.deepEqual(plain(page.posted('review/reviewer').at(-1).body), { agentId: 'a1', reviewer: 'this', reviewSeconds: 150 });
+  assert.equal(text(find(one.render(), (node) => node.props.role === 'alert')), PSC.HOST['review.notHere']);
+  // Another computer reviews, and this one is not set up for the Agent: "Another computer", no way to use this computer,
+  // the deadline read only.
+  const other = page.mount(plugin.components.AgentReview, { agent: summary.agents[1] });
+  other.cells[0] = views.a2;
+  shown = other.render();
+  assert.match(text(shown), /Reviewer: Another computerRemove reviewer/);
+  assert.match(text(shown), new RegExp(R.notHere.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(button(shown, R.useThisComputer), undefined);
+  assert.equal(find(shown, (node) => node.tag === 'input' && node.props.type === 'number').props.disabled, true);
+  assert.equal(find(shown, (node) => node.tag === 'input' && node.props.type === 'checkbox').props.checked, true);
+  assert.equal(JSON.stringify([...page.posted('review/reviewer'), ...page.posted('review/default')]).includes('conn'), false, 'the page names no Connection');
+  // An account service from before these routes: the block says it cannot read them, with the service's reason, and offers
+  // nothing to change.
+  const old = page.mount(plugin.components.AgentReview, { agent: summary.agents[0] });
+  old.cells[0] = { ok: false, errorCode: 'not_found', teaching: 'The requested route does not exist.' };
+  shown = old.render();
+  assert.equal(text(find(shown, (node) => node.props.role === 'alert')), R.unreadable.replace(/\.$/, '') + ': The requested route does not exist.');
+  assert.equal(find(shown, (node) => node.tag === 'input' || node.tag === 'button'), undefined);
 });
 
 test('the exploration-mode route names no Connection: one request per conversation', () => {

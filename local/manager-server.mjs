@@ -200,6 +200,24 @@ export function createManagerServer({
       onlyFields(body, ['agentId', 'conversationKey', 'goal', 'leaves', 'requestId']))),
     '/manager/conversations/end-preview': (body) => instances.admit(() => device.conversationEndPreview(onlyFields(body, ['agentId', 'conversationKey']))),
     '/manager/conversations/end': (body) => instances.admit(() => device.conversationEnd(onlyFields(body, ['agentId', 'conversationKey', 'requestId']))),
+    // D-1026a (owner, 2026-10-26): the Agent's post-call reviewer and its "review new conversations" default, read and set
+    // from the owner's client through this device grant, with no Console step. The only Connection a designation may name is this
+    // computer's own for that Agent (the local Agent instance attached to it under the signed-in account), or none
+    // (`null` cancels); any other id is refused here and nothing is sent.
+    // 中文说明：审查员只能指定为这台电脑自己给这个智能体的连接，或者取消（null）；别的连接号在这里就拒绝，什么都不发出。
+    '/manager/agents/review-state': (body) => instances.admit(() => device.agentReviewState(onlyFields(body, ['agentId']))),
+    '/manager/agents/reviewer': (body) => {
+      const fields = onlyFields(body, ['agentId', 'connectionId', 'reviewSeconds', 'ifNone'])
+      return instances.admit(() => {
+        const here = instances.connectionHere(String(fields.agentId ?? ''))
+        if (fields.connectionId !== null && (here === '' || fields.connectionId !== here)) {
+          throw Object.assign(new Error('Only this computer\'s own Connection for this Agent can be designated as its reviewer here, or none. Nothing was changed.'),
+            { errorCode: 'reviewer_not_this_computer' })
+        }
+        return device.agentReviewer(fields)
+      })
+    },
+    '/manager/agents/review-default': (body) => instances.admit(() => device.agentReviewDefault(onlyFields(body, ['agentId', 'enabled']))),
     // PSC 0.2.24 (D-1018b batch 3): the owner opens a folder of this computer as a project from their own client. The
     // confirmation's content comes from `state`; `open` carries the version of it the owner confirmed. The manager only
     // forwards these exact fields; a capability, tool, digest or mode never passes (the Gateway refuses them anyway).

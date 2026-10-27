@@ -5,6 +5,9 @@
 // {placeholders}). Where Console or the PSC already had an approved English sentence it is used as it is (the document
 // names each one): signing is Console Text A, widening is Text 9 and the non-strict confirmation, deleting a
 // conversation follows Console's Conversations texts.
+// Later releases change it in place: 0.19.1 added the isolation switch (PSC 0.2.33); 0.19.2 makes post-call review
+// optional in every mode with no Console step (D-1026a, owner 2026-10-26): the derived-mode review refusals are gone,
+// derived mode's one refusal is about writing rules, and Settings → Advanced has the Post-call review block.
 //
 // 中文说明：应用的规范英文文字（PSC 0.2.32）。测试拿发布的文字与这份表逐字核对；中文表只核对每个键都有译文。
 
@@ -310,11 +313,7 @@ export const PAGE = {
     "manager_closing": "Rulith on this computer is closing, so this cannot be changed now."
   },
   "tierRefusals": {
-    "review_required_by_derived_mode": "Turn post-call review back on for this conversation before switching it to derived mode.",
-    "derived_mode_unavailable": "Derived mode needs a reviewer for this Agent and permission for the model to write rules. Designate a reviewer for it in Console first."
-  },
-  "reviewRefusals": {
-    "derived_requires_review": "Switch this conversation out of derived mode before turning its review off."
+    "derived_mode_unavailable": "Derived mode needs permission for the model to write rules."
   },
   "composer": {
     "ended": "This conversation is deleted and cannot continue",
@@ -329,7 +328,7 @@ export const PAGE = {
     "reviewOff": "Off",
     "reviewMenu": "Post-call review of this conversation's write calls, from the next call",
     "reviewOnItem": "On: write calls go to the reviewer",
-    "reviewOffItem": "Off: this conversation is not reviewed (not in derived mode)"
+    "reviewOffItem": "Off: this conversation is not reviewed"
   },
   "project": {
     "incomplete": "What was read about this opening is incomplete, so you cannot be asked to confirm it. Try again later.",
@@ -567,6 +566,25 @@ export const PAGE = {
     "notStopped": "Could not stop what model commands started without isolation: {names}. Stop them yourself, or restart this computer.",
     "notChecked": "Could not check what model commands started without isolation left running: {reason}."
   },
+  "reviewSettings": {
+    "title": "Post-call review",
+    "explain": "The reviewer reads each write call after it runs and may add advice to its result; it never blocks a call.",
+    "newConversations": "Review new conversations",
+    "reviewer": "Reviewer: {name}",
+    "thisComputer": "This computer",
+    "otherComputer": "Another computer",
+    "none": "None",
+    "useThisComputer": "Use this computer",
+    "remove": "Remove reviewer",
+    "deadline": "Review deadline (seconds)",
+    "save": "Save",
+    "deadlineRange": "The review deadline is a whole number of seconds from 60 to 300.",
+    "notHere": "To review on this computer, set this Agent up under This computer first.",
+    "designated": "This computer now reviews this Agent's write calls, with the Agent's own model.",
+    "saved": "Saved.",
+    "notSaved": "Not saved",
+    "unreadable": "Could not read this Agent's review settings."
+  },
   "diagnosis": {
     "title": "Diagnosis",
     "reading": "Reading…",
@@ -664,6 +682,9 @@ export const HOST = {
   "isolation.pendingFor": "{status} For {agents} it applies after the Worker restarts, once the commands it is running finish.",
   "isolation.incomplete": "The request does not say which Agent, or whether its model commands run without isolation.",
   "isolation.unconfirmed": "Running model commands without isolation needs your confirmation. Nothing was changed.",
+  "review.incomplete": "The request does not say which Agent, or what to set for its review.",
+  "review.notHere": "This Agent is not set up on this computer, so this computer cannot review for it: choose “Set up on this computer” for it first. Nothing was changed.",
+  "review.deadline": "The review deadline is a whole number of seconds from 60 to 300.",
   "folders.files": "Rulith files",
   "folders.manager": "Local manager",
   "folders.conversations": "Conversations (DeepSeek Harness)",
@@ -680,7 +701,8 @@ export const MODE_WORDS = PAGE.modeWords;
 export const MODE_HINTS = PAGE.modeHints;
 export const WIDEN_TEXT = PAGE.widen;
 export const TIER_REFUSALS = { ...PAGE.switchRefusals, ...PAGE.tierRefusals };
-export const REVIEW_REFUSALS = { ...PAGE.switchRefusals, ...PAGE.reviewRefusals };
+// D-1026a: the review switch has no refusals of its own (review no longer depends on the mode).
+export const REVIEW_REFUSALS = { ...PAGE.switchRefusals };
 
 /** A text with its {name} parts filled in. Pure. */
 export const fill = (template, values) => template.replace(/\{(\w+)\}/g, (whole, name) => (Object.hasOwn(values, name) ? String(values[name]) : whole));

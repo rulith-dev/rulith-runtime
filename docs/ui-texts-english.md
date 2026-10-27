@@ -21,6 +21,14 @@ verbatim. The machine-readable copy the tests compare against is `app/test/harne
 themselves are `TEXTS` in `app/harness/web/rulith-dsh-ui/lib/client.js` (the page) and `HOST_TEXTS` in
 `app/harness/web/ui-texts.mjs` (the host).
 
+Changed in 0.19.2 (D-1026a, owner 2026-10-26): post-call review is optional in every exploration mode, switched per
+conversation in the composer, with each Agent's default under Settings → Advanced → Post-call review, and needs no
+Console step. The two derived-mode review refusals are gone (`tierRefusals.review_required_by_derived_mode`,
+`reviewRefusals.derived_requires_review`), `tierRefusals.derived_mode_unavailable` now names only rule writing,
+`composer.reviewOffItem` lost "(not in derived mode)", and `reviewSettings` and the host's `review.*` are new.
+中文摘要：0.19.2 起事后审查在每个档位都可选，按会话在输入行开关，智能体的默认值在设置 → 高级 → 事后审查，不需要 Console；
+推导档与审查的两条互斥拒绝删除，推导档不可用只剩“需要允许模型写规则”。
+
 ## The page (`client.js` `TEXTS.en`)
 
 ### Punctuation the page puts between its own words and a service's (`p`)
@@ -324,12 +332,10 @@ themselves are `TEXTS` in `app/harness/web/rulith-dsh-ui/lib/client.js` (the pag
 
 ### Why a mode switch was refused (mode switch only) (`tierRefusals`)
 
-- `tierRefusals.review_required_by_derived_mode`: `Turn post-call review back on for this conversation before switching it to derived mode.` (PSC 0.2.20 ③)
-- `tierRefusals.derived_mode_unavailable`: `Derived mode needs a reviewer for this Agent and permission for the model to write rules. Designate a reviewer for it in Console first.` (first sentence: Text 9's unavailable notice)
+- `tierRefusals.derived_mode_unavailable`: `Derived mode needs permission for the model to write rules.` (D-1026a: derived mode no longer needs a reviewer or post-call review)
 
-### Why a review switch was refused (review switch only) (`reviewRefusals`)
-
-- `reviewRefusals.derived_requires_review`: `Switch this conversation out of derived mode before turning its review off.` (PSC 0.2.20 ③)
+The review switch has no refusals of its own: review no longer depends on the mode (D-1026a), so it shows the shared
+`switchRefusals` and the host's `review.*` sentences.
 
 ### The composer's model and review chips (`composer`)
 
@@ -345,7 +351,12 @@ themselves are `TEXTS` in `app/harness/web/rulith-dsh-ui/lib/client.js` (the pag
 - `composer.reviewOff`: `Off`
 - `composer.reviewMenu`: `Post-call review of this conversation's write calls, from the next call`
 - `composer.reviewOnItem`: `On: write calls go to the reviewer`
-- `composer.reviewOffItem`: `Off: this conversation is not reviewed (not in derived mode)`
+- `composer.reviewOffItem`: `Off: this conversation is not reviewed`
+
+The review chip is always shown (D-1026a). On a conversation with no Board yet it shows the Agent's default for new
+conversations (`composer.reviewOn` or `composer.reviewOff`); `composer.reviewDefault` only when the service does not say
+it. Turning review on when the Agent has no eligible reviewer makes this computer the reviewer and shows
+`reviewSettings.designated` under the chips.
 
 ### Opening a folder as a project (PSC 0.2.24 SYS-LOCAL-01): the confirmation, refusals and progress (`project`)
 
@@ -581,6 +592,26 @@ asks nothing. The switch's name and the whole confirmation are PSC 0.2.31 ④'s 
 - `isolationSwitch.notStopped`: `Could not stop what model commands started without isolation: {names}. Stop them yourself, or restart this computer.`
 - `isolationSwitch.notChecked`: `Could not check what model commands started without isolation left running: {reason}.`
 
+### Settings → Advanced → Post-call review, per Agent (D-1026a) (`reviewSettings`)
+
+- `reviewSettings.title`: `Post-call review`
+- `reviewSettings.explain`: `The reviewer reads each write call after it runs and may add advice to its result; it never blocks a call.`
+- `reviewSettings.newConversations`: `Review new conversations` (the Agent's default; a switch, off for a new Agent)
+- `reviewSettings.reviewer`: `Reviewer: {name}` (`{name}` is `reviewSettings.thisComputer`, `reviewSettings.otherComputer` or `reviewSettings.none`)
+- `reviewSettings.thisComputer`: `This computer`
+- `reviewSettings.otherComputer`: `Another computer` (the account service names the reviewer only by its Connection id)
+- `reviewSettings.none`: `None`
+- `reviewSettings.useThisComputer`: `Use this computer`
+- `reviewSettings.remove`: `Remove reviewer`
+- `reviewSettings.deadline`: `Review deadline (seconds)` (60 to 300, sent with the designation, so changed here only while this computer reviews)
+- `reviewSettings.save`: `Save`
+- `reviewSettings.deadlineRange`: `The review deadline is a whole number of seconds from 60 to 300.`
+- `reviewSettings.notHere`: `To review on this computer, set this Agent up under This computer first.`
+- `reviewSettings.designated`: `This computer now reviews this Agent's write calls, with the Agent's own model.` (also under the composer's chips)
+- `reviewSettings.saved`: `Saved.`
+- `reviewSettings.notSaved`: `Not saved`
+- `reviewSettings.unreadable`: `Could not read this Agent's review settings.`
+
 ### Settings → Advanced → Diagnosis (`diagnosis`)
 
 - `diagnosis.title`: `Diagnosis`
@@ -718,6 +749,12 @@ asks nothing. The switch's name and the whole confirmation are PSC 0.2.31 ④'s 
 - `isolation.pendingFor`: `{status} For {agents} it applies after the Worker restarts, once the commands it is running finish.` (isolation required again while that Agent's Worker still runs unconfined)
 - `isolation.incomplete`: `The request does not say which Agent, or whether its model commands run without isolation.` (the switch's route)
 - `isolation.unconfirmed`: `Running model commands without isolation needs your confirmation. Nothing was changed.` (the switch's route, turned on without the confirmation)
+
+### Post-call review: the Agent's reviewer and default (D-1026a) (`review.*`)
+
+- `review.incomplete`: `The request does not say which Agent, or what to set for its review.`
+- `review.notHere`: `This Agent is not set up on this computer, so this computer cannot review for it: choose “Set up on this computer” for it first. Nothing was changed.`
+- `review.deadline`: `The review deadline is a whole number of seconds from 60 to 300.`
 
 ### Where Rulith keeps its files (Diagnosis) (`folders.*`)
 

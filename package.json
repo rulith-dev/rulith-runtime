@@ -1,6 +1,6 @@
 {
   "name": "rulith",
-  "version": "0.19.1",
+  "version": "0.19.2",
   "type": "module",
   "description": "Rulith: a local app for governed work with your own model, and the Runtime it runs on",
   "bin": {

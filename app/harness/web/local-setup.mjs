@@ -91,3 +91,116 @@ export function isolationRoutes({ manager }) {
   };
   return { set };
 }
+
+/**
+ * D-1026a (owner, 2026-10-26): post-call review is optional in every exploration mode, switched per conversation in the
+ * composer, with an Agent-level default here, and never needs Console. The reviewer reads each write call after it runs
+ * and may add advice to its result; it never blocks a call (D-1013f). These routes read and change the Agent's side of
+ * it through the manager's device grant:
+ *
+ * - `read({ agentId })`: who reviews for the Agent (`this` computer, an `other` computer, or `none`), its review deadline
+ *   and its "review new conversations" default, from the Gateway's review-state route, which creates nothing. It names
+ *   the reviewer only by its Connection id, so another computer is not named.
+ * - `designate({ agentId, reviewer: 'this' | 'none', reviewSeconds? })`: this computer becomes the reviewer, with the
+ *   deadline given (without one the Gateway keeps the current deadline of an unchanged reviewer), or the Agent has none.
+ *   The Connection id sent is the one the manager has for this computer's instance of that Agent; the page never names
+ *   one, and the manager refuses any other.
+ * - `setDefault({ agentId, enabled })`: the default; turning it on for an Agent with no reviewer first makes this
+ *   computer its reviewer.
+ * - `designateIfNone(agentId)`: used when a conversation's review is turned on (rulith-runtime.mjs). It asks the Gateway
+ *   with `ifNone: true` and no deadline, so the Gateway designates only while the Agent still has no eligible reviewer.
+ *   With an account service from before these routes it designates nothing and the conversation's switch still goes.
+ *
+ * `designated` is true only when this computer became the reviewer by that request (it was not before, and is after).
+ *
+ * A reviewer Connection reviews with its Agent's own model: the Runtime gives that Agent's Worker the Agent's model as
+ * its reviewer route at every Worker start (local/rulith-local.mjs, local/model-settings.mjs reviewerRoute). Only the
+ * Agent's fields reach the page, never a Connection id.
+ *
+ * 中文说明：事后审查在每个档位都可选，按会话在输入行开关，智能体的默认值在设置里，不需要 Console。审查员只在写入调用执行后
+ * 读它、可附建议，从不拦下调用。指定审查员时发出的连接号只取管理器给这台电脑这个智能体的连接；页面看不到任何连接号。
+ */
+export const REVIEW_SECONDS = Object.freeze({ min: 60, max: 300 });
+/**
+ * The Agent's reviewer as far as reviewing goes: the Connection id in a review answer's `reviewer`, unless its
+ * `reviewerState` is `ineligible` (that Connection was revoked or deleted), in which case the Agent has none and may be
+ * given another. The Gateway's other states keep the reviewer: `ready`; `disconnected` (its Worker is offline, or its key
+ * is being changed) and `not_configured` (its Worker does not offer review), whose reviews are recorded as unavailable;
+ * `not_designated` comes with no reviewer at all. The one place the Gateway's state names are read. Pure.
+ * 中文说明：只有 ineligible（审查员的连接被撤销或删除）算没有审查员；离线（disconnected）或没提供审查（not_configured）的仍是审查员。
+ */
+const INELIGIBLE_REVIEWER_STATES = new Set(['ineligible']);
+export const effectiveReviewer = (reply) => {
+  const reviewer = typeof reply?.reviewer === 'string' ? reply.reviewer : '';
+  return reviewer && !INELIGIBLE_REVIEWER_STATES.has(String(reply?.reviewerState ?? '')) ? reviewer : '';
+};
+/**
+ * No review routes on the way: an account service from before them (PSC 0.2.33) answers `not_found` (no such route) or
+ * `bad_command`; a proxy's 404 without a JSON body reaches here as `not_found` too (device-client.mjs agentReviewState);
+ * a manager from before them (one already running on the port) answers 404 itself.
+ */
+const reviewUnsupported = (error) => ['not_found', 'bad_command'].includes(error?.errorCode) || error?.status === 404;
+const validSeconds = (value) => Number.isInteger(value) && value >= REVIEW_SECONDS.min && value <= REVIEW_SECONDS.max;
+
+export function reviewRoutes({ manager }) {
+  const agentOf = (body) => {
+    const agentId = typeof body?.agentId === 'string' ? body.agentId : '';
+    if (!agentId) throw new Error(say('review.incomplete'));
+    return agentId;
+  };
+  /** The Agent must be the signed-in account's; `here` is this computer's Connection for it ('' when it has none). */
+  const place = async (agentId) => {
+    const state = await manager('/manager/state');
+    if (!(state.device?.agents ?? []).some((agent) => agent.id === agentId)) throw new Error(say('open.notInAccount'));
+    const instance = (state.instances ?? []).find((row) => row.mode === 'local_agent' && row.agentId === agentId && !row.signedOutAt);
+    return { here: typeof instance?.connectionId === 'string' ? instance.connectionId : '' };
+  };
+  const agentState = (agentId) => manager('/manager/agents/review-state', { agentId });
+  /** What the page may see: who reviews, by kind, the deadline and the default. Pure. */
+  const view = (agentId, reply, here) => {
+    const reviewer = effectiveReviewer(reply);
+    return { agentId, reviewer: !reviewer ? 'none' : reviewer === here ? 'this' : 'other',
+      reviewSeconds: validSeconds(reply?.reviewSeconds) ? reply.reviewSeconds : null,
+      reviewNewConversations: typeof reply?.reviewNewConversations === 'boolean' ? reply.reviewNewConversations : null,
+      thisComputer: here !== '' };
+  };
+  const read = async (query = {}) => {
+    const agentId = agentOf(query);
+    const { here } = await place(agentId);
+    return view(agentId, await agentState(agentId), here);
+  };
+  /** Refused (nothing sent) when this computer is not set up for the Agent: it has no Connection to designate. */
+  const notHere = () => Object.assign(new Error(say('review.notHere')), { errorCode: 'reviewer_not_set_up_here' });
+  const designate = async (body = {}) => {
+    const agentId = agentOf(body);
+    if (!['this', 'none'].includes(body.reviewer)) throw new Error(say('review.incomplete'));
+    if (body.reviewSeconds !== undefined && (body.reviewer !== 'this' || !validSeconds(body.reviewSeconds))) throw new Error(say('review.deadline'));
+    const { here } = await place(agentId);
+    if (body.reviewer === 'none') return { ...view(agentId, await manager('/manager/agents/reviewer', { agentId, connectionId: null }), here), designated: false };
+    if (!here) throw notHere();
+    const before = effectiveReviewer(await agentState(agentId));
+    const reply = await manager('/manager/agents/reviewer', { agentId, connectionId: here, ...(validSeconds(body.reviewSeconds) ? { reviewSeconds: body.reviewSeconds } : {}) });
+    return { ...view(agentId, reply, here), designated: before !== here && effectiveReviewer(reply) === here };
+  };
+  /** When the Agent has no eligible reviewer, this computer becomes it. Says whether it did. */
+  const designateIfNone = async (agentId, here) => {
+    let before;
+    try { before = await agentState(agentId); } catch (error) {
+      // An account service from before these routes: review stays the conversation's switch alone, as in 0.19.1.
+      if (reviewUnsupported(error)) return false;
+      throw error;
+    }
+    if (effectiveReviewer(before)) return false;
+    const at = here ?? (await place(agentId)).here;
+    if (!at) throw notHere();
+    return effectiveReviewer(await manager('/manager/agents/reviewer', { agentId, connectionId: at, ifNone: true })) === at;
+  };
+  const setDefault = async (body = {}) => {
+    const agentId = agentOf(body);
+    if (typeof body.enabled !== 'boolean') throw new Error(say('review.incomplete'));
+    const { here } = await place(agentId);
+    const designated = body.enabled ? await designateIfNone(agentId, here) : false;
+    return { ...view(agentId, await manager('/manager/agents/review-default', { agentId, enabled: body.enabled }), here), designated };
+  };
+  return { read, designate, designateIfNone, setDefault };
+}

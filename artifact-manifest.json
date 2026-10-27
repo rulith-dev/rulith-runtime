@@ -3,7 +3,7 @@
   "source": "https://github.com/rulith-dev/rulith-runtime",
   "files": {
     "agent/rulith-agent.mjs": {
-      "sha256": "7f13e3ea408df7fb3716b88ceadba7132d61120e6e76b2e26b4e03c7290ebb52"
+      "sha256": "ee4009759015d90248920075b798938d0d85e731905a93b7422241dbac4dbe94"
     },
     "agent/local-trace.mjs": {
       "sha256": "35ab9397bd47a0e099965ef5c7ce0f3c0c5269f4da523d443d6fd4610563d38a"
@@ -45,7 +45,7 @@
       "sha256": "68a8a73bb0ec4a07b1685aeef15ebd4bf690ddd61d7a0aaacbbc082fde55bc93"
     },
     "worker/rulith-worker.mjs": {
-      "sha256": "40fb0d6da198d95251df7a8cfca1f4bad9a426b9707931c9e66a7d7a57eee8ca"
+      "sha256": "5688c2f40278accf63f1d75384731c25de8906bf5b98bdd80445528b385b6438"
     },
     "worker/run-artifacts.mjs": {
       "sha256": "911d3e49c10e9b02f389f9c21cf43542dc6cc9261708c80f9ac683e2f97411e4"
@@ -87,7 +87,7 @@
       "sha256": "b61aadb7c1c672612232d268c33b34d588599b08c3c3499af40c75af2778c391"
     },
     "local/rulith-local.mjs": {
-      "sha256": "341cce89b6617d222b50dbddad1cc4668c3eed4e30530f65cc1d020ee06463ca"
+      "sha256": "5506aa7b072288ce30f8aa2be68606c0c737604f392c14eb09e1a047357eed15"
     },
     "local/operations.mjs": {
       "sha256": "6cf1e7ea8077908f53d6423637fca2d1df567fefbdc9e00ff25465f1cacb4e91"
@@ -99,31 +99,31 @@
       "sha256": "8d4d51978e8657cf0dd54ae58327313057610cf4521c0a604726b446102bbc04"
     },
     "local/process-identity.mjs": {
-      "sha256": "31eeeb3f1254712d8f4e8fc746be9eb10425f61728c0e5091e8bb0a590850218"
+      "sha256": "aca6459c02c13de0af2edfe3b3390412ed1a9618ff3e58fbcabd74f99cabd902"
     },
     "local/model-settings.mjs": {
-      "sha256": "b1f50863802c9735a61ece6a7913693423cc3b864673bb5a5364e4ea6e38f12f"
+      "sha256": "30b840f1e60f003caa01ac3149e16f4de2f90b493c59a3171e1a7a08a68441e7"
     },
     "local/sandbox-home-label.mjs": {
       "sha256": "367ff2a5fe364e819ad6a14896614e417ae90911c1a2d74a888bb6b25d822c5b"
     },
     "local/device-client.mjs": {
-      "sha256": "198c1448f958ef75f8006ec4c87c78995a26a60d9feb675840796b9fd23985da"
+      "sha256": "31ba4e0cc9a521e9079b2094b4dfdac8b9a9e101630c0f6325b35ae9d66f522e"
     },
     "local/instance-manager.mjs": {
-      "sha256": "a64f41f7b4b707acac14a3761c8aa33684c1d7d905d8d4eb5e9311e348685bb9"
+      "sha256": "5fbf09221328f4ce4cbb31887d7376b7d0cba05798f64322b5a5ee153833745a"
     },
     "local/tool-library.mjs": {
       "sha256": "659323137a750973fb9942e6d2bb8668bc3b23e55d10bc0d82d27a69a569d12f"
     },
     "local/manager-server.mjs": {
-      "sha256": "173e6c4b0c1683dc30dae6afaa56da0611401a06fae72a8eb64d198537151072"
+      "sha256": "77f7c4c3412239e89a9562e203013c2c738752f611ff9013f2a4fab2c851de4c"
     },
     "local/manager-health.mjs": {
       "sha256": "a5e9860bd554218b478d436fe29727b2f6a9b81969123294e440dec5eb3dcba2"
     },
     "docs/local-manager.md": {
-      "sha256": "413275df53d4d463465f86e6dcfe50d5e87743962cbce5a47b93659f904d886a"
+      "sha256": "5461558ba4ac482c392e152bf182737ce21b0688ca89534c3b71569553bea98e"
     },
     "docs/local-materials.md": {
       "sha256": "cfd45ae4852a76589844a017ac24f3dbfbc16b273c5a3021547f5800c2d50d1a"
@@ -156,7 +156,7 @@
       "sha256": "ffe408518344766f97b1fca4ba8aad2097929a8b13cca066ec9bc6c453f603df"
     },
     "examples/verified-calculation/README.md": {
-      "sha256": "bca3033c83bd5742086c03559a75bf4825e283130beed06706e207032de83ddb"
+      "sha256": "53d7bee7aa951cf1aa9f32238947491f35779d9c02a22ad5185dc1890da59749"
     },
     "examples/verified-calculation/data/input.json": {
       "sha256": "28090fb5874cb2d9eaf6df33c8d694ac5da078e53ce70d752045ca4ecb5481ec"
@@ -165,7 +165,7 @@
       "sha256": "cb3de45655ab25b8da0e7e0d575bf4fdfdaa106ecb4a03b434ae169f30d842c6"
     },
     "examples/verified-calculation/setup.mjs": {
-      "sha256": "35799925fb085529a24dd2726bfb4c09d2bdb03a9671c7356f76cfe398bc6855"
+      "sha256": "8a4fa9022232a336569e0c3ce67c927e7ce72fdbbc7cea73276de07feec60f4f"
     },
     "examples/verified-calculation/worker-tools.json": {
       "sha256": "e173b13818e54b7f9b07a9ad70fce2a4a7b6426abc514780efe41e080e14d244"

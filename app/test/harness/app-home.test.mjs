@@ -141,6 +141,31 @@ test('one launcher per app home: a second one is refused while the first holds i
   assert.equal(fs.existsSync(path.join(home, 'launcher.lock')), false);
 });
 
+// The same, for a launcher started the way `rulith` starts it: in the `rulith` process (rulith-local.mjs startApp), whose
+// command line runs rulith-local.mjs, not the launcher. Up to 0.19.1 the launcher's lock then named the launcher's script,
+// so on Windows the Runtime read the running app's lock as left by an ended process and a second start took it over.
+// 中文说明：经 `rulith` 启动的启动器，锁要记下进程真正运行的入口脚本；第二次启动必须被拒绝，持有者结束后才能接管。
+test('a launcher started through `rulith` holds its lock: a second start is refused while it runs, and a dead holder releases it', async (t) => {
+  const home = temp(t);
+  const holder = spawn(process.execPath, [path.join(repo, 'test', 'harness', 'support', 'rulith-start.mjs'), home],
+    { stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => holder.kill());
+  await new Promise((resolve, reject) => {
+    holder.stdout.on('data', (chunk) => { if (String(chunk).includes('held')) resolve(); });
+    holder.once('exit', () => reject(new Error('the holder exited')));
+  });
+  // The ticket names the script the holder's command line runs.
+  const ticket = JSON.parse(fs.readFileSync(path.join(home, 'launcher.lock'), 'utf8'));
+  if (process.platform === 'win32') assert.equal(ticket.script, 'rulith-start.mjs');
+  await assert.rejects(holdAppHome(home), /^Error: Rulith is already running from .* Use its browser tab, or stop it and start again\.$/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'launcher.lock'), 'utf8')).id, ticket.id, 'the running app keeps its lock');
+  holder.kill();
+  await new Promise((resolve) => holder.once('exit', resolve));
+  const release = await holdAppHome(home);
+  release();
+  assert.equal(fs.existsSync(path.join(home, 'launcher.lock')), false);
+});
+
 // The app home's kit reaches a new Agent through the manager's setup operation (web/local-setup.mjs): the launcher passes
 // it as RULITH_DSH_KIT_HOME and the host sends it with every setup; the manager uses it only for an Agent with no kit home.
 test('the app home kit is what the host offers the manager for a new Agent\'s general kit', async () => {
