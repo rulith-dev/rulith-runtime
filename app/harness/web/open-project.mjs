@@ -125,6 +125,8 @@ export function projectRoutes({ manager: call, platform = process.platform, file
     if (reply?.state === 'ready') onReady(target.instanceId);
     const view = projectView(reply);
     if (target.accountName && view.accountId === target.accountId) view.accountName = target.accountName;
+    // The confirmation explains isolation for this computer's system only (PSC 0.2.36 §14 ④).
+    view.system = { win32: 'windows', linux: 'linux', darwin: 'macos' }[platform] ?? 'other';
     return view;
   };
   return {

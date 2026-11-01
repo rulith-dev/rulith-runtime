@@ -33,10 +33,14 @@ test('a live app\'s context-window file may appear or change, with its temporary
   assert.deepEqual(guard(changed({ [windows]: 'f:210:3:3', [`${windows}.tmp`]: 'f:210:3:3', [dsh]: 'd:0:3:3' }, withFile), true, withFile).lines, [])
   const withTemporary = changed({ [`${windows}.tmp`]: 'f:210:1:1' }, withFile)
   assert.deepEqual(guard(changed({ [`${windows}.tmp`]: null, [windows]: 'f:210:3:3', [dsh]: 'd:0:3:3' }, withTemporary), true, withTemporary).lines, [])
-  // The live app's periodic rewrites are still its own.
+});
+
+test('batch C: the app rewrites nothing on a timer, so its former status file and device record changes are the suite\'s even when it is live', () => {
   const deviceTemporary = at('manager', 'device.json.0b0e3f9c-1d2e-4f50-8a6b-7c8d9e0f1a2b.tmp')
   assert.deepEqual(guard(changed({ [at('dsh', 'rulith-runtime-status.json')]: 'f:11:2:2', [at('manager', 'device.json')]: 'f:20:2:2',
-    [manager]: 'd:0:2:2', [deviceTemporary]: 'f:20:2:2', [windows]: 'f:200:2:2', [dsh]: 'd:0:2:2' }), true).lines, [])
+    [manager]: 'd:0:2:2', [deviceTemporary]: 'f:20:2:2' }), true).lines.sort(),
+  [`modified ${at('dsh', 'rulith-runtime-status.json')}`, `modified ${at('manager', 'device.json')}`, `modified ${manager}`,
+    `created ${deviceTemporary}`].sort())
 });
 
 test('everything else stays flagged: the same changes without a live app, a removed window file, other files, the dsh folder alone', () => {
@@ -58,8 +62,6 @@ test('everything else stays flagged: the same changes without a live app, a remo
     assert.match(lines[0], /^(created|modified) /)
     assert.ok(lines[0].endsWith(other), lines[0])
   }
-  // The status file and device record are periodic rewrites only, never created or removed by the app.
-  assert.deepEqual(guard(changed({ [at('dsh', 'rulith-runtime-status.json')]: null }), true).lines, [`removed ${at('dsh', 'rulith-runtime-status.json')}`])
 });
 
 test('nothing changed is nothing to report, and whether the app was live is asked only when a change could be its own', () => {

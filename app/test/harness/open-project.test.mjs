@@ -197,30 +197,39 @@ function loadClient() {
 }
 const client = loadClient();
 const plain = (value) => JSON.parse(JSON.stringify(value));
+// PSC 0.2.36 §14 ④, verbatim: the open-project note is the start, this computer's system's sentence (with the limits of
+// isolation on Windows and Linux) and the end.
+const NOTE_START = "Reading, writing and running commands in this folder are done by the Agent's engineering capability. Commands start without keys or tokens in their environment variables.";
+const NOTE_WINDOWS = "On Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; while this folder is open, commands can write in it, and its previous permissions come back when access is revoked.";
+const NOTE_LINUX = "On Linux, commands can write only this folder and their tool folder, the rest of the system is read-only, Rulith's credential folders are hidden, and background jobs end with the tool call that started them.";
+const NOTE_MACOS = "On macOS, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria.";
+const NOTE_LIMITS = "This protects Rulith's own credentials only: commands can still read other files your account can read, and can reach the network.";
+const NOTE_OTHER = "On this system, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria.";
+const NOTE_FALLBACK = 'If isolation cannot be set up, commands do not run, unless you turned on "Run without isolation (not recommended)" in Settings.';
+const NOTE_END = 'In non-strict mode the model chooses commands and their arguments itself; whether the work is done is still decided only by the acceptance criteria you sign.';
 
 test('the confirmation lists in view the folder, the Agent on this computer, what may be done, the tools in plain words, the tier, the caution and how to withdraw; only tool ids with versions and the account are under Details', () => {
   const shown = plain(client.projectConfirmation(notOpen()));
-  // Every item SYS-LOCAL-01 (PSC 0.2.24) requires the confirmation to list is in view, in this order, the tools used
-  // included; design §3.2 folds only the ids with their versions and the account.
-  assert.deepEqual(shown.rows.map(([name]) => name), ['Folder', 'Agent', 'What it may do', 'Tools used', 'Exploration mode', 'Note', 'How to withdraw']);
+  // Every item SYS-LOCAL-01 (PSC 0.2.24) requires the confirmation to list is in it, in this order; since PSC 0.2.36 the
+  // tools used are listed first under Details, with the ids and their versions and the account (design §3.2).
+  assert.deepEqual(shown.rows.map(([name]) => name), ['Folder', 'Agent', 'What it may do', 'Exploration mode', 'Note', 'How to withdraw']);
   // The caution is PSC 0.2.31 ④'s own text, checked exactly below; every other word is the page's.
   const text = [shown.title, ...shown.rows.filter(([name]) => name !== 'Note').flat(), ...shown.details.flat(), shown.footer].join('\n');
   const row = (label) => shown.rows.find(([name]) => name === label)?.[1];
   const detail = (label) => shown.details.find(([name]) => name === label)?.[1];
   assert.equal(row('Folder'), 'D:\\Work\\game');
   assert.match(row('What it may do'), /Read files, write files and run commands/);
-  // PSC 0.2.31 ④ (in force) fixes this text, replacing 0.2.24's sentence that the folder is not OS-level isolation.
-  assert.equal(row('Note'), 'On this computer, reading, writing and running commands in this project folder are carried out by the Agent\'s engineering capability. Commands run without this computer\'s keys or tokens in their environment, and tool access to loopback and private network addresses (including this computer\'s manager and app ports) is refused. By system: on Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; this folder is writable for commands while it is open, and its previous setting is restored when it is revoked or this computer is deactivated. On Linux, commands can write only this project folder and their tool folder, the system is read-only, Rulith\'s credential folders are hidden, the network stays available, and background jobs end with the tool call that started them. On macOS, commands are not yet isolated on this computer. If isolation cannot be set up, commands do not run (unless you chose "Run without isolation (not recommended)" in Settings). The non-strict tier means the commands and arguments the model gives no longer need grounds on the Board; whether the work is done is still certified only by the acceptance contract you sign. To revoke: unlock this project in Console, or deactivate this computer.');
-  assert.match(row('How to withdraw'), /withdraw the grant on this project's row of this Agent's page in Console/);
-  assert.match(row('How to withdraw'), /revoke this computer's sign-in/);
+  // PSC 0.2.36 §14 ④ fixes this text; a view that names no system it knows says commands are not isolated there.
+  assert.equal(row('Note'), [NOTE_START, NOTE_OTHER, NOTE_END].join(' '));
+  assert.equal(row('How to withdraw'), "In Console, choose Revoke access on this folder's row of the Agent's page, or sign this computer out.");
   assert.doesNotMatch(shown.rows.flat().join('\n'), /eng\.|@\d|1\.0\.0/, 'tool ids and versions stay folded');
   // The tools, in plain words, each once, with the capability they come from (by its name, without its version).
-  const words = row('Tools used').split('. ')[0].split(', ');
+  const words = detail('Tools used').split('. ')[0].split(', ');
   assert.deepEqual(words, ['Run acceptance checks', 'edit files by patch', 'find files by name', 'check background commands', 'run commands in the background', 'stop background commands', 'list files', 'edit files',
     'read files', 'read images', 'run commands', 'search file contents', 'run tests', 'see the folder\'s changes', 'write files'], 'one entry per tool, in the order the service lists them');
-  assert.match(row('Tools used'), /From this Agent's installed official engineering capability\.$/);
+  assert.match(detail('Tools used'), /From this Agent's installed official engineering capability\.$/);
   // Batch 5 (design §2): the capability's id and the Connection's name are internal words, so they are under Details.
-  assert.deepEqual(shown.details.map(([name]) => name), ['Account', 'Tools and versions', 'Local connection']);
+  assert.deepEqual(shown.details.map(([name]) => name), ['Tools used', 'Account', 'Tools and versions', 'Local connection']);
   assert.equal(detail('Local connection'), 'Workspace');
   assert.equal(detail('Account'), 'acct-1', 'without a name the account shows by its id');
   assert.equal(plain(client.projectConfirmation(notOpen(undefined, { accountName: 'Owner' }))).details.find(([name]) => name === 'Account')[1], 'Owner');
@@ -237,7 +246,13 @@ test('the confirmation lists in view the folder, the Agent on this computer, wha
   // A tool this page has no words for is still listed, by its name without the version; two versions of one tool are one entry.
   const other = plain(client.projectConfirmation(notOpen('/home/o/x', { tools: [{ id: 'eng.new_tool@1' }, { id: 'eng.read@1' }, { id: 'eng.read@2' }],
     computer: { label: '' }, capability: undefined })));
-  assert.equal(other.rows.find(([name]) => name === 'Tools used')[1], 'eng.new_tool, read files.');
+  assert.equal(other.details.find(([name]) => name === 'Tools used')[1], 'eng.new_tool, read files.');
+  // PSC 0.2.36 §14 ④: the note explains isolation for this computer's system only.
+  const note = (system) => plain(client.projectConfirmation(notOpen(undefined, { system }))).rows.find(([name]) => name === 'Note')[1];
+  assert.equal(note('windows'), [NOTE_START, NOTE_WINDOWS, NOTE_LIMITS, NOTE_FALLBACK, NOTE_END].join(' '));
+  assert.equal(note('linux'), [NOTE_START, NOTE_LINUX, NOTE_LIMITS, NOTE_FALLBACK, NOTE_END].join(' '));
+  assert.equal(note('macos'), [NOTE_START, NOTE_MACOS, NOTE_END].join(' '));
+  assert.equal(note('other'), [NOTE_START, NOTE_OTHER, NOTE_END].join(' '));
   assert.equal(other.details.find(([name]) => name === 'Tools and versions')[1], 'eng.new_tool@1, eng.read@1, eng.read@2.');
   assert.equal(other.rows.find(([name]) => name === 'Agent')[1], 'Default agent · this computer unnamed computer');
   // Nothing to confirm when the answer is incomplete or the mode cannot be explained.

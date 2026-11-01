@@ -112,7 +112,8 @@ test('a manager key outside the agreed shape is refused at startup', async (t) =
   const accepted = await runCli(['manager'], { ...base, RULITH_MANAGER_KEY: 'Abcd-1234_efgh5678' }, /Rulith manager: /)
   assert.match(accepted.out, new RegExp(`Rulith manager: http://127\\.0\\.0\\.1:${port} `))
   assert.equal(accepted.out.includes('Abcd-1234_efgh5678'), false)
-  assert.match(CLI_HELP, /RULITH_MANAGER_KEY/)
+  // Batch C: `rulith manager` still runs (above) but is not offered in the help, nor is `kit install`.
+  assert.doesNotMatch(CLI_HELP, /RULITH_MANAGER_|rulith manager|kit install/)
 })
 
 test('retired launch options refuse before creating files or starting a host', async (t) => {

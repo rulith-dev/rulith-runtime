@@ -140,7 +140,6 @@ export async function apply(ctx, config = {}) {
   const shadowSettings = config.shadow ?? {};
   const shadowLog = reviewLog(path.join(stateDir, 'logs'));
   const selectionFile = path.join(stateDir, 'rulith-selected.json');
-  const statusFile = path.join(stateDir, 'rulith-runtime-status.json');
   const chosenName = () => readJson(selectionFile)?.agentName || config.agentName || undefined;
   // 历史工具调用只在模型侧改名；必须先映射，再排板视图与统计已接受的 Set。
   // 模型看到的 Rulith 结果：每份只留这一步的变化（D-1008e），到来时排一次、此后不再改（D-1026b）；上下文到减负线
@@ -231,11 +230,12 @@ export async function apply(ctx, config = {}) {
   const saveAssignments = () => fs.promises.writeFile(assignmentsFile, JSON.stringify(Object.fromEntries(assignments), null, 2)).catch(() => {});
   let dirOwners = new Map();         // samePath(directory) -> agentId, refreshed with the sidebar tree
   const liveConversations = () => [...attached.values()].reduce((n, h) => n + h.boards.size, 0);
+  // The host's status, in memory only (batch C, D-1031a: it was also written to a status file in the dsh home at every 3-second
+  // tick, which nothing read).
   const report = (state, detail = {}) => {
     // A conversation set reports only its own count; the status counts every attached Agent's.
     status = { state, at: new Date().toISOString(), agents: [...attached.values()].map((h) => h.agentName), ...detail,
       liveConversations: liveConversations() };
-    try { fs.writeFileSync(statusFile, JSON.stringify(status, null, 2)); } catch {}
   };
   const defaultHolder = () => {
     const name = chosenName();
@@ -377,7 +377,7 @@ export async function apply(ctx, config = {}) {
         try { await attach(agent); }
         catch (error) { failures.push(`${agent.agentName}: ${String(error?.message ?? error).slice(0, 160)}`); }
       }
-      if (!paired.length) report('no_agent', { hint: 'Sign in with the Deep Rulith entry and set up an Agent' });
+      if (!paired.length) report('no_agent', { hint: 'Sign in to Rulith and set up an Agent' });
       else if (!attached.size) report('failed', { error: failures.join('; ').slice(0, 300) });
       else report('attached', { agentName: defaultHolder()?.agentName, tools: [...TOOLS], ...(failures.length ? { failures } : {}) });
       // Run independently: one idle conversation's retry budget cannot block another or Agent attachment.
@@ -430,10 +430,6 @@ export async function apply(ctx, config = {}) {
     let text = ''; req.on('data', (chunk) => { text += chunk; if (text.length > 65536) req.destroy(); });
     req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); } }); req.on('error', reject);
   });
-  // Whether this conversation's Agent's Worker on this computer is online, as its own Trace last reported it (the 任务
-  // panel's 这台电脑). Read from the instance's event stream through the manager (the address carries the instance key and
-  // stays in this process); only the state and this computer's name reach the page.
-  let traceLink = null;
   // Where each Source this Agent may use is bound, as Console locked it: the same read-only list the Worker loads at
   // start (GET <work>/sources with its own Connection credentials). Only names, types and locations reach the page.
   const sourcesCache = new Map();
@@ -455,27 +451,18 @@ export async function apply(ctx, config = {}) {
     if (!holder) throw new Error('No attached Agent');
     return boundSources(holder.instanceId);
   });
-  const workerTrace = async (query = {}) => {
+  // Whether this conversation's Agent's Worker on this computer is online (the Tasks panel's "This computer"): the manager's
+  // own state of its instance, `workerSetting.state`, which the instance host keeps from what the Worker last reported
+  // (online, offline, needs setup). Batch C (D-1031a; runtime review #1): it used to sample the instance host's event
+  // stream, whose bounded buffer had lost the one availability event after a few hundred tool calls, so a long session
+  // showed the Worker unread while it was online. Only the state and this computer's name reach the page.
+  // 中文说明：直接读管理器状态里这个实例的 workerSetting.state，不再从实例的事件流里抽样（长会话里最后一条在线事件会被挤掉）。
+  const workerState = async (query = {}) => {
     const agent = agentForRequest(query);
     if (!agent) return { available: false, computer: os.hostname() };
-    if (traceLink?.instanceId !== agent.instanceId)
-      traceLink = { instanceId: agent.instanceId, url: new URL((await manager('/manager/instances/open', { instanceId: agent.instanceId, page: '/' })).url) };
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 1500);
-    let text = '';
-    try {
-      const response = await fetch(`${traceLink.url.origin}/events?k=${encodeURIComponent(traceLink.url.searchParams.get('k') ?? '')}&history=paged`, { signal: abort.signal });
-      if (!response.ok) throw new Error(`the Worker trace answered ${response.status}`);
-      const reader = response.body.getReader(); const decoder = new TextDecoder();
-      for (;;) { const { value, done } = await reader.read(); if (done) break; text += decoder.decode(value, { stream: true }); }
-    } catch (error) {
-      if (error.name !== 'AbortError') { traceLink = null; throw error; }
-    } finally { clearTimeout(timer); }
-    const events = text.split('\n\n').filter((chunk) => chunk.startsWith('data: '))
-      .map((chunk) => { try { return JSON.parse(chunk.slice(6)); } catch { return null; } })
-      .filter((event) => event?.src === 'worker');
-    const lastAvailability = [...events].reverse().find((event) => event.type === 'availability');
-    return { available: true, agentName: agent.agentName, state: lastAvailability?.state ?? 'unknown', computer: os.hostname() };
+    const instance = ((await manager('/manager/state')).instances ?? []).find((row) => row.id === agent.instanceId);
+    const state = typeof instance?.workerSetting?.state === 'string' && instance.workerSetting.state ? instance.workerSetting.state : 'unknown';
+    return { available: true, agentName: agent.agentName, state, computer: os.hostname() };
   };
   // The Agent's call that waits for a person (a decision, or reconciling its result), from the manager's Health read, with
   // its page in Console: the 任务 panel shows it after a restart too, before the conversation's next result. Only whether
@@ -598,6 +585,8 @@ export async function apply(ctx, config = {}) {
     // 0.19.3: the person's context window for the route of the model in force (empty returns to the detected or default
     // one); kept on this computer only, used from the next turn.
     'POST /rulith/api/model/context-window': (body) => models.setContextWindow(body),
+    // Batch C: one check of the address, model ID and key the form holds, before saving (model-runtime.mjs checkModel).
+    'POST /rulith/api/model/check': (body) => models.check(body),
     // Design §3.2 打开文件夹: the operating system's folder chooser, opened in this process and closed again when the page
     // goes away. GET: { available }. POST: { state: chosen | cancelled | unavailable, path?, teaching? }; the chosen folder
     // is then opened through the project routes below like a typed one.
@@ -615,7 +604,7 @@ export async function apply(ctx, config = {}) {
       return diagnosisReport({ managerHome: home, dshHome: process.env.DSH_HOME, appHome: process.env.RULITH_DSH_APP_HOME,
         kitHome: config.kitHome || process.env.RULITH_DSH_KIT_HOME, keyFile: config.keyFile, legacyWorkbench, pendingFor: isolationPendingFor(instances) });
     },
-    'GET /rulith/api/worker': (query) => workerTrace(query),
+    'GET /rulith/api/worker': (query) => workerState(query),
     // Settings → Advanced: one Agent's "Run without isolation (not recommended)" on this computer (PSC 0.2.31 ③; see
     // local-setup.mjs isolationRoutes). Turning it on is passed on only with the page's confirmation.
     'POST /rulith/api/isolation': (body) => isolation.set(body),

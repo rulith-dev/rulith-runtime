@@ -95,7 +95,7 @@ described as an unknown outcome.
 shadow and bridge and cancels in-progress connection/backoff. Agent detach closes all of its channels. Reopening
 recreates local state with the same key. Transcript, relief and outgoing trim derive their Board state from each
 dsh session's own log/messages; no shared Board cache exists there and their rendering is unchanged.
-The Agent-wide panel and `rulith-runtime-status.json` expose counts, never conversation keys or credentials.
+The Agent-wide panel exposes counts, never conversation keys or credentials.
 
 Set launcher `conversationBoards` to `false`, or set `RULITH_DSH_CONVERSATION_BOARDS=0`, to use the shared default
 Board and omit the header. The environment switch wins in both directions: `0` turns it off and `1` turns it on;

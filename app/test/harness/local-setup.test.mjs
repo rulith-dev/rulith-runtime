@@ -8,7 +8,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { effectiveReviewer, isolationRoutes, reviewRoutes, setupRoutes, setupView } from '../../harness/web/local-setup.mjs';
-import { conversationModel, createRouteAdapter, effectiveModel, installLiveModels, liveRoute, modelRoutes, publicModel, signedInAccount }
+import { checkModel, conversationModel, createRouteAdapter, effectiveModel, installLiveModels, liveRoute, modelRoutes, providerMessage, publicModel, signedInAccount }
   from '../../harness/web/model-runtime.mjs';
 
 const ACCOUNT = { origin: 'https://console.example', accountId: 'acct-1' };
@@ -154,9 +154,9 @@ test('a model on a local server takes localContextWindow as its route\'s window;
 test('the launcher\'s line for an Agent names its model source, id and endpoint, never a key', async () => {
   const { modelLine, attachedAgents } = await import('../../harness/web/model-runtime.mjs');
   assert.equal(modelLine('One', { source: 'override', url: 'https://api.deepseek.com', name: 'deepseek-reasoner', key: SECRET }),
-    'Deep Rulith: Agent One uses its own model: deepseek-reasoner at https://api.deepseek.com.');
+    'Rulith: Agent One uses its own model: deepseek-reasoner at https://api.deepseek.com.');
   assert.equal(modelLine('Two', { source: 'default', url: 'http://127.0.0.1:8080/v1/', name: 'qwen', key: '' }),
-    'Deep Rulith: Agent Two uses the account default model: qwen at http://127.0.0.1:8080/v1.');
+    'Rulith: Agent Two uses the account default model: qwen at http://127.0.0.1:8080/v1.');
   assert.match(modelLine('Three', { source: 'default', url: '', name: '', key: '' }), /Agent Three has no usable model yet/);
   assert.equal(modelLine('One', { source: 'override', url: 'https://api.deepseek.com', name: 'x', key: SECRET }).includes(SECRET), false);
   assert.deepEqual(attachedAgents('Z:/nowhere', null), []);
@@ -1000,4 +1000,51 @@ test('web search takes its key from the turn\'s model: DeepSeek\'s own API only,
   await dsh.request(2);
   assert.equal(await provider.resolveOptions().resolveApiKey(), undefined);
   assert.equal(provider.resolveOptions().apiKeyEnv, 'RULITH_DSH_WEB_SEARCH_KEY', 'dsh\'s own missing-key words, as before');
+});
+
+// Batch C (D-1031a): Check in the model step. One minimal request on the wire the address names, with the form's key;
+// the provider's own words when it refuses, with the key cut out; nothing saved or returned of the key.
+test('batch C: the model check sends one minimal request on the address\'s wire and reports OK or the service\'s own words', async () => {
+  const KEY = 'sk-check-0123456789';
+  const sent = [];
+  const reply = (status, body) => async (url, init) => { sent.push({ url, headers: init.headers, body: JSON.parse(init.body) }); return new Response(body, { status, statusText: status === 401 ? 'Unauthorized' : '' }); };
+  // Anthropic Messages: x-api-key and anthropic-version, a small output limit.
+  assert.deepEqual(await checkModel({ url: 'https://api.anthropic.com/v1/messages', name: 'claude-opus-5-5', key: KEY }, { fetchImpl: reply(200, '{"id":"m"}') }), { state: 'ok' });
+  assert.equal(sent[0].url, 'https://api.anthropic.com/v1/messages');
+  assert.deepEqual([sent[0].headers['x-api-key'], sent[0].headers['anthropic-version'], sent[0].headers.authorization], [KEY, '2023-06-01', undefined]);
+  assert.deepEqual(sent[0].body, { model: 'claude-opus-5-5', max_tokens: 16, messages: [{ role: 'user', content: 'Reply with OK.' }] });
+  // OpenAI-compatible: a bearer token and no token limit.
+  assert.deepEqual(await checkModel({ url: 'https://api.openai.com/v1', name: 'gpt-5', key: KEY }, { fetchImpl: reply(200, '{}') }), { state: 'ok' });
+  assert.equal(sent[1].url, 'https://api.openai.com/v1/chat/completions');
+  assert.equal(sent[1].headers.authorization, `Bearer ${KEY}`);
+  assert.deepEqual(sent[1].body, { model: 'gpt-5', messages: [{ role: 'user', content: 'Reply with OK.' }] });
+  // A local server without a key: no credential header at all.
+  await checkModel({ url: 'http://127.0.0.1:11434/v1', name: 'qwen3' }, { fetchImpl: reply(200, '{}') });
+  assert.equal(Object.keys(sent[2].headers).some((name) => /authorization|api-key/i.test(name)), false);
+  // Refused: the provider's words (both error shapes), the key cut out even when the service echoes it.
+  const refused = await checkModel({ url: 'https://api.anthropic.com/v1/messages', name: 'claude-opus-5-5', key: KEY },
+    { fetchImpl: reply(401, JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: `invalid x-api-key ${KEY}` } })) });
+  assert.deepEqual(refused, { state: 'refused', message: '401 Unauthorized: invalid x-api-key …' });
+  assert.equal(JSON.stringify(refused).includes(KEY), false);
+  assert.equal(providerMessage(404, 'Not Found', JSON.stringify({ error: { message: 'The model `gpt-x` does not exist' } })), '404 Not Found: The model `gpt-x` does not exist');
+  assert.equal(providerMessage(502, 'Bad Gateway', '<html>proxy</html>'), '502 Bad Gateway');
+  // Not reached: the network error's code.
+  const unreachable = await checkModel({ url: 'https://api.openai.com/v1', name: 'gpt-5', key: KEY },
+    { fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }); } });
+  assert.deepEqual(unreachable, { state: 'unreachable', message: 'ENOTFOUND' });
+  // An address or a model ID missing: refused before anything is sent.
+  await assert.rejects(checkModel({ url: 'ftp://x', name: 'm' }, { fetchImpl: reply(200, '{}') }), (error) => error.errorCode === 'model_address_invalid');
+  await assert.rejects(checkModel({ url: 'https://api.openai.com/v1', name: ' ' }, { fetchImpl: reply(200, '{}') }), (error) => error.errorCode === 'model_name_missing');
+  assert.equal(sent.length, 4, 'nothing was sent for the refused address and the missing model ID');
+  // The route: with no key typed, the saved key of the model in force, only for the same address.
+  const saved = { url: 'https://api.openai.com/v1', name: 'gpt-5', key: KEY };
+  const seen = [];
+  const routes = modelRoutes({ manager: async () => ({}), read: async () => ({ account: ACCOUNT, model: saved }),
+    fetchImpl: async (url, init) => { seen.push(init.headers.authorization ?? ''); return new Response('{}', { status: 200 }); } });
+  assert.deepEqual(await routes.check({ url: 'https://api.openai.com/v1', name: 'gpt-5' }), { state: 'ok' });
+  await routes.check({ url: 'https://openrouter.ai/api/v1', name: 'openai/gpt-5' });
+  await routes.check({ url: 'https://openrouter.ai/api/v1', name: 'openai/gpt-5', key: 'typed-key-xyz' });
+  assert.deepEqual(seen, [`Bearer ${KEY}`, '', 'Bearer typed-key-xyz'], 'a saved key never goes to another address');
+  const host = fs.readFileSync(new URL('../../harness/web/rulith-runtime.mjs', import.meta.url), 'utf8');
+  assert.match(host, /'POST \/rulith\/api\/model\/check': \(body\) => models\.check\(body\),/);
 });

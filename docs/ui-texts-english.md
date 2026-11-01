@@ -37,6 +37,23 @@ one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
 中文摘要：0.19.3 起模型表单显示对话所按的上下文窗口及其来源（从模型服务读到、由你设定、来自设置文件、估计值、托管模型的默认值），
 并可填写自己的窗口。
 
+Changed in batch C (D-1031a, product review 2026-10-31): the sign card shows what a check criterion runs and freezes
+(`sign.runs`, `sign.runsOf`, `sign.freezes`, `sign.freezesNone`, `sign.freezesMore`, `sign.tooLarge`) and no digest; the
+model step fills in a service and checks the address, model ID and key (`model.presets`, `model.presetLocal`,
+`model.localModel`, `model.check*`, `model.notChecked`, the host's `model.checkAddress` and `model.checkName`); an account
+with one Agent sees its folders under `tree.projects`; and English says task, never goal, and has no Board, Worker,
+warrant or grounded (the non-strict confirmation keeps the pinned marker "Inputs not grounded"): `sign.unavailable`,
+`modeHints.derived`, `tree.deletedRefused`, `deletion.closings`, `deletion.someClosings`, `deletion.goalsUnread`,
+`legacy.notice` and the host's `isolation.pendingFor` are reworded. Console's own labels for three of them still say goal.
+PSC 0.2.36 (owner, 2026-11-01): the app words four confirmations its own way (`sign.body` says task, `tree.sealed`,
+`tree.goals`, `widen.non_strict.body`, `widen.derived.body`), the open-project note shows only this computer's system
+(`project.noteStart`, `project.noteSystem.*`, `project.noteLimits`, `project.noteFallback`, `project.noteEnd`; `project.noteValue` is gone, and the
+tools moved under Details), `project.withdrawValue` uses Console's Revoke access, and `isolationSwitch.confirmBody` says
+commands could act as you. The sign card cautions about shell lines and unfrozen package.json scripts
+(`sign.cautionCombined`, `sign.cautionScript`, batch C review).
+中文摘要：批次 C 起签字卡显示检查运行什么、冻结哪些文件，不显示哈希；模型一步可以一键填入服务并检查地址、模型 ID 与密钥；
+只有一个智能体的账户在侧栏直接看到文件夹；英文不再出现 goal、Board、Worker、warrant、grounded（PSC 逐字固定的几句除外）。
+
 ## The page (`client.js` `TEXTS.en`)
 
 ### Punctuation the page puts between its own words and a service's (`p`)
@@ -128,9 +145,18 @@ one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
 - `model.key`: `Key`
 - `model.keySaved`: `Saved; leave empty to keep it`
 - `model.keyPlaceholder`: `API key`
-- `model.hint`: `An OpenAI-compatible address, or an Anthropic address ending in /messages; a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.`
+- `model.hint`: `An OpenAI-compatible address, or an Anthropic one (its /v1/messages is added when missing); a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.` (batch C: an Anthropic base URL is completed)
 - `model.saving`: `Saving…`
 - `model.save`: `Save`
+- `model.presets`: `Fill in for:` (batch C: the model step)
+- `model.presetLocal`: `A server on this computer` (batch C: the model step)
+- `model.localModel`: `The model's name on the server` (batch C: the model step)
+- `model.check`: `Check` (batch C: the model step)
+- `model.checking`: `Checking…` (batch C: the model step)
+- `model.checkOk`: `The model service answered: this address, model ID and key work.` (batch C: the model step)
+- `model.checkRefused`: `The model service refused it: {message}` (batch C: the model step)
+- `model.checkUnreachable`: `Could not reach the model service: {message}` (batch C: the model step)
+- `model.notChecked`: `Not checked` (batch C: the model step)
 - `model.window`: `Context window: {tokens} tokens ({source})` (0.19.3; `{tokens}` with thousands separators, `{source}` one of the five below)
 - `model.windowSources.detected`: `detected from the model server`
 - `model.windowSources.set`: `set by you`
@@ -146,7 +172,7 @@ one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
 
 - `sign.title`: `Proposed acceptance criteria` (Console Text A)
 - `sign.button`: `Sign these criteria` (Console Text A)
-- `sign.body`: `You are signing these criteria as the acceptance for this goal. The Agent proposed them; from now on it cannot end or change them, and the goal completes only when every criterion holds on the current state. This is your decision under your account.` (Console Text A)
+- `sign.body`: `You are signing these criteria as the acceptance for this task. The Agent proposed them; from now on it cannot end or change them, and the task completes only when every criterion holds on the current state. This is your decision under your account.` (Console Text A, saying task for goal: PSC 0.2.36 §14)
 - `sign.accept`: `Sign` (Console Text A)
 - `sign.cancel`: `Not yet` (Console Text A)
 - `sign.signed`: `Signed.` (Console Text A)
@@ -154,7 +180,7 @@ one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
 - `sign.unreadable`: `The criteria awaiting your signature cannot be read right now`
 - `sign.signing`: `Signing…`
 - `sign.refused`: `Nothing was signed: {teaching}.` (Console Text A)
-- `sign.unavailable`: `These criteria cannot be signed for this goal: {category}.` (Console contractUnsignable)
+- `sign.unavailable`: `These criteria cannot be signed for this task: {category}.` (batch C: task, not goal; Console contractUnsignable still says goal)
 - `sign.truncated`: `This task has too many criteria to list here; sign them in Console.`
 - `sign.moreInConsole`: `More tasks await your signature than are listed here: see them in Console.`
 - `sign.replaced`: `Will be replaced` (Console contractSuperseded)
@@ -162,6 +188,14 @@ one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
 - `sign.unknownReason`: `the reason is unknown; try again later`
 - `sign.stale`: `The previous signature's result is not confirmed yet; it signed the earlier criteria.`
 - `sign.signedMark`: `Signed` (Console contractSigned)
+- `sign.runs`: `Runs {command} in {cwd}` (batch C: what a check runs and freezes, in Console's words)
+- `sign.runsOf`: `Runs {command} in {cwd} of {root}` (batch C: what a check runs and freezes, in Console's words)
+- `sign.freezes`: `freezes {files}` (batch C: what a check runs and freezes, in Console's words)
+- `sign.freezesNone`: `freezes no files` (batch C: what a check runs and freezes, in Console's words)
+- `sign.freezesMore`: `{files}, and {n} more` (batch C: what a check runs and freezes, in Console's words)
+- `sign.tooLarge`: `This check is too large to show here; see it in Console.` (batch C: what a check runs and freezes, in Console's words)
+- `sign.cautionCombined`: `This check runs a shell command line and passes when the whole line exits with 0: if the line joins commands (with |, ;, || or &) or starts another shell, a failing test can still count as passed.` (batch C review; Console contractSpecCautionCombined)
+- `sign.cautionScript`: `It runs a script defined in package.json, which these criteria do not freeze: the script can change after you sign.` (batch C review; Console contractSpecCautionScript)
 
 ### Why criteria were not signed, by the Kernel's refusal code (filled into `sign.refused` and `sign.unavailable`) (`signReasons`)
 
@@ -313,7 +347,7 @@ one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
 ### One sentence for each exploration mode (`modeHints`)
 
 - `modeHints.strict`: `Writes and runs need trusted facts first`
-- `modeHints.derived`: `Writes and runs go ahead when a rule derives a warrant for them`
+- `modeHints.derived`: `Writes and runs go ahead when a reason for them follows from recorded facts` (batch C: plain words, no warrant)
 - `modeHints.non_strict`: `The model's commands and inputs run as given; completion still needs your signature`
 
 ### Widening confirmations (Console's non-strict confirmation, PSC 0.2.5, and Text 9, PSC 0.2.9) (`widen`)
@@ -321,11 +355,11 @@ one for no usable model (`model.windowInvalid`, `model.windowNoModel`).
 - `widen.non_strict.title`: `Switch to non-strict exploration mode?` (Console non-strict confirmation)
 - `widen.non_strict.accept`: `Switch to non-strict` (Console non-strict confirmation)
 - `widen.non_strict.cancel`: `Keep strict` (Console non-strict confirmation)
-- `widen.non_strict.body`: `Write and run actions of this environment's tools will accept inputs the model supplies, even when no trusted fact on the Board backs them. Each such call is marked "Inputs not grounded". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time.` (Console non-strict confirmation)
+- `widen.non_strict.body`: `Files the model writes and commands it runs in this environment will use the inputs it chooses, even when no verified record backs them. Each such call is marked "Inputs not grounded". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time.` (Console's non-strict confirmation in the app's words: PSC 0.2.36 §14)
 - `widen.derived.title`: `Switch to derived exploration mode?` (Text 9)
 - `widen.derived.accept`: `Switch to derived` (Text 9)
 - `widen.derived.cancel`: `Keep strict` (Text 9)
-- `widen.derived.body`: `The model will be able to write and run in this environment's workspace whenever it can derive, from facts and rules it writes on the Board, a warrant for that action and its key inputs. Those facts do not have to be trusted evidence. Calls that need your decision never run without it, and writes stay inside the local workspace.` (Text 9)
+- `widen.derived.body`: `The model will be able to write and run in this environment's workspace whenever the rules and facts it records justify that step and its key inputs. Those facts do not have to be verified. Calls that need your decision never run without it, and writes stay inside the local workspace.` (Text 9's body in the app's words: PSC 0.2.36 §14)
 
 ### Why a mode or review switch was refused, by code (both switches) (`switchRefusals`)
 
@@ -391,9 +425,16 @@ it. Turning review on when the Agent has no eligible reviewer makes this compute
 - `project.fromCapability`: `From this Agent's installed official engineering capability.`
 - `project.mode`: `Exploration mode`
 - `project.note`: `Note`
-- `project.noteValue`: `On this computer, reading, writing and running commands in this project folder are carried out by the Agent's engineering capability. Commands run without this computer's keys or tokens in their environment, and tool access to loopback and private network addresses (including this computer's manager and app ports) is refused. By system: on Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; this folder is writable for commands while it is open, and its previous setting is restored when it is revoked or this computer is deactivated. On Linux, commands can write only this project folder and their tool folder, the system is read-only, Rulith's credential folders are hidden, the network stays available, and background jobs end with the tool call that started them. On macOS, commands are not yet isolated on this computer. If isolation cannot be set up, commands do not run (unless you chose "Run without isolation (not recommended)" in Settings). The non-strict tier means the commands and arguments the model gives no longer need grounds on the Board; whether the work is done is still certified only by the acceptance contract you sign. To revoke: unlock this project in Console, or deactivate this computer.` (PSC 0.2.31 ④, the open-project confirmation text)
+- `project.noteStart`: `Reading, writing and running commands in this folder are done by the Agent's engineering capability. Commands start without keys or tokens in their environment variables.` (PSC 0.2.36 §14 ④)
+- `project.noteSystem.windows`: `On Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; while this folder is open, commands can write in it, and its previous permissions come back when access is revoked.` (PSC 0.2.36 §14 ④)
+- `project.noteSystem.linux`: `On Linux, commands can write only this folder and their tool folder, the rest of the system is read-only, Rulith's credential folders are hidden, and background jobs end with the tool call that started them.` (PSC 0.2.36 §14 ④)
+- `project.noteSystem.macos`: `On macOS, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria.` (PSC 0.2.36 §14 ④)
+- `project.noteSystem.other`: `On this system, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria.` (PSC 0.2.36 §14 ④, any system other than Windows, Linux and macOS)
+- `project.noteLimits`: `This protects Rulith's own credentials only: commands can still read other files your account can read, and can reach the network.` (PSC 0.2.36 §14 ④, after the Windows or Linux sentence)
+- `project.noteFallback`: `If isolation cannot be set up, commands do not run, unless you turned on "Run without isolation (not recommended)" in Settings.` (PSC 0.2.36 §14 ④, Windows and Linux only)
+- `project.noteEnd`: `In non-strict mode the model chooses commands and their arguments itself; whether the work is done is still decided only by the acceptance criteria you sign.` (PSC 0.2.36 §14 ④)
 - `project.withdraw`: `How to withdraw`
-- `project.withdrawValue`: `To withdraw it later, withdraw the grant on this project's row of this Agent's page in Console, or revoke this computer's sign-in.`
+- `project.withdrawValue`: `In Console, choose Revoke access on this folder's row of the Agent's page, or sign this computer out.`
 - `project.account`: `Account`
 - `project.toolsVersions`: `Tools and versions`
 - `project.capability`: `Official engineering capability {id}`
@@ -489,7 +530,7 @@ it. Turning review on when the Agent has no eligible reviewer makes this compute
 - `tree.deletePending`: `This conversation still has a call without a result. Settle it first; nothing was changed.` (Console conversationDeletePending)
 - `tree.notDeleted`: `Not deleted`
 - `tree.partial`: `Not deleted yet: {reasons}. Choose “Finish deleting” on this conversation to go on.` (first sentence: Console conversationDeletePartial)
-- `tree.deletedRefused`: `Deleted. Core refused to close {n} of its goals; they stay open on its ended Board.` (Console conversationDeleteRefused)
+- `tree.deletedRefused`: `Deleted. {n} of its tasks could not be closed; they stay in the ended conversation, and Console's task records show them.` (batch C: plain words; Console conversationDeleteRefused still says goals and Board)
 - `tree.newFailed`: `The new conversation was not created: {error}`
 - `tree.projectNotOpened`: `Project not opened: {error}`
 - `tree.notProject`: ` (not a project yet)`
@@ -506,6 +547,7 @@ it. Turning review on when the Agent has no eligible reviewer makes this compute
 - `tree.default`: `Default`
 - `tree.newUnderAgent`: `Start a new conversation under this Agent`
 - `tree.agents`: `Agents`
+- `tree.projects`: `Projects` (batch C: the sidebar's heading for an account with one Agent)
 - `tree.newHereTitle`: `Start a new conversation under the current Agent and folder`
 - `tree.newHere`: `+ New conversation`
 - `tree.filter`: `Filter Agents, folders or conversations`
@@ -516,8 +558,8 @@ it. Turning review on when the Agent has no eligible reviewer makes this compute
 - `tree.dialogTitle`: `Delete this conversation?` (Console conversationDeleteTitle)
 - `tree.introAgent`: `Conversation “{title}” belongs to Agent {agent}. Deleting it:`
 - `tree.intro`: `Conversation “{title}”. Deleting it:`
-- `tree.sealed`: `Its Board is sealed and the conversation cannot continue.` (Console conversationDeleteBody, first sentence)
-- `tree.goals`: `{n} open goals will be closed as abandoned.` (Console conversationDeleteGoals)
+- `tree.sealed`: `The conversation ends and cannot continue.` (Console conversationDeleteBody's first sentence in the app's words: PSC 0.2.36 §14)
+- `tree.goals`: `{n} open tasks will be closed as abandoned.` (Console conversationDeleteGoals in the app's words: PSC 0.2.36 §14)
 - `tree.kept`: `Receipts, proofs, billing and history are kept and stay visible in the Console.` (Console conversationDeleteBody, second sentence)
 - `tree.undone`: `This cannot be undone.` (Console conversationDeleteBody, third sentence)
 - `tree.notFound`: `Conversation “{title}” has not used Rulith yet, so Rulith has no record of it. Deleting only removes it from the list on this computer.`
@@ -526,9 +568,9 @@ it. Turning review on when the Agent has no eligible reviewer makes this compute
 
 ### Why a deletion is not finished yet (Console's Conversations texts) (`deletion`)
 
-- `deletion.closings`: `{n} goal closings are not confirmed yet` (Console conversationClosingsUnconfirmed)
-- `deletion.someClosings`: `some goal closings are not confirmed yet`
-- `deletion.goalsUnread`: `its open goals could not be read` (Console conversationGoalsUnread)
+- `deletion.closings`: `{n} task closings are not confirmed yet` (batch C: task, not goal)
+- `deletion.someClosings`: `some task closings are not confirmed yet` (batch C: task, not goal)
+- `deletion.goalsUnread`: `its open tasks could not be read` (batch C: task, not goal; Console conversationGoalsUnread still says goals)
 - `deletion.deletedBeforeRecording`: `it was deleted before deletions were recorded as finished` (Console conversationDeletedBeforeRecording)
 - `deletion.settlementUnrecorded`: `its deletion is not recorded as finished yet` (Console conversationSettlementUnrecorded)
 - `deletion.unfinished`: `its deletion is not finished yet`
@@ -589,7 +631,7 @@ it. Turning review on when the Agent has no eligible reviewer makes this compute
 
 - `legacy.one`: `1 Agent`
 - `legacy.many`: `{n} Agents`
-- `legacy.notice`: `{count} set up by the retired Rulith workbench ({home}) no longer start their Workers with rulith. Run "rulith manager" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console.`
+- `legacy.notice`: `{count} set up by the retired Rulith workbench ({home}) no longer start on this computer with rulith. Run "rulith manager" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console.` (batch C: no Worker)
 
 ### Settings → Advanced: running model commands without isolation (PSC 0.2.31 ③ ④) (`isolationSwitch`)
 
@@ -600,7 +642,7 @@ asks nothing. The switch's name and the whole confirmation are PSC 0.2.31 ④'s 
 - `isolationSwitch.title`: `Model-command isolation`
 - `isolationSwitch.label`: `Run without isolation (not recommended)` (PSC 0.2.31 ③, the switch's name)
 - `isolationSwitch.confirmTitle`: `Run model commands without isolation?` (PSC 0.2.31 ④)
-- `isolationSwitch.confirmBody`: `Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials. Turn this on only if isolation cannot work here and you accept that risk.` (PSC 0.2.31 ④)
+- `isolationSwitch.confirmBody`: `Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials, and could use them to act as you in Rulith, for example to sign acceptance criteria. Turn this on only if isolation cannot work here and you accept that risk.` (PSC 0.2.36 §14 ⑤)
 - `isolationSwitch.accept`: `Run without isolation` (PSC 0.2.31 ④)
 - `isolationSwitch.cancel`: `Keep isolation` (PSC 0.2.31 ④)
 - `isolationSwitch.restarting`: `Saved. {agent} restarts on this computer to apply it, once any command it is running finishes.`
@@ -756,6 +798,8 @@ asks nothing. The switch's name and the whole confirmation are PSC 0.2.31 ④'s 
 - `model.defaultsElsewhere`: `This app reads the account's model settings from another Rulith folder (modelHome); change them there.`
 - `model.windowNoModel`: `Save a usable model first, then set its context window.` (0.19.3)
 - `model.windowInvalid`: `Enter the context window as a whole number of tokens from {min} to 100000000, such as 131072, or leave it empty.` (0.19.3; `{min}` is the smallest window Rulith can use, 85536)
+- `model.checkAddress`: `Enter the model service's address first, starting with http:// or https://.` (batch C: the host's refusals of a model check)
+- `model.checkName`: `Enter the model ID first.` (batch C: the host's refusals of a model check)
 
 ### Model-command isolation: Diagnosis, and the switch's route (`isolation.*`)
 
@@ -766,7 +810,7 @@ asks nothing. The switch's name and the whole confirmation are PSC 0.2.31 ④'s 
 - `isolation.refusingMany`: `Model commands are refused: {roots} are not read-protected. Restart Rulith to protect them again.`
 - `isolation.windowsOn`: `On: model commands run at low integrity and cannot read Rulith's own folders.`
 - `isolation.offFor`: `{status} Turned off for {agents} (RULITH_ADAPTER_SANDBOX=off; not recommended).`
-- `isolation.pendingFor`: `{status} For {agents} it applies after the Worker restarts, once the commands it is running finish.` (isolation required again while that Agent's Worker still runs unconfined)
+- `isolation.pendingFor`: `{status} For {agents} it applies once it restarts on this computer, after the commands it is running finish.` (batch C: no Worker)
 - `isolation.incomplete`: `The request does not say which Agent, or whether its model commands run without isolation.` (the switch's route)
 - `isolation.unconfirmed`: `Running model commands without isolation needs your confirmation. Nothing was changed.` (the switch's route, turned on without the confirmation)
 

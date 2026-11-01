@@ -68,8 +68,13 @@ window.__ModuleLoader__.load({
           saved: "Saved. It applies from the next turn.", savedNoKey: "Saved, but not usable yet: enter the key (a model at a local address may need none).",
           notSavedError: "Not saved: {error}", current: "In use: {name} · {host}", none: "No usable model is set yet.",
           address: "Address", modelId: "Model ID", key: "Key", keySaved: "Saved; leave empty to keep it", keyPlaceholder: "API key",
-          hint: "An OpenAI-compatible address, or an Anthropic address ending in /messages; a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.",
+          hint: "An OpenAI-compatible address, or an Anthropic one (its /v1/messages is added when missing); a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.",
           saving: "Saving…", save: "Save",
+          // Batch C: services the form fills in, and one check of the address, model ID and key before saving.
+          presets: "Fill in for:", presetLocal: "A server on this computer", localModel: "The model's name on the server",
+          check: "Check", checking: "Checking…", checkOk: "The model service answered: this address, model ID and key work.",
+          checkRefused: "The model service refused it: {message}", checkUnreachable: "Could not reach the model service: {message}",
+          notChecked: "Not checked",
           // The context window the model's conversations are measured against (0.19.3) and where it comes from.
           window: "Context window: {tokens} tokens ({source})",
           windowSources: { detected: "detected from the model server", set: "set by you", developer: "from the settings file",
@@ -78,17 +83,26 @@ window.__ModuleLoader__.load({
           windowField: "Context window (tokens)", windowEmpty: "Leave empty to use {tokens}",
           windowTooSmall: "Rulith needs a context window of at least {min} tokens, so this one is too small. Raise the context size on the model server (llama.cpp -c, Ollama num_ctx, the context length in LM Studio), then save the model again.",
         },
-        // Signing proposed criteria: Console Text A (PSC 0.2.17), verbatim where Console has the sentence.
+        // Signing proposed criteria: Console Text A (PSC 0.2.17), verbatim where Console has the sentence; the body says task
+        // where Console says goal (PSC 0.2.36 §14).
         sign: {
           title: "Proposed acceptance criteria", button: "Sign these criteria",
-          body: "You are signing these criteria as the acceptance for this goal. The Agent proposed them; from now on it cannot end or change them, and the goal completes only when every criterion holds on the current state. This is your decision under your account.",
+          body: "You are signing these criteria as the acceptance for this task. The Agent proposed them; from now on it cannot end or change them, and the task completes only when every criterion holds on the current state. This is your decision under your account.",
           accept: "Sign", cancel: "Not yet", signed: "Signed.", pending: "The signature's result is not confirmed yet; this refreshes on its own.",
           unreadable: "The criteria awaiting your signature cannot be read right now", signing: "Signing…",
-          refused: "Nothing was signed: {teaching}.", unavailable: "These criteria cannot be signed for this goal: {category}.",
+          refused: "Nothing was signed: {teaching}.", unavailable: "These criteria cannot be signed for this task: {category}.",
           truncated: "This task has too many criteria to list here; sign them in Console.",
           moreInConsole: "More tasks await your signature than are listed here: see them in Console.",
           replaced: "Will be replaced", notCriterion: "Not a criterion", unknownReason: "the reason is unknown; try again later",
           stale: "The previous signature's result is not confirmed yet; it signed the earlier criteria.", signedMark: "Signed",
+          // What a check criterion runs and freezes (batch C), in Console's words: "Runs `node test/check.mjs` in `.` · freezes
+          // test/check.mjs". Never a digest.
+          runs: "Runs {command} in {cwd}", runsOf: "Runs {command} in {cwd} of {root}", freezes: "freezes {files}",
+          freezesNone: "freezes no files", freezesMore: "{files}, and {n} more",
+          tooLarge: "This check is too large to show here; see it in Console.",
+          // Before signing (batch C review): the check passes on the exit status, which a line or a script can hide.
+          cautionCombined: "This check runs a shell command line and passes when the whole line exits with 0: if the line joins commands (with |, ;, || or &) or starts another shell, a failing test can still count as passed.",
+          cautionScript: "It runs a script defined in package.json, which these criteria do not freeze: the script can change after you sign.",
         },
         // Why nothing was signed, by the Kernel's refusal code ({teaching} and {category} above).
         signReasons: {
@@ -150,14 +164,15 @@ window.__ModuleLoader__.load({
           later: "Accepted, not in effect yet; look again later", notSwitched: "Not switched", notAccepted: "This switch was not accepted",
           title: "This conversation's exploration mode (changes only this conversation)" },
         modeWords: { strict: "Strict", derived: "Derived", non_strict: "Non-strict" },
-        modeHints: { strict: "Writes and runs need trusted facts first", derived: "Writes and runs go ahead when a rule derives a warrant for them",
+        modeHints: { strict: "Writes and runs need trusted facts first", derived: "Writes and runs go ahead when a reason for them follows from recorded facts",
           non_strict: "The model's commands and inputs run as given; completion still needs your signature" },
-        // Widening: Console's non-strict confirmation and Text 9 (PSC 0.2.5, 0.2.9), verbatim.
+        // Widening: Console's non-strict confirmation and Text 9 (PSC 0.2.5, 0.2.9), in the app's words where PSC 0.2.36 §14
+        // gives them (the non-strict body's first sentence, the derived body).
         widen: {
           non_strict: { title: "Switch to non-strict exploration mode?", accept: "Switch to non-strict", cancel: "Keep strict",
-            body: "Write and run actions of this environment's tools will accept inputs the model supplies, even when no trusted fact on the Board backs them. Each such call is marked \"Inputs not grounded\". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time." },
+            body: "Files the model writes and commands it runs in this environment will use the inputs it chooses, even when no verified record backs them. Each such call is marked \"Inputs not grounded\". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time." },
           derived: { title: "Switch to derived exploration mode?", accept: "Switch to derived", cancel: "Keep strict",
-            body: "The model will be able to write and run in this environment's workspace whenever it can derive, from facts and rules it writes on the Board, a warrant for that action and its key inputs. Those facts do not have to be trusted evidence. Calls that need your decision never run without it, and writes stay inside the local workspace." },
+            body: "The model will be able to write and run in this environment's workspace whenever the rules and facts it records justify that step and its key inputs. Those facts do not have to be verified. Calls that need your decision never run without it, and writes stay inside the local workspace." },
         },
         // Why a mode or review switch was refused, by the code its route returns (shared by both switches).
         switchRefusals: {
@@ -197,9 +212,20 @@ window.__ModuleLoader__.load({
           title: "Open this folder as a project?", folder: "Folder", agent: "Agent", agentValue: "{agent} · this computer {computer}",
           canDo: "What it may do", canDoValue: "Read files, write files and run commands (including tests and builds) in this folder.",
           tools: "Tools used", fromCapability: "From this Agent's installed official engineering capability.", mode: "Exploration mode",
-          // PSC 0.2.31 ④ (in force), verbatim: it replaces the 0.2.24 sentence that the folder is not OS-level isolation.
-          note: "Note", noteValue: "On this computer, reading, writing and running commands in this project folder are carried out by the Agent's engineering capability. Commands run without this computer's keys or tokens in their environment, and tool access to loopback and private network addresses (including this computer's manager and app ports) is refused. By system: on Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; this folder is writable for commands while it is open, and its previous setting is restored when it is revoked or this computer is deactivated. On Linux, commands can write only this project folder and their tool folder, the system is read-only, Rulith's credential folders are hidden, the network stays available, and background jobs end with the tool call that started them. On macOS, commands are not yet isolated on this computer. If isolation cannot be set up, commands do not run (unless you chose \"Run without isolation (not recommended)\" in Settings). The non-strict tier means the commands and arguments the model gives no longer need grounds on the Board; whether the work is done is still certified only by the acceptance contract you sign. To revoke: unlock this project in Console, or deactivate this computer.",
-          withdraw: "How to withdraw", withdrawValue: "To withdraw it later, withdraw the grant on this project's row of this Agent's page in Console, or revoke this computer's sign-in.",
+          // The note is the start, this computer's system's sentences and the end (PSC 0.2.36 §14 ④, verbatim); Windows and Linux
+          // add that isolation protects Rulith's own credentials only and that commands do not run without it.
+          note: "Note",
+          noteStart: "Reading, writing and running commands in this folder are done by the Agent's engineering capability. Commands start without keys or tokens in their environment variables.",
+          noteSystem: {
+            windows: "On Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; while this folder is open, commands can write in it, and its previous permissions come back when access is revoked.",
+            linux: "On Linux, commands can write only this folder and their tool folder, the rest of the system is read-only, Rulith's credential folders are hidden, and background jobs end with the tool call that started them.",
+            macos: "On macOS, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria.",
+            other: "On this system, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria.",
+          },
+          noteLimits: "This protects Rulith's own credentials only: commands can still read other files your account can read, and can reach the network.",
+          noteFallback: "If isolation cannot be set up, commands do not run, unless you turned on \"Run without isolation (not recommended)\" in Settings.",
+          noteEnd: "In non-strict mode the model chooses commands and their arguments itself; whether the work is done is still decided only by the acceptance criteria you sign.",
+          withdraw: "How to withdraw", withdrawValue: "In Console, choose Revoke access on this folder's row of the Agent's page, or sign this computer out.",
           account: "Account", toolsVersions: "Tools and versions", capability: "Official engineering capability {id}", connection: "Local connection",
           footer: "Existing conversations are not affected. Once it is open, a new conversation starts in this folder.",
           accept: "Open project", cancel: "Cancel", details: "Details",
@@ -275,27 +301,27 @@ window.__ModuleLoader__.load({
           newConversation: "New conversation", untitled: "Untitled conversation", recordUnreadable: "Could not read this conversation's record",
           deletePending: "This conversation still has a call without a result. Settle it first; nothing was changed.",
           notDeleted: "Not deleted", partial: "Not deleted yet: {reasons}. Choose “Finish deleting” on this conversation to go on.",
-          deletedRefused: "Deleted. Core refused to close {n} of its goals; they stay open on its ended Board.",
+          deletedRefused: "Deleted. {n} of its tasks could not be closed; they stay in the ended conversation, and Console's task records show them.",
           newFailed: "The new conversation was not created: {error}", projectNotOpened: "Project not opened: {error}",
           notProject: " (not a project yet)", newInFolder: "Start a new conversation in this folder", less: "Show less", more: "More ({n})",
           unsettled: "Not fully deleted: {reasons}", subConversation: "Earlier sub-conversation",
           finishTitle: "The deletion is not finished: {reasons}. The same deletion goes on, without asking again.", finish: "Finish deleting",
           deleteTitle: "Delete this conversation", delete: "Delete", defaultTitle: "This account's default Agent", default: "Default",
-          newUnderAgent: "Start a new conversation under this Agent", agents: "Agents",
+          newUnderAgent: "Start a new conversation under this Agent", agents: "Agents", projects: "Projects",
           newHereTitle: "Start a new conversation under the current Agent and folder", newHere: "+ New conversation",
           filter: "Filter Agents, folders or conversations", readingAgents: "Reading Agents…",
           agentsUnreadable: "Could not read the Agents: sign in to Rulith in Settings at the bottom left first.",
           unowned: "Conversations without an Agent", expand: "Show the Agent list",
           dialogTitle: "Delete this conversation?", introAgent: "Conversation “{title}” belongs to Agent {agent}. Deleting it:",
-          intro: "Conversation “{title}”. Deleting it:", sealed: "Its Board is sealed and the conversation cannot continue.",
-          goals: "{n} open goals will be closed as abandoned.", kept: "Receipts, proofs, billing and history are kept and stay visible in the Console.",
+          intro: "Conversation “{title}”. Deleting it:", sealed: "The conversation ends and cannot continue.",
+          goals: "{n} open tasks will be closed as abandoned.", kept: "Receipts, proofs, billing and history are kept and stay visible in the Console.",
           undone: "This cannot be undone.",
           notFound: "Conversation “{title}” has not used Rulith yet, so Rulith has no record of it. Deleting only removes it from the list on this computer.",
           keep: "Keep", deleting: "Deleting…",
         },
         // Why a deletion is not finished yet (Console's Conversations texts, PSC 0.2.27 ⑤ and its 0.2.28 erratum).
-        deletion: { closings: "{n} goal closings are not confirmed yet", someClosings: "some goal closings are not confirmed yet",
-          goalsUnread: "its open goals could not be read", deletedBeforeRecording: "it was deleted before deletions were recorded as finished",
+        deletion: { closings: "{n} task closings are not confirmed yet", someClosings: "some task closings are not confirmed yet",
+          goalsUnread: "its open tasks could not be read", deletedBeforeRecording: "it was deleted before deletions were recorded as finished",
           settlementUnrecorded: "its deletion is not recorded as finished yet", unfinished: "its deletion is not finished yet" },
         wizard: { title: "Get started with Rulith", steps: { signin: "Sign in", model: "Choose a model and enter its key", folder: "Open a folder" },
           notAttached: "This Agent is set up on this computer but not connected to Rulith yet: wait a moment, then choose the folder again.",
@@ -323,12 +349,12 @@ window.__ModuleLoader__.load({
           openInConsole: "Open the Agent in Console",
         },
         legacy: { one: "1 Agent", many: "{n} Agents",
-          notice: "{count} set up by the retired Rulith workbench ({home}) no longer start their Workers with rulith. Run \"rulith manager\" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console." },
+          notice: "{count} set up by the retired Rulith workbench ({home}) no longer start on this computer with rulith. Run \"rulith manager\" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console." },
         // Settings → Advanced: the owner's "Run without isolation (not recommended)" per Agent and its confirmation
-        // (PSC 0.2.31 ③ ④, verbatim).
+        // (PSC 0.2.31 ③ ④ and 0.2.36 §14 ⑤, verbatim).
         isolationSwitch: { title: "Model-command isolation", label: "Run without isolation (not recommended)",
           confirmTitle: "Run model commands without isolation?",
-          confirmBody: "Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials. Turn this on only if isolation cannot work here and you accept that risk.",
+          confirmBody: "Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials, and could use them to act as you in Rulith, for example to sign acceptance criteria. Turn this on only if isolation cannot work here and you accept that risk.",
           accept: "Run without isolation", cancel: "Keep isolation",
           restarting: "Saved. {agent} restarts on this computer to apply it, once any command it is running finishes.",
           nextStart: "Saved. It applies the next time {agent} starts on this computer.", notSaved: "Not saved",
@@ -407,7 +433,11 @@ window.__ModuleLoader__.load({
           saved: "已保存，从下一轮起生效。", savedNoKey: "已保存，但还不能用：请填写密钥（本机地址的模型可以不填）。",
           notSavedError: "没有保存：{error}", current: "现在用的：{name} · {host}", none: "还没有设置可用的模型。",
           address: "地址", modelId: "模型 ID", key: "密钥", keySaved: "已保存；留空则不改", keyPlaceholder: "API 密钥",
-          hint: "OpenAI 兼容的地址，或以 /messages 结尾的 Anthropic 地址；本机的模型可以用 http://127.0.0.1:端口/v1。保存后从下一轮起生效，不需要重启；密钥只留在这台电脑上，不会再显示。",
+          hint: "OpenAI 兼容的地址，或 Anthropic 的地址（缺 /v1/messages 时会自动补上）；本机的模型可以用 http://127.0.0.1:端口/v1。保存后从下一轮起生效，不需要重启；密钥只留在这台电脑上，不会再显示。",
+          presets: "填入：", presetLocal: "这台电脑上的服务", localModel: "服务上的模型名称",
+          check: "检查", checking: "正在检查…", checkOk: "模型服务有回应：这个地址、模型 ID 和密钥可用。",
+          checkRefused: "模型服务拒绝了：{message}", checkUnreachable: "连不上模型服务：{message}",
+          notChecked: "没有检查",
           saving: "正在保存…", save: "保存",
           window: "上下文窗口：{tokens} token（{source}）",
           windowSources: { detected: "从模型服务读到", set: "由你设定", developer: "来自设置文件",
@@ -426,6 +456,11 @@ window.__ModuleLoader__.load({
           moreInConsole: "还有等签字的任务没有列在这里：请在 Console 里查看。",
           replaced: "签字后会被替换", notCriterion: "不能作为验收标准", unknownReason: "原因未知，请稍后再试",
           stale: "上一次签字的结果还没有确认，那次签的是之前的标准。", signedMark: "已签",
+          runs: "在 {cwd} 运行 {command}", runsOf: "在 {root} 的 {cwd} 运行 {command}", freezes: "冻结 {files}",
+          freezesNone: "不冻结文件", freezesMore: "{files}，另有 {n} 个",
+          tooLarge: "这项检查太大，这里放不下；请在 Console 里查看。",
+          cautionCombined: "这项检查运行一行 shell 命令，整行的退出码是 0 就算通过：如果这一行用 |、;、|| 或 & 连着几条命令，或者又启动了一个 shell，测试失败了也可能算作通过。",
+          cautionScript: "它运行 package.json 里定义的脚本，而这些标准没有冻结 package.json：签字之后脚本还能改。",
         },
         signReasons: {
           unknown_goal: "找不到这个任务", goal_ended: "这个任务已经结束", goal_paused: "这个任务已暂停",
@@ -517,9 +552,19 @@ window.__ModuleLoader__.load({
           title: "把这个文件夹作为项目打开？", folder: "文件夹", agent: "智能体", agentValue: "{agent} · 这台电脑 {computer}",
           canDo: "可以做的事", canDoValue: "在这个文件夹里读文件、写文件、运行命令（包括测试和构建）。",
           tools: "所用工具", fromCapability: "来自这个智能体已装的官方编程能力。", mode: "档位",
-          // docs/model-command-isolation.md §7 中文对照。
-          note: "请注意", noteValue: "在这台电脑上，这个项目目录里的读、写和运行命令由智能体的编程能力执行。命令的环境里不带本机的密钥或令牌，通过工具访问本机与私有网络地址（含本机的管理器与应用端口）会被拒绝。按系统不同：在 Windows 上，命令以低完整性运行，读不到 Rulith 存放凭据的目录；这个目录在打开期间命令可读写，收回或停用这台电脑时还原原有设置。在 Linux 上，命令只能写这个项目目录与它的工具目录，系统只读，看不到 Rulith 存放凭据的目录，网络保留，后台任务随发起它的那次工具调用结束。在 macOS 上，命令目前不受本机隔离限制。隔离无法启用时命令不会运行（除非你在设置里选了“不隔离运行（不推荐）”）。宽松档意味着模型给出的命令与参数不再需要事先有依据，是否完成仍只由你签字的验收标准认证。撤销：在 Console 解除这个项目的锁定，或停用这台电脑。",
-          withdraw: "怎么收回", withdrawValue: "以后要收回，在 Console 这个智能体页面上这个项目的一行里收回授权，或者停用这台电脑的登录。",
+          // 中文对照（PSC 0.2.36 §14 ④ 的译文，不逐字）。
+          note: "请注意",
+          noteStart: "在这个文件夹里读、写和运行命令，由智能体的编程能力来做。命令启动时，环境变量里不带密钥或令牌。",
+          noteSystem: {
+            windows: "在 Windows 上，命令以低完整性运行，读不到 Rulith 存放凭据的文件夹；这个文件夹打开期间，命令可以在里面写入，收回授权后恢复它原来的权限。",
+            linux: "在 Linux 上，命令只能写这个文件夹和它们的工具文件夹，系统其余部分只读，Rulith 的凭据文件夹被隐藏，后台任务随启动它的那次工具调用一起结束。",
+            macos: "在 macOS 上，命令还没有隔离：它们能读到 Rulith 自己的凭据，并可能用这些凭据以你的身份行事，比如替你签验收标准。",
+            other: "在这个系统上，命令还没有隔离：它们能读到 Rulith 自己的凭据，并可能用这些凭据以你的身份行事，比如替你签验收标准。",
+          },
+          noteLimits: "这只保护 Rulith 自己的凭据：命令仍能读你账户能读的其他文件，也能上网。",
+          noteFallback: "隔离设置不起来时，命令不会运行，除非你在设置里打开了「不隔离运行（不推荐）」。",
+          noteEnd: "在宽松档，命令和参数由模型自己定；工作算不算完成，仍只由你签下的验收标准决定。",
+          withdraw: "怎么收回", withdrawValue: "在 Console 这个智能体页面上这个文件夹的一行里选 Revoke access（收回授权），或者让这台电脑退出登录。",
           account: "账户", toolsVersions: "工具与版本", capability: "官方编程能力 {id}", connection: "本机连接",
           footer: "已有的会话不受影响。打开完成后，会在这个文件夹里开一个新会话。",
           accept: "打开项目", cancel: "取消", details: "详细",
@@ -599,7 +644,7 @@ window.__ModuleLoader__.load({
           unsettled: "没删完：{reasons}", subConversation: "历史子会话",
           finishTitle: "删除还没有办完：{reasons}。同一次删除接着做，不再问。", finish: "补完删除",
           deleteTitle: "删除这个会话", delete: "删除", defaultTitle: "这个账户的默认智能体", default: "默认",
-          newUnderAgent: "在这个智能体下开新会话", agents: "智能体",
+          newUnderAgent: "在这个智能体下开新会话", agents: "智能体", projects: "项目",
           newHereTitle: "在当前智能体与目录下开新会话", newHere: "＋ 新会话",
           filter: "筛选智能体、目录或会话", readingAgents: "正在读取智能体…",
           agentsUnreadable: "读不到智能体：先在左下角的设置里登录 Rulith。",
@@ -641,7 +686,7 @@ window.__ModuleLoader__.load({
           notice: "已停用的 Rulith 工作台（{home}）设置的 {count}不再随 rulith 在这台电脑上开启。运行 \"rulith manager\" 让它们继续运行，或在这里重新设置每个智能体；这会替换它的智能体密钥，绑定在它旧接入上的 Source 要在 Console 里重新绑定。" },
         isolationSwitch: { title: "模型命令隔离", label: "不隔离运行（不推荐）",
           confirmTitle: "不隔离运行模型命令？",
-          confirmBody: "模型经编程能力运行的命令将能读取你的账户在这台电脑上能读的一切，包括 Rulith 自己的凭据。只有在这里无法隔离、且你接受这个风险时才打开。",
+          confirmBody: "模型经编程能力运行的命令将能读取你的账户在这台电脑上能读的一切，包括 Rulith 自己的凭据，并可能用它们以你的身份在 Rulith 里行事，比如替你签验收标准。只有在这里无法隔离、且你接受这个风险时才打开。",
           accept: "不隔离运行", cancel: "保持隔离",
           restarting: "已保存。{agent} 会在手头的命令结束后在这台电脑上重新开启，用上这个设置。",
           nextStart: "已保存。{agent} 下次在这台电脑上开启时生效。", notSaved: "没有保存",
@@ -913,6 +958,37 @@ window.__ModuleLoader__.load({
     }
 
     // ---- The model (PSC 0.2.27 ④): the signed-in account's default model; saved, it is used from the next turn.
+    // Batch C (D-1031a; product review #7): services the form fills in, an address and a model ID to start from. The
+    // services' names are their own in every language; a model server on this computer is described in words. A hosted
+    // service's context window is its own (1,000,000 tokens unless the person sets one), so the form does not show it.
+    const MODEL_PRESETS = [
+      { id: "openai", name: "OpenAI", url: "https://api.openai.com/v1", model: "gpt-5", hosted: true },
+      { id: "anthropic", name: "Anthropic", url: "https://api.anthropic.com/v1/messages", model: "claude-opus-5-5", hosted: true },
+      { id: "deepseek", name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-flash", hosted: true },
+      { id: "openrouter", name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-5", hosted: true },
+      { id: "local", name: "", url: "http://127.0.0.1:11434/v1", model: "", hosted: false },
+    ];
+    const PRESET_HOSTS = { "api.openai.com": "openai", "api.anthropic.com": "anthropic", "api.deepseek.com": "deepseek", "openrouter.ai": "openrouter" };
+    /** The preset an address belongs to: a hosted service by its host, a loopback address as this computer's server. Pure. */
+    function presetOf(value) {
+      let url;
+      try { url = new URL(String(value || "").trim()); } catch { return null; }
+      const id = own(PRESET_HOSTS, url.hostname) || (/^(127\.\d+\.\d+\.\d+|localhost|\[::1\])$/.test(url.hostname) ? "local" : "");
+      return MODEL_PRESETS.find((preset) => preset.id === id) || null;
+    }
+    /**
+     * The address the app speaks to: an Anthropic base URL (https://api.anthropic.com, …/v1, or an Anthropic-compatible
+     * …/anthropic) gets /v1/messages, which tells the app to speak Anthropic Messages; any other address is kept as typed. Pure.
+     */
+    function modelAddress(value) {
+      const typed = String(value || "").trim();
+      let url;
+      try { url = new URL(typed); } catch { return typed; }
+      const pathname = url.pathname.replace(/\/+$/, "");
+      if (/\/messages$/.test(pathname) || !(url.hostname === "api.anthropic.com" || /\/anthropic(\/v1)?$/.test(pathname))) return typed;
+      url.pathname = (/\/v1$/.test(pathname) ? pathname : pathname + "/v1") + "/messages";
+      return url.href;
+    }
     /** A whole number of tokens with thousands separators (262,144), the same in both languages. Pure. */
     const tokenCount = (value) => String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
     /**
@@ -956,7 +1032,7 @@ window.__ModuleLoader__.load({
             return;
           }
           const reply = await api("model", { expectedOrigin: m.expectedOrigin, expectedAccountId: m.expectedAccountId,
-            url: url.trim(), name: name.trim(), ...(key.trim() ? { key: key.trim() } : {}) });
+            url: modelAddress(url), name: name.trim(), ...(key.trim() ? { key: key.trim() } : {}) });
           if (!reply.ok) { setNotice({ ok: false, text: plain(reply, T.model.notSaved) }); return; }
           setKey(""); setDraft(null);
           const ready = !!(reply.model && reply.model.configured);
@@ -967,27 +1043,50 @@ window.__ModuleLoader__.load({
         } catch (error) { setNotice({ ok: false, text: fill(T.model.notSavedError, { error: errorText(error) }) }); }
         finally { setBusy(false); }
       };
+      /** One check of what the form holds (the saved key when none is typed, for the same address); nothing is saved. */
+      const check = async () => {
+        setBusy(true); setNotice(null);
+        try {
+          const reply = await api("model/check", { url: modelAddress(url), name: name.trim(), ...(key.trim() ? { key: key.trim() } : {}) });
+          if (!reply.ok) { setNotice({ ok: false, text: plain(reply, T.model.notChecked) }); return; }
+          setNotice(reply.state === "ok" ? { ok: true, text: T.model.checkOk } : { ok: false,
+            text: fill(reply.state === "unreachable" ? T.model.checkUnreachable : T.model.checkRefused, { message: words(reply.message) || SIGN.unknownReason }) });
+        } catch (error) { setNotice({ ok: false, text: fill(T.model.checkUnreachable, { message: errorText(error) }) }); }
+        finally { setBusy(false); }
+      };
       const host = (value) => String(value || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
       const label = (text, input) => h("label", { style: { display: "block", marginTop: 8 } }, h("div", { style: small }, text), input);
       const source = cw && Object.prototype.hasOwnProperty.call(T.model.windowSources, cw.source) ? T.model.windowSources[cw.source] : "";
+      const preset = presetOf(url);
+      // A hosted service's window is its own: the line shows only one the person set (or a local server's).
+      const windowShown = !!cw && (!(presetOf(m.url) || {}).hosted || cw.source === "set");
       return h("div", { "data-rulith-model-form": "" },
         h("div", null, m.configured ? fill(T.model.current, { name: m.name, host: host(m.url) }) : T.model.none),
-        cw ? h("div", { "data-rulith-context-window": cw.source || "", style: { marginTop: 4 } },
+        windowShown ? h("div", { "data-rulith-context-window": cw.source || "", style: { marginTop: 4 } },
           fill(T.model.window, { tokens: tokenCount(cw.tokens), source })) : null,
         cw && cw.source === "assumed" ? h("div", { style: { ...small, opacity: 1, color: AMBER, marginTop: 2 } }, T.model.windowAssumed) : null,
         cw && cw.tooSmall ? h("div", { role: "alert", "data-rulith-context-window-small": "", style: { ...small, opacity: 1, color: AMBER, marginTop: 2 } },
           fill(T.model.windowTooSmall, { min: tokenCount(cw.minimum) })) : null,
-        label(T.model.address, h("input", { value: url, list: "rulith-model-endpoints", placeholder: "https://api.deepseek.com/v1", disabled: busy, style: field,
+        h("div", { "data-rulith-model-presets": "", style: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 8 } },
+          h("span", { style: small }, T.model.presets),
+          MODEL_PRESETS.map((choice) => h("button", { key: choice.id, type: "button", "data-rulith-model-preset": choice.id, disabled: busy,
+            "aria-pressed": !!preset && preset.id === choice.id ? "true" : "false",
+            style: { ...button, padding: "1px 8px", ...(preset && preset.id === choice.id ? { borderColor: GREEN } : {}) },
+            onClick: () => setDraft({ url: choice.url, name: "" }) }, choice.name || T.model.presetLocal))),
+        label(T.model.address, h("input", { value: url, list: "rulith-model-endpoints", placeholder: MODEL_PRESETS[0].url, disabled: busy, style: field,
           onChange: (event) => edit("url", event.target.value) })),
-        h("datalist", { id: "rulith-model-endpoints" }, h("option", { value: "https://api.deepseek.com/v1" }), h("option", { value: "https://api.anthropic.com/v1/messages" })),
-        label(T.model.modelId, h("input", { value: name, placeholder: "deepseek-flash", disabled: busy, style: field, onChange: (event) => edit("name", event.target.value) })),
+        h("datalist", { id: "rulith-model-endpoints" }, MODEL_PRESETS.map((choice) => h("option", { key: choice.id, value: choice.url }))),
+        label(T.model.modelId, h("input", { value: name, placeholder: preset ? preset.model || T.model.localModel : "", disabled: busy, style: field,
+          onChange: (event) => edit("name", event.target.value) })),
         label(T.model.key, h("input", { type: "password", value: key, autoComplete: "new-password", disabled: busy, style: field,
           placeholder: m.keyConfigured ? T.model.keySaved : T.model.keyPlaceholder, onChange: (event) => setKey(event.target.value) })),
         cw ? label(T.model.windowField, h("input", { value: windowText, inputMode: "numeric", disabled: busy, style: field,
           "data-rulith-context-window-field": "", placeholder: fill(T.model.windowEmpty, { tokens: tokenCount(cw.fallback) }),
           onChange: (event) => setWindowDraft(event.target.value) })) : null,
         h("div", { style: { ...small, marginTop: 6 } }, T.model.hint),
-        h("div", { style: { marginTop: 10 } }, h("button", { type: "button", style: primary, disabled: busy || !url.trim() || !name.trim(), onClick: save }, busy ? T.model.saving : T.model.save)),
+        h("div", { style: { marginTop: 10, display: "flex", gap: 8 } },
+          h("button", { type: "button", style: button, "data-rulith-model-check": "", disabled: busy || !url.trim() || !name.trim(), onClick: check }, busy ? T.model.checking : T.model.check),
+          h("button", { type: "button", style: primary, disabled: busy || !url.trim() || !name.trim(), onClick: save }, busy ? T.model.saving : T.model.save)),
         notice ? alertLine(notice.text, notice.ok ? GREEN : AMBER) : null);
     }
 
@@ -1110,17 +1209,80 @@ window.__ModuleLoader__.load({
     }
     /**
      * A criterion as small text: the Gateway gives the leaf's desired atoms as Console shows them (their JSON text), read
-     * here as `predicate(name: value, …)`, with a long digest shortened; any other text is shown as it is, on one line. Pure.
+     * here as `predicate(name: value, …)` without any digest (batch C: a person cannot check a hash, so none is shown; an
+     * argument that was only a digest is left out); any other text is shown as it is, on one line. Pure.
      */
     function criterionText(value) {
       const text = words(value);
       let atoms;
       try { atoms = JSON.parse(text); } catch { return text.replace(/\s+/g, " "); }
       if (!Array.isArray(atoms) || !atoms.every((atom) => atom && typeof atom.predicate === "string")) return text.replace(/\s+/g, " ");
-      const shown = (v) => String(v).replace(/(sha256:)?([0-9a-f]{64})/g, (_m, prefix, hex) => (prefix || "") + hex.slice(0, 8) + "…");
+      const shown = (v) => String(v).replace(/(sha256:)?[0-9a-f]{64}/g, "").replace(/:{2,}/g, ":").replace(/^[:\s]+|[:\s]+$/g, "");
       return atoms.map((atom) => (atom.negated === true ? "not " : "") + atom.predicate + "("
-        + Object.entries(atom.args && typeof atom.args === "object" ? atom.args : {}).map(([name, v]) => name + ": " + shown(v)).join(", ") + ")").join(T.p.semi);
+        + Object.entries(atom.args && typeof atom.args === "object" ? atom.args : {}).map(([name, v]) => [name, shown(v)])
+          .filter(([, v]) => v !== "").map(([name, v]) => name + ": " + v).join(", ") + ")").join(T.p.semi);
     }
+    /**
+     * What a check criterion runs, as the Gateway describes it beside the leaf (batch C, rulith-java bbad83b2: `spec` is
+     * `{ kind: "check", check, source?, root?, command, shell, cwd, files: [{ path, sha256 }], filesTruncated?, filesTotal? }`,
+     * or `{ kind: "check", truncated: true }` when it did not fit): the command line as shown, its folder, the project and the
+     * files the check freezes, never their digests. Undefined for a leaf without one or a malformed one. Pure.
+     */
+    function checkSpec(value) {
+      if (!value || typeof value !== "object" || value.kind !== "check") return undefined;
+      if (value.truncated === true) return { truncated: true };
+      if (typeof value.command !== "string" || !value.command.trim() || typeof value.cwd !== "string" || !Array.isArray(value.files)
+        || !value.files.every((file) => file && typeof file.path === "string" && file.path)) return undefined;
+      const files = value.files.map((file) => file.path);
+      const total = Number.isSafeInteger(value.filesTotal) && value.filesTotal > files.length ? value.filesTotal : files.length;
+      const more = value.filesTruncated === true ? total - files.length : 0;
+      return { command: value.command.replace(/\s+/g, " ").trim(), cwd: value.cwd || ".", root: typeof value.root === "string" ? value.root : "",
+        files, more, cautions: specCautions(value.command, value.shell === true, files, more, value.cwd) };
+    }
+    // Two cautions before signing a check (batch C review P1, re-review), the same rule as Console's sign card. A check passes
+    // when its command exits with 0, and a person cannot see from one line ① what a shell line or a nested shell makes of
+    // that status ("npm test | tail -20" passes a failing test), or ② that npm, pnpm, yarn, bun, corepack or "node --run"
+    // runs a package.json script the criteria do not freeze. ① is said for every shell line and every line that names a
+    // shell, without trying to read the line. ② needs the package.json of the check's own folder (cwd) among the frozen
+    // files, and is said anyway when the line changes folder or names a workspace; it is not claimed when the file list
+    // was cut short. Words are split the way the kit splits an acceptance command. Display only; refusing such lines
+    // belongs to kit 1.1. Pure.
+    const SHELL_WORDS = ["cmd", "powershell", "pwsh", "bash", "sh", "dash", "zsh", "fish", "start"];
+    const SCRIPT_RUNNERS = ["npm", "pnpm", "yarn", "bun", "corepack"];
+    const ELSEWHERE = ["cd", "pushd", "--prefix", "-C", "--dir", "--cwd", "-w", "--workspace", "--workspaces", "--filter", "-r", "--recursive", "workspace", "workspaces"];
+    function specCautions(command, shell, files, more, cwd) {
+      const words = (String(command).match(/"[^"]*"|[^\s&|;<>()"]+/g) || []).map((word) => word.replace(/^"|"$/g, ""));
+      const base = (word) => word.split(/[\\/]/).pop().toLowerCase().replace(/\.(cmd|exe|bat|ps1)$/, "");
+      const cautions = [];
+      if (shell || words.some((word) => SHELL_WORDS.includes(base(word)))) cautions.push(SIGN.cautionCombined);
+      const runsScript = words.some((word, i) => SCRIPT_RUNNERS.includes(base(word)) || (base(word) === "node" && words[i + 1] === "--run"));
+      if (runsScript && !more) {
+        const folder = String(cwd || ".").replace(/\\/g, "/").replace(/^\.(\/|$)/, "").replace(/\/+$/, "");
+        const own = (folder ? folder + "/" : "") + "package.json";
+        const frozen = files.some((path) => String(path).replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase() === own.toLowerCase());
+        if (!frozen || words.some((word) => ELSEWHERE.includes(word))) cautions.push(SIGN.cautionScript);
+      }
+      return cautions;
+    }
+    const cautionsView = (spec) => (spec && !spec.truncated ? spec.cautions : []).map((caution, i) =>
+      h("div", { key: "caution" + i, "data-rulith-check-caution": "", style: { fontSize: 12, color: "var(--dsw-color-warning, #b7791f)", wordBreak: "break-word" } }, caution));
+    /** A template's pieces with `{name}` replaced by `values[name]` (a string or `{ code }`), for rendering. Pure. */
+    const pieces = (template, values) => String(template).split(/(\{\w+\})/).filter((piece) => piece !== "")
+      .map((piece) => { const m = /^\{(\w+)\}$/.exec(piece); return m && own(values, m[1]) !== undefined ? values[m[1]] : piece; });
+    /**
+     * A check's one sentence as pieces (strings, and `{ code }` for the command line, its folder and the project), in
+     * Console's words: "Runs `node test/check.mjs` in `.` · freezes test/check.mjs, test/data.json". Pure.
+     */
+    function checkParts(spec) {
+      if (!spec || spec.truncated) return [SIGN.tooLarge];
+      const runs = pieces(spec.root ? SIGN.runsOf : SIGN.runs, { command: { code: spec.command }, cwd: { code: spec.cwd }, root: { code: spec.root } });
+      const listed = spec.files.join(T.p.list);
+      const frozen = !spec.files.length && !spec.more ? [SIGN.freezesNone]
+        : pieces(SIGN.freezes, { files: spec.more ? fill(SIGN.freezesMore, { files: listed, n: spec.more }) : listed });
+      return [...runs, T.p.dot, ...frozen];
+    }
+    const codeStyle = { fontFamily: "var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Consolas, monospace)", fontSize: "0.95em", wordBreak: "break-all" };
+    const partsView = (parts) => parts.map((part, i) => (typeof part === "string" ? part : h("code", { key: i, style: codeStyle }, part.code)));
 
     // An operation of this conversation in plain words (design §2 操作): what it did, then how it ended. The strip's label
     // names only the tool and the Action; a file's name and a test's pass come from its result while the strip carries it.
@@ -1247,7 +1409,7 @@ window.__ModuleLoader__.load({
         // As Console marks them: a leaf the Kernel does not take as a criterion, and a signed one that signing again would
         // replace — only while the goal can take a signature at all (otherwise no leaf is eligible, and the reason is the goal's).
         const leaves = entry.leaves.filter((leaf) => leaf && words(leaf.node)).map((leaf) => ({ node: leaf.node, label: words(leaf.label),
-          criterion: criterionText(leaf.criterion), signed: leaf.signed === true, eligible: leaf.eligible === true,
+          criterion: criterionText(leaf.criterion), spec: checkSpec(leaf.spec), signed: leaf.signed === true, eligible: leaf.eligible === true,
           note: entry.signable !== true || leaf.eligible === true ? "" : leaf.signed === true ? SIGN.replaced : SIGN.notCriterion }));
         const toSign = entry.signable === true ? leaves.filter((leaf) => leaf.eligible).map((leaf) => leaf.node) : [];
         // A list shortened by the service cannot be signed from here: signing it would replace leaves this page never saw.
@@ -1300,7 +1462,7 @@ window.__ModuleLoader__.load({
       for (const task of tasks) {
         const entry = entries.find((e) => e.goal === task.goal);
         const rows = (entry ? entry.leaves : (memory.signed.get(task.goal) || []).map((leaf) => ({ ...leaf, signed: true, eligible: true })))
-          .map((leaf) => ({ node: leaf.node, label: leaf.label || T.panel.aCriterion, criterion: leaf.criterion,
+          .map((leaf) => ({ node: leaf.node, label: leaf.label || T.panel.aCriterion, criterion: leaf.criterion, spec: leaf.spec,
             signed: leaf.signed ? (task.fixed ? T.panel.byCapability : T.panel.signed)
               : leaf.note || T.panel.unsigned,
             holds: memory.holds.has(leaf.node) ? memory.holds.get(leaf.node) : null }));
@@ -1363,14 +1525,23 @@ window.__ModuleLoader__.load({
       };
       return { busy, note, ask };
     }
-    // One proposed criterion: its label, the criterion in small text, and whether it is signed, cannot be signed, or would
-    // be replaced by this signature (a signed leaf that is no longer eligible; Console's Will be replaced).
-    const leafRow = (leaf) => h("div", { key: leaf.node, "data-rulith-leaf": leaf.node, style: { padding: "2px 0" } },
-      h("div", { style: { display: "flex", gap: 6, alignItems: "baseline" } },
-        h("span", { style: { flex: 1, wordBreak: "break-word" } }, leaf.label || T.panel.aCriterion),
-        leaf.signed ? h("span", { style: { ...small, flex: "none" }, "data-rulith-leaf-signed": "" }, SIGN.signedMark) : null,
-        leaf.note ? h("span", { style: { ...small, flex: "none" }, "data-rulith-leaf-ineligible": "" }, leaf.note) : null),
-      leaf.criterion ? h("div", { style: { ...small, wordBreak: "break-all" } }, leaf.criterion) : null);
+    // One proposed criterion, and whether it is signed, cannot be signed, or would be replaced by this signature (a signed
+    // leaf that is no longer eligible; Console's Will be replaced). Batch C: a check criterion shows what it runs and freezes
+    // as its main line, with the Agent's own label under it; another criterion shows its label, with the criterion in small
+    // text. No digest is shown either way.
+    const leafRow = (leaf) => {
+      const check = leaf.spec && !leaf.spec.truncated;
+      return h("div", { key: leaf.node, "data-rulith-leaf": leaf.node, style: { padding: "2px 0" } },
+        h("div", { style: { display: "flex", gap: 6, alignItems: "baseline" } },
+          h("span", { style: { flex: 1, wordBreak: "break-word" }, ...(check ? { "data-rulith-leaf-check": "" } : {}) },
+            check ? partsView(checkParts(leaf.spec)) : leaf.label || T.panel.aCriterion),
+          leaf.signed ? h("span", { style: { ...small, flex: "none" }, "data-rulith-leaf-signed": "" }, SIGN.signedMark) : null,
+          leaf.note ? h("span", { style: { ...small, flex: "none" }, "data-rulith-leaf-ineligible": "" }, leaf.note) : null),
+        check ? (leaf.label ? h("div", { style: { ...small, wordBreak: "break-word" }, "data-rulith-leaf-label": "" }, leaf.label) : null)
+          : leaf.spec ? h("div", { style: small }, SIGN.tooLarge)
+          : leaf.criterion ? h("div", { style: { ...small, wordBreak: "break-all" } }, leaf.criterion) : null,
+        ...cautionsView(leaf.spec));
+    };
     /** The signing confirmation (PSC 0.2.28; Console Text A): only its Sign sends anything. */
     function SignDialog() {
       const asking = useStore(signView);
@@ -1582,7 +1753,9 @@ window.__ModuleLoader__.load({
               h("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } },
                 h("span", { style: { flex: 1, wordBreak: "break-word" } }, row.label),
                 h("span", { style: { flex: "none", fontSize: 12 } }, holdsWord(row.holds), h("span", { style: small }, T.p.dot + row.signed))),
-              row.criterion ? h("div", { style: { ...small, wordBreak: "break-all" } }, row.criterion) : null)))))
+              row.spec ? h("div", { style: { ...small, wordBreak: "break-word" } }, partsView(checkParts(row.spec)))
+                : row.criterion ? h("div", { style: { ...small, wordBreak: "break-all" } }, row.criterion) : null,
+              ...cautionsView(row.spec))))))
           : none(model.awaitingUnknown ? T.panel.criteriaLater : model.tasksReading ? T.common.reading : T.panel.noCriteria)),
         block(T.panel.recent, model.operations.length ? String(model.operations.length) : "", model.operations.length
           ? h("div", null, model.operations.map((line, i) => h("div", { key: i, "data-rulith-operation": "", style: { display: "flex", gap: 6, alignItems: "baseline", padding: "2px 0", fontSize: 12 } },
@@ -1758,6 +1931,16 @@ window.__ModuleLoader__.load({
      * the Connection's name and the account are under 「详细」 (design §3.2 打开确认框, §2: no internal word in view).
      * 中文说明：规定要列出的各项（含所用工具）都直接显示；带版本的工具标识、能力标识与版本、本机连接名和账户只在「详细」里。
      */
+    // The open-project note for this computer's system (PSC 0.2.36 §14 ④): the start, this system's sentence, then where
+    // there is isolation (Windows, Linux) its limits and that commands do not run without it, and the end. Any other system
+    // (macOS has its own sentence) says commands are not isolated there. 中文说明：只讲这台电脑的系统；有隔离的系统加两句：
+    // 它只护 Rulith 自己的凭据、隔离不起来就不运行。
+    function projectNote(system) {
+      const P = T.project;
+      const isolated = system === "windows" || system === "linux";
+      const own = isolated || system === "macos" ? P.noteSystem[system] : P.noteSystem.other;
+      return [P.noteStart, own, isolated ? P.noteLimits : "", isolated ? P.noteFallback : "", P.noteEnd].filter(Boolean).join(LOCALE === "en" ? " " : "");
+    }
     function projectConfirmation(view) {
       const v = view || {};
       const tools = Array.isArray(v.tools) ? v.tools : [];
@@ -1777,12 +1960,12 @@ window.__ModuleLoader__.load({
           [P.folder, v.directory],
           [P.agent, fill(P.agentValue, { agent: v.agentName, computer: v.computer.label || T.common.unnamedComputer })],
           [P.canDo, P.canDoValue],
-          [P.tools, toolList + T.p.stop + (capability ? (LOCALE === "en" ? " " : "") + P.fromCapability : "")],
           [P.mode, MODE_MEANING[requested]],
-          [P.note, P.noteValue],
+          [P.note, projectNote(v.system)],
           [P.withdraw, P.withdrawValue],
         ],
         details: [
+          [P.tools, toolList + T.p.stop + (capability ? (LOCALE === "en" ? " " : "") + P.fromCapability : "")],
           [P.account, v.accountName || v.accountId],
           [P.toolsVersions, tools.map((tool) => String(tool.id || "")).join(T.p.list)
             + (capability ? T.p.stop + (LOCALE === "en" ? " " : "") + fill(P.capability, { id: capability + (v.capability.version ? " " + v.capability.version : "") }) : "") + T.p.stop],
@@ -2080,13 +2263,17 @@ window.__ModuleLoader__.load({
       const groups = new Map(agents.map((a) => [a.agentId, { agent: a, dirs: new Map((a.directories || []).map((d) => [samePath(d.path), { dir: d, sessions: [] }])) }]));
       const others = [];
       const q = String(filter || "").trim().toLowerCase();
+      // Batch C (D-1031a; product review #11): an account with exactly one Agent shows its folders directly, with no Agent
+      // level and no group of conversations without an Agent: every conversation the list shows is that Agent's (the
+      // host routes an unassigned conversation to it as well).
+      const single = agents.length === 1 ? groups.get(agents[0].agentId) : null;
       for (const id of (list && list.ids) || []) {
         const s = list.byId[id];
         if (!s || archived.has(s.id) || (s.blank && s.id !== current)) continue;
         // Recorded Agent, else the owner of its directory. A conversation with neither (from before the sidebar, or of an
-        // Agent since deleted) is not given to anyone: it waits under "未归属的会话".
+        // Agent since deleted) is not given to anyone: it waits under "未归属的会话" (with one Agent: under that Agent).
         const agentId = assignments[s.id] || (s.origin === "subagent" && assignments[s.parentId]) || owners.get(samePath(s.cwd));
-        const group = groups.get(agentId);
+        const group = groups.get(agentId) || single;
         if (!group) { others.push(s); continue; }
         const key = samePath(s.cwd);
         if (!group.dirs.has(key)) group.dirs.set(key, { dir: { path: s.cwd || "", label: baseName(s.cwd) || T.tree.otherFolder, source: null, extra: true }, sessions: [] });
@@ -2128,7 +2315,7 @@ window.__ModuleLoader__.load({
       for (const d of otherDirs.values()) if (names.get(d.label) > 1) d.label = lastTwo(d.path);
       const otherList = [...otherDirs.values()];
       const othersOpen = q ? otherList.length > 0 : collapsed && collapsed["others"] === false;
-      return { agents: out, others: { dirs: otherList, count: otherList.reduce((n, d) => n + d.sessions.length, 0), open: !!othersOpen } };
+      return { agents: out, single: !!single, others: { dirs: otherList, count: otherList.reduce((n, d) => n + d.sessions.length, 0), open: !!othersOpen } };
     }
 
     function makeRulithTree(services) {
@@ -2260,11 +2447,17 @@ window.__ModuleLoader__.load({
               d.sessions.length > SHOWN && !filter ? h("button", { type: "button", style: { ...tiny, padding: "1px 34px", fontSize: 12 },
                 onClick: () => setMore({ ...more, [d.key]: !showAll }) }, showAll ? T.tree.less : fill(T.tree.more, { n: d.sessions.length - SHOWN })) : null));
         };
-        const agentBlock = (entry) => {
+        // `single`: the account's only Agent (batch C): no header row; its folders show directly, and before it is set up on
+        // this computer only the step that sets it up.
+        const agentBlock = (entry, single = false) => {
           const a = entry.agent;
           const online = a.worker && a.worker.state === "online";
           const opensHere = busy === "project:" + a.agentId;
-          return h("div", { key: a.agentId, "data-rulith-agent": a.agentId, style: { marginBottom: 4 } },
+          const setUpButton = () => h("button", { type: "button", "data-rulith-setup-agent": a.agentId, disabled: !!busy, style: { ...button, padding: "0 6px", fontSize: 11 }, onClick: () => setUp(a) },
+            busy === "setup:" + a.agentId ? T.setup.settingUp : T.setup.setUp);
+          return h("div", { key: a.agentId, "data-rulith-agent": a.agentId, ...(single ? { "data-rulith-single-agent": "" } : {}), style: { marginBottom: 4 } },
+            single ? (!a.attached ? h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", fontSize: 12.5 } },
+                dot(GREY), h("span", { style: { flex: 1, minWidth: 0, wordBreak: "break-word" } }, T.status.notSetUp), setUpButton()) : null) :
             // The Agent of the open conversation is highlighted; 默认 marks only the account's default Agent.
             h("div", { "data-rulith-agent-current": entry.hasCurrent ? "" : undefined,
                 style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", borderRadius: 6, fontSize: 13, fontWeight: 600,
@@ -2274,11 +2467,10 @@ window.__ModuleLoader__.load({
               h("span", { title: a.name, style: { flex: 1, minWidth: 0, wordBreak: "break-word" } }, a.name),
               entry.isDefault ? h("span", { "data-rulith-default": "", title: T.tree.defaultTitle, style: { ...small, fontWeight: 400 } }, T.tree.default) : null,
               entry.count ? h("span", { style: { ...small, fontWeight: 400 } }, entry.count) : null,
-              !a.attached ? h("button", { type: "button", "data-rulith-setup-agent": a.agentId, disabled: !!busy, style: { ...button, padding: "0 6px", fontSize: 11 }, onClick: () => setUp(a) },
-                  busy === "setup:" + a.agentId ? T.setup.settingUp : T.setup.setUp)
+              !a.attached ? setUpButton()
                 : firstDir(entry) ? h("button", { type: "button", title: T.tree.newUnderAgent, disabled: !!busy, style: tiny, onClick: () => newSession(a, firstDir(entry)) }, "+") : null),
             setup.run && setup.run.agentId === a.agentId && !(setup.run.settled && setup.run.ok && a.attached) ? h("div", { style: { padding: "0 6px 0 26px" } }, h(SetupSteps, { run: setup.run, onReplace: () => setUp(a, true) })) : null,
-            entry.open && a.attached ? h("div", null, entry.dirs.map((d) => dirBlock(entry, d)),
+            (entry.open || single) && a.attached ? h("div", null, entry.dirs.map((d) => dirBlock(entry, d)),
               // The directory level's last row: open another folder of this computer as one of this Agent's projects.
               h(FolderChooser, { key: "folders-" + a.agentId, disabled: !!busy, onChosen: (directory) => openFolder(a, directory) }),
               opensHere && opening.progress ? h("div", { role: "status", style: { ...small, display: "flex", gap: 6, alignItems: "baseline", padding: "2px 6px 2px 18px" } },
@@ -2287,13 +2479,13 @@ window.__ModuleLoader__.load({
         };
         return h("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: 1, overflow: "auto", padding: "4px 6px" }, "data-rulith-tree": "" },
           h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px" } },
-            h("span", { style: { ...section, margin: 0, flex: 1 } }, T.tree.agents),
+            h("span", { style: { ...section, margin: 0, flex: 1 } }, view.single ? T.tree.projects : T.tree.agents),
             h("button", { type: "button", title: T.tree.newHereTitle, disabled: !!busy || !ready, style: tiny, onClick: startHere }, T.tree.newHere)),
           h("input", { value: filter, placeholder: T.tree.filter, onChange: (event) => setFilter(event.target.value),
             style: { margin: "2px 6px 8px", padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(127,127,127,.35)", background: "transparent", color: "inherit", font: "inherit", fontSize: 12 } }),
           !tree ? none(T.tree.readingAgents)
             : !ready ? h("div", { style: { ...small, padding: "0 6px 8px" } }, plain(tree, T.tree.agentsUnreadable)) : null,
-          view.agents.map(agentBlock),
+          view.agents.map((entry) => agentBlock(entry, view.single)),
           view.others.count ? h("div", { style: { marginTop: 6 }, "data-rulith-unowned": "" },
             h("div", { style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 6px", fontSize: 13, opacity: 0.8 } },
               h("button", { type: "button", style: { ...tiny, padding: 0, width: 14 }, onClick: () => toggle("others", view.others.open) }, view.others.open ? "▾" : "▸"),
@@ -2415,6 +2607,7 @@ window.__ModuleLoader__.load({
           !tree ? none(T.tree.readingAgents)
             : !tree.ok ? alertLine(plain(tree, T.wizard.agentsUnreadable))
             : !agents.length ? alertLine(T.wizard.noAgents)
+            : agents.length === 1 ? null
             : named ? h("div", { style: { ...small, marginTop: 6 } }, fill(T.wizard.agent, { name: named.name + (named.isDefault ? T.common.default : "") }))
             : h("label", { style: { display: "block", marginTop: 6 } }, h("span", { style: small }, T.wizard.agentLabel),
                 h("select", { value: chosenAgent, disabled: working, onChange: (event) => setChosenAgent(event.target.value), style: { ...field, width: "auto" } },

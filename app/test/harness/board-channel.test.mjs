@@ -445,7 +445,7 @@ test('the web gate offers only Rulith and web tools and refuses new or resumed c
   const f = gateFixture(); const main = f.agent('main'); f.create(main);
   assert.deepEqual(main.filters[0].allow, [...TOOLS, ...WEB_TOOLS]); assert.equal(handOf(main), 'main');
   for (const name of DELEGATION_TOOLS) assert.ok(!main.filters[0].allow.includes(name));
-  assert.equal(f.globalSections[0].text, 'approved persona\n\n' + forDeployment(ADDENDUM));
+  assert.equal(f.globalSections[0].text({}), 'approved persona\n\n' + forDeployment(ADDENDUM));
   for (const header of [{ parentSession: 'main', delegationDepth: 1 }, { origin: 'subagent' }, { delegationDepth: 2 }]) {
     const child = f.agent('child', header);
     assert.throws(() => f.create(child), /sub-agents are disabled/);

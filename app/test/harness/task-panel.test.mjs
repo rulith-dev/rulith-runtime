@@ -85,7 +85,7 @@ test('running: the task in plain words, its criteria and whether each holds, pla
   assert.deepEqual(tasks, ['写 fizzbuzz.pyRunning', '(Unnamed task)Paused', '统计单词Completed (acceptance passed)'], 'open tasks first; never a node id');
   const criteria = nodes(shown).filter(attr('data-rulith-criterion')).map(text);
   assert.equal(criteria.length, 2);
-  assert.match(criteria[0], /^unittest 在 fizzbuzz\.py 上通过Holds · Signedeng\.check_passed\(key: game:unit:sha256:abababab…\)$/);
+  assert.match(criteria[0], /^unittest 在 fizzbuzz\.py 上通过Holds · Signedeng\.check_passed\(key: game:unit\)$/);
   assert.match(criteria[1], /^输出 1 到 100Does not hold · Signed/);
   const operations = nodes(shown).filter(attr('data-rulith-operation')).map(text);
   assert.deepEqual(operations.map((line) => line.replace(/\d\d:\d\d$/, '')), ['Run tests: passed', 'Write fizzbuzz.py', 'Start a task']);
@@ -108,10 +108,10 @@ test('awaiting signature: the criteria card goes to the top, with each leaf, its
   const card = find(shown, attr('data-rulith-awaiting-signature', 'goal-7'));
   assert.match(text(card), /^Proposed acceptance criteria写 fizzbuzz\.py/);
   const leaf = (node) => text(find(card, attr('data-rulith-leaf', node)));
-  assert.equal(leaf('leaf-a'), 'unittest 在 fizzbuzz.py 上通过eng.check_passed(key: game:unit:sha256:abababab…)');
+  assert.equal(leaf('leaf-a'), 'unittest 在 fizzbuzz.py 上通过eng.check_passed(key: game:unit)', 'no digest, not even shortened');
   assert.match(leaf('leaf-b'), /^输出 1 到 100Signed/);
   assert.match(leaf('leaf-c'), /^代码好读Not a criterionwork\.note\(text: readable\)$/);
-  assert.match(leaf('leaf-d'), /^旧的检查SignedWill be replacedeng\.check_passed\(check: old, spec_digest: sha256:abababab…\)$/);
+  assert.match(leaf('leaf-d'), /^旧的检查SignedWill be replacedeng\.check_passed\(check: old\)$/, 'an argument that was only a digest is left out');
   assert.equal(text(find(card, attr('data-rulith-sign', 'goal-7'))), 'Sign these criteria');
   assert.equal(text(find(shown, attr('data-rulith-task', 'goal-7'))), '写 fizzbuzz.pyWaiting for your signature');
   // Every criterion of the goal, signed or not, in 验收标准与状态.
@@ -127,6 +127,85 @@ test('awaiting signature: the criteria card goes to the top, with each leaf, its
   // A criterion that is not JSON is shown as it is, on one line.
   const plainCriterion = panel(page, { conversation: state(awaiting({ leaves: [{ node: 'leaf-x', label: 'x', criterion: 'eng.check_passed(\n key)', signed: false, eligible: true }] })) });
   assert.equal(text(find(plainCriterion.render(), attr('data-rulith-leaf', 'leaf-x'))), 'xeng.check_passed( key)');
+});
+
+// Batch C (D-1031a): the Gateway (rulith-java bbad83b2) gives a check leaf `spec`, what the check runs and freezes; the card
+// shows that as the leaf's main line, in Console's words, with the Agent's label under it, and never a digest.
+const checkSpec = (extra = {}) => ({ kind: 'check', check: 'unit', source: 'app', root: 'D:/work/game', command: 'node test/check.mjs', shell: false, cwd: '.',
+  files: [{ path: 'test/check.mjs', sha256: digest }, { path: 'test/data.json', sha256: 'cd'.repeat(32) }], ...extra });
+test('batch C: a check criterion shows what it runs and freezes, the Agent\'s label under it, and no digest', () => {
+  const page = loadPage();
+  const leaves = [{ ...LEAVES[0], spec: checkSpec() },
+    { ...LEAVES[1], spec: checkSpec({ root: undefined, cwd: 'pkg', command: 'npm test', files: [{ path: 'a.test.js', sha256: digest }], filesTruncated: true, filesTotal: 4 }) },
+    { node: 'leaf-e', label: 'performance', criterion: atom('eng.check_passed', { key: 'game:perf:sha256:' + digest }), signed: false, eligible: true, spec: { kind: 'check', truncated: true } },
+    { node: 'leaf-f', label: 'no files', criterion: atom('eng.check_passed', { key: 'game:none:sha256:' + digest }), signed: false, eligible: true, spec: checkSpec({ files: [] }) },
+    { node: 'leaf-g', label: 'malformed', criterion: atom('eng.check_passed', { key: 'game:bad:sha256:' + digest }), signed: false, eligible: true, spec: { kind: 'check', command: 1 } }];
+  const m = panel(page, { conversation: state(awaiting({ leaves })) });
+  const shown = m.render();
+  const card = find(shown, attr('data-rulith-awaiting-signature', 'goal-7'));
+  const leaf = (node) => text(find(card, attr('data-rulith-leaf', node)));
+  assert.equal(leaf('leaf-a'), 'Runs node test/check.mjs in . of D:/work/game · freezes test/check.mjs, test/data.jsonunittest 在 fizzbuzz.py 上通过');
+  const main = find(find(card, attr('data-rulith-leaf', 'leaf-a')), attr('data-rulith-leaf-check'));
+  assert.deepEqual(nodes(main).filter((node) => node.tag === 'code').map(text), ['node test/check.mjs', '.', 'D:/work/game'], 'the command, its folder and the project as code');
+  assert.equal(text(find(find(card, attr('data-rulith-leaf', 'leaf-a')), attr('data-rulith-leaf-label'))), 'unittest 在 fizzbuzz.py 上通过');
+  assert.equal(leaf('leaf-b'), 'Runs npm test in pkg · freezes a.test.js, and 3 more' + 'Signed' + '输出 1 到 100');
+  assert.equal(leaf('leaf-e'), 'performance' + PSC.SIGNING.tooLarge, 'too large to show: the label, and where to see it');
+  assert.equal(leaf('leaf-f'), 'Runs node test/check.mjs in . of D:/work/game · freezes no filesno files');
+  assert.equal(leaf('leaf-g'), 'malformedeng.check_passed(key: game:bad)', 'a malformed spec is ignored: the criterion without its digest');
+  // No digest anywhere on the card or in the panel's criteria, and the PSC-pinned card title and button are unchanged.
+  assert.doesNotMatch(text(shown), /[0-9a-f]{16}|sha256/);
+  assert.match(text(card), /^Proposed acceptance criteria写 fizzbuzz\.py/);
+  assert.equal(text(find(card, attr('data-rulith-sign', 'goal-7'))), 'Sign these criteria');
+  assert.equal(text(find(shown, attr('data-rulith-criterion', 'leaf-a'))), 'unittest 在 fizzbuzz.py 上通过Holds · Not signedRuns node test/check.mjs in . of D:/work/game · freezes test/check.mjs, test/data.json');
+  // The confirmation shows the same lines above the PSC-pinned body.
+  find(card, attr('data-rulith-sign', 'goal-7')).props.onClick();
+  const dialog = page.mount(page.plugin.components.SignDialog).render();
+  assert.match(text(dialog), /Runs node test\/check\.mjs in \. of D:\/work\/game · freezes test\/check\.mjs, test\/data\.json/);
+  assert.ok(text(dialog).includes(PSC.SIGNING.body));
+  assert.doesNotMatch(text(dialog), /[0-9a-f]{16}|sha256/);
+});
+
+// Batch C review P1 and re-review: a check passes when its whole line exits with 0, so the card says so for every shell
+// line and every line that names a shell (it does not try to read the line), and says when npm, pnpm, yarn, bun, corepack
+// or node --run runs a package.json script while the check's own folder's package.json is not frozen, or the line
+// changes folder or names a workspace. Console says the same.
+test('batch C: the card cautions about shell lines and about package.json scripts the criteria do not freeze', () => {
+  const page = loadPage();
+  const leaf = (node, extra) => ({ node, label: node, criterion: atom('eng.check_passed', { key: `game:${node}:sha256:` + digest }), signed: false, eligible: true,
+    spec: checkSpec({ files: [{ path: 'test/a.test.js', sha256: digest }], ...extra }) });
+  const pkg = (path) => ({ path, sha256: digest });
+  const leaves = [
+    leaf('piped', { shell: true, command: 'npm test 2>&1 | tail -20' }),
+    leaf('plainShell', { shell: true, command: 'node test/a.test.js' }),
+    leaf('chained', { shell: true, command: 'npm ci && npm test', files: [pkg('package.json')] }),
+    leaf('setCi', { shell: true, command: 'set CI=true&& npm test' }),
+    leaf('argv', { shell: false, command: 'node test/a.test.js' }),
+    leaf('nested', { shell: false, command: 'powershell -Command "npm test; exit 0"', files: [pkg('package.json')] }),
+    leaf('bashC', { shell: false, command: 'bash -c "node test/a.test.js | tail"' }),
+    leaf('pnpm', { shell: false, command: 'pnpm.cmd test' }),
+    leaf('corepack', { shell: false, command: 'corepack pnpm test' }),
+    leaf('nodeRun', { shell: false, command: 'node --run test' }),
+    leaf('wrongPackage', { shell: false, command: 'npm test', files: [pkg('web/package.json')] }),
+    leaf('ownFolder', { shell: false, command: 'npm test', cwd: 'web', files: [pkg('web/package.json')] }),
+    leaf('dotFolder', { shell: false, command: 'npm test', cwd: './web/', files: [pkg('web/package.json')] }),
+    leaf('prefix', { shell: false, command: 'npm --prefix web test', files: [pkg('package.json')] }),
+    leaf('changesFolder', { shell: true, command: 'cd web && npm test', files: [pkg('package.json')] }),
+    leaf('cutShort', { shell: false, command: 'npm test', filesTruncated: true, filesTotal: 40 }),
+  ];
+  const card = find(panel(page, { conversation: state(awaiting({ leaves })) }).render(), attr('data-rulith-awaiting-signature', 'goal-7'));
+  const cautions = (node) => nodes(find(card, attr('data-rulith-leaf', node))).filter((n) => n.props && Object.hasOwn(n.props, 'data-rulith-check-caution')).map(text);
+  const { cautionCombined: shell, cautionScript: script } = PSC.SIGNING;
+  assert.deepEqual(Object.fromEntries(leaves.map(({ node }) => [node, cautions(node)])), {
+    piped: [shell, script], plainShell: [shell], chained: [shell], setCi: [shell, script], argv: [], nested: [shell], bashC: [shell],
+    pnpm: [script], corepack: [script], nodeRun: [script], wrongPackage: [script], ownFolder: [], dotFolder: [], prefix: [script],
+    changesFolder: [shell, script], cutShort: [],
+  });
+  assert.equal(shell, 'This check runs a shell command line and passes when the whole line exits with 0: if the line joins commands (with |, ;, || or &) or starts another shell, a failing test can still count as passed.');
+  assert.equal(script, 'It runs a script defined in package.json, which these criteria do not freeze: the script can change after you sign.');
+  // The panel's criteria list says the same under a signed criterion's line.
+  const signed = { ...leaves[0], signed: true };
+  const shown = panel(page, { conversation: state(awaiting({ leaves: [signed] })) }).render();
+  assert.ok(text(find(shown, attr('data-rulith-criterion', 'piped'))).endsWith(shell + script));
 });
 
 test('signable:false and a shortened list: the reason in Chinese and no button; unknown criteria are never claimed absent', () => {
@@ -525,8 +604,10 @@ test('the left column wraps names instead of cutting them off', () => {
   const list = { ids: ['s1'], byId: { s1: { id: 's1', cwd: '/project', title, updatedAt: Date.now(), running: false, blank: false } } };
   const tree = page.mount(page.plugin.makeRulithTree({ sessions: { list: store(list) }, workspaces: { list: store({}) },
     ui: { selection: store({ sessionId: 's1' }), openSession() {}, archiveSession() {} } }), { wide: true });
+  // Two Agents: the Agent level is shown (an account with one Agent shows its folders directly, batch C).
   tree.cells[0] = { ok: true, defaultAgentId: 'a1', assignments: { s1: 'a1' }, agents: [{ agentId: 'a1', name: 'A rather long Agent name for this account', attached: true,
-    isDefault: true, directories: [{ path: '/project', label: 'a-project-folder-with-a-long-name', source: 'project' }] }] };
+    isDefault: true, directories: [{ path: '/project', label: 'a-project-folder-with-a-long-name', source: 'project' }] },
+  { agentId: 'a2', name: 'another', attached: false, directories: [] }] };
   const shown = tree.render();
   const named = nodes(shown).filter((node) => node.tag === 'span' && [title, 'A rather long Agent name for this account'].includes(text(node))
     || node.tag === 'span' && text(node) === '📁 a-project-folder-with-a-long-name');
@@ -539,7 +620,7 @@ test('the left column wraps names instead of cutting them off', () => {
 });
 
 // ---- The host half: the guarded route over a fake manager (standing for the manager and the Gateway behind it).
-async function hostFixture(t, manager) {
+async function hostFixture(t, manager, { state = () => ({ ok: true }) } = {}) {
   const previousFlag = process.env.RULITH_DSH_CONVERSATION_BOARDS;
   process.env.RULITH_DSH_CONVERSATION_BOARDS = '1';
   t.after(() => { if (previousFlag === undefined) delete process.env.RULITH_DSH_CONVERSATION_BOARDS; else process.env.RULITH_DSH_CONVERSATION_BOARDS = previousFlag; });
@@ -559,7 +640,8 @@ async function hostFixture(t, manager) {
       const route = new URL(String(url)).pathname;
       const body = init.body ? JSON.parse(init.body) : undefined;
       if (route === '/manager/conversations/sign-acceptance') calls.push(body);
-      const [status, answer] = route === '/manager/conversations/sign-acceptance' || route === '/manager/health' ? await manager(body, route) : [200, { ok: true }];
+      const [status, answer] = route === '/manager/conversations/sign-acceptance' || route === '/manager/health' ? await manager(body, route)
+        : route === '/manager/state' ? [200, state()] : [200, { ok: true }];
       return new Response(JSON.stringify(answer), { status, headers: { 'content-type': 'application/json' } });
     }
     const body = JSON.parse(init.body);
@@ -644,6 +726,25 @@ test('host: the Health read gives the panel the Agent\'s pending call (whether i
     consoleUrl: 'https://rulith.example/console/#/agents/agent-1?tab=runtime', pendingCall: { needsPerson: true, phase: 'waiting' } });
   health = { agents: [{ agentId: 'agent-1', console: {} }] };
   assert.deepEqual(await f.get('/rulith/api/health?session=s1'), { ok: true, available: true, consoleUrl: '', pendingCall: null });
+});
+
+// Batch C (D-1031a; runtime review #1): "This computer" is the manager's own record of the instance's Worker
+// (`workerSetting.state`), read on each poll; no instance event stream is sampled, so a long session cannot lose it.
+test("host: this computer's Worker state is the manager's workerSetting.state of the conversation's Agent", async (t) => {
+  let workerSetting = { enabled: true, state: 'online' };
+  const f = await hostFixture(t, () => [200, { ok: true }], { state: () => ({ ok: true, device: { token: 'never' },
+    instances: [{ id: 'instance', mode: 'local_agent', agentId: 'agent-1', workerSetting }, { id: 'other', mode: 'local_agent', agentId: 'agent-2',
+      workerSetting: { enabled: true, state: 'offline' } }] }) });
+  const worker = () => f.get('/rulith/api/worker?session=s1');
+  const computer = (await worker()).computer;
+  assert.ok(computer);
+  assert.deepEqual(await worker(), { ok: true, available: true, agentName: 'Default agent', state: 'online', computer });
+  workerSetting = { enabled: true, state: 'needs setup' };
+  assert.equal((await worker()).state, 'needs setup');
+  workerSetting = { enabled: false, state: 'offline' };
+  assert.equal((await worker()).state, 'offline');
+  workerSetting = undefined;
+  assert.equal((await worker()).state, 'unknown', 'no record says nothing either way: the panel shows it unread');
 });
 
 test('the Console pages the panel links come from the origin this computer signed in to, only over http(s)', () => {

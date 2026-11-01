@@ -27,6 +27,17 @@ const DEEPSEEK_API_HOST = 'api.deepseek.com';
 export const searchOffered = (env = process.env) => Boolean(env.RULITH_DSH_WEB_SEARCH_KEY);
 export const withoutSearch = (text) => text.replace('the read-only tools web_search and web_fetch', 'the read-only tool web_fetch');
 export const forDeployment = (text, env = process.env) => (searchOffered(env) ? text : withoutSearch(text));
+/**
+ * The addendum as one prompt assembly gives it (batch C, D-1031a): web_search is named only while that tool is registered
+ * for the agent the prompt is assembled for (`tools.get('web_search', scope)`, the check dsh's own web_search guidance
+ * makes), so a deployment whose search did not register never promises it. Without a registry to ask (a host that does
+ * not inject tools) the launch flag decides, as before (forDeployment).
+ * @param text - the approved addendum.
+ * @param tools - dsh's tool registry (`ctx.tools`), or undefined.
+ * @param scope - the assembly's scope (dsh passes it to a section's text function).
+ */
+export const addendumText = (text, tools, scope, env = process.env) => (typeof tools?.get === 'function'
+  ? (tools.get('web_search', scope) !== undefined ? text : withoutSearch(text)) : forDeployment(text, env));
 
 export function webSearchKey(route) {
   if (!route?.key || !route.url) return '';

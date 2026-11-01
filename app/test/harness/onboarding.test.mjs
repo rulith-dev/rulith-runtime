@@ -90,8 +90,10 @@ test('the wizard shows ① sign-in, then ② the model form, then ③ the folder
   shown = w.m.render();
   assert.ok(find(shown, (node) => node.tag === 'select'), 'no default is guessed');
   assert.equal(find(shown, (node) => node.tag === w.page.plugin.components.FolderChooser), undefined);
+  // Batch C: an account with one Agent is not shown an Agent at all; its folder is chosen at once.
   w = wizard(() => ({ ok: true }), { tree: { ok: true, agents: [agent('a1')] } });
-  assert.match(text(w.m.render()), /Agent: Default agent(?! \(default\))/);
+  assert.doesNotMatch(text(w.m.render()), /Agent: |Default agent/);
+  assert.ok(find(w.m.render(), (node) => node.tag === w.page.plugin.components.FolderChooser));
   // 稍后再说: put away for this account on this page load.
   shown = w.m.render();
   button(shown, 'Later').props.onClick();
@@ -127,10 +129,11 @@ test('the wizard\'s step ③ sets the Agent up with its steps shown, opens the c
   const dialog = w.page.expand(find(w.m.render(), (node) => node.tag === w.page.plugin.components.ProjectDialog));
   assert.ok(find(dialog, (node) => node.props['data-rulith-project-dialog'] !== undefined));
   assert.match(text(dialog), /FolderD:\\work\\gameAgentDefault agent · this computer .*What it may do.*Exploration mode/);
-  // The tools used are listed in view, in plain words, with the capability; only their ids and versions are under 详细.
+  // The tools used are listed first under Details (PSC 0.2.36), in plain words with the capability, then their ids and versions.
   const folded = find(dialog, (node) => node.tag === 'details');
   assert.ok(folded, 'tool versions are folded under Details');
-  assert.match(text(dialog), /Tools usedRead files, run commands\. From this Agent's installed official engineering capability\.Exploration mode/);
+  assert.match(text(folded), /Tools usedRead files, run commands\. From this Agent's installed official engineering capability\./);
+  assert.doesNotMatch(text(dialog).replace(text(folded), ''), /Tools used/, 'the tools are not repeated outside Details');
   assert.match(text(folded), /eng\.read@2, eng\.run@2/);
   assert.doesNotMatch(text(dialog).replace(text(folded), ''), /eng\.|@\d/, 'no id or version outside Details');
   // The setup ran first, as one operation, and its steps were shown.
@@ -221,6 +224,41 @@ test('the tree: Default marks only the account\'s default Agent (never guessed),
   assert.doesNotMatch(text(shown), /restart|Reconnect|new connection/);
   // Attached Agents end with the folder chooser.
   assert.ok(find(find(shown, (node) => node.props['data-rulith-agent'] === 'a1'), (node) => node.tag === plugin.components.FolderChooser));
+});
+
+// Batch C (D-1031a; product review #11): an account with exactly one Agent sees its folders directly, under "Projects":
+// no Agent row, no Default badge and no group of conversations without an Agent (every conversation is that Agent's).
+test('batch C: an account with one Agent shows its folders directly, with no Agent level and no unowned group', async () => {
+  const page = loadPage({ reply: ({ url, method }) => (url === '/rulith/api/setup' && method === 'POST' ? { ok: true, requestId: 'setup-0010', state: 'running', steps: [] } : { ok: true }) });
+  const { plugin } = page;
+  const list = { ids: ['s1', 's2'], byId: { s1: { id: 's1', cwd: 'D:\\Work\\game', title: 'work', updatedAt: Date.now(), running: false, blank: false },
+    s2: { id: 's2', cwd: 'D:\\elsewhere', title: 'older', updatedAt: Date.now() - 1000, running: false, blank: false } } };
+  const one = { ok: true, defaultAgentId: 'a1', assignments: { s1: 'a1' }, agents: [agent('a1', { isDefault: true, directories: [project] })] };
+  const built = plugin.buildTree({ tree: one, list, workspaces: {}, current: 's1', filter: '', collapsed: { a1: true } });
+  assert.equal(built.single, true);
+  assert.equal(built.others.count, 0, 'the conversation of no folder is the one Agent\'s');
+  assert.deepEqual(plain(built.agents[0].dirs.map((d) => [d.label, d.sessions.map((s) => s.id)])), [['game', ['s1']], ['elsewhere', ['s2']]]);
+  const store = (value) => ({ getSnapshot: () => value, subscribe() { return () => {}; } });
+  const m = page.mount(plugin.makeRulithTree({ sessions: { list: store(list) }, workspaces: { list: store({}) },
+    ui: { selection: store({ sessionId: 's1' }), openSession() {}, archiveSession() {} } }), { wide: true });
+  m.cells[0] = one;
+  let shown = m.render();
+  assert.match(text(shown), /^Projects/);
+  assert.doesNotMatch(text(shown), /Default agent|Default|Conversations without an Agent|Agents/);
+  assert.ok(find(shown, (node) => node.props['data-rulith-single-agent'] !== undefined));
+  assert.equal(nodes(shown).filter((node) => node.props['data-rulith-directory']).length, 2, 'the folders show even with the Agent collapsed before');
+  assert.ok(find(shown, (node) => node.tag === plugin.components.FolderChooser));
+  // Not set up on this computer yet: only that, with the button that sets it up.
+  m.cells[0] = { ...one, agents: [agent('a1', { attached: false, paired: false, directories: [] })] };
+  shown = m.render();
+  assert.match(text(shown), /This computer is not set up yet/);
+  await find(shown, (node) => node.props['data-rulith-setup-agent'] === 'a1').props.onClick();
+  assert.deepEqual(plain(page.posted('setup').map((r) => r.body)), [{ agentId: 'a1' }]);
+  assert.equal(find(m.render(), (node) => node.tag === plugin.components.FolderChooser), undefined);
+  // Two Agents: the Agent level and the unowned group are back.
+  const two = plugin.buildTree({ tree: { ...one, agents: [...one.agents, agent('a2')] }, list, workspaces: {}, current: 's1', filter: '', collapsed: {} });
+  assert.equal(two.single, false);
+  assert.equal(two.others.count, 1);
 });
 
 // ACC-LOCAL-09 (PSC 0.2.27 ②, SYS-LOCAL-01): another computer uses the Agent and holds its Agent token. Setting it up

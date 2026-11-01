@@ -106,6 +106,67 @@ test('This computer: each Agent\'s state here; 「Set up on this computer」 run
   assert.match(text(page.mount(page.plugin.components.ComputerSection, { state: { ok: true, signedIn: false }, refresh() {} }).render()), /Sign in to Rulith under Account first/);
 });
 
+// Batch C (D-1031a; product review #7): the model step fills in a service, completes an Anthropic base URL, checks what
+// the form holds with one request before saving, and does not show a hosted service's context window it did not set.
+test('Model (batch C): presets fill the address and a model ID to start from; Check asks once and says OK or the service\'s words', async () => {
+  const checks = [], saved = [];
+  let answer = { ok: true, state: 'ok' };
+  const page = loadPage({ reply: ({ url, method, body }) => {
+    if (url === '/rulith/api/model/check' && method === 'POST') { checks.push(body); return answer; }
+    if (url === '/rulith/api/model' && method === 'POST') { saved.push(body); return { ok: true, applies: 'next_turn', model: { configured: true } }; }
+    return { ok: true };
+  } });
+  const form = page.mount(page.plugin.components.ModelForm, {});
+  form.cells[0] = { ok: true, model: { source: 'default', url: '', name: '', configured: false, keyConfigured: false, expectedOrigin: 'o', expectedAccountId: 'a' } };
+  let shown = form.render();
+  const presets = nodes(shown).filter((node) => node.props['data-rulith-model-preset']);
+  assert.deepEqual(presets.map(text), ['OpenAI', 'Anthropic', 'DeepSeek', 'OpenRouter', 'A server on this computer']);
+  assert.match(text(shown), /^No usable model is set yet\.Fill in for:/);
+  const inputs = (root) => nodes(root).filter((node) => node.tag === 'input');
+  for (const [id, url, placeholder] of [['openai', 'https://api.openai.com/v1', 'gpt-5'], ['anthropic', 'https://api.anthropic.com/v1/messages', 'claude-opus-5-5'],
+    ['deepseek', 'https://api.deepseek.com/v1', 'deepseek-flash'], ['openrouter', 'https://openrouter.ai/api/v1', 'openai/gpt-5'],
+    ['local', 'http://127.0.0.1:11434/v1', "The model's name on the server"]]) {
+    find(form.render(), (node) => node.props['data-rulith-model-preset'] === id).props.onClick();
+    shown = form.render();
+    assert.deepEqual([inputs(shown)[0].props.value, inputs(shown)[1].props.value, inputs(shown)[1].props.placeholder], [url, '', placeholder], id);
+    assert.equal(find(shown, (node) => node.props['data-rulith-model-preset'] === id).props['aria-pressed'], 'true');
+  }
+  // An Anthropic base URL, as Anthropic's documentation gives it: completed to its Messages address for the check and the save.
+  inputs(form.render())[0].props.onChange({ target: { value: 'https://api.anthropic.com' } });
+  inputs(form.render())[1].props.onChange({ target: { value: 'claude-opus-5-5' } });
+  inputs(form.render())[2].props.onChange({ target: { value: 'sk-ant-typed' } });
+  await button(form.render(), 'Check').props.onClick();
+  assert.deepEqual(plain(checks), [{ url: 'https://api.anthropic.com/v1/messages', name: 'claude-opus-5-5', key: 'sk-ant-typed' }]);
+  assert.match(text(form.render()), /The model service answered: this address, model ID and key work\./);
+  assert.equal(saved.length, 0, 'checking saves nothing');
+  // The service's own words, or that it could not be reached.
+  answer = { ok: true, state: 'refused', message: '401 Unauthorized: invalid x-api-key' };
+  await button(form.render(), 'Check').props.onClick();
+  assert.match(text(form.render()), /The model service refused it: 401 Unauthorized: invalid x-api-key/);
+  answer = { ok: true, state: 'unreachable', message: 'ECONNREFUSED' };
+  await button(form.render(), 'Check').props.onClick();
+  assert.match(text(form.render()), /Could not reach the model service: ECONNREFUSED/);
+  await button(form.render(), 'Save').props.onClick();
+  assert.equal(saved[0].url, 'https://api.anthropic.com/v1/messages');
+  for (const [typed, sent] of [['https://api.anthropic.com/v1', 'https://api.anthropic.com/v1/messages'], ['https://api.deepseek.com/anthropic', 'https://api.deepseek.com/anthropic/v1/messages'],
+    ['https://api.anthropic.com/v1/messages', 'https://api.anthropic.com/v1/messages'], ['https://api.openai.com/v1', 'https://api.openai.com/v1']]) {
+    inputs(form.render())[0].props.onChange({ target: { value: typed } });
+    await button(form.render(), 'Check').props.onClick();
+    assert.equal(checks.at(-1).url, sent, typed);
+  }
+  // A hosted service's window is its own: no window line unless the person set one; a local server's is shown.
+  const hosted = { source: 'default', url: 'https://api.openai.com/v1', name: 'gpt-5', modelId: 'gpt-5', configured: true, keyConfigured: true, expectedOrigin: 'o', expectedAccountId: 'a' };
+  const line = (root) => find(root, (node) => node.props['data-rulith-context-window'] !== undefined);
+  form.cells[0] = { ok: true, model: { ...hosted, contextWindow: { tokens: 1000000, source: 'default', fallback: 1000000 } } };
+  const fresh = page.mount(page.plugin.components.ModelForm, {});
+  fresh.cells[0] = form.cells[0];
+  assert.equal(line(fresh.render()), undefined);
+  fresh.cells[0] = { ok: true, model: { ...hosted, contextWindow: { tokens: 400000, source: 'set', set: 400000, fallback: 1000000 } } };
+  assert.equal(text(line(fresh.render())), 'Context window: 400,000 tokens (set by you)');
+  fresh.cells[0] = { ok: true, model: { ...hosted, url: 'http://127.0.0.1:8080/v1', contextWindow: { tokens: 262144, source: 'detected', fallback: 262144 } } };
+  assert.equal(text(line(fresh.render())), 'Context window: 262,144 tokens (detected from the model server)');
+});
+
 test('Model: the form never shows the key back; saving sends the account guard and the key only when typed, and applies from the next turn', async () => {
   const saved = [];
   const page = loadPage({ reply: ({ url, method, body }) => {
@@ -412,9 +473,9 @@ test('deleting: only a finished deletion takes the row away; otherwise its reaso
   assert.deepEqual(outcome({ settled: true, refusedGoals: [] }), { settled: true, reasons: [], refused: 0 });
   assert.deepEqual(outcome({ settled: true, refusedGoals: [{ caseId: 'c1', code: 'refused' }] }), { settled: true, reasons: [], refused: 1 });
   assert.deepEqual(outcome({ settled: false, unconfirmedGoals: ['g1', 'g2'], goalsUnread: true }),
-    { settled: false, reasons: ['2 goal closings are not confirmed yet', 'its open goals could not be read'], refused: 0 });
+    { settled: false, reasons: ['2 task closings are not confirmed yet', 'its open tasks could not be read'], refused: 0 });
   assert.deepEqual(outcome({ deletion: { settled: false, reasons: [{ code: 'closings_unconfirmed', count: 3 }, { code: 'deleted_before_recording' }] } }),
-    { settled: false, reasons: ['3 goal closings are not confirmed yet', 'it was deleted before deletions were recorded as finished'], refused: 0 });
+    { settled: false, reasons: ['3 task closings are not confirmed yet', 'it was deleted before deletions were recorded as finished'], refused: 0 });
   assert.deepEqual(outcome({ deletion: { settled: true, refusedGoals: [{ caseId: 'c' }] } }), { settled: true, reasons: [], refused: 1 });
   // PSC 0.2.28 erratum: every closing answered and the goals read, only the finished record missing (补完删除 records it).
   assert.deepEqual(outcome({ deletion: { settled: false, reasons: [{ code: 'settlement_unrecorded' }] } }),
@@ -450,7 +511,7 @@ test('deleting: only a finished deletion takes the row away; otherwise its reaso
   await flush();
   let shown = tree.render();
   assert.deepEqual(archived, [], 'not finished: the row stays');
-  assert.equal(text(find(shown, (node) => node.props['data-rulith-unsettled'] === 's1')), 'Not fully deleted: 2 goal closings are not confirmed yet');
+  assert.equal(text(find(shown, (node) => node.props['data-rulith-unsettled'] === 's1')), 'Not fully deleted: 2 task closings are not confirmed yet');
   assert.equal(find(shown, (node) => node.props['data-rulith-delete'] === 's1'), undefined);
   // 补完删除: the same deletion, without asking again; finished, the row goes, and refused closings are said.
   await find(shown, (node) => node.props['data-rulith-finish-delete'] === 's1').props.onClick({ stopPropagation() {} });
@@ -459,7 +520,7 @@ test('deleting: only a finished deletion takes the row away; otherwise its reaso
   assert.deepEqual(archived, ['s1']);
   assert.equal(page.posted('conversation/end').length, 2);
   assert.equal(page.posted('conversation/end-preview').length, 1, 'finishing asks nothing again');
-  assert.match(text(shown), /Deleted\. Core refused to close 1 of its goals; they stay open on its ended Board\./);
+  assert.match(text(shown), /Deleted\. 1 of its tasks could not be closed; they stay in the ended conversation, and Console's task records show them\./);
 });
 
 test('a deleted conversation\'s composer offers nothing to set', () => {
@@ -664,7 +725,7 @@ test('ACC-ISO-14 Settings → Advanced: Run without isolation is off by default,
   assert.equal(text(dialog), S.confirmTitle + S.confirmBody + S.cancel + S.accept);
   assert.equal(dialog.props.role, 'alertdialog');
   assert.equal(S.confirmTitle, 'Run model commands without isolation?');
-  assert.equal(S.confirmBody, 'Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith\'s own credentials. Turn this on only if isolation cannot work here and you accept that risk.');
+  assert.equal(S.confirmBody, 'Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith\'s own credentials, and could use them to act as you in Rulith, for example to sign acceptance criteria. Turn this on only if isolation cannot work here and you accept that risk.');
   assert.deepEqual([S.label, S.accept, S.cancel], ['Run without isolation (not recommended)', 'Run without isolation', 'Keep isolation']);
   assert.equal(page.posted('isolation').length, 0, 'nothing is sent before the confirmation');
   button(shown, S.cancel).props.onClick();

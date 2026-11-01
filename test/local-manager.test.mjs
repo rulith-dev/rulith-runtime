@@ -2148,6 +2148,12 @@ test('setup-local sets a fresh Agent up in one operation: instance, Connection, 
     const installed = loadInstanceConfig(row.directory)
     assert.equal(installed.worker.env.ENG_KIT_HOME, join(row.directory, 'general-kit'))
     assert.ok(Object.keys(JSON.parse(readFileSync(installed.worker.env.RULITH_TOOLS_FILE, 'utf8')).tools).some((id) => id.startsWith('eng.')))
+    // Batch C (D-1031a): the kit home got the app's defaults (it had no settings.json), and the Worker's run deadline
+    // follows them: 600-second commands plus the Worker's margin.
+    const kitSettings = join(installed.worker.env.ENG_KIT_HOME, 'settings.json')
+    assert.deepEqual(JSON.parse(readFileSync(kitSettings, 'utf8')), { runDeadlineSeconds: 600, pollMaxWaitSeconds: 600,
+      treeExclude: ['node_modules', '.git', 'dist', '.venv', 'target', '**/__pycache__'], allow: ['install', 'delete'], shell: process.platform === 'win32' })
+    assert.equal(installed.worker.env.RULITH_WORKER_RUN_TIMEOUT_SECONDS, '660')
     // One pairing, and no "new Connection" field anywhere: there is no choice to make.
     assert.equal(pairRequests(gateway).length, 1)
     assert.equal(Object.hasOwn(pairRequests(gateway)[0].body, 'newConnection'), false)
@@ -2160,6 +2166,12 @@ test('setup-local sets a fresh Agent up in one operation: instance, Connection, 
     assert.equal(again.connectionId, done.connectionId)
     assert.match(again.steps[1].reason, /not rotated/)
     assert.match(again.steps[2].reason, /current/)
+    // An owner's own settings.json is never replaced: repair keeps it, and the kit follows its deadline.
+    writeFileSync(kitSettings, JSON.stringify({ runDeadlineSeconds: 90 }))
+    const repaired = await setUp(manager, { requestId: 'setup-owner-0001', agentId: 'agent-alpha', mode: 'repair' })
+    assert.equal(repaired.state, 'done', JSON.stringify(repaired))
+    assert.deepEqual(JSON.parse(readFileSync(kitSettings, 'utf8')), { runDeadlineSeconds: 90 })
+    assert.equal(loadInstanceConfig(row.directory).worker.env.RULITH_WORKER_RUN_TIMEOUT_SECONDS, '150')
     assert.equal(pairRequests(gateway).length, 1)
     assert.equal(manager.registry.read().instances.length, 1)
     // Nothing the operation reports or stores carries a credential.

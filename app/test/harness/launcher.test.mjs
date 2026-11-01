@@ -159,7 +159,7 @@ test('reviewerThinking and reviewerRequestExtra become the reviewer request extr
   assert.deepEqual(REVIEWER_REQUEST_RESERVED_KEYS, ['model', 'messages', 'max_tokens', 'temperature', 'stream', 'tools', 'tool_choice', 'n']);
   for (const key of REVIEWER_REQUEST_RESERVED_KEYS) {
     assert.throws(() => reviewerRequestExtra({ reviewerRequestExtra: { [key]: 1, chat_template_kwargs: {} } }),
-      { message: `Deep Rulith: reviewerRequestExtra in the settings may not set ${key}; the Worker controls it` });
+      { message: `Rulith: reviewerRequestExtra in the settings may not set ${key}; the Worker controls it` });
   }
   assert.throws(() => reviewerRequestExtra({ reviewerRequestExtra: { stream: true, n: 2 } }), /may not set stream, n; the Worker controls them/);
 });
@@ -286,8 +286,8 @@ test('at the start the launcher prints each attached Agent\'s model: where it co
   const ok = launch({}, [{ url: 'http://127.0.0.1:8080/v1', name: 'qwen', key: KEY }], {}, prepare);
   assert.equal(ok.run.status, 0, ok.run.stderr);
   const lines = ok.run.stdout.split(/\r?\n/).filter((line) => line.includes(' Agent '));
-  assert.deepEqual(lines, ['Deep Rulith: Agent Own model uses its own model: deepseek-reasoner at https://api.deepseek.com.',
-    'Deep Rulith: Agent Follows default uses the account default model: qwen at http://127.0.0.1:8080/v1.']);
+  assert.deepEqual(lines, ['Rulith: Agent Own model uses its own model: deepseek-reasoner at https://api.deepseek.com.',
+    'Rulith: Agent Follows default uses the account default model: qwen at http://127.0.0.1:8080/v1.']);
   for (const secret of [KEY, TOKEN]) assert.equal((ok.run.stdout + ok.run.stderr).includes(secret), false);
 });
 
@@ -438,5 +438,66 @@ test('one --port reaches dsh: the person\'s when given, else the one the setting
     assert.deepEqual(ports([]), ['3999']);
     assert.deepEqual(ports(['--port', '4555', '--no-open']), ['4555']);
     assert.deepEqual(ports(['--port=4556']), ['4556']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Batch C (D-1031a; security review P1-2): dsh's page address carries the launch token, which mints the page's session.
+// The launcher reads dsh's output instead of handing it its own: it prints the address without the token, and with no
+// browser opened writes the full address to a file only this account reads, removed when the launcher exits.
+test('the page address token never reaches the launcher\'s output; with --no-open the full address is in an owner-only file', async () => {
+  const { PassThrough } = await import('node:stream');
+  const { relayDshOutput, withoutToken, cleanAddress, PAGE_ADDRESS_FILE } = await import('../../harness/web/page-address.mjs');
+  const token = 'a1B2c3D4e5F6g7H8i9J0';
+  const url = `http://127.0.0.1:3080/?token=${token}`;
+  assert.equal(cleanAddress(url), 'http://127.0.0.1:3080/');
+  assert.equal(withoutToken(`see ${url}&x=1`), 'see http://127.0.0.1:3080/?token=<hidden>&x=1');
+  const relay = async (lines, options = {}) => {
+    const out = new PassThrough(), err = new PassThrough(), printed = [], errors = [];
+    const dir = temp();
+    const handle = relayDshOutput(out, err, { folder: dir, settleMs: 50, print: (l) => printed.push(l), printError: (l) => errors.push(l), ...options });
+    out.end(lines.join('\n') + '\n'); err.end(`web-app: could not open ${url}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const file = handle.written();
+    const saved = file ? fs.readFileSync(file, 'utf8') : '';
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { printed, errors, file, saved };
+  };
+  // dsh opened the browser: the clean address and that it was opened; no file.
+  const opened = await relay([`dsh web: ${url}`, 'dsh web: opening the default browser; pass --no-open to disable', `other ${url}`]);
+  assert.deepEqual(opened.printed, ['Rulith: http://127.0.0.1:3080/ (opened in your browser)', 'other http://127.0.0.1:3080/?token=<hidden>']);
+  assert.equal(opened.file, '');
+  assert.deepEqual(opened.errors, ['web-app: could not open http://127.0.0.1:3080/?token=<hidden>']);
+  // --no-open, or no browser line (a start over SSH): the full address goes to the file, only its path is printed.
+  for (const options of [{ noOpen: true }, {}]) {
+    const quiet = await relay([`dsh web: ${url}`], options);
+    assert.equal(path.basename(quiet.file), PAGE_ADDRESS_FILE, JSON.stringify(quiet));
+    assert.equal(quiet.saved, `${url}\n`);
+    assert.equal(quiet.printed.length, 1);
+    assert.match(quiet.printed[0], /^Rulith: http:\/\/127\.0\.0\.1:3080\/ is running\. To open it, use the address saved in .*page-address\.txt; it signs a browser in, so keep it to yourself\.$/);
+    for (const line of [...quiet.printed, ...quiet.errors]) assert.equal(line.includes(token), false);
+  }
+  // The real launcher: a stand-in dsh prints its address as dsh does and reads the saved file while it runs.
+  const dir = temp();
+  try {
+    const seen = path.join(dir, 'seen.txt');
+    const fakeDsh = path.join(dir, 'fake-dsh.mjs');
+    fs.writeFileSync(fakeDsh, `import fs from 'node:fs';\nimport path from 'node:path';\nconsole.log('dsh web: ${url}');\n`
+      + `const file = path.join(process.env.DSH_HOME, '${PAGE_ADDRESS_FILE}');\n`
+      + `for (let i = 0; i < 200 && !fs.existsSync(file); i++) await new Promise((r) => setTimeout(r, 25));\n`
+      + `fs.writeFileSync(process.env.FAKE_SEEN, fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : 'missing');\n`);
+    const s = { dshBin: fakeDsh, dshHome: path.join(dir, 'dsh-home'), cwd: dir, managerHome: path.join(dir, 'manager-home'),
+      keyFile: path.join(dir, 'key.txt'), runtimeEntry: path.join(dir, 'runtime.mjs'), persona: path.join(dir, 'persona.txt') };
+    fs.mkdirSync(path.join(s.dshHome, 'profiles', 'rulith'), { recursive: true });
+    fs.writeFileSync(path.join(s.dshHome, 'profiles', 'rulith', 'package.json'), '{}');
+    const file = path.join(dir, 'deep-rulith.json');
+    fs.writeFileSync(file, JSON.stringify(s));
+    const run = spawnSync(process.execPath, [path.join(web, 'start-deep-rulith.mjs'), file, '--no-open'],
+      { env: { ...process.env, FAKE_SEEN: seen }, encoding: 'utf8', timeout: 60_000 });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.includes(token) || run.stderr.includes(token), false, 'the token is printed nowhere');
+    assert.match(run.stdout, /Rulith: http:\/\/127\.0\.0\.1:3080\/ is running\. To open it, use the address saved in /);
+    assert.equal(fs.readFileSync(seen, 'utf8'), `${url}\n`, 'the full address was in the file while the app ran');
+    assert.equal(fs.existsSync(path.join(s.dshHome, PAGE_ADDRESS_FILE)), false, 'and is removed when the launcher exits');
+    assert.match(fs.readFileSync(path.join(web, 'start-deep-rulith.mjs'), 'utf8'), /stdio: \['inherit', 'pipe', 'pipe'\] \}\);\nconst relay = relayDshOutput/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

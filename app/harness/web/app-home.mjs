@@ -126,7 +126,7 @@ export function settingsCredentialRoots(s) {
  * system's own whoami and icacls, never whichever a PATH finds first). A file system without access lists (FAT, some
  * shares) keeps its folder's access, and the start goes on with a warning.
  */
-function ownerOnly(file) {
+export function ownerOnly(file) {
   if (process.platform !== 'win32') return;
   const system = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
   try {

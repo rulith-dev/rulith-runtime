@@ -6,7 +6,7 @@ import { COMPACTION_HEADROOM_TOKENS, COMPACTION_RATIO, COMPACTION_SUMMARY_MAX_TO
 export function conversationBoards(settings = {}, env = process.env) {
   const value = settings.conversationBoards;
   if (value !== undefined && typeof value !== 'boolean') {
-    throw new Error(`Deep Rulith: conversationBoards in the settings must be a boolean (got ${JSON.stringify(value)})`);
+    throw new Error(`Rulith: conversationBoards in the settings must be a boolean (got ${JSON.stringify(value)})`);
   }
   if (env.RULITH_DSH_CONVERSATION_BOARDS === '0') return false;
   if (env.RULITH_DSH_CONVERSATION_BOARDS === '1') return true;
@@ -22,10 +22,10 @@ export function contextLines(settings = {}) {
   const reliefRatio = settings.reliefRatio ?? RELIEF_RATIO;
   const compactionRatio = settings.compactionRatio ?? COMPACTION_RATIO;
   for (const [name, value] of [['reliefRatio', reliefRatio], ['compactionRatio', compactionRatio]]) {
-    if (typeof value !== 'number' || !(value > 0 && value < 1)) throw new Error(`Deep Rulith: ${name} in the settings must be a number between 0 and 1 (got ${JSON.stringify(value)})`);
+    if (typeof value !== 'number' || !(value > 0 && value < 1)) throw new Error(`Rulith: ${name} in the settings must be a number between 0 and 1 (got ${JSON.stringify(value)})`);
   }
   if (reliefRatio >= compactionRatio) {
-    throw new Error(`Deep Rulith: reliefRatio (${reliefRatio}) must be below compactionRatio (${compactionRatio}), or dsh compacts before context relief can act`);
+    throw new Error(`Rulith: reliefRatio (${reliefRatio}) must be below compactionRatio (${compactionRatio}), or dsh compacts before context relief can act`);
   }
   return { reliefRatio, compactionRatio };
 }
@@ -40,7 +40,7 @@ export function localContextWindow(settings = {}) {
   const value = settings.localContextWindow;
   if (value === undefined) return undefined;
   if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`Deep Rulith: localContextWindow in the settings must be a positive whole number (got ${JSON.stringify(value)})`);
+    throw new Error(`Rulith: localContextWindow in the settings must be a positive whole number (got ${JSON.stringify(value)})`);
   }
   return value;
 }
@@ -82,16 +82,16 @@ export const REVIEWER_THINKING_LEVELS = Object.freeze(['low', 'medium', 'high'])
 export function reviewerRequestExtra(settings = {}) {
   const thinking = settings.reviewerThinking;
   if (thinking !== undefined && thinking !== true && thinking !== false && !REVIEWER_THINKING_LEVELS.includes(thinking)) {
-    throw new Error(`Deep Rulith: reviewerThinking in the settings must be false, true, "low", "medium" or "high" (got ${JSON.stringify(thinking)})`);
+    throw new Error(`Rulith: reviewerThinking in the settings must be false, true, "low", "medium" or "high" (got ${JSON.stringify(thinking)})`);
   }
   const raw = settings.reviewerRequestExtra;
   if (raw !== undefined) {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-      throw new Error('Deep Rulith: reviewerRequestExtra in the settings must be a JSON object');
+      throw new Error('Rulith: reviewerRequestExtra in the settings must be a JSON object');
     }
     const reserved = Object.keys(raw).filter((key) => REVIEWER_REQUEST_RESERVED_KEYS.includes(key));
     if (reserved.length > 0) {
-      throw new Error(`Deep Rulith: reviewerRequestExtra in the settings may not set ${reserved.join(', ')}; the Worker controls ${reserved.length === 1 ? 'it' : 'them'}`);
+      throw new Error(`Rulith: reviewerRequestExtra in the settings may not set ${reserved.join(', ')}; the Worker controls ${reserved.length === 1 ? 'it' : 'them'}`);
     }
     return JSON.stringify(raw);
   }
@@ -100,7 +100,7 @@ export function reviewerRequestExtra(settings = {}) {
   if (REVIEWER_THINKING_LEVELS.includes(thinking)) {
     return JSON.stringify({ chat_template_kwargs: { enable_thinking: true }, reasoning_effort: thinking });
   }
-  throw new Error(`Deep Rulith: reviewerThinking in the settings must be false, true, "low", "medium" or "high" (got ${JSON.stringify(thinking)})`);
+  throw new Error(`Rulith: reviewerThinking in the settings must be false, true, "low", "medium" or "high" (got ${JSON.stringify(thinking)})`);
 }
 
 /**
@@ -145,10 +145,10 @@ export function writeReviewerEnv(managerHome, wantDefault, overrides = []) {
  */
 export function reviewerRoutes(settings = {}) {
   const routes = settings.reviewerRoutes ?? [];
-  if (!Array.isArray(routes)) throw new Error('Deep Rulith: reviewerRoutes in the settings must be a list');
+  if (!Array.isArray(routes)) throw new Error('Rulith: reviewerRoutes in the settings must be a list');
   return routes.map((r) => {
     if (!r || typeof r.agentPrefix !== 'string' || !r.agentPrefix || typeof r.provider !== 'string' || typeof r.model !== 'string') {
-      throw new Error('Deep Rulith: each reviewerRoutes entry needs agentPrefix, provider and model');
+      throw new Error('Rulith: each reviewerRoutes entry needs agentPrefix, provider and model');
     }
     return { agentPrefix: r.agentPrefix, provider: r.provider, model: r.model, extra: reviewerRequestExtra(r) };
   });

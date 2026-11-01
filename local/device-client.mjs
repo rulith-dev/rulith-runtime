@@ -169,6 +169,10 @@ export function createDeviceClient({ root } = {}) {
    * record as it is at that moment.
    */
   let writes = Promise.resolve()
+  // When the Agent directory was last confirmed by the service, in memory only (batch C, D-1031a): a refresh that
+  // changes nothing no longer rewrites this credential file (it was fsynced and renamed every 30 seconds just to move a
+  // timestamp). A refresh that changes the account, its Agents or the expiry still writes, at once.
+  let directoryCheckedAt = ''
 
   const load = () => {
     if (!existsSync(file)) return { format: DEVICE_FORMAT, state: 'none' }
@@ -314,7 +318,7 @@ export function createDeviceClient({ root } = {}) {
       account: current.account ?? null,
       agents: Array.isArray(current.agents) ? current.agents.map(agentView) : [],
       expiresAt: text(current.expiresAt),
-      directoryCheckedAt: text(current.refreshedAt) || text(current.linkedAt),
+      directoryCheckedAt: directoryCheckedAt || text(current.refreshedAt) || text(current.linkedAt),
       signOut: current.signOut ?? null,
       teaching: text(current.unusableTeaching) || text(current.signInTeaching),
     }
@@ -470,13 +474,17 @@ export function createDeviceClient({ root } = {}) {
       if (text(reply.deviceId) !== current.deviceId) throw new Error('The account service answered for a different device record.')
       if (text(reply.account?.id) !== text(current.account?.id)) throw new Error('The account service answered for a different account.')
       const agents = (Array.isArray(reply.agents) ? reply.agents : []).map(agentView)
+      const checkedAt = new Date().toISOString()
       await mutate((latest) => {
         if (latest.state !== 'linked' || latest.origin !== current.origin || latest.deviceId !== current.deviceId
             || latest.token !== current.token || text(latest.account?.id) !== text(current.account?.id))
           throw new Error('The signed-in account changed while refreshing. Read its current Agent list again.')
-        return { ...latest, account: { id: String(reply.account.id), name: String(reply.account?.name ?? '') },
-          agents, expiresAt: text(reply.expiresAt), refreshedAt: new Date().toISOString() }
+        const account = { id: String(reply.account.id), name: String(reply.account?.name ?? '') }, expiresAt = text(reply.expiresAt)
+        // Unchanged: nothing is written (undefined keeps the record as it is).
+        if (JSON.stringify([latest.account, latest.agents, text(latest.expiresAt)]) === JSON.stringify([account, agents, expiresAt])) return undefined
+        return { ...latest, account, agents, expiresAt, refreshedAt: checkedAt }
       })
+      directoryCheckedAt = checkedAt
       return status()
     }),
 

@@ -696,7 +696,7 @@ test('concurrent device writes keep every instance entry and refuse a backwards 
     assert.deepEqual(Object.keys(after.instances).sort(), [first.id, second.id, third.id].sort(),
       'a write whose snapshot predated a network call dropped a concurrent entry')
     assert.equal(after.state, 'linked', 'no write may move this record backwards')
-    assert.ok(after.refreshedAt, 'and the refresh still took effect')
+    assert.ok(manager.device.status().directoryCheckedAt, 'and the refresh still took effect')
   })
 })
 

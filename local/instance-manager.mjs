@@ -32,7 +32,7 @@ import { instanceRecordedAt, processRecordRunning, processStamp } from './proces
 import { checkedModelInput, createModelSettings, maxOutputTokens, modelSignature, modelView, resolvedKey } from './model-settings.mjs'
 import { createToolLibrary } from './tool-library.mjs'
 import { createLocalSetup } from './setup-local.mjs'
-import { generalKitCurrent, generalToolIds, installGeneralForInstance } from '../kits/general/installer.mjs'
+import { generalKitCurrent, generalToolIds, installGeneralForInstance, writeAppKitSettings } from '../kits/general/installer.mjs'
 import { adapterSandboxMode, isolationSwitchedOff, pathWithin, rulithBackstop, workBase } from '../worker/adapter-confinement.mjs'
 import { sweepUnconfined, UNCONFINED_RECORDS } from './process-tree.mjs'
 import { credentialRootRefusal, ensureCredentialRootLabels, releaseAllProjectLabels } from './sandbox-home-label.mjs'
@@ -2088,12 +2088,16 @@ export function createInstanceManager({ registry, device, startConfirmMs, manage
       const refusal = grantRefusal(op.instanceId, { requirePaired: true })
       if (refusal !== null) throw teach(refusal)
       const directory = resolve(record(op.instanceId).directory)
-      if (generalKitCurrent(directory)) return { reason: 'The general kit for this Agent is current; nothing was replaced.' }
       const env = loadInstanceConfig(directory).worker?.env ?? {}
       // Under confinement the kit home is in the instance's work root (never in a credential root such as the app's kit).
       const kitHome = confined
         ? (text(env.ENG_KIT_HOME) && !insideCredentialRoot(text(env.ENG_KIT_HOME)) ? text(env.ENG_KIT_HOME) : join(workRootOf(op.instanceId), 'kit'))
         : text(env.ENG_KIT_HOME) || text(op.kitHome) || join(directory, 'general-kit')
+      // Batch C (D-1031a): a kit home without settings.json gets the app's defaults (600-second commands, project-local
+      // installs and deletions, dependency folders out of the tree digest); one that has a settings.json keeps it. Written
+      // before the currency check: the Worker's run deadline follows the settings, so the kit is then reinstalled to match.
+      try { writeAppKitSettings(kitHome) } catch (error) { throw teach(kitTeaching(error)) }
+      if (generalKitCurrent(directory)) return { reason: 'The general kit for this Agent is current; nothing was replaced.' }
       const { host } = await ensureHostLocked(op.instanceId)
       try {
         await host.replaceWorkerTools(() => installGeneralForInstance({ directory, kitHome }), { restartStopped: op.mode === 'setup' ? op.requestId : false })

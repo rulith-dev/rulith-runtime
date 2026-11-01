@@ -1720,23 +1720,20 @@ export function createLocalHost({
   }
 }
 
+// Batch C (D-1031a): `rulith manager` (what the app starts beside itself, and what keeps a retired workbench's Agents
+// running) and `rulith kit install general` still work, but are not offered here: the person's command is `rulith`.
 export const CLI_HELP = `Rulith
 
 Usage:
   rulith                      Open Rulith in the browser: sign in, choose a model, open a folder,
                               then say what to do
   rulith app                  The same; rulith start and rulith setup are earlier names for it
-    --no-open                 Print the page's address instead of opening the browser
+    --no-open                 Do not open the browser: the page's address is written to a file in
+                              Rulith's folder, and the command prints that file's path
     --port <port>             The page's loopback port (default 3080, else a free one)
-  rulith kit install general --agent <name> --kit-home <dir> [--manager-home <dir>]
-  rulith manager              Only the local Runtime manager the app runs beside it (no page)
 
 Environment:
-  RULITH_APP_HOME       Where Rulith keeps its files (default ~/.rulith/app)
-  RULITH_MANAGER_HOME   rulith manager: its directory (default ~/.rulith/manager)
-  RULITH_MANAGER_PORT   rulith manager: its loopback port (default 7780)
-  RULITH_MANAGER_KEY    rulith manager: its fixed key, 16-128 of A-Z a-z 0-9 - _
-                        (default: 32 random hex characters, new on every run)`
+  RULITH_APP_HOME       Where Rulith keeps its files (default ~/.rulith/app)`
 
 /** The names that open the app: `rulith` alone, and the earlier `start` and `setup` (the workbench they opened is retired). */
 const APP_COMMANDS = new Set(['app', 'start', 'setup'])

@@ -10,7 +10,13 @@
 // derived mode's one refusal is about writing rules, and Settings → Advanced has the Post-call review block. 0.19.3
 // (owner direction 2026-10-27) adds the model's context window to the model form (`model.window*`, with the too-small
 // warning `model.windowTooSmall`) and the host's two refusals of the window field (`model.windowNoModel`,
-// `model.windowInvalid`).
+// `model.windowInvalid`). Batch C (D-1031a) adds what a check criterion runs and freezes (`sign.runs` … `sign.tooLarge`),
+// the model step's presets and check (`model.presets` … `model.notChecked`, the host's `model.checkAddress` and
+// `model.checkName`) and `tree.projects`, and rewords the English that said goal, Board, Worker or warrant outside the
+// texts the PSC pins verbatim (docs/ui-texts-english.md lists them). PSC 0.2.36 (owner, 2026-11-01) gives the app its own
+// wording of the sign, delete-conversation and two widening confirmations, splits the open-project note by system
+// (`project.noteStart`, `project.noteSystem`, `project.noteLimits`, `project.noteEnd`; the tools move under Details) and
+// adds to the no-isolation consent that commands could act as you; the sign card gains two cautions (`sign.caution*`).
 //
 // 中文说明：应用的规范英文文字（PSC 0.2.32）。测试拿发布的文字与这份表逐字核对；中文表只核对每个键都有译文。
 
@@ -103,9 +109,18 @@ export const PAGE = {
     "key": "Key",
     "keySaved": "Saved; leave empty to keep it",
     "keyPlaceholder": "API key",
-    "hint": "An OpenAI-compatible address, or an Anthropic address ending in /messages; a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.",
+    "hint": "An OpenAI-compatible address, or an Anthropic one (its /v1/messages is added when missing); a model on this computer can use http://127.0.0.1:port/v1. Saved, it applies from the next turn without a restart; the key stays on this computer and is never shown again.",
     "saving": "Saving…",
     "save": "Save",
+    "presets": "Fill in for:",
+    "presetLocal": "A server on this computer",
+    "localModel": "The model's name on the server",
+    "check": "Check",
+    "checking": "Checking…",
+    "checkOk": "The model service answered: this address, model ID and key work.",
+    "checkRefused": "The model service refused it: {message}",
+    "checkUnreachable": "Could not reach the model service: {message}",
+    "notChecked": "Not checked",
     "window": "Context window: {tokens} tokens ({source})",
     "windowSources": {
       "detected": "detected from the model server",
@@ -122,7 +137,7 @@ export const PAGE = {
   "sign": {
     "title": "Proposed acceptance criteria",
     "button": "Sign these criteria",
-    "body": "You are signing these criteria as the acceptance for this goal. The Agent proposed them; from now on it cannot end or change them, and the goal completes only when every criterion holds on the current state. This is your decision under your account.",
+    "body": "You are signing these criteria as the acceptance for this task. The Agent proposed them; from now on it cannot end or change them, and the task completes only when every criterion holds on the current state. This is your decision under your account.",
     "accept": "Sign",
     "cancel": "Not yet",
     "signed": "Signed.",
@@ -130,14 +145,22 @@ export const PAGE = {
     "unreadable": "The criteria awaiting your signature cannot be read right now",
     "signing": "Signing…",
     "refused": "Nothing was signed: {teaching}.",
-    "unavailable": "These criteria cannot be signed for this goal: {category}.",
+    "unavailable": "These criteria cannot be signed for this task: {category}.",
     "truncated": "This task has too many criteria to list here; sign them in Console.",
     "moreInConsole": "More tasks await your signature than are listed here: see them in Console.",
     "replaced": "Will be replaced",
     "notCriterion": "Not a criterion",
     "unknownReason": "the reason is unknown; try again later",
     "stale": "The previous signature's result is not confirmed yet; it signed the earlier criteria.",
-    "signedMark": "Signed"
+    "signedMark": "Signed",
+    "runs": "Runs {command} in {cwd}",
+    "runsOf": "Runs {command} in {cwd} of {root}",
+    "freezes": "freezes {files}",
+    "freezesNone": "freezes no files",
+    "freezesMore": "{files}, and {n} more",
+    "tooLarge": "This check is too large to show here; see it in Console.",
+    "cautionCombined": "This check runs a shell command line and passes when the whole line exits with 0: if the line joins commands (with |, ;, || or &) or starts another shell, a failing test can still count as passed.",
+    "cautionScript": "It runs a script defined in package.json, which these criteria do not freeze: the script can change after you sign."
   },
   "signReasons": {
     "unknown_goal": "this task was not found",
@@ -290,7 +313,7 @@ export const PAGE = {
   },
   "modeHints": {
     "strict": "Writes and runs need trusted facts first",
-    "derived": "Writes and runs go ahead when a rule derives a warrant for them",
+    "derived": "Writes and runs go ahead when a reason for them follows from recorded facts",
     "non_strict": "The model's commands and inputs run as given; completion still needs your signature"
   },
   "widen": {
@@ -298,13 +321,13 @@ export const PAGE = {
       "title": "Switch to non-strict exploration mode?",
       "accept": "Switch to non-strict",
       "cancel": "Keep strict",
-      "body": "Write and run actions of this environment's tools will accept inputs the model supplies, even when no trusted fact on the Board backs them. Each such call is marked \"Inputs not grounded\". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time."
+      "body": "Files the model writes and commands it runs in this environment will use the inputs it chooses, even when no verified record backs them. Each such call is marked \"Inputs not grounded\". Calls that need your decision never run without it, writes stay inside the locations you authorized, and tools you have not locked stay unavailable. You can switch back at any time."
     },
     "derived": {
       "title": "Switch to derived exploration mode?",
       "accept": "Switch to derived",
       "cancel": "Keep strict",
-      "body": "The model will be able to write and run in this environment's workspace whenever it can derive, from facts and rules it writes on the Board, a warrant for that action and its key inputs. Those facts do not have to be trusted evidence. Calls that need your decision never run without it, and writes stay inside the local workspace."
+      "body": "The model will be able to write and run in this environment's workspace whenever the rules and facts it records justify that step and its key inputs. Those facts do not have to be verified. Calls that need your decision never run without it, and writes stay inside the local workspace."
     }
   },
   "switchRefusals": {
@@ -361,9 +384,18 @@ export const PAGE = {
     "fromCapability": "From this Agent's installed official engineering capability.",
     "mode": "Exploration mode",
     "note": "Note",
-    "noteValue": "On this computer, reading, writing and running commands in this project folder are carried out by the Agent's engineering capability. Commands run without this computer's keys or tokens in their environment, and tool access to loopback and private network addresses (including this computer's manager and app ports) is refused. By system: on Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; this folder is writable for commands while it is open, and its previous setting is restored when it is revoked or this computer is deactivated. On Linux, commands can write only this project folder and their tool folder, the system is read-only, Rulith's credential folders are hidden, the network stays available, and background jobs end with the tool call that started them. On macOS, commands are not yet isolated on this computer. If isolation cannot be set up, commands do not run (unless you chose \"Run without isolation (not recommended)\" in Settings). The non-strict tier means the commands and arguments the model gives no longer need grounds on the Board; whether the work is done is still certified only by the acceptance contract you sign. To revoke: unlock this project in Console, or deactivate this computer.",
+    "noteStart": "Reading, writing and running commands in this folder are done by the Agent's engineering capability. Commands start without keys or tokens in their environment variables.",
+    "noteSystem": {
+      "windows": "On Windows, commands run at low integrity and cannot read the folders where Rulith keeps its credentials; while this folder is open, commands can write in it, and its previous permissions come back when access is revoked.",
+      "linux": "On Linux, commands can write only this folder and their tool folder, the rest of the system is read-only, Rulith's credential folders are hidden, and background jobs end with the tool call that started them.",
+      "macos": "On macOS, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria.",
+      "other": "On this system, commands are not isolated yet: they can read Rulith's own credentials and could use them to act as you, for example to sign acceptance criteria."
+    },
+    "noteLimits": "This protects Rulith's own credentials only: commands can still read other files your account can read, and can reach the network.",
+    "noteFallback": "If isolation cannot be set up, commands do not run, unless you turned on \"Run without isolation (not recommended)\" in Settings.",
+    "noteEnd": "In non-strict mode the model chooses commands and their arguments itself; whether the work is done is still decided only by the acceptance criteria you sign.",
     "withdraw": "How to withdraw",
-    "withdrawValue": "To withdraw it later, withdraw the grant on this project's row of this Agent's page in Console, or revoke this computer's sign-in.",
+    "withdrawValue": "In Console, choose Revoke access on this folder's row of the Agent's page, or sign this computer out.",
     "account": "Account",
     "toolsVersions": "Tools and versions",
     "capability": "Official engineering capability {id}",
@@ -465,7 +497,7 @@ export const PAGE = {
     "deletePending": "This conversation still has a call without a result. Settle it first; nothing was changed.",
     "notDeleted": "Not deleted",
     "partial": "Not deleted yet: {reasons}. Choose “Finish deleting” on this conversation to go on.",
-    "deletedRefused": "Deleted. Core refused to close {n} of its goals; they stay open on its ended Board.",
+    "deletedRefused": "Deleted. {n} of its tasks could not be closed; they stay in the ended conversation, and Console's task records show them.",
     "newFailed": "The new conversation was not created: {error}",
     "projectNotOpened": "Project not opened: {error}",
     "notProject": " (not a project yet)",
@@ -482,6 +514,7 @@ export const PAGE = {
     "default": "Default",
     "newUnderAgent": "Start a new conversation under this Agent",
     "agents": "Agents",
+    "projects": "Projects",
     "newHereTitle": "Start a new conversation under the current Agent and folder",
     "newHere": "+ New conversation",
     "filter": "Filter Agents, folders or conversations",
@@ -492,8 +525,8 @@ export const PAGE = {
     "dialogTitle": "Delete this conversation?",
     "introAgent": "Conversation “{title}” belongs to Agent {agent}. Deleting it:",
     "intro": "Conversation “{title}”. Deleting it:",
-    "sealed": "Its Board is sealed and the conversation cannot continue.",
-    "goals": "{n} open goals will be closed as abandoned.",
+    "sealed": "The conversation ends and cannot continue.",
+    "goals": "{n} open tasks will be closed as abandoned.",
     "kept": "Receipts, proofs, billing and history are kept and stay visible in the Console.",
     "undone": "This cannot be undone.",
     "notFound": "Conversation “{title}” has not used Rulith yet, so Rulith has no record of it. Deleting only removes it from the list on this computer.",
@@ -501,9 +534,9 @@ export const PAGE = {
     "deleting": "Deleting…"
   },
   "deletion": {
-    "closings": "{n} goal closings are not confirmed yet",
-    "someClosings": "some goal closings are not confirmed yet",
-    "goalsUnread": "its open goals could not be read",
+    "closings": "{n} task closings are not confirmed yet",
+    "someClosings": "some task closings are not confirmed yet",
+    "goalsUnread": "its open tasks could not be read",
     "deletedBeforeRecording": "it was deleted before deletions were recorded as finished",
     "settlementUnrecorded": "its deletion is not recorded as finished yet",
     "unfinished": "its deletion is not finished yet"
@@ -565,13 +598,13 @@ export const PAGE = {
   "legacy": {
     "one": "1 Agent",
     "many": "{n} Agents",
-    "notice": "{count} set up by the retired Rulith workbench ({home}) no longer start their Workers with rulith. Run \"rulith manager\" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console."
+    "notice": "{count} set up by the retired Rulith workbench ({home}) no longer start on this computer with rulith. Run \"rulith manager\" to keep them running, or set each Agent up again here; that replaces its Agent token, and Sources bound to its old Connection must be bound again in Console."
   },
   "isolationSwitch": {
     "title": "Model-command isolation",
     "label": "Run without isolation (not recommended)",
     "confirmTitle": "Run model commands without isolation?",
-    "confirmBody": "Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials. Turn this on only if isolation cannot work here and you accept that risk.",
+    "confirmBody": "Commands the model runs through the engineering capability will be able to read everything your account can read on this computer, including Rulith's own credentials, and could use them to act as you in Rulith, for example to sign acceptance criteria. Turn this on only if isolation cannot work here and you accept that risk.",
     "accept": "Run without isolation",
     "cancel": "Keep isolation",
     "restarting": "Saved. {agent} restarts on this computer to apply it, once any command it is running finishes.",
@@ -689,6 +722,8 @@ export const HOST = {
   "model.defaultsElsewhere": "This app reads the account's model settings from another Rulith folder (modelHome); change them there.",
   "model.windowNoModel": "Save a usable model first, then set its context window.",
   "model.windowInvalid": "Enter the context window as a whole number of tokens from {min} to 100000000, such as 131072, or leave it empty.",
+  "model.checkAddress": "Enter the model service's address first, starting with http:// or https://.",
+  "model.checkName": "Enter the model ID first.",
   "isolation.unavailable": "Not available on this platform yet: model commands run with your account's access.",
   "isolation.linuxOn": "On: model commands run under bubblewrap, with Rulith's own folders hidden.",
   "isolation.noBwrap": "Bubblewrap (bwrap) is not installed: model commands are refused until it is.",
@@ -696,7 +731,7 @@ export const HOST = {
   "isolation.refusingMany": "Model commands are refused: {roots} are not read-protected. Restart Rulith to protect them again.",
   "isolation.windowsOn": "On: model commands run at low integrity and cannot read Rulith's own folders.",
   "isolation.offFor": "{status} Turned off for {agents} (RULITH_ADAPTER_SANDBOX=off; not recommended).",
-  "isolation.pendingFor": "{status} For {agents} it applies after the Worker restarts, once the commands it is running finish.",
+  "isolation.pendingFor": "{status} For {agents} it applies once it restarts on this computer, after the commands it is running finish.",
   "isolation.incomplete": "The request does not say which Agent, or whether its model commands run without isolation.",
   "isolation.unconfirmed": "Running model commands without isolation needs your confirmation. Nothing was changed.",
   "review.incomplete": "The request does not say which Agent, or what to set for its review.",

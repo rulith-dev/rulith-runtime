@@ -70,7 +70,11 @@ This is a side-effect fence, not a sandbox: commands run as the Worker's operati
 
 ## Settings (`<kit home>/settings.json`)
 
-See `settings.example.json`. All fields are optional.
+See `settings.example.json`. All fields are optional. The defaults below are the library's; the Rulith app writes its
+own defaults into a kit home it sets up when that home has no `settings.json` yet (an existing file is never
+replaced): `runDeadlineSeconds` and `pollMaxWaitSeconds` 600, `allow` `["install", "delete"]`, `shell` `true` on
+Windows only (so `npm` and `npx`, `.cmd` scripts there, start; elsewhere `false`) and `treeExclude`
+`["node_modules", ".git", "dist", ".venv", "target", "**/__pycache__"]` (`installer.mjs` `APP_KIT_SETTINGS`).
 
 | Field | Default | Meaning |
 | --- | --- | --- |

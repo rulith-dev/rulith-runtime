@@ -197,7 +197,9 @@ worker_tools_mismatch），把隔离放在 **Worker 启动适配器的那一刻*
 >
 > **UI texts (English is normative; a Chinese rendering follows each, per the owner's 2026-10-25 English-first direction).**
 >
-> *Open-project confirmation* (replaces the 0.2.24 sentence that the folder is not OS-level isolated; one paragraph, by
+> *Open-project confirmation* (PSC 0.2.36 §14 ④ replaced this text on 2026-11-01: the note now shows only this
+> computer's system and says isolation protects Rulith's own credentials only; see `docs/ui-texts-english.md`. The
+> 0.2.31 text, kept here as the record of this batch: replaces the 0.2.24 sentence that the folder is not OS-level isolated; one paragraph, by
 > platform):
 >
 > > On this computer, reading, writing and running commands in this project folder are carried out by the Agent's
@@ -266,8 +268,11 @@ worker_tools_mismatch），把隔离放在 **Worker 启动适配器的那一刻*
   不扩大谁能做什么）；项目目录上的会在释放时删去。
 - **迁移带入的旧作业日志**：旧布局迁出时整份复制 Worker 根与 kit home，其中可能有旧的作业日志与输出；它们因此落在工作根
   （受限命令可读写）。这些内容本来就由受限命令产生，不含 Rulith 的凭据；旧副本在确认后删除。
-- **启动器会话令牌打印到 stdout**：`dsh web` 把带 `?token=` 的本页会话地址打印到启动器的标准输出。若所有者把它重定向到
-  命令可读的位置（如项目目录里的日志），命令就能拿到会话。请勿如此重定向。
+- **启动器会话令牌**（批次 C 起不再打印）：`dsh web` 的本页地址带 `?token=`，拿到它就能换到本页会话。启动器现在读 dsh 的
+  输出，只打印去掉令牌的地址，其他行里的令牌值一律遮住；浏览器仍由 dsh 用完整地址打开。没有打开浏览器时（`--no-open`、
+  经 SSH 启动），完整地址写进 app home（设置文件模式下是 dsh home）里只有本账户可读的 `page-address.txt`，启动器退出时
+  删除。剩余：dsh 打开浏览器时，完整地址会在它启动的打开程序（Windows 上的 node 与 PowerShell，Linux 上的 xdg-open）的
+  命令行里停留约一秒。
 - **卸载后遗留**：卸载应用不会自动还原仍在打开中的项目目录标签（记录在管理器 home 的 `project-labels`，删掉管理器 home 即
   丢失记录），也不删工作根（`%LOCALAPPDATA%\Rulith\work`）。Low 标签只放宽低完整性进程对该项目目录的写，不影响正常程序；
   卸载前先移除实例即自动还原。

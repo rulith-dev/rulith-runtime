@@ -55,7 +55,7 @@ test('isolation status says what the Worker does on each platform, fail-closed i
   const pending = isolationStatus({ platform: 'win32', roots: [], pendingFor: ['Research'], protectedRoot: () => true });
   assert.equal(pending.state, 'partly-off');
   assert.equal(pending.text, 'On: model commands run at low integrity and cannot read Rulith\'s own folders.'
-    + ' For Research it applies after the Worker restarts, once the commands it is running finish.');
+    + ' For Research it applies once it restarts on this computer, after the commands it is running finish.');
   assert.deepEqual(isolationPendingFor([
     { agentName: 'Research', runWithoutIsolation: false, workerSetting: { unconfined: true } },
     { agentName: 'Off', runWithoutIsolation: true, workerSetting: { unconfined: true } },
@@ -132,7 +132,7 @@ test('Settings → Advanced keeps a Diagnosis: versions, this computer, isolatio
   assert.match(words, /This computer: OWNER-PC · signed in · Default agent: online, Other: not set up/);
   assert.match(words, /Model-command isolation: On: model commands run at low integrity/);
   assert.match(words, /Rulith files: C:\\Users\\o\\\.rulith\\app[\s\S]*Logs: C:\\Users\\o\\\.rulith\\app\\dsh\\logs/);
-  assert.match(words, /2 Agents set up by the retired Rulith workbench \(C:\\Users\\o\\\.rulith\\manager\) no longer start their Workers with rulith\./);
+  assert.match(words, /2 Agents set up by the retired Rulith workbench \(C:\\Users\\o\\\.rulith\\manager\) no longer start on this computer with rulith\./);
   assert.equal(nodes(shown).some((node) => node.props && node.props['data-rulith-diagnosis'] === 'on'), true);
   assert.equal(nodes(shown).some((node) => node.tag === 'button'), false, 'a view, with nothing to press');
   diagnosis.cells[0] = { ok: false, teaching: 'not reachable' };
@@ -155,5 +155,5 @@ test('the wizard shows the workbench notice when the computer has the workbench\
   const signedOut = { ok: true, signedIn: false };
   assert.doesNotMatch(wizardWith(signedOut), /retired Rulith workbench/);
   assert.match(wizardWith({ ...signedOut, legacyWorkbench: { home: '/home/o/.rulith/manager', agents: 1 } }),
-    /1 Agent set up by the retired Rulith workbench \(\/home\/o\/\.rulith\/manager\) no longer start their Workers with rulith\. Run "rulith manager"/);
+    /1 Agent set up by the retired Rulith workbench \(\/home\/o\/\.rulith\/manager\) no longer start on this computer with rulith\. Run "rulith manager"/);
 });

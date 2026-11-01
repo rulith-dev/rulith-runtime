@@ -106,7 +106,7 @@ Owner decision: read-only, side-effect-free tools may stay native instead of goi
 `web-search-deepseek` and `web-fetch-http`), restricted per agent beside Rulith's three; no other dsh tool (read,
 read_image, write, edit, glob, grep, shell, jobs) is offered. `web_search` is registered only when a DeepSeek key reached
 dsh (`RULITH_DSH_WEB_SEARCH_KEY`, set by the launcher or the headless role only when Rulith's model route is
-`https://api.deepseek.com`); without it the model has `web_fetch` alone (the addendum text stays as below and still names web_search). dsh's own prompt
+`https://api.deepseek.com`); without it the model has `web_fetch` alone and the addendum's first sentence names only `web_fetch` (`Your tools are Rulith's three and the read-only tool web_fetch.`). Since batch C (D-1031a) that variant is chosen at each prompt assembly from whether `web_search` is registered for the agent the prompt is for (`web-tools.mjs` `addendumText`), not from the launch flag alone. dsh's own prompt
 guidance for these tools (`tool:web_search`, `tool:web_fetch` sections) is suppressed by the complete persona section.
 Their results are dsh's and are not laid out by the Board transcript; they leave nothing on the Board.
 

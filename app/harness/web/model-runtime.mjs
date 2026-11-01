@@ -139,8 +139,8 @@ export function modelLine(agentName, model) {
   try { const url = new URL(text(model?.url).trim()); where = url.origin + url.pathname.replace(/\/+$/, ''); } catch { where = ''; }
   const source = model?.source === 'override' ? 'its own model' : 'the account default model';
   return modelReady(model ?? {})
-    ? `Deep Rulith: Agent ${agentName} uses ${source}: ${text(model.name).trim()} at ${where}.`
-    : `Deep Rulith: Agent ${agentName} has no usable model yet (${source} is not set or incomplete); save one in Rulith's settings.`;
+    ? `Rulith: Agent ${agentName} uses ${source}: ${text(model.name).trim()} at ${where}.`
+    : `Rulith: Agent ${agentName} has no usable model yet (${source} is not set or incomplete); save one in Rulith's settings.`;
 }
 
 /** What the page may see of a model: never the key, not even its length or a digest. */
@@ -479,7 +479,63 @@ export const contextWindowView = ({ tokens, source, set, fallback, tooSmall }) =
  * route's context window (`contextWindow`); a saved model on a local server is asked for its window before the answer
  * (at most the detection deadline), and the person's own window is kept on this computer only.
  */
-export function modelRoutes({ manager, read, defaultsElsewhere = false, windows }) {
+/**
+ * The provider's own words for a failed request, from its JSON error body (OpenAI-compatible `{error: {message}}`,
+ * Anthropic `{type: "error", error: {type, message}}`, or a bare `message`), else its status line; one line, at most 300
+ * characters, with the key the request carried (if any) cut out, so a provider that echoes it never shows it. Pure.
+ */
+export function providerMessage(status, statusText, body, key = '') {
+  let said = '';
+  try {
+    const parsed = JSON.parse(body);
+    const error = parsed?.error;
+    said = typeof error === 'string' ? error : typeof error?.message === 'string' ? error.message : typeof parsed?.message === 'string' ? parsed.message : '';
+  } catch { said = ''; }
+  if (!said) said = String(body ?? '').trim().startsWith('<') ? '' : String(body ?? '').trim();
+  const line = `${status}${statusText ? ` ${statusText}` : ''}${said ? `: ${said}` : ''}`.replace(/[\u0000-\u001f\u007f]+/g, ' ');
+  const hidden = key && key.length >= 4 ? line.split(key).join('…') : line;
+  return hidden.length > 300 ? `${hidden.slice(0, 299)}…` : hidden;
+}
+
+/**
+ * Check a model service the person entered (batch C, D-1031a; Settings → Model and the wizard's model step): one minimal
+ * request with the address, model ID and key from the form, before anything is saved. Anthropic Messages (an address
+ * ending in /messages): `POST …/messages` with `x-api-key` and `anthropic-version: 2023-06-01`, at most 16 output
+ * tokens. Any other address is OpenAI-compatible: `POST …/chat/completions` with the key as a bearer token, and no token
+ * limit (newer OpenAI models refuse `max_tokens`). The key is the form's; with none typed, the saved key of the model in
+ * force is used only for the same address. Nothing is saved, logged or returned of the key.
+ * Answers `{ state: 'ok' }`, `{ state: 'refused', message }` (the service answered with an error; its own words) or
+ * `{ state: 'unreachable', message }` (no answer: the network error's code). 中文说明：只发一次最小的请求核对地址、模型 ID
+ * 与密钥；什么都不保存，密钥不记录、不回传；服务的错误原话照实转告（其中的密钥被去掉）。
+ */
+export async function checkModel({ url, name, key = '' }, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
+  const endpoint = modelEndpoint(text(url));
+  let address;
+  try { address = new URL(endpoint?.url ?? ''); } catch { address = null; }
+  if (!address || !['http:', 'https:'].includes(address.protocol)) throw Object.assign(new Error(say('model.checkAddress')), { errorCode: 'model_address_invalid' });
+  const model = text(name).trim();
+  if (!model) throw Object.assign(new Error(say('model.checkName')), { errorCode: 'model_name_missing' });
+  const secret = text(key).trim();
+  const messages = endpoint.api === 'anthropic-messages';
+  const headers = { 'content-type': 'application/json', accept: 'application/json',
+    ...(messages ? { 'anthropic-version': '2023-06-01', ...(secret ? { 'x-api-key': secret } : {}) } : secret ? { authorization: `Bearer ${secret}` } : {}) };
+  const ask = [{ role: 'user', content: 'Reply with OK.' }];
+  const abort = AbortSignal.timeout(timeoutMs);
+  let response;
+  try {
+    // No redirects (batch C review): a redirect elsewhere would carry the key in x-api-key, which fetch does not strip.
+    response = await fetchImpl(endpoint.url, { method: 'POST', headers, signal: abort, redirect: 'error',
+      body: JSON.stringify(messages ? { model, max_tokens: 16, messages: ask } : { model, messages: ask }) });
+  } catch (error) {
+    const code = error?.cause?.code ?? error?.cause?.errors?.[0]?.code
+      ?? (['TimeoutError', 'AbortError'].includes(error?.name) ? 'timed out' : error?.cause?.message ?? '');
+    return { state: 'unreachable', message: providerMessage('', '', code || String(error?.message ?? error), secret).replace(/^: /, '') };
+  }
+  const body = await response.text().catch(() => '');
+  return response.ok ? { state: 'ok' } : { state: 'refused', message: providerMessage(response.status, response.statusText, body, secret) };
+}
+
+export function modelRoutes({ manager, read, defaultsElsewhere = false, windows, fetchImpl }) {
   const fields = ['url', 'name', 'key', 'clearKey', 'thinking', 'maxOutputTokens'];
   const view = (model, account) => ({ ...publicModel(model, account),
     ...(windows && modelReady(model) ? { contextWindow: contextWindowView(windows.info(model)) } : {}) });
@@ -521,6 +577,17 @@ export function modelRoutes({ manager, read, defaultsElsewhere = false, windows 
      * 100000000, or empty (`''`, `null`) to return to the detected or default window. Guarded by the account the page
      * read, like saving the model; nothing reaches the manager or the Gateway.
      */
+    /** One check of the address, model ID and key in the form (checkModel): with no key typed, the saved key of the model
+     * in force for the same address. */
+    check: async (body = {}) => {
+      let key = text(body.key);
+      if (!key.trim()) {
+        const { model } = await read(body.agentId ? String(body.agentId) : undefined);
+        const same = modelEndpoint(text(model?.url))?.url === modelEndpoint(text(body.url))?.url;
+        if (same) key = text(model.key);
+      }
+      return checkModel({ url: body.url, name: body.name, key }, fetchImpl ? { fetchImpl } : {});
+    },
     setContextWindow: async (body = {}) => {
       const { account, model } = await read(body.agentId ? String(body.agentId) : undefined);
       if (!account) throw Object.assign(new Error(say('model.notSignedIn')), { errorCode: 'not_signed_in' });

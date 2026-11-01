@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { conversationBoards, contextEnv, contextLines, localContextWindow, reviewerEnv, reviewerRequestExtra, reviewerRoutes, writeReviewerEnv } from './launcher-settings.mjs';
 import { holdAppHome, launcherSettings, legacyWorkbench, legacyWorkbenchLine, settingsCredentialRoots } from './app-home.mjs';
 import { webSearchKey } from '../web-tools.mjs';
+import { relayDshOutput } from './page-address.mjs';
 import { attachedAgents, effectiveModel, modelLine, signedInAccount } from './model-runtime.mjs';
 import { credentialRootRefusal, ensureCredentialRootLabels } from '../../../local/sandbox-home-label.mjs';
 
@@ -52,7 +53,7 @@ const hostShadow = shadow.enabled === true;
 let shadowModel = null;
 if (hostShadow && shadow.modelHome) {
   shadowModel = defaultOf(path.resolve(shadow.modelHome));
-  if (!shadowModel) throw new Error('Deep Rulith: no model is configured in shadow.modelHome');
+  if (!shadowModel) throw new Error('Rulith: no model is configured in shadow.modelHome');
 }
 const base = model ? model.url.replace(/\/+$/, '') : '';
 // A model entry without maxTokens answers within the library's default output cap, and long tool arguments (a whole
@@ -136,7 +137,7 @@ function writeReviewerRoute(YAML, doc) {
   };
   const overrides = reviewerRoutes(s).map((r) => {
     const env = routeEnv(r.provider, r.model, r.extra);
-    if (!env) throw new Error(`Deep Rulith: reviewerRoutes provider ${r.provider} has no base URL in the dsh profile`);
+    if (!env) throw new Error(`Rulith: reviewerRoutes provider ${r.provider} has no base URL in the dsh profile`);
     return { agentPrefix: r.agentPrefix, env };
   });
   // The default: no route of the launcher's own (the Runtime derives it), only the request extra (launcher-settings.mjs).
@@ -159,7 +160,7 @@ function writeModelRoute() {
   // Models page writes this file with): comments and other entries are kept as they are.
   const YAML = createRequire(import.meta.url)('yaml');
   const doc = YAML.parseDocument(fs.readFileSync(profilePatch, 'utf8'));
-  if (doc.errors.length > 0) throw new Error(`Deep Rulith: ${profilePatch} is not valid YAML; fix it and restart`);
+  if (doc.errors.length > 0) throw new Error(`Rulith: ${profilePatch} is not valid YAML; fix it and restart`);
   if (!YAML.isSeq(doc.contents)) doc.contents = doc.createNode([]);
   const rows = doc.contents;
   const row = (id) => rows.items.find((item) => YAML.isMap(item) && item.get('id') === id && !item.has('insert'));
@@ -228,7 +229,13 @@ if (!fs.existsSync(path.join(s.dshHome, 'profiles', profile, 'package.json'))) {
 syncBrowserPlugin(); writeModelRoute();
 // One --port reaches dsh: the person's (`rulith --port`), else the free one the app home chose.
 const portGiven = args.some((arg) => arg === '--port' || arg.startsWith('--port='));
+// dsh's output is read here, never inherited (page-address.mjs): its page address carries the launch token, which must
+// not reach a redirected launcher output. The address is printed without it; with no browser opened, the full address is
+// saved in Rulith's own folder (the app home, or the settings' dsh home) and removed when this launcher exits.
 const child = spawn(process.execPath, [s.dshBin, '--profile', profile, '--patch', overlay, ...(s.webPort && !portGiven ? ['--port', String(s.webPort)] : []), ...args],
-  { cwd: s.cwd, env, stdio: 'inherit' });
-child.on('exit', (code) => process.exit(code ?? 0));
+  { cwd: s.cwd, env, stdio: ['inherit', 'pipe', 'pipe'] });
+const relay = relayDshOutput(child.stdout, child.stderr, { folder: home ?? s.dshHome, noOpen: args.includes('--no-open') });
+process.on('exit', () => { const file = relay.written(); if (file) try { fs.rmSync(file, { force: true }); } catch {} });
+// 'close', not 'exit': dsh's last lines are relayed before this process ends.
+child.on('close', (code) => process.exit(code ?? 0));
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));

@@ -366,7 +366,7 @@ async function runtimeFixture(t, enabled = true, initialAgents = [], instances =
     if (previousFlag === undefined) delete process.env.RULITH_DSH_CONVERSATION_BOARDS;
     else process.env.RULITH_DSH_CONVERSATION_BOARDS = previousFlag;
   });
-  const requests = [], statuses = [], definitions = [], effects = [], listeners = new Map();
+  const requests = [], definitions = [], effects = [], listeners = new Map();
   let server, tick, transport;
   t.mock.method(globalThis, 'setInterval', (fn, ms) => { assert.equal(ms, 3000); tick = fn; return 0; });
   t.mock.method(net, 'connect', (_options, callback) => {
@@ -384,7 +384,8 @@ async function runtimeFixture(t, enabled = true, initialAgents = [], instances =
     }
     throw new Error('fixture file absent');
   });
-  t.mock.method(fs, 'writeFileSync', (_file, value) => statuses.push(JSON.parse(value)));
+  // Batch C: the host writes no status file any more; nothing else of it is written synchronously.
+  t.mock.method(fs, 'writeFileSync', () => {});
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     const body = JSON.parse(init.body); requests.push({ ...body, headers: init.headers });
     await transport?.(body);
@@ -426,7 +427,7 @@ async function runtimeFixture(t, enabled = true, initialAgents = [], instances =
     await done;
     return reply;
   };
-  return { requests, statuses, definitions, emit, panel, post, tick: () => tick(), transport: (fn) => { transport = fn; } };
+  return { requests, definitions, emit, panel, post, tick: () => tick(), transport: (fn) => { transport = fn; } };
 }
 
 test('runtime tick proactively recovers a failed conversation without another model call', async (t) => {
@@ -436,10 +437,11 @@ test('runtime tick proactively recovers a failed conversation without another mo
   await assert.rejects(f.definitions.find((d) => d.name === 'Set').execute({}, { agent: main }), /outcome is unknown/);
   f.transport(undefined);
   const calls = f.requests.filter((r) => r.method === 'tools/call').length;
+  const opened = f.requests.filter((r) => r.method === 'initialize' && r.headers['X-Rulith-Conversation'] === 'dsh:parent').length;
   await f.tick(); await setImmediate();
-  assert.equal(f.statuses.at(-1).state, 'attached');
-  assert.ok(f.statuses.at(-1).reconnectedAt);
-  assert.equal(f.statuses.at(-1).liveConversations, 1);
+  assert.ok(f.requests.filter((r) => r.method === 'initialize' && r.headers['X-Rulith-Conversation'] === 'dsh:parent').length > opened,
+    'the tick reconnected the conversation');
+  assert.equal((await f.panel()).liveConversations, 1);
   assert.equal(f.requests.filter((r) => r.method === 'tools/call').length, calls);
 });
 
@@ -448,11 +450,11 @@ test('attachment discovers tools on the first known conversation and reuses its 
   assert.ok(f.requests.every((r) => r.headers['X-Rulith-Conversation'] === 'dsh:parent'));
   await f.definitions.find((d) => d.name === 'Get').execute({}, { agent: main });
   assert.equal(f.requests.filter((r) => r.method === 'initialize').length, 1);
-  assert.equal(f.statuses.at(-1).liveConversations, 1);
+  assert.equal((await f.panel()).liveConversations, 1);
 });
 
 test('runtime routes registered tools by conversation, publishes only aggregate status, and disposes on dsh events', async (t) => {
-  const { requests, statuses, definitions, emit, panel } = await runtimeFixture(t);
+  const { requests, definitions, emit, panel } = await runtimeFixture(t);
   assert.deepEqual(definitions.map((d) => [d.name, d.description]), TOOLS.map((name) => [name, `fixture ${name}`]));
   assert.deepEqual(requests.map((r) => r.method), ['initialize', 'notifications/initialized', 'tools/list']);
   assert.ok(requests.every((r) => r.headers['X-Rulith-Conversation'] === undefined), 'attachment only discovers tools');
@@ -462,12 +464,12 @@ test('runtime routes registered tools by conversation, publishes only aggregate 
   assert.deepEqual(requests.filter((r) => r.method === 'tools/call').map((r) => r.headers['X-Rulith-Conversation']),
     ['dsh:parent', 'dsh:parent', 'dsh:fork']);
   assert.equal(requests.filter((r) => r.method === 'initialize').length, 3, 'discovery plus two conversations');
-  assert.equal(statuses.at(-1).liveConversations, 2);
-  assert.deepEqual(await panel(), { ok: true, available: true, agentName: 'fixture', liveConversations: 2 });
-  emit('session/disposed', main.session); assert.equal(statuses.at(-1).liveConversations, 2);
-  emit('session/disposed', child.session); assert.equal(statuses.at(-1).liveConversations, 1);
-  emit('session/disposed', fork.session); assert.equal(statuses.at(-1).liveConversations, 0);
-  assert.doesNotMatch(JSON.stringify(statuses), /dsh:|fixture-token|fixture-manager-key|fixture-mcp-session/);
+  const seen = [await panel()];
+  assert.deepEqual(seen[0], { ok: true, available: true, agentName: 'fixture', liveConversations: 2 });
+  emit('session/disposed', main.session); seen.push(await panel()); assert.equal(seen.at(-1).liveConversations, 2);
+  emit('session/disposed', child.session); seen.push(await panel()); assert.equal(seen.at(-1).liveConversations, 1);
+  emit('session/disposed', fork.session); seen.push(await panel()); assert.equal(seen.at(-1).liveConversations, 0);
+  assert.doesNotMatch(JSON.stringify(seen), /dsh:|fixture-token|fixture-manager-key|fixture-mcp-session/);
 });
 
 // ACC-ISO-01 (model-command isolation, D-1024a / PSC 0.2.28 ①): the app host's /rulith/api routes require the dsh
@@ -563,5 +565,5 @@ test('every paired Agent is attached at once; tool calls go to the Agent the con
   assert.match(moved.teaching, /already belongs to another Agent/);
   assert.equal((await f.post('sessions/assign', { session: 'x', agentId: 'agent-c' })).ok, false, 'an Agent not set up here cannot take a conversation');
   assert.equal((await f.panel('?session=other')).agentName, 'beta', 'the panel reads the conversation\'s own Agent');
-  assert.equal(f.statuses.at(-1).liveConversations, 2);
+  assert.equal((await f.panel()).liveConversations, 1, 'the default Agent\'s own count');
 });

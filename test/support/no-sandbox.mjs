@@ -18,11 +18,11 @@
 //
 //    A guard in the runner process snapshots the real %LOCALAPPDATA%\Rulith, ~/.rulith and $XDG_DATA_HOME/rulith-work
 //    before the suite and compares them when it exits; anything created, removed or modified there (contents, size,
-//    times, including a security change) fails the run and is listed. The one exception is the periodic bookkeeping of
-//    a Rulith app the owner keeps running from the real app home (~/.rulith/app) while the suite runs: exactly the files
-//    it rewrites on a timer (and, since 0.19.3, its context-window file, which it writes when a detected window changes),
-//    and only while its manager's lease shows it running the whole time and its device record keeps the same account and
-//    device (the decision is test-home-guard.mjs unexplainedChanges).
+//    times, including a security change) fails the run and is listed. The one exception is a Rulith app the owner keeps
+//    running from the real app home (~/.rulith/app) while the suite runs: its context-window file (since 0.19.3, written
+//    when a detected window changes), only while its manager's lease shows it running the whole time and its device
+//    record keeps the same account and device (the decision is test-home-guard.mjs unexplainedChanges). Since batch C the
+//    app rewrites nothing on a timer, so an app from before batch C running meanwhile is reported.
 //
 // 中文说明：测试引导在运行器和它派生的每个测试进程里都会加载。它把隔离默认关掉（理由见上），并把整轮测试的账户目录
 // （USERPROFILE、HOME、LOCALAPPDATA、APPDATA、XDG_DATA_HOME）换成一个临时目录，子进程继承；运行器进程里另有守卫，
@@ -67,20 +67,16 @@ if (!process.env.RULITH_TEST_HOMES) {
     for (const root of watched) walk(root)
     return seen
   }
-  // 中文说明：负责人常常一边开着本机应用（真实的 ~/.rulith/app）一边跑测试。活着的应用会按时改写自己的几处记录，这不是
-  // 测试写的：应用宿主每 3 秒写一次 dsh/rulith-runtime-status.json（直接覆盖写）；本机管理器每 30 秒刷新一次智能体目录，
-  // 原子改写 manager/device.json（先在同一目录写 device.json.<uuid>.tmp 再改名，所以 manager 目录本身的时间也跟着变，
-  // 那个临时文件也可能恰好在快照时还在）。守卫只放过这几个确切的路径，而且只在应用确实一直活着时：看 manager 目录里
-  // 管理器的租约 workbench.lock——测试开始与结束时是同一张票据（同一个 id，即同一个持有进程），且按 Runtime 自己判断
-  // 锁持有者是否还在的规则（process-identity.mjs processRecordRunning：pid 在、同一次开机、同一个程序与入口脚本，防
-  // pid 复用）判定为仍在运行。宿主写的状态文件也以这张租约为准：没有管理器在跑时宿主自己拉起它、退出时一并结束它，一张
-  // 租约就够。另外要求真实 manager/device.json 里几个不含机密的身份字段（state、origin、deviceId、account.id）在测试前后
-  // 不变：应用的例行改写只更新目录的刷新时间，不动这些；它们变了（登录、退出、换账户或换设备）就不是例行改写。只读这四个
-  // 字段，文件里的其它内容既不保留也不打印。应用没在跑、跑到一半才启动或换了一个、身份字段变了，或者被改的是别的文件
-  // （包括这几个文件被新建或删除），一律照旧算作测试的改动、整轮失败。0.19.3 起应用在读到的上下文窗口变了时原子改写
-  // dsh/rulith-context-windows.json（先写同名 .tmp 再改名，所以 dsh 目录本身的时间也跟着变）；它第一次读到窗口时这个
-  // 文件可能在测试期间新建。同样的条件下放过它的新建与改写、它的临时文件，以及只在它被写过时 dsh 目录本身的改动；
-  // 它被删除仍算测试的改动（应用从不删它）。判断写在 test-home-guard.mjs，有单独的测试。
+  // 中文说明：负责人常常一边开着本机应用（真实的 ~/.rulith/app）一边跑测试。批次 C 起应用不再按时改写任何文件（宿主的
+  // 状态文件删了，manager/device.json 只在智能体目录真的变了时才写），只剩 0.19.3 起的上下文窗口文件：读到的窗口变了时
+  // 原子改写 dsh/rulith-context-windows.json（先写同名 .tmp 再改名，所以 dsh 目录本身的时间也跟着变），第一次读到窗口时
+  // 它可能在测试期间新建。守卫只放过它的新建与改写、它的临时文件，以及只在它被写过时 dsh 目录本身的改动，而且只在应用
+  // 确实一直活着时：看 manager 目录里管理器的租约 workbench.lock——测试开始与结束时是同一张票据（同一个 id，即同一个持有
+  // 进程），且按 Runtime 自己判断锁持有者是否还在的规则（process-identity.mjs processRecordRunning：pid 在、同一次开机、
+  // 同一个程序与入口脚本，防 pid 复用）判定为仍在运行；另外要求真实 manager/device.json 里几个不含机密的身份字段（state、
+  // origin、deviceId、account.id）在测试前后不变。只读这四个字段，文件里的其它内容既不保留也不打印。应用没在跑、跑到一半
+  // 才启动或换了一个、身份字段变了，或者被改的是别的文件，一律算作测试的改动、整轮失败；窗口文件被删除也算（应用从不删它）。
+  // 批次 C 之前的应用若在测试期间开着，它的按时改写会被报出来。判断写在 test-home-guard.mjs，有单独的测试。
   const appHome = path.join(realHome, '.rulith', 'app')
   const managerHome = path.join(appHome, 'manager')
   const managerLease = path.join(managerHome, 'workbench.lock')

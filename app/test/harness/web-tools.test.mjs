@@ -301,6 +301,26 @@ test('without a search key the addendum offers only web_fetch, and nothing else 
   assert.match(forDeployment(WEB, {}), /^Your tools are Rulith's three and the read-only tool web_fetch\./);
 });
 
+test('batch C: the addendum names web_search only while it is registered for the agent the prompt is assembled for', async () => {
+  const { addendumText, withoutSearch } = await import('../../harness/web-tools.mjs');
+  const { ADDENDUM } = await import('../../harness/rulith-gate.mjs');
+  const { installGate } = await import('../../harness/web/rulith-web-gate.mjs');
+  const registry = (names) => ({ get: (name, scope) => (names.includes(name) && scope !== 'restricted' ? {} : undefined) });
+  assert.equal(addendumText(ADDENDUM, registry(['web_search', 'web_fetch'])), ADDENDUM);
+  assert.equal(addendumText(ADDENDUM, registry(['web_fetch'])), withoutSearch(ADDENDUM));
+  assert.equal(addendumText(ADDENDUM, registry(['web_search', 'web_fetch']), 'restricted'), withoutSearch(ADDENDUM), 'by the scope dsh assembles for');
+  // The launch flag alone no longer promises search: registered or not decides, whatever the flag says.
+  assert.equal(addendumText(ADDENDUM, registry(['web_fetch']), undefined, { RULITH_DSH_WEB_SEARCH_KEY: '1' }), withoutSearch(ADDENDUM));
+  // No registry to ask: the flag, as before.
+  assert.equal(addendumText(ADDENDUM, undefined, undefined, {}), withoutSearch(ADDENDUM));
+  // The web gate's section asks at every assembly.
+  const sections = []; let names = ['web_fetch'];
+  installGate({ tools: { get: (name) => (names.includes(name) ? {} : undefined) }, on() {}, systemPrompt: { section: (s) => sections.push(s) } }, 'persona');
+  assert.equal(sections[0].text({}), 'persona\n\n' + withoutSearch(ADDENDUM));
+  names = ['web_search', 'web_fetch'];
+  assert.equal(sections[0].text({}), 'persona\n\n' + ADDENDUM);
+});
+
 // ACC-ISO-03 (model-command isolation, D-1024a): the web tools never let the model (or a page it read) reach a local
 // service. A regression over the exact loopback endpoints that hold credentials-equivalent power on this machine: the
 // manager (7790), the app host (3080) and the model engine (8080). SSRF-guarded at the tool seam; a spawned command is

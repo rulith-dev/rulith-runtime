@@ -321,7 +321,9 @@ test('the panel\'s health and worker reads resolve the Agent from the conversati
   assert.match(host, /const agentForRequest = \(query = \{\}\) => resolveHolder\(query\.session, requestFolder\(query, sessions\)\) \?\? null;/);
   for (const route of ['health', 'worker']) assert.match(host, new RegExp(`'GET /rulith/api/${route}': \\(query\\) => \\w+\\(query\\)`));
   assert.match(host, /const health = async \(query = \{\}\) => \{\s*const agent = agentForRequest\(query\);/);
-  assert.match(host, /const workerTrace = async \(query = \{\}\) => \{\s*const agent = agentForRequest\(query\);/);
+  assert.match(host, /const workerState = async \(query = \{\}\) => \{\s*const agent = agentForRequest\(query\);/);
+  // Batch C: the Worker's state is the manager's, never sampled from an instance host's event stream.
+  assert.doesNotMatch(host, /\/events|\/manager\/instances\/open|workerTrace|rulith-runtime-status/);
 });
 
 // ---- One name per thing, one table per language (design §1, §2; D-1025b).
@@ -339,6 +341,15 @@ test('the page\'s words use the vocabulary: no Board, Worker, Agent token or Con
   // English uses Console's words, Board included where Console's approved sentences say it.
   for (const [at, words] of leaves(plain(plugin.TEXTS.en)).filter(([key]) => !exempt(key)))
     assert.doesNotMatch(words, /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]|DeepSeek|Deep Rulith|lease|\bgoal-\d/, at);
+  // Batch C (D-1031a): English says task, never goal, and has no Board, Worker, warrant or grounded either. Since PSC 0.2.36
+  // the app words its confirmations its own way; only the non-strict confirmation keeps the pinned marker "Inputs not
+  // grounded" (§14).
+  const PINNED = ['widen.non_strict.body'];
+  const internal = /\bBoards?\b|\bgoals?\b|\bWorkers?\b|warrant|grounded|\bgrounds\b/i;
+  const english = leaves(plain(plugin.TEXTS.en)).filter(([key]) => !exempt(key));
+  assert.ok(english.length > 300, 'the page\'s English sentences were found');
+  for (const [at, words] of english.filter(([key]) => !PINNED.includes(key))) assert.doesNotMatch(words, internal, at);
+  for (const at of PINNED) assert.ok(english.some(([key]) => key === at), `${at} is still a page text`);
   // The host speaks through its tables too: no sentence for the person is written into its route modules.
   for (const file of ['rulith-runtime.mjs', 'open-project.mjs', 'local-setup.mjs', 'folder-picker.mjs', 'model-runtime.mjs', 'diagnosis.mjs']) {
     const code = fs.readFileSync(new URL('../../harness/web/' + file, import.meta.url), 'utf8').split('\n')
@@ -349,6 +360,13 @@ test('the page\'s words use the vocabulary: no Board, Worker, Agent token or Con
   assert.doesNotMatch(host, /Choose an Agent first|Invalid session id|Name the conversation|That Agent is not set up|another Agent's Board|Name the goal|Same-origin Deep Rulith|No such Deep Rulith|Rulith answered/);
 });
 
+test('batch C: the host\'s English says task, never goal, and has no Board, Worker, warrant or grounded', async () => {
+  const { HOST_TEXTS } = await import('../../harness/web/ui-texts.mjs');
+  const entries = Object.entries(HOST_TEXTS.en);
+  assert.ok(entries.length > 40, 'the host\'s sentences were found');
+  for (const [at, words] of entries) assert.doesNotMatch(words, /\bBoards?\b|\bgoals?\b|\bWorkers?\b|warrant|grounded|\bgrounds\b/i, at);
+});
+
 test('the model-visible changes of batch 5 are listed verbatim in their document', async () => {
   const doc = fs.readFileSync(new URL('../../../docs/model-visible-changes-batch5.md', import.meta.url), 'utf8');
   const { ADDENDUM } = await import('../../harness/rulith-gate.mjs');
@@ -357,6 +375,17 @@ test('the model-visible changes of batch 5 are listed verbatim in their document
   const tail = ADDENDUM.slice(ADDENDUM.indexOf('Early, propose the acceptance'), ADDENDUM.indexOf(' the Board certifies the goal'));
   assert.ok(doc.includes(tail), 'the new acceptance sentences');
   assert.ok(doc.includes(projectLine('<directory>', null)));
+});
+
+test('the model-visible changes of batch C are listed verbatim in their document', async () => {
+  const doc = fs.readFileSync(new URL('../../../docs/model-visible-changes-batch-c.md', import.meta.url), 'utf8');
+  const { ADDENDUM } = await import('../../harness/rulith-gate.mjs');
+  const { withoutSearch } = await import('../../harness/web-tools.mjs');
+  // Batch C changes no model-visible text: the two approved first sentences of the addendum, now chosen by whether
+  // web_search is registered, are both listed as they are.
+  for (const text of [ADDENDUM, withoutSearch(ADDENDUM)]) assert.ok(doc.includes(text.slice(0, text.indexOf('.') + 1)));
+  // The kit is the official capability's 1.0.0 (no kit text changes in this batch): its measure sentence is as before.
+  assert.match(ADDENDUM, /write a spec to \.deep-rulith\/measure\/<name>\.json/);
 });
 
 test('every normative English string of PSC 0.2.32 is listed in docs/ui-texts-english.md, and the app ships exactly them', async () => {
@@ -377,8 +406,8 @@ test('every normative English string of PSC 0.2.32 is listed in docs/ui-texts-en
   assert.deepEqual(plain(plugin.TIER_REFUSALS), PSC.TIER_REFUSALS);
   assert.deepEqual(plain(plugin.REVIEW_REFUSALS), PSC.REVIEW_REFUSALS);
   // Console's approved English is reused verbatim where the meaning is the same (Text A, Text 9, the non-strict
-  // confirmation, PSC 0.2.20 ③, Console's Conversations texts).
-  assert.equal(PSC.SIGNING.body, 'You are signing these criteria as the acceptance for this goal. The Agent proposed them; from now on it cannot end or change them, and the goal completes only when every criterion holds on the current state. This is your decision under your account.');
+  // confirmation, PSC 0.2.20 ③, Console's Conversations texts), in the app's own words where PSC 0.2.36 §14 gives them.
+  assert.equal(PSC.SIGNING.body, 'You are signing these criteria as the acceptance for this task. The Agent proposed them; from now on it cannot end or change them, and the task completes only when every criterion holds on the current state. This is your decision under your account.');
   assert.deepEqual([PSC.SIGNING.title, PSC.SIGNING.button, PSC.SIGNING.accept, PSC.SIGNING.cancel, PSC.SIGNING.signed, PSC.SIGNING.refused],
     ['Proposed acceptance criteria', 'Sign these criteria', 'Sign', 'Not yet', 'Signed.', 'Nothing was signed: {teaching}.']);
   assert.deepEqual([PSC.WIDEN_TEXT.derived.title, PSC.WIDEN_TEXT.derived.accept, PSC.WIDEN_TEXT.derived.cancel],
