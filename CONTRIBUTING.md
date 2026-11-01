@@ -44,10 +44,7 @@ redeploying the Gateway. Until then the Console keeps recommending the pinned re
 person who follows Setup installs it, even over a newer compatible one.
 
 1. Prepare, tag and verify the release as above, land the release commit on `main`, and push
-   the commit and its `v<version>` tag (the example setup downloads from that tag). From the
-   Gateway repository, run its pairing gate against this checkout and the verified previous
-   package: `node scripts/verify-mcp-cutover.mjs <this checkout> <previous package>`. It checks
-   that the Gateway's pin names this exact package version.
+   the commit and its `v<version>` tag (the example setup downloads from that tag).
 2. Publish without moving `latest`: `npm publish --tag next`. Then run
    `npm run release:verify-published -- <version>`, which resolves the exact version rather
    than a dist-tag.
