@@ -2,6 +2,35 @@
 
 All notable changes to the local runtime are documented here.
 
+## 0.20.0 - 2026-11-01
+
+Batch C of the 2026-10-31 review (D-1031a); the texts below are PSC 0.2.36 (approved by the owner 2026-11-01).
+
+- **Coding tools work on real projects.** When the app sets up an Agent's coding tools and their kit home has no
+  `settings.json`, it writes one with settings the official engineering capability 1.0.0 already reads (its bytes are
+  unchanged): 600 seconds per command, project-local installs and deletions allowed, `node_modules`, `.git`, `dist`,
+  `.venv`, `target` and every `__pycache__` left out of the tree digest, and the shell on Windows only (npm and npx
+  are `.cmd` scripts there). **Existing Agents change too:** a kit home that never had a `settings.json` gets this one
+  at the app's next start or repair, so after upgrading, an Agent's commands may run longer, install and delete inside
+  the project, and on Windows go through `cmd.exe`. The tree digest includes these settings, so passes recorded before
+  need to run once more; certified tasks are untouched. An existing `settings.json` is never replaced.
+- **The sign card shows what a check runs** (with the service from rulith-java 4ad876e1): the command, its folder, the
+  project and the files it freezes, never a digest. It cautions for every shell line, or line naming a shell, that the
+  whole line's exit status decides (`npm test | tail -20` passes a failing test), and when npm, pnpm, yarn, bun,
+  corepack or `node --run` runs a package.json script while the check folder's own `package.json` is not frozen.
+  Console says the same.
+- **Plain English.** The sign, delete-conversation and two widening confirmations say task, not goal, and no Board or
+  warrant. The open-project note explains isolation for this computer's system only and says plainly that it protects
+  Rulith's own credentials only: commands can still read other files your account can read and reach the network. On
+  macOS it says commands are not isolated and could use Rulith's credentials to act as you. The tools used are listed
+  under Details. Turning on "Run without isolation" now says commands could act as you, for example sign criteria.
+- **Model step.** Presets for common services and a Check that makes one minimal request with the entered key (it
+  follows no redirect, so a key is never sent to another address).
+- **Smaller things.** An account with one Agent sees its folders directly. The task panel reads the Worker's state from
+  the manager; no file is rewritten on a timer. The page's session token is no longer printed (the full address opens
+  in the browser, or with `--no-open` is written to an owner-only file). The model is told about web_search only while
+  it is registered. `rulith --help` no longer lists `kit install` and `manager`.
+
 ## 0.19.3 - 2026-10-27
 
 - App: a model on a local inference server is measured against its real context window (owner direction 2026-10-27).
