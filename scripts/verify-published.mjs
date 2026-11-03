@@ -107,18 +107,23 @@ async function smokeStart(packageRoot, temp) {
   } finally { await stop(manager.child) }
   const home = join(temp, 'home')
   const app = await startUntil(packageRoot, ['app', '--no-open', '--port', String(await unusedPort())],
-    { RULITH_APP_HOME: join(temp, 'app-home'), HOME: home, USERPROFILE: home }, /dsh web: http:\/\/127\.0\.0\.1:\d+\/\?token=\S+/, 'app')
+    { RULITH_APP_HOME: join(temp, 'app-home'), HOME: home, USERPROFILE: home }, /use the address saved in (.+?); it signs a browser in/, 'app')
   try {
-    const url = new URL(/dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(app.output())[1])
-    // dsh trades the printed token for a cookie on a redirect to its page, as a browser follows it.
+    // Since 0.20.0 (batch C) the app prints no session token: with --no-open the full address is written to an owner-only
+    // file, and the output names that file.
+    assert.doesNotMatch(app.output(), /token=/, 'the published app printed its session token')
+    const saved = /use the address saved in (.+?); it signs a browser in/.exec(app.output())[1]
+    const url = new URL(readFileSync(saved, 'utf8').trim())
+    assert.match(url.href, /^http:\/\/127\.0\.0\.1:\d+\/\?token=\S+$/, 'the saved address is not the app page')
+    // dsh trades the saved token for a cookie on a redirect to its page, as a browser follows it.
     const entry = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10_000) })
     const cookie = (entry.headers.get('set-cookie') ?? '').split(';')[0]
-    assert.ok(entry.status === 303 && cookie, `the published app did not accept its printed address (${entry.status})`)
+    assert.ok(entry.status === 303 && cookie, `the published app did not accept its saved address (${entry.status})`)
     const index = await fetch(new URL(entry.headers.get('location') ?? './', url), { headers: { cookie }, signal: AbortSignal.timeout(10_000) })
     assert.equal(index.status, 200, 'the published app did not serve its page')
     assert.match(await index.text(), /<title>Rulith<\/title>/)
     // The app host's routes take the page's dsh session (model-command isolation, D-1024a): refused without it, answered
-    // with the cookie the printed address gave this check, exactly as for the page itself.
+    // with the cookie the saved address gave this check, exactly as for the page itself.
     const api = new URL('/rulith/api/state', url)
     const refused = await fetch(api, { headers: { 'x-deep-rulith': '1' }, signal: AbortSignal.timeout(20_000) })
     assert.equal(refused.status, 401, 'the published app host answered without the page session')
